@@ -344,7 +344,7 @@ const fn section_hint(section: Section) -> &'static str {
 pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> AnyView {
     match section {
         Section::General => {
-            let git_source = Memo::new(move |_| form.with(|form| form.source_kind == "git"));
+            let kind = Memo::new(move |_| form.with(|form| form.source_kind.clone()));
             view! {
                 <div class="form-grid">
                     <label class="field">
@@ -357,30 +357,40 @@ pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> A
                         >
                             <option value="image">"Container image"</option>
                             <option value="git">"Git repository with Dockerfile"</option>
+                            <option value="self">"Manifest repository with Dockerfile"</option>
                         </select>
                     </label>
                     {text_input("Replicas", form, |v| v.replicas.clone(), |v, s| v.replicas = s)}
                     {move || {
-                        if git_source.get() {
+                        if kind.get() == "image" {
+                            text_input(
+                                "Container image",
+                                form,
+                                |v| v.image.clone(),
+                                |v, s| v.image = s,
+                            )
+                        } else {
                             view! {
-                                {text_input(
-                                    "Repository",
-                                    form,
-                                    |v| v.repository.clone(),
-                                    |v, s| v.repository = s,
-                                )}
-                                {text_input(
-                                    "Branch",
-                                    form,
-                                    |v| v.branch.clone(),
-                                    |v, s| v.branch = s,
-                                )}
-                                {text_input(
-                                    "Commit (optional)",
-                                    form,
-                                    |v| v.commit.clone(),
-                                    |v, s| v.commit = s,
-                                )}
+                                <Show when={move || kind.get() == "git"}>
+                                    {text_input(
+                                        "Repository",
+                                        form,
+                                        |v| v.repository.clone(),
+                                        |v, s| v.repository = s,
+                                    )}
+                                    {text_input(
+                                        "Branch",
+                                        form,
+                                        |v| v.branch.clone(),
+                                        |v, s| v.branch = s,
+                                    )}
+                                    {text_input(
+                                        "Commit (optional)",
+                                        form,
+                                        |v| v.commit.clone(),
+                                        |v, s| v.commit = s,
+                                    )}
+                                </Show>
                                 {text_input(
                                     "Dockerfile path",
                                     form,
@@ -395,13 +405,6 @@ pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> A
                                 )}
                             }
                                 .into_any()
-                        } else {
-                            text_input(
-                                "Container image",
-                                form,
-                                |v| v.image.clone(),
-                                |v, s| v.image = s,
-                            )
                         }
                     }}
                 </div>

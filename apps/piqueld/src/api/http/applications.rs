@@ -261,7 +261,7 @@ pub(super) async fn status(
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in = Query)]
 pub(super) struct GenerationQuery {
-    /// Current intent revision; optional for reconcile, required for deployment and deletion unless forced.
+    /// Current intent revision; optional for reconcile, required for deletion unless forced.
     pub(super) expected_generation: Option<u64>,
     /// Explicitly bypass intent preconditions.
     #[serde(default)]

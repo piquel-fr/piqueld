@@ -1,7 +1,7 @@
 //! Typed changes to saved application configuration. No edit performs runtime work.
 use crate::manifest::{
     ApplicationManifest, Build, GitRepository, HealthCheck, Mount, RepositoryManifest,
-    ResourceLimits, Route, SecretMount, Service, Source, Volume,
+    ResourceLimits, Route, SecretMount, Service, Source, SourceRepository, Volume,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -208,7 +208,19 @@ impl ApplicationEdit {
     pub fn apply(self, manifest: &mut ApplicationManifest) -> Result<(), EditError> {
         match self {
             Self::Name(name) => manifest.metadata.name = name,
-            Self::Repository(value) => manifest.spec.manifest = value,
+            Self::Repository(value) => {
+                // Disconnecting keeps "self" sources building from the former repository.
+                if value.is_none()
+                    && let Some(previous) = &manifest.spec.manifest
+                {
+                    for service in &mut manifest.spec.services {
+                        service
+                            .source
+                            .resolve_manifest_repository(&previous.repository);
+                    }
+                }
+                manifest.spec.manifest = value;
+            }
             Self::RepositoryUrl(value) => Self::repository(manifest)?.repository.url = value,
             Self::RepositoryBranch(value) => Self::repository(manifest)?.repository.branch = value,
             Self::RepositoryCommit(value) => Self::repository(manifest)?.repository.commit = value,
@@ -439,7 +451,13 @@ impl ServiceEdit {
     /// Returns the Git repository of a Git source; image sources are incompatible.
     fn git(service: &mut Service) -> Result<&mut GitRepository, EditError> {
         match &mut service.source {
-            Source::Git { repository, .. } => Ok(repository),
+            Source::Git {
+                repository: SourceRepository::Git(repository),
+                ..
+            } => Ok(repository),
+            Source::Git { .. } => Err(EditError::Incompatible(
+                "edit the manifest repository to change a \"self\" source",
+            )),
             Source::Image { .. } => Err(EditError::Incompatible(
                 "select a Git source before editing Git settings",
             )),

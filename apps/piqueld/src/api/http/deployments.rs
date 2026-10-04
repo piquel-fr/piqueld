@@ -8,6 +8,7 @@ use axum::{
 use piqueld_core::{
     ApplicationId, Operation,
     api::{AcceptedOperation, DeploymentView, Envelope, Page},
+    manifest::ManifestRevision,
 };
 
 #[derive(Default, serde::Deserialize, utoipa::IntoParams)]
@@ -18,6 +19,51 @@ pub(super) struct HistoryQuery {
     cursor: Option<String>,
 }
 
+/// Deployment preconditions plus an optional one-time manifest revision.
+#[derive(Default, serde::Deserialize, utoipa::IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in=Query)]
+pub(super) struct DeployQuery {
+    /// Current intent revision; required unless forced.
+    expected_generation: Option<u64>,
+    /// Explicitly bypass intent preconditions.
+    #[serde(default)]
+    force: bool,
+    /// Fetch the repository manifest from this branch head, without saving it.
+    branch: Option<String>,
+    /// Fetch the repository manifest from this full commit, without saving it.
+    commit: Option<String>,
+}
+
+impl DeployQuery {
+    /// Unwraps the query, mapping rejections to 400 `query_invalid`.
+    fn decode(
+        query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
+    ) -> Result<Self, ApiError> {
+        query.map(|Query(value)| value).map_err(|_| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "query_invalid",
+                "expected_generation must be an integer, force must be true or false, and branch or commit may appear once",
+            )
+        })
+    }
+
+    /// The one-time manifest revision, if `branch` or `commit` was given.
+    fn revision(&mut self) -> Result<Option<ManifestRevision>, ApiError> {
+        match (self.branch.take(), self.commit.take()) {
+            (None, None) => Ok(None),
+            (Some(branch), None) => Ok(Some(ManifestRevision::Branch(branch))),
+            (None, Some(commit)) => Ok(Some(ManifestRevision::Commit(commit))),
+            (Some(_), Some(_)) => Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "revision_invalid",
+                "select either a branch or a commit",
+            )),
+        }
+    }
+}
+
 /// Deploys the saved configuration.
 ///
 /// Returns 202 with the accepted durable operation. Requires
@@ -25,7 +71,7 @@ pub(super) struct HistoryQuery {
 /// Repeating a request with the same `Idempotency-Key` returns the original
 /// response.
 #[utoipa::path(post,path="/api/v1/applications/{id}/deploy",operation_id="deployApplication",
-    params(("id"=String,Path),super::applications::GenerationQuery,("Idempotency-Key"=Option<String>,Header)),
+    params(("id"=String,Path),DeployQuery,("Idempotency-Key"=Option<String>,Header)),
     responses((status=202,description="Deployment accepted",body=Envelope<AcceptedOperation>),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
     (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
@@ -33,16 +79,14 @@ pub(super) async fn deploy(
     State(state): State<ApiState>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    query: Result<
-        Query<super::applications::GenerationQuery>,
-        axum::extract::rejection::QueryRejection,
-    >,
+    query: Result<Query<DeployQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiError> {
-    let query = super::applications::GenerationQuery::decode(query)?;
+    let mut query = DeployQuery::decode(query)?;
     super::applications::accept_mutation(
         &state,
         crate::api::Mutation::Deploy {
             id: ApplicationId::parse(id)?,
+            revision: query.revision()?,
         },
         query.expected_generation,
         query.force,

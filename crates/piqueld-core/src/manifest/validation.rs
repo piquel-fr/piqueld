@@ -2,8 +2,8 @@
 
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, Build, GitRepository,
-    HealthCheck, Mount, ResourceLimits, SecretDeclaration, SecretGenerator, Service, Source,
-    ValidatedApplication, Volume,
+    HealthCheck, ManifestRevision, Mount, ResourceLimits, SecretDeclaration, SecretGenerator,
+    Service, Source, SourceRepository, ValidatedApplication, Volume,
 };
 use crate::{codes, resource::valid_logical_name};
 use serde::{Deserialize, Serialize};
@@ -107,6 +107,18 @@ impl GitRepository {
                 "commit must be a full lowercase hexadecimal Git hash",
             );
         }
+    }
+}
+
+impl ManifestRevision {
+    /// Records that `path` needs a repository-backed manifest.
+    pub(crate) fn unbacked(path: &str, errors: &mut Vec<ValidationError>) {
+        error(
+            errors,
+            "manifest_repository_required",
+            path,
+            "the manifest repository applies only when spec.manifest is configured",
+        );
     }
 }
 
@@ -448,7 +460,12 @@ impl ApplicationManifest {
             codes::VOLUME_NAME_DUPLICATE,
             &mut errors,
         );
-        validate_services(&self.spec.services, &volume_names, &mut errors);
+        validate_services(
+            &self.spec.services,
+            &volume_names,
+            self.spec.manifest.is_some(),
+            &mut errors,
+        );
         validate_volumes(&self.spec.volumes, &mut errors);
         validate_generated_secrets(&self.spec.secrets, &mut errors);
         errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
@@ -531,14 +548,50 @@ fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationErro
     within_budget
 }
 
+impl Source {
+    /// Validates Git repository selection and build paths.
+    fn validate_git(&self, base: &str, manifest_backed: bool, errors: &mut Vec<ValidationError>) {
+        if let Self::Git {
+            repository,
+            build:
+                Build::Docker {
+                    dockerfile,
+                    context,
+                },
+        } = self
+        {
+            let path = format!("{base}.source.repository");
+            match repository {
+                SourceRepository::Git(repository) => repository.validate(&path, errors),
+                SourceRepository::Manifest(_) if !manifest_backed => {
+                    ManifestRevision::unbacked(&path, errors);
+                }
+                SourceRepository::Manifest(_) => {}
+            }
+            for (field, value) in [("dockerfile", dockerfile), ("context", context)] {
+                if !valid_repository_path(value) {
+                    error(
+                        errors,
+                        "repository_path_invalid",
+                        &format!("{base}.source.build.{field}"),
+                        "path must be relative to the repository root and remain within it",
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Validates every service: name, replicas, source, secrets, environment,
 /// mounts, process arguments, health check, and resource limits.
 ///
-/// `volume_names` holds declared volumes for mount references. Secret targets
-/// must be unique under `/run/secrets/` and must not collide with mount targets.
+/// `volume_names` holds declared volumes for mount references, and
+/// `manifest_backed` allows `"self"` Git sources. Secret targets must be unique
+/// under `/run/secrets/` and must not collide with mount targets.
 fn validate_services(
     services: &[Service],
     volume_names: &BTreeSet<String>,
+    manifest_backed: bool,
     errors: &mut Vec<ValidationError>,
 ) {
     for (index, service) in services.iter().enumerate() {
@@ -562,27 +615,7 @@ fn validate_services(
                 "image must be a valid registry reference without credentials or a URL scheme",
             );
         }
-        if let Source::Git {
-            repository,
-            build:
-                Build::Docker {
-                    dockerfile,
-                    context,
-                },
-        } = &service.source
-        {
-            repository.validate(&format!("{base}.source.repository"), errors);
-            for (field, value) in [("dockerfile", dockerfile), ("context", context)] {
-                if !valid_repository_path(value) {
-                    error(
-                        errors,
-                        "repository_path_invalid",
-                        &format!("{base}.source.build.{field}"),
-                        "path must be relative to the repository root and remain within it",
-                    );
-                }
-            }
-        }
+        service.source.validate_git(&base, manifest_backed, errors);
         let mut targets = service
             .mounts
             .iter()

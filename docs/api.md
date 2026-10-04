@@ -38,11 +38,11 @@ normalized manifest is needed.
 | GET | `/api/v1/applications/{id}/status` | Intent progress and separate runtime health |
 | POST | `/api/v1/applications/plan` | Preview a manifest without pulling images |
 | POST | `/api/v1/applications/apply` | Save configuration by name; `?deploy=true` also deploys |
-| POST | `/api/v1/applications/{id}/deploy` | Deploy the inspected saved revision with fresh source resolution; supersede pending work |
+| POST | `/api/v1/applications/{id}/deploy` | Deploy the inspected saved revision with fresh source resolution; supersede pending work. `branch=NAME` or `commit=SHA` fetches a repository-backed manifest from that revision once, without saving it |
 | GET | `/api/v1/applications/{id}/deployments` | Deployment snapshots, newest first, three per page |
 | GET | `/api/v1/applications/{id}/deployments/{deployment}/attempts` | Retained outcomes, newest first, 100 per page |
 | DELETE | `/api/v1/applications/{id}` | Request deletion; no body |
-| POST | `/api/v1/applications/{id}/reconcile` | Repair latest intent without refreshing prepared digests |
+| POST | `/api/v1/applications/{id}/reconcile` | Retry the latest operation with its saved inputs once it has ended or failed; an operation still in progress is returned unchanged |
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment |
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |

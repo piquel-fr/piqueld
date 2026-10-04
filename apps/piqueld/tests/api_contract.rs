@@ -1007,6 +1007,17 @@ impl Target<'_> {
         assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
         assert_eq!(malformed.code(), "json_malformed");
 
+        let repeated_branch = send_raw(
+            self,
+            Method::POST,
+            "/api/v1/applications/doesnotexist1/deploy?branch=a&branch=b",
+            &[],
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(repeated_branch.status, StatusCode::BAD_REQUEST);
+        assert_eq!(repeated_branch.code(), "query_invalid");
+
         let paired = send_raw(
             self,
             Method::GET,
@@ -1643,8 +1654,17 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
     request.manifest.spec.services[0].replicas = 2;
     let changed = client.apply_and_deploy(&request).await.unwrap();
     assert_eq!(changed.generation, 2);
+    // A one-time manifest revision needs a repository-backed manifest.
+    let revision = piqueld_client::ManifestRevision::Branch("feature".into());
+    let unbacked = client
+        .deploy_application(&first.application_id, 2, Some(&revision))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(unbacked, piqueld_client::ClientError::Api { error, .. } if error.details.to_string().contains("manifest_repository_required"))
+    );
     let refreshed = client
-        .deploy_application(&first.application_id, 2)
+        .deploy_application(&first.application_id, 2, None)
         .await
         .unwrap();
     assert_eq!(refreshed.generation, 2);
@@ -1681,7 +1701,7 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
     assert_eq!(deletion.generation, 3);
     assert!(
         client
-            .deploy_application(&first.application_id, 3)
+            .deploy_application(&first.application_id, 3, None)
             .await
             .is_err()
     );
@@ -1910,7 +1930,7 @@ async fn receipt_failure_rolls_back_acceptance_and_expired_keys_are_reusable() {
         .await
         .unwrap();
     let refreshed = keyed
-        .deploy_application(&accepted.application_id, 1)
+        .deploy_application(&accepted.application_id, 1, None)
         .await
         .unwrap();
     assert_ne!(refreshed.operation_id, accepted.operation_id);
@@ -2068,7 +2088,7 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
     );
     let refreshed = api
         .client
-        .deploy_application(&accepted.application_id, 2)
+        .deploy_application(&accepted.application_id, 2, None)
         .await
         .unwrap();
     assert_eq!(refreshed.generation, 2);
@@ -2086,7 +2106,7 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
     assert_eq!(reconciled.operation_id, deletion.operation_id);
     assert!(
         api.client
-            .deploy_application(&accepted.application_id, 2)
+            .deploy_application(&accepted.application_id, 2, None)
             .await
             .is_err()
     );
@@ -2349,12 +2369,12 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     assert!(detail.latest_operation.is_none());
     let first = api
         .client
-        .deploy_application(&saved.application_id, saved.generation)
+        .deploy_application(&saved.application_id, saved.generation, None)
         .await
         .unwrap();
     let second = api
         .client
-        .deploy_application(&saved.application_id, saved.generation)
+        .deploy_application(&saved.application_id, saved.generation, None)
         .await
         .unwrap();
     assert_ne!(first.operation_id, second.operation_id);
@@ -2390,7 +2410,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     );
     assert!(
         api.client
-            .deploy_application(&saved.application_id, 1)
+            .deploy_application(&saved.application_id, 1, None)
             .await
             .is_err()
     );
@@ -2431,7 +2451,7 @@ async fn deploy_after_rename_captures_saved_name_and_spec() {
     api.client.apply_application(&edited).await.unwrap();
     let refreshed = api
         .client
-        .deploy_application(&accepted.application_id, 3)
+        .deploy_application(&accepted.application_id, 3, None)
         .await
         .unwrap();
     let snapshot = api
@@ -2802,7 +2822,7 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
     let id = piqueld_core::ApplicationId::parse("absent-application").unwrap();
     for mutation in [
         Mutation::save(manifest.clone(), None, false),
-        Mutation::Deploy { id: id.clone() },
+        Mutation::deploy(id.clone()),
         Mutation::Delete { id: id.clone() },
         Mutation::Rename {
             id,
@@ -3296,7 +3316,7 @@ impl AcceptanceApi {
 
 #[tokio::test]
 async fn field_edit_source_endpoints_preserve_other_git_settings() {
-    use piqueld_client::{Build, GitRepository, edit::ServiceEdit};
+    use piqueld_client::{Build, GitRepository, SourceRepository, edit::ServiceEdit};
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
     let saved = api
@@ -3306,11 +3326,11 @@ async fn field_edit_source_endpoints_preserve_other_git_settings() {
         .unwrap();
     let id = &saved.application_id;
     let source = Source::Git {
-        repository: GitRepository {
+        repository: SourceRepository::Git(GitRepository {
             url: "https://example.com/first.git".into(),
             branch: "main".into(),
             commit: None,
-        },
+        }),
         build: Build::Docker {
             dockerfile: "Dockerfile".into(),
             context: ".".into(),
@@ -3352,7 +3372,11 @@ async fn field_edit_source_endpoints_preserve_other_git_settings() {
     let pinned = api
         .edit_service_field(id, ServiceEdit::GitCommit(Some("a".repeat(40))))
         .await;
-    let Source::Git { repository, build } = pinned.source else {
+    let Source::Git {
+        repository: SourceRepository::Git(repository),
+        build,
+    } = pinned.source
+    else {
         panic!("Git source")
     };
     assert_eq!(repository.branch, "release");
@@ -3368,7 +3392,7 @@ async fn field_edit_source_endpoints_preserve_other_git_settings() {
         .edit_service_field(id, ServiceEdit::GitCommit(None))
         .await;
     assert!(
-        matches!(unpinned.source, Source::Git { repository, .. } if repository.commit.is_none())
+        matches!(unpinned.source, Source::Git { repository: SourceRepository::Git(repository), .. } if repository.commit.is_none())
     );
     let image = api
         .edit_service_field(id, ServiceEdit::Image("nginx:stable".into()))

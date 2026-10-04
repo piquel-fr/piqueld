@@ -187,6 +187,13 @@
         }
       ]
     },
+    "ManifestRepository": {
+      "description": "The literal `\"self\"`, selecting the manifest's own repository.",
+      "enum": [
+        "self"
+      ],
+      "type": "string"
+    },
     "Metadata": {
       "additionalProperties": false,
       "description": "User-provided application metadata.",
@@ -552,7 +559,7 @@
               "description": "Explicit build instructions."
             },
             "repository": {
-              "$ref": "#/definitions/GitRepository",
+              "$ref": "#/definitions/SourceRepository",
               "description": "Repository and revision to resolve."
             },
             "type": {
@@ -568,6 +575,19 @@
             "type"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "SourceRepository": {
+      "description": "The repository a Git build source checks out.",
+      "oneOf": [
+        {
+          "$ref": "#/definitions/ManifestRepository",
+          "description": "`\"self\"`: the application's manifest repository, at the exact commit its\nmanifest was read from, so one deployment builds from one revision."
+        },
+        {
+          "$ref": "#/definitions/GitRepository",
+          "description": "An independently resolved repository and revision."
         }
       ]
     },

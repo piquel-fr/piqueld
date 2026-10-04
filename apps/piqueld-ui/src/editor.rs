@@ -1,5 +1,8 @@
 //! Form drafts and section patches. Each save changes only its own settings group.
-use piqueld_client::{Build, GitRepository, HealthCheck, Mount, ResourceLimits, Service, Source};
+use piqueld_client::{
+    Build, GitRepository, HealthCheck, ManifestRepository, Mount, ResourceLimits, Service, Source,
+    SourceRepository,
+};
 
 /// Independently saved service settings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -133,10 +136,13 @@ impl From<&Service> for ServiceForm {
                         context,
                     },
             } => {
-                form.source_kind = "git".into();
-                form.repository.clone_from(&repository.url);
-                form.branch.clone_from(&repository.branch);
-                form.commit = repository.commit.clone().unwrap_or_default();
+                form.source_kind = "self".into();
+                if let SourceRepository::Git(repository) = repository {
+                    form.source_kind = "git".into();
+                    form.repository.clone_from(&repository.url);
+                    form.branch.clone_from(&repository.branch);
+                    form.commit = repository.commit.clone().unwrap_or_default();
+                }
                 form.dockerfile.clone_from(dockerfile);
                 form.context.clone_from(context);
             }
@@ -170,29 +176,37 @@ impl From<&Service> for ServiceForm {
     }
 }
 impl ServiceForm {
+    fn source(&self) -> Result<Source, String> {
+        let repository = match self.source_kind.as_str() {
+            "image" => {
+                return Ok(Source::Image {
+                    image: self.image.clone(),
+                });
+            }
+            "git" => SourceRepository::Git(GitRepository {
+                url: self.repository.clone(),
+                branch: self.branch.clone(),
+                commit: (!self.commit.is_empty()).then(|| self.commit.clone()),
+            }),
+            "self" => SourceRepository::Manifest(ManifestRepository::Manifest),
+            _ => return Err("Choose image or Git as the source.".into()),
+        };
+        Ok(Source::Git {
+            repository,
+            build: Build::Docker {
+                dockerfile: self.dockerfile.clone(),
+                context: self.context.clone(),
+            },
+        })
+    }
+
     /// Applies a single group to a fresh copy of saved configuration.
     /// # Errors
     /// Returns actionable errors for malformed numeric fields or duplicate environment keys.
     pub fn patch(&self, section: Section, service: &mut Service) -> Result<(), String> {
         match section {
             Section::General => {
-                service.source = match self.source_kind.as_str() {
-                    "image" => Source::Image {
-                        image: self.image.clone(),
-                    },
-                    "git" => Source::Git {
-                        repository: GitRepository {
-                            url: self.repository.clone(),
-                            branch: self.branch.clone(),
-                            commit: (!self.commit.is_empty()).then(|| self.commit.clone()),
-                        },
-                        build: Build::Docker {
-                            dockerfile: self.dockerfile.clone(),
-                            context: self.context.clone(),
-                        },
-                    },
-                    _ => return Err("Choose image or Git as the source.".into()),
-                };
+                service.source = self.source()?;
                 service.replicas = self
                     .replicas
                     .parse()
@@ -338,11 +352,11 @@ mod tests {
     fn git_source_round_trips_when_scaling_changes() {
         let mut saved = service();
         saved.source = Source::Git {
-            repository: GitRepository {
+            repository: SourceRepository::Git(GitRepository {
                 url: "https://example.com/app.git".into(),
                 branch: "release".into(),
                 commit: Some("a".repeat(40)),
-            },
+            }),
             build: Build::Docker {
                 dockerfile: "infra/Dockerfile".into(),
                 context: "app".into(),

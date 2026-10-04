@@ -274,8 +274,10 @@ a saved account. See [authentication](authentication.md) for details.
 `app deploy` fetches repository-backed configuration when configured, then explicitly
 resolves image or Git build sources. It supersedes pending work for the selected
 application. Use `--yes` to skip interactive confirmation, `--no-wait` to return
-after acceptance, or a longer global `--timeout` for builds. The server continues
-deployment if the CLI wait times out. `app reconcile` retries or repairs the latest
+after acceptance, or a longer global `--timeout` for builds. `--branch NAME` or
+`--commit SHA` fetches a repository-backed manifest from another revision for this
+deployment only, without saving it; for example, to test a feature branch. The
+server continues deployment if the CLI wait times out. `app reconcile` retries or repairs the latest
 deployment snapshot and prepared target without refreshing sources.
 
 Human output uses bold labels and color on terminals, application lists,

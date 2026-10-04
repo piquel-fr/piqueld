@@ -73,6 +73,9 @@ pub enum Mutation {
     Deploy {
         /// Stable application identity.
         id: ApplicationId,
+        /// Fetch the manifest from this revision instead, without saving it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        revision: Option<piqueld_core::manifest::ManifestRevision>,
     },
     /// Request resource deletion.
     Delete {
@@ -105,6 +108,12 @@ pub enum MutationResponse {
 }
 
 impl Mutation {
+    /// Deploys saved configuration at its configured manifest revision.
+    #[must_use]
+    pub fn deploy(id: ApplicationId) -> Self {
+        Self::Deploy { id, revision: None }
+    }
+
     /// Creates save intent, optionally deploying the saved snapshot atomically.
     /// # Panics
     /// Panics if the built-in placeholder ID is invalid.

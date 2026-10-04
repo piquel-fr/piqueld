@@ -1064,6 +1064,12 @@ impl ControllerHarness {
         );
     }
 
+    /// Simulates a daemon restart: reopens the database behind a fresh controller.
+    async fn reopen(&mut self) {
+        self.store = Arc::new(Store::open(&self.database_path).await.unwrap());
+        self.controller = Controller::new(Arc::clone(&self.docker), Arc::clone(&self.store));
+    }
+
     async fn target(&self, id: &ApplicationId) -> ResolvedApplication {
         self.store.get(id).await.unwrap().resolved.unwrap()
     }
@@ -1660,9 +1666,7 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
         .apply(input.clone().validate().unwrap(), Some(0))
         .await
         .unwrap();
-    let deploy = || Mutation::Deploy {
-        id: first.application_id.clone(),
-    };
+    let deploy = || Mutation::deploy(first.application_id.clone());
     let MutationResponse::Operation(replacement) = applications
         .accept(deploy(), None, true, None)
         .await
@@ -1796,7 +1800,9 @@ mod repository_deployments {
     use super::*;
     use piqueld::api::{ApplicationError, Mutation, MutationResponse};
     use piqueld::store::StoreError;
-    use piqueld_core::manifest::{ApplicationManifest, GitRepository, RepositoryManifest};
+    use piqueld_core::manifest::{
+        ApplicationManifest, GitRepository, ManifestRevision, RepositoryManifest, SourceRepository,
+    };
 
     impl git_fixture::GitBuildFixture {
         pub fn failing_source(&self) -> piqueld_core::Source {
@@ -1868,10 +1874,37 @@ mod repository_deployments {
             ]);
             self.git(&["rev-parse", "HEAD"])
         }
+        /// Builds `Dockerfile` from the manifest's own repository and revision.
+        fn self_source() -> piqueld_core::Source {
+            piqueld_core::Source::Git {
+                repository: SourceRepository::Manifest(
+                    piqueld_core::manifest::ManifestRepository::Manifest,
+                ),
+                build: piqueld_core::manifest::Build::Docker {
+                    dockerfile: "Dockerfile".into(),
+                    context: ".".into(),
+                },
+            }
+        }
         async fn deploy(harness: &ControllerHarness, id: &ApplicationId) -> Operation {
+            Self::deploy_revision(harness, id, None).await
+        }
+        async fn deploy_revision(
+            harness: &ControllerHarness,
+            id: &ApplicationId,
+            revision: Option<ManifestRevision>,
+        ) -> Operation {
             let MutationResponse::Operation(accepted) = harness
                 .applications()
-                .accept(Mutation::Deploy { id: id.clone() }, None, true, None)
+                .accept(
+                    Mutation::Deploy {
+                        id: id.clone(),
+                        revision,
+                    },
+                    None,
+                    true,
+                    None,
+                )
                 .await
                 .unwrap()
             else {
@@ -2012,7 +2045,7 @@ mod repository_deployments {
     #[tokio::test]
     async fn retry_after_reopening_store_uses_fetched_manifest_and_new_deploy_fetches_again() {
         let repository = RepositoryFixture::new();
-        let harness = ControllerHarness::new().await;
+        let mut harness = ControllerHarness::new().await;
         let initial = repository.manifest("app.json");
         repository.write("app.json", &initial);
         repository.commit();
@@ -2031,20 +2064,20 @@ mod repository_deployments {
         assert_eq!(failed.error_code.as_deref(), Some("git_build_failed"));
         repository.write("app.json", &initial);
         repository.commit();
-        let reopened = Arc::new(Store::open(&harness.database_path).await.unwrap());
-        let controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&reopened));
-        let applications = TestApplications::new(
-            Arc::clone(&reopened),
-            controller.runtime(Arc::new(tokio::sync::Notify::new())),
-        );
-        let retry = applications
+        harness.reopen().await;
+        let retry = harness
+            .applications()
             .reconcile(&first.application_id, None)
             .await
             .unwrap();
         assert_eq!(retry.id, failed.id);
-        controller.scan(&CancellationToken::new()).await.unwrap();
+        harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(
-            reopened.operation(&retry.id).await.unwrap().state,
+            harness.store.operation(&retry.id).await.unwrap().state,
             OperationState::Failed
         );
         assert_eq!(
@@ -2053,6 +2086,126 @@ mod repository_deployments {
                 .state,
             OperationState::Succeeded
         );
+    }
+
+    #[tokio::test]
+    async fn self_sources_build_the_manifest_commit_including_one_time_revisions() {
+        let repository = RepositoryFixture::new();
+        let harness = ControllerHarness::new().await;
+        let mut fetched = repository.manifest("app.json");
+        fetched.spec.services[0].source = RepositoryFixture::self_source();
+        repository.write("app.json", &fetched);
+        std::fs::write(
+            repository.directory.path().join("Dockerfile"),
+            "FROM alpine:3.20\n",
+        )
+        .unwrap();
+        let main = repository.commit();
+        repository.git(&["checkout", "-b", "feature"]);
+        std::fs::write(
+            repository.directory.path().join("Dockerfile"),
+            "FROM alpine:3.21\n",
+        )
+        .unwrap();
+        let feature = repository.commit();
+        repository.git(&["checkout", "main"]);
+        let mut bootstrap = repository.manifest("app.json");
+        bootstrap.spec.services.clear();
+        let saved = harness
+            .applications()
+            .save(bootstrap.validate().unwrap(), Some(0))
+            .await
+            .unwrap();
+        let application_id = ApplicationId::parse(saved.application_id).unwrap();
+        // The override is not saved, and saved configuration keeps "self".
+        let expected_spec = fetched
+            .clone()
+            .validate()
+            .unwrap()
+            .normalize(application_id.clone())
+            .to_manifest()
+            .spec;
+        for (revision, expected) in [
+            (
+                Some(ManifestRevision::Commit(feature.clone())),
+                feature.clone(),
+            ),
+            (None, main),
+            (Some(ManifestRevision::Branch("feature".into())), feature),
+        ] {
+            let deployment =
+                RepositoryFixture::deploy_revision(&harness, &application_id, revision).await;
+            assert_eq!(deployment.state, OperationState::Succeeded);
+            let stored = harness.store.get(&application_id).await.unwrap();
+            assert!(
+                matches!(&stored.resolved.unwrap().services[0].source, ResolvedSource::Git { commit, .. } if commit == &expected)
+            );
+            assert_eq!(stored.application.to_manifest().spec, expected_spec);
+        }
+        // "self" would otherwise pin another repository to this one's commit.
+        let mut moved = fetched;
+        moved.spec.manifest.as_mut().unwrap().repository.url = "/elsewhere".into();
+        repository.write("app.json", &moved);
+        repository.commit();
+        let deployment = RepositoryFixture::deploy(&harness, &application_id).await;
+        assert_eq!(deployment.error_code.as_deref(), Some("manifest_invalid"));
+    }
+
+    #[tokio::test]
+    async fn retry_after_reopening_store_builds_self_sources_at_the_fetched_commit() {
+        let repository = RepositoryFixture::new();
+        let mut harness = ControllerHarness::new().await;
+        repository.commit();
+        repository.git(&["checkout", "-b", "feature"]);
+        let mut fetched = repository.manifest("app.json");
+        let mut built = fetched.spec.services[0].clone();
+        built.name = "built".into();
+        built.source = RepositoryFixture::self_source();
+        fetched.spec.services.push(built);
+        repository.write("app.json", &fetched);
+        let dockerfile = repository.directory.path().join("Dockerfile");
+        std::fs::write(&dockerfile, "FROM alpine:3.20\n").unwrap();
+        let pinned = repository.commit();
+        let mut bootstrap = repository.manifest("app.json");
+        bootstrap.spec.services.clear();
+        let saved = harness
+            .applications()
+            .save(bootstrap.validate().unwrap(), Some(0))
+            .await
+            .unwrap();
+        let application_id = ApplicationId::parse(saved.application_id).unwrap();
+        // The image service fails preparation after the manifest is fetched.
+        harness.docker.arm_tag_flips(100).await;
+        let failed = RepositoryFixture::deploy_revision(
+            &harness,
+            &application_id,
+            Some(ManifestRevision::Branch("feature".into())),
+        )
+        .await;
+        assert_eq!(
+            failed.error_code.as_deref(),
+            Some("image_resolution_failed")
+        );
+        std::fs::write(&dockerfile, "FROM alpine:3.21\n").unwrap();
+        repository.commit();
+        harness.reopen().await;
+        harness.docker.arm_tag_flips(0).await;
+        let retry = harness
+            .applications()
+            .reconcile(&application_id, None)
+            .await
+            .unwrap();
+        assert_eq!(retry.id, failed.id);
+        harness.finish(&retry).await;
+        let resolved = harness.target(&application_id).await;
+        let commit = resolved
+            .services
+            .iter()
+            .find_map(|service| match &service.source {
+                ResolvedSource::Git { commit, .. } => Some(commit),
+                ResolvedSource::Image { .. } => None,
+            });
+        assert_eq!(commit, Some(&pinned));
     }
 
     #[tokio::test]
@@ -2068,11 +2221,11 @@ mod repository_deployments {
         let build_commit = build_repository.commit();
         let mut fetched = repository.manifest("app.json");
         fetched.spec.services[0].source = piqueld_core::Source::Git {
-            repository: GitRepository {
+            repository: piqueld_core::manifest::SourceRepository::Git(GitRepository {
                 url: build_repository.directory.path().display().to_string(),
                 branch: "main".into(),
                 commit: Some(build_commit.clone()),
-            },
+            }),
             build: piqueld_core::manifest::Build::Docker {
                 dockerfile: "Dockerfile".into(),
                 context: ".".into(),

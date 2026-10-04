@@ -169,6 +169,23 @@ checkout or build preserves the existing running deployment. Normal reconciliati
 reuses prepared images; explicit deploy resolves and builds sources again.
 Local images are supported only on the existing single-node Swarm topology.
 
+A repository-backed application can build from its own manifest repository:
+
+```toml
+[spec.services.source]
+type = "git"
+repository = "self"
+[spec.services.source.build]
+type = "docker"
+dockerfile = "infra/auth.Dockerfile"
+```
+
+`self` uses the `spec.manifest` repository at the exact commit the manifest was
+fetched from, so every such service in a deployment builds from one revision.
+It requires `spec.manifest` to name the repository the manifest is fetched from;
+otherwise the deployment fails with `manifest_invalid`. Disconnecting repository backing replaces `self`
+with the former manifest repository and branch.
+
 Git checkout permits file, Git, HTTP(S), and SSH transports. Executable remote
 helpers such as `ext::` are disabled, including through host URL rewrites.
 
@@ -204,9 +221,9 @@ fetches after successful preparation, unless newer configuration was saved while
 the deployment was preparing. Those intervening edits are preserved; the deployment
 still uses its captured inputs. Omitting the section disconnects backing.
 The fetched manifest and its commit are persisted for restart/retry; a new Deploy
-fetches again. A manifest using a Git service source resolves that source's own
-repository and revision independently. Image sources are explicitly refreshed,
-even when the fetched manifest is unchanged.
+fetches again. A Git service source with an explicit repository resolves its own
+revision independently; `repository = "self"` builds the fetched manifest commit.
+Image sources are explicitly refreshed, even when the fetched manifest is unchanged.
 
 Git owns runtime configuration while backing is enabled: direct apply cannot
 change services or volumes, and rename is rejected with `repository_managed`.
@@ -214,6 +231,11 @@ Connection settings alone remain editable through apply so an incorrect path
 can be repaired. Manifest connection settings do not change the runtime spec
 hash. Source builds, deployment, and rollback retain the behavior described above.
 Automatic synchronization and webhooks are not implemented.
+
+`piquelctl app deploy NAME --branch feature` (or `--commit SHA`) fetches the
+manifest from another revision for one deployment, without saving it. `self`
+sources build that revision too. Subsequent deploys use the fetched manifest's own
+`spec.manifest` settings again.
 
 Services can reference application-scoped secrets as files:
 

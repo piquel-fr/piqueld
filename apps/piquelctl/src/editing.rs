@@ -9,7 +9,7 @@ use crate::{
 use clap::{Args, Subcommand};
 use piqueld_client::{
     ApplicationView, Build, Client, GitRepository, HealthCheck, Mount, Redirect, RedirectStatus,
-    RepositoryManifest, Route, SavedApplication, Service, Source, Volume,
+    RepositoryManifest, Route, SavedApplication, Service, Source, SourceRepository, Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit},
 };
 
@@ -183,11 +183,11 @@ impl GitBuildArgs {
     /// Git source that builds `url` with Docker using these settings.
     fn source(&self, url: &str) -> Source {
         Source::Git {
-            repository: GitRepository {
+            repository: SourceRepository::Git(GitRepository {
                 url: url.into(),
                 branch: self.branch.clone(),
                 commit: self.commit.clone(),
-            },
+            }),
             build: Build::Docker {
                 dockerfile: self.dockerfile.clone(),
                 context: self.context.clone(),

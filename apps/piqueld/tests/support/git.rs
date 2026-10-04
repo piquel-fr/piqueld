@@ -35,11 +35,13 @@ impl GitBuildFixture {
             );
         }
         let source = piqueld_core::Source::Git {
-            repository: piqueld_core::manifest::GitRepository {
-                url: repo.path().display().to_string(),
-                branch: "main".into(),
-                commit: None,
-            },
+            repository: piqueld_core::manifest::SourceRepository::Git(
+                piqueld_core::manifest::GitRepository {
+                    url: repo.path().display().to_string(),
+                    branch: "main".into(),
+                    commit: None,
+                },
+            ),
             build: piqueld_core::manifest::Build::Docker {
                 dockerfile: "Dockerfile".into(),
                 context: ".".into(),
