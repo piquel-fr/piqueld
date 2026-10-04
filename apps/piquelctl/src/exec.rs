@@ -11,10 +11,11 @@ use piqueld_client::{
 };
 use rustix::termios::{OptionalActions, Termios, tcgetattr, tcgetwinsize, tcsetattr};
 use std::{
-    io::{IsTerminal, Read, Write},
+    io::{IsTerminal, Read},
     process::ExitCode,
 };
 use tokio::{
+    io::{AsyncWrite, AsyncWriteExt},
     signal::unix::{Signal, SignalKind, signal},
     sync::mpsc,
 };
@@ -64,18 +65,24 @@ impl ExecArgs {
             .then(|| signal(SignalKind::window_change()))
             .transpose()
             .map_err(|error| local_error("watch terminal size", &error))?;
-        tokio::spawn(forward(input, request.stdin.then(read_stdin), resizes));
-        let code = receive(output).await?;
+        // A local input failure aborts the session rather than ending the
+        // command's input early, which would look like success.
+        let code = tokio::select! {
+            code = receive(output) => code?,
+            Err(error) = forward(input, request.stdin.then(read_stdin), resizes) => return Err(error),
+        };
         Ok(ExitCode::from(u8::try_from(code).unwrap_or(u8::MAX)))
     }
 }
 
 /// Writes command output until the final frame and returns the exit code.
+/// Writes are asynchronous so a blocked output pipe never stops `forward`.
 async fn receive(mut output: ExecReader) -> Result<i64> {
+    let (mut stdout, mut stderr) = (tokio::io::stdout(), tokio::io::stderr());
     loop {
         match output.next().await? {
-            Some(ExecOutput::Stdout(data)) => write(std::io::stdout(), &data)?,
-            Some(ExecOutput::Stderr(data)) => write(std::io::stderr(), &data)?,
+            Some(ExecOutput::Stdout(data)) => write(&mut stdout, &data).await?,
+            Some(ExecOutput::Stderr(data)) => write(&mut stderr, &data).await?,
             Some(ExecOutput::Exit(code)) => return Ok(code),
             Some(ExecOutput::Failed(error)) => {
                 return Err(CliError::new(
@@ -94,47 +101,55 @@ async fn receive(mut output: ExecReader) -> Result<i64> {
     }
 }
 
-fn write(mut target: impl Write, data: &[u8]) -> Result<()> {
-    target
-        .write_all(data)
-        .and_then(|()| target.flush())
+async fn write(target: &mut (impl AsyncWrite + Unpin), data: &[u8]) -> Result<()> {
+    let written = async {
+        target.write_all(data).await?;
+        target.flush().await
+    };
+    written
+        .await
         .map_err(|error| local_error("write command output", &error))
 }
 
 /// Sends standard input and terminal size changes until either the daemon
 /// stops accepting input or there is nothing left to forward.
+/// # Errors
+/// Returns a failure to read standard input.
 async fn forward(
     mut input: ExecWriter,
-    mut stdin: Option<mpsc::Receiver<Vec<u8>>>,
+    mut stdin: Option<mpsc::Receiver<std::io::Result<Vec<u8>>>>,
     mut resizes: Option<Signal>,
-) {
+) -> Result<()> {
     loop {
         // Disabled branches still evaluate their expressions, so each source
         // is only touched inside a lazy `async` block that is never polled.
         let frame = tokio::select! {
             chunk = async { stdin.as_mut().expect("enabled").recv().await }, if stdin.is_some() => {
-                if let Some(data) = chunk {
-                    ExecInput::Stdin(data)
-                } else {
-                    stdin = None;
-                    ExecInput::CloseStdin
+                match chunk {
+                    Some(Ok(data)) => ExecInput::Stdin(data),
+                    Some(Err(error)) => return Err(local_error("read standard input", &error)),
+                    None => {
+                        stdin = None;
+                        ExecInput::CloseStdin
+                    }
                 }
             }
             Some(()) = async { resizes.as_mut().expect("enabled").recv().await }, if resizes.is_some() => match RawTerminal::size() {
                 Ok(size) => ExecInput::Resize(size),
                 Err(_) => continue,
             },
-            else => return,
+            else => return Ok(()),
         };
         if input.send(&frame).await.is_err() {
-            return;
+            return Ok(());
         }
     }
 }
 
 /// Reads standard input on a plain thread: a blocking read cannot be
 /// cancelled, and runtime shutdown must not wait for it after the command exits.
-fn read_stdin() -> mpsc::Receiver<Vec<u8>> {
+/// A read error is sent as the last item; the channel closes at end of input.
+fn read_stdin() -> mpsc::Receiver<std::io::Result<Vec<u8>>> {
     let (sender, receiver) = mpsc::channel(4);
     std::thread::spawn(move || {
         let mut stdin = std::io::stdin().lock();
@@ -143,12 +158,15 @@ fn read_stdin() -> mpsc::Receiver<Vec<u8>> {
             match stdin.read(&mut buffer) {
                 Ok(0) => return,
                 Ok(read) => {
-                    if sender.blocking_send(buffer[..read].to_vec()).is_err() {
+                    if sender.blocking_send(Ok(buffer[..read].to_vec())).is_err() {
                         return;
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => return,
+                Err(error) => {
+                    let _ = sender.blocking_send(Err(error));
+                    return;
+                }
             }
         }
     });

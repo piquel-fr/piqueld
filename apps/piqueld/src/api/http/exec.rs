@@ -16,7 +16,7 @@ use piqueld_core::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::mpsc,
+    sync::{mpsc, oneshot},
 };
 use tower_http::request_id::RequestId;
 
@@ -26,7 +26,10 @@ pub(super) struct ExecUpgrade(OnUpgrade);
 impl<S: Send + Sync> FromRequestParts<S> for ExecUpgrade {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
+    fn from_request_parts(
+        parts: &mut Parts,
+        _: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         let header_contains = |name: header::HeaderName, value: &str| {
             parts
                 .headers
@@ -38,17 +41,19 @@ impl<S: Send + Sync> FromRequestParts<S> for ExecUpgrade {
         };
         let requested = header_contains(header::CONNECTION, "upgrade")
             && header_contains(header::UPGRADE, EXEC_PROTOCOL);
-        requested
-            .then(|| parts.extensions.remove::<OnUpgrade>())
-            .flatten()
-            .map(Self)
-            .ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::UPGRADE_REQUIRED,
-                    "upgrade_required",
-                    "Request an HTTP/1.1 upgrade to the piqueld-exec.v1 protocol",
-                )
-            })
+        std::future::ready(
+            requested
+                .then(|| parts.extensions.remove::<OnUpgrade>())
+                .flatten()
+                .map(Self)
+                .ok_or_else(|| {
+                    ApiError::new(
+                        StatusCode::UPGRADE_REQUIRED,
+                        "upgrade_required",
+                        "Request an HTTP/1.1 upgrade to the piqueld-exec.v1 protocol",
+                    )
+                }),
+        )
     }
 }
 
@@ -97,9 +102,11 @@ async fn stream(
     let (mut reader, mut writer) = tokio::io::split(connection);
     let (input, input_rx) = mpsc::channel(16);
     let (output_tx, output) = mpsc::channel::<ExecOutput>(16);
+    let (connected, disconnected) = oneshot::channel();
     // Input is read independently so a quiet client never blocks output.
-    // Ending the read drops `input`, which closes the command's standard input.
+    // Ending the read drops `connected`, which tells the relay the client is gone.
     let reading = tokio::spawn(async move {
+        let _connected = connected;
         let mut buffer = Vec::new();
         loop {
             match ExecInput::decode(&mut buffer) {
@@ -130,6 +137,7 @@ async fn stream(
     let io = ExecIo {
         input: input_rx,
         output: output_tx,
+        disconnected,
     };
     let (result, written) = tokio::join!(session.run(io), writing);
     reading.abort();

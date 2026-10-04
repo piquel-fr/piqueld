@@ -252,6 +252,7 @@ fn serve_stream<S>(
 }
 
 /// Echoes standard input until it closes, then reports stderr and exit code 3.
+/// A client that disconnects first gets nothing.
 fn echo_exec<S: Read + Write>(stream: &mut S) {
     use piqueld_client::exec::{ExecFrame, ExecInput, ExecOutput};
     let (mut buffer, mut stdin) = (Vec::new(), Vec::new());
@@ -263,7 +264,9 @@ fn echo_exec<S: Read + Write>(stream: &mut S) {
             None => {
                 let mut chunk = [0_u8; 4096];
                 let read = stream.read(&mut chunk).expect("exec input");
-                assert_ne!(read, 0, "exec input ended before stdin closed");
+                if read == 0 {
+                    return;
+                }
                 buffer.extend_from_slice(&chunk[..read]);
             }
         }
@@ -556,8 +559,8 @@ fn repeated_pagination_cursor_is_rejected() {
     let _ = server.finish();
 }
 
-#[test]
-fn exec_forwards_stdin_streams_output_and_exits_with_the_command_code() {
+/// Runs `app exec notes web -i -- cat -` against an echo server, feeding `stdin`.
+fn exec_cat(stdin: Stdio, input: &[u8]) -> (TestServer, Output) {
     let server = start_server(false, 2, |request| match request.path.as_str() {
         "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
         "/api/v1/applications/app-notes-01/exec" => {
@@ -586,21 +589,36 @@ fn exec_forwards_stdin_streams_output_and_exits_with_the_command_code() {
             "--",
         ])
         .args(["cat", "-"])
-        .stdin(Stdio::piped())
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("piquelctl process");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(b"hello")
-        .expect("stdin is forwarded");
+    if let Some(mut pipe) = child.stdin.take() {
+        pipe.write_all(input).expect("stdin is forwarded");
+    }
     let output = child.wait_with_output().expect("piquelctl exits");
+    (server, output)
+}
+
+#[test]
+fn exec_forwards_stdin_streams_output_and_exits_with_the_command_code() {
+    let (server, output) = exec_cat(Stdio::piped(), b"hello");
     assert_eq!(output.status.code(), Some(3));
     assert_eq!(output.stdout, b"hello");
     assert_eq!(output.stderr, b"closed");
+    let _ = server.finish();
+}
+
+#[test]
+fn exec_fails_instead_of_closing_stdin_when_it_cannot_be_read() {
+    // Reading a directory fails with EISDIR.
+    let directory = fs::File::open(env!("CARGO_MANIFEST_DIR")).expect("directory");
+    let (server, output) = exec_cat(directory.into(), b"");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, b"");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+    assert!(stderr.contains("could not read standard input"), "{stderr}");
     let _ = server.finish();
 }
 

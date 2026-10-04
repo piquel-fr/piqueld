@@ -11,8 +11,11 @@ use piqueld_core::{
     ApplicationId, InstanceId,
     exec::{ExecInput, ExecOutput, ExecRequest},
 };
-use std::collections::HashMap;
-use tokio::{io::AsyncWriteExt, sync::mpsc};
+use std::{collections::HashMap, convert::Infallible};
+use tokio::{
+    io::AsyncWriteExt,
+    sync::{mpsc, oneshot},
+};
 
 /// A created Docker exec instance that has not started yet.
 #[derive(Clone, Debug)]
@@ -27,10 +30,13 @@ pub struct Exec {
 
 /// Channels connecting a running command to its client transport.
 pub struct ExecIo {
-    /// Client input. Closing the channel closes the command's standard input.
+    /// Client input. [`ExecInput::CloseStdin`] ends standard input.
     pub input: mpsc::Receiver<ExecInput>,
     /// Command output. Only [`ExecOutput::Stdout`] and [`ExecOutput::Stderr`] are sent.
     pub output: mpsc::Sender<ExecOutput>,
+    /// Resolves when the transport drops its sender, meaning the client is
+    /// gone. Nothing can be sent on it, so only a disconnect signals it.
+    pub disconnected: oneshot::Receiver<Infallible>,
 }
 
 impl BollardDocker {
@@ -106,12 +112,9 @@ impl BollardDocker {
     /// Streams a created command until it exits and returns its exit code.
     ///
     /// Input failures only close standard input: a command may exit before
-    /// reading all of it. Output delivery failures mean the client is gone.
-    pub(super) async fn run_task_exec(
-        &self,
-        exec: &Exec,
-        mut io: ExecIo,
-    ) -> Result<i64, DockerError> {
+    /// reading all of it. A disconnect or failed output delivery means the
+    /// client is gone, and streaming stops with an error.
+    pub(super) async fn run_task_exec(&self, exec: &Exec, io: ExecIo) -> Result<i64, DockerError> {
         let StartExecResults::Attached {
             mut output,
             mut input,
@@ -130,32 +133,42 @@ impl BollardDocker {
         else {
             return Err(DockerError::Request("attach exec"));
         };
-        let mut input_open = true;
-        loop {
-            tokio::select! {
-                item = output.next() => {
-                    let frame = match item {
-                        None => break,
-                        Some(Err(error)) => return Err(DockerError::request("read exec output", error)),
-                        Some(Ok(LogOutput::StdErr { message })) => ExecOutput::Stderr(message.into()),
-                        Some(Ok(LogOutput::StdOut { message } | LogOutput::Console { message })) => {
-                            ExecOutput::Stdout(message.into())
-                        }
-                        Some(Ok(LogOutput::StdIn { .. })) => continue,
-                    };
-                    io.output
-                        .send(frame)
-                        .await
-                        .map_err(|_| DockerError::Request("deliver exec output"))?;
-                }
-                frame = io.input.recv(), if input_open => match frame {
-                    Some(ExecInput::Stdin(data)) => {
+        let ExecIo {
+            input: mut frames,
+            output: sink,
+            disconnected,
+        } = io;
+        // Output is pumped on its own so a command that stops reading its
+        // input never stops its output from draining.
+        let forward_output = async {
+            while let Some(item) = output.next().await {
+                let frame = match item.map_err(|e| DockerError::request("read exec output", e))? {
+                    LogOutput::StdErr { message } => ExecOutput::Stderr(message.into()),
+                    LogOutput::StdOut { message } | LogOutput::Console { message } => {
+                        ExecOutput::Stdout(message.into())
+                    }
+                    LogOutput::StdIn { .. } => continue,
+                };
+                sink.send(frame)
+                    .await
+                    .map_err(|_| DockerError::Request("deliver exec output"))?;
+            }
+            Ok::<_, DockerError>(())
+        };
+        // Never returns: a blocked stdin write must not hide a disconnect, so
+        // disconnects are watched separately.
+        let forward_input = async {
+            let mut input_open = true;
+            while let Some(frame) = frames.recv().await {
+                match frame {
+                    ExecInput::Stdin(data) if input_open => {
                         if let Err(error) = input.write_all(&data).await {
                             tracing::debug!(?error, "exec standard input closed");
                             input_open = false;
                         }
                     }
-                    Some(ExecInput::Resize(size)) => {
+                    ExecInput::Stdin(_) => {}
+                    ExecInput::Resize(size) => {
                         let options = ResizeExecOptions {
                             h: size.height.into(),
                             w: size.width.into(),
@@ -167,15 +180,21 @@ impl BollardDocker {
                     // Closing a terminal's input makes Docker close its output
                     // too, detaching from the command. Only a disconnected
                     // client does that; a terminal has no end of input.
-                    Some(ExecInput::CloseStdin) if exec.tty => {}
-                    Some(ExecInput::CloseStdin) | None => {
+                    ExecInput::CloseStdin if exec.tty => {}
+                    ExecInput::CloseStdin => {
                         input_open = false;
                         if let Err(error) = input.shutdown().await {
                             tracing::debug!(?error, "exec standard input shutdown failed");
                         }
                     }
-                },
+                }
             }
+            std::future::pending::<Infallible>().await
+        };
+        tokio::select! {
+            result = forward_output => result?,
+            never = forward_input => match never {},
+            _ = disconnected => return Err(DockerError::Request("client disconnected")),
         }
         self.docker
             .inspect_exec(&exec.id)

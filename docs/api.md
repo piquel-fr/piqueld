@@ -262,6 +262,10 @@ and Docker errors are ordinary JSON errors returned before the upgrade.
 After `101 Switching Protocols`, each direction sends frames of a one-byte tag, a
 big-endian `u32` payload length (at most 1 MiB) and the payload. Clients send
 stdin bytes (1), stdin end (2; ignored with a terminal, where disconnecting detaches) and terminal resizes (3, `u16` width then height).
+Closing the connection, rather than sending stdin end, stops the session. The
+daemon only sees the close after reading the input sent before it, so a client
+that disconnects with input still queued behind a command that stopped reading
+is noticed when the command reads or exits.
 The daemon sends stdout (1), stderr (2), and finally either the exit code (3,
 big-endian `i64`) or an `ErrorBody` JSON failure (4). `piqueld_core::exec`
 implements the framing; Progenitor cannot generate upgrades, so `piqueld-client`

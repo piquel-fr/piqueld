@@ -3,7 +3,8 @@
 //! A client posts an [`ExecRequest`] with `Connection: Upgrade` and
 //! `Upgrade: piqueld-exec.v1`. After `101 Switching Protocols`, the client
 //! sends [`ExecInput`] frames and the daemon sends [`ExecOutput`] frames until
-//! a final [`ExecOutput::Exit`] or [`ExecOutput::Failed`].
+//! a final [`ExecOutput::Exit`] or [`ExecOutput::Failed`]. Clients end input
+//! with [`ExecInput::CloseStdin`]; closing the connection stops the session.
 //!
 //! Each frame is a one-byte tag, a big-endian `u32` payload length, then the
 //! payload. Decoding is transport-independent: callers append received bytes to
@@ -268,7 +269,7 @@ mod tests {
             }
         }
         assert_eq!(decoded, frames);
-        assert!(buffer.is_empty());
+        assert_eq!(buffer, b"");
 
         let mut buffer = ExecOutput::Exit(-3).encoded();
         assert!(matches!(
