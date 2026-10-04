@@ -94,52 +94,51 @@ in `dataDir`. The host does not need `services.tailscale.enable`:
 services.piqueld.settings.tailscale = {
   enabled = true;
   hostname = "piqueld"; # https://piqueld.<tailnet>.ts.net
-  auth_key_file = "/run/secrets/piqueld-ts-auth-key"; # first login only
+  auth_key_file = config.age.secrets.piqueld-ts-auth-key.path; # first login only
 };
 ```
 
-The key file is passed to the service as the systemd credential `ts-auth-key`;
-it never enters the Nix store. `settings.auth.public_url` defaults to the node's
-HTTPS URL. See [the tailnet node](configuration.md#tailnet-node) for details.
+`settings.auth.public_url` defaults to the node's HTTPS URL. See
+[the tailnet node](configuration.md#tailnet-node) for details.
 
 `settings` declares typed options for `server.listen_mode`, `server.port`,
 `server.allowed_hosts`, `auth.public_url`, `tailscale.enabled`,
 `tailscale.hostname`, `tailscale.auth_key_file`, `docker.socket`,
 `docker.auto_initialize_swarm`, `ingress.enabled`, all three `reconciliation`
 intervals/timeouts, the `retention` periods, both `build_history` limits,
-`metrics.listen`, and every `notifications` switch and timing, with the daemon's
-defaults. Reconciliation values must be 1–86400 seconds; retention values are
-nonnegative days, with zero disabling pruning. Unknown settings are rejected.
-
-Webhook destination URLs usually embed credentials, so they are not Nix
-settings. Put them in a private file and point `notificationDestinationsFile`
-at it:
+`metrics.listen`, `notifications.destinations`, and every `notifications` switch
+and timing, with the daemon's defaults. Reconciliation
+values must be 1–86400 seconds; retention values are nonnegative days, with zero
+disabling pruning. Unknown settings are rejected.
 
 ```nix
-services.piqueld = {
-  settings.notifications.enabled = true;
-  notificationDestinationsFile = "/run/secrets/piqueld-destinations.toml";
+services.piqueld.settings.notifications = {
+  enabled = true;
+  destinations = [
+    {
+      name = "operations";
+      kind = "discord"; # or "json"
+      url_file = config.age.secrets.discord-webhook.path;
+    }
+  ];
 };
 ```
 
-```toml
-[[notifications.destinations]]
-name = "operations"
-kind = "discord" # or "json"
-url = "https://discord.com/api/webhooks/..."
-```
+See [observability](observability.md) for delivery semantics.
 
-The file must contain only `[[notifications.destinations]]` entries. systemd
-loads it as a service credential, so it can stay root-owned with mode `0600`;
-it is appended to the generated configuration inside the service's private
-`/tmp` at each start. Restart piqueld after changing it. See
-[observability](observability.md) for delivery semantics.
+Settings enter the world-readable Nix store, so a destination's `url` has a
+`url_file` variant that takes a host path instead, such as an agenix or sops-nix
+secret; set exactly one of them. The Tailscale auth key is only accepted as
+`auth_key_file`. The module passes every `_file` path to systemd
+`LoadCredential=`: systemd reads the file as root and hands the service a
+private copy, so the secret can stay root-only. Restart piqueld after a secret
+changes.
+
 The module always supplies
 `server.data_dir` from `dataDir` and `server.runtime_dir` from `runtimeDir`. It does not configure a registry, Traefik,
 TLS termination or an external UI directory. Git, SSH, and Docker executables
 are present on the service PATH. Configure SSH credentials and known hosts for
 the service user, not the interactive operator; host home directories are protected.
-Never put credential values into Nix settings, which are stored in the Nix store.
 
 Nix packages and development shells support x86_64 Linux. Configuration and
 package changes require rebuilding NixOS; application state remains under

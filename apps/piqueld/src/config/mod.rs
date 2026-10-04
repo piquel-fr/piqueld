@@ -1,7 +1,9 @@
 //! Read-only host configuration for the single-node Docker Swarm daemon.
 
+mod credential;
 mod listeners;
 mod observability;
+pub use credential::{Credential, CredentialError, CredentialFile};
 pub use observability::{MetricsConfig, NotificationConfig, WebhookDestination, WebhookKind};
 
 use piqueld_core::TomlDiagnostic;
@@ -187,8 +189,9 @@ pub struct TailscaleConfig {
     /// Node name, which becomes `<hostname>.<tailnet>.ts.net`.
     pub hostname: String,
     /// File holding an auth key for the first login. Without one, the daemon
-    /// logs an interactive login URL. Later starts reuse the node state.
-    pub auth_key_file: Option<PathBuf>,
+    /// logs an interactive login URL. Later starts reuse the node state. It is
+    /// passed to Tailscale by path, so piqueld never reads the key itself.
+    pub auth_key_file: Option<CredentialFile>,
 }
 
 impl Default for TailscaleConfig {
@@ -214,9 +217,6 @@ impl TailscaleConfig {
             return Err(ConfigError::Invalid(
                 "tailscale.hostname must be a single DNS label".into(),
             ));
-        }
-        if let Some(path) = &self.auth_key_file {
-            absolute_file("tailscale.auth_key_file", path)?;
         }
         Ok(())
     }
@@ -431,9 +431,10 @@ pub enum ConfigError {
     /// Reading the source file failed.
     #[error("could not read configuration")]
     Read(#[source] std::io::Error),
-    /// The TOML document was syntactically malformed, had the wrong shape, or
-    /// contained unknown keys. Never carries configuration source text.
-    #[error("configuration is not valid TOML")]
+    /// The TOML document was syntactically malformed, had the wrong shape,
+    /// contained unknown keys, or named an unreadable credential file. Never
+    /// carries configuration source text.
+    #[error("configuration could not be parsed")]
     Parse(#[source] TomlDiagnostic),
     /// A parsed setting violated a semantic invariant.
     #[error("configuration is invalid: {0}")]
@@ -477,7 +478,7 @@ impl DaemonConfig {
     /// Projects effective settings into the read-only public dashboard response.
     ///
     /// Settings are grouped by section and rendered as display strings, e.g.
-    /// `Server` -> `HTTP port` -> `7845`. Secrets such as webhook URLs are omitted.
+    /// `Server` -> `HTTP port` -> `7845`. Credentials appear only as their source.
     #[must_use]
     pub fn view(&self) -> piqueld_core::api::HostConfiguration {
         let mut groups: std::collections::BTreeMap<
@@ -508,18 +509,6 @@ impl DaemonConfig {
                         "Initialize Swarm",
                         self.docker.auto_initialize_swarm.to_string(),
                     ),
-                ],
-            ),
-            (
-                "Tailscale",
-                vec![
-                    ("Enabled", self.tailscale.enabled.to_string()),
-                    ("Hostname", self.tailscale.hostname.clone()),
-                    (
-                        "State directory",
-                        self.server.tailscale_dir().display().to_string(),
-                    ),
-                    ("Public URL", self.public_url().to_owned()),
                 ],
             ),
             (
@@ -577,8 +566,29 @@ impl DaemonConfig {
             )
         })
         .collect();
+        groups.insert("Tailscale".into(), self.tailscale_view());
         groups.insert("Observability".into(), self.observability_view());
         piqueld_core::api::HostConfiguration { groups }
+    }
+    /// Builds the `Tailscale` group. The auth key appears only as its file.
+    fn tailscale_view(&self) -> std::collections::BTreeMap<String, String> {
+        let tailscale = &self.tailscale;
+        std::collections::BTreeMap::from([
+            ("Enabled".into(), tailscale.enabled.to_string()),
+            ("Hostname".into(), tailscale.hostname.clone()),
+            (
+                "Auth key".into(),
+                tailscale
+                    .auth_key_file
+                    .as_ref()
+                    .map_or_else(|| "none".into(), ToString::to_string),
+            ),
+            (
+                "State directory".into(),
+                self.server.tailscale_dir().display().to_string(),
+            ),
+            ("Public URL".into(), self.public_url().to_owned()),
+        ])
     }
     /// Builds the `Observability` group, listing notification destinations by name
     /// only so webhook URLs never reach the dashboard.
@@ -617,9 +627,10 @@ impl DaemonConfig {
                     .iter()
                     .map(|d| {
                         format!(
-                            "{} ({})",
+                            "{} ({}, URL {})",
                             d.name,
-                            if d.enabled { "enabled" } else { "disabled" }
+                            if d.enabled { "enabled" } else { "disabled" },
+                            d.url
                         )
                     })
                     .collect::<Vec<_>>()
