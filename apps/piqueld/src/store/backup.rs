@@ -17,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, TempDir};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -90,6 +90,18 @@ pub enum BackupError {
     /// The archive has no database.
     #[error("archive does not contain {DATABASE}")]
     MissingDatabase,
+    /// A failed restore could not be undone; see the log for each failed undo.
+    #[error(
+        "restore failed and could not be undone; empty the data directory and run piqueld restore again (remaining state is in {})",
+        staging.display()
+    )]
+    PartialRestore {
+        /// Staging directory kept so the daemon refuses to start.
+        staging: PathBuf,
+        /// Failure that interrupted publication.
+        #[source]
+        source: Box<BackupError>,
+    },
     /// A restore was interrupted before its database was moved into place.
     #[error(
         "an interrupted restore left {}; empty the data directory and run piqueld restore again",
@@ -289,8 +301,9 @@ impl<'a> Backups<'a> {
     ///
     /// # Errors
     /// Rejects newer schemas, unexpected entries, damaged databases, and a
-    /// running daemon. Nothing is left in the data directory on failure; see
-    /// [`Self::ensure_restore_complete`] for interruptions.
+    /// running daemon. Nothing is left in the data directory on failure, unless
+    /// undoing a partial publication fails ([`BackupError::PartialRestore`]);
+    /// see [`Self::ensure_restore_complete`] for interruptions.
     pub async fn restore(&self, archive: &Path) -> Result<BackupManifest, BackupError> {
         let data_dir = self.data_dir;
         crate::prepare_data_dir(data_dir)
@@ -316,7 +329,7 @@ impl<'a> Backups<'a> {
                 .map_err(BackupError::Task)??
         };
         verify(&staging.path().join(DATABASE), &manifest).await?;
-        publish(staging.path(), data_dir)?;
+        publish(staging, data_dir)?;
         Ok(manifest)
     }
 
@@ -462,7 +475,7 @@ impl Archive {
             .map_err(BackupError::io("sync archive", &self.output))?;
         file.persist_noclobber(&self.output)
             .map_err(|error| BackupError::io("create archive", &self.output)(error.error))?;
-        sync_dir(parent)
+        sync(parent)
     }
 }
 
@@ -561,26 +574,20 @@ fn extract(archive: &Path, staging: &Path) -> Result<BackupManifest, BackupError
             .into_owned();
         let in_tree =
             INGRESS_STATE.iter().any(|state| path.starts_with(state)) || path.starts_with(TAILNET);
-        // Modes are fixed rather than taken from the archive, since the daemon
-        // rejects a non-private key or state directory.
-        let mode = match entry.header().entry_type() {
-            tar::EntryType::Regular
-                if in_tree || path == Path::new(DATABASE) || path == Path::new(SECRET_KEY) =>
-            {
-                0o600
+        let allowed = match entry.header().entry_type() {
+            tar::EntryType::Regular => {
+                in_tree || path == Path::new(DATABASE) || path == Path::new(SECRET_KEY)
             }
-            tar::EntryType::Directory if in_tree || path == Path::new(INGRESS) => 0o700,
-            _ => return Err(BackupError::UnexpectedEntry(path)),
+            tar::EntryType::Directory => in_tree || path == Path::new(INGRESS),
+            _ => false,
         };
-        if !entry
-            .unpack_in(staging)
-            .map_err(BackupError::io("unpack archive into", staging))?
+        if !allowed
+            || !entry
+                .unpack_in(staging)
+                .map_err(BackupError::io("unpack archive into", staging))?
         {
             return Err(BackupError::UnexpectedEntry(path));
         }
-        let unpacked = staging.join(&path);
-        fs::set_permissions(&unpacked, fs::Permissions::from_mode(mode))
-            .map_err(BackupError::io("set permissions of", &unpacked))?;
     }
     if !staging.join(DATABASE).is_file() {
         return Err(BackupError::MissingDatabase);
@@ -588,27 +595,68 @@ fn extract(archive: &Path, staging: &Path) -> Result<BackupManifest, BackupError
     Ok(manifest)
 }
 
-/// Moves restored state from `staging` into `data_dir` in [`PUBLISHED`] order.
-/// If a move fails, state already moved is moved back, leaving `data_dir`
-/// empty again so the restore can be retried.
-fn publish(staging: &Path, data_dir: &Path) -> Result<(), BackupError> {
+/// Moves sealed state from `staging` into `data_dir` in [`PUBLISHED`] order,
+/// making everything else durable before the database marks the restore
+/// complete. If a step fails, moved state is moved back so the restore can be
+/// retried; if that fails too, `staging` is kept so the daemon refuses to start.
+fn publish(staging: TempDir, data_dir: &Path) -> Result<(), BackupError> {
+    seal(staging.path())?;
+    // The staging directory is the interruption marker; persist it first.
+    sync(data_dir)?;
     let mut moved = Vec::new();
-    for name in PUBLISHED {
-        let source = staging.join(name);
+    let result = PUBLISHED.iter().try_for_each(|&name| {
+        let source = staging.path().join(name);
         if !source.exists() {
-            continue;
+            return Ok(());
         }
-        if let Err(error) = fs::rename(&source, data_dir.join(name)) {
-            for name in moved {
-                if let Err(undo) = fs::rename(data_dir.join(name), staging.join(name)) {
-                    tracing::error!(%undo, name, "could not undo a partial restore");
-                }
-            }
-            return Err(BackupError::io("move restored state into", data_dir)(error));
+        if name == DATABASE {
+            sync(data_dir)?;
         }
+        fs::rename(&source, data_dir.join(name))
+            .map_err(BackupError::io("move restored state into", data_dir))?;
         moved.push(name);
+        Ok(())
+    });
+    let Err(error) = result.and_then(|()| sync(data_dir)) else {
+        return Ok(());
+    };
+    let mut undone = true;
+    for name in moved {
+        if let Err(undo) = fs::rename(data_dir.join(name), staging.path().join(name)) {
+            tracing::error!(%undo, name, "could not undo a partial restore");
+            undone = false;
+        }
     }
-    sync_dir(data_dir)
+    if undone {
+        return Err(error);
+    }
+    Err(BackupError::PartialRestore {
+        staging: staging.keep(),
+        source: Box::new(error),
+    })
+}
+
+/// Makes restored state private and durable before it is published. Modes are
+/// fixed rather than taken from the archive, including for parents that tar
+/// created implicitly, since the daemon rejects a non-private key or state
+/// directory. Extraction admits only regular files and directories.
+fn seal(path: &Path) -> Result<(), BackupError> {
+    let metadata = fs::symlink_metadata(path).map_err(BackupError::io("inspect", path))?;
+    let mode = if metadata.is_dir() {
+        for child in fs::read_dir(path).map_err(BackupError::io("read directory", path))? {
+            seal(
+                &child
+                    .map_err(BackupError::io("read directory", path))?
+                    .path(),
+            )?;
+        }
+        0o700
+    } else {
+        0o600
+    };
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(BackupError::io("set permissions of", path))?;
+    sync(path)
 }
 
 /// Checks a restored database's integrity and that it matches its manifest.
@@ -712,10 +760,11 @@ fn create_private_dir(path: &Path) -> Result<(), BackupError> {
         .map_err(BackupError::io("create backup directory", path))
 }
 
-fn sync_dir(path: &Path) -> Result<(), BackupError> {
+/// Flushes a file, or a directory's entries, to disk.
+fn sync(path: &Path) -> Result<(), BackupError> {
     File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(BackupError::io("sync directory", path))
+        .and_then(|file| file.sync_all())
+        .map_err(BackupError::io("sync", path))
 }
 
 /// Directory containing `path`, treating a bare file name as the working directory.
@@ -895,6 +944,20 @@ mod tests {
             Rotation::Scheduled.created_at("piqueld-before-upgrade-5.tar"),
             None
         );
+    }
+
+    #[test]
+    fn seal_makes_implicit_parents_and_files_private() {
+        let staging = tempfile::tempdir().unwrap();
+        let parent = staging.path().join("ingress/data/caddy");
+        fs::create_dir_all(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(parent.join("cert.pem"), b"cert").unwrap();
+        fs::set_permissions(parent.join("cert.pem"), fs::Permissions::from_mode(0o644)).unwrap();
+        seal(staging.path()).unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&parent), 0o700);
+        assert_eq!(mode(&parent.join("cert.pem")), 0o600);
     }
 
     #[test]
