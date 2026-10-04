@@ -179,6 +179,13 @@ fn docker_build_arguments_and_target_validate_and_are_part_of_source_identity() 
             serde_json::json!({"OK": "a\0b"}),
             codes::BUILD_ARG_VALUE_INVALID,
         ),
+        (
+            "args",
+            (0..5)
+                .map(|index| (format!("A{index}"), "x".repeat(60_000)))
+                .collect(),
+            codes::BUILD_ARG_TOTAL_EXCESSIVE,
+        ),
         ("target", "--push".into(), codes::BUILD_TARGET_INVALID),
         ("target", "".into(), codes::BUILD_TARGET_INVALID),
     ] {

@@ -181,7 +181,8 @@ Each preparation gets an isolated checkout. A full configured commit hash is
 used directly; otherwise the branch head is resolved once. Dockerfile and context
 paths are relative to the repository root, must stay within it, and default build
 context is `.`. Build argument names follow the environment variable rules, and
-`target` must name a stage in the Dockerfile; without it Docker builds the final
+because they are passed on the `docker build` command line, build arguments may
+total at most 256 KiB. `target` must name a stage in the Dockerfile; without it Docker builds the final
 stage. Build arguments are not secret: Docker records them in image metadata and
 piqueld shows them in manifests and build history. Use service secrets for
 sensitive values. There is no automatic build backend detection, submodule or LFS

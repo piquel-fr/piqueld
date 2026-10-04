@@ -25,6 +25,9 @@ const MAX_VARIABLE_ENTRIES: usize = 256;
 /// cannot dominate a manifest, a container environment list, or a build command.
 const MAX_IDENTIFIER_BYTES: usize = 255;
 const MAX_VARIABLE_VALUE_BYTES: usize = 65_536;
+/// Build arguments are passed on the `docker build` command line, whose
+/// arguments and environment share the kernel's ~2 MiB `ARG_MAX`.
+const MAX_BUILD_ARG_TOTAL_BYTES: usize = 262_144;
 const MAX_PROCESS_ELEMENTS: usize = 128;
 const MAX_PROCESS_ELEMENT_BYTES: usize = 4_096;
 const MAX_MOUNTS_PER_SERVICE: usize = 32;
@@ -41,8 +44,8 @@ impl Build {
     ///
     /// Appends errors at `path` for Dockerfile or context paths that are not
     /// relative or leave the repository, build arguments that break the
-    /// environment variable name, count, and size rules, and targets that are
-    /// not Docker stage names.
+    /// environment variable name, count, and size rules or together exceed
+    /// their command-line budget, and targets that are not Docker stage names.
     pub fn validate(&self, path: &str, errors: &mut Vec<ValidationError>) {
         let Self::Docker {
             dockerfile,
@@ -61,6 +64,19 @@ impl Build {
             }
         }
         VariableMap::BUILD_ARGS.validate(args, path, errors);
+        // Each argument is passed as `KEY=VALUE`.
+        let total: usize = args
+            .iter()
+            .map(|(key, value)| key.len() + value.len() + 1)
+            .sum();
+        if total > MAX_BUILD_ARG_TOTAL_BYTES {
+            error(
+                errors,
+                codes::BUILD_ARG_TOTAL_EXCESSIVE,
+                &format!("{path}.args"),
+                &format!("build arguments must total at most {MAX_BUILD_ARG_TOTAL_BYTES} bytes"),
+            );
+        }
         if target
             .as_deref()
             .is_some_and(|target| !valid_build_target(target))
