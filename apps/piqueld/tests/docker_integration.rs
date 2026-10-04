@@ -437,31 +437,33 @@ impl SwarmScenario {
         );
     }
 
+    /// The `migrate` job derived from the service, running `script`.
+    fn job(&self, operation: &str, script: &str) -> piqueld_core::DesiredJobRun {
+        let name = piqueld_core::JobName::parse("migrate").unwrap();
+        let mut container = self.service.clone();
+        container.name = piqueld_core::DockerServiceName::for_job(&self.app, &name);
+        container.command = vec!["/bin/sh".into(), "-c".into(), script.into()];
+        container.arguments.clear();
+        container.healthcheck = None;
+        container.labels = self.labels.clone();
+        container
+            .labels
+            .insert(piqueld_core::resource::JOB_LABEL.into(), name.to_string());
+        piqueld_core::DesiredJob {
+            logical_name: name,
+            run: piqueld_core::manifest::JobRun::BeforeRollout,
+            timeout_seconds: 60,
+            container,
+        }
+        .for_operation(operation)
+    }
+
     /// Runs one-shot jobs derived from the service: they read its secret,
     /// never answer for its alias, ignore image health checks, report exit
     /// codes and output, and are replaced or removed by operation.
     async fn run_jobs(&self) {
         let docker = &self.engine.docker;
-        let job = |operation: &str, script: &str| {
-            let name = piqueld_core::JobName::parse("migrate").unwrap();
-            let mut container = self.service.clone();
-            container.name = piqueld_core::DockerServiceName::for_job(&self.app, &name);
-            container.command = vec!["/bin/sh".into(), "-c".into(), script.into()];
-            container.arguments.clear();
-            container.healthcheck = None;
-            container.labels = self.labels.clone();
-            container
-                .labels
-                .insert(piqueld_core::resource::JOB_LABEL.into(), name.to_string());
-            piqueld_core::DesiredJob {
-                logical_name: name,
-                run: piqueld_core::manifest::JobRun::BeforeRollout,
-                timeout_seconds: 60,
-                container,
-            }
-            .for_operation(operation)
-        };
-        let first = job(
+        let first = self.job(
             "operation-1",
             "test \"$(cat /run/secrets/token)\" = mounted-value && echo out && echo err >&2",
         );
@@ -469,7 +471,10 @@ impl SwarmScenario {
         docker.start_job(&first).await.unwrap();
         // Bollard's typed model misses Docker's `Healthcheck` key, so the
         // stored specification is read as raw JSON.
-        let spec = self.raw_service_spec(first.container.name.as_str()).await;
+        let spec = self
+            .docker_api("GET", &format!("/services/{}", first.container.name))
+            .await["Spec"]
+            .take();
         assert!(spec["Mode"]["ReplicatedJob"].is_object(), "{spec}");
         let task = &spec["TaskTemplate"];
         assert_eq!(
@@ -495,9 +500,12 @@ impl SwarmScenario {
         // Docker copies stdout and stderr independently, so their relative
         // order is not guaranteed.
         let mut output = docker.job_output(&first).await.unwrap();
-        output.sort_by_key(|(stream, _)| *stream == piqueld_core::api::LogStream::Stderr);
+        assert!(!output.truncated);
+        output
+            .chunks
+            .sort_by_key(|(stream, _)| *stream == piqueld_core::api::LogStream::Stderr);
         assert_eq!(
-            output,
+            output.chunks,
             [
                 (piqueld_core::api::LogStream::Stdout, b"out\n".to_vec()),
                 (piqueld_core::api::LogStream::Stderr, b"err\n".to_vec()),
@@ -505,7 +513,7 @@ impl SwarmScenario {
         );
 
         // Another operation's run of the same job replaces this one.
-        let second = job("operation-2", "exit 3");
+        let second = self.job("operation-2", "exit 3");
         assert_eq!(
             docker.job_status(&second).await.unwrap(),
             JobStatus::Missing
@@ -535,11 +543,44 @@ impl SwarmScenario {
         );
     }
 
-    /// Reads a service's stored specification over Docker's HTTP API.
-    async fn raw_service_spec(&self, name: &str) -> serde_json::Value {
+    /// Job removal waits for a run's container to stop even after an earlier
+    /// attempt deleted its service but failed waiting. `sh` as PID 1 ignores
+    /// SIGTERM, so the container outlives its service by the stop grace period.
+    async fn remove_jobs_waits_for_stopping_containers(&self) {
+        let docker = &self.engine.docker;
+        let third = self.job("operation-3", "sleep 300");
+        docker.start_job(&third).await.unwrap();
+        let running = || async {
+            self.docker_api(
+                "GET",
+                "/containers/json?filters=%7B%22label%22%3A%5B%22io.piqueld.job-operation%3Doperation-3%22%5D%7D",
+            )
+            .await
+            .as_array()
+            .unwrap()
+            .len()
+        };
+        tokio::time::timeout(Duration::from_mins(1), async {
+            while running().await == 0 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .expect("job container starts");
+        self.docker_api("DELETE", &format!("/services/{}", third.container.name))
+            .await;
+        docker
+            .remove_jobs(&self.labels, JobRuns::All)
+            .await
+            .unwrap();
+        assert_eq!(running().await, 0);
+    }
+
+    /// Sends one request to Docker's HTTP API and returns its JSON body.
+    async fn docker_api(&self, method: &str, path: &str) -> serde_json::Value {
         use std::io::{Read, Write};
         let socket = self.engine.socket.clone();
-        let request = format!("GET /services/{name} HTTP/1.0\r\nHost: docker\r\n\r\n");
+        let request = format!("{method} {path} HTTP/1.0\r\nHost: docker\r\n\r\n");
         let response = tokio::task::spawn_blocking(move || {
             let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
             stream.write_all(request.as_bytes()).unwrap();
@@ -551,11 +592,14 @@ impl SwarmScenario {
         .unwrap();
         let (head, body) = response.split_once("\r\n\r\n").unwrap();
         assert!(head.contains(" 200 "), "{head}");
-        serde_json::from_str::<serde_json::Value>(body).unwrap()["Spec"].take()
+        if body.is_empty() {
+            return serde_json::Value::Null;
+        }
+        serde_json::from_str(body).unwrap()
     }
 
     /// Polls a job run until it stops.
-    async fn wait_job(docker: &BollardDocker, job: &piqueld_core::DesiredJob) -> JobStatus {
+    async fn wait_job(docker: &BollardDocker, job: &piqueld_core::DesiredJobRun) -> JobStatus {
         tokio::time::timeout(Duration::from_mins(1), async {
             loop {
                 match docker.job_status(job).await.unwrap() {
@@ -679,6 +723,7 @@ async fn swarm_init_create_replica_drift_restart_jobs_delete_and_volume_retentio
     scenario.scale_and_reconnect().await;
     scenario.assert_idempotence_and_repair_drift().await;
     scenario.run_jobs().await;
+    scenario.remove_jobs_waits_for_stopping_containers().await;
     scenario.delete_retaining_volume(&http_service).await;
 }
 

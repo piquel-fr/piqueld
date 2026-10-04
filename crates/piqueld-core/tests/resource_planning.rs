@@ -1005,8 +1005,16 @@ fn jobs_reuse_their_service_container_under_a_distinct_identity() {
         piqueld_core::OwnershipState::Owned
     );
     // A run is labelled with the operation that starts it.
-    assert_eq!(job.operation(), None);
+    let operation_label = piqueld_core::resource::JOB_OPERATION_LABEL;
+    assert!(!job.container.labels.contains_key(operation_label));
     let run = job.for_operation("operation-1");
-    assert_eq!(run.operation(), Some("operation-1"));
+    assert_eq!(run.operation(), "operation-1");
+    assert_eq!(
+        run.container
+            .labels
+            .get(operation_label)
+            .map(String::as_str),
+        Some("operation-1")
+    );
     assert!(run.has_valid_identity());
 }

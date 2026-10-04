@@ -33,9 +33,9 @@ pub use planner::{
     PlanRequest, PlanSummary,
 };
 pub use resource::{
-    CompileError, Convergence, DesiredJob, DesiredMount, DesiredNetwork, DesiredService,
-    DesiredVolume, InstanceId, InstanceIdError, ObservedApplication, ObservedNetwork,
-    ObservedService, ObservedTask, ObservedVolume, Ownership, OwnershipState,
+    CompileError, Convergence, DesiredJob, DesiredJobRun, DesiredMount, DesiredNetwork,
+    DesiredService, DesiredVolume, InstanceId, InstanceIdError, ObservedApplication,
+    ObservedNetwork, ObservedService, ObservedTask, ObservedVolume, Ownership, OwnershipState,
     ResolutionRequirement, ResolutionSet, ResolvedApplication, ResolvedSource, Sha256Digest,
     Sha256DigestError, TaskDiagnostic, TaskState, compile_application, image_repository,
     preview_resolution, valid_logical_name,

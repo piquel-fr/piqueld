@@ -180,7 +180,7 @@ impl BollardDocker {
     }
 
     /// Returns stop-first when `container` mounts any volume read-write, so two
-    /// tasks never share a writable data directory (e.g. PostgreSQL), at the
+    /// tasks never share a writable data directory (e.g. `PostgreSQL`), at the
     /// cost of a short downtime per rollout. Every other service starts its
     /// replacement first. piqueld only authors named-volume mounts.
     pub(super) fn update_order(

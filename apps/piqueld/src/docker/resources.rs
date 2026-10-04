@@ -807,14 +807,14 @@ impl DockerApi for BollardDocker {
             )
             .await
     }
-    async fn start_job(&self, job: &piqueld_core::DesiredJob) -> Result<(), DockerError> {
+    async fn start_job(&self, job: &piqueld_core::DesiredJobRun) -> Result<(), DockerError> {
         DockerTimeout::Request
             .run("start job", Box::pin(self.create_job(job)))
             .await
     }
     async fn job_status(
         &self,
-        job: &piqueld_core::DesiredJob,
+        job: &piqueld_core::DesiredJobRun,
     ) -> Result<super::JobStatus, DockerError> {
         DockerTimeout::Request
             .run("inspect job", self.inspect_job(job))
@@ -822,8 +822,8 @@ impl DockerApi for BollardDocker {
     }
     async fn job_output(
         &self,
-        job: &piqueld_core::DesiredJob,
-    ) -> Result<Vec<(piqueld_core::api::LogStream, Vec<u8>)>, DockerError> {
+        job: &piqueld_core::DesiredJobRun,
+    ) -> Result<super::JobOutput, DockerError> {
         DockerTimeout::Request
             .run("read job output", self.read_job_output(job))
             .await

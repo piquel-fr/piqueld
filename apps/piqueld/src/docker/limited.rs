@@ -143,12 +143,12 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     ) -> Result<(), DockerError> {
         self.inner.remove_service(name, ownership).await
     }
-    async fn start_job(&self, job: &piqueld_core::DesiredJob) -> Result<(), DockerError> {
+    async fn start_job(&self, job: &piqueld_core::DesiredJobRun) -> Result<(), DockerError> {
         self.inner.start_job(job).await
     }
     async fn job_status(
         &self,
-        job: &piqueld_core::DesiredJob,
+        job: &piqueld_core::DesiredJobRun,
     ) -> Result<super::JobStatus, DockerError> {
         let _permit = self
             .observations
@@ -159,8 +159,8 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     }
     async fn job_output(
         &self,
-        job: &piqueld_core::DesiredJob,
-    ) -> Result<Vec<(piqueld_core::api::LogStream, Vec<u8>)>, DockerError> {
+        job: &piqueld_core::DesiredJobRun,
+    ) -> Result<super::JobOutput, DockerError> {
         let _permit = self
             .observations
             .acquire()

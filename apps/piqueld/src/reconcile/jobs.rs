@@ -2,8 +2,9 @@
 //! leaves the active target and its running services untouched.
 //!
 //! Each job succeeds at most once per operation. Retries and restarts skip jobs
-//! with a recorded success, and resume a run still present in Docker instead
-//! of starting it again.
+//! with a recorded success, and resume a run that is still running or
+//! succeeded instead of starting it again. A run's outcome is recorded before
+//! its service is removed, so a crash in between never reruns it.
 use super::{
     ActionKind, CancellationToken, Controller, DockerApi, Duration, Operation, OperationError,
     Plan, PlanRequest,
@@ -13,7 +14,7 @@ use crate::{
     docker::{JobRuns, JobStatus},
 };
 use piqueld_core::{
-    DesiredJob, ResolvedApplication,
+    DesiredJobRun, ResolvedApplication,
     api::{BuildState, LogStream},
     manifest::JobRun,
 };
@@ -23,15 +24,16 @@ use std::{collections::BTreeMap, sync::Arc};
 const JOB_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 impl<D: DockerApi> Controller<D> {
-    /// Runs before-rollout jobs in declared order. Promoted operations already
-    /// passed this point, so their retries and repairs never rerun jobs.
+    /// Removes runs of earlier operations, then runs before-rollout jobs in
+    /// declared order. Promoted operations already passed this point, so their
+    /// retries and repairs never rerun jobs.
     pub(super) async fn run_jobs(
         &self,
         operation: &Operation,
         target: &ResolvedApplication,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
-        if target.jobs.is_empty() || self.store.is_promoted(&operation.id).await? {
+        if self.store.is_promoted(&operation.id).await? {
             return Ok(());
         }
         let succeeded = self.store.succeeded_jobs(&operation.id).await?;
@@ -43,18 +45,20 @@ impl<D: DockerApi> Controller<D> {
             })
             .map(|job| job.for_operation(&operation.id))
             .collect::<Vec<_>>();
+        let ownership = self.ownership_labels(&operation.application_id);
+        // A run left by an earlier operation must not overlap this deployment,
+        // even one without jobs. This operation's own runs are kept only while
+        // a job is pending, because one of them may be resumed.
+        let stale = if jobs.is_empty() {
+            JobRuns::All
+        } else {
+            JobRuns::Except(&operation.id)
+        };
+        self.remove_jobs(operation, &ownership, stale, cancellation)
+            .await?;
         if jobs.is_empty() {
             return Ok(());
         }
-        let ownership = self.ownership_labels(&operation.application_id);
-        // A run left by an earlier operation must not overlap this one's jobs.
-        self.remove_jobs(
-            operation,
-            &ownership,
-            JobRuns::Except(&operation.id),
-            cancellation,
-        )
-        .await?;
         // Jobs join the private network and mount the target's volumes, which a
         // first deployment has not created yet. Services are not touched, and a
         // blocked deployment runs no jobs because it could never roll out.
@@ -88,12 +92,13 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
-    /// Records one job run in build history and removes its service afterwards.
-    /// On shutdown the run keeps going so the restarted operation resumes it.
+    /// Records one job run in build history, then removes its service unless
+    /// the operation will resume it. The outcome is stored first, so a crash
+    /// in between leaves a run that is resumed or removed, never rerun.
     async fn run_job(
         &self,
         operation: &Operation,
-        job: &DesiredJob,
+        job: &DesiredJobRun,
         ownership: &BTreeMap<String, String>,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
@@ -130,33 +135,51 @@ impl<D: DockerApi> Controller<D> {
                 result.as_ref().err().map(OperationError::diagnostic),
             )
             .await?;
-        let shutdown = matches!(result, Err(OperationError::Cancelled))
-            && !matches!(
-                self.check_current(operation).await,
-                Err(OperationError::Superseded | OperationError::Cancelled)
-            );
-        if !shutdown {
-            // Removing the service also stops a run that timed out or was
-            // superseded or cancelled.
-            self.remove_job_run(operation, ownership).await;
-        }
+        // Failed means the job itself failed; any other error ended the
+        // attempt before its outcome was known.
         let state = match &result {
             Ok(()) => BuildState::Succeeded,
-            Err(OperationError::Cancelled | OperationError::Superseded) => BuildState::Interrupted,
-            Err(_) => BuildState::Failed,
+            Err(OperationError::JobFailed { .. } | OperationError::JobTimeout(_)) => {
+                BuildState::Failed
+            }
+            Err(_) => BuildState::Interrupted,
         };
         attempt
             .finish(state, Some(job.container.image.as_str()))
             .await?;
+        if !self.resumable(operation, &result).await {
+            // Removing the service also stops a run that timed out or was
+            // superseded or cancelled.
+            self.remove_job_run(operation, ownership).await;
+        }
         result
     }
 
-    /// Starts the run unless it already exists, waits for it, and records its
-    /// output, exit code, and any Docker explanation of a failure.
+    /// Whether a retry of the operation may resume the run, so its service is
+    /// kept: after a shutdown, or when the run's outcome is still unknown.
+    async fn resumable(&self, operation: &Operation, result: &Result<(), OperationError>) -> bool {
+        match result {
+            Ok(())
+            | Err(
+                OperationError::JobFailed { .. }
+                | OperationError::JobTimeout(_)
+                | OperationError::Superseded,
+            ) => false,
+            Err(OperationError::Cancelled) => !matches!(
+                self.check_current(operation).await,
+                Err(OperationError::Superseded | OperationError::Cancelled)
+            ),
+            Err(_) => true,
+        }
+    }
+
+    /// Starts the run unless it is running or already succeeded, waits for it,
+    /// and records its output, exit code, and any Docker explanation of a
+    /// failure.
     async fn execute_job(
         &self,
         operation: &Operation,
-        job: &DesiredJob,
+        job: &DesiredJobRun,
         ownership: &BTreeMap<String, String>,
         cancellation: &CancellationToken,
         journal: &crate::store::JournalAction,
@@ -166,8 +189,16 @@ impl<D: DockerApi> Controller<D> {
             .service_secrets(&job.container.secrets, ownership)
             .await?;
         // A run Docker accepted before a lost response or a restart is resumed.
+        // A failed run left by an earlier attempt is replaced: retrying reruns it.
         self.retry(operation, journal, cancellation, || async {
-            if self.docker.job_status(job).await? != JobStatus::Missing {
+            if matches!(
+                self.docker.job_status(job).await?,
+                JobStatus::Running
+                    | JobStatus::Finished {
+                        exit_code: Some(0),
+                        ..
+                    }
+            ) {
                 return Ok(());
             }
             self.docker.ensure_swarm(false).await?;
@@ -178,19 +209,7 @@ impl<D: DockerApi> Controller<D> {
         })
         .await?;
         let status = self.wait_job(operation, job, cancellation).await?;
-        if status != JobStatus::Missing {
-            match self.docker.job_output(job).await {
-                Ok(output) => {
-                    for (stream, bytes) in output {
-                        log.append(&bytes, stream).await?;
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(error = ?error, job = %job.logical_name, "job output unavailable");
-                    Self::note(log, &format!("job output unavailable: {error}")).await?;
-                }
-            }
-        }
+        let truncated = status != JobStatus::Missing && self.record_output(job, log).await?;
         if let JobStatus::Finished {
             exit_code: Some(code),
             ..
@@ -198,8 +217,8 @@ impl<D: DockerApi> Controller<D> {
         {
             log.exit_code(code).await?;
         }
-        let job = job.logical_name.to_string();
-        match status {
+        let name = job.logical_name.to_string();
+        let result = match status {
             JobStatus::Finished {
                 exit_code: Some(0), ..
             } => Ok(()),
@@ -207,16 +226,46 @@ impl<D: DockerApi> Controller<D> {
                 if let Some(error) = error {
                     Self::note(log, &error).await?;
                 }
-                Err(OperationError::JobFailed { job, exit_code })
+                Err(OperationError::JobFailed {
+                    job: name,
+                    exit_code,
+                })
             }
             JobStatus::Missing => {
                 Self::note(log, "the job's service was removed before it finished").await?;
                 Err(OperationError::JobFailed {
-                    job,
+                    job: name,
                     exit_code: None,
                 })
             }
-            JobStatus::Running => Err(OperationError::JobTimeout(job)),
+            JobStatus::Running => Err(OperationError::JobTimeout(name)),
+        };
+        // Marked last: a truncated log accepts no further notes.
+        if truncated {
+            log.truncated().await?;
+        }
+        result
+    }
+
+    /// Appends the run's output to its log and returns whether some of it was
+    /// dropped. Unavailable output is noted instead of failing the job.
+    async fn record_output(
+        &self,
+        job: &DesiredJobRun,
+        log: &BuildLog,
+    ) -> Result<bool, OperationError> {
+        match self.docker.job_output(job).await {
+            Ok(output) => {
+                for (stream, bytes) in output.chunks {
+                    log.append(&bytes, stream).await?;
+                }
+                Ok(output.truncated)
+            }
+            Err(error) => {
+                tracing::warn!(error = ?error, job = %job.logical_name, "job output unavailable");
+                Self::note(log, &format!("job output unavailable: {error}")).await?;
+                Ok(false)
+            }
         }
     }
 
@@ -231,29 +280,34 @@ impl<D: DockerApi> Controller<D> {
     }
 
     /// Polls until the run stops and returns its status, or `Running` once the
-    /// job's timeout elapsed. Docker errors are retried until the deadline and
-    /// then end as a timeout, which is never retried automatically. A daemon
-    /// restart resumes the run with a fresh timeout.
+    /// job's timeout elapsed. When Docker could not report the status up to
+    /// the timeout, its error is returned instead: the outcome is unknown, so
+    /// the run is kept and the retried operation resumes it with a fresh
+    /// timeout, as after a daemon restart.
     async fn wait_job(
         &self,
         operation: &Operation,
-        job: &DesiredJob,
+        job: &DesiredJobRun,
         cancellation: &CancellationToken,
     ) -> Result<JobStatus, OperationError> {
         let deadline =
             tokio::time::Instant::now() + Duration::from_secs(u64::from(job.timeout_seconds));
+        let mut failure = None;
         loop {
             self.check_current(operation).await?;
             let status = tokio::select! {
                 () = cancellation.cancelled() => return Err(OperationError::Cancelled),
-                () = tokio::time::sleep_until(deadline) => return Ok(JobStatus::Running),
+                () = tokio::time::sleep_until(deadline) => {
+                    return failure.map_or(Ok(JobStatus::Running), |error| Err(OperationError::from(error)));
+                }
                 status = self.docker.job_status(job) => status,
             };
             match status {
-                Ok(JobStatus::Running) => {}
+                Ok(JobStatus::Running) => failure = None,
                 Ok(status) => return Ok(status),
                 Err(error) => {
                     tracing::warn!(error = ?error, job = %job.logical_name, "job status check failed; retrying");
+                    failure = Some(error);
                 }
             }
             tokio::select! {
@@ -292,7 +346,7 @@ impl<D: DockerApi> Controller<D> {
 
     /// Removes this operation's run once, even after the operation was
     /// superseded. Failures are only logged: the job's outcome is already
-    /// decided, and the next deployment with jobs or deletion removes leftovers.
+    /// recorded, and the next deployment or deletion removes leftovers.
     async fn remove_job_run(&self, operation: &Operation, ownership: &BTreeMap<String, String>) {
         let result: Result<(), OperationError> = async {
             let journal = self

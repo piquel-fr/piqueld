@@ -39,17 +39,20 @@ Before promotion, each deployment runs its `before-rollout` jobs as Swarm
 replicated jobs pinned to the local node, without restarts, health checks, or
 network aliases. A blocked plan runs no jobs; otherwise the private network and
 volumes they need are ensured first and services are not touched. Job services
-are labelled with the operation that started them. Job services of earlier
-operations are removed first, and a new run is only created after the replaced
-run's container stopped, so runs never overlap. A retried operation skips jobs
-it already ran successfully and resumes a run still present in Docker, which
-also covers a start whose response was lost. The controller polls each job until
-it exits or its timeout passes, records its output as a build record, and
-removes the job service. On shutdown a running job is left for the restarted
-daemon; a superseded or cancelled operation stops its own run. A failed job
-fails the operation while the active target keeps being maintained. Observation
-never reports job services, so planning, repair, and health ignore them;
-deletion removes leftovers before the network.
+and their containers are labelled with the operation that started them. Every
+deployment, even one without jobs, first removes job services of earlier
+operations and waits until their containers stopped, and a new run is only
+created after the replaced run's container stopped, so runs never overlap. A
+retried operation skips jobs it already ran successfully and resumes a run that
+is still running or succeeded, which also covers a start whose response was
+lost; a failed run is replaced. The controller polls each job until it exits or
+its timeout passes, records its outcome and output as a build record, and only
+then removes the job service. On shutdown, or when Docker could not report the
+status before the timeout, the run is left for the retried operation to resume;
+a superseded or cancelled operation stops its own run. A failed job fails the
+operation while the active target keeps being maintained. Observation never
+reports job services, so planning, repair, and health ignore them; deletion
+removes leftovers before the network.
 
 Explicit `deploy` captures the latest saved configuration and resolves its sources
 again without advancing its generation. Each deployment supersedes pending work;

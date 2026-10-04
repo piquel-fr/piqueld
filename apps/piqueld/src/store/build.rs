@@ -142,6 +142,15 @@ impl Store {
             .map_err(StoreError::database)?;
         Ok(())
     }
+    /// Marks a build's output truncated when its producer dropped some of it.
+    pub(crate) async fn build_log_truncated(&self, id: i64) -> Result<(), StoreError> {
+        let _writer = self.writers.lock().await;
+        sqlx::query!("UPDATE builds SET log_truncated=1 WHERE id=?1", id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::database)?;
+        Ok(())
+    }
     /// Marks a running build finished with a terminal state and optional image ID.
     /// Already finished builds are left unchanged; `Running` is invalid input.
     pub(crate) async fn finish_build(

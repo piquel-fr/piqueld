@@ -2,8 +2,8 @@
 //! networks, mounts, and node placement.
 use super::{
     BTreeMap, BollardDocker, DockerError, Duration, HashMap, HealthConfig, InspectServiceOptions,
-    JobRuns, JobStatus, ListServicesOptionsBuilder, ListTasksOptionsBuilder, ResourceKind,
-    ServiceSpec, ServiceSpecMode, StreamExt, TaskSpecRestartPolicy,
+    JobOutput, JobRuns, JobStatus, ListServicesOptionsBuilder, ListTasksOptionsBuilder,
+    ResourceKind, ServiceSpec, ServiceSpecMode, StreamExt, TaskSpecRestartPolicy,
     TaskSpecRestartPolicyConditionEnum,
 };
 use bollard::{
@@ -12,23 +12,23 @@ use bollard::{
     query_parameters::{ListContainersOptionsBuilder, LogsOptionsBuilder},
 };
 use piqueld_core::{
-    DesiredJob,
+    DesiredJobRun,
     api::LogStream,
-    resource::{APPLICATION_LABEL, JOB_LABEL, JOB_OPERATION_LABEL},
+    resource::{APPLICATION_LABEL, INSTANCE_LABEL, JOB_LABEL, JOB_OPERATION_LABEL, MANAGED_LABEL},
 };
 
 /// Output retained from one job run; build history applies its own cap too.
 const JOB_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
 /// Delay between checks that a removed run's container has stopped.
 const JOB_STOP_POLL_INTERVAL: Duration = Duration::from_millis(250);
-/// Label Swarm sets on every task container of a service.
-const SWARM_SERVICE_LABEL: &str = "com.docker.swarm.service.name";
 
 impl BollardDocker {
     /// Converts a service specification into a single-completion job without
     /// restarts or rolling updates. The health check is disabled because an
     /// image `HEALTHCHECK` would otherwise apply, and network aliases are
     /// dropped so the job never answers for the service it was derived from.
+    /// The container carries the service's labels, so a run whose service is
+    /// already removed can still be found until its container stops.
     pub(super) fn job_spec(mut spec: ServiceSpec) -> ServiceSpec {
         spec.mode = Some(ServiceSpecMode {
             replicated_job: Some(ServiceSpecModeReplicatedJob {
@@ -43,12 +43,12 @@ impl BollardDocker {
             condition: Some(TaskSpecRestartPolicyConditionEnum::NONE),
             ..Default::default()
         });
-        task.container_spec
-            .get_or_insert_with(Default::default)
-            .health_check = Some(HealthConfig {
+        let container = task.container_spec.get_or_insert_with(Default::default);
+        container.health_check = Some(HealthConfig {
             test: Some(vec!["NONE".into()]),
             ..Default::default()
         });
+        container.labels.clone_from(&spec.labels);
         for network in task.networks.iter_mut().flatten() {
             network.aliases = None;
         }
@@ -79,18 +79,17 @@ impl BollardDocker {
         }
     }
 
-    /// Replaces another operation's run of the job with this operation's run.
-    pub(super) async fn create_job(&self, job: &DesiredJob) -> Result<(), DockerError> {
+    /// Replaces any existing service of the job with this operation's run.
+    pub(super) async fn create_job(&self, job: &DesiredJobRun) -> Result<(), DockerError> {
         if !job.has_valid_identity() {
             return Err(DockerError::OwnershipConflict);
         }
-        if job.operation().is_none() {
-            return Err(DockerError::Validation("job operation"));
-        }
         let name = job.container.name.as_str();
-        self.remove_owned_service(name, &job.container.labels, ResourceKind::Job)
+        let ownership = &job.container.labels;
+        self.remove_owned_service(name, ownership, ResourceKind::Job)
             .await?;
-        self.wait_job_stopped(name).await?;
+        self.wait_jobs_stopped(ownership, Some(job.logical_name.as_str()), JobRuns::All)
+            .await?;
         let node_id = self.local_node_id().await?;
         let spec = Self::job_spec(
             self.service_spec_with_secrets(&job.container, &node_id)
@@ -99,22 +98,43 @@ impl BollardDocker {
         self.create_service_wire(&spec).await
     }
 
-    /// Waits until no container of the named job service is running. Swarm
-    /// stops a removed service's containers asynchronously, after their grace
-    /// period; the caller's request timeout bounds the wait.
-    async fn wait_job_stopped(&self, name: &str) -> Result<(), DockerError> {
+    /// Waits until no selected container of the application's jobs, or of
+    /// one job, is running. Swarm stops a removed service's containers
+    /// asynchronously, after their grace period; the caller's request timeout
+    /// bounds the wait.
+    async fn wait_jobs_stopped(
+        &self,
+        ownership: &BTreeMap<String, String>,
+        job: Option<&str>,
+        runs: JobRuns<'_>,
+    ) -> Result<(), DockerError> {
+        let mut labels = [MANAGED_LABEL, INSTANCE_LABEL, APPLICATION_LABEL]
+            .into_iter()
+            .map(|key| {
+                ownership
+                    .get(key)
+                    .map(|value| format!("{key}={value}"))
+                    .ok_or(DockerError::Validation("job ownership"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        labels.push(job.map_or_else(|| JOB_LABEL.to_owned(), |job| format!("{JOB_LABEL}={job}")));
         let options = ListContainersOptionsBuilder::default()
-            .filters(&HashMap::from([(
-                "label",
-                vec![format!("{SWARM_SERVICE_LABEL}={name}")],
-            )]))
+            .filters(&HashMap::from([("label", labels)]))
             .build();
         loop {
-            let running = Self::map_request(
+            let containers = Self::map_request(
                 "list job containers",
                 self.docker.list_containers(Some(options.clone())).await,
             )?;
-            if running.is_empty() {
+            if !containers.into_iter().any(|container| {
+                runs.selects(
+                    container
+                        .labels
+                        .as_ref()
+                        .and_then(|labels| labels.get(JOB_OPERATION_LABEL))
+                        .map(String::as_str),
+                )
+            }) {
                 return Ok(());
             }
             tokio::time::sleep(JOB_STOP_POLL_INTERVAL).await;
@@ -122,7 +142,7 @@ impl BollardDocker {
     }
 
     /// Returns the tasks of the operation's run, or `None` when it has no run.
-    async fn job_run_tasks(&self, job: &DesiredJob) -> Result<Option<Vec<Task>>, DockerError> {
+    async fn job_run_tasks(&self, job: &DesiredJobRun) -> Result<Option<Vec<Task>>, DockerError> {
         let name = job.container.name.as_str();
         let service = match self
             .docker
@@ -136,7 +156,7 @@ impl BollardDocker {
             Err(error) => return Err(DockerError::request("inspect job", error)),
         };
         let labels = service.spec.and_then(|s| s.labels).unwrap_or_default();
-        if labels.get(JOB_OPERATION_LABEL).map(String::as_str) != job.operation() {
+        if labels.get(JOB_OPERATION_LABEL).map(String::as_str) != Some(job.operation()) {
             return Ok(None);
         }
         if !Self::owns_resource(labels, &job.container.labels, ResourceKind::Job, name) {
@@ -159,7 +179,7 @@ impl BollardDocker {
     }
 
     /// Reads the progress of the operation's run of the job.
-    pub(super) async fn inspect_job(&self, job: &DesiredJob) -> Result<JobStatus, DockerError> {
+    pub(super) async fn inspect_job(&self, job: &DesiredJobRun) -> Result<JobStatus, DockerError> {
         // A single-completion job without restarts schedules exactly one task.
         Ok(match self.job_run_tasks(job).await? {
             None => JobStatus::Missing,
@@ -170,12 +190,13 @@ impl BollardDocker {
         })
     }
 
-    /// Reads the run's output, merging consecutive chunks of one stream so
-    /// build history stores them in few writes.
+    /// Reads the run's output up to [`JOB_OUTPUT_MAX_BYTES`], merging
+    /// consecutive chunks of one stream so build history stores them in few
+    /// writes.
     pub(super) async fn read_job_output(
         &self,
-        job: &DesiredJob,
-    ) -> Result<Vec<(LogStream, Vec<u8>)>, DockerError> {
+        job: &DesiredJobRun,
+    ) -> Result<JobOutput, DockerError> {
         let container = self
             .job_run_tasks(job)
             .await?
@@ -183,7 +204,7 @@ impl BollardDocker {
             .flatten()
             .find_map(|task| task.status?.container_status?.container_id);
         let Some(container) = container else {
-            return Ok(Vec::new());
+            return Ok(JobOutput::default());
         };
         let mut logs = self.docker.logs(
             &container,
@@ -194,11 +215,9 @@ impl BollardDocker {
                     .build(),
             ),
         );
-        let mut output: Vec<(LogStream, Vec<u8>)> = Vec::new();
+        let mut output = JobOutput::default();
         let mut remaining = JOB_OUTPUT_MAX_BYTES;
-        while remaining > 0
-            && let Some(item) = logs.next().await
-        {
+        while let Some(item) = logs.next().await {
             let (stream, message) = match item {
                 Ok(LogOutput::StdErr { message }) => (LogStream::Stderr, message),
                 Ok(
@@ -213,16 +232,22 @@ impl BollardDocker {
             };
             let kept = &message[..message.len().min(remaining)];
             remaining -= kept.len();
-            match output.last_mut() {
+            match output.chunks.last_mut() {
                 Some((last, bytes)) if *last == stream => bytes.extend_from_slice(kept),
-                _ => output.push((stream, kept.to_vec())),
+                _ if kept.is_empty() => {}
+                _ => output.chunks.push((stream, kept.to_vec())),
+            }
+            if kept.len() < message.len() {
+                output.truncated = true;
+                break;
             }
         }
         Ok(output)
     }
 
     /// Deletes the selected job services of the application named by
-    /// `ownership`, then waits for their containers to stop.
+    /// `ownership`, then waits for their containers to stop, including those
+    /// of services an earlier attempt already deleted.
     pub(super) async fn remove_owned_jobs(
         &self,
         ownership: &BTreeMap<String, String>,
@@ -247,7 +272,6 @@ impl BollardDocker {
                 ))
                 .await,
         )?;
-        let mut removed = Vec::new();
         for spec in services.into_iter().filter_map(|service| service.spec) {
             let operation = spec
                 .labels
@@ -261,16 +285,12 @@ impl BollardDocker {
                 .remove_owned_service(&name, ownership, ResourceKind::Job)
                 .await
             {
-                Ok(()) => removed.push(name),
                 // Same-label services of another instance are not ours to remove.
-                Err(DockerError::OwnershipConflict) => {}
+                Ok(()) | Err(DockerError::OwnershipConflict) => {}
                 Err(error) => return Err(error),
             }
         }
-        for name in removed {
-            self.wait_job_stopped(&name).await?;
-        }
-        Ok(())
+        self.wait_jobs_stopped(ownership, None, runs).await
     }
 }
 
@@ -283,7 +303,9 @@ mod tests {
 
     #[test]
     fn job_spec_runs_once_without_health_check_or_service_alias() {
+        let labels = HashMap::from([(JOB_OPERATION_LABEL.to_owned(), "operation-1".to_owned())]);
         let service = ServiceSpec {
+            labels: Some(labels.clone()),
             task_template: Some(TaskSpec {
                 container_spec: Some(TaskSpecContainerSpec {
                     health_check: None,
@@ -312,10 +334,13 @@ mod tests {
             task.restart_policy.unwrap().condition,
             Some(TaskSpecRestartPolicyConditionEnum::NONE)
         );
+        let container = task.container_spec.unwrap();
         assert_eq!(
-            task.container_spec.unwrap().health_check.unwrap().test,
+            container.health_check.unwrap().test,
             Some(vec!["NONE".into()])
         );
+        // Labels find a run's container after its service is removed.
+        assert_eq!(container.labels, Some(labels));
         let network = &task.networks.unwrap()[0];
         assert_eq!(network.target.as_deref(), Some("app-notes"));
         assert_eq!(network.aliases, None);

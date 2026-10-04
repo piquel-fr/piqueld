@@ -341,11 +341,13 @@ the deployment with `job_failed` or `job_timeout`. The previous target keeps
 running, the application stays degraded, and failed jobs are not retried
 automatically; deploy again after fixing the cause. Each job succeeds at most
 once per deployment: a retried deployment skips jobs that already succeeded,
-and after a daemon restart a still-running job is resumed rather than started
-again, with a fresh timeout. Retrying a promoted deployment or repairing drift
-never runs jobs. A deployment that is superseded or cancelled stops its running
-job. Each run, its bounded output, and Docker's explanation of a failed task
-are kept in the application's build history.
+and after a daemon restart, or when Docker could not report a job's status, a
+still-running job is resumed rather than started again, with a fresh timeout.
+Retrying a promoted deployment or repairing drift never runs jobs. A deployment
+that is superseded or cancelled stops its running job, and the next deployment
+stops any job an earlier one left behind. Each run, its bounded output, and
+Docker's explanation of a failed task are kept in the application's build
+history; output past 1 MiB per run is dropped and the run is marked truncated.
 
 Besides applying a manifest, jobs can be edited with `piquelctl app job`, the
 dashboard's Jobs tab, or `PUT /api/v1/applications/{id}/jobs`. Renaming a

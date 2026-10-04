@@ -50,6 +50,11 @@ impl BuildLog {
     pub(crate) async fn exit_code(&self, code: i64) -> Result<(), StoreError> {
         self.store.build_exit_code(self.id, code).await
     }
+    /// Records that output was dropped before reaching this log. Later
+    /// output is no longer accepted.
+    pub(crate) async fn truncated(&self) -> Result<(), StoreError> {
+        self.store.build_log_truncated(self.id).await
+    }
 }
 
 /// A persisted build record that is always given a terminal state.

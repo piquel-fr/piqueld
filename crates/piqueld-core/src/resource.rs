@@ -459,24 +459,41 @@ impl DesiredJob {
             && self.container.name == DockerServiceName::for_job(&application, &self.logical_name)
     }
 
-    /// Returns this job's run for `operation`. The label lets a retried or
-    /// restarted operation find and resume its own run instead of starting over.
+    /// Returns this job's run for `operation`.
     #[must_use]
-    pub fn for_operation(&self, operation: &str) -> Self {
-        let mut run = self.clone();
-        run.container
+    pub fn for_operation(&self, operation: &str) -> DesiredJobRun {
+        let mut job = self.clone();
+        job.container
             .labels
             .insert(JOB_OPERATION_LABEL.into(), operation.into());
-        run
+        DesiredJobRun {
+            job,
+            operation: operation.into(),
+        }
     }
+}
 
-    /// Operation that started this run, when it was created by `for_operation`.
+/// One operation's run of a job. Its operation label lets a retried or
+/// restarted operation find and resume its own run instead of starting over.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DesiredJobRun {
+    job: DesiredJob,
+    operation: String,
+}
+
+impl DesiredJobRun {
+    /// Operation that starts this run.
     #[must_use]
-    pub fn operation(&self) -> Option<&str> {
-        self.container
-            .labels
-            .get(JOB_OPERATION_LABEL)
-            .map(String::as_str)
+    pub fn operation(&self) -> &str {
+        &self.operation
+    }
+}
+
+impl std::ops::Deref for DesiredJobRun {
+    type Target = DesiredJob;
+
+    fn deref(&self) -> &DesiredJob {
+        &self.job
     }
 }
 
