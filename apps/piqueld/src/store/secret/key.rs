@@ -59,11 +59,11 @@ impl Store {
             Err(StoreError::SecretSource(_)) => {}
             Err(error) => return Err(error),
         }
-        let usage = sqlx::query!("SELECT COUNT(*) AS versions, COUNT(DISTINCT application_id) AS applications, COUNT(DISTINCT application_id||char(0)||name) AS secrets FROM secret_versions WHERE available=1")
+        let usage = sqlx::query!("SELECT COUNT(*) AS versions, COUNT(DISTINCT environment_id) AS applications, COUNT(DISTINCT environment_id||char(0)||name) AS secrets FROM secret_versions WHERE available=1")
             .fetch_one(&mut *tx).await.map_err(StoreError::database)?;
         let now = super::now_ms();
         // Each affected application's history explains why its values need replacing.
-        sqlx::query!("INSERT INTO events(application_id,kind,message,created_at_ms) SELECT application_id,'secret_values_discarded','Secret key recovery discarded '||COUNT(*)||' stored values; store replacements, then deploy',?1 FROM secret_versions WHERE available=1 GROUP BY application_id",now)
+        sqlx::query!("INSERT INTO events(environment_id,kind,message,created_at_ms) SELECT environment_id,'secret_values_discarded','Secret key recovery discarded '||COUNT(*)||' stored values; store replacements, then deploy',?1 FROM secret_versions WHERE available=1 GROUP BY environment_id",now)
             .execute(&mut *tx).await.map_err(StoreError::database)?;
         sqlx::query!(
             "UPDATE secret_versions SET available=0,nonce=X'',ciphertext=X'' WHERE available=1"
@@ -84,7 +84,7 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)?;
         SecretCipher::retire(&self.secret_key_path, now).map_err(StoreError::SecretSource)?;
         Ok(SecretKeyRecovery {
-            affected_applications: usage.applications,
+            affected_environments: usage.applications,
             affected_secrets: usage.secrets,
             discarded_versions: usage.versions,
         })

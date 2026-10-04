@@ -1,15 +1,15 @@
 //! Connected command implementations plus shared application lookup and operation waiting.
 use crate::{
     cli::{
-        AppCommand, ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, DeployArgs, ManifestArgs,
-        OperationArgs, TargetArgs,
+        AppCommand, ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs,
     },
-    error::{CliError, ErrorKind, ErrorReport, Result},
+    environments,
+    error::{CliError, ErrorKind, Result},
     output::{
         Console, TaskOutcome,
         reports::{
-            ApplicationRow, DeletionReport, OperationOutcomeReport, SavedDeploymentReport,
-            ShowReport, StatusReport, ValidManifestReport,
+            ApplicationDeletionReport, ApplicationRow, OperationOutcomeReport,
+            SavedDeploymentReport, ShowReport, StatusReport, ValidManifestReport,
         },
     },
     support::{confirm, looks_like_application_id, manifest_name, read_manifest, retry_transport},
@@ -40,21 +40,22 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
         Command::Secrets { action } => action.run(cli, client, console).await,
         Command::Status => status(cli, client, console).await,
         Command::App { command } => app(cli, client, console, command).await,
+        Command::Env { command } => command.run(cli, client, console).await,
         Command::Builds(args) => match &args.command {
             BuildCommand::List {
-                application,
+                environment,
                 cursor,
-            } => builds(console, client, application.as_deref(), cursor.as_deref()).await,
+            } => builds(console, client, environment.as_deref(), cursor.as_deref()).await,
             BuildCommand::Logs { id, before } => build_logs(console, client, *id, *before).await,
         },
         Command::Operation(args) => operation(console, client, args).await,
         Command::Events {
-            application,
+            environment,
             cursor,
             limit,
         } => {
             let page = client
-                .events(application.as_deref(), cursor.as_deref(), *limit)
+                .events(environment.as_deref(), cursor.as_deref(), *limit)
                 .await?;
             console.emit(&page)
         }
@@ -70,33 +71,37 @@ async fn app(
 ) -> Result<()> {
     match command {
         AppCommand::List => list(cli, client, console).await,
-        AppCommand::Show { name_or_id } => show(console, client, name_or_id).await,
-        AppCommand::Logs {
-            name_or_id,
-            service,
-            tail,
-            since_seconds,
-        } => {
-            logs(
-                console,
-                client,
-                name_or_id,
-                service.as_deref(),
-                *tail,
-                *since_seconds,
-            )
-            .await
+        AppCommand::Show { name_or_id } => show(cli, console, client, name_or_id).await,
+        AppCommand::Logs { name_or_id, window } => {
+            let (_, environment) = environments::select(client, name_or_id, None).await?;
+            environments::logs(console, client, &environment, window).await
         }
         AppCommand::Exec(_) => unreachable!("exec sessions run without the command timeout"),
         AppCommand::Secret {
             application,
+            environment,
             action,
-        } => action.run(cli, client, console, application).await,
+        } => {
+            action
+                .run(cli, client, console, application, environment.as_deref())
+                .await
+        }
         AppCommand::Validate { .. } => unreachable!("validation runs before connecting"),
         AppCommand::Plan(args) => plan_command(console, client, args).await,
         AppCommand::Apply(args) => apply(cli, client, console, args).await,
         AppCommand::Delete(args) => delete(cli, client, console, args).await,
-        AppCommand::Reconcile(args) => reconcile(cli, client, console, args).await,
+        AppCommand::Reconcile(args) => {
+            let (application, environment) =
+                environments::select(client, &args.name_or_id, None).await?;
+            environments::reconcile(
+                cli,
+                client,
+                console,
+                (&application, &environment),
+                &args.flags,
+            )
+            .await
+        }
         AppCommand::Rename(args) => {
             crate::editing::save(
                 cli,
@@ -108,7 +113,19 @@ async fn app(
             )
             .await
         }
-        AppCommand::Deploy(args) => deploy(cli, client, console, args).await,
+        AppCommand::Deploy(args) => {
+            let (application, environment) =
+                environments::select(client, &args.target.name_or_id, None).await?;
+            environments::deploy(
+                cli,
+                client,
+                console,
+                (&application, &environment),
+                &args.target.flags,
+                &args.revision,
+            )
+            .await
+        }
         AppCommand::Create(args) => crate::editing::create(cli, client, console, args).await,
         AppCommand::Service { command } => command.run(cli, client, console).await,
         AppCommand::Volume { command } => command.run(cli, client, console).await,
@@ -125,14 +142,14 @@ async fn app(
     }
 }
 
-/// Emits one page of build attempts, optionally filtered by application.
+/// Emits one page of build attempts, optionally filtered by environment.
 async fn builds(
     console: &mut Console,
     client: &Client,
-    application: Option<&str>,
+    environment: Option<&str>,
     cursor: Option<&str>,
 ) -> Result<()> {
-    console.emit(&client.builds(application, cursor).await?)
+    console.emit(&client.builds(environment, cursor).await?)
 }
 
 /// Emits one page of build output, then warns about expired or truncated output
@@ -191,39 +208,29 @@ async fn status(cli: &Cli, client: &Client, console: &mut Console) -> Result<()>
     })
 }
 
-/// Lists every application with its status. Statuses are fetched with up to 8
-/// requests in flight while preserving list order; a failed status fetch becomes
-/// a per-application warning and an `unavailable` row instead of failing the list.
+/// Lists every application with its environments' statuses. Applications are
+/// fetched with up to 8 in flight while preserving list order; a failed status
+/// fetch becomes a warning and an `unavailable` environment instead of failing the list.
 async fn list(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     let applications = all_applications(client).await?;
     let mut statuses =
         futures_util::stream::iter(applications.into_iter().map(|application| async move {
-            let status = client.application_status(application.id.as_str()).await;
-            (application, status)
+            let statuses = environments::statuses(client, &application.environments).await;
+            (application, statuses)
         }))
         .buffered(8);
     let mut items = Vec::new();
-    while let Some((application, status)) = statuses.next().await {
-        let status = match status {
-            Ok(status) => {
-                if let Some(message) = &status.message {
-                    console.warning(format_args!("{}: {message}", application.name))?;
-                }
-                Some(status)
-            }
-            Err(error) => {
-                let error = CliError::from(error);
-                console.warning_report(&ErrorReport::warning(
-                    &error,
-                    cli,
-                    application.name.as_str(),
-                ))?;
-                None
-            }
-        };
+    while let Some((application, statuses)) = statuses.next().await {
+        let environments = environments::rows(
+            cli,
+            console,
+            &application.name,
+            &application.environments,
+            statuses,
+        )?;
         items.push(ApplicationRow {
             application,
-            status,
+            environments,
         });
     }
     console.emit(&Page {
@@ -232,40 +239,21 @@ async fn list(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     })
 }
 
-/// Shows one application and its status, warning with any status message.
-async fn show(console: &mut Console, client: &Client, name_or_id: &str) -> Result<()> {
+/// Shows one application and its environments' statuses.
+async fn show(cli: &Cli, console: &mut Console, client: &Client, name_or_id: &str) -> Result<()> {
     let application = resolve_application(client, name_or_id).await?;
-    let status = client
-        .application_status(application.application.id().as_str())
-        .await?;
+    let statuses = environments::statuses(client, &application.environments).await;
+    let environments = environments::rows(
+        cli,
+        console,
+        application.application.metadata().name.as_str(),
+        &application.environments,
+        statuses,
+    )?;
     console.emit(&ShowReport {
         application: &application,
-        status: &status,
-    })?;
-    if let Some(message) = &status.message {
-        console.warning(message)?;
-    }
-    Ok(())
-}
-
-/// Emits a bounded snapshot of runtime logs, warning when the daemon truncated it.
-async fn logs(
-    console: &mut Console,
-    client: &Client,
-    name_or_id: &str,
-    service: Option<&str>,
-    tail: u16,
-    since_seconds: u32,
-) -> Result<()> {
-    let app = resolve_application(client, name_or_id).await?;
-    let logs = client
-        .application_logs(app.application.id().as_str(), service, tail, since_seconds)
-        .await?;
-    console.emit(&logs)?;
-    if logs.truncated {
-        console.warning("Log snapshot was truncated; narrow the service or time window.")?;
-    }
-    Ok(())
+        environments: &environments,
+    })
 }
 
 /// Validates a manifest with the same rules as the daemon, without a daemon.
@@ -338,9 +326,10 @@ async fn apply(cli: &Cli, client: &Client, console: &mut Console, args: &ApplyAr
     })
 }
 
-/// Confirms and deletes an application (named volumes are retained), guarded by
-/// the expected generation unless `--force`. Waits until the application is gone
-/// unless `--no-wait`.
+/// Confirms and deletes an application and all its environments (named volumes
+/// are retained), guarded by the expected generation unless `--force`. With
+/// several environments, `--environments` must name every one. Waits until the
+/// application is gone unless `--no-wait`.
 async fn delete(
     cli: &Cli,
     client: &Client,
@@ -348,110 +337,84 @@ async fn delete(
     args: &DeleteArgs,
 ) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
+    let name = application.application.metadata().name.clone();
+    let names = application
+        .environments
+        .iter()
+        .map(|environment| environment.name.as_str())
+        .collect::<Vec<_>>();
+    if names.len() > 1 {
+        let mut confirmed = args
+            .environments
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let mut expected = names.clone();
+        confirmed.sort_unstable();
+        confirmed.dedup();
+        expected.sort_unstable();
+        if confirmed != expected {
+            return Err(CliError::new(
+                ErrorKind::Input,
+                format!(
+                    "application {name:?} has environments {}; confirm by naming every one with --environments {}",
+                    names.join(", "),
+                    names.join(",")
+                ),
+            ));
+        }
+    }
     console.info(format_args!(
-        "deleting {} ({}): managed services and network are removed; named volumes are retained",
-        application.application.metadata().name,
-        application.application.id()
+        "deleting {name} ({}) and its environments {}: managed services and networks are removed; named volumes are retained",
+        application.application.id(),
+        if names.is_empty() { "(none)".to_owned() } else { names.join(", ") }
     ))?;
 
+    let flags = &args.deletion;
     confirm(
         console,
         cli.noninteractive,
-        args.yes,
-        &format!(
-            "Delete application {:?}? Named volumes will be retained. [y/N] ",
-            application.application.metadata().name
-        ),
+        flags.yes,
+        &format!("Delete application {name:?}? Named volumes will be retained. [y/N] "),
     )
     .await?;
 
-    let accepted = retry_transport(|| {
+    let confirmed = args
+        .environments
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let deleted = retry_transport(|| {
         client.delete_application_with_preconditions(
             application.application.id().as_str(),
-            (!args.force).then_some(args.expected_generation.unwrap_or(application.generation)),
-            args.force,
+            (!flags.force).then_some(flags.expected_generation.unwrap_or(application.generation)),
+            flags.force,
+            &confirmed,
         )
     })
     .await
     .map_err(CliError::from)?;
-    if args.no_wait {
-        return console.emit(&DeletionReport::accepted(&accepted));
+    if flags.no_wait {
+        return console.emit(&ApplicationDeletionReport::accepted(&deleted));
     }
+    let operations = deleted
+        .operations
+        .iter()
+        .map(|operation| operation.operation_id.clone())
+        .collect::<Vec<_>>();
     wait_for_deletion(
         console,
         client,
-        &accepted.application_id,
-        &accepted.operation_id,
+        || client.application(&deleted.application_id),
+        &operations,
     )
     .await?;
-    console.emit(&DeletionReport::completed(&accepted))
-}
-
-/// Confirms and retries the latest operation with its saved inputs, guarded by the
-/// expected generation only when one is given. Waits for it unless `--no-wait`.
-async fn reconcile(
-    cli: &Cli,
-    client: &Client,
-    console: &mut Console,
-    args: &TargetArgs,
-) -> Result<()> {
-    let application = resolve_application(client, &args.name_or_id).await?;
-    confirm(
-        console,
-        cli.noninteractive,
-        args.yes,
-        &format!(
-            "Retry the latest operation for application {:?}? [y/N] ",
-            application.application.metadata().name
-        ),
-    )
-    .await?;
-    let accepted = retry_transport(|| {
-        client.reconcile_application(
-            application.application.id().as_str(),
-            args.expected_generation,
-        )
-    })
-    .await?;
-    wait_for_accepted(console, client, args.no_wait, &accepted).await
-}
-
-/// Confirms and deploys saved configuration, fetching the manifest and resolving
-/// sources again (from `--branch` or `--commit` for this deployment only). Guarded by
-/// the expected generation, defaulting to the current one. Waits unless `--no-wait`.
-async fn deploy(
-    cli: &Cli,
-    client: &Client,
-    console: &mut Console,
-    args: &DeployArgs,
-) -> Result<()> {
-    let target = &args.target;
-    let application = resolve_application(client, &target.name_or_id).await?;
-    confirm(
-        console,
-        cli.noninteractive,
-        target.yes,
-        &format!(
-            "Deploy application {:?}? [y/N] ",
-            application.application.metadata().name
-        ),
-    )
-    .await?;
-    let revision = args.revision();
-    let accepted = retry_transport(|| {
-        client.deploy_application(
-            application.application.id().as_str(),
-            target.expected_generation.unwrap_or(application.generation),
-            revision.as_ref(),
-        )
-    })
-    .await?;
-    wait_for_accepted(console, client, target.no_wait, &accepted).await
+    console.emit(&ApplicationDeletionReport::completed(&deleted))
 }
 
 /// Emits an accepted operation as is with `no_wait`, otherwise waits for it and
 /// emits its outcome.
-async fn wait_for_accepted(
+pub(crate) async fn wait_for_accepted(
     console: &mut Console,
     client: &Client,
     no_wait: bool,
@@ -602,18 +565,21 @@ fn finish_operation(operation: Operation) -> Result<Operation> {
     }
 }
 
-/// Polls until the application returns 404, which is the success condition.
-/// Meanwhile tracks the delete operation for progress and fails early if it ends
-/// unsuccessfully. A 404 for the operation itself is tolerated.
-async fn wait_for_deletion(
+/// Polls until `resource` returns 404, which is the success condition.
+/// Meanwhile tracks the delete operations for progress and fails early if one
+/// ends unsuccessfully. A 404 for an operation itself is tolerated.
+pub(crate) async fn wait_for_deletion<T, F>(
     console: &mut Console,
     client: &Client,
-    id: &str,
-    operation_id: &str,
-) -> Result<()> {
-    let progress = console.start_task(operation_id);
+    resource: impl Fn() -> F,
+    operation_ids: &[String],
+) -> Result<()>
+where
+    F: std::future::Future<Output = std::result::Result<T, ClientError>>,
+{
+    let progress = console.start_task(operation_ids.first().map_or("deletion", String::as_str));
     loop {
-        match client.application(id).await {
+        match resource().await {
             Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => {
                 progress.finish(TaskOutcome::Succeeded, "deleted");
                 return Ok(());
@@ -621,22 +587,26 @@ async fn wait_for_deletion(
             Err(error) => return Err(error.into()),
             Ok(_) => {}
         }
-        match client.operation(operation_id).await {
-            Ok(operation) => {
-                progress.update(&OperationProgress::message(&operation));
-                if operation.state.terminal() {
-                    if !matches!(
-                        operation.state,
-                        OperationState::Succeeded | OperationState::Superseded
-                    ) {
-                        progress
-                            .finish(TaskOutcome::Failed, &OperationProgress::message(&operation));
+        for operation_id in operation_ids {
+            match client.operation(operation_id).await {
+                Ok(operation) => {
+                    progress.update(&OperationProgress::message(&operation));
+                    if operation.state.terminal() {
+                        if !matches!(
+                            operation.state,
+                            OperationState::Succeeded | OperationState::Superseded
+                        ) {
+                            progress.finish(
+                                TaskOutcome::Failed,
+                                &OperationProgress::message(&operation),
+                            );
+                        }
+                        finish_operation(operation)?;
                     }
-                    finish_operation(operation)?;
                 }
+                Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => {}
+                Err(error) => return Err(error.into()),
             }
-            Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => {}
-            Err(error) => return Err(error.into()),
         }
         time::sleep(POLL_INTERVAL).await;
     }

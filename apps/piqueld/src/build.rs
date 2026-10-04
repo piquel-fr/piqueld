@@ -1,6 +1,6 @@
 //! Durable attempt lifecycle and output sink, independent of the executor.
 use crate::store::{Store, StoreError};
-use piqueld_core::{ApplicationId, api::BuildState, manifest::Source};
+use piqueld_core::{EnvironmentId, api::BuildState, manifest::Source};
 use std::sync::Arc;
 
 /// A bounded persistent output sink usable by any build executor.
@@ -91,7 +91,7 @@ impl BuildAttempt {
     /// job run record when `job` is set.
     pub(crate) async fn start(
         store: Arc<Store>,
-        application: &ApplicationId,
+        application: &EnvironmentId,
         operation: &str,
         service: &str,
         source: &Source,

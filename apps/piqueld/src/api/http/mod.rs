@@ -9,8 +9,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use piqueld_core::ApplicationIdError;
 use piqueld_core::api::{ApplyApplicationRequest, Envelope, ErrorBody};
+use piqueld_core::{ApplicationIdError, EnvironmentIdError, EnvironmentNameError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc};
@@ -29,6 +29,7 @@ mod browser;
 mod builds;
 mod deployments;
 mod editing;
+mod environments;
 mod events;
 mod exec;
 mod logs;
@@ -161,7 +162,7 @@ impl ApiError {
             StoreError::SecretQuota => Self::new(
                 StatusCode::CONFLICT,
                 "secret_quota_exceeded",
-                "Secret storage quota exceeded (1000 versions or 100 MiB per application); delete unused secrets to free space",
+                "Secret storage quota exceeded (1000 versions or 100 MiB per environment); delete unused secrets to free space",
             ),
             StoreError::SecretReferenced => Self::new(
                 StatusCode::CONFLICT,
@@ -169,6 +170,28 @@ impl ApiError {
                 "Secret is still referenced by application configuration or a deployment",
             ),
             other => unreachable!("non-secret storage error: {other}"),
+        }
+    }
+
+    /// Maps environment selection failures selected by `From<StoreError>`,
+    /// listing the application's environments in `details.environments`.
+    ///
+    /// Panics if given another variant; callers must pre-filter.
+    fn from_environment_error(error: StoreError) -> Self {
+        match error {
+            StoreError::EnvironmentRequired { environments } => Self::new(
+                StatusCode::CONFLICT,
+                "environment_required",
+                "The application does not have exactly one environment; name the environment explicitly",
+            )
+            .details(json!({"environments": environments})),
+            StoreError::ConfirmationRequired { environments } => Self::new(
+                StatusCode::CONFLICT,
+                "environment_confirmation_required",
+                "Deleting this application also deletes all its environments; confirm by naming every one",
+            )
+            .details(json!({"environments": environments})),
+            other => unreachable!("non-environment storage error: {other}"),
         }
     }
 }
@@ -191,9 +214,11 @@ impl From<StoreError> for ApiError {
             StoreError::HostnameConflict { hostname } => Self::new(
                 StatusCode::CONFLICT,
                 "hostname_conflict",
-                "Hostname is reserved by another application or this installation",
+                "Hostname is reserved by another environment or this installation",
             )
             .details(json!({"hostname": hostname})),
+            error @ (StoreError::EnvironmentRequired { .. }
+            | StoreError::ConfirmationRequired { .. }) => Self::from_environment_error(error),
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "generation_conflict",
@@ -236,7 +261,7 @@ impl From<StoreError> for ApiError {
             StoreError::AlreadyExists => Self::new(
                 StatusCode::CONFLICT,
                 "application_name_collision",
-                "application identity or name already exists",
+                "application or environment identity or name already exists",
             ),
             StoreError::IllegalTransition => Self::new(
                 StatusCode::CONFLICT,
@@ -329,6 +354,26 @@ impl From<ApplicationIdError> for ApiError {
             StatusCode::BAD_REQUEST,
             "application_id_invalid",
             "application ID is invalid",
+        )
+    }
+}
+
+impl From<EnvironmentIdError> for ApiError {
+    fn from(_: EnvironmentIdError) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            "environment_id_invalid",
+            "environment ID is invalid",
+        )
+    }
+}
+
+impl From<EnvironmentNameError> for ApiError {
+    fn from(_: EnvironmentNameError) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            "environment_name_invalid",
+            "environment names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
         )
     }
 }
@@ -546,11 +591,14 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(applications::apply))
         .routes(routes!(applications::plan))
         .routes(routes!(applications::get, applications::delete))
-        .routes(routes!(applications::detail))
         .routes(routes!(applications::manifest_download))
-        .routes(routes!(applications::status))
-        .routes(routes!(applications::reconcile))
         .routes(routes!(applications::rename))
+        .routes(routes!(environments::create))
+        .routes(routes!(environments::get, environments::delete))
+        .routes(routes!(environments::detail))
+        .routes(routes!(environments::status))
+        .routes(routes!(environments::reconcile))
+        .routes(routes!(environments::rename))
         .routes(routes!(deployments::deploy))
         .routes(routes!(deployments::list))
         .routes(routes!(deployments::attempts))
@@ -574,7 +622,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
 /// Middleware that runs the request inside a `request_context` span and
 /// post-processes JSON error responses.
 ///
-/// 1. Extracts the application ID from `/api/v1/applications/{id}` routes.
+/// 1. Extracts the environment ID from `/api/v1/environments/{id}` routes.
 /// 2. Runs the inner handler.
 /// 3. For 4xx/5xx JSON `ErrorBody` responses, rewrites `request_id` to the
 ///    `x-request-id` value.
@@ -591,14 +639,14 @@ async fn bind_error_request_id(
     request: Request,
     next: Next,
 ) -> Response {
-    let application = matched
-        .filter(|path| path.as_str().starts_with("/api/v1/applications/{id}"))
+    let environment = matched
+        .filter(|path| path.as_str().starts_with("/api/v1/environments/{id}"))
         .and_then(|_| params.ok())
         .and_then(|params| {
             params
                 .iter()
                 .find(|(name, _)| *name == "id")
-                .and_then(|(_, id)| piqueld_core::ApplicationId::parse(id).ok())
+                .and_then(|(_, id)| piqueld_core::EnvironmentId::parse(id).ok())
         });
     let request_id = request
         .extensions()
@@ -643,7 +691,7 @@ async fn bind_error_request_id(
         .get::<piqueld_core::observability::Diagnostic>()
         .cloned();
     state
-        .record_failure(parts.status, &mut error, diagnostic, application.as_ref())
+        .record_failure(parts.status, &mut error, diagnostic, environment.as_ref())
         .await;
     let bytes = serde_json::to_vec(&error).unwrap_or_else(|_| b"{}".to_vec());
     Response::from_parts(parts, Body::from(bytes))
@@ -651,14 +699,14 @@ async fn bind_error_request_id(
 
 impl ApiState {
     /// Records a server error's diagnostic (`diagnostic`, or a synthesized one)
-    /// and exposes its ID as `details.diagnostic_id`. Client errors and
+    /// in `environment`'s history, and exposes its ID as `details.diagnostic_id`. Client errors and
     /// `configuration_unavailable` are left untouched.
     async fn record_failure(
         &self,
         status: StatusCode,
         error: &mut ErrorBody,
         diagnostic: Option<piqueld_core::observability::Diagnostic>,
-        application: Option<&piqueld_core::ApplicationId>,
+        environment: Option<&piqueld_core::EnvironmentId>,
     ) {
         if !status.is_server_error() || error.code == "configuration_unavailable" {
             return;
@@ -676,7 +724,7 @@ impl ApiState {
             error.code.as_str(),
             "storage_unavailable" | "schema_mismatch"
         ) {
-            self.record_diagnostic(&diagnostic, Some(&error.request_id), application)
+            self.record_diagnostic(&diagnostic, Some(&error.request_id), environment)
                 .await;
         }
         tracing::error!(diagnostic_id=%diagnostic.id, request_id=%error.request_id, code=%diagnostic.code, "API request failed");

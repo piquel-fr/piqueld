@@ -1,8 +1,8 @@
-//! Application-scoped encrypted values and durable deployment version pins.
+//! Environment-scoped encrypted values and durable deployment version pins.
 mod deletion;
 mod key;
 
-use super::{ApplicationId, NormalizedApplication, Store, StoreError, now_ms};
+use super::{EnvironmentId, NormalizedApplication, Operation, Store, StoreError, now_ms};
 use crate::secrets::{Envelope, Generate, SecretCipher};
 use anyhow::Context;
 use piqueld_core::api::SecretMetadata;
@@ -15,11 +15,11 @@ impl Store {
     /// Returns application absence or database errors.
     pub async fn secrets(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
     ) -> Result<Vec<SecretMetadata>, StoreError> {
         self.get(application).await?;
         let id = application.as_str();
-        let rows=sqlx::query!("SELECT s.name,s.generation,s.updated_at_ms,s.deletion_id,v.available FROM application_secrets s JOIN secret_versions v USING(application_id,name,generation) WHERE s.application_id=?1 ORDER BY s.name",id).fetch_all(&self.pool).await.map_err(StoreError::database)?;
+        let rows=sqlx::query!("SELECT s.name,s.generation,s.updated_at_ms,s.deletion_id,v.available FROM environment_secrets s JOIN secret_versions v USING(environment_id,name,generation) WHERE s.environment_id=?1 ORDER BY s.name",id).fetch_all(&self.pool).await.map_err(StoreError::database)?;
         Ok(rows
             .into_iter()
             .map(|r| SecretMetadata {
@@ -34,14 +34,14 @@ impl Store {
     /// Creates or replaces a logical secret. Rotation only affects a later deployment.
     /// `expected` is the current generation (zero to create). The value is
     /// encrypted into a new immutable version with its own Swarm secret name
-    /// (`piqueld-secret-<uuid>`), subject to per-application count and byte quotas.
-    /// Rejected while the application or the secret is being deleted.
+    /// (`piqueld-secret-<uuid>`), subject to per-environment count and byte quotas.
+    /// Rejected while the environment or the secret is being deleted.
     ///
     /// # Errors
     /// Returns invalid input, version conflict, key or database errors.
     pub async fn put_secret(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
         name: &str,
         expected: i64,
         value: Vec<u8>,
@@ -56,13 +56,13 @@ impl Store {
         }
         let _writer = self.writers.lock().await;
         let app = self.get(application).await?;
-        if app.delete_intent {
+        if app.delete_intent() {
             return Err(StoreError::Busy);
         }
         let id = application.as_str();
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let existing = sqlx::query!(
-            "SELECT generation,deletion_id FROM application_secrets WHERE application_id=?1 AND name=?2", id, name
+            "SELECT generation,deletion_id FROM environment_secrets WHERE environment_id=?1 AND name=?2", id, name
         ).fetch_optional(&mut *tx).await.map_err(StoreError::database)?;
         let current = existing.as_ref().map_or(0, |row| row.generation);
         if existing.is_some_and(|row| row.deletion_id.is_some()) {
@@ -71,7 +71,7 @@ impl Store {
         Self::secret_version_matches(expected, current)?;
         if current == 0 {
             let count = sqlx::query_scalar!(
-                "SELECT COUNT(*) FROM application_secrets WHERE application_id=?1",
+                "SELECT COUNT(*) FROM environment_secrets WHERE environment_id=?1",
                 id
             )
             .fetch_one(&mut *tx)
@@ -89,11 +89,11 @@ impl Store {
             .map_err(StoreError::SecretSource)?;
         let now = now_ms();
         let swarm_name = format!("piqueld-secret-{}", uuid::Uuid::now_v7().simple());
-        sqlx::query!("INSERT INTO application_secrets(application_id,name,generation,updated_at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(application_id,name) DO UPDATE SET generation=excluded.generation,updated_at_ms=excluded.updated_at_ms",id,name,generation,now).execute(&mut *tx).await.map_err(StoreError::database)?;
-        sqlx::query!("INSERT INTO secret_versions(application_id,name,generation,swarm_name,nonce,ciphertext) VALUES(?1,?2,?3,?4,?5,?6)",id,name,generation,swarm_name,envelope.nonce,envelope.ciphertext).execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!("INSERT INTO environment_secrets(environment_id,name,generation,updated_at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(environment_id,name) DO UPDATE SET generation=excluded.generation,updated_at_ms=excluded.updated_at_ms",id,name,generation,now).execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!("INSERT INTO secret_versions(environment_id,name,generation,swarm_name,nonce,ciphertext) VALUES(?1,?2,?3,?4,?5,?6)",id,name,generation,swarm_name,envelope.nonce,envelope.ciphertext).execute(&mut *tx).await.map_err(StoreError::database)?;
         // History records the logical name and version, never the value.
         let message = format!("Stored secret version {generation}");
-        sqlx::query!("INSERT INTO events(application_id,kind,message,resource,created_at_ms) VALUES(?1,'secret_saved',?2,?3,?4)",id,message,name,now).execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!("INSERT INTO events(environment_id,kind,message,resource,created_at_ms) VALUES(?1,'secret_saved',?2,?3,?4)",id,message,name,now).execute(&mut *tx).await.map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(SecretMetadata {
             name: name.into(),
@@ -125,12 +125,12 @@ impl Store {
     /// errors) unchanged.
     pub(crate) async fn generate_secrets(
         &self,
+        id: &EnvironmentId,
         app: &NormalizedApplication,
     ) -> Result<(), StoreError> {
-        let id = app.id();
         let id_str = id.as_str();
         let existing = sqlx::query_scalar!(
-            "SELECT name FROM application_secrets WHERE application_id=?1",
+            "SELECT name FROM environment_secrets WHERE environment_id=?1",
             id_str
         )
         .fetch_all(&self.pool)
@@ -164,10 +164,11 @@ impl Store {
     /// its own transaction; see `pin_secrets_on`.
     pub(crate) async fn pin_secrets(
         &self,
-        operation: &str,
+        operation: &Operation,
         app: &NormalizedApplication,
     ) -> Result<BTreeMap<String, String>, StoreError> {
-        self.generate_secrets(app).await?;
+        self.generate_secrets(&operation.environment_id, app)
+            .await?;
         let _writer = self.writers.lock().await;
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let pins = Self::pin_secrets_on(&mut tx, operation, app).await?;
@@ -181,10 +182,11 @@ impl Store {
     /// deleted, or had its value discarded by key recovery.
     pub(super) async fn pin_secrets_on(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        operation: &str,
+        operation: &Operation,
         app: &NormalizedApplication,
     ) -> Result<BTreeMap<String, String>, StoreError> {
         Self::check_secret_references(tx, app).await?;
+        let (operation, id) = (operation.id.as_str(), operation.environment_id.as_str());
         let prepared = sqlx::query_scalar!(
             "SELECT operation_id FROM deployment_secrets_prepared WHERE operation_id=?1",
             operation
@@ -193,10 +195,9 @@ impl Store {
         .await
         .map_err(StoreError::database)?
         .is_some();
-        let id = app.id().as_str();
         if !prepared {
             for name in app.spec().mounted_secret_names() {
-                let changed=sqlx::query!("INSERT INTO deployment_secret_pins(operation_id,application_id,name,generation) SELECT ?1,application_id,name,generation FROM application_secrets WHERE application_id=?2 AND name=?3",operation,id,name).execute(&mut **tx).await.map_err(StoreError::database)?.rows_affected();
+                let changed=sqlx::query!("INSERT INTO deployment_secret_pins(operation_id,environment_id,name,generation) SELECT ?1,environment_id,name,generation FROM environment_secrets WHERE environment_id=?2 AND name=?3",operation,id,name).execute(&mut **tx).await.map_err(StoreError::database)?.rows_affected();
                 if changed != 1 {
                     return Err(StoreError::InvalidInput);
                 }
@@ -209,7 +210,7 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         }
-        let rows=sqlx::query!("SELECT p.name,v.swarm_name,v.available FROM deployment_secret_pins p JOIN secret_versions v USING(application_id,name,generation) WHERE p.operation_id=?1",operation).fetch_all(&mut **tx).await.map_err(StoreError::database)?;
+        let rows=sqlx::query!("SELECT p.name,v.swarm_name,v.available FROM deployment_secret_pins p JOIN secret_versions v USING(environment_id,name,generation) WHERE p.operation_id=?1",operation).fetch_all(&mut **tx).await.map_err(StoreError::database)?;
         let unavailable = rows
             .iter()
             .filter(|r| r.available == 0)
@@ -225,11 +226,11 @@ impl Store {
     /// Decrypts one version by its Swarm secret name, for creating the runtime secret.
     pub(crate) async fn secret_plaintext(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
         swarm_name: &str,
     ) -> Result<Zeroizing<Vec<u8>>, StoreError> {
         let id = application.as_str();
-        let row=sqlx::query!("SELECT name,generation,nonce,ciphertext,available FROM secret_versions WHERE application_id=?1 AND swarm_name=?2",id,swarm_name).fetch_optional(&self.pool).await.map_err(StoreError::database)?.ok_or(StoreError::NotFound)?;
+        let row=sqlx::query!("SELECT name,generation,nonce,ciphertext,available FROM secret_versions WHERE environment_id=?1 AND swarm_name=?2",id,swarm_name).fetch_optional(&self.pool).await.map_err(StoreError::database)?.ok_or(StoreError::NotFound)?;
         if row.available == 0 {
             return Err(StoreError::SecretUnavailable { names: row.name });
         }
@@ -247,28 +248,28 @@ impl Store {
             )
             .map_err(StoreError::SecretSource)
     }
-    /// Swarm secret names of every stored version, used to clean up after application deletion.
+    /// Swarm secret names of every stored version, used to clean up after environment deletion.
     pub(crate) async fn secret_names(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
     ) -> Result<Vec<String>, StoreError> {
         let id = application.as_str();
         sqlx::query_scalar!(
-            "SELECT swarm_name FROM secret_versions WHERE application_id=?1",
+            "SELECT swarm_name FROM secret_versions WHERE environment_id=?1",
             id
         )
         .fetch_all(&self.pool)
         .await
         .map_err(StoreError::database)
     }
-    /// Enforces the per-application limits of 1000 available versions and
+    /// Enforces the per-environment limits of 1000 available versions and
     /// 100 MiB of ciphertext, including the incoming value.
     async fn check_secret_quota(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         id: &str,
         incoming: usize,
     ) -> Result<(), StoreError> {
-        let usage = sqlx::query!("SELECT COUNT(*) AS versions, COALESCE(SUM(length(ciphertext)),0) AS bytes FROM secret_versions WHERE application_id=?1 AND available=1",id)
+        let usage = sqlx::query!("SELECT COUNT(*) AS versions, COALESCE(SUM(length(ciphertext)),0) AS bytes FROM secret_versions WHERE environment_id=?1 AND available=1",id)
             .fetch_one(&mut **tx).await.map_err(StoreError::database)?;
         // Include the 16-byte authentication tag in the persisted-byte limit.
         if usage.versions >= 1000

@@ -34,8 +34,8 @@ pub(super) async fn resources(
 #[serde(default, deny_unknown_fields)]
 #[into_params(parameter_in=Query)]
 pub(super) struct AnalyticsQuery {
-    /// Only include deployments of this application.
-    application_id: Option<String>,
+    /// Only include deployments of this environment.
+    environment_id: Option<String>,
     /// Inclusive Unix millisecond lower bound; defaults to 30 days before `until_ms`.
     since_ms: Option<i64>,
     /// Inclusive Unix millisecond upper bound; defaults to now.
@@ -53,7 +53,7 @@ pub(super) async fn analytics(
     let until = query.until_ms.unwrap_or_else(crate::store::now_ms);
     Ok(ok(state
         .deployment_analytics(
-            query.application_id.as_deref(),
+            query.environment_id.as_deref(),
             query
                 .since_ms
                 .unwrap_or_else(|| until.saturating_sub(30 * 86_400_000)),

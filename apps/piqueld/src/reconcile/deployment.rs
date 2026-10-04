@@ -86,7 +86,7 @@ impl<D: DockerApi> Controller<D> {
                 source: error.into(),
             }
         })?;
-        let application = parsed.normalize(operation.application_id.clone());
+        let application = parsed.normalize(input.application.id().clone());
         if application.metadata().name != input.application.metadata().name {
             return Err(OperationError::ManifestInvalid);
         }

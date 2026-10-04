@@ -5,7 +5,7 @@ use crate::{
     operations::OperationError,
     store::{
         ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind, OperationState, Store,
-        StoreError, StoredApplication,
+        StoreError, StoredEnvironment,
     },
 };
 use piqueld_core::{

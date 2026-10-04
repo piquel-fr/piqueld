@@ -283,8 +283,8 @@ impl ValidatedRoute {
 mod tests {
     use super::{RouteTarget, ValidatedRoute};
     use crate::{
-        ApplicationId, InstanceId, ResolutionSet, ResolvedSource, ServiceName, api::RouteStatus,
-        compile_application, parse_toml,
+        ApplicationId, EnvironmentId, InstanceId, ResolutionSet, ResolvedSource, ServiceName,
+        api::RouteStatus, compile_application, parse_toml,
     };
 
     fn manifest(routes: &str) -> String {
@@ -443,7 +443,7 @@ mod tests {
                 serde_json::from_value::<ValidatedRoute>(route.clone()).is_err(),
                 "{route}"
             );
-            route["application_id"] = "test-app".into();
+            route["environment_id"] = "test-app".into();
             route["state"] = "ready".into();
             route["message"] = "".into();
             assert!(
@@ -460,6 +460,7 @@ mod tests {
             .normalize(ApplicationId::parse("test-app").unwrap());
         let target = compile_application(
             &app,
+            &EnvironmentId::parse("test-app").unwrap(),
             InstanceId::parse("test-instance").unwrap(),
             &ResolutionSet::default(),
         )
@@ -490,6 +491,7 @@ mod tests {
             .collect();
         let target = compile_application(
             &app,
+            &EnvironmentId::parse("test-app").unwrap(),
             InstanceId::parse("test-instance").unwrap(),
             &ResolutionSet {
                 sources,

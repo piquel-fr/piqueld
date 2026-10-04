@@ -28,7 +28,7 @@ use piqueld_core::resource::{
     TaskState, image_repository,
 };
 use piqueld_core::{
-    ApplicationId, DockerNetworkName, InstanceId, ObservedApplication, ResourceKind,
+    DockerNetworkName, EnvironmentId, InstanceId, ObservedApplication, ResourceKind,
     docker_resource_name, docker_resource_readable_prefix,
 };
 use std::{
@@ -154,7 +154,7 @@ pub trait DockerApi: Send + Sync + 'static {
     async fn application_logs(
         &self,
         instance: &InstanceId,
-        application: &ApplicationId,
+        application: &EnvironmentId,
         service: Option<&str>,
         tail: u16,
         since: u32,
@@ -194,7 +194,7 @@ pub trait DockerApi: Send + Sync + 'static {
     async fn create_exec(
         &self,
         instance: &InstanceId,
-        application: &ApplicationId,
+        environment: &EnvironmentId,
         request: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<Exec>, DockerError>;
     /// Streams a created command until it exits and returns its exit code.
@@ -208,7 +208,7 @@ pub trait DockerApi: Send + Sync + 'static {
     /// Reads the resources managed for one application.
     async fn observe(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
     ) -> Result<ObservedApplication, DockerError>;
     /// Creates or verifies a managed network.
     async fn ensure_network(&self, desired: &DesiredNetwork) -> Result<(), DockerError>;

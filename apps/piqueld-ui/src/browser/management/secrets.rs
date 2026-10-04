@@ -34,7 +34,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
     let value = RwSignal::new(String::new());
     let empty_value = RwSignal::new(String::new());
     dirty_group("secret-value".into(), value, empty_value);
-    let id = StoredValue::new(context.id());
+    let id = StoredValue::new(context.environment_id());
     let reload = Callback::new(move |()| {
         if context.blocked() || loading.get_untracked() {
             return;

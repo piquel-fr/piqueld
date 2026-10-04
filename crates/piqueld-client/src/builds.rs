@@ -6,10 +6,10 @@ impl Client {
     /// Returns transport, decoding, or API errors.
     pub async fn builds(
         &self,
-        application: Option<&str>,
+        environment: Option<&str>,
         cursor: Option<&str>,
     ) -> Result<Page<BuildRecord>, ClientError> {
-        generated_result(self.generated.list_builds(application, cursor, None).await)
+        generated_result(self.generated.list_builds(cursor, environment, None).await)
             .await
             .map(|response| response.data)
     }

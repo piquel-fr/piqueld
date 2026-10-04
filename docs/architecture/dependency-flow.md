@@ -1,6 +1,8 @@
 # Module boundaries
 
-`piqueld-core` owns manifest and resource types, pure planning, application status,
+`piqueld-core` owns manifest and resource types, application and environment
+identities (`ApplicationId` for the product owning the manifest, `EnvironmentId`
+for the deployable unit that runtime names derive from), pure planning, environment status,
 operation records, and shared API requests and responses. It has no HTTP server,
 database, Docker, or UI dependency. The daemon uses these contracts directly.
 `piqueld-client` adds HTTP transport and reexports the shared contracts for the

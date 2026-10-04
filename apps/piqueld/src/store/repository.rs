@@ -7,7 +7,7 @@
 //! The candidate is copied to deployment history when fetched, but only becomes
 //! saved application configuration after source preparation succeeds, provided
 //! no newer configuration was saved in the meantime.
-use super::{NormalizedApplication, Operation, Store, StoreError, now_ms};
+use super::{ApplicationId, NormalizedApplication, Operation, Store, StoreError, now_ms};
 use sqlx::{Sqlite, Transaction};
 
 /// A deployment's candidate manifest and whether it is the fetched snapshot.
@@ -71,10 +71,11 @@ impl Store {
         commit: Option<&str>,
     ) -> Result<(), StoreError> {
         let json = application.canonical_json().map_err(StoreError::corrupt)?;
-        self.generate_secrets(application).await?;
+        self.generate_secrets(&operation.environment_id, application)
+            .await?;
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let app_id = operation.application_id.as_str();
-        let changed = sqlx::query!("UPDATE deployment_inputs SET application_json=?1,repository_commit=?2,fetched=1 WHERE operation_id=?3 AND fetched=0 AND operation_id=(SELECT id FROM operations WHERE application_id=?4 ORDER BY created_at_ms DESC,id DESC LIMIT 1) AND EXISTS(SELECT 1 FROM operations WHERE id=?3 AND state='running')", json,commit,operation.id,app_id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
+        let app_id = operation.environment_id.as_str();
+        let changed = sqlx::query!("UPDATE deployment_inputs SET application_json=?1,repository_commit=?2,fetched=1 WHERE operation_id=?3 AND fetched=0 AND operation_id=(SELECT id FROM operations WHERE environment_id=?4 ORDER BY created_at_ms DESC,id DESC LIMIT 1) AND EXISTS(SELECT 1 FROM operations WHERE id=?3 AND state='running')", json,commit,operation.id,app_id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
@@ -87,19 +88,20 @@ impl Store {
         .await
         .map_err(StoreError::database)?;
         Self::operation_event(&mut tx, &operation.id, "manifest_fetched", commit, now_ms()).await?;
-        Self::pin_secrets_on(&mut tx, &operation.id, application).await?;
-        Self::commit_application_changes(tx, [app_id]).await
+        Self::pin_secrets_on(&mut tx, operation, application).await?;
+        Self::commit_environment_changes(tx, [app_id]).await
     }
 
-    /// Promotes a fetched candidate to saved configuration, bumping the
-    /// application generation and recording `application_applied`. Skipped when
-    /// the candidate matches the saved configuration or a newer save changed the
-    /// generation since the operation started.
+    /// Promotes a fetched candidate to its application's saved configuration,
+    /// bumping the application generation and recording `application_applied`.
+    /// Skipped when the candidate matches the saved configuration or a newer
+    /// save changed the generation since the operation started. Returns the
+    /// application whose configuration changed.
     /// Called in the same transaction that saves the fully prepared runtime target.
     pub(super) async fn accept_deployment_on(
         tx: &mut Transaction<'_, Sqlite>,
         operation: &Operation,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Option<ApplicationId>, StoreError> {
         let row = sqlx::query!(
             "SELECT application_json FROM deployment_inputs WHERE operation_id=?1 AND fetched=1",
             operation.id
@@ -107,18 +109,29 @@ impl Store {
         .fetch_optional(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        if let Some(row) = row {
-            let now = now_ms();
-            let app_id = operation.application_id.as_str();
-            let generation = i64::try_from(operation.generation).map_err(StoreError::corrupt)?;
-            let changed = sqlx::query!("UPDATE applications SET desired_json=?1,generation=generation+1,updated_at_ms=?2 WHERE id=?3 AND desired_json!=?1 AND deleted_at_ms IS NULL AND generation=?4", row.application_json,now,app_id,generation).execute(&mut **tx).await.map_err(StoreError::database)?.rows_affected();
-            if changed != 0 {
-                sqlx::query!("UPDATE operations SET generation=(SELECT generation FROM applications WHERE id=?1) WHERE id=?2", app_id,operation.id).execute(&mut **tx).await.map_err(StoreError::database)?;
-                sqlx::query!("UPDATE deployments SET generation=(SELECT generation FROM operations WHERE id=?1) WHERE id=?1",operation.id).execute(&mut **tx).await.map_err(StoreError::database)?;
-                Self::operation_event(tx, &operation.id, "application_applied", None, now).await?;
-            }
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let now = now_ms();
+        let environment = operation.environment_id.as_str();
+        let application = sqlx::query_scalar!(
+            r#"SELECT application_id AS "application_id!" FROM environments WHERE id=?1"#,
+            environment
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        let generation = i64::try_from(operation.generation).map_err(StoreError::corrupt)?;
+        let changed = sqlx::query!("UPDATE applications SET desired_json=?1,generation=generation+1,updated_at_ms=?2 WHERE id=?3 AND desired_json!=?1 AND generation=?4", row.application_json,now,application,generation).execute(&mut **tx).await.map_err(StoreError::database)?.rows_affected();
+        if changed == 0 {
+            return Ok(None);
         }
-        Ok(())
+        sqlx::query!("UPDATE operations SET generation=(SELECT generation FROM applications WHERE id=?1) WHERE id=?2", application,operation.id).execute(&mut **tx).await.map_err(StoreError::database)?;
+        sqlx::query!("UPDATE deployments SET generation=(SELECT generation FROM operations WHERE id=?1) WHERE id=?1",operation.id).execute(&mut **tx).await.map_err(StoreError::database)?;
+        Self::operation_event(tx, &operation.id, "application_applied", None, now).await?;
+        ApplicationId::parse(application)
+            .map(Some)
+            .map_err(StoreError::corrupt)
     }
 }
 
@@ -174,7 +187,7 @@ mod tests {
             .accept(
                 Mutation::Save {
                     application: Box::new(edited.clone()),
-                    expected_application_id: Some(op.application_id.to_string()),
+                    expected_application_id: Some(op.environment_id.to_string()),
                     deploy: false,
                 },
                 Some(1),
@@ -185,21 +198,35 @@ mod tests {
             .unwrap();
         let target = piqueld_core::compile_application(
             &fetched,
+            &op.environment_id,
             InstanceId::parse(store.instance_id()).unwrap(),
             &ResolutionSet::default(),
         )
         .unwrap();
         store.save_prepared(&op, &target).await.unwrap();
         assert_eq!(
-            store.get(&op.application_id).await.unwrap().application,
+            store
+                .get(&op.environment_id)
+                .await
+                .unwrap()
+                .application
+                .application,
             edited
         );
-        assert_eq!(store.get(&op.application_id).await.unwrap().generation, 2);
+        assert_eq!(
+            store
+                .get(&op.environment_id)
+                .await
+                .unwrap()
+                .application
+                .generation,
+            2
+        );
         assert_eq!(store.operation(&op.id).await.unwrap().generation, 1);
         assert_eq!(store.deployment_manifest(&op.id).await.unwrap(), fetched);
         assert_eq!(
             store
-                .deployments(&op.application_id, None, 3)
+                .deployments(&op.environment_id, None, 3)
                 .await
                 .unwrap()
                 .items[0]

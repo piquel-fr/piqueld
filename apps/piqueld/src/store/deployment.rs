@@ -1,5 +1,5 @@
 //! Saved configuration and immutable deployment inputs. Saving never creates work.
-use super::{ApplicationId, NormalizedApplication, Operation, Store, StoreError, now_ms};
+use super::{EnvironmentId, NormalizedApplication, Operation, Store, StoreError, now_ms};
 use piqueld_core::api::{DeploymentView, Page, SavedApplication};
 use sqlx::{Sqlite, Transaction};
 
@@ -12,10 +12,10 @@ struct DeploymentRow {
 
 impl Store {
     /// Saves edited configuration with the next generation without creating an
-    /// operation, so nothing is deployed until requested. New applications start
-    /// as `not_deployed`. Returns `IllegalTransition` while deletion is pending,
-    /// `AlreadyExists` for a taken name, and `SecretDeleting` for manifests that
-    /// reference secrets being deleted.
+    /// operation, so nothing is deployed until requested. New applications get a
+    /// `production` environment that starts as `not_deployed`. Returns
+    /// `IllegalTransition` while deletion is pending, `AlreadyExists` for a taken
+    /// name, and `SecretDeleting` for manifests that reference secrets being deleted.
     pub(super) async fn save_configuration_on(
         tx: &mut Transaction<'_, Sqlite>,
         app: &NormalizedApplication,
@@ -29,12 +29,12 @@ impl Store {
         let name = app.metadata().name.as_str();
         let now = now_ms();
         let changed = sqlx::query!("INSERT INTO applications(id,name,desired_json,generation,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?5) ON CONFLICT(id) DO UPDATE SET desired_json=excluded.desired_json,generation=excluded.generation,updated_at_ms=excluded.updated_at_ms WHERE applications.delete_intent=0",id,name,json,generation,now)
-            .execute(&mut **tx).await.map_err(|error| if error.as_database_error().is_some_and(sqlx::error::DatabaseError::is_unique_violation) {StoreError::AlreadyExists} else {StoreError::database(error)})?.rows_affected();
+            .execute(&mut **tx).await.map_err(StoreError::constraint)?.rows_affected();
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
         if previous == 0 {
-            Self::write_status(tx, id, "not_deployed", None, now).await?;
+            Self::create_default_environment_on(tx, app.id(), now).await?;
         }
         Ok(SavedApplication {
             application_id: id.into(),
@@ -50,7 +50,7 @@ impl Store {
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
     ) -> Result<(), StoreError> {
-        sqlx::query!("INSERT INTO deployments(id,application_id,manifest_json,generation,created_at_ms) SELECT o.id,a.id,a.desired_json,o.generation,o.created_at_ms FROM operations o JOIN applications a ON a.id=o.application_id WHERE o.id=?1",id)
+        sqlx::query!("INSERT INTO deployments(id,environment_id,manifest_json,generation,created_at_ms) SELECT o.id,o.environment_id,a.desired_json,o.generation,o.created_at_ms FROM operations o JOIN environments e ON e.id=o.environment_id JOIN applications a ON a.id=e.application_id WHERE o.id=?1",id)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
         Ok(())
     }
@@ -100,12 +100,12 @@ impl Store {
         Ok(())
     }
 
-    /// Lists deployment snapshots newest first; history is retained until application deletion.
+    /// Lists deployment snapshots newest first; history is retained until environment deletion.
     /// # Errors
     /// Returns storage, decoding, absence, or invalid cursor errors.
     pub async fn deployments(
         &self,
-        app: &ApplicationId,
+        app: &EnvironmentId,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<DeploymentView>, StoreError> {
@@ -120,7 +120,7 @@ impl Store {
             sqlx::query_as!(
                 DeploymentRow,
                 "SELECT id AS \"id!\",manifest_json,succeeded_at_ms FROM deployments
-                 WHERE application_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
+                 WHERE environment_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
                 app_id,
                 before,
                 limit_sql
@@ -131,7 +131,7 @@ impl Store {
             sqlx::query_as!(
                 DeploymentRow,
                 "SELECT id AS \"id!\",manifest_json,succeeded_at_ms FROM deployments
-                 WHERE application_id=?1 ORDER BY id DESC LIMIT ?2",
+                 WHERE environment_id=?1 ORDER BY id DESC LIMIT ?2",
                 app_id,
                 limit_sql
             )
@@ -144,8 +144,8 @@ impl Store {
         let next_cursor = more
             .then(|| rows.last().map(|row| format!("v1:{}", row.id)))
             .flatten();
-        let current = sqlx::query_scalar!("SELECT d.id FROM deployments d JOIN operations o ON o.id=d.id WHERE d.application_id=?1 AND o.promoted=1 ORDER BY d.id DESC LIMIT 1",app_id).fetch_optional(&mut *tx).await.map_err(StoreError::database)?.flatten();
-        let successful = sqlx::query_scalar!("SELECT id FROM deployments WHERE application_id=?1 AND succeeded_at_ms IS NOT NULL ORDER BY id DESC LIMIT 1",app_id).fetch_optional(&mut *tx).await.map_err(StoreError::database)?.flatten();
+        let current = sqlx::query_scalar!("SELECT d.id FROM deployments d JOIN operations o ON o.id=d.id WHERE d.environment_id=?1 AND o.promoted=1 ORDER BY d.id DESC LIMIT 1",app_id).fetch_optional(&mut *tx).await.map_err(StoreError::database)?.flatten();
+        let successful = sqlx::query_scalar!("SELECT id FROM deployments WHERE environment_id=?1 AND succeeded_at_ms IS NOT NULL ORDER BY id DESC LIMIT 1",app_id).fetch_optional(&mut *tx).await.map_err(StoreError::database)?.flatten();
         let mut items = Vec::with_capacity(rows.len());
         for row in rows {
             items.push(DeploymentView {
@@ -201,7 +201,12 @@ mod tests {
     use piqueld_core::{ApplicationState, OperationState};
 
     fn empty() -> NormalizedApplication {
-        piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='empty'\n[spec]").unwrap().normalize(ApplicationId::parse("app-empty-test").unwrap())
+        piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='empty'\n[spec]").unwrap().normalize(piqueld_core::ApplicationId::parse("app-empty-test").unwrap())
+    }
+
+    /// The environment created with a saved application, which shares its ID.
+    fn environment(saved: &SavedApplication) -> EnvironmentId {
+        EnvironmentId::parse(saved.application_id.as_str()).unwrap()
     }
 
     async fn save(store: &Store, app: NormalizedApplication, generation: u64) -> SavedApplication {
@@ -230,13 +235,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::open(temp.path().join("db")).await.unwrap();
         let saved = save(&store, empty(), 0).await;
-        let id = ApplicationId::parse(&saved.application_id).unwrap();
-        let application = store.get(&id).await.unwrap().application;
+        let id = environment(&saved);
+        let application = store.get(&id).await.unwrap().application.application;
         let (MutationResponse::Saved(deployed), wake) = store
             .accept(
                 Mutation::Save {
                     application: Box::new(application.clone()),
-                    expected_application_id: Some(saved.application_id),
+                    expected_application_id: Some(saved.application_id.clone()),
                     deploy: true,
                 },
                 Some(saved.generation),
@@ -254,17 +259,28 @@ mod tests {
             store.deployment_manifest(&operation_id).await.unwrap(),
             application
         );
-        let deletion = store
-            .request_delete(&id, Some(deployed.generation))
+        let (MutationResponse::Deleted(deletion), _) = store
+            .accept(
+                Mutation::DeleteApplication {
+                    id: application.id().clone(),
+                    environments: Vec::new(),
+                },
+                Some(deployed.generation),
+                false,
+                None,
+            )
             .await
-            .unwrap();
+            .unwrap()
+        else {
+            panic!("deleted")
+        };
         for deploy in [false, true] {
             assert!(matches!(
                 store
                     .accept(
                         Mutation::Save {
                             application: Box::new(application.clone()),
-                            expected_application_id: Some(id.to_string()),
+                            expected_application_id: Some(saved.application_id.clone()),
                             deploy,
                         },
                         Some(deletion.generation),
@@ -282,16 +298,16 @@ mod tests {
             Err(StoreError::IllegalTransition)
         ));
         let current = store.get(&id).await.unwrap();
-        assert!(current.delete_intent);
-        assert_eq!(current.generation, deletion.generation);
+        assert!(current.delete_intent() && current.application.delete_intent);
+        assert_eq!(current.application.generation, deletion.generation);
         assert_eq!(
             store
-                .latest_operation_for_application(&id)
+                .latest_operation_for_environment(&id)
                 .await
                 .unwrap()
                 .unwrap()
                 .id,
-            deletion.id
+            deletion.operations[0].operation_id
         );
     }
 
@@ -301,14 +317,14 @@ mod tests {
         let path = temp.path().join("db");
         let store = Store::open(&path).await.unwrap();
         let saved = save(&store, empty(), 0).await;
-        let id = ApplicationId::parse(&saved.application_id).unwrap();
+        let id = environment(&saved);
         assert_eq!(
             store.status(&id).await.unwrap().state,
             ApplicationState::NotDeployed
         );
         assert!(
             store
-                .latest_operation_for_application(&id)
+                .latest_operation_for_environment(&id)
                 .await
                 .unwrap()
                 .is_none()
@@ -396,10 +412,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::open(temp.path().join("db")).await.unwrap();
         let saved = save(&store, empty(), 0).await;
-        let id = ApplicationId::parse(saved.application_id).unwrap();
+        let id = environment(&saved);
         let op = store.request_deploy(&id, Some(1)).await.unwrap();
         let target = piqueld_core::compile_application(
             &store.deployment_manifest(&op.id).await.unwrap(),
+            &id,
             piqueld_core::InstanceId::parse(store.instance_id()).unwrap(),
             &piqueld_core::ResolutionSet::default(),
         )

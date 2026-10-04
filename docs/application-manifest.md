@@ -217,7 +217,10 @@ branch = "main"
 Create the application manually with `piquelctl app apply --file bootstrap.toml`.
 A bootstrap manifest may contain only its header, metadata, and `spec.manifest`;
 services can be supplied by the first fetched manifest. Then click **Deploy** in
-the dashboard or run `piquelctl app deploy NAME --yes`.
+the dashboard or run `piquelctl app deploy NAME --yes` (`env deploy NAME ENV` when
+the application has several environments). Environments of a repository-backed
+application report `source: repository`; a fetched manifest becomes the saved
+configuration all of them deploy.
 
 Deploy resolves the configured commit (or branch head), reads only the exact
 configured TOML/JSON file, and checks that its name matches the existing
@@ -243,12 +246,13 @@ can be repaired. Manifest connection settings do not change the runtime spec
 hash. Source builds, deployment, and rollback retain the behavior described above.
 Automatic synchronization and webhooks are not implemented.
 
-`piquelctl app deploy NAME --branch feature` (or `--commit SHA`) fetches the
+`piquelctl app deploy NAME --branch feature` (or `--commit SHA`, also on `env deploy`) fetches the
 manifest from another revision for one deployment, without saving it. `self`
 sources build that revision too. Subsequent deploys use the fetched manifest's own
 `spec.manifest` settings again.
 
-Services can reference application-scoped secrets as files:
+Services can reference environment-scoped secrets as files; every environment
+of an application has its own values:
 
 ```toml
 [[spec.services.secrets]]
@@ -281,7 +285,7 @@ A value is generated when a deployment prepares its inputs, a service mounts
 the secret, and it has no stored value. Declarations that no service mounts are
 not generated, so they never count against secret quotas. A value is never
 changed afterwards: later applies, deploys, and edits to the declaration keep
-it. Values set manually with `piquelctl app secret` are kept too, so rotation
+it. Values set manually with `piquelctl app secret [--env ENV]` are kept too, so rotation
 stays explicit. Removing a declaration retains the stored value.
 
 ## Startup dependencies

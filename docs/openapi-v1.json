@@ -2,10 +2,10 @@
   "components": {
     "schemas": {
       "AcceptedOperation": {
-        "description": "Operation accepted by an application mutation endpoint.",
+        "description": "Operation accepted by a mutation endpoint.",
         "properties": {
-          "application_id": {
-            "description": "Stable application identifier.",
+          "environment_id": {
+            "description": "Environment the operation changes. Receipts stored before environments\nexisted name it `application_id`.",
             "type": "string"
           },
           "generation": {
@@ -21,7 +21,7 @@
         },
         "required": [
           "operation_id",
-          "application_id",
+          "environment_id",
           "generation"
         ],
         "type": "object"
@@ -379,58 +379,8 @@
           }
         ]
       },
-      "ApplicationDetailView": {
-        "description": "Read-only application detail composed at the API boundary.",
-        "properties": {
-          "application": {
-            "$ref": "#/components/schemas/ApplicationView",
-            "description": "Desired application."
-          },
-          "diagnostics": {
-            "description": "Bounded diagnostics from status, runtime, and the latest operation.",
-            "items": {
-              "$ref": "#/components/schemas/DiagnosticView"
-            },
-            "type": "array"
-          },
-          "latest_operation": {
-            "oneOf": [
-              {
-                "allOf": [
-                  {
-                    "$ref": "#/components/schemas/Operation"
-                  }
-                ],
-                "description": "Most recent durable operation, when one exists."
-              },
-              {
-                "enum": [
-                  null
-                ],
-                "nullable": true,
-                "type": "string"
-              }
-            ]
-          },
-          "observed": {
-            "$ref": "#/components/schemas/ObservedApplicationView",
-            "description": "Sanitized runtime observation."
-          },
-          "status": {
-            "$ref": "#/components/schemas/ApplicationStatusView",
-            "description": "Durable application lifecycle status."
-          }
-        },
-        "required": [
-          "application",
-          "status",
-          "observed",
-          "diagnostics"
-        ],
-        "type": "object"
-      },
       "ApplicationId": {
-        "description": "Stable internal application identity. It is assigned by persistence and is not\nderived from editable application metadata.",
+        "description": "Stable internal application identity. It is assigned by persistence and is not\nderived from editable application metadata. An application owns the shared\nmanifest and its environments; it has no runtime resources of its own.\n\n```compile_fail\nuse piqueld_core::{ApplicationId, EnvironmentId};\nlet environment: EnvironmentId = ApplicationId::parse(\"app-00000001\").unwrap();\n```",
         "type": "string"
       },
       "ApplicationLogs": {
@@ -555,7 +505,7 @@
         "type": "object"
       },
       "ApplicationState": {
-        "description": "Current application reconciliation status.",
+        "description": "Current environment reconciliation status.",
         "enum": [
           "not_deployed",
           "pending",
@@ -566,40 +516,6 @@
           "failed"
         ],
         "type": "string"
-      },
-      "ApplicationStatusView": {
-        "description": "Current application reconciliation status.",
-        "properties": {
-          "application_id": {
-            "description": "Stable application identifier.",
-            "type": "string"
-          },
-          "message": {
-            "description": "Optional safe status message.",
-            "nullable": true,
-            "type": "string"
-          },
-          "runtime_health": {
-            "description": "Observed runtime health, independent of operation progress.",
-            "nullable": true,
-            "type": "string"
-          },
-          "state": {
-            "$ref": "#/components/schemas/ApplicationState",
-            "description": "Machine-readable lifecycle state."
-          },
-          "updated_at_ms": {
-            "description": "Last update timestamp in Unix milliseconds.",
-            "format": "int64",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "application_id",
-          "state",
-          "updated_at_ms"
-        ],
-        "type": "object"
       },
       "ApplicationSummary": {
         "description": "Metadata returned when listing applications.",
@@ -612,6 +528,13 @@
           "delete_intent": {
             "description": "Whether deletion has been requested.",
             "type": "boolean"
+          },
+          "environments": {
+            "description": "Environments in name order.",
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentView"
+            },
+            "type": "array"
           },
           "generation": {
             "description": "Current manifest or deletion-intent revision.",
@@ -627,13 +550,6 @@
             "description": "Editable application name.",
             "type": "string"
           },
-          "resolved_generation": {
-            "description": "Revision of the last completely resolved target, not a convergence guarantee.",
-            "format": "int64",
-            "minimum": 0,
-            "nullable": true,
-            "type": "integer"
-          },
           "updated_at_ms": {
             "description": "Last update timestamp in Unix milliseconds.",
             "format": "int64",
@@ -646,7 +562,8 @@
           "generation",
           "delete_intent",
           "created_at_ms",
-          "updated_at_ms"
+          "updated_at_ms",
+          "environments"
         ],
         "type": "object"
       },
@@ -655,7 +572,7 @@
         "properties": {
           "application": {
             "$ref": "#/components/schemas/NormalizedApplication",
-            "description": "Normalized application manifest."
+            "description": "Normalized application manifest, shared by every environment."
           },
           "created_at_ms": {
             "description": "Creation timestamp in Unix milliseconds.",
@@ -666,17 +583,17 @@
             "description": "Whether deletion has been requested.",
             "type": "boolean"
           },
+          "environments": {
+            "description": "Environments in name order.",
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentView"
+            },
+            "type": "array"
+          },
           "generation": {
             "description": "Current manifest or deletion-intent revision.",
             "format": "int64",
             "minimum": 0,
-            "type": "integer"
-          },
-          "resolved_generation": {
-            "description": "Revision of the last completely resolved target, not a convergence guarantee.",
-            "format": "int64",
-            "minimum": 0,
-            "nullable": true,
             "type": "integer"
           },
           "spec_hash": {
@@ -695,7 +612,8 @@
           "spec_hash",
           "delete_intent",
           "created_at_ms",
-          "updated_at_ms"
+          "updated_at_ms",
+          "environments"
         ],
         "type": "object"
       },
@@ -837,13 +755,13 @@
       "BuildRecord": {
         "description": "Durable source-preparation attempt or one-shot job run, independent of the executor.",
         "properties": {
-          "application_id": {
-            "description": "Owning application ID.",
-            "type": "string"
-          },
           "commit": {
             "description": "Resolved Git commit, when checkout completed.",
             "nullable": true,
+            "type": "string"
+          },
+          "environment_id": {
+            "description": "Owning environment ID.",
             "type": "string"
           },
           "exit_code": {
@@ -910,7 +828,7 @@
         },
         "required": [
           "id",
-          "application_id",
+          "environment_id",
           "operation_id",
           "service",
           "source",
@@ -1132,6 +1050,34 @@
           "queued_operations",
           "pending_deliveries",
           "failed_deliveries"
+        ],
+        "type": "object"
+      },
+      "DeletedApplication": {
+        "description": "Accepted application deletion: one delete operation per environment.",
+        "properties": {
+          "application_id": {
+            "description": "Stable application identity.",
+            "type": "string"
+          },
+          "generation": {
+            "description": "Revision after requesting deletion.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "operations": {
+            "description": "Deletion of each environment; the application disappears with the last one.",
+            "items": {
+              "$ref": "#/components/schemas/AcceptedOperation"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "application_id",
+          "generation",
+          "operations"
         ],
         "type": "object"
       },
@@ -1793,10 +1739,10 @@
         "description": "Successful API response envelope.",
         "properties": {
           "data": {
-            "description": "Operation accepted by an application mutation endpoint.",
+            "description": "Operation accepted by a mutation endpoint.",
             "properties": {
-              "application_id": {
-                "description": "Stable application identifier.",
+              "environment_id": {
+                "description": "Environment the operation changes. Receipts stored before environments\nexisted name it `application_id`.",
                 "type": "string"
               },
               "generation": {
@@ -1812,67 +1758,8 @@
             },
             "required": [
               "operation_id",
-              "application_id",
+              "environment_id",
               "generation"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "data"
-        ],
-        "type": "object"
-      },
-      "Envelope_ApplicationDetailView": {
-        "description": "Successful API response envelope.",
-        "properties": {
-          "data": {
-            "description": "Read-only application detail composed at the API boundary.",
-            "properties": {
-              "application": {
-                "$ref": "#/components/schemas/ApplicationView",
-                "description": "Desired application."
-              },
-              "diagnostics": {
-                "description": "Bounded diagnostics from status, runtime, and the latest operation.",
-                "items": {
-                  "$ref": "#/components/schemas/DiagnosticView"
-                },
-                "type": "array"
-              },
-              "latest_operation": {
-                "oneOf": [
-                  {
-                    "allOf": [
-                      {
-                        "$ref": "#/components/schemas/Operation"
-                      }
-                    ],
-                    "description": "Most recent durable operation, when one exists."
-                  },
-                  {
-                    "enum": [
-                      null
-                    ],
-                    "nullable": true,
-                    "type": "string"
-                  }
-                ]
-              },
-              "observed": {
-                "$ref": "#/components/schemas/ObservedApplicationView",
-                "description": "Sanitized runtime observation."
-              },
-              "status": {
-                "$ref": "#/components/schemas/ApplicationStatusView",
-                "description": "Durable application lifecycle status."
-              }
-            },
-            "required": [
-              "application",
-              "status",
-              "observed",
-              "diagnostics"
             ],
             "type": "object"
           }
@@ -1912,49 +1799,6 @@
         ],
         "type": "object"
       },
-      "Envelope_ApplicationStatusView": {
-        "description": "Successful API response envelope.",
-        "properties": {
-          "data": {
-            "description": "Current application reconciliation status.",
-            "properties": {
-              "application_id": {
-                "description": "Stable application identifier.",
-                "type": "string"
-              },
-              "message": {
-                "description": "Optional safe status message.",
-                "nullable": true,
-                "type": "string"
-              },
-              "runtime_health": {
-                "description": "Observed runtime health, independent of operation progress.",
-                "nullable": true,
-                "type": "string"
-              },
-              "state": {
-                "$ref": "#/components/schemas/ApplicationState",
-                "description": "Machine-readable lifecycle state."
-              },
-              "updated_at_ms": {
-                "description": "Last update timestamp in Unix milliseconds.",
-                "format": "int64",
-                "type": "integer"
-              }
-            },
-            "required": [
-              "application_id",
-              "state",
-              "updated_at_ms"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "data"
-        ],
-        "type": "object"
-      },
       "Envelope_ApplicationView": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -1963,7 +1807,7 @@
             "properties": {
               "application": {
                 "$ref": "#/components/schemas/NormalizedApplication",
-                "description": "Normalized application manifest."
+                "description": "Normalized application manifest, shared by every environment."
               },
               "created_at_ms": {
                 "description": "Creation timestamp in Unix milliseconds.",
@@ -1974,17 +1818,17 @@
                 "description": "Whether deletion has been requested.",
                 "type": "boolean"
               },
+              "environments": {
+                "description": "Environments in name order.",
+                "items": {
+                  "$ref": "#/components/schemas/EnvironmentView"
+                },
+                "type": "array"
+              },
               "generation": {
                 "description": "Current manifest or deletion-intent revision.",
                 "format": "int64",
                 "minimum": 0,
-                "type": "integer"
-              },
-              "resolved_generation": {
-                "description": "Revision of the last completely resolved target, not a convergence guarantee.",
-                "format": "int64",
-                "minimum": 0,
-                "nullable": true,
                 "type": "integer"
               },
               "spec_hash": {
@@ -2003,7 +1847,8 @@
               "spec_hash",
               "delete_intent",
               "created_at_ms",
-              "updated_at_ms"
+              "updated_at_ms",
+              "environments"
             ],
             "type": "object"
           }
@@ -2166,6 +2011,43 @@
         ],
         "type": "object"
       },
+      "Envelope_DeletedApplication": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Accepted application deletion: one delete operation per environment.",
+            "properties": {
+              "application_id": {
+                "description": "Stable application identity.",
+                "type": "string"
+              },
+              "generation": {
+                "description": "Revision after requesting deletion.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "operations": {
+                "description": "Deletion of each environment; the application disappears with the last one.",
+                "items": {
+                  "$ref": "#/components/schemas/AcceptedOperation"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "application_id",
+              "generation",
+              "operations"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_DeploymentAnalytics": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -2270,6 +2152,174 @@
         ],
         "type": "object"
       },
+      "Envelope_EnvironmentDetailView": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Read-only environment detail composed at the API boundary.",
+            "properties": {
+              "application": {
+                "$ref": "#/components/schemas/ApplicationView",
+                "description": "Its application and shared desired configuration."
+              },
+              "diagnostics": {
+                "description": "Bounded diagnostics from status, runtime, and the latest operation.",
+                "items": {
+                  "$ref": "#/components/schemas/DiagnosticView"
+                },
+                "type": "array"
+              },
+              "environment": {
+                "$ref": "#/components/schemas/EnvironmentView",
+                "description": "The environment."
+              },
+              "latest_operation": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Operation"
+                      }
+                    ],
+                    "description": "Most recent durable operation, when one exists."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
+              "observed": {
+                "$ref": "#/components/schemas/ObservedApplicationView",
+                "description": "Sanitized runtime observation."
+              },
+              "status": {
+                "$ref": "#/components/schemas/EnvironmentStatusView",
+                "description": "Durable environment lifecycle status."
+              }
+            },
+            "required": [
+              "environment",
+              "application",
+              "status",
+              "observed",
+              "diagnostics"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_EnvironmentStatusView": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Current environment reconciliation status.",
+            "properties": {
+              "environment_id": {
+                "description": "Stable environment identifier.",
+                "type": "string"
+              },
+              "message": {
+                "description": "Optional safe status message.",
+                "nullable": true,
+                "type": "string"
+              },
+              "runtime_health": {
+                "description": "Observed runtime health, independent of operation progress.",
+                "nullable": true,
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/ApplicationState",
+                "description": "Machine-readable lifecycle state."
+              },
+              "updated_at_ms": {
+                "description": "Last update timestamp in Unix milliseconds.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "environment_id",
+              "state",
+              "updated_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_EnvironmentView": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "A deployable unit of an application, with its own deployment history,\nstatus, volumes, generated secrets, routes, and Docker network.",
+            "properties": {
+              "application_id": {
+                "$ref": "#/components/schemas/ApplicationId",
+                "description": "Owning application."
+              },
+              "created_at_ms": {
+                "description": "Creation timestamp in Unix milliseconds.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "delete_intent": {
+                "description": "Whether deletion has been requested.",
+                "type": "boolean"
+              },
+              "id": {
+                "$ref": "#/components/schemas/EnvironmentId",
+                "description": "Stable environment identifier; runtime names derive from it."
+              },
+              "name": {
+                "$ref": "#/components/schemas/EnvironmentName",
+                "description": "Name, unique within the application."
+              },
+              "resolved_generation": {
+                "description": "Application revision of the last completely resolved target, not a\nconvergence guarantee.",
+                "format": "int64",
+                "minimum": 0,
+                "nullable": true,
+                "type": "integer"
+              },
+              "source": {
+                "$ref": "#/components/schemas/EnvironmentSource",
+                "description": "Where deployments come from."
+              },
+              "updated_at_ms": {
+                "description": "Last update timestamp in Unix milliseconds.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "application_id",
+              "name",
+              "source",
+              "delete_intent",
+              "created_at_ms",
+              "updated_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_Event": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -2280,25 +2330,6 @@
                 "description": "Action execution identity.",
                 "nullable": true,
                 "type": "string"
-              },
-              "application_id": {
-                "oneOf": [
-                  {
-                    "allOf": [
-                      {
-                        "$ref": "#/components/schemas/ApplicationId"
-                      }
-                    ],
-                    "description": "Related application, when applicable."
-                  },
-                  {
-                    "enum": [
-                      null
-                    ],
-                    "nullable": true,
-                    "type": "string"
-                  }
-                ]
               },
               "attempt": {
                 "description": "Execution attempt for attempt-related events.",
@@ -2337,6 +2368,25 @@
                 "minimum": 0,
                 "nullable": true,
                 "type": "integer"
+              },
+              "environment_id": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/EnvironmentId"
+                      }
+                    ],
+                    "description": "Related environment, when applicable."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
               },
               "error_code": {
                 "description": "Stable failure classification, when this event records failure.",
@@ -2400,7 +2450,7 @@
               },
               "scope": {
                 "$ref": "#/components/schemas/EventScope",
-                "description": "Lifetime owner, independent of contextual application references."
+                "description": "Lifetime owner, independent of contextual environment references."
               }
             },
             "required": [
@@ -2450,10 +2500,6 @@
           "data": {
             "description": "Durable asynchronous operation returned by the API.",
             "properties": {
-              "application_id": {
-                "$ref": "#/components/schemas/ApplicationId",
-                "description": "Stable application identifier."
-              },
               "attempt": {
                 "description": "Number of execution attempts started, including interrupted attempts.",
                 "format": "int64",
@@ -2470,6 +2516,10 @@
                 "description": "Creation timestamp in Unix milliseconds.",
                 "format": "int64",
                 "type": "integer"
+              },
+              "environment_id": {
+                "$ref": "#/components/schemas/EnvironmentId",
+                "description": "Environment the operation changes. Records stored before environments\nexisted name it `application_id`; the value is the same."
               },
               "error_code": {
                 "description": "Stable failure code, when present.",
@@ -2529,7 +2579,7 @@
             },
             "required": [
               "id",
-              "application_id",
+              "environment_id",
               "kind",
               "generation",
               "attempt",
@@ -2565,6 +2615,13 @@
                       "description": "Whether deletion has been requested.",
                       "type": "boolean"
                     },
+                    "environments": {
+                      "description": "Environments in name order.",
+                      "items": {
+                        "$ref": "#/components/schemas/EnvironmentView"
+                      },
+                      "type": "array"
+                    },
                     "generation": {
                       "description": "Current manifest or deletion-intent revision.",
                       "format": "int64",
@@ -2579,13 +2636,6 @@
                       "description": "Editable application name.",
                       "type": "string"
                     },
-                    "resolved_generation": {
-                      "description": "Revision of the last completely resolved target, not a convergence guarantee.",
-                      "format": "int64",
-                      "minimum": 0,
-                      "nullable": true,
-                      "type": "integer"
-                    },
                     "updated_at_ms": {
                       "description": "Last update timestamp in Unix milliseconds.",
                       "format": "int64",
@@ -2598,7 +2648,8 @@
                     "generation",
                     "delete_intent",
                     "created_at_ms",
-                    "updated_at_ms"
+                    "updated_at_ms",
+                    "environments"
                   ],
                   "type": "object"
                 },
@@ -2632,13 +2683,13 @@
                 "items": {
                   "description": "Durable source-preparation attempt or one-shot job run, independent of the executor.",
                   "properties": {
-                    "application_id": {
-                      "description": "Owning application ID.",
-                      "type": "string"
-                    },
                     "commit": {
                       "description": "Resolved Git commit, when checkout completed.",
                       "nullable": true,
+                      "type": "string"
+                    },
+                    "environment_id": {
+                      "description": "Owning environment ID.",
                       "type": "string"
                     },
                     "exit_code": {
@@ -2705,7 +2756,7 @@
                   },
                   "required": [
                     "id",
-                    "application_id",
+                    "environment_id",
                     "operation_id",
                     "service",
                     "source",
@@ -2813,25 +2864,6 @@
                       "nullable": true,
                       "type": "string"
                     },
-                    "application_id": {
-                      "oneOf": [
-                        {
-                          "allOf": [
-                            {
-                              "$ref": "#/components/schemas/ApplicationId"
-                            }
-                          ],
-                          "description": "Related application, when applicable."
-                        },
-                        {
-                          "enum": [
-                            null
-                          ],
-                          "nullable": true,
-                          "type": "string"
-                        }
-                      ]
-                    },
                     "attempt": {
                       "description": "Execution attempt for attempt-related events.",
                       "format": "int64",
@@ -2869,6 +2901,25 @@
                       "minimum": 0,
                       "nullable": true,
                       "type": "integer"
+                    },
+                    "environment_id": {
+                      "oneOf": [
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/components/schemas/EnvironmentId"
+                            }
+                          ],
+                          "description": "Related environment, when applicable."
+                        },
+                        {
+                          "enum": [
+                            null
+                          ],
+                          "nullable": true,
+                          "type": "string"
+                        }
+                      ]
                     },
                     "error_code": {
                       "description": "Stable failure classification, when this event records failure.",
@@ -2932,7 +2983,7 @@
                     },
                     "scope": {
                       "$ref": "#/components/schemas/EventScope",
-                      "description": "Lifetime owner, independent of contextual application references."
+                      "description": "Lifetime owner, independent of contextual environment references."
                     }
                   },
                   "required": [
@@ -3062,10 +3113,6 @@
                 "items": {
                   "description": "Durable asynchronous operation returned by the API.",
                   "properties": {
-                    "application_id": {
-                      "$ref": "#/components/schemas/ApplicationId",
-                      "description": "Stable application identifier."
-                    },
                     "attempt": {
                       "description": "Number of execution attempts started, including interrupted attempts.",
                       "format": "int64",
@@ -3082,6 +3129,10 @@
                       "description": "Creation timestamp in Unix milliseconds.",
                       "format": "int64",
                       "type": "integer"
+                    },
+                    "environment_id": {
+                      "$ref": "#/components/schemas/EnvironmentId",
+                      "description": "Environment the operation changes. Records stored before environments\nexisted name it `application_id`; the value is the same."
                     },
                     "error_code": {
                       "description": "Stable failure code, when present.",
@@ -3141,7 +3192,7 @@
                   },
                   "required": [
                     "id",
-                    "application_id",
+                    "environment_id",
                     "kind",
                     "generation",
                     "attempt",
@@ -3181,7 +3232,7 @@
                 "type": "string"
               },
               "changes": {
-                "description": "Safe changes relative to the latest deployment snapshot.",
+                "description": "Safe changes relative to the baseline.",
                 "items": {
                   "$ref": "#/components/schemas/ManifestChange"
                 },
@@ -3194,7 +3245,7 @@
                 "type": "integer"
               },
               "identical": {
-                "description": "Whether this specification matches the latest deployment snapshot.",
+                "description": "Whether this specification matches the baseline: the latest deployment\nsnapshot of the application's only environment, or the saved\nconfiguration when it has several.",
                 "type": "boolean"
               },
               "operation": {
@@ -3205,7 +3256,7 @@
                         "$ref": "#/components/schemas/Operation"
                       }
                     ],
-                    "description": "Latest operation at the time of comparison."
+                    "description": "Latest operation of the application's only environment at the time of comparison."
                   },
                   {
                     "enum": [
@@ -3218,7 +3269,7 @@
               },
               "plan": {
                 "$ref": "#/components/schemas/Plan",
-                "description": "Ordered runtime plan; unresolved images are explicit actions."
+                "description": "Ordered runtime plan for the application's only environment; unresolved\nimages are explicit actions. Empty when it has several environments."
               },
               "rollouts": {
                 "description": "Effective rollout of each service, sorted by service name.",
@@ -3359,8 +3410,8 @@
           "data": {
             "description": "Metadata-only result of lost-key recovery. Never rotates application credentials.",
             "properties": {
-              "affected_applications": {
-                "description": "Applications whose stored values were discarded.",
+              "affected_environments": {
+                "description": "Environments whose stored values were discarded.",
                 "format": "int64",
                 "type": "integer"
               },
@@ -3376,7 +3427,7 @@
               }
             },
             "required": [
-              "affected_applications",
+              "affected_environments",
               "affected_secrets",
               "discarded_versions"
             ],
@@ -3404,7 +3455,7 @@
                 "type": "integer"
               },
               "name": {
-                "description": "Application-scoped logical name.",
+                "description": "Environment-scoped logical name.",
                 "type": "string"
               },
               "unavailable": {
@@ -3488,7 +3539,7 @@
                   "type": "integer"
                 },
                 "name": {
-                  "description": "Application-scoped logical name.",
+                  "description": "Environment-scoped logical name.",
                   "type": "string"
                 },
                 "unavailable": {
@@ -3528,6 +3579,132 @@
         ],
         "type": "object"
       },
+      "EnvironmentDetailView": {
+        "description": "Read-only environment detail composed at the API boundary.",
+        "properties": {
+          "application": {
+            "$ref": "#/components/schemas/ApplicationView",
+            "description": "Its application and shared desired configuration."
+          },
+          "diagnostics": {
+            "description": "Bounded diagnostics from status, runtime, and the latest operation.",
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticView"
+            },
+            "type": "array"
+          },
+          "environment": {
+            "$ref": "#/components/schemas/EnvironmentView",
+            "description": "The environment."
+          },
+          "latest_operation": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Operation"
+                  }
+                ],
+                "description": "Most recent durable operation, when one exists."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "observed": {
+            "$ref": "#/components/schemas/ObservedApplicationView",
+            "description": "Sanitized runtime observation."
+          },
+          "status": {
+            "$ref": "#/components/schemas/EnvironmentStatusView",
+            "description": "Durable environment lifecycle status."
+          }
+        },
+        "required": [
+          "environment",
+          "application",
+          "status",
+          "observed",
+          "diagnostics"
+        ],
+        "type": "object"
+      },
+      "EnvironmentId": {
+        "description": "Stable internal environment identity, assigned by persistence. Docker names,\nownership labels, secret encryption context, and history all derive from it.\nEnvironments migrated from single-environment applications keep the\napplication ID they had before environments existed.",
+        "type": "string"
+      },
+      "EnvironmentName": {
+        "description": "User-facing environment name, unique within its application.",
+        "type": "string"
+      },
+      "EnvironmentRequest": {
+        "additionalProperties": false,
+        "description": "Creates or renames an environment, conditioned on the inspected application revision.",
+        "properties": {
+          "expected_generation": {
+            "description": "Current application revision, required unless explicitly forced.",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Environment name, unique within the application.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "EnvironmentSource": {
+        "description": "Where an environment's deployments come from.\n\nEvery environment currently follows its application's manifest connection:\nper-environment branches and promotion add their own sources later.",
+        "enum": [
+          "saved",
+          "repository"
+        ],
+        "type": "string"
+      },
+      "EnvironmentStatusView": {
+        "description": "Current environment reconciliation status.",
+        "properties": {
+          "environment_id": {
+            "description": "Stable environment identifier.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Optional safe status message.",
+            "nullable": true,
+            "type": "string"
+          },
+          "runtime_health": {
+            "description": "Observed runtime health, independent of operation progress.",
+            "nullable": true,
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ApplicationState",
+            "description": "Machine-readable lifecycle state."
+          },
+          "updated_at_ms": {
+            "description": "Last update timestamp in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "environment_id",
+          "state",
+          "updated_at_ms"
+        ],
+        "type": "object"
+      },
       "EnvironmentValue": {
         "additionalProperties": false,
         "properties": {
@@ -3541,6 +3718,58 @@
         },
         "required": [
           "value"
+        ],
+        "type": "object"
+      },
+      "EnvironmentView": {
+        "description": "A deployable unit of an application, with its own deployment history,\nstatus, volumes, generated secrets, routes, and Docker network.",
+        "properties": {
+          "application_id": {
+            "$ref": "#/components/schemas/ApplicationId",
+            "description": "Owning application."
+          },
+          "created_at_ms": {
+            "description": "Creation timestamp in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "delete_intent": {
+            "description": "Whether deletion has been requested.",
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/components/schemas/EnvironmentId",
+            "description": "Stable environment identifier; runtime names derive from it."
+          },
+          "name": {
+            "$ref": "#/components/schemas/EnvironmentName",
+            "description": "Name, unique within the application."
+          },
+          "resolved_generation": {
+            "description": "Application revision of the last completely resolved target, not a\nconvergence guarantee.",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/EnvironmentSource",
+            "description": "Where deployments come from."
+          },
+          "updated_at_ms": {
+            "description": "Last update timestamp in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "application_id",
+          "name",
+          "source",
+          "delete_intent",
+          "created_at_ms",
+          "updated_at_ms"
         ],
         "type": "object"
       },
@@ -3577,25 +3806,6 @@
             "description": "Action execution identity.",
             "nullable": true,
             "type": "string"
-          },
-          "application_id": {
-            "oneOf": [
-              {
-                "allOf": [
-                  {
-                    "$ref": "#/components/schemas/ApplicationId"
-                  }
-                ],
-                "description": "Related application, when applicable."
-              },
-              {
-                "enum": [
-                  null
-                ],
-                "nullable": true,
-                "type": "string"
-              }
-            ]
           },
           "attempt": {
             "description": "Execution attempt for attempt-related events.",
@@ -3634,6 +3844,25 @@
             "minimum": 0,
             "nullable": true,
             "type": "integer"
+          },
+          "environment_id": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/EnvironmentId"
+                  }
+                ],
+                "description": "Related environment, when applicable."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           },
           "error_code": {
             "description": "Stable failure classification, when this event records failure.",
@@ -3697,7 +3926,7 @@
           },
           "scope": {
             "$ref": "#/components/schemas/EventScope",
-            "description": "Lifetime owner, independent of contextual application references."
+            "description": "Lifetime owner, independent of contextual environment references."
           }
         },
         "required": [
@@ -4535,7 +4764,7 @@
         "type": "object"
       },
       "ObservedApplicationView": {
-        "description": "Bounded observed runtime state for one application.",
+        "description": "Bounded observed runtime state for one environment.",
         "properties": {
           "network_count": {
             "description": "Number of owned networks observed.",
@@ -4619,10 +4848,6 @@
       "Operation": {
         "description": "Durable asynchronous operation returned by the API.",
         "properties": {
-          "application_id": {
-            "$ref": "#/components/schemas/ApplicationId",
-            "description": "Stable application identifier."
-          },
           "attempt": {
             "description": "Number of execution attempts started, including interrupted attempts.",
             "format": "int64",
@@ -4639,6 +4864,10 @@
             "description": "Creation timestamp in Unix milliseconds.",
             "format": "int64",
             "type": "integer"
+          },
+          "environment_id": {
+            "$ref": "#/components/schemas/EnvironmentId",
+            "description": "Environment the operation changes. Records stored before environments\nexisted name it `application_id`; the value is the same."
           },
           "error_code": {
             "description": "Stable failure code, when present.",
@@ -4698,7 +4927,7 @@
         },
         "required": [
           "id",
-          "application_id",
+          "environment_id",
           "kind",
           "generation",
           "attempt",
@@ -4709,7 +4938,7 @@
         "type": "object"
       },
       "OperationKind": {
-        "description": "Application change being reconciled.\nDeployment operations retain the serialized kind `refresh` for compatibility\nwith existing stored records and API clients.",
+        "description": "Environment change being reconciled.\nDeployment operations retain the serialized kind `refresh` for compatibility\nwith existing stored records and API clients.",
         "enum": [
           "apply",
           "refresh",
@@ -4852,7 +5081,7 @@
             "type": "string"
           },
           "changes": {
-            "description": "Safe changes relative to the latest deployment snapshot.",
+            "description": "Safe changes relative to the baseline.",
             "items": {
               "$ref": "#/components/schemas/ManifestChange"
             },
@@ -4865,7 +5094,7 @@
             "type": "integer"
           },
           "identical": {
-            "description": "Whether this specification matches the latest deployment snapshot.",
+            "description": "Whether this specification matches the baseline: the latest deployment\nsnapshot of the application's only environment, or the saved\nconfiguration when it has several.",
             "type": "boolean"
           },
           "operation": {
@@ -4876,7 +5105,7 @@
                     "$ref": "#/components/schemas/Operation"
                   }
                 ],
-                "description": "Latest operation at the time of comparison."
+                "description": "Latest operation of the application's only environment at the time of comparison."
               },
               {
                 "enum": [
@@ -4889,7 +5118,7 @@
           },
           "plan": {
             "$ref": "#/components/schemas/Plan",
-            "description": "Ordered runtime plan; unresolved images are explicit actions."
+            "description": "Ordered runtime plan for the application's only environment; unresolved\nimages are explicit actions. Empty when it has several environments."
           },
           "rollouts": {
             "description": "Effective rollout of each service, sorted by service name.",
@@ -5345,8 +5574,8 @@
           },
           {
             "properties": {
-              "application_id": {
-                "description": "Owning application identity.",
+              "environment_id": {
+                "description": "Owning environment identity.",
                 "type": "string"
               },
               "hostname": {
@@ -5363,7 +5592,7 @@
               }
             },
             "required": [
-              "application_id",
+              "environment_id",
               "hostname",
               "state",
               "message"
@@ -5569,8 +5798,8 @@
       "SecretKeyRecovery": {
         "description": "Metadata-only result of lost-key recovery. Never rotates application credentials.",
         "properties": {
-          "affected_applications": {
-            "description": "Applications whose stored values were discarded.",
+          "affected_environments": {
+            "description": "Environments whose stored values were discarded.",
             "format": "int64",
             "type": "integer"
           },
@@ -5586,7 +5815,7 @@
           }
         },
         "required": [
-          "affected_applications",
+          "affected_environments",
           "affected_secrets",
           "discarded_versions"
         ],
@@ -5605,7 +5834,7 @@
             "type": "integer"
           },
           "name": {
-            "description": "Application-scoped logical name.",
+            "description": "Environment-scoped logical name.",
             "type": "string"
           },
           "unavailable": {
@@ -6468,9 +6697,9 @@
         "operationId": "deploymentAnalytics",
         "parameters": [
           {
-            "description": "Only include deployments of this application.",
+            "description": "Only include deployments of this environment.",
             "in": "query",
-            "name": "application_id",
+            "name": "environment_id",
             "required": false,
             "schema": {
               "type": "string"
@@ -6773,7 +7002,7 @@
             }
           },
           {
-            "description": "Deploy the saved configuration; omission saves only.",
+            "description": "Deploy the saved configuration to the application's only environment; omission saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -7110,7 +7339,7 @@
             }
           },
           {
-            "description": "Current intent revision; optional for reconcile, required for deletion unless forced.",
+            "description": "Current application revision; required unless forced.",
             "in": "query",
             "name": "expected_generation",
             "required": false,
@@ -7121,12 +7350,21 @@
             }
           },
           {
-            "description": "Explicitly bypass intent preconditions.",
+            "description": "Explicitly bypass the revision precondition. Never skips confirmation.",
             "in": "query",
             "name": "force",
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "description": "Comma-separated names of every environment; required when there are several.",
+            "in": "query",
+            "name": "environments",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -7143,11 +7381,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                  "$ref": "#/components/schemas/Envelope_DeletedApplication"
                 }
               }
             },
-            "description": "Deletion operation"
+            "description": "Deletion operations"
           },
           "400": {
             "content": {
@@ -7210,7 +7448,7 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Delete services and networks, retaining volumes"
+        "summary": "Delete an application and all its environments, retaining volumes"
       },
       "get": {
         "operationId": "getApplication",
@@ -7288,13 +7526,13 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Get an application"
+        "summary": "Get an application and its environments"
       }
     },
-    "/api/v1/applications/{id}/deploy": {
+    "/api/v1/applications/{id}/environments": {
       "post": {
-        "description": "Returns 202 with the accepted durable operation. Requires\n`expected_generation` unless `force=true`; a stale generation fails with 409.\nRepeating a request with the same `Idempotency-Key` returns the original\nresponse.",
-        "operationId": "deployApplication",
+        "description": "The environment deploys the application's shared manifest and starts\n`not_deployed`. The inspected application `expected_generation` goes in the\nJSON body.",
+        "operationId": "createEnvironment",
         "parameters": [
           {
             "in": "path",
@@ -7305,41 +7543,12 @@
             }
           },
           {
-            "description": "Current intent revision; required unless forced.",
-            "in": "query",
-            "name": "expected_generation",
-            "required": false,
-            "schema": {
-              "format": "int64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Explicitly bypass intent preconditions.",
+            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
             "in": "query",
             "name": "force",
             "required": false,
             "schema": {
               "type": "boolean"
-            }
-          },
-          {
-            "description": "Fetch the repository manifest from this branch head, without saving it.",
-            "in": "query",
-            "name": "branch",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Fetch the repository manifest from this full commit, without saving it.",
-            "in": "query",
-            "name": "commit",
-            "required": false,
-            "schema": {
-              "type": "string"
             }
           },
           {
@@ -7351,16 +7560,26 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "202": {
+          "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                  "$ref": "#/components/schemas/Envelope_EnvironmentView"
                 }
               }
             },
-            "description": "Deployment accepted"
+            "description": "Environment created"
           },
           "400": {
             "content": {
@@ -7402,6 +7621,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -7423,312 +7652,7 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Deploys the saved configuration."
-      }
-    },
-    "/api/v1/applications/{id}/deployments": {
-      "get": {
-        "description": "Returns three deployment snapshots per page; follow `next_cursor` for older ones.",
-        "operationId": "listDeployments",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "`next_cursor` from a previous page.",
-            "in": "query",
-            "name": "cursor",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_Page_DeploymentView"
-                }
-              }
-            },
-            "description": "Deployment snapshots, newest first (three per page)"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "TCP authority or browser origin is not trusted"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Lists deployments of an application, newest first."
-      }
-    },
-    "/api/v1/applications/{id}/deployments/{deployment}/attempts": {
-      "get": {
-        "description": "Returns up to 100 retained attempt outcomes per page. Deployments owned by\nanother application are reported as not found.",
-        "operationId": "listDeploymentAttempts",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "deployment",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "`next_cursor` from a previous page.",
-            "in": "query",
-            "name": "cursor",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_Page_Operation"
-                }
-              }
-            },
-            "description": "Retained attempt outcomes, newest first (100 per page)"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "TCP authority or browser origin is not trusted"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Lists attempts of one deployment, newest first."
-      }
-    },
-    "/api/v1/applications/{id}/detail": {
-      "get": {
-        "operationId": "getApplicationDetail",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "maxLength": 64,
-              "minLength": 8,
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_ApplicationDetailView"
-                }
-              }
-            },
-            "description": "Success"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "TCP authority or browser origin is not trusted"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "502": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Get desired and observed application state"
-      }
-    },
-    "/api/v1/applications/{id}/exec": {
-      "get": {
-        "description": "Opens a WebSocket whose first message is a JSON ExecRequest; see piqueld_core::exec.",
-        "operationId": "execApplicationCommand",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "101": {
-            "description": "Switched to a WebSocket streaming the command"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "TCP authority or browser origin is not trusted"
-          },
-          "426": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        }
+        "summary": "Adds an environment to an application."
       }
     },
     "/api/v1/applications/{id}/jobs": {
@@ -7764,7 +7688,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -7905,129 +7829,6 @@
         }
       }
     },
-    "/api/v1/applications/{id}/logs": {
-      "get": {
-        "description": "Output can be narrowed to one service and one stream. Out-of-range `tail` or\n`since_seconds` values fail with 400 `logs_query_invalid`.",
-        "operationId": "applicationLogs",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Only include output from this service (1–63 characters); all services when omitted.",
-            "in": "query",
-            "name": "service",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Only include this output stream; merged output when omitted.",
-            "in": "query",
-            "name": "stream",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/LogStream"
-            }
-          },
-          {
-            "description": "Maximum number of most recent lines, merged across the selected services.",
-            "in": "query",
-            "name": "tail",
-            "required": false,
-            "schema": {
-              "default": 200,
-              "format": "int32",
-              "maximum": 1000,
-              "minimum": 1,
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Only include output from this many seconds ago onward.",
-            "in": "query",
-            "name": "since_seconds",
-            "required": false,
-            "schema": {
-              "default": 3600,
-              "format": "int32",
-              "maximum": 86400,
-              "minimum": 1,
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_ApplicationLogs"
-                }
-              }
-            },
-            "description": "Recent Docker output"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "TCP authority or browser origin is not trusted"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "502": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Gets recent container output for an application."
-      }
-    },
     "/api/v1/applications/{id}/manifest": {
       "get": {
         "description": "Reads only saved configuration, so it works while the runtime is unavailable.",
@@ -8154,7 +7955,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -8293,123 +8094,6 @@
             "description": "Structured, sanitized error"
           }
         }
-      }
-    },
-    "/api/v1/applications/{id}/reconcile": {
-      "post": {
-        "description": "Returns 202 with a durable operation that repairs the runtime to match the\naccepted configuration. Unlike other mutations, `expected_generation` is\noptional. Repeating a request with the same `Idempotency-Key` returns the\noriginal response.",
-        "operationId": "reconcileApplication",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Current intent revision; optional for reconcile, required for deletion unless forced.",
-            "in": "query",
-            "name": "expected_generation",
-            "required": false,
-            "schema": {
-              "format": "int64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Explicitly bypass intent preconditions.",
-            "in": "query",
-            "name": "force",
-            "required": false,
-            "schema": {
-              "type": "boolean"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
-                }
-              }
-            },
-            "description": "Reconciliation accepted"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "TCP authority or browser origin is not trusted"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Reconciles an application."
       }
     },
     "/api/v1/applications/{id}/rename": {
@@ -8562,7 +8246,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -8705,7 +8389,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -8879,7 +8563,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -9053,7 +8737,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -9227,7 +8911,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -9401,7 +9085,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -9575,7 +9259,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -9716,266 +9400,6 @@
         }
       }
     },
-    "/api/v1/applications/{id}/secrets": {
-      "get": {
-        "description": "Returns metadata only; secret values are write-only and never returned.",
-        "operationId": "applicationSecrets",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_Vec_SecretMetadata"
-                }
-              }
-            },
-            "description": "Secret metadata"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "TCP authority or browser origin is not trusted"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Lists an application's secrets."
-      }
-    },
-    "/api/v1/applications/{id}/secrets/{name}": {
-      "delete": {
-        "description": "Fails with 409 while the configuration or a deployment still references it.\nIf cleanup is interrupted, retrying the deletion finishes it.",
-        "operationId": "deleteApplicationSecret",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-Expected-Generation",
-            "required": true,
-            "schema": {
-              "format": "int64",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_bool"
-                }
-              }
-            },
-            "description": "Secret deleted"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "TCP authority or browser origin is not trusted"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Deletes a secret."
-      },
-      "put": {
-        "description": "The body is the raw value (`application/octet-stream`, 1–512000 bytes).\n`X-Expected-Generation` must be 0 to create a secret, or its current\ngeneration to replace it; a mismatch fails with 409. Running services keep\ntheir value until the next deployment. The response carries metadata only.",
-        "operationId": "putApplicationSecret",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-Expected-Generation",
-            "required": true,
-            "schema": {
-              "format": "int64",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/octet-stream": {
-              "schema": {
-                "format": "binary",
-                "type": "string"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_SecretMetadata"
-                }
-              }
-            },
-            "description": "Updated metadata; no secret value"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "TCP authority or browser origin is not trusted"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Creates or replaces a secret value."
-      }
-    },
     "/api/v1/applications/{id}/services": {
       "post": {
         "operationId": "add_application_service",
@@ -10009,7 +9433,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -10192,7 +9616,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -10345,7 +9769,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -10527,7 +9951,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -10709,7 +10133,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -10891,7 +10315,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -11082,7 +10506,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -11241,7 +10665,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -11423,7 +10847,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -11605,7 +11029,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -11787,7 +11211,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -11969,7 +11393,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -12151,7 +11575,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -12333,7 +11757,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -12515,7 +11939,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -12697,7 +12121,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -12877,7 +12301,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -13059,7 +12483,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -13241,7 +12665,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -13423,7 +12847,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -13605,7 +13029,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -13787,7 +13211,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -13969,7 +13393,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -14151,7 +13575,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -14333,7 +13757,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -14515,7 +13939,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -14697,7 +14121,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -14879,7 +14303,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -15061,7 +14485,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -15243,7 +14667,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -15425,7 +14849,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -15607,7 +15031,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -15789,7 +15213,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -15930,86 +15354,6 @@
         }
       }
     },
-    "/api/v1/applications/{id}/status": {
-      "get": {
-        "operationId": "applicationStatus",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "maxLength": 64,
-              "minLength": 8,
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_ApplicationStatusView"
-                }
-              }
-            },
-            "description": "Success"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "TCP authority or browser origin is not trusted"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Get application status"
-      }
-    },
     "/api/v1/applications/{id}/volumes": {
       "post": {
         "operationId": "add_application_volume",
@@ -16043,7 +15387,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -16215,7 +15559,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -16398,7 +15742,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -17013,13 +16357,13 @@
     },
     "/api/v1/builds": {
       "get": {
-        "description": "Optionally filtered to one application. Follow `next_cursor` to load older\nbuilds.",
+        "description": "Optionally filtered to one environment. Follow `next_cursor` to load older\nbuilds.",
         "operationId": "listBuilds",
         "parameters": [
           {
-            "description": "Only include builds for this application.",
+            "description": "Only include builds for this environment.",
             "in": "query",
-            "name": "application_id",
+            "name": "environment_id",
             "required": false,
             "schema": {
               "type": "string"
@@ -17239,15 +16583,1357 @@
         "summary": "Gets a recorded diagnostic."
       }
     },
+    "/api/v1/environments/{id}": {
+      "delete": {
+        "operationId": "deleteEnvironment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Current intent revision; optional for reconcile, required for deletion unless forced.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                }
+              }
+            },
+            "description": "Deletion operation"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Delete an environment's services and networks, retaining volumes"
+      },
+      "get": {
+        "operationId": "getEnvironment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_EnvironmentView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Get an environment"
+      }
+    },
+    "/api/v1/environments/{id}/deploy": {
+      "post": {
+        "description": "Returns 202 with the accepted durable operation. Requires\n`expected_generation` unless `force=true`; a stale generation fails with 409.\nRepeating a request with the same `Idempotency-Key` returns the original\nresponse.",
+        "operationId": "deployEnvironment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Current intent revision; required unless forced.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Fetch the repository manifest from this branch head, without saving it.",
+            "in": "query",
+            "name": "branch",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Fetch the repository manifest from this full commit, without saving it.",
+            "in": "query",
+            "name": "commit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                }
+              }
+            },
+            "description": "Deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Deploys the application's saved configuration to an environment."
+      }
+    },
+    "/api/v1/environments/{id}/deployments": {
+      "get": {
+        "description": "Returns three deployment snapshots per page; follow `next_cursor` for older ones.",
+        "operationId": "listDeployments",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`next_cursor` from a previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Page_DeploymentView"
+                }
+              }
+            },
+            "description": "Deployment snapshots, newest first (three per page)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Lists deployments of an environment, newest first."
+      }
+    },
+    "/api/v1/environments/{id}/deployments/{deployment}/attempts": {
+      "get": {
+        "description": "Returns up to 100 retained attempt outcomes per page. Deployments owned by\nanother environment are reported as not found.",
+        "operationId": "listDeploymentAttempts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deployment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`next_cursor` from a previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Page_Operation"
+                }
+              }
+            },
+            "description": "Retained attempt outcomes, newest first (100 per page)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Lists attempts of one deployment, newest first."
+      }
+    },
+    "/api/v1/environments/{id}/detail": {
+      "get": {
+        "operationId": "getEnvironmentDetail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_EnvironmentDetailView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Get desired and observed environment state"
+      }
+    },
+    "/api/v1/environments/{id}/exec": {
+      "get": {
+        "description": "Opens a WebSocket whose first message is a JSON ExecRequest; see piqueld_core::exec.",
+        "operationId": "execEnvironmentCommand",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switched to a WebSocket streaming the command"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "426": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
+    "/api/v1/environments/{id}/logs": {
+      "get": {
+        "description": "Output can be narrowed to one service and one stream. Out-of-range `tail` or\n`since_seconds` values fail with 400 `logs_query_invalid`.",
+        "operationId": "environmentLogs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only include output from this service (1–63 characters); all services when omitted.",
+            "in": "query",
+            "name": "service",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only include this output stream; merged output when omitted.",
+            "in": "query",
+            "name": "stream",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LogStream"
+            }
+          },
+          {
+            "description": "Maximum number of most recent lines, merged across the selected services.",
+            "in": "query",
+            "name": "tail",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "format": "int32",
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Only include output from this many seconds ago onward.",
+            "in": "query",
+            "name": "since_seconds",
+            "required": false,
+            "schema": {
+              "default": 3600,
+              "format": "int32",
+              "maximum": 86400,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_ApplicationLogs"
+                }
+              }
+            },
+            "description": "Recent Docker output"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Gets recent container output for an environment."
+      }
+    },
+    "/api/v1/environments/{id}/reconcile": {
+      "post": {
+        "description": "Returns 202 with a durable operation that repairs the runtime to match the\naccepted configuration. Unlike other mutations, `expected_generation` is\noptional. Repeating a request with the same `Idempotency-Key` returns the\noriginal response.",
+        "operationId": "reconcileEnvironment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Current intent revision; optional for reconcile, required for deletion unless forced.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                }
+              }
+            },
+            "description": "Reconciliation accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Reconciles an environment."
+      }
+    },
+    "/api/v1/environments/{id}/rename": {
+      "post": {
+        "description": "Changes only the name, without redeploying. The inspected application\n`expected_generation` goes in the JSON body; the new name must not already\nbe used by another environment of the application, even with `force=true`.",
+        "operationId": "renameEnvironment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_EnvironmentView"
+                }
+              }
+            },
+            "description": "Environment renamed without redeployment"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Renames an environment."
+      }
+    },
+    "/api/v1/environments/{id}/secrets": {
+      "get": {
+        "description": "Returns metadata only; secret values are write-only and never returned.",
+        "operationId": "environmentSecrets",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Vec_SecretMetadata"
+                }
+              }
+            },
+            "description": "Secret metadata"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Lists an environment's secrets."
+      }
+    },
+    "/api/v1/environments/{id}/secrets/{name}": {
+      "delete": {
+        "description": "Fails with 409 while the configuration or a deployment still references it.\nIf cleanup is interrupted, retrying the deletion finishes it.",
+        "operationId": "deleteEnvironmentSecret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Expected-Generation",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_bool"
+                }
+              }
+            },
+            "description": "Secret deleted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Deletes a secret."
+      },
+      "put": {
+        "description": "The body is the raw value (`application/octet-stream`, 1–512000 bytes).\n`X-Expected-Generation` must be 0 to create a secret, or its current\ngeneration to replace it; a mismatch fails with 409. Running services keep\ntheir value until the next deployment. The response carries metadata only.",
+        "operationId": "putEnvironmentSecret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Expected-Generation",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SecretMetadata"
+                }
+              }
+            },
+            "description": "Updated metadata; no secret value"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Creates or replaces a secret value."
+      }
+    },
+    "/api/v1/environments/{id}/status": {
+      "get": {
+        "operationId": "environmentStatus",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_EnvironmentStatusView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Get environment status"
+      }
+    },
     "/api/v1/events": {
       "get": {
         "description": "Oldest first unless `descending=true`. Follow `next_cursor` to load more.",
         "operationId": "listEvents",
         "parameters": [
           {
-            "description": "Only include events about this application.",
+            "description": "Only include events about this environment.",
             "in": "query",
-            "name": "application_id",
+            "name": "environment_id",
             "required": false,
             "schema": {
               "type": "string"
@@ -17310,7 +17996,7 @@
             }
           },
           {
-            "description": "Only include application-owned or daemon-owned history.",
+            "description": "Only include environment-owned or daemon-owned history.",
             "in": "query",
             "name": "scope",
             "required": false,
@@ -17419,9 +18105,9 @@
         "operationId": "streamEvents",
         "parameters": [
           {
-            "description": "Only include events about this application.",
+            "description": "Only include events about this environment.",
             "in": "query",
-            "name": "application_id",
+            "name": "environment_id",
             "required": false,
             "schema": {
               "type": "string"
@@ -17484,7 +18170,7 @@
             }
           },
           {
-            "description": "Only include application-owned or daemon-owned history.",
+            "description": "Only include environment-owned or daemon-owned history.",
             "in": "query",
             "name": "scope",
             "required": false,
@@ -17954,7 +18640,7 @@
     },
     "/api/v1/system/secrets/recover-key": {
       "post": {
-        "description": "Discards stored secret values for all applications; metadata and running\nservices are kept. Fails with 409 while the current key still works. The next\nvalue write generates a new key.",
+        "description": "Discards stored secret values for all environments; metadata and running\nservices are kept. Fails with 409 while the current key still works. The next\nvalue write generates a new key.",
         "operationId": "recoverSecretKey",
         "responses": {
           "200": {

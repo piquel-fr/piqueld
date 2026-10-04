@@ -289,7 +289,7 @@ impl Store {
     ///
     /// Condition keys:
     /// ```text
-    /// <application_id>:<category>   application build/deployment failures
+    /// <environment_id>:<category>   application build/deployment failures
     /// daemon:<error_code>           daemon failures
     /// ```
     async fn process_notification_event(
@@ -298,7 +298,7 @@ impl Store {
         event: &Event,
     ) -> Result<(), StoreError> {
         let app = (event.scope == EventScope::Application)
-            .then(|| event.application_id.as_ref().map(ToString::to_string))
+            .then(|| event.environment_id.as_ref().map(ToString::to_string))
             .flatten();
         if event.kind == "operation_succeeded" {
             for category in [
@@ -356,7 +356,7 @@ impl Store {
         if notified.is_none() {
             let category_name = category.as_str();
             sqlx::query!(
-                "INSERT INTO notification_conditions(key,category,application_id,event_id,first_seen_ms,last_seen_ms,notified)
+                "INSERT INTO notification_conditions(key,category,environment_id,event_id,first_seen_ms,last_seen_ms,notified)
                 VALUES(?1,?2,?3,?4,?5,?5,1)",
                 key,
                 category_name,
@@ -550,7 +550,7 @@ impl Store {
             .map_err(StoreError::corrupt)?;
         let error_code = failed.then_some(code.as_str());
         let event = sqlx::query!(
-            "INSERT INTO events(scope,application_id,kind,message,error_code,diagnostic_id,diagnostic_json,created_at_ms)
+            "INSERT INTO events(scope,environment_id,kind,message,error_code,diagnostic_id,diagnostic_json,created_at_ms)
             VALUES(?1,?2,'dependency_health_changed',?3,?4,?5,?6,?7)",
             scope,
             application,
@@ -583,7 +583,7 @@ impl Store {
         let (_writer, mut tx) = self.begin_immediate().await?;
         if let Some(application) = application {
             let exists = sqlx::query_scalar!(
-                "SELECT COUNT(*) FROM applications WHERE id=?1 AND delete_intent=0",
+                "SELECT COUNT(*) FROM environments WHERE id=?1 AND delete_intent=0",
                 application,
             )
             .fetch_one(&mut *tx)
@@ -622,7 +622,7 @@ impl Store {
             if failed {
                 let category_name = category.as_str();
                 sqlx::query!(
-                    "INSERT INTO notification_conditions(key,category,application_id,event_id,first_seen_ms,last_seen_ms)
+                    "INSERT INTO notification_conditions(key,category,environment_id,event_id,first_seen_ms,last_seen_ms)
                     VALUES(?1,?2,?3,?4,?5,?5)
                     ON CONFLICT(key) DO UPDATE
                     SET event_id=excluded.event_id,first_seen_ms=excluded.first_seen_ms,last_seen_ms=excluded.last_seen_ms,
@@ -706,15 +706,15 @@ impl Store {
         Ok(())
     }
 
-    /// Feeds each live application's recent runtime health into
+    /// Feeds each live environment's recent runtime health into
     /// `observe_condition`. Degraded services, or no running services when some
     /// are expected, count as failing; observations older than `max_gap_ms` are skipped.
     pub(crate) async fn observe_services(&self, max_gap_ms: i64) -> Result<(), StoreError> {
         let rows = sqlx::query!(
-            "SELECT s.application_id AS \"application_id!\",s.runtime_health,s.health_observed_at_ms,COALESCE(json_array_length(a.resolved_json,
+            "SELECT s.environment_id AS \"environment_id!\",s.runtime_health,s.health_observed_at_ms,COALESCE(json_array_length(e.resolved_json,
             '$.services'),0) AS \"expected_services!: i64\"
-            FROM application_status s JOIN applications a ON a.id=s.application_id
-            WHERE s.health_observed_at_ms IS NOT NULL AND s.runtime_health IS NOT NULL AND a.delete_intent=0"
+            FROM environment_status s JOIN environments e ON e.id=s.environment_id
+            WHERE s.health_observed_at_ms IS NOT NULL AND s.runtime_health IS NOT NULL AND e.delete_intent=0"
         )
         .fetch_all(&self.pool)
         .await
@@ -723,8 +723,8 @@ impl Store {
             let observed = row.health_observed_at_ms.ok_or(StoreError::Corrupt)?;
             if now_ms().saturating_sub(observed) <= max_gap_ms {
                 self.observe_condition(
-                    &row.application_id,
-                    Some(&row.application_id),
+                    &row.environment_id,
+                    Some(&row.environment_id),
                     row.runtime_health.as_deref() == Some("degraded")
                         || (row.runtime_health.as_deref() == Some("absent")
                             && row.expected_services > 0),

@@ -1,7 +1,7 @@
 //! Distinct names for generated Docker resources. Engine observations remain raw strings.
 
 use crate::names::validated_string;
-use crate::{ApplicationId, JobName, ResourceKind, ServiceName, VolumeName, docker_resource_name};
+use crate::{EnvironmentId, JobName, ResourceKind, ServiceName, VolumeName, docker_resource_name};
 
 validated_string!(
     /// A Docker network name, distinct from logical names and other resource kinds.
@@ -31,13 +31,13 @@ validated_string!(
 impl DockerNetworkName {
     /// Whether this is the canonical private or ingress network for an application.
     #[must_use]
-    pub fn is_for_application(&self, id: &ApplicationId) -> bool {
+    pub fn is_for_application(&self, id: &EnvironmentId) -> bool {
         self == &Self::for_application(id) || self == &Self::for_ingress(id)
     }
 
     /// Derives a separate network for this application's exposed services.
     #[must_use]
-    pub fn for_ingress(id: &ApplicationId) -> Self {
+    pub fn for_ingress(id: &EnvironmentId) -> Self {
         Self(docker_resource_name(
             id,
             ResourceKind::Network,
@@ -47,7 +47,7 @@ impl DockerNetworkName {
 
     /// Derives the application's private network name.
     #[must_use]
-    pub fn for_application(id: &ApplicationId) -> Self {
+    pub fn for_application(id: &EnvironmentId) -> Self {
         Self(docker_resource_name(id, ResourceKind::Network, None))
     }
 }
@@ -55,7 +55,7 @@ impl DockerNetworkName {
 impl DockerServiceName {
     /// Derives a service name from stable application and logical service identity.
     #[must_use]
-    pub fn for_service(id: &ApplicationId, service: &ServiceName) -> Self {
+    pub fn for_service(id: &EnvironmentId, service: &ServiceName) -> Self {
         Self(docker_resource_name(
             id,
             ResourceKind::Service,
@@ -65,7 +65,7 @@ impl DockerServiceName {
 
     /// Derives a job's service name, disjoint from every logical service's name.
     #[must_use]
-    pub fn for_job(id: &ApplicationId, job: &JobName) -> Self {
+    pub fn for_job(id: &EnvironmentId, job: &JobName) -> Self {
         Self(docker_resource_name(
             id,
             ResourceKind::Job,
@@ -77,7 +77,7 @@ impl DockerServiceName {
 impl DockerVolumeName {
     /// Derives a volume name from stable application and logical volume identity.
     #[must_use]
-    pub fn for_volume(id: &ApplicationId, volume: &VolumeName) -> Self {
+    pub fn for_volume(id: &EnvironmentId, volume: &VolumeName) -> Self {
         Self(docker_resource_name(
             id,
             ResourceKind::Volume,
@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn generated_names_preserve_existing_identity_and_round_trip() {
-        let application = ApplicationId::parse("a".repeat(64)).unwrap();
+        let application = EnvironmentId::parse("a".repeat(64)).unwrap();
         let logical = "b".repeat(63);
         let service =
             DockerServiceName::for_service(&application, &ServiceName::parse(&logical).unwrap());

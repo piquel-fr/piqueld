@@ -1,15 +1,15 @@
 //! Build records outlive operation retention; output is chunked and bounded.
 use super::{Store, StoreError, now_ms, page_limit};
 use piqueld_core::{
-    ApplicationId,
+    EnvironmentId,
     api::{BuildLogChunk, BuildLogPage, BuildRecord, BuildState, LogStream, Page},
     manifest::Source,
 };
 
-/// `builds` row shared by the application-scoped and global listing queries.
+/// `builds` row shared by the environment-scoped and global listing queries.
 struct BuildRow {
     id: i64,
-    application_id: String,
+    environment_id: String,
     operation_id: String,
     service: String,
     job: Option<String>,
@@ -44,7 +44,7 @@ impl Store {
     /// a job run when `job` names the job, and returns its row ID.
     pub(crate) async fn start_build(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
         operation: &str,
         service: &str,
         source: &Source,
@@ -54,7 +54,7 @@ impl Store {
         let app = application.as_str();
         let now = now_ms();
         let _writer = self.writers.lock().await;
-        Ok(sqlx::query!("INSERT INTO builds(application_id,operation_id,service,job,source_json,state,started_at_ms) VALUES(?1,?2,?3,?4,?5,'running',?6)",app,operation,service,job,source,now).execute(&self.pool).await.map_err(StoreError::database)?.last_insert_rowid())
+        Ok(sqlx::query!("INSERT INTO builds(environment_id,operation_id,service,job,source_json,state,started_at_ms) VALUES(?1,?2,?3,?4,?5,'running',?6)",app,operation,service,job,source,now).execute(&self.pool).await.map_err(StoreError::database)?.last_insert_rowid())
     }
     /// Appends build output, splitting it into chunks of at most 4096 bytes.
     /// Output past the per-build byte cap is dropped and the build is marked
@@ -215,12 +215,12 @@ impl Store {
         .map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)
     }
-    /// Lists build attempts newest first, optionally scoped to an application.
+    /// Lists build attempts newest first, optionally scoped to an environment.
     /// # Errors
     /// Returns invalid pagination or database errors.
     pub async fn builds(
         &self,
-        application: Option<&ApplicationId>,
+        application: Option<&EnvironmentId>,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<BuildRecord>, StoreError> {
@@ -241,9 +241,9 @@ impl Store {
             let app = application.as_str();
             sqlx::query_as!(
                 BuildRow,
-                "SELECT id AS \"id!\",application_id,operation_id,service,job,source_json,state,
+                "SELECT id AS \"id!\",environment_id,operation_id,service,job,source_json,state,
                  started_at_ms,finished_at_ms,commit_hash,image_id,exit_code,log_bytes,log_truncated,log_expired
-                 FROM builds WHERE application_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
+                 FROM builds WHERE environment_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
                 app,
                 before,
                 fetch
@@ -253,7 +253,7 @@ impl Store {
         } else {
             sqlx::query_as!(
                 BuildRow,
-                "SELECT id AS \"id!\",application_id,operation_id,service,job,source_json,state,
+                "SELECT id AS \"id!\",environment_id,operation_id,service,job,source_json,state,
                  started_at_ms,finished_at_ms,commit_hash,image_id,exit_code,log_bytes,log_truncated,log_expired
                  FROM builds WHERE id<?1 ORDER BY id DESC LIMIT ?2",
                 before,
@@ -273,7 +273,7 @@ impl Store {
             .map(|r| {
                 Ok(BuildRecord {
                     id: r.id,
-                    application_id: r.application_id,
+                    environment_id: r.environment_id,
                     operation_id: r.operation_id,
                     service: r.service,
                     job: r.job,
@@ -397,11 +397,11 @@ mod tests {
                 "../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
             ))
             .unwrap()
-            .normalize(ApplicationId::parse("app-build-test").unwrap());
+            .normalize(piqueld_core::ApplicationId::parse("app-build-test").unwrap());
             let operation = store.save_application(&app, None, None).await.unwrap();
             let id = store
                 .start_build(
-                    app.id(),
+                    &EnvironmentId::default_for(app.id()),
                     &operation.id,
                     "web",
                     &app.spec().services[0].source,
@@ -454,7 +454,7 @@ mod tests {
         } = Fixture::new().await;
         let other = store
             .start_build(
-                app.id(),
+                &EnvironmentId::default_for(app.id()),
                 &operation,
                 "web",
                 &app.spec().services[0].source,
@@ -485,7 +485,10 @@ mod tests {
             assert_eq!(chunk.offset, i64::try_from(index * 4096).unwrap());
             assert_eq!(chunk.text, "a".repeat(4096));
         }
-        let records = store.builds(Some(app.id()), None, 50).await.unwrap();
+        let records = store
+            .builds(Some(&EnvironmentId::default_for(app.id())), None, 50)
+            .await
+            .unwrap();
         assert_eq!(records.items[0].state, BuildState::Succeeded);
         assert_eq!(records.items[0].commit.as_deref(), Some("commit"));
         assert_eq!(records.items[1].log_bytes, 32768);
@@ -505,11 +508,11 @@ mod tests {
         let other = manifest
             .validate()
             .unwrap()
-            .normalize(ApplicationId::parse("app-other").unwrap());
+            .normalize(piqueld_core::ApplicationId::parse("app-other").unwrap());
         let other_operation = store.save_application(&other, None, Some(0)).await.unwrap();
         let latest = store
             .start_build(
-                app.id(),
+                &EnvironmentId::default_for(app.id()),
                 &operation,
                 "web",
                 &app.spec().services[0].source,
@@ -520,7 +523,7 @@ mod tests {
         for _ in 0..3 {
             store
                 .start_build(
-                    other.id(),
+                    &EnvironmentId::default_for(other.id()),
                     &other_operation.id,
                     "web",
                     &other.spec().services[0].source,
@@ -529,17 +532,24 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let first = store.builds(Some(app.id()), None, 1).await.unwrap();
+        let first = store
+            .builds(Some(&EnvironmentId::default_for(app.id())), None, 1)
+            .await
+            .unwrap();
         assert_eq!(first.items[0].id, latest);
         let second = store
-            .builds(Some(app.id()), first.next_cursor.as_deref(), 1)
+            .builds(
+                Some(&EnvironmentId::default_for(app.id())),
+                first.next_cursor.as_deref(),
+                1,
+            )
             .await
             .unwrap();
         assert_eq!(second.items[0].id, id);
         assert!(second.next_cursor.is_none());
         let global = store.builds(None, None, 1).await.unwrap();
-        assert_eq!(global.items[0].application_id, other.id().as_str());
-        let absent = ApplicationId::parse("app-absent").unwrap();
+        assert_eq!(global.items[0].environment_id, other.id().as_str());
+        let absent = EnvironmentId::parse("app-absent").unwrap();
         assert!(
             store
                 .builds(Some(&absent), None, 1)
@@ -595,7 +605,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            store.builds(Some(app.id()), None, 50).await.unwrap().items[0].log_bytes,
+            store
+                .builds(Some(&EnvironmentId::default_for(app.id())), None, 50)
+                .await
+                .unwrap()
+                .items[0]
+                .log_bytes,
             70_000
         );
         sqlx::query!("UPDATE builds SET finished_at_ms=0 WHERE id=?1", id)
@@ -609,7 +624,7 @@ mod tests {
         assert_eq!(records.items[0].state, BuildState::Succeeded);
         let interrupted = store
             .start_build(
-                app.id(),
+                &EnvironmentId::default_for(app.id()),
                 &operation,
                 "web",
                 &app.spec().services[0].source,

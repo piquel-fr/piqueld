@@ -11,7 +11,7 @@ impl<D: DockerApi> Controller<D> {
     /// it left open as `action_outcome_unknown`. Only store failures are returned;
     /// operation failures are persisted on the operation itself.
     #[tracing::instrument(skip_all, fields(
-        application_id = %operation.application_id,
+        environment_id = %operation.environment_id,
         operation_id = %operation.id,
         generation = operation.generation,
         operation_kind = ?operation.kind,
@@ -47,7 +47,7 @@ impl<D: DockerApi> Controller<D> {
     ///    Otherwise success completes the operation (or finalizes deletion), a
     ///    `Cancelled`/`Superseded` error defers to newer durable state, failed
     ///    deletions keep running with the error recorded for retry, and other
-    ///    failures mark the application degraded and the operation failed.
+    ///    failures mark the environment degraded and the operation failed.
     ///
     /// Returns a short outcome label for logging.
     async fn run_operation_inner(
@@ -160,7 +160,7 @@ impl<D: DockerApi> Controller<D> {
         // Keep preparation and persistence state out of the discovery future.
         Box::pin(self.execute_operation(operation, cancellation)).await?;
         if operation.kind == OperationKind::Delete {
-            let names = self.store.secret_names(&operation.application_id).await?;
+            let names = self.store.secret_names(&operation.environment_id).await?;
             if !names.is_empty() {
                 self.remove_secrets(operation, &names).await?;
             }
@@ -181,7 +181,7 @@ impl<D: DockerApi> Controller<D> {
         let result = match self.store.action_request(&journal, 1).await {
             Ok(()) => self
                 .docker
-                .remove_secrets(names, &self.ownership_labels(&operation.application_id))
+                .remove_secrets(names, &self.ownership_labels(&operation.environment_id))
                 .await
                 .map_err(OperationError::from),
             Err(error) => Err(error.into()),
@@ -212,7 +212,7 @@ impl<D: DockerApi> Controller<D> {
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
         let request = self.operation_request(operation, cancellation).await?;
-        let ownership = self.ownership_labels(&operation.application_id);
+        let ownership = self.ownership_labels(&operation.environment_id);
         if operation.kind != OperationKind::Delete
             && !self
                 .store
@@ -253,7 +253,7 @@ impl<D: DockerApi> Controller<D> {
                 .record_health(&operation.id, &observed)
                 .await
                 .map_err(OperationError::from)?;
-            let accepted_routes = self.store.applied_routes(&operation.application_id).await?;
+            let accepted_routes = self.store.applied_routes(&operation.environment_id).await?;
             let runtime_request = match &request {
                 PlanRequest::Reconcile { desired } => PlanRequest::Reconcile {
                     desired: desired
@@ -285,7 +285,7 @@ impl<D: DockerApi> Controller<D> {
                     .map_err(|_| OperationError::ConvergenceTimeout)??;
                 }
             }
-            if self.store.applied_routes(&operation.application_id).await? != accepted_routes {
+            if self.store.applied_routes(&operation.environment_id).await? != accepted_routes {
                 // Replan after cutover before dropping old ingress attachments.
                 continue;
             }
@@ -340,12 +340,12 @@ impl<D: DockerApi> Controller<D> {
             .map_err(OperationError::from)?;
         let application = self
             .store
-            .get(&operation.application_id)
+            .get(&operation.environment_id)
             .await
             .map_err(OperationError::from)?;
         Ok(if operation.kind == OperationKind::Delete {
             PlanRequest::Delete {
-                application_id: operation.application_id.clone(),
+                environment_id: operation.environment_id.clone(),
                 instance_id: piqueld_core::InstanceId::parse(self.store.instance_id())
                     .expect("valid store identity"),
             }
@@ -359,7 +359,7 @@ impl<D: DockerApi> Controller<D> {
         })
     }
 
-    /// Stages the application's routes and applies them through managed ingress
+    /// Stages the environment's routes and applies them through managed ingress
     /// when present (which skips the gateway while backends are not ready and no
     /// hostname is withdrawn), or acknowledges the routing table directly.
     /// `ready` tells staging whether the backing services exist yet. No-op when
@@ -370,7 +370,7 @@ impl<D: DockerApi> Controller<D> {
         routes: &[piqueld_core::manifest::ValidatedRoute],
         ready: bool,
     ) -> Result<(), OperationError> {
-        if routes.is_empty() && !self.store.has_routes(&operation.application_id).await? {
+        if routes.is_empty() && !self.store.has_routes(&operation.environment_id).await? {
             return Ok(());
         }
         self.store.progress(&operation.id, "routing", None).await?;
@@ -386,7 +386,7 @@ impl<D: DockerApi> Controller<D> {
         } else {
             self.store
                 .stage_routes(
-                    &operation.application_id,
+                    &operation.environment_id,
                     routes,
                     ready,
                     Some(&operation.id),
@@ -440,7 +440,7 @@ impl<D: DockerApi> Controller<D> {
     async fn prepare_target(
         &self,
         operation: &Operation,
-        application: &super::StoredApplication,
+        application: &super::StoredEnvironment,
     ) -> Result<piqueld_core::ResolvedApplication, OperationError> {
         self.check_current(operation).await?;
         self.docker.ensure_swarm(false).await?;
@@ -462,7 +462,7 @@ impl<D: DockerApi> Controller<D> {
         let snapshot = self.store.deployment_manifest(&operation.id).await?;
         let manifest = self.deployment_manifest(operation, &snapshot).await?;
         // A rename changes display metadata without rewriting deployment history.
-        let manifest = manifest.with_name(application.application.metadata().name.clone());
+        let manifest = manifest.with_name(application.manifest().metadata().name.clone());
         let mut reusable = if operation.kind == OperationKind::Refresh {
             piqueld_core::ResolutionSet::default()
         } else {
@@ -473,25 +473,22 @@ impl<D: DockerApi> Controller<D> {
                     target.reusable_resolutions(&manifest)
                 })
         };
-        reusable.secret_names = self.store.pin_secrets(&operation.id, &manifest).await?;
-        let prepared =
-            runtime
-                .prepare(&manifest, &reusable)
-                .await
-                .map_err(|error| match error {
-                    crate::application::BoundaryError::Store(error) => OperationError::from(error),
-                    crate::application::BoundaryError::Runtime(error) => {
-                        OperationError::from(error)
-                    }
-                    crate::application::BoundaryError::GitBuild(error) => {
-                        tracing::warn!(error = ?error, "Git source build failed");
-                        OperationError::GitBuildFailed(error)
-                    }
-                    crate::application::BoundaryError::Compilation(errors) => {
-                        tracing::error!(?errors, "application compilation failed");
-                        OperationError::ValidationFailed("compile application")
-                    }
-                })?;
+        reusable.secret_names = self.store.pin_secrets(operation, &manifest).await?;
+        let prepared = runtime
+            .prepare(&operation.environment_id, &manifest, &reusable)
+            .await
+            .map_err(|error| match error {
+                crate::application::BoundaryError::Store(error) => OperationError::from(error),
+                crate::application::BoundaryError::Runtime(error) => OperationError::from(error),
+                crate::application::BoundaryError::GitBuild(error) => {
+                    tracing::warn!(error = ?error, "Git source build failed");
+                    OperationError::GitBuildFailed(error)
+                }
+                crate::application::BoundaryError::Compilation(errors) => {
+                    tracing::error!(?errors, "application compilation failed");
+                    OperationError::ValidationFailed("compile application")
+                }
+            })?;
         self.check_current(operation).await?;
         // The topology may have changed while images were pulled or built.
         self.docker.ensure_swarm(false).await?;
@@ -502,12 +499,12 @@ impl<D: DockerApi> Controller<D> {
         Ok(prepared)
     }
 
-    /// Fails with `Superseded` when a newer operation exists for the application,
+    /// Fails with `Superseded` when a newer operation exists for the environment,
     /// or `Cancelled` when this operation is no longer `Running`.
     pub(super) async fn check_current(&self, operation: &Operation) -> Result<(), OperationError> {
         let current = self
             .store
-            .latest_operation_for_application(&operation.application_id)
+            .latest_operation_for_environment(&operation.environment_id)
             .await
             .map_err(OperationError::from)?;
         let Some(current) = current.filter(|current| current.id == operation.id) else {
@@ -519,7 +516,7 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
-    /// Marks the application degraded with the failure message.
+    /// Marks the environment degraded with the failure message.
     async fn record_failure(
         &self,
         operation: &Operation,
@@ -545,7 +542,7 @@ mod tests {
         store::Store,
     };
 
-    /// Accepts a routed application and starts executing its operation.
+    /// Accepts a routed environment and starts executing its operation.
     async fn running_operation(store: &Store) -> Operation {
         let manifest = piqueld_core::parse_toml(&format!(
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='routed'\n\
@@ -580,10 +577,10 @@ mod tests {
         let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
         let operation = running_operation(&store).await;
         let routes = store
-            .get(&operation.application_id)
+            .get(&operation.environment_id)
             .await
             .unwrap()
-            .application
+            .manifest()
             .spec()
             .routes
             .clone();
@@ -619,7 +616,7 @@ mod tests {
         }
         store
             .accept(
-                Mutation::deploy(operation.application_id.clone()),
+                Mutation::deploy(operation.environment_id.clone()),
                 None,
                 true,
                 None,
@@ -750,7 +747,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let events = store
-            .events(Some(&operation.application_id), None, 100)
+            .events(Some(&operation.environment_id), None, 100)
             .await
             .unwrap()
             .items;

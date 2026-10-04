@@ -2,7 +2,7 @@
 
 use piqueld::store::{Store, StoreError};
 use piqueld_core::resource::{ResolutionSet, ResolvedSource, compile_application};
-use piqueld_core::{ApplicationId, InstanceId, OperationState, parse_toml};
+use piqueld_core::{ApplicationId, EnvironmentId, InstanceId, OperationState, parse_toml};
 use sqlx::{Connection, SqliteConnection};
 
 fn application() -> piqueld_core::NormalizedApplication {
@@ -20,6 +20,11 @@ fn application_named(id: &str, name: &str) -> piqueld_core::NormalizedApplicatio
     parse_toml(&manifest)
         .expect("fixture variant is valid")
         .normalize(ApplicationId::parse(id).expect("fixture ID is valid"))
+}
+
+/// The environment created with `application`, which shares its ID.
+fn environment(application: &piqueld_core::NormalizedApplication) -> EnvironmentId {
+    EnvironmentId::default_for(application.id())
 }
 
 fn resolved(
@@ -41,6 +46,7 @@ fn resolved(
     };
     compile_application(
         application,
+        &environment(application),
         InstanceId::parse(instance_id).expect("store instance ID is valid"),
         &resolutions,
     )
@@ -59,18 +65,18 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
         .await
         .expect("application saved");
     let stored = store
-        .get(application.id())
+        .get(&environment(&application))
         .await
         .expect("application readable");
     assert_eq!(stored.resolved, Some(desired.clone()));
-    assert!(!stored.delete_intent);
+    assert!(!stored.delete_intent());
     assert_eq!(
         store.operation(&created.id).await.unwrap().state,
         OperationState::Requested
     );
 
     let deleted = store
-        .request_delete(application.id(), None)
+        .request_delete(&environment(&application))
         .await
         .expect("deletion saved");
     assert_eq!(
@@ -78,20 +84,32 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
         OperationState::Superseded
     );
     assert_eq!(deleted.state, OperationState::Requested);
-    assert!(store.get(application.id()).await.unwrap().delete_intent);
+    assert!(
+        store
+            .get(&environment(&application))
+            .await
+            .unwrap()
+            .delete_intent()
+    );
     drop(store);
 
     let reopened = Store::open(&database).await.expect("database reopens");
     assert_eq!(
         reopened
-            .get(application.id())
+            .get(&environment(&application))
             .await
             .unwrap()
             .resolved
             .unwrap(),
         desired
     );
-    assert!(reopened.get(application.id()).await.unwrap().delete_intent);
+    assert!(
+        reopened
+            .get(&environment(&application))
+            .await
+            .unwrap()
+            .delete_intent()
+    );
     reopened
         .transition_operation(
             &deleted.id,
@@ -104,7 +122,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     let running = reopened.operation(&deleted.id).await.unwrap();
     reopened.finish_delete_operation(&running).await.unwrap();
     assert!(matches!(
-        reopened.get(application.id()).await,
+        reopened.get(&environment(&application)).await,
         Err(StoreError::NotFound)
     ));
     assert!(matches!(
@@ -113,7 +131,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     ));
     assert!(
         reopened
-            .events(Some(application.id()), None, 100)
+            .events(Some(&environment(&application)), None, 100)
             .await
             .unwrap()
             .items
@@ -156,7 +174,12 @@ async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation
         OperationState::Superseded
     );
     assert_eq!(
-        store.get(application.id()).await.unwrap().application,
+        store
+            .get(&environment(&application))
+            .await
+            .unwrap()
+            .application
+            .application,
         replacement
     );
     store
@@ -185,7 +208,7 @@ async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation
     assert_eq!(retried.error_message, None);
     assert!(matches!(
         store
-            .get(&ApplicationId::parse("missing-app").unwrap())
+            .get(&EnvironmentId::parse("missing-app").unwrap())
             .await,
         Err(StoreError::NotFound)
     ));
@@ -239,9 +262,9 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
         .await
         .expect("listing tolerates a corrupt row");
     assert_eq!(page.items.len(), 1);
-    assert_eq!(page.items[0].application.id(), healthy.id());
+    assert_eq!(page.items[0].id(), &environment(&healthy));
     assert_eq!(page.next_cursor, None);
-    assert!(store.get(corrupt.id()).await.is_err());
+    assert!(store.get(&environment(&corrupt)).await.is_err());
 
     // A corrupt row inside a full page must not suppress the pagination
     // cursor: quarantined rows still consume page slots, so the surviving
@@ -266,7 +289,7 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
         first_page
             .items
             .iter()
-            .map(|application| application.application.id().as_str())
+            .map(|environment| environment.id().as_str())
             .collect::<Vec<_>>(),
         vec![healthy.id().as_str()],
         "the corrupt row is quarantined inside the full page"
@@ -281,7 +304,7 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
         second_page
             .items
             .iter()
-            .map(|application| application.application.id().as_str())
+            .map(|environment| environment.id().as_str())
             .collect::<Vec<_>>(),
         vec![third.id().as_str(), fourth.id().as_str()],
         "the remaining healthy application follows the quarantined page"
@@ -300,13 +323,19 @@ async fn deployment_history_survives_pruning_and_events_have_independent_retenti
         .save_application(&app, Some(&desired), Some(0))
         .await
         .unwrap();
-    let second = store.request_deploy(app.id(), Some(1)).await.unwrap();
+    let second = store
+        .request_deploy(&environment(&app), Some(1))
+        .await
+        .unwrap();
     store.prune_finished_operations(i64::MAX).await.unwrap();
     assert!(store.operation(&first.id).await.is_ok());
     assert!(store.operation(&second.id).await.is_ok());
     assert!(store.prepared_target(&first.id).await.unwrap().is_some());
     assert!(store.prepared_target(&second.id).await.unwrap().is_none());
-    let events = store.events(Some(app.id()), None, 100).await.unwrap();
+    let events = store
+        .events(Some(&environment(&app)), None, 100)
+        .await
+        .unwrap();
     assert!(
         events
             .items
@@ -323,7 +352,7 @@ async fn deployment_history_survives_pruning_and_events_have_independent_retenti
             .items
             .is_empty()
     );
-    assert!(store.get(app.id()).await.is_ok());
+    assert!(store.get(&environment(&app)).await.is_ok());
     assert!(store.operation(&second.id).await.is_ok());
 }
 
@@ -338,8 +367,17 @@ async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
     store.save_application(&other, None, Some(0)).await.unwrap();
     let mut expected_deployments = vec![initial.id];
     for _ in 0..3 {
-        expected_deployments.push(store.request_deploy(app.id(), Some(1)).await.unwrap().id);
-        store.request_deploy(other.id(), Some(1)).await.unwrap();
+        expected_deployments.push(
+            store
+                .request_deploy(&environment(&app), Some(1))
+                .await
+                .unwrap()
+                .id,
+        );
+        store
+            .request_deploy(&environment(&other), Some(1))
+            .await
+            .unwrap();
     }
     expected_deployments.sort_unstable_by(|left, right| right.cmp(left));
 
@@ -355,11 +393,11 @@ async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
     let mut deployments = Vec::new();
     loop {
         let page = store
-            .deployments(app.id(), cursor.as_deref(), 2)
+            .deployments(&environment(&app), cursor.as_deref(), 2)
             .await
             .unwrap();
         for deployment in page.items {
-            assert_eq!(&deployment.operation.application_id, app.id());
+            assert_eq!(deployment.operation.environment_id, environment(&app));
             deployments.push(deployment.operation.id);
         }
         cursor = page.next_cursor;
@@ -375,17 +413,17 @@ async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
         .unwrap()
         .items
         .into_iter()
-        .filter(|event| event.application_id.as_ref() == Some(app.id()))
+        .filter(|event| event.environment_id.as_ref() == Some(&environment(&app)))
         .map(|event| event.id)
         .collect::<Vec<_>>();
     let mut events = Vec::new();
     loop {
         let page = store
-            .events(Some(app.id()), cursor.as_deref(), 2)
+            .events(Some(&environment(&app)), cursor.as_deref(), 2)
             .await
             .unwrap();
         for event in page.items {
-            assert_eq!(event.application_id.as_ref(), Some(app.id()));
+            assert_eq!(event.environment_id.as_ref(), Some(&environment(&app)));
             events.push(event.id);
         }
         cursor = page.next_cursor;
@@ -394,7 +432,7 @@ async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
         }
     }
     assert_eq!(events, expected_events);
-    let absent = ApplicationId::parse("app-absent").unwrap();
+    let absent = EnvironmentId::parse("app-absent").unwrap();
     assert!(
         store
             .events(Some(&absent), None, 2)

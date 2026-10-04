@@ -1,11 +1,11 @@
 use super::{
-    ApplicationId, BTreeMap, BTreeSet, BollardDocker, DesiredNetwork, DesiredService,
-    DesiredVolume, DockerApi, DockerError, DockerNetworkName, DockerTimeout, HashMap,
-    InspectNetworkOptions, InspectServiceOptions, Ipam, ListNetworksOptionsBuilder,
-    ListServicesOptionsBuilder, ListTasksOptionsBuilder, ListVolumesOptionsBuilder,
-    NetworkCreateRequest, OBSERVATION_INSPECT_CONCURRENCY, ObservedApplication, ObservedNetwork,
-    ObservedService, ObservedVolume, ResourceKind, StreamExt, SwarmInitRequest, SwarmState,
-    TryStreamExt, VolumeCreateOptions, async_trait, resolve_image_digest, stream,
+    BTreeMap, BTreeSet, BollardDocker, DesiredNetwork, DesiredService, DesiredVolume, DockerApi,
+    DockerError, DockerNetworkName, DockerTimeout, EnvironmentId, HashMap, InspectNetworkOptions,
+    InspectServiceOptions, Ipam, ListNetworksOptionsBuilder, ListServicesOptionsBuilder,
+    ListTasksOptionsBuilder, ListVolumesOptionsBuilder, NetworkCreateRequest,
+    OBSERVATION_INSPECT_CONCURRENCY, ObservedApplication, ObservedNetwork, ObservedService,
+    ObservedVolume, ResourceKind, StreamExt, SwarmInitRequest, SwarmState, TryStreamExt,
+    VolumeCreateOptions, async_trait, resolve_image_digest, stream,
 };
 
 /// Inspections attempted before an incomplete network response is an error.
@@ -32,7 +32,7 @@ impl BollardDocker {
     /// network, while the observations keep only those `relevant` to the app.
     async fn snapshot_networks(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
     ) -> Result<NetworkSnapshot, DockerError> {
         let mut raw_networks = Self::map_request(
             "list networks",
@@ -118,7 +118,7 @@ impl BollardDocker {
     /// Volumes are observed from the list responses without further inspection.
     async fn snapshot_volumes(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
     ) -> Result<Vec<ObservedVolume>, DockerError> {
         let mut raw_volumes = Self::map_request(
             "list volumes",
@@ -175,7 +175,7 @@ impl BollardDocker {
     /// names of every listed service, used to filter the task listing.
     async fn inspect_application_services(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
     ) -> Result<(Vec<bollard::models::Service>, Vec<String>), DockerError> {
         let mut listed_services = Self::map_request(
             "list services",
@@ -253,7 +253,7 @@ impl BollardDocker {
     ///    check routed services' injected ingress range against the network.
     async fn snapshot_services(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
         networks: &NetworkSnapshot,
         node_id: &str,
     ) -> Result<Vec<piqueld_core::ObservedService>, DockerError> {
@@ -435,7 +435,7 @@ impl DockerApi for BollardDocker {
     async fn application_logs(
         &self,
         instance: &super::InstanceId,
-        application: &ApplicationId,
+        application: &EnvironmentId,
         service: Option<&str>,
         tail: u16,
         since: u32,
@@ -448,13 +448,13 @@ impl DockerApi for BollardDocker {
     async fn create_exec(
         &self,
         instance: &super::InstanceId,
-        application: &ApplicationId,
+        environment: &EnvironmentId,
         request: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<super::Exec>, DockerError> {
         DockerTimeout::Request
             .run(
                 "create exec",
-                self.create_task_exec(instance, application, request),
+                self.create_task_exec(instance, environment, request),
             )
             .await
     }
@@ -600,7 +600,7 @@ impl DockerApi for BollardDocker {
 
     async fn observe(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
     ) -> Result<ObservedApplication, DockerError> {
         // One deadline covers every phase, including complete resource inspections.
         DockerTimeout::Request

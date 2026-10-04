@@ -81,7 +81,7 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
         "Docker became unreachable".into(),
     );
     store
-        .record_diagnostic(&diagnostic, None, Some(&op.application_id))
+        .record_diagnostic(&diagnostic, None, Some(&op.environment_id))
         .await
         .unwrap();
     let failure = Diagnostic::new(
@@ -90,13 +90,13 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
         "Service failed".into(),
     );
     store
-        .record_diagnostic(&failure, None, Some(&op.application_id))
+        .record_diagnostic(&failure, None, Some(&op.environment_id))
         .await
         .unwrap();
     let (MutationResponse::Operation(delete), _) = store
         .accept(
             Mutation::Delete {
-                id: op.application_id.clone(),
+                id: op.environment_id.clone(),
             },
             None,
             true,
@@ -126,7 +126,7 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
     ));
     let retained = store.diagnostic(&diagnostic.id).await.unwrap();
     assert_eq!(retained.scope, EventScope::Daemon);
-    assert_eq!(retained.application_id, Some(op.application_id));
+    assert_eq!(retained.environment_id, Some(op.environment_id));
     assert!(
         store
             .events(None, None, 100)
@@ -465,7 +465,7 @@ async fn open_incidents_survive_retention_until_recovery_is_delivered() {
             .with_observability(&config);
         store.configure_deliveries().await.unwrap();
         let op = application(&store).await;
-        let application = (!daemon).then_some(op.application_id.as_str());
+        let application = (!daemon).then_some(op.environment_id.as_str());
         let key = application.unwrap_or("docker_unavailable");
         let started = now_ms() - 2 * 86_400_000;
         let cutoff = now_ms() - 86_400_000;

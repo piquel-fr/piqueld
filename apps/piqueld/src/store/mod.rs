@@ -1,11 +1,12 @@
-//! `SQLite` persistence and atomic acceptance of validated application commands;
-//! Docker planning and execution belong to the controller.
+//! `SQLite` persistence and atomic acceptance of validated application and
+//! environment commands; Docker planning and execution belong to the controller.
 
 mod acceptance;
 mod application;
 mod auth;
 mod build;
 mod deployment;
+mod environment;
 mod event;
 pub(crate) mod ingress;
 mod jobs;
@@ -20,7 +21,10 @@ mod repository;
 mod secret;
 mod status;
 
-use piqueld_core::{ApplicationId, NormalizedApplication, resource::ResolvedApplication};
+use piqueld_core::{
+    ApplicationId, EnvironmentId, EnvironmentName, EnvironmentSource, NormalizedApplication,
+    api::EnvironmentView, resource::ResolvedApplication,
+};
 pub use piqueld_core::{ApplicationState, Operation, OperationKind, OperationState};
 use sqlx::{
     Sqlite, SqlitePool, Transaction,
@@ -79,7 +83,7 @@ pub enum StoreError {
     SecretDeleting,
     /// Retained ciphertext is bounded without evicting deployment pins.
     #[error(
-        "secret storage quota exceeded (1000 versions or 100 MiB per application); delete unused secrets to free space"
+        "secret storage quota exceeded (1000 versions or 100 MiB per environment); delete unused secrets to free space"
     )]
     SecretQuota,
     /// A secret changed after the caller inspected its metadata.
@@ -90,8 +94,8 @@ pub enum StoreError {
         /// Current logical secret version.
         actual: i64,
     },
-    /// An exact public hostname belongs to another application or the installation.
-    #[error("hostname {hostname} is reserved by another application or this installation")]
+    /// An exact public hostname belongs to another environment or the installation.
+    #[error("hostname {hostname} is reserved by another environment or this installation")]
     HostnameConflict {
         /// Conflicting canonical public hostname.
         hostname: String,
@@ -131,6 +135,24 @@ pub enum StoreError {
     /// Mutation cannot run during pending work or deletion.
     #[error("application is busy; wait for its current operation to finish")]
     Busy,
+    /// A runtime command named an application whose environment is ambiguous.
+    #[error(
+        "environment required: the application has {}; name one explicitly",
+        environment_list(environments)
+    )]
+    EnvironmentRequired {
+        /// The application's environments, in name order.
+        environments: Vec<EnvironmentName>,
+    },
+    /// Deleting an application with several environments must name every one.
+    #[error(
+        "deleting this application also deletes {}; confirm by naming every environment",
+        environment_list(environments)
+    )]
+    ConfirmationRequired {
+        /// The application's environments, in name order.
+        environments: Vec<EnvironmentName>,
+    },
     /// Runtime fields are managed by the repository manifest.
     #[error("application configuration is managed by its repository manifest")]
     RepositoryManaged,
@@ -158,6 +180,23 @@ pub enum StoreError {
     /// Repository input could not be converted to its bounded representation.
     #[error("repository input is invalid")]
     InvalidInputSource(#[source] Box<dyn StdError + Send + Sync>),
+}
+
+/// Describes environments in an error message.
+///
+/// ```text
+/// []                      -> "no environments"
+/// [production, staging]   -> "environments production, staging"
+/// ```
+fn environment_list(environments: &[EnvironmentName]) -> String {
+    if environments.is_empty() {
+        return "no environments".into();
+    }
+    let names = environments
+        .iter()
+        .map(EnvironmentName::as_str)
+        .collect::<Vec<_>>();
+    format!("environments {}", names.join(", "))
 }
 
 impl StoreError {
@@ -196,42 +235,51 @@ impl StoreError {
     }
 }
 
-/// Persisted application target. Runtime status is recorded separately.
+/// Persisted application: the manifest its environments share and its revision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoredApplication {
     /// Validated, normalized manifest.
     pub application: NormalizedApplication,
-    /// Resolved Docker target, including immutable image digests.
-    pub resolved: Option<ResolvedApplication>,
-    /// Current intent revision.
+    /// Current configuration revision, shared by every environment.
     pub generation: u64,
-    /// Revision associated with the last resolved target.
-    pub resolved_generation: Option<u64>,
-    /// Whether the target is absence of services and networks.
+    /// Whether the application and all its environments are being deleted.
     pub delete_intent: bool,
     /// When this application was created.
     pub created_at_ms: i64,
-    /// When its target last changed.
+    /// When its configuration last changed.
     pub updated_at_ms: i64,
 }
 
-/// Persisted metadata used by application collection reads.
+/// Persisted environment with the application configuration it deploys.
+/// Runtime status is recorded separately.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StoredApplicationSummary {
-    /// Stable application identifier.
-    pub id: ApplicationId,
-    /// Editable application name.
-    pub name: String,
-    /// Current intent revision.
-    pub generation: u64,
-    /// Revision associated with the last resolved target.
-    pub resolved_generation: Option<u64>,
+pub struct StoredEnvironment {
+    /// Environment metadata.
+    pub environment: EnvironmentView,
+    /// Owning application and its saved configuration.
+    pub application: StoredApplication,
+    /// Resolved Docker target, including immutable image digests.
+    pub resolved: Option<ResolvedApplication>,
+}
+
+impl StoredEnvironment {
+    /// Stable environment identity, from which runtime names derive.
+    #[must_use]
+    pub fn id(&self) -> &EnvironmentId {
+        &self.environment.id
+    }
+
     /// Whether the target is absence of services and networks.
-    pub delete_intent: bool,
-    /// When this application was created.
-    pub created_at_ms: i64,
-    /// When its target last changed.
-    pub updated_at_ms: i64,
+    #[must_use]
+    pub fn delete_intent(&self) -> bool {
+        self.environment.delete_intent
+    }
+
+    /// The application's saved manifest this environment deploys.
+    #[must_use]
+    pub fn manifest(&self) -> &NormalizedApplication {
+        &self.application.application
+    }
 }
 
 /// Default query page size.
@@ -239,11 +287,11 @@ pub const DEFAULT_PAGE_SIZE: usize = 50;
 /// Maximum query page size.
 pub const MAX_PAGE_SIZE: usize = 100;
 
-/// Last observed application status.
+/// Last observed environment status.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApplicationStatus {
-    /// Application identity.
-    pub application_id: ApplicationId,
+pub struct EnvironmentStatus {
+    /// Environment identity.
+    pub environment_id: EnvironmentId,
     /// Current status.
     pub state: ApplicationState,
     /// Last observed runtime health, independent of pending intent.
@@ -254,20 +302,11 @@ pub struct ApplicationStatus {
     pub updated_at_ms: i64,
 }
 
-/// Page of live application records.
+/// Page of live environments.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApplicationPage {
-    /// Applications in ID order.
-    pub items: Vec<StoredApplication>,
-    /// Cursor for the next page.
-    pub next_cursor: Option<String>,
-}
-
-/// Page of live application metadata.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApplicationSummaryPage {
-    /// Application summaries in ID order.
-    pub items: Vec<StoredApplicationSummary>,
+pub struct EnvironmentPage {
+    /// Environments in ID order.
+    pub items: Vec<StoredEnvironment>,
     /// Cursor for the next page.
     pub next_cursor: Option<String>,
 }
@@ -539,38 +578,63 @@ fn page_limit(limit: usize) -> Result<i64, StoreError> {
     i64::try_from(limit).map_err(StoreError::invalid_input)
 }
 
-/// Raw `applications` row as selected by full application reads.
+/// Raw `applications` row.
 #[derive(Debug)]
 struct ApplicationRow {
     id: String,
     desired_json: String,
-    resolved_json: Option<String>,
     generation: i64,
-    resolved_generation: Option<i64>,
     delete_intent: i64,
     created_at_ms: i64,
     updated_at_ms: i64,
 }
 
-/// Raw `applications` row as selected by summary reads, without manifest JSON.
-#[derive(Debug)]
-struct ApplicationSummaryRow {
-    id: String,
-    name: String,
-    generation: i64,
-    resolved_generation: Option<i64>,
-    delete_intent: i64,
-    created_at_ms: i64,
-    updated_at_ms: i64,
-}
-
-impl ApplicationSummaryRow {
-    /// Converts raw columns into domain types, reporting out-of-range values as corruption.
-    fn decode(self) -> Result<StoredApplicationSummary, StoreError> {
-        Ok(StoredApplicationSummary {
-            id: ApplicationId::parse(self.id).map_err(StoreError::corrupt)?,
-            name: self.name,
+impl ApplicationRow {
+    /// Deserializes the stored manifest, rejecting rows whose manifest ID
+    /// disagrees with the row ID.
+    fn decode(self) -> Result<StoredApplication, StoreError> {
+        let application: NormalizedApplication =
+            serde_json::from_str(&self.desired_json).map_err(StoreError::corrupt)?;
+        if application.id().as_str() != self.id {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(StoredApplication {
+            application,
             generation: u64::try_from(self.generation).map_err(StoreError::corrupt)?,
+            delete_intent: self.delete_intent != 0,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+        })
+    }
+}
+
+/// Raw `environments` row, with whether its application has a manifest repository.
+#[derive(Debug)]
+struct EnvironmentRow {
+    id: String,
+    application_id: String,
+    name: String,
+    repository: bool,
+    resolved_generation: Option<i64>,
+    delete_intent: i64,
+    created_at_ms: i64,
+    updated_at_ms: i64,
+}
+
+impl EnvironmentRow {
+    /// Converts raw columns into the environment view, reporting out-of-range
+    /// values as corruption.
+    fn decode(self) -> Result<EnvironmentView, StoreError> {
+        Ok(EnvironmentView {
+            id: EnvironmentId::parse(self.id).map_err(StoreError::corrupt)?,
+            application_id: ApplicationId::parse(self.application_id)
+                .map_err(StoreError::corrupt)?,
+            name: EnvironmentName::parse(self.name).map_err(StoreError::corrupt)?,
+            source: if self.repository {
+                EnvironmentSource::Repository
+            } else {
+                EnvironmentSource::Saved
+            },
             resolved_generation: self
                 .resolved_generation
                 .map(u64::try_from)
@@ -583,16 +647,49 @@ impl ApplicationSummaryRow {
     }
 }
 
-impl ApplicationRow {
-    /// Deserializes the stored manifest and target, rejecting rows whose manifest
-    /// ID disagrees with the row ID.
-    fn decode(self) -> Result<StoredApplication, StoreError> {
-        let application: NormalizedApplication =
-            serde_json::from_str(&self.desired_json).map_err(StoreError::corrupt)?;
-        if application.id().as_str() != self.id {
-            return Err(StoreError::Corrupt);
+/// An environment joined with its application, as selected by full environment reads.
+#[derive(Debug)]
+struct StoredEnvironmentRow {
+    id: String,
+    application_id: String,
+    name: String,
+    resolved_json: Option<String>,
+    resolved_generation: Option<i64>,
+    delete_intent: i64,
+    created_at_ms: i64,
+    updated_at_ms: i64,
+    desired_json: String,
+    generation: i64,
+    application_delete_intent: i64,
+    application_created_at_ms: i64,
+    application_updated_at_ms: i64,
+}
+
+impl StoredEnvironmentRow {
+    /// Splits the joined row into its environment and application parts.
+    fn decode(self) -> Result<StoredEnvironment, StoreError> {
+        let application = ApplicationRow {
+            id: self.application_id.clone(),
+            desired_json: self.desired_json,
+            generation: self.generation,
+            delete_intent: self.application_delete_intent,
+            created_at_ms: self.application_created_at_ms,
+            updated_at_ms: self.application_updated_at_ms,
         }
-        Ok(StoredApplication {
+        .decode()?;
+        let environment = EnvironmentRow {
+            id: self.id,
+            application_id: self.application_id,
+            name: self.name,
+            repository: application.application.spec().manifest.is_some(),
+            resolved_generation: self.resolved_generation,
+            delete_intent: self.delete_intent,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+        }
+        .decode()?;
+        Ok(StoredEnvironment {
+            environment,
             application,
             resolved: self
                 .resolved_json
@@ -600,15 +697,6 @@ impl ApplicationRow {
                 .map(serde_json::from_str)
                 .transpose()
                 .map_err(StoreError::corrupt)?,
-            generation: u64::try_from(self.generation).map_err(StoreError::corrupt)?,
-            resolved_generation: self
-                .resolved_generation
-                .map(u64::try_from)
-                .transpose()
-                .map_err(StoreError::corrupt)?,
-            delete_intent: self.delete_intent != 0,
-            created_at_ms: self.created_at_ms,
-            updated_at_ms: self.updated_at_ms,
         })
     }
 }
@@ -619,6 +707,68 @@ mod observability_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn existing_applications_become_one_production_environment_with_the_same_id() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("upgrade.db");
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let before = MIGRATIONS.len() - 1;
+        for (index, migration) in MIGRATIONS.iter().take(before).enumerate() {
+            Store::apply_migration(&pool, index + 1, migration)
+                .await
+                .unwrap();
+        }
+        let id = ApplicationId::parse("app-legacy-01").unwrap();
+        let manifest = piqueld_core::parse_toml(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec]",
+        )
+        .unwrap()
+        .normalize(id.clone());
+        let desired = serde_json::to_string(&manifest).unwrap();
+        sqlx::raw_sql(&format!(
+            "INSERT INTO applications(id,name,desired_json,generation,created_at_ms,updated_at_ms) VALUES('{id}','notes','{desired}',3,1,2);
+             INSERT INTO application_status(application_id,state,updated_at_ms) VALUES('{id}','ready',2);
+             INSERT INTO operations(id,application_id,kind,state,generation,created_at_ms,updated_at_ms,finished_at_ms) VALUES('operation-1','{id}','refresh','succeeded',3,1,2,2);
+             INSERT INTO events(application_id,operation_id,kind,created_at_ms) VALUES('{id}','operation-1','operation_succeeded',2);"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let store = Store::open(&path).await.unwrap();
+        let application = store.application(&id).await.unwrap();
+        assert_eq!(application.application, manifest);
+        assert_eq!(application.generation, 3);
+        let environments = store.environments(&id).await.unwrap();
+        assert_eq!(environments.len(), 1);
+        let environment = &environments[0];
+        assert_eq!(environment.id, EnvironmentId::default_for(&id));
+        assert_eq!(environment.name.as_str(), "production");
+        assert_eq!(environment.source, EnvironmentSource::Saved);
+        assert_eq!(
+            store.status(&environment.id).await.unwrap().state,
+            ApplicationState::Ready
+        );
+        let operation = store
+            .latest_operation_for_environment(&environment.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(operation.id, "operation-1");
+        assert_eq!(operation.generation, 3);
+        let events = store.events(Some(&environment.id), None, 10).await.unwrap();
+        assert_eq!(events.items.len(), 1);
+    }
 
     #[tokio::test]
     async fn every_committed_migration_reopens_after_a_later_migration_fails() {

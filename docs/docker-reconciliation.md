@@ -18,6 +18,12 @@ and removals only need the local manager, so status, health, and deletion keep
 working if another node joins. Existing unpinned services acquire the constraint
 during their next reconciliation.
 
+The deployable unit is an environment of an application. Every environment
+deploys its application's saved manifest into its own network, services, and
+volumes, named and labelled after the environment ID (the ownership label key
+remains `io.piqueld.application`). Environments are reconciled independently;
+an operation, its status, and its prepared target belong to one environment.
+
 Apply validates and persists the entire normalized manifest. Save-only Apply
 returns the saved configuration without an operation ID or scheduling work.
 Apply with deployment and explicit Deploy prepare all sources, check a fresh
@@ -79,7 +85,7 @@ again without advancing its generation. Each deployment supersedes pending work;
 retries with the same idempotency key return the original operation. Deployment
 is rejected while deletion is intended.
 
-One async controller polls pending application futures and discovery together.
+One async controller polls pending environment futures and discovery together.
 SQLite calls, Docker observations, image pulls, and convergence timers yield to
 other ready work. Shared limits allow two image resolutions, eight application
 observations, and one resource mutation request globally. Timers consume no I/O
@@ -131,7 +137,7 @@ remain in daemon logs; durable diagnostics are sanitized. Focused fake-runtime
 tests cover execution; `just docker-test` is the separate privileged Docker
 qualification against an isolated Docker-in-Docker daemon.
 
-Operation logs carry application ID, operation ID, generation, and operation kind.
+Operation logs carry environment ID, operation ID, generation, and operation kind.
 At `info`, the daemon reports operation start and completion with outcome and
 duration. Enable `RUST_LOG=piqueld=debug` for preparation/convergence phases,
 Docker actions, observations, and retry timing. Manifest values and runtime

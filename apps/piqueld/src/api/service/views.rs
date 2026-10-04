@@ -1,31 +1,34 @@
-//! Shared application projections and bounded runtime diagnostics.
-use crate::store::{ApplicationStatus, StoredApplication};
+//! Shared application and environment projections and bounded runtime diagnostics.
+use crate::store::{EnvironmentStatus, StoredApplication, StoredEnvironment};
 use piqueld_core::{
     ObservedApplication,
     api::{
-        ApplicationStatusView, ApplicationView, DiagnosticView, ObservedApplicationView,
-        ObservedServiceView,
+        ApplicationView, DiagnosticView, EnvironmentStatusView, EnvironmentView,
+        ObservedApplicationView, ObservedServiceView,
     },
     resource::{Convergence, ObservedService, TaskDiagnostic, TaskState},
 };
 
-/// Projects stored intent into its API view, adding the spec hash.
-pub(super) fn application_view(stored: StoredApplication) -> ApplicationView {
+/// Projects stored intent and its environments into the API view, adding the spec hash.
+pub(super) fn application_view(
+    stored: StoredApplication,
+    environments: Vec<EnvironmentView>,
+) -> ApplicationView {
     ApplicationView {
         generation: stored.generation,
-        resolved_generation: stored.resolved_generation,
         spec_hash: stored.application.spec_hash(),
         application: stored.application,
         delete_intent: stored.delete_intent,
         created_at_ms: stored.created_at_ms,
         updated_at_ms: stored.updated_at_ms,
+        environments,
     }
 }
 
-/// Projects persisted application status into its API view.
-pub(super) fn status_view(status: ApplicationStatus) -> ApplicationStatusView {
-    ApplicationStatusView {
-        application_id: status.application_id.to_string(),
+/// Projects persisted environment status into its API view.
+pub(super) fn status_view(status: EnvironmentStatus) -> EnvironmentStatusView {
+    EnvironmentStatusView {
+        environment_id: status.environment_id.to_string(),
         state: status.state,
         runtime_health: status.runtime_health,
         message: status.message,
@@ -33,7 +36,7 @@ pub(super) fn status_view(status: ApplicationStatus) -> ApplicationStatusView {
     }
 }
 
-/// Upper bound on diagnostics in one application detail response.
+/// Upper bound on diagnostics in one environment detail response.
 const MAX_DETAIL_DIAGNOSTICS: usize = 24;
 /// Upper bound on diagnostics reported for a single service.
 const MAX_SERVICE_DIAGNOSTICS: usize = 8;
@@ -44,7 +47,7 @@ const MAX_SERVICE_DIAGNOSTICS: usize = 8;
 /// `service_missing` diagnostic only when `reconciled` is true (the application
 /// is `Ready` and observation succeeded); otherwise it is still `Updating`.
 pub(super) fn observed_view(
-    stored: &StoredApplication,
+    stored: &StoredEnvironment,
     observed: &ObservedApplication,
     reconciled: bool,
 ) -> ObservedApplicationView {
@@ -177,7 +180,7 @@ fn service_diagnostics(service: &ObservedService) -> Vec<DiagnosticView> {
 /// operation error, then per-service diagnostics. Capped at
 /// `MAX_DETAIL_DIAGNOSTICS`.
 pub(super) fn detail_diagnostics(
-    status: &ApplicationStatusView,
+    status: &EnvironmentStatusView,
     observed: &ObservedApplicationView,
     operation: Option<&piqueld_core::Operation>,
 ) -> Vec<DiagnosticView> {

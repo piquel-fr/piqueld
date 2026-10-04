@@ -1,5 +1,5 @@
 //! Immutable diagnostic history, independent of operation retention.
-use super::{ApplicationId, Store, StoreError, new_id, now_ms, page_limit};
+use super::{EnvironmentId, Store, StoreError, new_id, now_ms, page_limit};
 use piqueld_core::{
     Event,
     api::Page,
@@ -9,7 +9,7 @@ use sqlx::{QueryBuilder, Sqlite, Transaction};
 
 impl Store {
     /// Records an event of `kind` copying the operation's current context
-    /// (application, generation, attempt, error, phase, resource).
+    /// (environment, generation, attempt, error, phase, resource).
     /// For a failed operation it attaches a diagnostic, reusing the one already
     /// recorded for the same attempt and error code so repeated events share one
     /// occurrence ID.
@@ -57,8 +57,8 @@ impl Store {
             .transpose()
             .map_err(StoreError::corrupt)?;
         sqlx::query!(
-            "INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,error_code,phase,
-            resource,created_at_ms,scope,diagnostic_id,diagnostic_json) SELECT application_id,id,
+            "INSERT INTO events(environment_id,operation_id,generation,attempt,kind,message,error_code,phase,
+            resource,created_at_ms,scope,diagnostic_id,diagnostic_json) SELECT environment_id,id,
             generation,attempt,?1,?2,error_code,phase,resource,?3,?4,?5,?6
             FROM operations
             WHERE id=?7",
@@ -81,13 +81,13 @@ impl Store {
     /// Returns storage or pagination errors.
     pub async fn events(
         &self,
-        application: Option<&ApplicationId>,
+        application: Option<&EnvironmentId>,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Event>, StoreError> {
         self.filtered_events(
             &EventFilter {
-                application_id: application.map(ToString::to_string),
+                environment_id: application.map(ToString::to_string),
                 ..EventFilter::default()
             },
             cursor,
@@ -220,7 +220,7 @@ impl Store {
         &self,
         diagnostic: &Diagnostic,
         request_id: Option<&str>,
-        application: Option<&ApplicationId>,
+        application: Option<&EnvironmentId>,
     ) -> Result<(), StoreError> {
         let _writer = self.writers.lock().await;
         let mut diagnostic = diagnostic.clone();
@@ -228,14 +228,14 @@ impl Store {
             diagnostic.scope = EventScope::Daemon;
         }
         let scope = diagnostic.scope.as_str();
-        let app = application.map(ApplicationId::as_str);
+        let app = application.map(EnvironmentId::as_str);
         let json = serde_json::to_string(&diagnostic).map_err(StoreError::corrupt)?;
         let now = now_ms();
         sqlx::query!(
-            "INSERT INTO events(scope,application_id,kind,message,error_code,diagnostic_id,diagnostic_json,request_id,
+            "INSERT INTO events(scope,environment_id,kind,message,error_code,diagnostic_id,diagnostic_json,request_id,
             created_at_ms) SELECT ?1,?2,'diagnostic',?3,?4,?5,?6,?7,?8
             WHERE ?1='daemon' OR EXISTS(SELECT 1
-            FROM applications
+            FROM environments
             WHERE id=?2)",
             scope,
             app,
@@ -252,22 +252,22 @@ impl Store {
         Ok(())
     }
 
-    /// Records an informational application event outside any operation.
+    /// Records an informational environment event outside any operation.
     /// # Errors
     /// Returns storage errors.
-    pub(crate) async fn record_application_event(
+    pub(crate) async fn record_environment_event(
         &self,
-        application: &ApplicationId,
+        environment: &EnvironmentId,
         kind: &str,
         message: &str,
         resource: &str,
     ) -> Result<(), StoreError> {
         let _writer = self.writers.lock().await;
-        let app = application.as_str();
+        let id = environment.as_str();
         let now = now_ms();
         sqlx::query!(
-            "INSERT INTO events(application_id,kind,message,resource,created_at_ms) VALUES(?1,?2,?3,?4,?5)",
-            app,
+            "INSERT INTO events(environment_id,kind,message,resource,created_at_ms) VALUES(?1,?2,?3,?4,?5)",
+            id,
             kind,
             message,
             resource,
@@ -284,7 +284,7 @@ impl Store {
     pub(crate) async fn report_diagnostic(
         &self,
         diagnostic: &Diagnostic,
-        application: Option<&ApplicationId>,
+        application: Option<&EnvironmentId>,
     ) {
         tracing::error!(diagnostic_id=%diagnostic.id, code=%diagnostic.code, summary=%diagnostic.summary, "control-plane failure");
         if let Err(error) = self.record_diagnostic(diagnostic, None, application).await {
@@ -364,7 +364,7 @@ impl Store {
     }
 }
 
-/// Rejects inverted time ranges and malformed application IDs in an event filter.
+/// Rejects inverted time ranges and malformed environment IDs in an event filter.
 fn validate_filter(filter: &EventFilter) -> Result<(), StoreError> {
     if filter
         .since_ms
@@ -373,8 +373,8 @@ fn validate_filter(filter: &EventFilter) -> Result<(), StoreError> {
     {
         return Err(StoreError::InvalidInput);
     }
-    if let Some(id) = &filter.application_id {
-        ApplicationId::parse(id).map_err(StoreError::invalid_input)?;
+    if let Some(id) = &filter.environment_id {
+        EnvironmentId::parse(id).map_err(StoreError::invalid_input)?;
     }
     Ok(())
 }
@@ -383,7 +383,7 @@ fn validate_filter(filter: &EventFilter) -> Result<(), StoreError> {
 #[derive(sqlx::FromRow)]
 struct EventRow {
     id: i64,
-    application_id: Option<String>,
+    environment_id: Option<String>,
     operation_id: Option<String>,
     generation: Option<i64>,
     attempt: Option<i64>,
@@ -413,7 +413,7 @@ impl EventRow {
         fetch: i64,
     ) -> Result<QueryBuilder<'_, Sqlite>, StoreError> {
         let mut query = QueryBuilder::new(
-            "SELECT id, application_id, operation_id, generation, attempt, kind, message, error_code, \
+            "SELECT id, environment_id, operation_id, generation, attempt, kind, message, error_code, \
              phase, resource, created_at_ms, scope, action_id, retry, retry_delay_ms, duration_ms, \
              request_id, diagnostic_json FROM events WHERE id",
         );
@@ -421,7 +421,7 @@ impl EventRow {
             .push(if filter.descending { " < " } else { " > " })
             .push_bind(cursor);
         for (column, value) in [
-            ("application_id", filter.application_id.as_deref()),
+            ("environment_id", filter.environment_id.as_deref()),
             ("operation_id", filter.operation_id.as_deref()),
             ("action_id", filter.action_id.as_deref()),
             ("kind", filter.kind.as_deref()),
@@ -465,9 +465,9 @@ impl EventRow {
     fn into_event(self) -> Result<Event, StoreError> {
         Ok(Event {
             id: self.id,
-            application_id: self
-                .application_id
-                .map(ApplicationId::parse)
+            environment_id: self
+                .environment_id
+                .map(EnvironmentId::parse)
                 .transpose()
                 .map_err(StoreError::corrupt)?,
             operation_id: self.operation_id,
@@ -532,7 +532,7 @@ mod tests {
                 (EventFilter::default(), "INTEGER PRIMARY KEY"),
                 (
                     EventFilter {
-                        application_id: Some("app-query".into()),
+                        environment_id: Some("app-query".into()),
                         ..Default::default()
                     },
                     "event_application",

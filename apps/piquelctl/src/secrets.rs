@@ -50,18 +50,21 @@ pub(crate) enum SecretAction {
     },
 }
 impl SecretAction {
-    /// Runs a secret action for `application`. Current metadata is fetched first so
-    /// `set` and `delete` can default the expected generation (`0` creates a new secret;
-    /// deleting an unknown secret fails). Values are read only after confirmation.
+    /// Runs a secret action for the named environment of `application`, or its
+    /// only environment. Current metadata is fetched first so `set` and `delete`
+    /// can default the expected generation (`0` creates a new secret; deleting an
+    /// unknown secret fails). Values are read only after confirmation.
     pub(crate) async fn run(
         &self,
         cli: &Cli,
         client: &Client,
         console: &mut Console,
         application: &str,
+        environment: Option<&str>,
     ) -> Result<()> {
-        let app = crate::commands::resolve_application(client, application).await?;
-        let id = app.application.id().as_str();
+        let (_, environment) =
+            crate::environments::select(client, application, environment).await?;
+        let id = environment.id.as_str();
         let metadata = client.secrets(id).await?;
         match self {
             Self::List => console.emit(&metadata)?,
@@ -83,7 +86,7 @@ impl SecretAction {
                     cli.noninteractive,
                     *yes,
                     &format!(
-                        "Set secret {name:?} for {application:?}? Takes effect on a later Deploy. [y/N] "
+                        "Set secret {name:?} for {application:?} in environment {:?}? Takes effect on a later Deploy. [y/N] ", environment.name.as_str()
                     ),
                 ).await?;
                 let file = file.clone();
@@ -115,7 +118,10 @@ impl SecretAction {
                     console,
                     cli.noninteractive,
                     *yes,
-                    &format!("Delete secret {name:?} from {application:?}? [y/N] "),
+                    &format!(
+                        "Delete secret {name:?} from {application:?} in environment {:?}? [y/N] ",
+                        environment.name.as_str()
+                    ),
                 )
                 .await?;
                 client.delete_secret(id, name, generation).await?;
@@ -139,10 +145,10 @@ impl SecretAction {
     }
 }
 
-/// Daemon-wide operations, distinct from application-scoped secret values.
+/// Daemon-wide operations, distinct from environment-scoped secret values.
 #[derive(Debug, Subcommand)]
 pub(crate) enum KeyAction {
-    /// Recover from a lost master key by discarding ALL stored values, for every application.
+    /// Recover from a lost master key by discarding ALL stored values, for every environment.
     RecoverKey {
         /// Confirm recovery without an interactive prompt.
         #[arg(long)]
@@ -159,7 +165,7 @@ impl KeyAction {
         console: &mut Console,
     ) -> Result<()> {
         let Self::RecoverKey { yes } = self;
-        let message = "Discard stored secret values for ALL applications? Running services keep their Docker secrets; replacement values and a new deploy are required. [y/N] ";
+        let message = "Discard stored secret values for ALL environments? Running services keep their Docker secrets; replacement values and a new deploy are required. [y/N] ";
         // Print scope even with --yes; the confirmation helper skips its prompt then.
         console.warning(message.trim_end_matches(" [y/N] "))?;
         confirm(console, cli.noninteractive, *yes, message).await?;

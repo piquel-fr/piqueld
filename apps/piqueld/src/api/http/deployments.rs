@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use piqueld_core::{
-    ApplicationId, Operation,
+    EnvironmentId, Operation,
     api::{AcceptedOperation, DeploymentView, Envelope, Page},
     manifest::ManifestRevision,
 };
@@ -64,13 +64,13 @@ impl DeployQuery {
     }
 }
 
-/// Deploys the saved configuration.
+/// Deploys the application's saved configuration to an environment.
 ///
 /// Returns 202 with the accepted durable operation. Requires
 /// `expected_generation` unless `force=true`; a stale generation fails with 409.
 /// Repeating a request with the same `Idempotency-Key` returns the original
 /// response.
-#[utoipa::path(post,path="/api/v1/applications/{id}/deploy",operation_id="deployApplication",
+#[utoipa::path(post,path="/api/v1/environments/{id}/deploy",operation_id="deployEnvironment",
     params(("id"=String,Path),DeployQuery,("Idempotency-Key"=Option<String>,Header)),
     responses((status=202,description="Deployment accepted",body=Envelope<AcceptedOperation>),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
@@ -85,7 +85,7 @@ pub(super) async fn deploy(
     super::applications::accept_mutation(
         &state,
         crate::api::Mutation::Deploy {
-            id: ApplicationId::parse(id)?,
+            id: EnvironmentId::parse(id)?,
             revision: query.revision()?,
         },
         query.expected_generation,
@@ -95,10 +95,10 @@ pub(super) async fn deploy(
     .await
 }
 
-/// Lists deployments of an application, newest first.
+/// Lists deployments of an environment, newest first.
 ///
 /// Returns three deployment snapshots per page; follow `next_cursor` for older ones.
-#[utoipa::path(get,path="/api/v1/applications/{id}/deployments",operation_id="listDeployments",
+#[utoipa::path(get,path="/api/v1/environments/{id}/deployments",operation_id="listDeployments",
     params(("id"=String,Path),HistoryQuery),
     responses((status=200,description="Deployment snapshots, newest first (three per page)",body=Envelope<Page<DeploymentView>>),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse))))]
@@ -115,15 +115,15 @@ pub(super) async fn list(
         )
     })?;
     Ok(ok(state
-        .deployments(&ApplicationId::parse(id)?, query.cursor.as_deref())
+        .deployments(&EnvironmentId::parse(id)?, query.cursor.as_deref())
         .await?))
 }
 
 /// Lists attempts of one deployment, newest first.
 ///
 /// Returns up to 100 retained attempt outcomes per page. Deployments owned by
-/// another application are reported as not found.
-#[utoipa::path(get,path="/api/v1/applications/{id}/deployments/{deployment}/attempts",operation_id="listDeploymentAttempts",
+/// another environment are reported as not found.
+#[utoipa::path(get,path="/api/v1/environments/{id}/deployments/{deployment}/attempts",operation_id="listDeploymentAttempts",
     params(("id"=String,Path),("deployment"=String,Path),HistoryQuery),
     responses((status=200,description="Retained attempt outcomes, newest first (100 per page)",body=Envelope<Page<Operation>>),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse))))]
@@ -141,7 +141,7 @@ pub(super) async fn attempts(
     })?;
     Ok(ok(state
         .deployment_attempts(
-            &ApplicationId::parse(id)?,
+            &EnvironmentId::parse(id)?,
             &deployment,
             query.cursor.as_deref(),
         )

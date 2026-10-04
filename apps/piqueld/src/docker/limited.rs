@@ -9,7 +9,7 @@
 use super::{DockerApi, DockerError, DockerTimeout, SwarmState};
 use async_trait::async_trait;
 use piqueld_core::{
-    ApplicationId, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
+    DesiredNetwork, DesiredService, DesiredVolume, EnvironmentId, ObservedApplication,
 };
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Semaphore;
@@ -41,7 +41,7 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     async fn application_logs(
         &self,
         instance: &piqueld_core::InstanceId,
-        application: &ApplicationId,
+        application: &EnvironmentId,
         service: Option<&str>,
         tail: u16,
         since: u32,
@@ -64,10 +64,10 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     async fn create_exec(
         &self,
         instance: &piqueld_core::InstanceId,
-        application: &ApplicationId,
+        environment: &EnvironmentId,
         request: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<super::Exec>, DockerError> {
-        self.inner.create_exec(instance, application, request).await
+        self.inner.create_exec(instance, environment, request).await
     }
 
     async fn run_exec(&self, exec: &super::Exec, io: super::ExecIo) -> Result<i64, DockerError> {
@@ -128,7 +128,7 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
         self.build_image_recorded(dockerfile, context, None).await
     }
     /// Waiting for an observation permit counts against the request budget.
-    async fn observe(&self, id: &ApplicationId) -> Result<ObservedApplication, DockerError> {
+    async fn observe(&self, id: &EnvironmentId) -> Result<ObservedApplication, DockerError> {
         DockerTimeout::Request
             .run("observe application", async {
                 let _permit = self
@@ -213,7 +213,7 @@ mod tests {
         let permits = docker.observations.acquire_many(8).await.unwrap();
         let started = tokio::time::Instant::now();
         let error = docker
-            .observe(&ApplicationId::parse("app-queued").unwrap())
+            .observe(&EnvironmentId::parse("app-queued").unwrap())
             .await
             .unwrap_err();
         assert_eq!(started.elapsed(), DockerTimeout::Request.duration());

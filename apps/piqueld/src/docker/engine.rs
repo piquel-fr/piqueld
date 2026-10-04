@@ -551,7 +551,7 @@ mod tests {
         use piqueld_core::resource::{
             APPLICATION_LABEL, INSTANCE_LABEL, MANAGED_LABEL, SERVICE_LABEL, SPEC_HASH_LABEL,
         };
-        let app = piqueld_core::ApplicationId::parse("app-update-race").unwrap();
+        let app = piqueld_core::EnvironmentId::parse("app-update-race").unwrap();
         let name = piqueld_core::docker_resource_name(
             &app,
             piqueld_core::ResourceKind::Service,

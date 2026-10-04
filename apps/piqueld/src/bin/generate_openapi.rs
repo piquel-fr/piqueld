@@ -187,7 +187,7 @@ impl Generator {
         // builds lack, so the exec WebSocket is written by hand in
         // `piqueld_client::exec` for native targets.
         ensure!(
-            paths.remove("/api/v1/applications/{id}/exec").is_some(),
+            paths.remove("/api/v1/environments/{id}/exec").is_some(),
             "missing exec operation"
         );
         // Readiness uses a typed readiness body for 503. Progenitor cannot

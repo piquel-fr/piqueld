@@ -327,7 +327,7 @@ impl<'a> ErrorReport<'a> {
         out.heading("Context:")?;
         for (label, field) in [
             ("Operation", "id"),
-            ("Application", "application_id"),
+            ("Environment", "environment_id"),
             ("Phase", "phase"),
             ("Resource", "resource"),
             ("Code", "error_code"),
@@ -337,10 +337,10 @@ impl<'a> ErrorReport<'a> {
                 out.label(label, value)?;
             }
         }
-        if let Some(application) = operation.get("application_id").and_then(Value::as_str) {
+        if let Some(environment) = operation.get("environment_id").and_then(Value::as_str) {
             out.label(
                 "Hint",
-                format_args!("retry with `piquelctl app reconcile {application}`"),
+                format_args!("retry with `piquelctl env reconcile <APP> {environment}`"),
             )?;
         }
         Ok(())

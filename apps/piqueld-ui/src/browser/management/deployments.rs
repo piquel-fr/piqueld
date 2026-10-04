@@ -27,14 +27,15 @@ pub(super) fn DeploymentActions() -> impl IntoView {
             }
         };
         let app = context.saved.get_untracked();
+        let environment = context.environment_id();
         context.busy.set(true);
         spawn_local(async move {
             let mut result = client
-                .deploy_application(app.application.id().as_str(), app.generation, None)
+                .deploy_environment(&environment, app.generation, None)
                 .await;
             if result.as_ref().is_err_and(transport_failure) {
                 result = client
-                    .deploy_application(app.application.id().as_str(), app.generation, None)
+                    .deploy_environment(&environment, app.generation, None)
                     .await;
             }
             match result {
@@ -246,7 +247,7 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
     let cursor = RwSignal::new(None::<String>);
     let error = RwSignal::new(None::<String>);
     let loading = RwSignal::new(false);
-    let id = context.id();
+    let id = context.environment_id();
     context.poll_deployments(id.clone(), history, cursor, paginated, error, loading);
     let more = move |_| {
         let id = id.clone();
@@ -551,13 +552,13 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
         if loading.get_untracked() {
             return;
         }
-        let app_id = op.application_id.to_string();
+        let environment = op.environment_id.to_string();
         let deployment_id = op.id.clone();
         let active = active.clone();
         loading.set(true);
         spawn_local(async move {
             let result = Client::browser()
-                .deployment_attempts(&app_id, &deployment_id, next.as_deref())
+                .deployment_attempts(&environment, &deployment_id, next.as_deref())
                 .await;
             if !active.get() {
                 return;

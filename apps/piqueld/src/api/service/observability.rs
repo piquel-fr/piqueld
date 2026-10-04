@@ -42,7 +42,7 @@ impl ApplicationService {
         &self,
         diagnostic: &Diagnostic,
         request_id: Option<&str>,
-        application: Option<&piqueld_core::ApplicationId>,
+        application: Option<&piqueld_core::EnvironmentId>,
     ) {
         if let Err(error) = self
             .store

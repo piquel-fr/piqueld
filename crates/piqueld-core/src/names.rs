@@ -88,6 +88,12 @@ validated_string!(
     crate::resource::valid_logical_name
 );
 validated_string!(
+    /// User-facing environment name, unique within its application.
+    EnvironmentName, EnvironmentNameError,
+    "environment names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
+    crate::resource::valid_logical_name
+);
+validated_string!(
     /// Logical service name, distinct from an application or volume name.
     ///
     /// ```compile_fail

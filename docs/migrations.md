@@ -1,8 +1,9 @@
 # Database migrations
 
 SQLx's SQLite driver owns persistence. The database at
-`<server.data_dir>/piqueld.db` contains application manifests, resolved targets,
-application status, operation history, and the control-plane instance identity.
+`<server.data_dir>/piqueld.db` contains application manifests, environments
+with their resolved targets and status, operation history, and the control-plane
+instance identity.
 The store reads and writes these records; it does not resolve images or plan
 runtime changes.
 
@@ -44,9 +45,11 @@ resolves image tags again. Empty applications are valid and deploy without
 services or networks.
 
 Deployment snapshots, execution records and attempt outcomes are retained until
-application deletion. Deletion removes the application's database records,
-application-owned history and request receipts after runtime verification; Docker volumes remain.
-Daemon-scoped failures retain optional application context after deletion.
+environment deletion. Deletion removes the environment's database records,
+environment-owned history and request receipts after runtime verification; Docker
+volumes remain. The application is removed with its last environment when its
+deletion was requested. Daemon-scoped failures retain optional environment
+context after deletion.
 Application events use `retention.event_days`; shared daemon events use
 `retention.daemon_event_days` (both default to 90 days; zero disables pruning). Non-deployment operation retention remains configurable.
 
@@ -111,6 +114,21 @@ cascades routing records only after gateway withdrawal and runtime cleanup succe
 ID-based cursor and ordering. Filtered event/build queries use direct application
 equality, and filtered output uses direct stream equality, so their existing
 compound indexes bound each page without scanning unrelated history.
+
+`0012_environments.sql` splits applications into applications and their
+environments. Every existing application becomes an application with one
+environment named `production`; both keep the existing ID, so Docker names,
+ownership labels, secret encryption context and history are unchanged and
+nothing is redeployed. The former `applications` table is renamed
+`environments` and keeps each environment's resolved target and deletion intent.
+A new `applications` table holds the name, saved manifest, configuration
+revision and deletion intent. Runtime tables (`environment_status`,
+`operations`, `deployments`, `builds`, `events`, `environment_secrets`,
+`secret_versions`, deployment pins, `environment_routes`, hostname reservations,
+active actions and notification conditions) name their owner `environment_id`.
+Stored operation records and request receipts that still say `application_id`
+keep decoding. An older daemon rejects the migrated schema; restore the
+pre-upgrade backup to roll back.
 
 ## Upgrade and rollback
 

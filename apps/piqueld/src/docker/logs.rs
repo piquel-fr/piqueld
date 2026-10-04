@@ -6,7 +6,7 @@ use bollard::{
 };
 use futures_util::StreamExt;
 use piqueld_core::{
-    ApplicationId, InstanceId,
+    EnvironmentId, InstanceId,
     api::{ApplicationLogs, LogRecord},
     resource::{APPLICATION_LABEL, INSTANCE_LABEL, MANAGED_LABEL, SERVICE_LABEL},
 };
@@ -29,7 +29,7 @@ impl BollardDocker {
     pub(super) async fn read_logs(
         &self,
         instance: &InstanceId,
-        application: &ApplicationId,
+        application: &EnvironmentId,
         service: Option<&str>,
         tail: u16,
         since: u32,
@@ -158,7 +158,7 @@ impl BollardDocker {
     pub(super) async fn owned_services(
         &self,
         instance: &InstanceId,
-        application: &ApplicationId,
+        application: &EnvironmentId,
         service: Option<&str>,
     ) -> Result<HashMap<String, String>, DockerError> {
         Ok(self

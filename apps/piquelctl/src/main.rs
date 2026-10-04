@@ -4,6 +4,7 @@ mod auth;
 mod cli;
 mod commands;
 mod editing;
+mod environments;
 mod error;
 mod exec;
 mod output;
@@ -169,7 +170,7 @@ mod tests {
             vec!["piquelctl", "status"],
             vec!["piquelctl", "app", "list"],
             vec!["piquelctl", "app", "show", "notes"],
-            vec!["piquelctl", "builds", "list", "--application", "app-01"],
+            vec!["piquelctl", "builds", "list", "--environment", "app-01"],
             vec!["piquelctl", "builds", "logs", "1", "--before", "64"],
             vec!["piquelctl", "app", "validate", "--file", "application.toml"],
             vec!["piquelctl", "app", "plan", "--file", "application.toml"],

@@ -8,15 +8,15 @@ use crate::{
 };
 use hyper::Method;
 use piqueld_core::{
-    ApplicationId, NormalizedApplication, OperationState, observability::EventScope,
+    EnvironmentId, NormalizedApplication, OperationState, observability::EventScope,
 };
 use serde_json::json;
 
 fn application(name: &str, host: &str, body: &str) -> NormalizedApplication {
-    piqueld_core::parse_toml(&format!("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[[spec.services]]\nname='web'\ncommand=['caddy']\narguments=['respond','--listen',':8080','--body','{body}']\n[spec.services.source]\ntype='image'\nimage='{CADDY_IMAGE}'\n[[spec.routes]]\nhostname='{host}'\nservice='web'\nport=8080")).unwrap().normalize(ApplicationId::parse("input-app").unwrap())
+    piqueld_core::parse_toml(&format!("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[[spec.services]]\nname='web'\ncommand=['caddy']\narguments=['respond','--listen',':8080','--body','{body}']\n[spec.services.source]\ntype='image'\nimage='{CADDY_IMAGE}'\n[[spec.routes]]\nhostname='{host}'\nservice='web'\nport=8080")).unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap())
 }
 
-async fn request_deployment(store: &Store, app: NormalizedApplication) -> (ApplicationId, String) {
+async fn request_deployment(store: &Store, app: NormalizedApplication) -> (EnvironmentId, String) {
     let (MutationResponse::Saved(saved), _) = store
         .accept(
             Mutation::Save {
@@ -33,7 +33,7 @@ async fn request_deployment(store: &Store, app: NormalizedApplication) -> (Appli
     else {
         panic!("saved")
     };
-    let id = ApplicationId::parse(saved.application_id).unwrap();
+    let id = EnvironmentId::parse(saved.application_id).unwrap();
     let operation = saved.operation_id.unwrap();
     (id, operation)
 }
@@ -42,7 +42,7 @@ async fn deploy(
     store: &Store,
     controller: &Controller<BollardDocker>,
     app: NormalizedApplication,
-) -> ApplicationId {
+) -> EnvironmentId {
     let (id, operation) = request_deployment(store, app).await;
     tokio::time::timeout(Duration::from_mins(3), async {
         loop {
@@ -76,7 +76,7 @@ struct Scenario {
     docker: Arc<BollardDocker>,
     gateway: Arc<Ingress>,
     controller: Controller<BollardDocker>,
-    first: ApplicationId,
+    first: EnvironmentId,
     client: reqwest::Client,
     tls_port: u16,
     plain_port: u16,
@@ -235,7 +235,7 @@ impl Scenario {
     /// A service-less application's redirect is answered by Caddy itself, so
     /// the application has no ingress network.
     async fn redirect_without_backend(&self) {
-        let app = piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='www'\n[[spec.routes]]\nhostname='www.example.test'\nredirect={to='https://one.example.test/base/'}").unwrap().normalize(ApplicationId::parse("input-app").unwrap());
+        let app = piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='www'\n[[spec.routes]]\nhostname='www.example.test'\nredirect={to='https://one.example.test/base/'}").unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap());
         let id = deploy(&self.store, &self.controller, app).await;
         let response = self
             .client
@@ -337,10 +337,9 @@ impl Scenario {
                     private.spec.routes.clear();
                     let (_, operation) = request_deployment(
                         &self.store,
-                        private
-                            .validate()
-                            .unwrap()
-                            .normalize(ApplicationId::parse("private-input").unwrap()),
+                        private.validate().unwrap().normalize(
+                            piqueld_core::ApplicationId::parse("private-input").unwrap(),
+                        ),
                     )
                     .await;
                     while self.store.operation(&operation).await.unwrap().state
@@ -542,7 +541,7 @@ impl Scenario {
         assert_eq!(self.body("one.example.test").await, "first backend");
     }
 
-    async fn unavailable_application(&self) -> (ApplicationId, NormalizedApplication) {
+    async fn unavailable_application(&self) -> (EnvironmentId, NormalizedApplication) {
         let app = application("unavailable", "unavailable.example.test", "unavailable");
         let (MutationResponse::Saved(saved), _) = self
             .store
@@ -561,7 +560,7 @@ impl Scenario {
         else {
             panic!("saved")
         };
-        let unavailable = ApplicationId::parse(saved.application_id).unwrap();
+        let unavailable = EnvironmentId::parse(saved.application_id).unwrap();
         (unavailable, app)
     }
 
@@ -794,7 +793,9 @@ impl Scenario {
                 deploy(
                     &self.store,
                     &self.controller,
-                    changed.validate().unwrap().normalize(self.first.clone()),
+                    changed.validate().unwrap().normalize(
+                        piqueld_core::ApplicationId::parse(self.first.as_str()).unwrap(),
+                    ),
                 )
                 .await;
                 completed.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -919,7 +920,10 @@ impl Scenario {
         deploy(
             &self.store,
             &controller,
-            changed.validate().unwrap().normalize(self.first.clone()),
+            changed
+                .validate()
+                .unwrap()
+                .normalize(piqueld_core::ApplicationId::parse(self.first.as_str()).unwrap()),
         )
         .await;
         assert_eq!(

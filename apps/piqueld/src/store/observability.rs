@@ -159,7 +159,7 @@ impl Store {
         let attempts = sqlx::query!(
             "SELECT a.deployment_id,a.attempt,a.outcome_json
             FROM deployment_attempts a JOIN deployments d ON d.id=a.deployment_id
-            WHERE (?1 IS NULL OR d.application_id=?1) AND json_extract(a.outcome_json,'$.finished_at_ms') BETWEEN ?2 AND ?3
+            WHERE (?1 IS NULL OR d.environment_id=?1) AND json_extract(a.outcome_json,'$.finished_at_ms') BETWEEN ?2 AND ?3
             ORDER BY a.deployment_id,a.attempt",
             application,
             since,
@@ -231,7 +231,7 @@ impl Store {
         result.action_retries = sqlx::query_scalar!(
             "SELECT COUNT(*)
             FROM events
-            WHERE kind='action_retry' AND (?1 IS NULL OR application_id=?1) AND created_at_ms BETWEEN ?2 AND ?3",
+            WHERE kind='action_retry' AND (?1 IS NULL OR environment_id=?1) AND created_at_ms BETWEEN ?2 AND ?3",
             application,
             since,
             until,
@@ -242,7 +242,7 @@ impl Store {
         result.actions = sqlx::query!(
             "SELECT phase,COUNT(*) AS \"count!: i64\",AVG(duration_ms) AS \"mean?: f64\"
             FROM events
-            WHERE duration_ms IS NOT NULL AND phase IS NOT NULL AND (?1 IS NULL OR application_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 GROUP BY phase
+            WHERE duration_ms IS NOT NULL AND phase IS NOT NULL AND (?1 IS NULL OR environment_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 GROUP BY phase
             ORDER BY phase",
             application,
             since,
@@ -261,7 +261,7 @@ impl Store {
         result.failures = sqlx::query!(
             "SELECT error_code,COUNT(DISTINCT COALESCE(diagnostic_id,CAST(id AS TEXT))) AS \"count!: i64\"
             FROM events
-            WHERE error_code IS NOT NULL AND (?1 IS NULL OR application_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 GROUP BY error_code
+            WHERE error_code IS NOT NULL AND (?1 IS NULL OR environment_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 GROUP BY error_code
             ORDER BY 2 DESC,error_code LIMIT 20",
             application,
             since,

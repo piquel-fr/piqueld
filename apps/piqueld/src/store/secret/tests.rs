@@ -5,7 +5,12 @@ fn application() -> NormalizedApplication {
         "../../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
     ))
     .unwrap()
-    .normalize(ApplicationId::parse("app-secret-test").unwrap())
+    .normalize(piqueld_core::ApplicationId::parse("app-secret-test").unwrap())
+}
+
+/// The environment created with `app`, which shares its ID.
+fn environment(app: &NormalizedApplication) -> EnvironmentId {
+    EnvironmentId::default_for(app.id())
 }
 
 fn with_secret(app: &NormalizedApplication) -> NormalizedApplication {
@@ -28,7 +33,7 @@ async fn captured_deployment_protects_secrets_before_pinning() {
     let captured = with_secret(&app);
     let op = store.save_application(&captured, None, None).await.unwrap();
     store
-        .put_secret(app.id(), "token", 0, b"value".to_vec())
+        .put_secret(&environment(&app), "token", 0, b"value".to_vec())
         .await
         .unwrap();
     store
@@ -45,10 +50,12 @@ async fn captured_deployment_protects_secrets_before_pinning() {
         .await
         .unwrap();
     assert!(matches!(
-        store.begin_secret_deletion(app.id(), "token", 1).await,
+        store
+            .begin_secret_deletion(&environment(&app), "token", 1)
+            .await,
         Err(StoreError::SecretReferenced)
     ));
-    assert_eq!(store.pin_secrets(&op.id, &captured).await.unwrap().len(), 1);
+    assert_eq!(store.pin_secrets(&op, &captured).await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -59,16 +66,16 @@ async fn deletion_reservations_survive_restart_and_do_not_block_other_writes() {
     let app = application();
     let op = store.save_application(&app, None, None).await.unwrap();
     store
-        .put_secret(app.id(), "token", 0, b"value".to_vec())
+        .put_secret(&environment(&app), "token", 0, b"value".to_vec())
         .await
         .unwrap();
     let deletion = store
-        .begin_secret_deletion(app.id(), "token", 1)
+        .begin_secret_deletion(&environment(&app), "token", 1)
         .await
         .unwrap();
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        store.put_secret(app.id(), "other", 0, b"unrelated".to_vec()),
+        store.put_secret(&environment(&app), "other", 0, b"unrelated".to_vec()),
     )
     .await
     .unwrap()
@@ -77,7 +84,7 @@ async fn deletion_reservations_survive_restart_and_do_not_block_other_writes() {
     let store = Store::open(&path).await.unwrap();
     assert!(
         store
-            .secrets(app.id())
+            .secrets(&environment(&app))
             .await
             .unwrap()
             .iter()
@@ -87,7 +94,7 @@ async fn deletion_reservations_survive_restart_and_do_not_block_other_writes() {
     );
     assert!(matches!(
         store
-            .put_secret(app.id(), "token", 1, b"replacement".to_vec())
+            .put_secret(&environment(&app), "token", 1, b"replacement".to_vec())
             .await,
         Err(StoreError::SecretDeleting)
     ));
@@ -96,28 +103,28 @@ async fn deletion_reservations_survive_restart_and_do_not_block_other_writes() {
         Err(StoreError::SecretDeleting)
     ));
     assert!(matches!(
-        store.pin_secrets(&op.id, &with_secret(&app)).await,
+        store.pin_secrets(&op, &with_secret(&app)).await,
         Err(StoreError::SecretDeleting)
     ));
     let retry = store
-        .begin_secret_deletion(app.id(), "token", 1)
+        .begin_secret_deletion(&environment(&app), "token", 1)
         .await
         .unwrap();
     assert_eq!(retry.id, deletion.id);
     assert_eq!(retry.versions, deletion.versions);
     store
-        .finish_secret_deletion(app.id(), "token", &retry.id)
+        .finish_secret_deletion(&environment(&app), "token", &retry.id)
         .await
         .unwrap();
     store
-        .put_secret(app.id(), "token", 0, b"new value".to_vec())
+        .put_secret(&environment(&app), "token", 0, b"new value".to_vec())
         .await
         .unwrap();
     store
-        .finish_secret_deletion(app.id(), "token", &deletion.id)
+        .finish_secret_deletion(&environment(&app), "token", &deletion.id)
         .await
         .unwrap();
-    let names = store.secret_names(app.id()).await.unwrap();
+    let names = store.secret_names(&environment(&app)).await.unwrap();
     assert_eq!(
         names.len(),
         2,
@@ -135,45 +142,48 @@ async fn wrong_master_key_blocks_writes_and_original_key_restores_them() {
     let app = application();
     store.save_application(&app, None, None).await.unwrap();
     store
-        .put_secret(app.id(), "token", 0, b"original".to_vec())
+        .put_secret(&environment(&app), "token", 0, b"original".to_vec())
         .await
         .unwrap();
     let original = Zeroizing::new(std::fs::read(&key).unwrap());
-    let versions = store.secret_names(app.id()).await.unwrap();
+    let versions = store.secret_names(&environment(&app)).await.unwrap();
     drop(store);
     std::fs::write(&key, [42; 32]).unwrap();
     let store = Store::open(&path).await.unwrap();
     assert!(matches!(
         store
-            .put_secret(app.id(), "token", 1, b"wrong key".to_vec())
+            .put_secret(&environment(&app), "token", 1, b"wrong key".to_vec())
             .await,
         Err(StoreError::SecretSource(_))
     ));
-    assert_eq!(store.secrets(app.id()).await.unwrap()[0].generation, 1);
+    assert_eq!(
+        store.secrets(&environment(&app)).await.unwrap()[0].generation,
+        1
+    );
     std::fs::write(&key, &*original).unwrap();
     store
-        .put_secret(app.id(), "token", 1, b"restored".to_vec())
+        .put_secret(&environment(&app), "token", 1, b"restored".to_vec())
         .await
         .unwrap();
     assert_eq!(
         &*store
-            .secret_plaintext(app.id(), &versions[0])
+            .secret_plaintext(&environment(&app), &versions[0])
             .await
             .unwrap(),
         b"original"
     );
     let deletion = store
-        .begin_secret_deletion(app.id(), "token", 2)
+        .begin_secret_deletion(&environment(&app), "token", 2)
         .await
         .unwrap();
     store
-        .finish_secret_deletion(app.id(), "token", &deletion.id)
+        .finish_secret_deletion(&environment(&app), "token", &deletion.id)
         .await
         .unwrap();
     std::fs::remove_file(&key).unwrap();
     assert!(matches!(
         store
-            .put_secret(app.id(), "new", 0, b"value".to_vec())
+            .put_secret(&environment(&app), "new", 0, b"value".to_vec())
             .await,
         Err(StoreError::SecretSource(_))
     ));
@@ -190,7 +200,7 @@ async fn retained_version_quota_rejects_writes_without_removing_values() {
     let app = application();
     store.save_application(&app, None, None).await.unwrap();
     store
-        .put_secret(app.id(), "token", 0, b"x".to_vec())
+        .put_secret(&environment(&app), "token", 0, b"x".to_vec())
         .await
         .unwrap();
     let mut tx = store.pool.begin().await.unwrap();
@@ -203,25 +213,31 @@ async fn retained_version_quota_rejects_writes_without_removing_values() {
         Err(StoreError::SecretQuota)
     ));
     tx.rollback().await.unwrap();
-    sqlx::query!("WITH RECURSIVE versions(n) AS (SELECT 2 UNION ALL SELECT n+1 FROM versions WHERE n<1000) INSERT INTO secret_versions(application_id,name,generation,swarm_name,nonce,ciphertext) SELECT s.application_id,s.name,v.n,'fixture-'||v.n,s.nonce,s.ciphertext FROM versions v CROSS JOIN secret_versions s WHERE s.generation=1").execute(&store.pool).await.unwrap();
+    sqlx::query!("WITH RECURSIVE versions(n) AS (SELECT 2 UNION ALL SELECT n+1 FROM versions WHERE n<1000) INSERT INTO secret_versions(environment_id,name,generation,swarm_name,nonce,ciphertext) SELECT s.environment_id,s.name,v.n,'fixture-'||v.n,s.nonce,s.ciphertext FROM versions v CROSS JOIN secret_versions s WHERE s.generation=1").execute(&store.pool).await.unwrap();
     assert!(matches!(
         store
-            .put_secret(app.id(), "token", 1, b"blocked".to_vec())
+            .put_secret(&environment(&app), "token", 1, b"blocked".to_vec())
             .await,
         Err(StoreError::SecretQuota)
     ));
-    assert_eq!(store.secrets(app.id()).await.unwrap()[0].generation, 1);
-    assert_eq!(store.secret_names(app.id()).await.unwrap().len(), 1000);
+    assert_eq!(
+        store.secrets(&environment(&app)).await.unwrap()[0].generation,
+        1
+    );
+    assert_eq!(
+        store.secret_names(&environment(&app)).await.unwrap().len(),
+        1000
+    );
     let deletion = store
-        .begin_secret_deletion(app.id(), "token", 1)
+        .begin_secret_deletion(&environment(&app), "token", 1)
         .await
         .unwrap();
     store
-        .finish_secret_deletion(app.id(), "token", &deletion.id)
+        .finish_secret_deletion(&environment(&app), "token", &deletion.id)
         .await
         .unwrap();
     store
-        .put_secret(app.id(), "fresh", 0, b"space freed".to_vec())
+        .put_secret(&environment(&app), "fresh", 0, b"space freed".to_vec())
         .await
         .unwrap();
 }
@@ -233,7 +249,7 @@ async fn rotation_preserves_retry_pins_and_secret_values_never_enter_snapshots()
     let mut app = application();
     let op = store.save_application(&app, None, None).await.unwrap();
     store
-        .put_secret(app.id(), "token", 0, b"first-value".to_vec())
+        .put_secret(&environment(&app), "token", 0, b"first-value".to_vec())
         .await
         .unwrap();
     let mut input = app.to_manifest();
@@ -244,33 +260,35 @@ async fn rotation_preserves_retry_pins_and_secret_values_never_enter_snapshots()
             target: "/run/secrets/token".into(),
         });
     app = input.validate().unwrap().normalize(app.id().clone());
-    let pins = store.pin_secrets(&op.id, &app).await.unwrap();
+    let pins = store.pin_secrets(&op, &app).await.unwrap();
     store
-        .put_secret(app.id(), "token", 1, b"second-value".to_vec())
+        .put_secret(&environment(&app), "token", 1, b"second-value".to_vec())
         .await
         .unwrap();
     assert!(
         store
-            .put_secret(app.id(), "token", 1, b"stale".to_vec())
+            .put_secret(&environment(&app), "token", 1, b"stale".to_vec())
             .await
             .is_err()
     );
     assert_eq!(
         store
-            .secret_plaintext(app.id(), &pins["token"])
+            .secret_plaintext(&environment(&app), &pins["token"])
             .await
             .unwrap()
             .as_slice(),
         b"first-value"
     );
     assert!(matches!(
-        store.begin_secret_deletion(app.id(), "token", 2).await,
+        store
+            .begin_secret_deletion(&environment(&app), "token", 2)
+            .await,
         Err(StoreError::SecretReferenced)
     ));
     assert!(
         store
             .secret_plaintext(
-                &ApplicationId::parse("app-another").unwrap(),
+                &EnvironmentId::parse("app-another").unwrap(),
                 &pins["token"]
             )
             .await
@@ -279,7 +297,7 @@ async fn rotation_preserves_retry_pins_and_secret_values_never_enter_snapshots()
     drop(store);
     let store = Store::open(&path).await.unwrap();
     assert_eq!(
-        store.pin_secrets(&op.id, &app).await.unwrap(),
+        store.pin_secrets(&op, &app).await.unwrap(),
         pins,
         "retry must use the pre-rotation pin after restart"
     );
@@ -288,12 +306,15 @@ async fn rotation_preserves_retry_pins_and_secret_values_never_enter_snapshots()
             .unwrap()
             .contains("first-value")
     );
-    let next = store.request_deploy(app.id(), None).await.unwrap();
-    let new_pins = store.pin_secrets(&next.id, &app).await.unwrap();
+    let next = store
+        .request_deploy(&environment(&app), None)
+        .await
+        .unwrap();
+    let new_pins = store.pin_secrets(&next, &app).await.unwrap();
     assert_ne!(pins, new_pins);
     assert_eq!(
         store
-            .secret_plaintext(app.id(), &new_pins["token"])
+            .secret_plaintext(&environment(&app), &new_pins["token"])
             .await
             .unwrap()
             .as_slice(),
@@ -301,13 +322,13 @@ async fn rotation_preserves_retry_pins_and_secret_values_never_enter_snapshots()
     );
     std::fs::remove_file(directory.path().join("secrets.key")).unwrap();
     assert_eq!(
-        store.secrets(app.id()).await.unwrap()[0].generation,
+        store.secrets(&environment(&app)).await.unwrap()[0].generation,
         2,
         "metadata reads do not require the key"
     );
     assert!(
         store
-            .put_secret(app.id(), "token", 2, b"replacement".to_vec())
+            .put_secret(&environment(&app), "token", 2, b"replacement".to_vec())
             .await
             .is_err()
     );
@@ -322,17 +343,17 @@ async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
     let app = with_secret(&application());
     let deployed = store.save_application(&app, None, None).await.unwrap();
     store
-        .put_secret(app.id(), "token", 0, b"original".to_vec())
+        .put_secret(&environment(&app), "token", 0, b"original".to_vec())
         .await
         .unwrap();
-    let pinned = store.pin_secrets(&deployed.id, &app).await.unwrap();
+    let pinned = store.pin_secrets(&deployed, &app).await.unwrap();
     assert!(matches!(
         store.recover_secret_key().await,
         Err(StoreError::SecretKeyUsable)
     ));
     assert_eq!(
         &*store
-            .secret_plaintext(app.id(), &pinned["token"])
+            .secret_plaintext(&environment(&app), &pinned["token"])
             .await
             .unwrap(),
         b"original"
@@ -342,7 +363,7 @@ async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
     let recovery = store.recover_secret_key().await.unwrap();
     assert_eq!(
         (
-            recovery.affected_applications,
+            recovery.affected_environments,
             recovery.affected_secrets,
             recovery.discarded_versions
         ),
@@ -355,26 +376,26 @@ async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
         .find(|path| path.to_string_lossy().contains("secrets.key.retired-"))
         .expect("the unusable key is kept aside");
     assert_eq!(std::fs::read(retired).unwrap(), [42; 32]);
-    assert!(store.secrets(app.id()).await.unwrap()[0].unavailable);
+    assert!(store.secrets(&environment(&app)).await.unwrap()[0].unavailable);
     assert!(matches!(
-        store.secret_plaintext(app.id(), &pinned["token"]).await,
+        store.secret_plaintext(&environment(&app), &pinned["token"]).await,
         Err(StoreError::SecretUnavailable { names }) if names == "token"
     ));
     assert!(matches!(
-        store.pin_secrets(&deployed.id, &app).await,
+        store.pin_secrets(&deployed, &app).await,
         Err(StoreError::SecretUnavailable { .. })
     ));
 
     store
-        .put_secret(app.id(), "token", 1, b"replacement".to_vec())
+        .put_secret(&environment(&app), "token", 1, b"replacement".to_vec())
         .await
         .unwrap();
     assert!(key.exists(), "the first new value generates a key");
     let redeployed = store.save_application(&app, None, None).await.unwrap();
-    let pins = store.pin_secrets(&redeployed.id, &app).await.unwrap();
+    let pins = store.pin_secrets(&redeployed, &app).await.unwrap();
     assert_eq!(
         &*store
-            .secret_plaintext(app.id(), &pins["token"])
+            .secret_plaintext(&environment(&app), &pins["token"])
             .await
             .unwrap(),
         b"replacement"
@@ -411,20 +432,20 @@ async fn mounted_declared_secrets_are_generated_once_and_never_replace_values() 
         .normalize(application().id().clone());
     let first = store.save_application(&app, None, None).await.unwrap();
     store
-        .put_secret(app.id(), "manual", 0, b"chosen".to_vec())
+        .put_secret(&environment(&app), "manual", 0, b"chosen".to_vec())
         .await
         .unwrap();
-    let pins = store.pin_secrets(&first.id, &app).await.unwrap();
+    let pins = store.pin_secrets(&first, &app).await.unwrap();
     let value = store
-        .secret_plaintext(app.id(), &pins["token"])
+        .secret_plaintext(&environment(&app), &pins["token"])
         .await
         .unwrap();
     assert_eq!(value.len(), 32);
 
     let second = store.save_application(&app, None, Some(1)).await.unwrap();
-    assert_eq!(store.pin_secrets(&second.id, &app).await.unwrap(), pins);
+    assert_eq!(store.pin_secrets(&second, &app).await.unwrap(), pins);
     let generations = store
-        .secrets(app.id())
+        .secrets(&environment(&app))
         .await
         .unwrap()
         .into_iter()

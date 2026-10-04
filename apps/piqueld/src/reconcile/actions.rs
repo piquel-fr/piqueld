@@ -99,7 +99,7 @@ impl<D: DockerApi> Controller<D> {
         }
         let app = ownership
             .get(super::APPLICATION_LABEL)
-            .and_then(|app| piqueld_core::ApplicationId::parse(app).ok())
+            .and_then(|app| piqueld_core::EnvironmentId::parse(app).ok())
             .ok_or(OperationError::OwnershipConflict)?;
         let mut values = Vec::with_capacity(secrets.len());
         for secret in secrets {
@@ -144,14 +144,14 @@ impl<D: DockerApi> Controller<D> {
         }
     }
 
-    /// Labels that mark Docker resources as managed by this instance and application.
+    /// Labels that mark Docker resources as managed by this instance and environment.
     ///
     /// ```text
     /// {MANAGED_LABEL: "true", INSTANCE_LABEL: <store instance id>, APPLICATION_LABEL: <app id>}
     /// ```
     pub(super) fn ownership_labels(
         &self,
-        id: &piqueld_core::ApplicationId,
+        id: &piqueld_core::EnvironmentId,
     ) -> std::collections::BTreeMap<String, String> {
         std::collections::BTreeMap::from([
             (super::MANAGED_LABEL.into(), "true".into()),
@@ -309,7 +309,7 @@ impl<D: DockerApi> Controller<D> {
             if cancellation.is_cancelled() {
                 return Err(OperationError::Cancelled);
             }
-            let error = match self.docker.observe(&operation.application_id).await {
+            let error = match self.docker.observe(&operation.environment_id).await {
                 Ok(observed) => return Ok(observed),
                 Err(error) => error,
             };

@@ -48,6 +48,9 @@ const APPLICATION_TABS: [&str; 11] = [
 struct EditorContext {
     dashboard: StoredValue<super::DashboardContext>,
     saved: RwSignal<ApplicationView>,
+    /// Environment whose runtime, history, and secrets are shown; `None` until
+    /// its detail loads. Changes only when another environment is selected.
+    environment: Memo<Option<String>>,
     dirty: RwSignal<BTreeSet<String>>,
     busy: RwSignal<bool>,
     uncertain: RwSignal<bool>,
@@ -64,6 +67,10 @@ impl EditorContext {
     fn id(self) -> String {
         self.saved
             .with_untracked(|saved| saved.application.id().to_string())
+    }
+    /// The shown environment's ID, read once by components keyed on it.
+    fn environment_id(self) -> String {
+        self.environment.get_untracked().unwrap_or_default()
     }
     fn name(self) -> String {
         self.saved
@@ -394,9 +401,12 @@ pub(super) fn ApplicationPage(id: String, service: Option<String>) -> impl IntoV
 #[component]
 fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl IntoView {
     let query = leptos_router::hooks::use_query_map();
+    let dashboard = dashboard_context();
+    let selected = dashboard.signals.selected_environment;
     let context = EditorContext {
-        dashboard: StoredValue::new(dashboard_context()),
+        dashboard: StoredValue::new(dashboard),
         saved: RwSignal::new(initial),
+        environment: Memo::new(move |_| selected.get()),
         dirty: RwSignal::new(BTreeSet::new()),
         busy: RwSignal::new(false),
         uncertain: RwSignal::new(false),
@@ -438,6 +448,7 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
                 {move || health().map(health_badge)}
             </div>
             <div class="page-actions">
+                <EnvironmentSelector />
                 <a
                     class="btn btn-ghost"
                     href={format!("/api/v1/applications/{id}/manifest")}
@@ -459,23 +470,82 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
             </div>
         </div>
         <ApplicationSettings />
-        <div hidden={move || context.tab.get() != "Secrets"}>
-            <ApplicationSecrets />
-        </div>
-        <div hidden={move || context.tab.get() != "Deployments"}>
-            <DeploymentHistory />
-        </div>
-        <Show when={move || context.tab.get() == "Builds"}>
-            <super::builds::BuildHistory application={context.id()} />
-        </Show>
-        <Show when={move || context.tab.get() == "Logs"}>
-            <ApplicationLogs />
-        </Show>
-        <Show when={move || context.tab.get() == "Events"}>
-            <super::observability::EventHistory application={context.id()} />
-        </Show>
+        // Environment-scoped sections remount when another environment is selected.
+        {move || {
+            context
+                .environment
+                .get()
+                .map(|_| {
+                    view! {
+                        <div hidden={move || context.tab.get() != "Secrets"}>
+                            <ApplicationSecrets />
+                        </div>
+                        <div hidden={move || context.tab.get() != "Deployments"}>
+                            <DeploymentHistory />
+                        </div>
+                        <Show when={move || context.tab.get() == "Builds"}>
+                            <super::builds::BuildHistory environment={context.environment_id()} />
+                        </Show>
+                        <Show when={move || context.tab.get() == "Logs"}>
+                            <ApplicationLogs />
+                        </Show>
+                        <Show when={move || context.tab.get() == "Events"}>
+                            <super::observability::EventHistory environment={context.environment_id()} />
+                        </Show>
+                    }
+                })
+        }}
     }
     .into_any()
+}
+
+/// Selects the environment whose runtime, history, logs, and secrets are shown.
+/// Lists the environments of the latest detail, falling back to the saved view.
+#[component]
+fn EnvironmentSelector() -> impl IntoView {
+    let context = editor();
+    let dashboard = context.dashboard.get_value();
+    let signals = dashboard.signals;
+    let environments = move || {
+        signals
+            .detail
+            .with(|detail| {
+                detail
+                    .as_ref()
+                    .map(|detail| detail.application.environments.clone())
+            })
+            .unwrap_or_else(|| context.saved.with(|saved| saved.environments.clone()))
+    };
+    let select = move |event| {
+        signals
+            .selected_environment
+            .set(Some(event_target_value(&event)));
+        signals.detail.set(None);
+        super::load_detail(dashboard.client.clone(), signals, context.id());
+    };
+    view! {
+        <label class="field" style="max-width:200px">
+            <span>"Environment"</span>
+            <select
+                prop:value={move || context.environment.get().unwrap_or_default()}
+                disabled={move || context.dirty.with(|dirty| !dirty.is_empty())}
+                on:change={select}
+            >
+                {move || {
+                    environments()
+                        .into_iter()
+                        .map(|environment| {
+                            view! {
+                                <option value={environment.id.to_string()}>
+                                    {environment.name.to_string()}
+                                </option>
+                            }
+                        })
+                        .collect_view()
+                }}
+            </select>
+        </label>
+    }
 }
 
 /// Danger-zone card that deletes the application (guarded by the saved
@@ -486,7 +556,20 @@ fn DeleteApplication() -> impl IntoView {
     let navigate = use_navigate();
     let refresh = dashboard_context().refresh;
     let delete = move |_| {
-        if !window().confirm_with_message("Delete this application, its services, and all deployment history? Docker volume data will be retained.").unwrap_or(false){return;}
+        let environments = context.saved.with_untracked(|saved| {
+            saved
+                .environments
+                .iter()
+                .map(|environment| environment.name.to_string())
+                .collect::<Vec<_>>()
+        });
+        let message = format!(
+            "Delete this application, all its environments ({}), their services, and all deployment history? Docker volume data will be retained.",
+            environments.join(", ")
+        );
+        if !window().confirm_with_message(&message).unwrap_or(false) {
+            return;
+        }
         context.set_error(None);
         let client = match mutation_client() {
             Ok(client) => client,
@@ -499,10 +582,13 @@ fn DeleteApplication() -> impl IntoView {
         let navigate = navigate.clone();
         context.busy.set(true);
         spawn_local(async move {
+            let confirmed = environments.iter().map(String::as_str).collect::<Vec<_>>();
             match client
-                .delete_application_with_generation(
+                .delete_application_with_preconditions(
                     saved.application.id().as_str(),
                     Some(saved.generation),
+                    false,
+                    &confirmed,
                 )
                 .await
             {
@@ -521,7 +607,7 @@ fn DeleteApplication() -> impl IntoView {
                 <div>
                     <h3>"Delete application"</h3>
                     <p>
-                        "Removes running services and all configuration and deployment history. Docker volumes and their data are retained."
+                        "Removes every environment's running services and all configuration and deployment history. Docker volumes and their data are retained."
                     </p>
                 </div>
                 <button

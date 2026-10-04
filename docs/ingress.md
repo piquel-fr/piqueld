@@ -39,7 +39,11 @@ redirect = { to = "https://notes.example.com" }
 
 The dashboard's Routes tab supports the same save/deploy lifecycle. Removing a
 service in the UI also removes its routes from saved configuration. A domain can
-point at only one application's service; multiple domains may point at one service.
+point at only one environment's service; multiple domains may point at one service.
+Hostname reservations are held per environment and include the application's saved
+routes, so two environments of one application cannot share hostnames: creating a
+second environment of an application with routes fails with `hostname_conflict`
+until environments can override hostnames.
 The backend serves plain HTTP on its internal port. WebSockets and streaming are
 supported. Wildcards, path rewriting/routing, tunnels, arbitrary TCP/UDP, and
 HTTPS backends are outside this release.
@@ -56,10 +60,10 @@ HTTPS reverse proxy must listen on a different address or host.
 
 Only Caddy publishes ports. HTTP redirects to HTTPS for known hosts; unknown HTTP
 hosts receive 404 and unknown TLS names receive no automatically issued certificate.
-Each application's exposed services share a dedicated ingress overlay with Caddy;
-applications with only redirect routes have none.
-Application ingress networks are separate from each other and from private backend
-networks. The gateway is trusted across all exposed applications.
+Each environment's exposed services share a dedicated ingress overlay with Caddy;
+environments with only redirect routes have none.
+Environment ingress networks are separate from each other and from private backend
+networks. The gateway is trusted across all exposed environments.
 
 Caddy runs as the daemon's UID/GID in a standalone Docker container, with only the
 `NET_BIND_SERVICE` capability (required by the official binary), a read-only root filesystem, and a private Unix administration socket.

@@ -108,13 +108,13 @@ impl Client {
     Sends a `GET` request to `/api/v1/analytics/deployments`
 
     Arguments:
-    - `application_id`: Only include deployments of this application.
+    - `environment_id`: Only include deployments of this environment.
     - `since_ms`: Inclusive Unix millisecond lower bound; defaults to 30 days before `until_ms`.
     - `until_ms`: Inclusive Unix millisecond upper bound; defaults to now.
     */
     pub async fn deployment_analytics<'a>(
         &'a self,
-        application_id: Option<&'a str>,
+        environment_id: Option<&'a str>,
         since_ms: Option<i64>,
         until_ms: Option<i64>,
     ) -> Result<
@@ -138,8 +138,8 @@ impl Client {
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
             .query(&progenitor_client::QueryParam::new(
-                "application_id",
-                &application_id,
+                "environment_id",
+                &environment_id,
             ))
             .query(&progenitor_client::QueryParam::new("since_ms", &since_ms))
             .query(&progenitor_client::QueryParam::new("until_ms", &until_ms))
@@ -308,7 +308,7 @@ impl Client {
     Sends a `POST` request to `/api/v1/applications/apply`
 
     Arguments:
-    - `deploy`: Deploy the saved configuration; omission saves only.
+    - `deploy`: Deploy the saved configuration to the application's only environment; omission saves only.
     - `force`: Explicitly bypass revision and identity preconditions.
     - `idempotency_key`
     - `x_expected_application_id`: TOML only: inspected application identity. JSON uses `expected_application_id` in the request body.
@@ -475,7 +475,7 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Get an application
+    /*Get an application and its environments
 
     Sends a `GET` request to `/api/v1/applications/{id}`
 
@@ -534,24 +534,26 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Delete services and networks, retaining volumes
+    /*Delete an application and all its environments, retaining volumes
 
     Sends a `DELETE` request to `/api/v1/applications/{id}`
 
     Arguments:
     - `id`
-    - `expected_generation`: Current intent revision; optional for reconcile, required for deletion unless forced.
-    - `force`: Explicitly bypass intent preconditions.
+    - `environments`: Comma-separated names of every environment; required when there are several.
+    - `expected_generation`: Current application revision; required unless forced.
+    - `force`: Explicitly bypass the revision precondition. Never skips confirmation.
     - `idempotency_key`
     */
     pub async fn delete_application<'a>(
         &'a self,
         id: &'a str,
+        environments: Option<&'a str>,
         expected_generation: Option<u64>,
         force: Option<bool>,
         idempotency_key: Option<&'a str>,
     ) -> Result<
-        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::AcceptedOperation>>,
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::DeletedApplication>>,
         Error<piqueld_core::api::ErrorBody>,
     > {
         let url = format!(
@@ -575,6 +577,10 @@ impl Client {
                 ::reqwest::header::ACCEPT,
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
+            .query(&progenitor_client::QueryParam::new(
+                "environments",
+                &environments,
+            ))
             .query(&progenitor_client::QueryParam::new(
                 "expected_generation",
                 &expected_generation,
@@ -612,37 +618,32 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Deploys the saved configuration
+    /*Adds an environment to an application
 
-    Returns 202 with the accepted durable operation. Requires
-    `expected_generation` unless `force=true`; a stale generation fails with 409.
-    Repeating a request with the same `Idempotency-Key` returns the original
-    response.
+    The environment deploys the application's shared manifest and starts
+    `not_deployed`. The inspected application `expected_generation` goes in the
+    JSON body.
 
-    Sends a `POST` request to `/api/v1/applications/{id}/deploy`
+    Sends a `POST` request to `/api/v1/applications/{id}/environments`
 
     Arguments:
     - `id`
-    - `branch`: Fetch the repository manifest from this branch head, without saving it.
-    - `commit`: Fetch the repository manifest from this full commit, without saving it.
-    - `expected_generation`: Current intent revision; required unless forced.
-    - `force`: Explicitly bypass intent preconditions.
+    - `force`: Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
     - `idempotency_key`
+    - `body`
     */
-    pub async fn deploy_application<'a>(
+    pub async fn create_environment<'a>(
         &'a self,
         id: &'a str,
-        branch: Option<&'a str>,
-        commit: Option<&'a str>,
-        expected_generation: Option<u64>,
         force: Option<bool>,
         idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::api::EnvironmentRequest,
     ) -> Result<
-        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::AcceptedOperation>>,
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::EnvironmentView>>,
         Error<piqueld_core::api::ErrorBody>,
     > {
         let url = format!(
-            "{}/api/v1/applications/{}/deploy",
+            "{}/api/v1/applications/{}/environments",
             self.baseurl,
             encode_path(&id.to_string()),
         );
@@ -662,24 +663,19 @@ impl Client {
                 ::reqwest::header::ACCEPT,
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
-            .query(&progenitor_client::QueryParam::new("branch", &branch))
-            .query(&progenitor_client::QueryParam::new("commit", &commit))
-            .query(&progenitor_client::QueryParam::new(
-                "expected_generation",
-                &expected_generation,
-            ))
+            .json(&body)
             .query(&progenitor_client::QueryParam::new("force", &force))
             .headers(header_map)
             .build()?;
         let info = OperationInfo {
-            operation_id: "deploy_application",
+            operation_id: "create_environment",
         };
         self.pre(&mut request, &info).await?;
         let result = self.exec(request, &info).await;
         self.post(&result, &info).await?;
         let response = result?;
         match response.status().as_u16() {
-            202u16 => crate::client::decode_response(response).await,
+            200u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -692,203 +688,10 @@ impl Client {
             409u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
-            500u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            503u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            _ => Err(Error::UnexpectedResponse(response)),
-        }
-    }
-    /*Lists deployments of an application, newest first
-
-    Returns three deployment snapshots per page; follow `next_cursor` for older ones.
-
-    Sends a `GET` request to `/api/v1/applications/{id}/deployments`
-
-    Arguments:
-    - `id`
-    - `cursor`: `next_cursor` from a previous page.
-    */
-    pub async fn list_deployments<'a>(
-        &'a self,
-        id: &'a str,
-        cursor: Option<&'a str>,
-    ) -> Result<
-        ResponseValue<
-            piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::api::DeploymentView>>,
-        >,
-        Error<piqueld_core::api::ErrorBody>,
-    > {
-        let url = format!(
-            "{}/api/v1/applications/{}/deployments",
-            self.baseurl,
-            encode_path(&id.to_string()),
-        );
-        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-        header_map.append(
-            ::reqwest::header::HeaderName::from_static("api-version"),
-            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
-        );
-        #[allow(unused_mut)]
-        let mut request = self
-            .client
-            .get(url)
-            .header(
-                ::reqwest::header::ACCEPT,
-                ::reqwest::header::HeaderValue::from_static("application/json"),
-            )
-            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
-            .headers(header_map)
-            .build()?;
-        let info = OperationInfo {
-            operation_id: "list_deployments",
-        };
-        self.pre(&mut request, &info).await?;
-        let result = self.exec(request, &info).await;
-        self.post(&result, &info).await?;
-        let response = result?;
-        match response.status().as_u16() {
-            200u16 => crate::client::decode_response(response).await,
-            400u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            403u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            404u16 => Err(Error::ErrorResponse(
+            415u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             500u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            _ => Err(Error::UnexpectedResponse(response)),
-        }
-    }
-    /*Lists attempts of one deployment, newest first
-
-    Returns up to 100 retained attempt outcomes per page. Deployments owned by
-    another application are reported as not found.
-
-    Sends a `GET` request to `/api/v1/applications/{id}/deployments/{deployment}/attempts`
-
-    Arguments:
-    - `id`
-    - `deployment`
-    - `cursor`: `next_cursor` from a previous page.
-    */
-    pub async fn list_deployment_attempts<'a>(
-        &'a self,
-        id: &'a str,
-        deployment: &'a str,
-        cursor: Option<&'a str>,
-    ) -> Result<
-        ResponseValue<
-            piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::Operation>>,
-        >,
-        Error<piqueld_core::api::ErrorBody>,
-    > {
-        let url = format!(
-            "{}/api/v1/applications/{}/deployments/{}/attempts",
-            self.baseurl,
-            encode_path(&id.to_string()),
-            encode_path(&deployment.to_string()),
-        );
-        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-        header_map.append(
-            ::reqwest::header::HeaderName::from_static("api-version"),
-            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
-        );
-        #[allow(unused_mut)]
-        let mut request = self
-            .client
-            .get(url)
-            .header(
-                ::reqwest::header::ACCEPT,
-                ::reqwest::header::HeaderValue::from_static("application/json"),
-            )
-            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
-            .headers(header_map)
-            .build()?;
-        let info = OperationInfo {
-            operation_id: "list_deployment_attempts",
-        };
-        self.pre(&mut request, &info).await?;
-        let result = self.exec(request, &info).await;
-        self.post(&result, &info).await?;
-        let response = result?;
-        match response.status().as_u16() {
-            200u16 => crate::client::decode_response(response).await,
-            400u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            403u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            404u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            500u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            _ => Err(Error::UnexpectedResponse(response)),
-        }
-    }
-    /*Get desired and observed application state
-
-    Sends a `GET` request to `/api/v1/applications/{id}/detail`
-
-    */
-    pub async fn get_application_detail<'a>(
-        &'a self,
-        id: &'a str,
-    ) -> Result<
-        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::ApplicationDetailView>>,
-        Error<piqueld_core::api::ErrorBody>,
-    > {
-        let url = format!(
-            "{}/api/v1/applications/{}/detail",
-            self.baseurl,
-            encode_path(&id.to_string()),
-        );
-        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-        header_map.append(
-            ::reqwest::header::HeaderName::from_static("api-version"),
-            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
-        );
-        #[allow(unused_mut)]
-        let mut request = self
-            .client
-            .get(url)
-            .header(
-                ::reqwest::header::ACCEPT,
-                ::reqwest::header::HeaderValue::from_static("application/json"),
-            )
-            .headers(header_map)
-            .build()?;
-        let info = OperationInfo {
-            operation_id: "get_application_detail",
-        };
-        self.pre(&mut request, &info).await?;
-        let result = self.exec(request, &info).await;
-        self.post(&result, &info).await?;
-        let response = result?;
-        match response.status().as_u16() {
-            200u16 => crate::client::decode_response(response).await,
-            400u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            403u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            404u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            500u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            502u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             503u16 => Err(Error::ErrorResponse(
@@ -901,7 +704,8 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -989,85 +793,6 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Gets recent container output for an application
-
-    Output can be narrowed to one service and one stream. Out-of-range `tail` or
-    `since_seconds` values fail with 400 `logs_query_invalid`.
-
-    Sends a `GET` request to `/api/v1/applications/{id}/logs`
-
-    Arguments:
-    - `id`
-    - `service`: Only include output from this service (1–63 characters); all services when omitted.
-    - `since_seconds`: Only include output from this many seconds ago onward.
-    - `stream`: Only include this output stream; merged output when omitted.
-    - `tail`: Maximum number of most recent lines, merged across the selected services.
-    */
-    pub async fn application_logs<'a>(
-        &'a self,
-        id: &'a str,
-        service: Option<&'a str>,
-        since_seconds: Option<u32>,
-        stream: Option<&'a piqueld_core::api::LogStream>,
-        tail: Option<u32>,
-    ) -> Result<
-        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::ApplicationLogs>>,
-        Error<piqueld_core::api::ErrorBody>,
-    > {
-        let url = format!(
-            "{}/api/v1/applications/{}/logs",
-            self.baseurl,
-            encode_path(&id.to_string()),
-        );
-        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-        header_map.append(
-            ::reqwest::header::HeaderName::from_static("api-version"),
-            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
-        );
-        #[allow(unused_mut)]
-        let mut request = self
-            .client
-            .get(url)
-            .header(
-                ::reqwest::header::ACCEPT,
-                ::reqwest::header::HeaderValue::from_static("application/json"),
-            )
-            .query(&progenitor_client::QueryParam::new("service", &service))
-            .query(&progenitor_client::QueryParam::new(
-                "since_seconds",
-                &since_seconds,
-            ))
-            .query(&progenitor_client::QueryParam::new("stream", &stream))
-            .query(&progenitor_client::QueryParam::new("tail", &tail))
-            .headers(header_map)
-            .build()?;
-        let info = OperationInfo {
-            operation_id: "application_logs",
-        };
-        self.pre(&mut request, &info).await?;
-        let result = self.exec(request, &info).await;
-        self.post(&result, &info).await?;
-        let response = result?;
-        match response.status().as_u16() {
-            200u16 => crate::client::decode_response(response).await,
-            400u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            403u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            404u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            502u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            503u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            _ => Err(Error::UnexpectedResponse(response)),
-        }
-    }
     /*Downloads the saved configuration as a TOML manifest
 
     Reads only saved configuration, so it works while the runtime is unavailable.
@@ -1122,7 +847,8 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -1199,89 +925,6 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             422u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            500u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            503u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            _ => Err(Error::UnexpectedResponse(response)),
-        }
-    }
-    /*Reconciles an application
-
-    Returns 202 with a durable operation that repairs the runtime to match the
-    accepted configuration. Unlike other mutations, `expected_generation` is
-    optional. Repeating a request with the same `Idempotency-Key` returns the
-    original response.
-
-    Sends a `POST` request to `/api/v1/applications/{id}/reconcile`
-
-    Arguments:
-    - `id`
-    - `expected_generation`: Current intent revision; optional for reconcile, required for deletion unless forced.
-    - `force`: Explicitly bypass intent preconditions.
-    - `idempotency_key`
-    */
-    pub async fn reconcile_application<'a>(
-        &'a self,
-        id: &'a str,
-        expected_generation: Option<u64>,
-        force: Option<bool>,
-        idempotency_key: Option<&'a str>,
-    ) -> Result<
-        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::AcceptedOperation>>,
-        Error<piqueld_core::api::ErrorBody>,
-    > {
-        let url = format!(
-            "{}/api/v1/applications/{}/reconcile",
-            self.baseurl,
-            encode_path(&id.to_string()),
-        );
-        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
-        header_map.append(
-            ::reqwest::header::HeaderName::from_static("api-version"),
-            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
-        );
-        if let Some(value) = idempotency_key {
-            header_map.append("Idempotency-Key", value.to_string().try_into()?);
-        }
-        #[allow(unused_mut)]
-        let mut request = self
-            .client
-            .post(url)
-            .header(
-                ::reqwest::header::ACCEPT,
-                ::reqwest::header::HeaderValue::from_static("application/json"),
-            )
-            .query(&progenitor_client::QueryParam::new(
-                "expected_generation",
-                &expected_generation,
-            ))
-            .query(&progenitor_client::QueryParam::new("force", &force))
-            .headers(header_map)
-            .build()?;
-        let info = OperationInfo {
-            operation_id: "reconcile_application",
-        };
-        self.pre(&mut request, &info).await?;
-        let result = self.exec(request, &info).await;
-        self.post(&result, &info).await?;
-        let response = result?;
-        match response.status().as_u16() {
-            202u16 => crate::client::decode_response(response).await,
-            400u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            403u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            404u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            409u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             500u16 => Err(Error::ErrorResponse(
@@ -1376,7 +1019,8 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -1473,7 +1117,8 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -1556,7 +1201,8 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -1648,7 +1294,8 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -1740,7 +1387,8 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -1832,7 +1480,8 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -1924,7 +1573,8 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2012,210 +1662,12 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Lists an application's secrets
-
-    Returns metadata only; secret values are write-only and never returned.
-
-    Sends a `GET` request to `/api/v1/applications/{id}/secrets`
-
-    */
-    pub async fn application_secrets<'a>(
-        &'a self,
-        id: &'a str,
-    ) -> Result<
-        ResponseValue<piqueld_core::api::Envelope<Vec<piqueld_core::api::SecretMetadata>>>,
-        Error<piqueld_core::api::ErrorBody>,
-    > {
-        let url = format!(
-            "{}/api/v1/applications/{}/secrets",
-            self.baseurl,
-            encode_path(&id.to_string()),
-        );
-        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-        header_map.append(
-            ::reqwest::header::HeaderName::from_static("api-version"),
-            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
-        );
-        #[allow(unused_mut)]
-        let mut request = self
-            .client
-            .get(url)
-            .header(
-                ::reqwest::header::ACCEPT,
-                ::reqwest::header::HeaderValue::from_static("application/json"),
-            )
-            .headers(header_map)
-            .build()?;
-        let info = OperationInfo {
-            operation_id: "application_secrets",
-        };
-        self.pre(&mut request, &info).await?;
-        let result = self.exec(request, &info).await;
-        self.post(&result, &info).await?;
-        let response = result?;
-        match response.status().as_u16() {
-            200u16 => crate::client::decode_response(response).await,
-            403u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            404u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            503u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            _ => Err(Error::UnexpectedResponse(response)),
-        }
-    }
-    /*Creates or replaces a secret value
-
-    The body is the raw value (`application/octet-stream`, 1–512000 bytes).
-    `X-Expected-Generation` must be 0 to create a secret, or its current
-    generation to replace it; a mismatch fails with 409. Running services keep
-    their value until the next deployment. The response carries metadata only.
-
-    Sends a `PUT` request to `/api/v1/applications/{id}/secrets/{name}`
-
-    */
-    pub async fn put_application_secret<'a, B: Into<reqwest::Body>>(
-        &'a self,
-        id: &'a str,
-        name: &'a str,
-        x_expected_generation: i64,
-        body: B,
-    ) -> Result<
-        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SecretMetadata>>,
-        Error<piqueld_core::api::ErrorBody>,
-    > {
-        let url = format!(
-            "{}/api/v1/applications/{}/secrets/{}",
-            self.baseurl,
-            encode_path(&id.to_string()),
-            encode_path(&name.to_string()),
-        );
-        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
-        header_map.append(
-            ::reqwest::header::HeaderName::from_static("api-version"),
-            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
-        );
-        header_map.append(
-            "X-Expected-Generation",
-            x_expected_generation.to_string().try_into()?,
-        );
-        #[allow(unused_mut)]
-        let mut request = self
-            .client
-            .put(url)
-            .header(
-                ::reqwest::header::ACCEPT,
-                ::reqwest::header::HeaderValue::from_static("application/json"),
-            )
-            .header(
-                ::reqwest::header::CONTENT_TYPE,
-                ::reqwest::header::HeaderValue::from_static("application/octet-stream"),
-            )
-            .body(body)
-            .headers(header_map)
-            .build()?;
-        let info = OperationInfo {
-            operation_id: "put_application_secret",
-        };
-        self.pre(&mut request, &info).await?;
-        let result = self.exec(request, &info).await;
-        self.post(&result, &info).await?;
-        let response = result?;
-        match response.status().as_u16() {
-            200u16 => crate::client::decode_response(response).await,
-            400u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            403u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            404u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            409u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            503u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            _ => Err(Error::UnexpectedResponse(response)),
-        }
-    }
-    /*Deletes a secret
-
-    Fails with 409 while the configuration or a deployment still references it.
-    If cleanup is interrupted, retrying the deletion finishes it.
-
-    Sends a `DELETE` request to `/api/v1/applications/{id}/secrets/{name}`
-
-    */
-    pub async fn delete_application_secret<'a>(
-        &'a self,
-        id: &'a str,
-        name: &'a str,
-        x_expected_generation: i64,
-    ) -> Result<ResponseValue<piqueld_core::api::Envelope<bool>>, Error<piqueld_core::api::ErrorBody>>
-    {
-        let url = format!(
-            "{}/api/v1/applications/{}/secrets/{}",
-            self.baseurl,
-            encode_path(&id.to_string()),
-            encode_path(&name.to_string()),
-        );
-        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
-        header_map.append(
-            ::reqwest::header::HeaderName::from_static("api-version"),
-            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
-        );
-        header_map.append(
-            "X-Expected-Generation",
-            x_expected_generation.to_string().try_into()?,
-        );
-        #[allow(unused_mut)]
-        let mut request = self
-            .client
-            .delete(url)
-            .header(
-                ::reqwest::header::ACCEPT,
-                ::reqwest::header::HeaderValue::from_static("application/json"),
-            )
-            .headers(header_map)
-            .build()?;
-        let info = OperationInfo {
-            operation_id: "delete_application_secret",
-        };
-        self.pre(&mut request, &info).await?;
-        let result = self.exec(request, &info).await;
-        self.post(&result, &info).await?;
-        let response = result?;
-        match response.status().as_u16() {
-            200u16 => crate::client::decode_response(response).await,
-            400u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            403u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            404u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            409u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            503u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            _ => Err(Error::UnexpectedResponse(response)),
-        }
-    }
     /*Sends a `POST` request to `/api/v1/applications/{id}/services`
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2312,7 +1764,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2398,7 +1851,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2493,7 +1947,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2588,7 +2043,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2683,7 +2139,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2779,7 +2236,8 @@ impl Client {
     - `id`
     - `service`
     - `key`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2881,7 +2339,8 @@ impl Client {
     - `id`
     - `service`
     - `key`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2969,7 +2428,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3064,7 +2524,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3159,7 +2620,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3254,7 +2716,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3349,7 +2812,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3444,7 +2908,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3539,7 +3004,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3634,7 +3100,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3729,7 +3196,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3824,7 +3292,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3919,7 +3388,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4014,7 +3484,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4109,7 +3580,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4204,7 +3676,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4299,7 +3772,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4394,7 +3868,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4489,7 +3964,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4584,7 +4060,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4679,7 +4156,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4774,7 +4252,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4869,7 +4348,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4964,7 +4444,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5059,7 +4540,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5154,7 +4636,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5249,7 +4732,8 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5339,70 +4823,12 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Get application status
-
-    Sends a `GET` request to `/api/v1/applications/{id}/status`
-
-    */
-    pub async fn application_status<'a>(
-        &'a self,
-        id: &'a str,
-    ) -> Result<
-        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::ApplicationStatusView>>,
-        Error<piqueld_core::api::ErrorBody>,
-    > {
-        let url = format!(
-            "{}/api/v1/applications/{}/status",
-            self.baseurl,
-            encode_path(&id.to_string()),
-        );
-        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-        header_map.append(
-            ::reqwest::header::HeaderName::from_static("api-version"),
-            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
-        );
-        #[allow(unused_mut)]
-        let mut request = self
-            .client
-            .get(url)
-            .header(
-                ::reqwest::header::ACCEPT,
-                ::reqwest::header::HeaderValue::from_static("application/json"),
-            )
-            .headers(header_map)
-            .build()?;
-        let info = OperationInfo {
-            operation_id: "application_status",
-        };
-        self.pre(&mut request, &info).await?;
-        let result = self.exec(request, &info).await;
-        self.post(&result, &info).await?;
-        let response = result?;
-        match response.status().as_u16() {
-            200u16 => crate::client::decode_response(response).await,
-            400u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            403u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            404u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            500u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            503u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            _ => Err(Error::UnexpectedResponse(response)),
-        }
-    }
     /*Sends a `PUT` request to `/api/v1/applications/{id}/volumes`
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5494,7 +4920,8 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5591,7 +5018,8 @@ impl Client {
     Arguments:
     - `id`
     - `volume`
-    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment;
+    omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -6285,20 +5713,20 @@ impl Client {
     }
     /*Lists Git source builds, newest first
 
-    Optionally filtered to one application. Follow `next_cursor` to load older
+    Optionally filtered to one environment. Follow `next_cursor` to load older
     builds.
 
     Sends a `GET` request to `/api/v1/builds`
 
     Arguments:
-    - `application_id`: Only include builds for this application.
     - `cursor`: `next_cursor` from a previous page.
+    - `environment_id`: Only include builds for this environment.
     - `limit`: Page size; defaults to 50.
     */
     pub async fn list_builds<'a>(
         &'a self,
-        application_id: Option<&'a str>,
         cursor: Option<&'a str>,
+        environment_id: Option<&'a str>,
         limit: Option<i64>,
     ) -> Result<
         ResponseValue<
@@ -6320,11 +5748,11 @@ impl Client {
                 ::reqwest::header::ACCEPT,
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
-            .query(&progenitor_client::QueryParam::new(
-                "application_id",
-                &application_id,
-            ))
             .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new(
+                "environment_id",
+                &environment_id,
+            ))
             .query(&progenitor_client::QueryParam::new("limit", &limit))
             .headers(header_map)
             .build()?;
@@ -6472,6 +5900,930 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Get an environment
+
+    Sends a `GET` request to `/api/v1/environments/{id}`
+
+    */
+    pub async fn get_environment<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::EnvironmentView>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "get_environment",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Delete an environment's services and networks, retaining volumes
+
+    Sends a `DELETE` request to `/api/v1/environments/{id}`
+
+    Arguments:
+    - `id`
+    - `expected_generation`: Current intent revision; optional for reconcile, required for deletion unless forced.
+    - `force`: Explicitly bypass intent preconditions.
+    - `idempotency_key`
+    */
+    pub async fn delete_environment<'a>(
+        &'a self,
+        id: &'a str,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::AcceptedOperation>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "delete_environment",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Deploys the application's saved configuration to an environment
+
+    Returns 202 with the accepted durable operation. Requires
+    `expected_generation` unless `force=true`; a stale generation fails with 409.
+    Repeating a request with the same `Idempotency-Key` returns the original
+    response.
+
+    Sends a `POST` request to `/api/v1/environments/{id}/deploy`
+
+    Arguments:
+    - `id`
+    - `branch`: Fetch the repository manifest from this branch head, without saving it.
+    - `commit`: Fetch the repository manifest from this full commit, without saving it.
+    - `expected_generation`: Current intent revision; required unless forced.
+    - `force`: Explicitly bypass intent preconditions.
+    - `idempotency_key`
+    */
+    pub async fn deploy_environment<'a>(
+        &'a self,
+        id: &'a str,
+        branch: Option<&'a str>,
+        commit: Option<&'a str>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::AcceptedOperation>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/deploy",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("branch", &branch))
+            .query(&progenitor_client::QueryParam::new("commit", &commit))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "deploy_environment",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Lists deployments of an environment, newest first
+
+    Returns three deployment snapshots per page; follow `next_cursor` for older ones.
+
+    Sends a `GET` request to `/api/v1/environments/{id}/deployments`
+
+    Arguments:
+    - `id`
+    - `cursor`: `next_cursor` from a previous page.
+    */
+    pub async fn list_deployments<'a>(
+        &'a self,
+        id: &'a str,
+        cursor: Option<&'a str>,
+    ) -> Result<
+        ResponseValue<
+            piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::api::DeploymentView>>,
+        >,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/deployments",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "list_deployments",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Lists attempts of one deployment, newest first
+
+    Returns up to 100 retained attempt outcomes per page. Deployments owned by
+    another environment are reported as not found.
+
+    Sends a `GET` request to `/api/v1/environments/{id}/deployments/{deployment}/attempts`
+
+    Arguments:
+    - `id`
+    - `deployment`
+    - `cursor`: `next_cursor` from a previous page.
+    */
+    pub async fn list_deployment_attempts<'a>(
+        &'a self,
+        id: &'a str,
+        deployment: &'a str,
+        cursor: Option<&'a str>,
+    ) -> Result<
+        ResponseValue<
+            piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::Operation>>,
+        >,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/deployments/{}/attempts",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&deployment.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "list_deployment_attempts",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Get desired and observed environment state
+
+    Sends a `GET` request to `/api/v1/environments/{id}/detail`
+
+    */
+    pub async fn get_environment_detail<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::EnvironmentDetailView>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/detail",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "get_environment_detail",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            502u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Gets recent container output for an environment
+
+    Output can be narrowed to one service and one stream. Out-of-range `tail` or
+    `since_seconds` values fail with 400 `logs_query_invalid`.
+
+    Sends a `GET` request to `/api/v1/environments/{id}/logs`
+
+    Arguments:
+    - `id`
+    - `service`: Only include output from this service (1–63 characters); all services when omitted.
+    - `since_seconds`: Only include output from this many seconds ago onward.
+    - `stream`: Only include this output stream; merged output when omitted.
+    - `tail`: Maximum number of most recent lines, merged across the selected services.
+    */
+    pub async fn environment_logs<'a>(
+        &'a self,
+        id: &'a str,
+        service: Option<&'a str>,
+        since_seconds: Option<u32>,
+        stream: Option<&'a piqueld_core::api::LogStream>,
+        tail: Option<u32>,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::ApplicationLogs>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/logs",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("service", &service))
+            .query(&progenitor_client::QueryParam::new(
+                "since_seconds",
+                &since_seconds,
+            ))
+            .query(&progenitor_client::QueryParam::new("stream", &stream))
+            .query(&progenitor_client::QueryParam::new("tail", &tail))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "environment_logs",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            502u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Reconciles an environment
+
+    Returns 202 with a durable operation that repairs the runtime to match the
+    accepted configuration. Unlike other mutations, `expected_generation` is
+    optional. Repeating a request with the same `Idempotency-Key` returns the
+    original response.
+
+    Sends a `POST` request to `/api/v1/environments/{id}/reconcile`
+
+    Arguments:
+    - `id`
+    - `expected_generation`: Current intent revision; optional for reconcile, required for deletion unless forced.
+    - `force`: Explicitly bypass intent preconditions.
+    - `idempotency_key`
+    */
+    pub async fn reconcile_environment<'a>(
+        &'a self,
+        id: &'a str,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::AcceptedOperation>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/reconcile",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "reconcile_environment",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Renames an environment
+
+    Changes only the name, without redeploying. The inspected application
+    `expected_generation` goes in the JSON body; the new name must not already
+    be used by another environment of the application, even with `force=true`.
+
+    Sends a `POST` request to `/api/v1/environments/{id}/rename`
+
+    Arguments:
+    - `id`
+    - `force`: Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn rename_environment<'a>(
+        &'a self,
+        id: &'a str,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::api::EnvironmentRequest,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::EnvironmentView>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/rename",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "rename_environment",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Lists an environment's secrets
+
+    Returns metadata only; secret values are write-only and never returned.
+
+    Sends a `GET` request to `/api/v1/environments/{id}/secrets`
+
+    */
+    pub async fn environment_secrets<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<Vec<piqueld_core::api::SecretMetadata>>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/secrets",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "environment_secrets",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Creates or replaces a secret value
+
+    The body is the raw value (`application/octet-stream`, 1–512000 bytes).
+    `X-Expected-Generation` must be 0 to create a secret, or its current
+    generation to replace it; a mismatch fails with 409. Running services keep
+    their value until the next deployment. The response carries metadata only.
+
+    Sends a `PUT` request to `/api/v1/environments/{id}/secrets/{name}`
+
+    */
+    pub async fn put_environment_secret<'a, B: Into<reqwest::Body>>(
+        &'a self,
+        id: &'a str,
+        name: &'a str,
+        x_expected_generation: i64,
+        body: B,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SecretMetadata>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/secrets/{}",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&name.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        header_map.append(
+            "X-Expected-Generation",
+            x_expected_generation.to_string().try_into()?,
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .header(
+                ::reqwest::header::CONTENT_TYPE,
+                ::reqwest::header::HeaderValue::from_static("application/octet-stream"),
+            )
+            .body(body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "put_environment_secret",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Deletes a secret
+
+    Fails with 409 while the configuration or a deployment still references it.
+    If cleanup is interrupted, retrying the deletion finishes it.
+
+    Sends a `DELETE` request to `/api/v1/environments/{id}/secrets/{name}`
+
+    */
+    pub async fn delete_environment_secret<'a>(
+        &'a self,
+        id: &'a str,
+        name: &'a str,
+        x_expected_generation: i64,
+    ) -> Result<ResponseValue<piqueld_core::api::Envelope<bool>>, Error<piqueld_core::api::ErrorBody>>
+    {
+        let url = format!(
+            "{}/api/v1/environments/{}/secrets/{}",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&name.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        header_map.append(
+            "X-Expected-Generation",
+            x_expected_generation.to_string().try_into()?,
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "delete_environment_secret",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Get environment status
+
+    Sends a `GET` request to `/api/v1/environments/{id}/status`
+
+    */
+    pub async fn environment_status<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::EnvironmentStatusView>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/status",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "environment_status",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Lists structured events
 
     Oldest first unless `descending=true`. Follow `next_cursor` to load more.
@@ -6480,27 +6832,27 @@ impl Client {
 
     Arguments:
     - `action_id`: Only include events of this runtime action.
-    - `application_id`: Only include events about this application.
     - `attempt`: Only include events of this operation attempt.
     - `cursor`: `next_cursor` from a previous page; for streams, a `v1:<event-id>` SSE ID to
     resume after.
     - `descending`: Return newest events first; streams only support oldest first.
+    - `environment_id`: Only include events about this environment.
     - `error_code`: Only include failures with this error code.
     - `errors_only`: Only include diagnostic (failure) events.
     - `kind`: Only include events of this kind.
     - `limit`: Page size (defaults to 50), or stream batch size (defaults to 100).
     - `operation_id`: Only include events of this operation.
-    - `scope`: Only include application-owned or daemon-owned history.
+    - `scope`: Only include environment-owned or daemon-owned history.
     - `since_ms`: Inclusive Unix millisecond lower bound.
     - `until_ms`: Inclusive Unix millisecond upper bound.
     */
     pub async fn list_events<'a>(
         &'a self,
         action_id: Option<&'a str>,
-        application_id: Option<&'a str>,
         attempt: Option<u64>,
         cursor: Option<&'a str>,
         descending: Option<bool>,
+        environment_id: Option<&'a str>,
         error_code: Option<&'a str>,
         errors_only: Option<bool>,
         kind: Option<&'a str>,
@@ -6528,15 +6880,15 @@ impl Client {
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
             .query(&progenitor_client::QueryParam::new("action_id", &action_id))
-            .query(&progenitor_client::QueryParam::new(
-                "application_id",
-                &application_id,
-            ))
             .query(&progenitor_client::QueryParam::new("attempt", &attempt))
             .query(&progenitor_client::QueryParam::new("cursor", &cursor))
             .query(&progenitor_client::QueryParam::new(
                 "descending",
                 &descending,
+            ))
+            .query(&progenitor_client::QueryParam::new(
+                "environment_id",
+                &environment_id,
             ))
             .query(&progenitor_client::QueryParam::new(
                 "error_code",
@@ -6592,27 +6944,27 @@ impl Client {
 
     Arguments:
     - `action_id`: Only include events of this runtime action.
-    - `application_id`: Only include events about this application.
     - `attempt`: Only include events of this operation attempt.
     - `cursor`: `next_cursor` from a previous page; for streams, a `v1:<event-id>` SSE ID to
     resume after.
     - `descending`: Return newest events first; streams only support oldest first.
+    - `environment_id`: Only include events about this environment.
     - `error_code`: Only include failures with this error code.
     - `errors_only`: Only include diagnostic (failure) events.
     - `kind`: Only include events of this kind.
     - `limit`: Page size (defaults to 50), or stream batch size (defaults to 100).
     - `operation_id`: Only include events of this operation.
-    - `scope`: Only include application-owned or daemon-owned history.
+    - `scope`: Only include environment-owned or daemon-owned history.
     - `since_ms`: Inclusive Unix millisecond lower bound.
     - `until_ms`: Inclusive Unix millisecond upper bound.
     */
     pub async fn stream_events<'a>(
         &'a self,
         action_id: Option<&'a str>,
-        application_id: Option<&'a str>,
         attempt: Option<u64>,
         cursor: Option<&'a str>,
         descending: Option<bool>,
+        environment_id: Option<&'a str>,
         error_code: Option<&'a str>,
         errors_only: Option<bool>,
         kind: Option<&'a str>,
@@ -6633,15 +6985,15 @@ impl Client {
             .client
             .get(url)
             .query(&progenitor_client::QueryParam::new("action_id", &action_id))
-            .query(&progenitor_client::QueryParam::new(
-                "application_id",
-                &application_id,
-            ))
             .query(&progenitor_client::QueryParam::new("attempt", &attempt))
             .query(&progenitor_client::QueryParam::new("cursor", &cursor))
             .query(&progenitor_client::QueryParam::new(
                 "descending",
                 &descending,
+            ))
+            .query(&progenitor_client::QueryParam::new(
+                "environment_id",
+                &environment_id,
             ))
             .query(&progenitor_client::QueryParam::new(
                 "error_code",
@@ -7033,7 +7385,7 @@ impl Client {
     }
     /*Recovers from a lost secret master key
 
-    Discards stored secret values for all applications; metadata and running
+    Discards stored secret values for all environments; metadata and running
     services are kept. Fails with 409 while the current key still works. The next
     value write generates a new key.
 

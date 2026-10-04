@@ -25,6 +25,9 @@ use tokio::{
 pub(crate) struct ExecArgs {
     /// Application name or stable ID.
     name_or_id: String,
+    /// Environment name or stable ID; optional when the application has exactly one.
+    #[arg(long = "env", value_name = "ENV")]
+    environment: Option<String>,
     /// Service whose running task executes the command.
     service: ServiceName,
     /// Forward standard input to the command.
@@ -49,16 +52,16 @@ impl ExecArgs {
                 "--tty requires standard input to be a terminal",
             ));
         }
-        let application = crate::commands::resolve_application(client, &self.name_or_id).await?;
+        let (_, environment) =
+            crate::environments::select(client, &self.name_or_id, self.environment.as_deref())
+                .await?;
         let request = ExecRequest {
             service: self.service.clone(),
             command,
             stdin: self.interactive || self.tty,
             tty: self.tty.then(RawTerminal::size).transpose()?,
         };
-        let (output, input) = client
-            .exec(application.application.id().as_str(), &request)
-            .await?;
+        let (output, input) = client.exec(environment.id.as_str(), &request).await?;
         // Restored on drop, before main reports any error.
         let _terminal = self.tty.then(RawTerminal::enable).transpose()?;
         let resizes = self

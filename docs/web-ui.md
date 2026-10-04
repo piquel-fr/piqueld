@@ -20,8 +20,16 @@ Notifications); and the System section (Daemon status, Host settings, Accounts).
 Its footer shows daemon connectivity and the signed-in account with a sign-out
 button. The home page and Applications show the five most recent deployments
 across applications; each row opens that deployment in its application history.
-Applications also has a clickable directory with each application's health and
-last deployment time.
+Applications also has a clickable directory with each application's health (its
+least healthy environment) and last deployment time.
+
+An application's page has an **Environment** selector next to its actions. The
+selected environment's runtime overview, deployments, logs, secrets, builds, and
+events are shown and **Deploy** targets it; configuration tabs edit the
+application's shared manifest. `?environment=<id>` in the address selects an
+environment, and links from deployments, builds, and events use it. Creating,
+renaming, and deleting environments is available through `piquelctl env` and the
+API; the full environment UI comes later.
 
 Applications have one main tab row: Overview (the default), Services, Source,
 Routes, Volumes, Jobs, Secrets, Deployments, Builds, Logs, and Events. The Jobs
@@ -47,10 +55,11 @@ The pencil beside the application name opens its rename form.
 The Deployments tab lists expandable deployment rows with Details, Snapshot,
 and Attempts sections. Attempts load when first opened; refresh and older-attempt
 controls appear below the list. Operation IDs appear only in deployment Details. Current target, last successful deployment, and observed runtime health
-are distinct. History remains until the application is deleted. Deploying an
+are distinct. History remains until the environment is deleted. Deploying an
 empty application removes its runtime services and network. Removing volumes or
 deleting an application retains Docker volume data; deleting an application
-also deletes its configuration and all database history.
+deletes every environment, its configuration, and all database history. The
+confirmation names the environments being deleted.
 
 Forms save typed fields or settings sections through individual endpoints, without
 resubmitting the application manifest. Related fields within a form save atomically.
@@ -154,7 +163,7 @@ receive the SPA shell. Content-hashed asset filenames are served with
 immutable caching; the shell is always revalidated.
 
 The dashboard performs one initial refresh, then bounded pagination and
-application-status and recent-deployment reads. Background polls run every 15 seconds after success and back off
+environment-status and recent-deployment reads. Background polls run every 15 seconds after success and back off
 to at most 120 seconds after failures. Polls pause while the document is
 hidden, never overlap, and a manual refresh remains available. A failed refresh
 keeps the last successful view visible and marks it stale.

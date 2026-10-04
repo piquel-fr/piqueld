@@ -1,12 +1,12 @@
 pub use piqueld_core::api::{
-    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationSummary,
-    ApplicationView, ApplyApplicationRequest, DeploymentView, DiagnosticView,
-    MAX_APPLICATION_PAGE_SIZE, ObservedApplicationView, ObservedServiceView, PlanView,
-    RenameApplicationRequest, RenamedApplication, SavedApplication,
+    AcceptedOperation, ApplicationSummary, ApplicationView, ApplyApplicationRequest,
+    DeletedApplication, DeploymentView, DiagnosticView, MAX_APPLICATION_PAGE_SIZE,
+    ObservedApplicationView, ObservedServiceView, PlanView, RenameApplicationRequest,
+    RenamedApplication, SavedApplication,
 };
 
 use crate::{
-    Client, ClientError, Envelope, ManifestRevision, Page,
+    Client, ClientError, Envelope, Page,
     client::{generated_result, invalid_request},
 };
 
@@ -54,22 +54,12 @@ impl Client {
         .map(|response| response.data)
     }
 
-    /// Fetches one application by identifier.
+    /// Fetches one application and its environments by identifier.
     ///
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn application(&self, id: &str) -> Result<ApplicationView, ClientError> {
         generated_result(self.generated.get_application(id).await)
-            .await
-            .map(|response| response.data)
-    }
-
-    /// Fetches desired, observed, operation, and diagnostic state for an application.
-    ///
-    /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn application_detail(&self, id: &str) -> Result<ApplicationDetailView, ClientError> {
-        generated_result(self.generated.get_application_detail(id).await)
             .await
             .map(|response| response.data)
     }
@@ -122,19 +112,22 @@ impl Client {
         .map(|response| response.data)
     }
 
-    /// Deletes only if the supplied intent revision still matches; absence is rejected.
+    /// Deletes an application and all its environments only if the supplied
+    /// intent revision still matches; absence is rejected.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn delete_application_with_generation(
         &self,
         id: &str,
         expected: Option<u64>,
-    ) -> Result<AcceptedOperation, ClientError> {
-        self.delete_application_with_preconditions(id, expected, false)
+    ) -> Result<DeletedApplication, ClientError> {
+        self.delete_application_with_preconditions(id, expected, false, &[])
             .await
     }
 
-    /// Deletes with a revision precondition or an explicit force override.
+    /// Deletes an application and all its environments with a revision
+    /// precondition or an explicit force override. `environments` must name
+    /// every environment when there are several; forcing never skips that.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn delete_application_with_preconditions(
@@ -142,10 +135,18 @@ impl Client {
         id: &str,
         expected: Option<u64>,
         force: bool,
-    ) -> Result<AcceptedOperation, ClientError> {
+        environments: &[&str],
+    ) -> Result<DeletedApplication, ClientError> {
+        let environments = (!environments.is_empty()).then(|| environments.join(","));
         generated_result(
             self.generated
-                .delete_application(id, expected, force.then_some(true), None)
+                .delete_application(
+                    id,
+                    environments.as_deref(),
+                    expected,
+                    force.then_some(true),
+                    None,
+                )
                 .await,
         )
         .await
@@ -161,16 +162,6 @@ impl Client {
         request: &ApplyApplicationRequest,
     ) -> Result<PlanView, ClientError> {
         generated_result(self.generated.plan_application(None, None, request).await)
-            .await
-            .map(|response| response.data)
-    }
-
-    /// Fetches current reconciliation status for an application.
-    ///
-    /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn application_status(&self, id: &str) -> Result<ApplicationStatusView, ClientError> {
-        generated_result(self.generated.application_status(id).await)
             .await
             .map(|response| response.data)
     }
@@ -263,24 +254,6 @@ impl Client {
             .map(|response| response.data)
     }
 
-    /// Retries the latest operation with its saved inputs once it has ended or failed,
-    /// without resolving sources again. An operation still in progress is returned as is.
-    /// # Errors
-    /// Returns transport, API, or decoding errors.
-    pub async fn reconcile_application(
-        &self,
-        id: &str,
-        expected: Option<u64>,
-    ) -> Result<AcceptedOperation, ClientError> {
-        generated_result(
-            self.generated
-                .reconcile_application(id, expected, None, None)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
-    }
-
     /// Renames an idle application without touching its runtime resources.
     /// # Errors
     /// Returns transport, API, decoding, name, busy, or generation errors.
@@ -309,83 +282,6 @@ impl Client {
         .await
         .map(|response| response.data)
     }
-
-    /// Reads one page of informational events, including history of deleted applications.
-    /// # Errors
-    /// Returns transport, API, decoding, or pagination errors.
-    pub async fn events(
-        &self,
-        application_id: Option<&str>,
-        cursor: Option<&str>,
-        limit: u16,
-    ) -> Result<Page<piqueld_core::Event>, ClientError> {
-        self.filtered_events(
-            &piqueld_core::observability::EventFilter {
-                application_id: application_id.map(str::to_owned),
-                ..Default::default()
-            },
-            cursor,
-            limit,
-        )
-        .await
-    }
-}
-
-impl Client {
-    /// Deploys exactly the inspected saved configuration revision. `revision`
-    /// fetches a repository manifest from another branch or commit, once.
-    /// # Errors
-    /// Returns transport, API, or revision conflict errors.
-    pub async fn deploy_application(
-        &self,
-        id: &str,
-        expected: u64,
-        revision: Option<&ManifestRevision>,
-    ) -> Result<AcceptedOperation, ClientError> {
-        let (branch, commit) = match revision {
-            None => (None, None),
-            Some(ManifestRevision::Branch(branch)) => (Some(branch.as_str()), None),
-            Some(ManifestRevision::Commit(commit)) => (None, Some(commit.as_str())),
-        };
-        generated_result(
-            self.generated
-                .deploy_application(id, branch, commit, Some(expected), None, None)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
-    }
-
-    /// Lists deployment snapshots newest first, three per page.
-    /// # Errors
-    /// Returns transport, API, or decoding errors.
-    pub async fn deployments(
-        &self,
-        id: &str,
-        cursor: Option<&str>,
-    ) -> Result<Page<DeploymentView>, ClientError> {
-        generated_result(self.generated.list_deployments(id, cursor).await)
-            .await
-            .map(|response| response.data)
-    }
-
-    /// Lists retained attempt outcomes, 100 per page.
-    /// # Errors
-    /// Returns transport, API, or decoding errors.
-    pub async fn deployment_attempts(
-        &self,
-        id: &str,
-        deployment: &str,
-        cursor: Option<&str>,
-    ) -> Result<Page<piqueld_core::Operation>, ClientError> {
-        generated_result(
-            self.generated
-                .list_deployment_attempts(id, deployment, cursor)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
-    }
 }
 
 impl Client {
@@ -397,44 +293,5 @@ impl Client {
             generated_result(self.generated.download_application_manifest(id).await).await?;
         let bytes = crate::client::collect_byte_stream(stream).await?;
         String::from_utf8(bytes).map_err(|source| ClientError::TextDecode { source })
-    }
-
-    /// Reads a bounded historical Docker log window.
-    /// # Errors
-    /// Returns transport, validation or Docker errors.
-    pub async fn application_logs(
-        &self,
-        id: &str,
-        service: Option<&str>,
-        tail: u16,
-        since_seconds: u32,
-    ) -> Result<piqueld_core::api::ApplicationLogs, ClientError> {
-        self.filtered_application_logs(id, service, tail, since_seconds, None)
-            .await
-    }
-    /// Reads a bounded log window filtered by service and stream in the daemon.
-    /// # Errors
-    /// Returns transport, validation or Docker errors.
-    pub async fn filtered_application_logs(
-        &self,
-        id: &str,
-        service: Option<&str>,
-        tail: u16,
-        since_seconds: u32,
-        stream: Option<piqueld_core::api::LogStream>,
-    ) -> Result<piqueld_core::api::ApplicationLogs, ClientError> {
-        generated_result(
-            self.generated
-                .application_logs(
-                    id,
-                    service,
-                    Some(since_seconds),
-                    stream.as_ref(),
-                    Some(u32::from(tail)),
-                )
-                .await,
-        )
-        .await
-        .map(|response| response.data)
     }
 }

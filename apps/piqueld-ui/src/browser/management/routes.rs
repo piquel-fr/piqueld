@@ -155,13 +155,13 @@ pub(super) fn RouteSettings() -> impl IntoView {
         .dashboard
         .with_value(|dashboard| dashboard.signals.readiness);
     let deployed = move || {
-        let id = context.id();
+        let id = context.environment.get().unwrap_or_default();
         readiness.get().map(|status| {
             status
                 .ingress
                 .routes
                 .into_iter()
-                .filter(|route| route.application_id == id)
+                .filter(|route| route.environment_id == id)
                 .collect::<Vec<_>>()
         })
     };

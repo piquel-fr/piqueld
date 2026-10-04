@@ -9,12 +9,16 @@ use piqueld_core::resource::{
     ObservedTask, ObservedVolume, ResolutionRequirement, ResolutionSet, ResolvedApplication,
     ResolvedSource, TaskState, compile_application, image_repository, preview_resolution,
 };
-use piqueld_core::{ApplicationId, DockerNetworkName, InstanceId, Plan, parse_toml};
+use piqueld_core::{ApplicationId, DockerNetworkName, EnvironmentId, InstanceId, Plan, parse_toml};
 
 fn application() -> piqueld_core::NormalizedApplication {
     parse_toml(include_str!("fixtures/manifests/prebuilt.toml"))
         .unwrap()
         .normalize(ApplicationId::parse("app-notes-01").unwrap())
+}
+
+fn environment() -> EnvironmentId {
+    EnvironmentId::parse("app-notes-01").unwrap()
 }
 
 fn instance() -> InstanceId {
@@ -103,7 +107,7 @@ fn image_resolution_is_the_only_pending_compilation_input() {
     assert!(
         matches!(preview_resolution(&app, &missing).as_slice(), [ResolutionRequirement::ResolveImage { service, .. }] if service.as_str() == "web")
     );
-    let desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    let desired = compile_application(&app, &environment(), instance(), &resolutions()).unwrap();
     assert_eq!(
         desired.services[0].image.as_str(),
         format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64))
@@ -137,7 +141,7 @@ fn docker_registry_aliases_are_canonicalized() {
 #[test]
 fn planner_creates_only_supported_runtime_actions() {
     let app = application();
-    let desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    let desired = compile_application(&app, &environment(), instance(), &resolutions()).unwrap();
     let plan = Plan::from_request(
         &PlanRequest::Reconcile {
             desired: desired.clone(),
@@ -211,7 +215,8 @@ fn plan_shows_effective_rollouts_and_warns_about_overlapping_writers() {
 
 #[test]
 fn changed_rollout_settings_drift_until_applied() {
-    let mut desired = compile_application(&application(), instance(), &resolutions()).unwrap();
+    let mut desired =
+        compile_application(&application(), &environment(), instance(), &resolutions()).unwrap();
     let converged = observed(&desired).services.remove(0);
     assert_eq!(converged.drift(&desired.services[0]), [] as [&str; 0]);
 
@@ -234,7 +239,7 @@ fn changed_rollout_settings_drift_until_applied() {
 #[test]
 fn converged_services_need_no_work_and_delete_retains_volumes() {
     let app = application();
-    let desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    let desired = compile_application(&app, &environment(), instance(), &resolutions()).unwrap();
     let observed = observed(&desired);
     let plan = Plan::from_request(
         &PlanRequest::Reconcile {
@@ -245,7 +250,7 @@ fn converged_services_need_no_work_and_delete_retains_volumes() {
     assert!(!plan.has_mutations());
     let deletion = Plan::from_request(
         &PlanRequest::Delete {
-            application_id: desired.id.clone(),
+            environment_id: desired.id.clone(),
             instance_id: desired.instance_id.clone(),
         },
         &observed,
@@ -293,7 +298,7 @@ fn converged_services_need_no_work_and_delete_retains_volumes() {
         .insert("io.piqueld.instance".into(), "other-instance".into());
     let foreign_deletion = Plan::from_request(
         &PlanRequest::Delete {
-            application_id: desired.id,
+            environment_id: desired.id,
             instance_id: desired.instance_id,
         },
         &foreign,
@@ -325,7 +330,7 @@ fn digest() -> String {
 
 fn labels_for(
     instance: &InstanceId,
-    application: &ApplicationId,
+    application: &EnvironmentId,
 ) -> std::collections::BTreeMap<String, String> {
     std::collections::BTreeMap::from([
         ("io.piqueld.managed".into(), "true".into()),
@@ -337,7 +342,7 @@ fn labels_for(
 
 #[test]
 fn desired_identity_matrices_reject_non_canonical_resources() {
-    let id = ApplicationId::parse("app-notes-01").unwrap();
+    let id = EnvironmentId::parse("app-notes-01").unwrap();
     let instance = instance();
     let network = DesiredNetwork {
         name: piqueld_core::DockerNetworkName::parse(piqueld_core::docker_resource_name(
@@ -421,7 +426,7 @@ fn desired_identity_matrices_reject_non_canonical_resources() {
 
 #[test]
 fn ownership_states_classify_labels() {
-    let id = ApplicationId::parse("app-notes-01").unwrap();
+    let id = EnvironmentId::parse("app-notes-01").unwrap();
     let instance = instance();
 
     assert_eq!(
@@ -462,7 +467,7 @@ fn ownership_states_classify_labels() {
 #[test]
 fn drift_fields_are_granular_for_command_and_arguments() {
     let app = application();
-    let desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    let desired = compile_application(&app, &environment(), instance(), &resolutions()).unwrap();
     let mut drifted = observed(&desired);
     drifted.services[0].command = vec!["sh".into()];
     drifted.services[0].arguments = vec!["-c".into(), "true".into()];
@@ -489,7 +494,8 @@ fn drift_fields_are_granular_for_command_and_arguments() {
 #[test]
 fn unsupported_observed_healthcheck_is_healthcheck_drift() {
     let app = application();
-    let mut desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    let mut desired =
+        compile_application(&app, &environment(), instance(), &resolutions()).unwrap();
     desired.services[0].healthcheck = None;
     // Docker reports a health check that piqueld cannot represent.
     let mut drifted = observed(&desired);
@@ -503,7 +509,7 @@ fn unsupported_observed_healthcheck_is_healthcheck_drift() {
 #[test]
 fn obsolete_cleanup_is_gated_and_reports_deferred_diagnostics() {
     let app = application();
-    let desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    let desired = compile_application(&app, &environment(), instance(), &resolutions()).unwrap();
     // Build a fully-converged observation, then add an obsolete owned service
     // while breaking convergence of the wanted service so cleanup stays gated.
     let base = observed(&desired);
@@ -570,7 +576,7 @@ fn obsolete_cleanup_is_gated_and_reports_deferred_diagnostics() {
 #[test]
 fn failed_convergence_blocks_with_a_service_update_diagnostic() {
     let app = application();
-    let desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    let desired = compile_application(&app, &environment(), instance(), &resolutions()).unwrap();
     let mut failed = observed(&desired);
     failed.services[0].convergence = Convergence::Failed;
     let plan = Plan::from_request(&PlanRequest::Reconcile { desired }, &failed);
@@ -608,7 +614,7 @@ fn dependent_application() -> ResolvedApplication {
             .map(|service| (service.name.clone(), source.clone()))
             .collect(),
     };
-    compile_application(&app, instance(), &resolutions).unwrap()
+    compile_application(&app, &environment(), instance(), &resolutions).unwrap()
 }
 
 /// Observes `desired` with `db` in `db_state` and the `missing` services absent.
@@ -741,7 +747,7 @@ fn preview_plans_splice_resolution_actions_first() {
     ));
     assert!(!plan.is_blocked());
 
-    let desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    let desired = compile_application(&app, &environment(), instance(), &resolutions()).unwrap();
     let with_desired = Plan::from_request(
         &PlanRequest::Preview {
             unresolved: Vec::new(),
@@ -778,7 +784,7 @@ fn wire_decoding_enforces_domain_guards() {
 #[test]
 fn observation_matching_ignores_order_but_not_multiplicity() {
     let app = application();
-    let desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    let desired = compile_application(&app, &environment(), instance(), &resolutions()).unwrap();
 
     // Order is irrelevant for networks and mounts alike...
     let mut reordered = observed(&desired);
@@ -798,14 +804,15 @@ fn observation_matching_ignores_order_but_not_multiplicity() {
 #[test]
 fn logical_name_is_an_alias_only_on_the_private_network() {
     let app = application();
-    let mut desired = compile_application(&app, instance(), &resolutions()).unwrap();
-    let ingress = DockerNetworkName::for_ingress(app.id());
+    let mut desired =
+        compile_application(&app, &environment(), instance(), &resolutions()).unwrap();
+    let ingress = DockerNetworkName::for_ingress(&environment());
     desired.services[0].networks.push(ingress.clone());
     assert_eq!(
         desired.services[0].network_attachments(),
         vec![
             NetworkAttachment {
-                network: DockerNetworkName::for_application(app.id()).to_string(),
+                network: DockerNetworkName::for_application(&environment()).to_string(),
                 aliases: vec!["web".into()],
             },
             NetworkAttachment {
@@ -831,7 +838,7 @@ fn logical_name_is_an_alias_only_on_the_private_network() {
 #[test]
 fn compiled_ownership_carries_the_spec_hash_label() {
     let app = application();
-    let desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    let desired = compile_application(&app, &environment(), instance(), &resolutions()).unwrap();
     let hash = Sha256Digest::parse(desired.spec_hash.clone()).unwrap();
     for network in &desired.networks {
         assert_eq!(
@@ -846,7 +853,8 @@ fn compiled_ownership_carries_the_spec_hash_label() {
 
 #[test]
 fn cleanup_plans_are_stable_across_engine_listing_order() {
-    let desired = compile_application(&application(), instance(), &resolutions()).unwrap();
+    let desired =
+        compile_application(&application(), &environment(), instance(), &resolutions()).unwrap();
     let mut snapshot = observed(&desired);
     let mut obsolete_names = Vec::new();
     for logical in ["old-z", "old-a"] {
@@ -879,7 +887,7 @@ fn cleanup_plans_are_stable_across_engine_listing_order() {
             desired: desired.clone(),
         },
         PlanRequest::Delete {
-            application_id: desired.id.clone(),
+            environment_id: desired.id.clone(),
             instance_id: desired.instance_id.clone(),
         },
     ] {
@@ -911,7 +919,8 @@ fn cleanup_plans_are_stable_across_engine_listing_order() {
 
 #[test]
 fn desired_names_are_checked_while_engine_observations_remain_permissive() {
-    let desired = compile_application(&application(), instance(), &resolutions()).unwrap();
+    let desired =
+        compile_application(&application(), &environment(), instance(), &resolutions()).unwrap();
     let mut wire = serde_json::to_value(&desired).unwrap();
     wire["services"][0]["name"] = "Foreign_Service".into();
     assert!(serde_json::from_value::<piqueld_core::ResolvedApplication>(wire).is_err());
@@ -932,7 +941,8 @@ fn desired_names_are_checked_while_engine_observations_remain_permissive() {
 
 #[test]
 fn command_and_http_health_checks_have_the_same_runtime_meaning() {
-    let mut desired = compile_application(&application(), instance(), &resolutions()).unwrap();
+    let mut desired =
+        compile_application(&application(), &environment(), instance(), &resolutions()).unwrap();
     let http = piqueld_core::HealthCheck::Http {
         port: 8080,
         path: "/health".into(),
@@ -976,7 +986,8 @@ fn command_and_http_health_checks_have_the_same_runtime_meaning() {
 fn planner_rejects_wrong_resource_roles_before_use_or_deletion() {
     use piqueld_core::resource::SERVICE_LABEL;
     use piqueld_core::{ResourceKind, docker_resource_name};
-    let desired = compile_application(&application(), instance(), &resolutions()).unwrap();
+    let desired =
+        compile_application(&application(), &environment(), instance(), &resolutions()).unwrap();
     for role in [
         ResourceKind::Network,
         ResourceKind::Volume,
@@ -1005,7 +1016,7 @@ fn planner_rejects_wrong_resource_roles_before_use_or_deletion() {
         }
         let deletion = Plan::from_request(
             &PlanRequest::Delete {
-                application_id: desired.id.clone(),
+                environment_id: desired.id.clone(),
                 instance_id: instance(),
             },
             &snapshot,
@@ -1031,7 +1042,7 @@ fn planner_rejects_wrong_resource_roles_before_use_or_deletion() {
     snapshot.networks[0].name.push_str("-other");
     let deletion = Plan::from_request(
         &PlanRequest::Delete {
-            application_id: desired.id.clone(),
+            environment_id: desired.id.clone(),
             instance_id: instance(),
         },
         &snapshot,
@@ -1049,7 +1060,7 @@ fn jobs_reuse_their_service_container_under_a_distinct_identity() {
     ))
     .unwrap()
     .normalize(ApplicationId::parse("app-notes-01").unwrap());
-    let desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    let desired = compile_application(&app, &environment(), instance(), &resolutions()).unwrap();
     let (service, job) = (&desired.services[0], &desired.jobs[0]);
     assert!(job.has_valid_identity());
     assert_ne!(job.container.name, service.name);
@@ -1071,7 +1082,7 @@ fn jobs_reuse_their_service_container_under_a_distinct_identity() {
         piqueld_core::OwnershipState::for_resource(
             &job.container.labels,
             &instance(),
-            app.id(),
+            &environment(),
             piqueld_core::ResourceKind::Job,
             job.container.name.as_str(),
         ),

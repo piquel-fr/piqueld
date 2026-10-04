@@ -5,6 +5,8 @@
 
 pub mod api;
 pub mod codes;
+pub mod environment;
+pub use environment::EnvironmentSource;
 pub mod event;
 pub mod exec;
 pub mod identity;
@@ -12,8 +14,8 @@ pub use event::Event;
 pub mod manifest;
 pub mod names;
 pub use names::{
-    ApplicationName, ApplicationNameError, JobName, JobNameError, ServiceName, ServiceNameError,
-    VolumeName, VolumeNameError,
+    ApplicationName, ApplicationNameError, EnvironmentName, EnvironmentNameError, JobName,
+    JobNameError, ServiceName, ServiceNameError, VolumeName, VolumeNameError,
 };
 pub mod operation;
 pub mod planner;
@@ -21,8 +23,8 @@ mod preview;
 pub mod resource;
 
 pub use identity::{
-    ApplicationId, ApplicationIdError, ResourceKind, docker_resource_name,
-    docker_resource_readable_prefix,
+    ApplicationId, ApplicationIdError, EnvironmentId, EnvironmentIdError, ResourceKind,
+    docker_resource_name, docker_resource_readable_prefix,
 };
 pub use manifest::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationSpec, HealthCheck, Metadata, Mount,

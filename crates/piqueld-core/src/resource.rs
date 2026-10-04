@@ -5,7 +5,7 @@ use crate::manifest::domain::{
 };
 use crate::names::validated_string;
 use crate::{
-    ApplicationId, ApplicationName, DockerNetworkName, DockerServiceName, DockerVolumeName,
+    ApplicationName, DockerNetworkName, DockerServiceName, DockerVolumeName, EnvironmentId,
     JobName, ResourceKind, ServiceName, VolumeName, docker_resource_name,
     manifest::{
         HealthCheck, JobRun, NormalizedApplication, ResourceLimits, Rollout, RolloutPolicy, Source,
@@ -223,8 +223,8 @@ pub fn preview_resolution(
 pub struct Ownership {
     /// The control-plane instance that owns the resource.
     pub instance_id: InstanceId,
-    /// The application that owns the resource.
-    pub application_id: ApplicationId,
+    /// The environment that owns the resource.
+    pub environment_id: EnvironmentId,
     /// Logical service name when the resource belongs to one service.
     pub service: Option<ServiceName>,
     /// Normalized application spec hash.
@@ -239,7 +239,7 @@ impl Ownership {
     /// ```text
     /// io.piqueld.managed     = "true"
     /// io.piqueld.instance    = <instance_id>
-    /// io.piqueld.application = <application_id>
+    /// io.piqueld.application = <environment_id>
     /// io.piqueld.spec-hash   = "sha256:..."
     /// io.piqueld.service     = <service>   (optional)
     /// ```
@@ -248,7 +248,7 @@ impl Ownership {
         let mut labels = BTreeMap::from([
             (MANAGED_LABEL.into(), "true".into()),
             (INSTANCE_LABEL.into(), self.instance_id.to_string()),
-            (APPLICATION_LABEL.into(), self.application_id.to_string()),
+            (APPLICATION_LABEL.into(), self.environment_id.to_string()),
             (SPEC_HASH_LABEL.into(), self.spec_hash.clone()),
         ]);
         if let Some(service) = &self.service {
@@ -527,8 +527,8 @@ pub struct ResolvedApplication {
     /// Immutable secret versions selected during effective input preparation.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secret_names: BTreeMap<String, String>,
-    /// Stable application identity.
-    pub id: ApplicationId,
+    /// Owning environment identity.
+    pub id: EnvironmentId,
     /// User-facing application name.
     pub name: ApplicationName,
     /// Current control-plane instance identity.
@@ -609,7 +609,7 @@ impl ResolvedApplication {
         {
             let labels = Ownership {
                 instance_id: self.instance_id.clone(),
-                application_id: self.id.clone(),
+                environment_id: self.id.clone(),
                 service: None,
                 spec_hash: self.spec_hash.clone(),
             }
@@ -654,7 +654,7 @@ impl ResolvedApplication {
 /// valid `sha256:` digest, and both identities parse.
 fn desired_application_from_labels(
     labels: &BTreeMap<String, String>,
-) -> Option<(ApplicationId, InstanceId)> {
+) -> Option<(EnvironmentId, InstanceId)> {
     if labels.get(MANAGED_LABEL).map(String::as_str) != Some("true")
         || labels.get(INSTANCE_LABEL).is_none_or(String::is_empty)
         || labels
@@ -664,7 +664,7 @@ fn desired_application_from_labels(
         return None;
     }
     Some((
-        ApplicationId::parse(labels.get(APPLICATION_LABEL)?.clone()).ok()?,
+        EnvironmentId::parse(labels.get(APPLICATION_LABEL)?.clone()).ok()?,
         InstanceId::parse(labels.get(INSTANCE_LABEL)?.clone()).ok()?,
     ))
 }
@@ -703,11 +703,12 @@ pub struct CompileError {
     pub message: String,
 }
 
-/// Compiles normalized intent after all image references have immutable resolutions.
+/// Compiles normalized intent for one environment after all image references have
+/// immutable resolutions.
 ///
 /// Validates resolutions first, then derives one owned private network (only
 /// when there are services), one Docker volume per declared volume, and one
-/// `DesiredService` per service, all labelled with the application ownership.
+/// `DesiredService` per service, all named after and labelled with `environment`.
 ///
 /// # Errors
 ///
@@ -722,6 +723,7 @@ pub struct CompileError {
 /// undeclared service, all of which indicate internal bugs.
 pub fn compile_application(
     app: &NormalizedApplication,
+    environment: &EnvironmentId,
     instance_id: InstanceId,
     resolutions: &ResolutionSet,
 ) -> Result<ResolvedApplication, Vec<CompileError>> {
@@ -735,27 +737,27 @@ pub fn compile_application(
         Sha256Digest::parse(spec_hash.clone()).expect("spec_hash is produced by the domain hasher");
     let ownership = Ownership {
         instance_id: instance_id.clone(),
-        application_id: app.id().clone(),
+        environment_id: environment.clone(),
         service: None,
         spec_hash: digest.as_str().to_owned(),
     };
-    let private_network = DockerNetworkName::for_application(app.id());
+    let private_network = DockerNetworkName::for_application(environment);
     let services = app
         .spec()
         .services
         .iter()
-        .map(|service| compile_service(service, app, resolutions, &ownership, &private_network))
+        .map(|service| compile_service(service, resolutions, &ownership, &private_network))
         .collect::<Vec<_>>();
     Ok(ResolvedApplication {
         jobs: app
             .spec()
             .jobs
             .iter()
-            .map(|job| compile_job(job, app, &services, &ownership))
+            .map(|job| compile_job(job, &services, &ownership))
             .collect(),
         secret_names: resolutions.secret_names.clone(),
         routes: app.spec().routes.clone(),
-        id: app.id().clone(),
+        id: environment.clone(),
         name: app.metadata().name.clone(),
         instance_id,
         spec_hash,
@@ -773,7 +775,7 @@ pub fn compile_application(
             .iter()
             .map(|volume| DesiredVolume {
                 logical_name: volume.name.clone(),
-                name: DockerVolumeName::for_volume(app.id(), &volume.name),
+                name: DockerVolumeName::for_volume(environment, &volume.name),
                 labels: ownership.labels(),
             })
             .collect(),
@@ -877,17 +879,17 @@ fn resolved_source_matches(source: &Source, resolved: &ResolvedSource) -> bool {
 /// later by `ResolvedApplication::with_ingress_routes`.
 fn compile_service(
     service: &Service,
-    app: &NormalizedApplication,
     resolutions: &ResolutionSet,
-    application_ownership: &Ownership,
+    environment_ownership: &Ownership,
     private_network: &DockerNetworkName,
 ) -> DesiredService {
     let source = resolutions.sources[&service.name].clone();
-    let mut ownership = application_ownership.clone();
+    let environment = &environment_ownership.environment_id;
+    let mut ownership = environment_ownership.clone();
     ownership.service = Some(service.name.clone());
     DesiredService {
         logical_name: service.name.clone(),
-        name: DockerServiceName::for_service(app.id(), &service.name),
+        name: DockerServiceName::for_service(environment, &service.name),
         image: source.image(),
         source,
         replicas: service.replicas,
@@ -898,7 +900,7 @@ fn compile_service(
             .mounts
             .iter()
             .map(|mount: &Mount| DesiredMount {
-                volume_name: DockerVolumeName::for_volume(app.id(), &mount.volume),
+                volume_name: DockerVolumeName::for_volume(environment, &mount.volume),
                 target: mount.target.clone(),
                 read_only: mount.read_only,
             })
@@ -923,23 +925,22 @@ fn compile_service(
 /// Validation guarantees that every job references a declared service.
 fn compile_job(
     job: &Job,
-    app: &NormalizedApplication,
     services: &[DesiredService],
-    application_ownership: &Ownership,
+    environment_ownership: &Ownership,
 ) -> DesiredJob {
     let mut container = services
         .iter()
         .find(|service| service.logical_name == job.service)
         .expect("validated jobs reference declared services")
         .clone();
-    container.name = DockerServiceName::for_job(app.id(), &job.name);
+    container.name = DockerServiceName::for_job(&environment_ownership.environment_id, &job.name);
     container.replicas = 1;
     container.command.clone_from(&job.command);
     container.arguments.clear();
     container.healthcheck = None;
     container.depends_on.clear();
     container.rollout = Rollout::default();
-    container.labels = application_ownership.labels();
+    container.labels = environment_ownership.labels();
     container
         .labels
         .insert(JOB_LABEL.into(), job.name.to_string());
@@ -1133,7 +1134,7 @@ impl ObservedNetwork {
 
     /// Returns whether the labels, role, and canonical name identify this network.
     #[must_use]
-    pub fn is_owned_by(&self, instance: &InstanceId, application: &ApplicationId) -> bool {
+    pub fn is_owned_by(&self, instance: &InstanceId, application: &EnvironmentId) -> bool {
         OwnershipState::for_resource(
             &self.labels,
             instance,
@@ -1159,7 +1160,7 @@ pub struct ObservedVolume {
 impl ObservedVolume {
     /// Returns whether this volume has the expected owner and volume label role.
     #[must_use]
-    pub fn is_owned_by(&self, instance: &InstanceId, application: &ApplicationId) -> bool {
+    pub fn is_owned_by(&self, instance: &InstanceId, application: &EnvironmentId) -> bool {
         OwnershipState::for_resource(
             &self.labels,
             instance,
@@ -1300,7 +1301,7 @@ impl ObservedService {
     /// canonical name from the service label, so it can classify obsolete
     /// services during cleanup and deletion.
     #[must_use]
-    pub fn is_owned_by(&self, instance: &InstanceId, application: &ApplicationId) -> bool {
+    pub fn is_owned_by(&self, instance: &InstanceId, application: &EnvironmentId) -> bool {
         OwnershipState::for_resource(
             &self.labels,
             instance,
@@ -1345,7 +1346,7 @@ impl OwnershipState {
     pub fn for_resource(
         labels: &BTreeMap<String, String>,
         instance: &InstanceId,
-        application: &ApplicationId,
+        application: &EnvironmentId,
         kind: ResourceKind,
         name: &str,
     ) -> Self {
@@ -1387,7 +1388,7 @@ impl OwnershipState {
     pub fn from_labels(
         labels: &BTreeMap<String, String>,
         instance: &InstanceId,
-        application: &ApplicationId,
+        application: &EnvironmentId,
     ) -> Self {
         if labels.get(MANAGED_LABEL).map(String::as_str) != Some("true")
             || labels

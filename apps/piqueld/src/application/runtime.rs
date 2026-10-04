@@ -3,12 +3,12 @@
 use super::{BoundaryError, RuntimeBoundary};
 use crate::{
     docker::{DockerApi, DockerError, DockerTimeout},
-    store::StoredApplication,
+    store::StoredEnvironment,
 };
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use piqueld_core::{
-    InstanceId, NormalizedApplication, ResolutionSet, compile_application,
+    EnvironmentId, InstanceId, NormalizedApplication, ResolutionSet, compile_application,
     manifest::{Source, SourceRepository},
     resource::ResolvedSource,
 };
@@ -62,7 +62,7 @@ impl<D> ApplicationRuntime<D> {
 impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
     async fn logs(
         &self,
-        id: &piqueld_core::ApplicationId,
+        id: &piqueld_core::EnvironmentId,
         service: Option<&str>,
         tail: u16,
         since: u32,
@@ -95,7 +95,7 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
     /// ownership labels, so foreign Docker secrets are never deleted.
     async fn remove_secrets(
         &self,
-        application: &piqueld_core::ApplicationId,
+        application: &piqueld_core::EnvironmentId,
         names: &[String],
     ) -> Result<(), BoundaryError> {
         let ownership = std::collections::BTreeMap::from([
@@ -119,12 +119,12 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
     }
     async fn create_exec(
         &self,
-        application: &piqueld_core::ApplicationId,
+        environment: &piqueld_core::EnvironmentId,
         request: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<crate::docker::Exec>, BoundaryError> {
         Ok(self
             .docker
-            .create_exec(&self.instance_id, application, request)
+            .create_exec(&self.instance_id, environment, request)
             .await?)
     }
     async fn run_exec(
@@ -139,7 +139,7 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
     }
 
     /// Resolves every service source not already present in `reusable`, then
-    /// compiles the application against the merged resolutions.
+    /// compiles the application for `environment` against the merged resolutions.
     ///
     /// 1. Collects services lacking a reusable resolution and, during execution,
     ///    records the `preparing_sources` progress phase with their names.
@@ -150,6 +150,7 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
     /// The whole sequence is bounded by `prepare_timeout`.
     async fn prepare(
         &self,
+        environment: &EnvironmentId,
         application: &NormalizedApplication,
         reusable: &ResolutionSet,
     ) -> Result<piqueld_core::ResolvedApplication, BoundaryError> {
@@ -176,7 +177,7 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
             let sources = stream::iter(
                 pending
                     .into_iter()
-                    .map(|(name, source)| self.prepare_source(application, name, source)),
+                    .map(|(name, source)| self.prepare_source(environment, name, source)),
             )
             .buffer_unordered(4)
             .try_collect::<Vec<_>>()
@@ -192,8 +193,13 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
             };
             let mut resolutions = reusable.clone();
             resolutions.sources.extend(sources);
-            let resolved = compile_application(application, self.instance_id.clone(), &resolutions)
-                .map_err(BoundaryError::Compilation)?;
+            let resolved = compile_application(
+                application,
+                environment,
+                self.instance_id.clone(),
+                &resolutions,
+            )
+            .map_err(BoundaryError::Compilation)?;
             Ok(resolved)
         })
         .await
@@ -211,13 +217,10 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
 
     async fn observe(
         &self,
-        application: &StoredApplication,
+        application: &StoredEnvironment,
     ) -> Result<piqueld_core::ObservedApplication, BoundaryError> {
         DockerTimeout::Request
-            .run(
-                "observe application",
-                self.docker.observe(application.application.id()),
-            )
+            .run("observe application", self.docker.observe(application.id()))
             .await
             .map_err(BoundaryError::from)
     }
@@ -231,7 +234,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
     /// failed. Journal failures are reported the same way as resolution failures.
     async fn prepare_source(
         &self,
-        application: &NormalizedApplication,
+        environment: &EnvironmentId,
         name: piqueld_core::ServiceName,
         source: Source,
     ) -> Result<
@@ -254,7 +257,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
             None
         };
         let result = self
-            .resolve_source(application, name.as_str(), source)
+            .resolve_source(environment, name.as_str(), source)
             .await;
         if let (Some((store, _)), Some(journal)) = (&self.progress, &journal) {
             store
@@ -274,7 +277,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
     /// Git source into a local image.
     async fn resolve_source(
         &self,
-        application: &NormalizedApplication,
+        environment: &EnvironmentId,
         name: &str,
         source: Source,
     ) -> Result<ResolvedSource, BoundaryError> {
@@ -299,7 +302,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
                 };
                 let (commit, image_id) = self
                     .prepare_git(
-                        application,
+                        environment,
                         name,
                         &source,
                         repository,
@@ -324,7 +327,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
     /// finished as succeeded or failed. Without progress the build runs unrecorded.
     async fn prepare_git(
         &self,
-        application: &NormalizedApplication,
+        environment: &EnvironmentId,
         service: &str,
         source: &Source,
         repository: &piqueld_core::manifest::GitRepository,
@@ -336,7 +339,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
         };
         let attempt = crate::build::BuildAttempt::start(
             Arc::clone(store),
-            application.id(),
+            environment,
             operation,
             service,
             source,

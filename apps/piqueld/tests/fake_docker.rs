@@ -22,7 +22,9 @@ use piqueld_core::resource::{
     ResolutionSet, ResolvedApplication, ResolvedSource, SERVICE_LABEL, SPEC_HASH_LABEL, TaskState,
     compile_application, image_repository,
 };
-use piqueld_core::{ApplicationId, InstanceId, Plan, parse_toml};
+use piqueld_core::{
+    ApplicationId, EnvironmentId, InstanceId, NormalizedApplication, Plan, parse_toml,
+};
 use piqueld_core::{Operation, OperationState};
 use sqlx::{Connection, SqliteConnection};
 use std::{
@@ -154,7 +156,7 @@ impl FakeDocker {
         }
     }
 
-    async fn assert_active_repair(&self, id: &ApplicationId) {
+    async fn assert_active_repair(&self, id: &EnvironmentId) {
         {
             let mut observed = self.observed.lock().await;
             let service = observed
@@ -285,7 +287,7 @@ impl DockerApi for FakeDocker {
     async fn application_logs(
         &self,
         _instance: &InstanceId,
-        _application: &ApplicationId,
+        _application: &EnvironmentId,
         _service: Option<&str>,
         _tail: u16,
         _since: u32,
@@ -331,7 +333,7 @@ impl DockerApi for FakeDocker {
     async fn create_exec(
         &self,
         _instance: &InstanceId,
-        _application: &ApplicationId,
+        _environment: &EnvironmentId,
         _request: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<piqueld::docker::Exec>, DockerError> {
         Err(DockerError::Unavailable("create exec"))
@@ -362,7 +364,7 @@ impl DockerApi for FakeDocker {
 
     async fn observe(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
     ) -> Result<ObservedApplication, DockerError> {
         let _probe = self.observations.enter().await;
         if self.fail_observations.load(Ordering::SeqCst) {
@@ -612,6 +614,11 @@ impl DockerApi for FakeDocker {
     }
 }
 
+/// The environment created with `application`, which shares its ID.
+fn environment(application: &NormalizedApplication) -> EnvironmentId {
+    EnvironmentId::default_for(application.id())
+}
+
 fn application() -> piqueld_core::NormalizedApplication {
     parse_toml(include_str!(
         "../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
@@ -648,6 +655,7 @@ async fn fixture_store(
     };
     let resolved = compile_application(
         &application,
+        &environment(&application),
         InstanceId::parse(store.instance_id()).expect("store instance ID is valid"),
         &resolutions,
     )
@@ -655,7 +663,7 @@ async fn fixture_store(
     (store, application, resolved)
 }
 
-fn foreign_labels(application_id: &ApplicationId) -> BTreeMap<String, String> {
+fn foreign_labels(application_id: &EnvironmentId) -> BTreeMap<String, String> {
     BTreeMap::from([
         (MANAGED_LABEL.into(), "true".into()),
         (INSTANCE_LABEL.into(), "other-instance".into()),
@@ -700,6 +708,7 @@ impl ControllerHarness {
         };
         let resolved = compile_application(
             &application,
+            &environment(&application),
             InstanceId::parse(store.instance_id()).expect("store instance ID is valid"),
             &resolutions,
         )
@@ -751,7 +760,7 @@ impl ControllerHarness {
     async fn assert_recovered(&self, operation_id: &str) {
         let status = self
             .store
-            .status(self.application.id())
+            .status(&environment(&self.application))
             .await
             .expect("status is readable");
         assert_eq!(status.state, piqueld::store::ApplicationState::Ready);
@@ -763,7 +772,7 @@ impl ControllerHarness {
         assert_eq!(operation.state, OperationState::Succeeded);
         let observed = self
             .docker
-            .observe(self.application.id())
+            .observe(&environment(&self.application))
             .await
             .expect("fake observation");
         assert_eq!(observed.volumes.len(), 1);
@@ -779,6 +788,7 @@ impl ControllerHarness {
             .normalize(self.application.id().clone());
         let replacement_resolved = compile_application(
             &replacement,
+            &environment(&replacement),
             InstanceId::parse(self.store.instance_id()).expect("store instance ID is valid"),
             &self.resolutions,
         )
@@ -803,7 +813,7 @@ impl ControllerHarness {
             .expect("drift repair converges");
         assert_eq!(
             self.docker
-                .observe(self.application.id())
+                .observe(&environment(&self.application))
                 .await
                 .unwrap()
                 .services[0]
@@ -814,19 +824,19 @@ impl ControllerHarness {
 
     async fn delete(&self) -> Operation {
         self.store
-            .request_delete(self.application.id(), None)
+            .request_delete(&environment(&self.application))
             .await
             .expect("delete is durable")
     }
 
     async fn assert_deleted(&self) {
         assert!(matches!(
-            self.store.get(self.application.id()).await,
+            self.store.get(&environment(&self.application)).await,
             Err(piqueld::store::StoreError::NotFound)
         ));
         let observed = self
             .docker
-            .observe(self.application.id())
+            .observe(&environment(&self.application))
             .await
             .expect("final observation");
         assert_eq!(observed.services, [] as [piqueld_core::ObservedService; 0]);
@@ -856,7 +866,7 @@ async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
     assert_eq!(
         harness
             .docker
-            .observe(harness.application.id())
+            .observe(&environment(&harness.application))
             .await
             .unwrap()
             .services[0]
@@ -887,10 +897,10 @@ async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
     assert!(
         harness
             .store
-            .get(harness.application.id())
+            .get(&environment(&harness.application))
             .await
             .unwrap()
-            .delete_intent
+            .delete_intent()
     );
     harness
         .docker
@@ -928,7 +938,7 @@ async fn controller_executes_actions_introduced_by_fresh_planning() {
         .expect("service is seeded");
     let observed = harness
         .docker
-        .observe(harness.application.id())
+        .observe(&environment(&harness.application))
         .await
         .expect("matching observation");
     let plan = ControllerHarness::reconcile_plan(harness.resolved.clone(), &observed);
@@ -948,7 +958,7 @@ async fn controller_executes_actions_introduced_by_fresh_planning() {
 
     let status = harness
         .store
-        .status(harness.application.id())
+        .status(&environment(&harness.application))
         .await
         .unwrap();
     assert_eq!(status.state, piqueld::store::ApplicationState::Ready);
@@ -975,7 +985,7 @@ async fn superseded_operations_do_not_plan_stale_runtime_state() {
         .expect("service is seeded");
     let observed = harness
         .docker
-        .observe(harness.application.id())
+        .observe(&environment(&harness.application))
         .await
         .expect("matching observation");
     let plan = ControllerHarness::reconcile_plan(harness.resolved.clone(), &observed);
@@ -1012,7 +1022,7 @@ async fn superseded_operations_do_not_plan_stale_runtime_state() {
 async fn controller_refuses_a_foreign_same_name_service() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let (store, application, resolved) = fixture_store(&directory).await;
-    let mut foreign_service_labels = foreign_labels(application.id());
+    let mut foreign_service_labels = foreign_labels(&environment(&application));
     foreign_service_labels.insert(SERVICE_LABEL.into(), "web".into());
     let foreign = ObservedService {
         labels: foreign_service_labels,
@@ -1032,7 +1042,7 @@ async fn controller_refuses_a_foreign_same_name_service() {
         .await
         .expect("ownership conflict is journaled");
     let status = store
-        .status(application.id())
+        .status(&environment(&application))
         .await
         .expect("status is readable");
     assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
@@ -1043,7 +1053,7 @@ async fn controller_refuses_a_foreign_same_name_service() {
     assert_eq!(operation.state, OperationState::Failed);
     assert_eq!(
         docker
-            .observe(application.id())
+            .observe(&environment(&application))
             .await
             .unwrap()
             .services
@@ -1070,7 +1080,7 @@ async fn assert_foreign_fixture_refuses_reconciliation(
         .await
         .expect("ownership conflict is journaled");
     let status = store
-        .status(application.id())
+        .status(&environment(application))
         .await
         .expect("status is readable");
     assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
@@ -1089,7 +1099,7 @@ async fn controller_refuses_a_foreign_same_name_network() {
     let foreign = ObservedNetwork {
         name: resolved.networks[0].name.to_string(),
         runtime_configuration_matches: true,
-        labels: foreign_labels(application.id()),
+        labels: foreign_labels(&environment(&application)),
     };
     let docker = Arc::new(FakeDocker::with_observed(ObservedApplication {
         networks: vec![foreign],
@@ -1097,7 +1107,7 @@ async fn controller_refuses_a_foreign_same_name_network() {
     }));
     assert_foreign_fixture_refuses_reconciliation(&docker, &store, &application, &resolved).await;
     // The foreign network must survive untouched.
-    let observed = docker.observe(application.id()).await.unwrap();
+    let observed = docker.observe(&environment(&application)).await.unwrap();
     assert_eq!(observed.networks.len(), 1);
     assert_eq!(
         observed.networks[0].labels.get(INSTANCE_LABEL),
@@ -1112,7 +1122,7 @@ async fn controller_refuses_a_foreign_same_name_volume() {
     let foreign = ObservedVolume {
         name: resolved.volumes[0].name.to_string(),
         runtime_configuration_matches: true,
-        labels: foreign_labels(application.id()),
+        labels: foreign_labels(&environment(&application)),
     };
     let docker = Arc::new(FakeDocker::with_observed(ObservedApplication {
         volumes: vec![foreign],
@@ -1120,7 +1130,7 @@ async fn controller_refuses_a_foreign_same_name_volume() {
     }));
     assert_foreign_fixture_refuses_reconciliation(&docker, &store, &application, &resolved).await;
     // The foreign volume must survive untouched.
-    let observed = docker.observe(application.id()).await.unwrap();
+    let observed = docker.observe(&environment(&application)).await.unwrap();
     assert_eq!(observed.volumes.len(), 1);
     assert_eq!(
         observed.volumes[0].labels.get(INSTANCE_LABEL),
@@ -1249,7 +1259,7 @@ impl ControllerHarness {
         self.controller = Controller::new(Arc::clone(&self.docker), Arc::clone(&self.store));
     }
 
-    async fn target(&self, id: &ApplicationId) -> ResolvedApplication {
+    async fn target(&self, id: &EnvironmentId) -> ResolvedApplication {
         self.store.get(id).await.unwrap().resolved.unwrap()
     }
 
@@ -1268,8 +1278,8 @@ async fn save_and_deploy_are_durable_before_resolution_and_reconcile_reuses_imag
         .await
         .unwrap();
     assert_eq!(harness.pulls().await, 0);
-    let stored = harness.store.get(&accepted.application_id).await.unwrap();
-    assert_eq!(stored.generation, 1);
+    let stored = harness.store.get(&accepted.environment_id).await.unwrap();
+    assert_eq!(stored.application.generation, 1);
     assert!(stored.resolved.is_none());
     harness.finish(&accepted).await;
     let pulls = harness.pulls().await;
@@ -1281,13 +1291,13 @@ async fn save_and_deploy_are_durable_before_resolution_and_reconcile_reuses_imag
     assert_eq!(repeated.generation, 2);
     assert_eq!(harness.pulls().await, pulls);
     let reconcile = applications
-        .reconcile(&accepted.application_id, Some(2))
+        .reconcile(&accepted.environment_id, Some(2))
         .await
         .unwrap();
     harness.finish(&reconcile).await;
     assert_eq!(harness.pulls().await, pulls);
     let refresh = applications
-        .deploy(&accepted.application_id, Some(2))
+        .deploy(&accepted.environment_id, Some(2))
         .await
         .unwrap();
     assert_ne!(refresh.id, accepted.id);
@@ -1296,15 +1306,16 @@ async fn save_and_deploy_are_durable_before_resolution_and_reconcile_reuses_imag
     assert_eq!(
         harness
             .store
-            .get(&accepted.application_id)
+            .get(&accepted.environment_id)
             .await
             .unwrap()
+            .application
             .generation,
         2
     );
     let events = harness
         .store
-        .events(Some(&accepted.application_id), None, 100)
+        .events(Some(&accepted.environment_id), None, 100)
         .await
         .unwrap()
         .items;
@@ -1350,7 +1361,7 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
     ));
     assert!(
         applications
-            .delete(&first.application_id, Some(1))
+            .delete(&first.environment_id, Some(1))
             .await
             .is_err()
     );
@@ -1362,10 +1373,10 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
     assert!(
         harness
             .store
-            .get(&first.application_id)
+            .get(&first.environment_id)
             .await
             .unwrap()
-            .application
+            .manifest()
             .spec()
             .services[0]
             .environment
@@ -1373,13 +1384,13 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
     );
     assert_eq!(third.generation, 3);
     let deletion = applications
-        .delete(&first.application_id, Some(3))
+        .delete(&first.environment_id, Some(3))
         .await
         .unwrap();
     assert_eq!(deletion.generation, 4);
     assert_eq!(
         applications
-            .delete(&first.application_id, None)
+            .delete(&first.environment_id, None)
             .await
             .unwrap()
             .id,
@@ -1387,7 +1398,7 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
     );
     assert!(
         applications
-            .deploy(&first.application_id, None)
+            .deploy(&first.environment_id, None)
             .await
             .is_err()
     );
@@ -1399,9 +1410,9 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
             piqueld::store::StoreError::IllegalTransition
         ))
     ));
-    let deleting = harness.store.get(&first.application_id).await.unwrap();
-    assert_eq!(deleting.generation, 4);
-    assert!(deleting.delete_intent);
+    let deleting = harness.store.get(&first.environment_id).await.unwrap();
+    assert_eq!(deleting.application.generation, 4);
+    assert!(deleting.delete_intent());
     assert_eq!(
         harness.store.operation(&deletion.id).await.unwrap().state,
         OperationState::Requested
@@ -1439,7 +1450,7 @@ async fn periodic_recovery_reuses_failed_prepared_target_and_records_health_chan
     assert_eq!(completed.attempt, 2);
     let observed = harness
         .docker
-        .observe(&operation.application_id)
+        .observe(&operation.environment_id)
         .await
         .unwrap();
     harness
@@ -1495,7 +1506,7 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
         .unwrap();
     controller.scan(&CancellationToken::new()).await.unwrap();
     let original_target = store
-        .get(&original.application_id)
+        .get(&original.environment_id)
         .await
         .unwrap()
         .resolved
@@ -1517,7 +1528,7 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
     tokio::time::timeout(std::time::Duration::from_secs(3), gate.entered.notified())
         .await
         .expect("pull started");
-    docker.assert_active_repair(&accepted.application_id).await;
+    docker.assert_active_repair(&accepted.environment_id).await;
     let mut fast = manifest();
     fast.metadata.name = "fast".into();
     let fast = applications
@@ -1534,13 +1545,13 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
     })
     .await
     .expect("unrelated application completes while slow pull is pending");
-    let pending = store.get(&accepted.application_id).await.unwrap();
-    assert_eq!(pending.generation, 2);
-    assert_eq!(pending.resolved_generation, Some(1));
+    let pending = store.get(&accepted.environment_id).await.unwrap();
+    assert_eq!(pending.application.generation, 2);
+    assert_eq!(pending.environment.resolved_generation, Some(1));
     assert_eq!(pending.resolved, Some(original_target));
     assert_eq!(
         docker
-            .observe(&accepted.application_id)
+            .observe(&accepted.environment_id)
             .await
             .unwrap()
             .services[0]
@@ -1548,7 +1559,7 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
         Convergence::Converged
     );
     let deleted = applications
-        .delete(&accepted.application_id, None)
+        .delete(&accepted.environment_id, None)
         .await
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -1601,7 +1612,7 @@ async fn controller_enforces_global_io_bounds_on_a_single_thread() {
     for app in store.list(None, 100).await.unwrap().items {
         assert_eq!(
             store
-                .latest_operation_for_application(app.application.id())
+                .latest_operation_for_environment(app.id())
                 .await
                 .unwrap()
                 .unwrap()
@@ -1649,7 +1660,7 @@ async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resour
         .unwrap();
     assert!(changed.operation_id.is_none());
     assert_eq!(harness.pulls().await, pulls);
-    let app = harness.store.get(&first.application_id).await.unwrap();
+    let app = harness.store.get(&first.environment_id).await.unwrap();
     assert!(
         app.resolved.unwrap().services[0]
             .image
@@ -1657,13 +1668,13 @@ async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resour
             .ends_with(&"a".repeat(64))
     );
     let refreshed = applications
-        .deploy(&first.application_id, Some(2))
+        .deploy(&first.environment_id, Some(2))
         .await
         .unwrap();
     harness.finish(&refreshed).await;
     let before = harness
         .store
-        .get(&first.application_id)
+        .get(&first.environment_id)
         .await
         .unwrap()
         .resolved
@@ -1672,7 +1683,7 @@ async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resour
     let renamed = applications
         .accept(
             piqueld::api::Mutation::Rename {
-                id: first.application_id.clone(),
+                id: ApplicationId::parse(first.environment_id.as_str()).unwrap(),
                 name: "renamed".into(),
             },
             Some(2),
@@ -1687,7 +1698,7 @@ async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resour
     assert_eq!(renamed.generation, 3);
     let after = harness
         .store
-        .get(&first.application_id)
+        .get(&first.environment_id)
         .await
         .unwrap()
         .resolved
@@ -1698,7 +1709,7 @@ async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resour
     assert_eq!(
         harness
             .store
-            .latest_operation_for_application(&first.application_id)
+            .latest_operation_for_environment(&first.environment_id)
             .await
             .unwrap()
             .unwrap()
@@ -1748,7 +1759,7 @@ async fn failed_preparation_preserves_active_repair_and_save_does_not_retry() {
         .accept(
             piqueld::api::Mutation::save(
                 input.validate().unwrap(),
-                Some(first.application_id.to_string()),
+                Some(first.environment_id.to_string()),
                 false,
             ),
             Some(failed.generation),
@@ -1774,8 +1785,8 @@ async fn failed_preparation_preserves_active_repair_and_save_does_not_retry() {
         .await
         .unwrap();
     assert_eq!(harness.docker.observed.lock().await.services[0].replicas, 1);
-    let stored = harness.store.get(&first.application_id).await.unwrap();
-    assert_eq!(stored.resolved_generation, Some(1));
+    let stored = harness.store.get(&first.environment_id).await.unwrap();
+    assert_eq!(stored.environment.resolved_generation, Some(1));
     let events = harness.store.events(None, None, 100).await.unwrap().items;
     assert!(events.iter().any(|event| event.kind == "operation_failed"
         && event.error_code.as_deref() == Some("image_resolution_failed")
@@ -1868,6 +1879,7 @@ async fn deploy_dependents(
     };
     let resolved = compile_application(
         &application,
+        &environment(&application),
         InstanceId::parse(store.instance_id()).unwrap(),
         &resolutions,
     )
@@ -1949,7 +1961,7 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
         .apply(input.clone().validate().unwrap(), Some(0))
         .await
         .unwrap();
-    let deploy = || Mutation::deploy(first.application_id.clone());
+    let deploy = || Mutation::deploy(first.environment_id.clone());
     let MutationResponse::Operation(replacement) = applications
         .accept(deploy(), None, true, None)
         .await
@@ -1969,7 +1981,7 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
     harness.finish(&replacement).await;
     let active = harness
         .store
-        .get(&first.application_id)
+        .get(&first.environment_id)
         .await
         .unwrap()
         .resolved
@@ -2022,7 +2034,7 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
     assert_eq!(
         harness
             .store
-            .get(&first.application_id)
+            .get(&first.environment_id)
             .await
             .unwrap()
             .resolved
@@ -2030,7 +2042,7 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
         active
     );
     harness
-        .assert_git_build_history(&first.application_id)
+        .assert_git_build_history(&first.environment_id)
         .await;
 }
 
@@ -2169,12 +2181,12 @@ mod repository_deployments {
                 },
             }
         }
-        async fn deploy(harness: &ControllerHarness, id: &ApplicationId) -> Operation {
+        async fn deploy(harness: &ControllerHarness, id: &EnvironmentId) -> Operation {
             Self::deploy_revision(harness, id, None).await
         }
         async fn deploy_revision(
             harness: &ControllerHarness,
-            id: &ApplicationId,
+            id: &EnvironmentId,
             revision: Option<ManifestRevision>,
         ) -> Operation {
             let MutationResponse::Operation(accepted) = harness
@@ -2230,16 +2242,16 @@ mod repository_deployments {
         )
         .unwrap();
         repository.commit();
-        let deployed = RepositoryFixture::deploy(&harness, &first.application_id).await;
+        let deployed = RepositoryFixture::deploy(&harness, &first.environment_id).await;
         assert_eq!(deployed.state, OperationState::Succeeded);
         assert_eq!(deployed.generation, 2);
         assert!(
             harness.pulls().await > before,
             "unchanged image references must be refreshed"
         );
-        let current = harness.store.get(&first.application_id).await.unwrap();
+        let current = harness.store.get(&first.environment_id).await.unwrap();
         assert_eq!(
-            current.application.spec().manifest.as_ref().unwrap().path,
+            current.manifest().spec().manifest.as_ref().unwrap().path,
             "next.json"
         );
         assert_eq!(current.resolved.unwrap().services[0].replicas, 2);
@@ -2250,7 +2262,7 @@ mod repository_deployments {
         std::fs::remove_file(repository.directory.path().join("app.json")).unwrap();
         repository.commit();
         assert_eq!(
-            RepositoryFixture::deploy(&harness, &first.application_id)
+            RepositoryFixture::deploy(&harness, &first.environment_id)
                 .await
                 .state,
             OperationState::Succeeded
@@ -2258,10 +2270,10 @@ mod repository_deployments {
         assert!(
             harness
                 .store
-                .get(&first.application_id)
+                .get(&first.environment_id)
                 .await
                 .unwrap()
-                .application
+                .manifest()
                 .spec()
                 .manifest
                 .is_none()
@@ -2269,7 +2281,7 @@ mod repository_deployments {
         std::fs::remove_file(repository.directory.path().join("next.json")).unwrap();
         repository.commit();
         assert_eq!(
-            RepositoryFixture::deploy(&harness, &first.application_id)
+            RepositoryFixture::deploy(&harness, &first.environment_id)
                 .await
                 .state,
             OperationState::Succeeded
@@ -2290,16 +2302,16 @@ mod repository_deployments {
             .await
             .unwrap();
         harness.finish(&first).await;
-        let before = harness.store.get(&first.application_id).await.unwrap();
+        let before = harness.store.get(&first.environment_id).await.unwrap();
         std::fs::remove_file(repository.directory.path().join("app.json")).unwrap();
         repository.commit();
-        let missing = RepositoryFixture::deploy(&harness, &first.application_id).await;
+        let missing = RepositoryFixture::deploy(&harness, &first.environment_id).await;
         assert_eq!(missing.error_code.as_deref(), Some("manifest_not_found"));
         let mut invalid = initial.clone();
         invalid.metadata.name = "different-application".into();
         repository.write("app.json", &invalid);
         repository.commit();
-        let invalid = RepositoryFixture::deploy(&harness, &first.application_id).await;
+        let invalid = RepositoryFixture::deploy(&harness, &first.environment_id).await;
         assert_eq!(invalid.error_code.as_deref(), Some("manifest_invalid"));
         let build = git_fixture::GitBuildFixture::new();
         let mut failing = initial.clone();
@@ -2307,11 +2319,11 @@ mod repository_deployments {
         failing.spec.services[0].source = build.failing_source();
         repository.write("app.json", &failing);
         repository.commit();
-        let failed = RepositoryFixture::deploy(&harness, &first.application_id).await;
+        let failed = RepositoryFixture::deploy(&harness, &first.environment_id).await;
         assert_eq!(failed.error_code.as_deref(), Some("git_build_failed"));
-        let after = harness.store.get(&first.application_id).await.unwrap();
+        let after = harness.store.get(&first.environment_id).await.unwrap();
         assert_eq!(before.application, after.application);
-        assert_eq!(before.generation, after.generation);
+        assert_eq!(before.application.generation, after.application.generation);
         assert_eq!(before.resolved, after.resolved);
         assert_eq!(harness.store.list(None, 50).await.unwrap().items.len(), 1);
         let mut manual = initial;
@@ -2343,14 +2355,14 @@ mod repository_deployments {
         candidate.spec.services[0].source = build.failing_source();
         repository.write("app.json", &candidate);
         repository.commit();
-        let failed = RepositoryFixture::deploy(&harness, &first.application_id).await;
+        let failed = RepositoryFixture::deploy(&harness, &first.environment_id).await;
         assert_eq!(failed.error_code.as_deref(), Some("git_build_failed"));
         repository.write("app.json", &initial);
         repository.commit();
         harness.reopen().await;
         let retry = harness
             .applications()
-            .reconcile(&first.application_id, None)
+            .reconcile(&first.environment_id, None)
             .await
             .unwrap();
         assert_eq!(retry.id, failed.id);
@@ -2364,7 +2376,7 @@ mod repository_deployments {
             OperationState::Failed
         );
         assert_eq!(
-            RepositoryFixture::deploy(&harness, &first.application_id)
+            RepositoryFixture::deploy(&harness, &first.environment_id)
                 .await
                 .state,
             OperationState::Succeeded
@@ -2399,13 +2411,13 @@ mod repository_deployments {
             .save(bootstrap.validate().unwrap(), Some(0))
             .await
             .unwrap();
-        let application_id = ApplicationId::parse(saved.application_id).unwrap();
+        let application_id = EnvironmentId::parse(saved.application_id).unwrap();
         // The override is not saved, and saved configuration keeps "self".
         let expected_spec = fetched
             .clone()
             .validate()
             .unwrap()
-            .normalize(application_id.clone())
+            .normalize(ApplicationId::parse(application_id.as_str()).unwrap())
             .to_manifest()
             .spec;
         for (revision, expected) in [
@@ -2421,9 +2433,9 @@ mod repository_deployments {
             assert_eq!(deployment.state, OperationState::Succeeded);
             let stored = harness.store.get(&application_id).await.unwrap();
             assert!(
-                matches!(&stored.resolved.unwrap().services[0].source, ResolvedSource::Git { commit, .. } if commit == &expected)
+                matches!(&stored.resolved.as_ref().unwrap().services[0].source, ResolvedSource::Git { commit, .. } if commit == &expected)
             );
-            assert_eq!(stored.application.to_manifest().spec, expected_spec);
+            assert_eq!(stored.manifest().to_manifest().spec, expected_spec);
         }
         // "self" would otherwise pin another repository to this one's commit.
         let mut moved = fetched;
@@ -2456,7 +2468,7 @@ mod repository_deployments {
             .save(bootstrap.validate().unwrap(), Some(0))
             .await
             .unwrap();
-        let application_id = ApplicationId::parse(saved.application_id).unwrap();
+        let application_id = EnvironmentId::parse(saved.application_id).unwrap();
         // The image service fails preparation after the manifest is fetched.
         harness.docker.arm_tag_flips(100).await;
         let failed = RepositoryFixture::deploy_revision(
@@ -2527,7 +2539,7 @@ mod repository_deployments {
             .save(bootstrap.validate().unwrap(), Some(0))
             .await
             .unwrap();
-        let application_id = ApplicationId::parse(saved.application_id).unwrap();
+        let application_id = EnvironmentId::parse(saved.application_id).unwrap();
         let deployment = RepositoryFixture::deploy(&harness, &application_id).await;
         assert_eq!(deployment.state, OperationState::Succeeded);
         let resolved = harness
@@ -2581,6 +2593,7 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
             .normalize(harness.application.id().clone());
         harness.resolved = compile_application(
             &harness.application,
+            &environment(&harness.application),
             InstanceId::parse(harness.store.instance_id()).unwrap(),
             &harness.resolutions,
         )
@@ -2606,7 +2619,7 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
                 && event["span"]["operation_id"] == operation_id
         })
         .unwrap_or_else(|| panic!("missing completion event in captured traces:\n{text}"));
-    assert_eq!(completed["span"]["application_id"], application_id);
+    assert_eq!(completed["span"]["environment_id"], application_id);
     assert_eq!(completed["span"]["operation_id"], operation_id);
     assert_eq!(completed["span"]["generation"], 1);
     assert_eq!(completed["fields"]["outcome"], "succeeded");
@@ -2622,7 +2635,7 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
 }
 
 impl ControllerHarness {
-    async fn assert_git_build_history(&self, id: &ApplicationId) {
+    async fn assert_git_build_history(&self, id: &EnvironmentId) {
         let builds = self.store.builds(Some(id), None, 50).await.unwrap();
         assert_eq!(
             builds.items.len(),
@@ -2736,7 +2749,7 @@ async fn full_scan_records_one_docker_failure_for_overlapping_observers() {
             store
                 .filtered_events(
                     &piqueld_core::observability::EventFilter {
-                        application_id: Some(application_id),
+                        environment_id: Some(application_id),
                         kind: Some("diagnostic".into()),
                         error_code: Some("docker_unavailable".into()),
                         ..Default::default()
@@ -2779,7 +2792,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
     harness.finish(&first).await;
     harness
         .store
-        .put_secret(&first.application_id, "token", 0, b"version-one".to_vec())
+        .put_secret(&first.environment_id, "token", 0, b"version-one".to_vec())
         .await
         .unwrap();
     let mut input = manifest();
@@ -2794,7 +2807,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
         .await
         .unwrap();
     harness.finish(&deployment).await;
-    let target = harness.target(&first.application_id).await;
+    let target = harness.target(&first.environment_id).await;
     let old = target.secret_names["token"].clone();
     assert_eq!(
         harness.docker.secret_values.lock().await[&old],
@@ -2802,7 +2815,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
     );
     harness
         .store
-        .put_secret(&first.application_id, "token", 1, b"version-two".to_vec())
+        .put_secret(&first.environment_id, "token", 1, b"version-two".to_vec())
         .await
         .unwrap();
     harness
@@ -2811,16 +2824,16 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
         .await
         .unwrap();
     assert_eq!(
-        harness.target(&first.application_id).await,
+        harness.target(&first.environment_id).await,
         target,
         "rotation alone must not update services"
     );
     let next = applications
-        .deploy(&first.application_id, None)
+        .deploy(&first.environment_id, None)
         .await
         .unwrap();
     harness.finish(&next).await;
-    let target = harness.target(&first.application_id).await;
+    let target = harness.target(&first.environment_id).await;
     let new = &target.secret_names["token"];
     assert_ne!(&old, new);
     assert_eq!(
@@ -2830,7 +2843,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
     assert_eq!(
         harness
             .docker
-            .observe(&first.application_id)
+            .observe(&first.environment_id)
             .await
             .unwrap()
             .services[0]
@@ -2851,14 +2864,14 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
             .runtime(Arc::new(tokio::sync::Notify::new())),
     );
     service
-        .delete_secret(&first.application_id, "token", 2)
+        .delete_secret(&first.environment_id, "token", 2)
         .await
         .unwrap();
     assert!(harness.docker.secret_values.lock().await.is_empty());
     assert!(
         harness
             .store
-            .secrets(&first.application_id)
+            .secrets(&first.environment_id)
             .await
             .unwrap()
             .is_empty()
@@ -2876,7 +2889,7 @@ async fn application_deletion_journals_secret_cleanup_failures() {
     harness.finish(&first).await;
     harness
         .store
-        .put_secret(&first.application_id, "token", 0, b"value".to_vec())
+        .put_secret(&first.environment_id, "token", 0, b"value".to_vec())
         .await
         .unwrap();
     harness
@@ -2884,7 +2897,7 @@ async fn application_deletion_journals_secret_cleanup_failures() {
         .fail_secret_removal
         .store(true, Ordering::SeqCst);
     let deletion = applications
-        .delete(&first.application_id, Some(1))
+        .delete(&first.environment_id, Some(1))
         .await
         .unwrap();
     harness
@@ -2915,7 +2928,7 @@ async fn application_deletion_journals_secret_cleanup_failures() {
     assert!(events.iter().any(|event| event.kind == "action_failed"
         && event.phase.as_deref() == Some("remove_secrets")
         && event.error_code.as_deref() == Some("docker_request_failed")));
-    assert!(harness.store.get(&first.application_id).await.is_ok());
+    assert!(harness.store.get(&first.environment_id).await.is_ok());
 }
 
 #[tokio::test]
@@ -2927,7 +2940,7 @@ async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollou
         .await
         .unwrap();
     harness.finish(&initial).await;
-    let id = &initial.application_id;
+    let id = &initial.environment_id;
     harness
         .store
         .put_secret(id, "token", 0, b"original".to_vec())
@@ -2992,7 +3005,7 @@ async fn missing_secret_key_fails_rollout_before_docker_mutation() {
     harness.finish(&first).await;
     harness
         .store
-        .put_secret(&first.application_id, "token", 0, b"value".to_vec())
+        .put_secret(&first.environment_id, "token", 0, b"value".to_vec())
         .await
         .unwrap();
     std::fs::remove_file(harness.database_path.with_file_name("secrets.key")).unwrap();
@@ -3100,7 +3113,7 @@ async fn preparation_timeout_is_retried_after_backoff() {
         .unwrap();
     let latest = harness
         .store
-        .latest_operation_for_application(&operation.application_id)
+        .latest_operation_for_environment(&operation.environment_id)
         .await
         .unwrap()
         .unwrap();
@@ -3152,7 +3165,7 @@ async fn changed_swarm_topology_blocks_preparation_and_recovers_after_backoff() 
         .unwrap();
     let latest = harness
         .store
-        .latest_operation_for_application(&operation.application_id)
+        .latest_operation_for_environment(&operation.environment_id)
         .await
         .unwrap()
         .unwrap();
@@ -3202,7 +3215,7 @@ async fn topology_change_during_preparation_blocks_promotion_and_mutation() {
     assert!(
         harness
             .store
-            .get(&operation.application_id)
+            .get(&operation.environment_id)
             .await
             .unwrap()
             .resolved
@@ -3383,7 +3396,7 @@ async fn failed_or_timed_out_job_dependencies_prevent_jobs_and_other_services() 
         assert!(
             harness
                 .store
-                .get(&operation.application_id)
+                .get(&operation.environment_id)
                 .await
                 .unwrap()
                 .resolved
@@ -3461,9 +3474,10 @@ async fn failed_migration_keeps_prerequisites_and_repairs_other_active_services(
         assert_eq!(
             harness
                 .store
-                .get(&operation.application_id)
+                .get(&operation.environment_id)
                 .await
                 .unwrap()
+                .environment
                 .resolved_generation,
             Some(1)
         );
@@ -3485,7 +3499,7 @@ impl ControllerHarness {
     /// The application's newest build record and its retained output.
     async fn latest_run(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
     ) -> (piqueld_core::api::BuildRecord, String) {
         let run = self
             .store
@@ -3556,7 +3570,7 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
         }]
     );
     assert!(harness.docker.jobs.lock().await.is_empty());
-    let (run, output) = harness.latest_run(&first.application_id).await;
+    let (run, output) = harness.latest_run(&first.environment_id).await;
     assert_eq!(
         (run.job.as_deref(), run.exit_code, run.state),
         (
@@ -3588,13 +3602,14 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
     assert_eq!(
         harness
             .store
-            .get(&first.application_id)
+            .get(&first.environment_id)
             .await
             .unwrap()
+            .environment
             .resolved_generation,
         Some(1)
     );
-    let (run, output) = harness.latest_run(&first.application_id).await;
+    let (run, output) = harness.latest_run(&first.environment_id).await;
     assert_eq!(
         (run.exit_code, run.state),
         (Some(3), piqueld_core::api::BuildState::Failed)
@@ -3619,7 +3634,7 @@ async fn failed_job_keeps_an_unchanged_application_degraded() {
     harness.finish(&first).await;
     harness.docker.job_exit.store(3, Ordering::SeqCst);
     let redeploy = applications
-        .deploy(&first.application_id, None)
+        .deploy(&first.environment_id, None)
         .await
         .unwrap();
     assert_eq!(
@@ -3628,7 +3643,7 @@ async fn failed_job_keeps_an_unchanged_application_degraded() {
     );
     // Services already match the target, but the deployment still failed.
     harness.scan_result(&redeploy).await;
-    let status = harness.store.status(&first.application_id).await.unwrap();
+    let status = harness.store.status(&first.environment_id).await.unwrap();
     assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
     assert_eq!(harness.started_jobs().await, ["migrate", "migrate"]);
 }
@@ -3700,7 +3715,7 @@ async fn restarted_daemon_resumes_a_running_job() {
     harness.finish(&operation).await;
     assert_eq!(harness.started_jobs().await, ["migrate"]);
     assert!(harness.docker.jobs.lock().await.is_empty());
-    let (run, output) = harness.latest_run(&operation.application_id).await;
+    let (run, output) = harness.latest_run(&operation.environment_id).await;
     assert_eq!(run.state, piqueld_core::api::BuildState::Succeeded);
     assert_eq!(output, "migrated\n");
 }
@@ -3729,7 +3744,7 @@ async fn superseded_job_run_is_stopped() {
     // The replacement deployment declares no jobs, so the superseded
     // operation must stop its own run.
     assert!(harness.docker.jobs.lock().await.is_empty());
-    let (run, _) = harness.latest_run(&first.application_id).await;
+    let (run, _) = harness.latest_run(&first.environment_id).await;
     assert_eq!(run.state, piqueld_core::api::BuildState::Interrupted);
     harness.finish(&second).await;
     assert_eq!(harness.started_jobs().await, ["migrate"]);
@@ -3751,7 +3766,7 @@ async fn job_timeout_keeps_output_and_stops_the_run() {
         harness.scan_result(&operation).await,
         (OperationState::Failed, Some("job_timeout".into()))
     );
-    let (run, output) = harness.latest_run(&operation.application_id).await;
+    let (run, output) = harness.latest_run(&operation.environment_id).await;
     assert_eq!(run.state, piqueld_core::api::BuildState::Failed);
     assert_eq!(output, "migrated\n");
     assert!(harness.docker.jobs.lock().await.is_empty());
@@ -3814,13 +3829,13 @@ async fn timed_out_job_cleanup_retries_after_restart_without_rerunning() {
     assert!(
         harness
             .store
-            .get(&operation.application_id)
+            .get(&operation.environment_id)
             .await
             .unwrap()
             .resolved
             .is_none()
     );
-    let (run, output) = harness.latest_run(&operation.application_id).await;
+    let (run, output) = harness.latest_run(&operation.environment_id).await;
     assert_eq!(run.state, piqueld_core::api::BuildState::Failed);
     assert_eq!(output, "migrated\n");
 }
@@ -3933,7 +3948,7 @@ async fn unknown_job_status_keeps_the_run_for_a_retry() {
         harness.scan_result(&operation).await,
         (OperationState::Failed, Some("docker_request_failed".into()))
     );
-    let (run, _) = harness.latest_run(&operation.application_id).await;
+    let (run, _) = harness.latest_run(&operation.environment_id).await;
     assert_eq!(run.state, piqueld_core::api::BuildState::Interrupted);
     assert_eq!(harness.docker.jobs.lock().await.len(), 1);
 
@@ -3946,7 +3961,7 @@ async fn unknown_job_status_keeps_the_run_for_a_retry() {
     harness.expire_backoff(&operation).await;
     harness.finish(&operation).await;
     assert_eq!(harness.started_jobs().await, ["migrate"]);
-    let (run, _) = harness.latest_run(&operation.application_id).await;
+    let (run, _) = harness.latest_run(&operation.environment_id).await;
     assert_eq!(run.state, piqueld_core::api::BuildState::Succeeded);
     assert!(harness.docker.jobs.lock().await.is_empty());
 }
@@ -3969,7 +3984,7 @@ async fn recorded_success_survives_a_crash_before_cleanup() {
         loop {
             let builds = harness
                 .store
-                .builds(Some(&operation.application_id), None, 10)
+                .builds(Some(&operation.environment_id), None, 10)
                 .await
                 .unwrap();
             if builds
@@ -4030,7 +4045,7 @@ async fn retry_reruns_a_failed_run_left_in_place() {
         .store(false, Ordering::SeqCst);
     let retry = harness
         .applications()
-        .reconcile(&operation.application_id, None)
+        .reconcile(&operation.environment_id, None)
         .await
         .unwrap();
     assert_eq!(retry.id, operation.id);
@@ -4055,7 +4070,7 @@ async fn job_outcome_survives_output_and_cleanup_failures() {
         .await
         .unwrap();
     harness.finish(&operation).await;
-    let (run, output) = harness.latest_run(&operation.application_id).await;
+    let (run, output) = harness.latest_run(&operation.environment_id).await;
     assert_eq!(
         (run.exit_code, run.state),
         (Some(0), piqueld_core::api::BuildState::Succeeded)
@@ -4094,10 +4109,10 @@ async fn blocked_deployment_runs_no_jobs() {
         .await
         .networks
         .push(ObservedNetwork {
-            name: piqueld_core::DockerNetworkName::for_application(&operation.application_id)
+            name: piqueld_core::DockerNetworkName::for_application(&operation.environment_id)
                 .to_string(),
             runtime_configuration_matches: true,
-            labels: foreign_labels(&operation.application_id),
+            labels: foreign_labels(&operation.environment_id),
         });
     assert_eq!(
         harness.scan_result(&operation).await,

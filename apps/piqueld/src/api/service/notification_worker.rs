@@ -118,7 +118,7 @@ impl ApplicationService {
             WebhookKind::Discord => {
                 let summary = event.message.as_deref().unwrap_or(&event.kind);
                 let application = event
-                    .application_id
+                    .environment_id
                     .as_ref()
                     .map_or_else(|| "daemon".to_owned(), ToString::to_string);
                 let diagnostic = event.diagnostic.as_ref().map_or_else(String::new, |d| {

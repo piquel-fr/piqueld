@@ -46,8 +46,8 @@ pub struct Diagnostic {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct EventFilter {
-    /// Contextual application ID, including references retained in daemon history.
-    pub application_id: Option<String>,
+    /// Contextual environment ID, including references retained in daemon history.
+    pub environment_id: Option<String>,
     /// Operation identity.
     pub operation_id: Option<String>,
     /// Execution attempt.
