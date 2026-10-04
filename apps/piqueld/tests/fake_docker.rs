@@ -3402,17 +3402,17 @@ async fn failed_migration_keeps_prerequisites_and_repairs_other_active_services(
             (OperationState::Failed, Some("job_failed".into()))
         );
         // Repair must keep both newly created and updated prerequisites, while
-        // continuing to maintain unrelated services against the active target.
+        // continuing to maintain other services against the active target,
+        // including dependents of a converged prerequisite.
         {
             let mut observed = harness.docker.observed.lock().await;
-            let other = observed
-                .services
-                .iter_mut()
-                .find(|service| service.labels[SERVICE_LABEL] == "other")
-                .unwrap();
-            other.replicas = 9;
+            for service in &mut observed.services {
+                if matches!(service.labels[SERVICE_LABEL].as_str(), "web" | "other") {
+                    service.replicas = 9;
+                }
+            }
         }
-        for _ in 0..3 {
+        for _ in 0..4 {
             assert_eq!(
                 harness.scan_result(&operation).await,
                 (OperationState::Failed, Some("job_failed".into()))

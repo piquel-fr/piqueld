@@ -478,7 +478,7 @@ impl<D: DockerApi> Controller<D> {
             return Ok(());
         }
         if let Some(prepared) = self.store.prepared_target(operation_id).await? {
-            plan.preserve_job_prerequisites(&prepared);
+            plan.preserve_job_prerequisites(&prepared, &observed);
         }
         let Some(action) = plan.next_repair() else {
             return Ok(());

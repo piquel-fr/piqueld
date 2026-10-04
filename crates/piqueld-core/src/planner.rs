@@ -508,8 +508,13 @@ impl Plan {
     }
 
     /// Filters old-target repair actions that would revert or remove prepared
-    /// job prerequisites. Convergence waits remain to gate active dependents.
-    pub fn preserve_job_prerequisites(&mut self, prepared: &ResolvedApplication) {
+    /// job prerequisites. A prerequisite's wait remains only while it is still
+    /// converging, so it gates active dependents without blocking their repair.
+    pub fn preserve_job_prerequisites(
+        &mut self,
+        prepared: &ResolvedApplication,
+        observed: &ObservedApplication,
+    ) {
         let dependencies = prepared
             .jobs
             .iter()
@@ -524,6 +529,12 @@ impl Plan {
         self.actions.retain(|action| match &action.kind {
             ActionKind::EnsureService { service } => !services.contains(service.name.as_str()),
             ActionKind::RemoveService { name } => !services.contains(name.as_str()),
+            ActionKind::WaitForService { service } => {
+                !services.contains(service.as_str())
+                    || !observed.services.iter().any(|found| {
+                        found.name == *service && found.convergence == Convergence::Converged
+                    })
+            }
             ActionKind::RemoveNetwork { name } => {
                 prepared.jobs.is_empty()
                     || !prepared
