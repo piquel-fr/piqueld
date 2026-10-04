@@ -886,6 +886,7 @@ fn compile_job(
     container.command.clone_from(&job.command);
     container.arguments.clear();
     container.healthcheck = None;
+    container.depends_on.clear();
     container.labels = application_ownership.labels();
     container
         .labels

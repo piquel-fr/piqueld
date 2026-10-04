@@ -333,7 +333,8 @@ run point: jobs run in declared order after every source is prepared and before
 the deployment is promoted or changes any service. Missing networks and volumes
 are created first, and a deployment whose plan is blocked runs no jobs. Because
 services have not changed yet, a first deployment's jobs cannot reach services
-that the same deployment creates.
+that the same deployment creates, and the referenced service's `depends_on`
+does not apply to them.
 
 A non-zero exit, a rejected task, or exceeding `timeout_seconds` (1–86,400) fails
 the deployment with `job_failed` or `job_timeout`. The previous target keeps

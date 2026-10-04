@@ -3,6 +3,7 @@ use super::{
     OperationKind, OperationState, Plan, PlanRequest, StoreError, blocked_plan_error,
 };
 use crate::application::RuntimeBoundary;
+use crate::docker::JobRuns;
 use std::sync::Arc;
 
 impl<D: DockerApi> Controller<D> {
@@ -229,13 +230,8 @@ impl<D: DockerApi> Controller<D> {
         if operation.kind == OperationKind::Delete {
             self.withdraw_routes(operation, deadline).await?;
             // Job services would keep the private network attached.
-            self.remove_jobs(
-                operation,
-                &ownership,
-                crate::docker::JobRuns::All,
-                cancellation,
-            )
-            .await?;
+            self.remove_jobs(operation, &ownership, JobRuns::All, cancellation)
+                .await?;
         }
         tracing::debug!(
             timeout_seconds = self.retry.convergence_timeout.as_secs(),
