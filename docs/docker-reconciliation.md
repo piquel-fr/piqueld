@@ -3,7 +3,10 @@
 The daemon controls one local Docker Engine running a single-node Swarm. It
 manages private overlay networks, named volumes, and replicated services,
 verifies ownership before mutations, and retains volumes on deletion. Service
-updates are start-first, one task at a time, and pause on failure. Tasks are pinned
+updates run one task at a time and pause on failure. They are start-first, except
+for services that mount any volume read-write: those stop the old task before
+starting its replacement, so two tasks never write the same data directory, at the
+cost of a short downtime per rollout. Tasks are pinned
 to the local manager's immutable node ID so local images and volumes cannot move
 to a subsequently joined node. Preparation, promotion, and resource creation or
 updates recheck the supported single-node topology; an unsupported topology blocks
