@@ -112,6 +112,49 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await expect(page.locator('.table', { hasText: 'browser-test' })).toContainText('requested');
 });
 
+test('adds, reorders, and removes jobs', async ({ page, account }) => {
+  void account;
+  await createApplication(page);
+  await addService(page, 'web', 'nginx:1.27');
+  await tab(page, 'Jobs').click();
+  await expect(page.getByText('No jobs. Deployments roll out services directly.', { exact: true })).toBeVisible();
+  const job = (index: number) => page.locator(`[data-job="${index}"]`);
+  const fill = async (index: number, name: string, command: string[]) => {
+    await page.getByRole('button', { name: 'Add job', exact: true }).click();
+    await job(index).getByLabel('Name', { exact: true }).fill(name);
+    await job(index).getByRole('combobox', { name: 'Service', exact: true }).selectOption('web');
+    for (const [element, value] of command.entries()) {
+      if (element > 0) await job(index).getByRole('button', { name: 'Add command element', exact: true }).click();
+      await job(index).getByLabel('Command element', { exact: true }).nth(element).fill(value);
+    }
+  };
+  await fill(0, 'seed', ['seed']);
+  await fill(1, 'migrate', ['migrate', '--all']);
+  await job(1).getByLabel('Timeout (seconds)', { exact: true }).fill('60');
+  await job(1).getByRole('button', { name: 'Move up', exact: true }).click();
+  await save(page);
+  await page.reload();
+  await tab(page, 'Jobs').click();
+  await expect(job(0).getByLabel('Name', { exact: true })).toHaveValue('migrate');
+  await expect(job(0).getByLabel('Command element', { exact: true }).nth(1)).toHaveValue('--all');
+  await expect(job(0).getByLabel('Timeout (seconds)', { exact: true })).toHaveValue('60');
+  await expect(job(1).getByLabel('Name', { exact: true })).toHaveValue('seed');
+  await expect(job(1).getByLabel('Timeout (seconds)', { exact: true })).toHaveValue('300');
+
+  await job(1).getByRole('button', { name: 'Remove', exact: true }).first().click();
+  await save(page);
+  await page.reload();
+  await tab(page, 'Jobs').click();
+  await expect(job(0).getByLabel('Name', { exact: true })).toHaveValue('migrate');
+  await expect(job(1)).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Deploy', exact: true }).click();
+  const deployment = page.locator('.expander', { hasText: 'Deployment #' });
+  await deployment.getByRole('button', { name: /Deployment #/ }).click();
+  await deployment.getByRole('button', { name: 'Snapshot', exact: true }).click();
+  await expect(deployment).toContainText('migrate on web, up to 60s: migrate --all');
+});
+
 test('unsaved edits block deployment and navigation until discarded', async ({ page, account }) => {
   void account;
   await createApplication(page);

@@ -167,8 +167,14 @@ pub enum JobRun {
     BeforeRollout,
 }
 
+impl Job {
+    /// Timeout applied when a job declares none.
+    pub const DEFAULT_TIMEOUT_SECONDS: u32 = 300;
+}
+
+/// Serde default for `Job::timeout_seconds`.
 fn default_job_timeout() -> u32 {
-    300
+    Job::DEFAULT_TIMEOUT_SECONDS
 }
 
 /// The exhaustive set of deployable service sources.

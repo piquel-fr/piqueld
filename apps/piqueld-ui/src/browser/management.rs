@@ -1,5 +1,6 @@
 //! Application editor state and page composition. Polling never replaces local edits.
 mod deployments;
+mod jobs;
 mod logs;
 mod navigation;
 mod routes;
@@ -28,12 +29,13 @@ use secrets::ApplicationSecrets;
 use settings::{MetadataSettings, NewService, RepositorySettings, VolumeSettings};
 use std::collections::BTreeSet;
 
-const APPLICATION_TABS: [&str; 10] = [
+const APPLICATION_TABS: [&str; 11] = [
     "Overview",
     "Services",
     "Source",
     "Routes",
     "Volumes",
+    "Jobs",
     "Secrets",
     "Deployments",
     "Builds",
@@ -663,14 +665,14 @@ fn EditorFeedback() -> impl IntoView {
     }
 }
 
-/// Source, services, routes and volumes tabs. Service, route and volume
-/// editing is disabled while the application is managed from a Git manifest.
+/// Source, services, routes, volumes and jobs tabs. Service, route, volume and
+/// job editing is disabled while the application is managed from a Git manifest.
 #[component]
 fn ApplicationSettings() -> impl IntoView {
     let context = editor();
     view! {
         <div hidden={move || {
-            !matches!(context.tab.get(), "Source" | "Services" | "Routes" | "Volumes")
+            !matches!(context.tab.get(), "Source" | "Services" | "Routes" | "Volumes" | "Jobs")
         }}>
             <div class="stack">
                 {move || {
@@ -679,7 +681,7 @@ fn ApplicationSettings() -> impl IntoView {
                         .then(|| {
                             notice(
                                 Tone::Info,
-                                "Runtime configuration is managed in Git. Disconnect the repository in Source to edit services, routes, and volumes here.",
+                                "Runtime configuration is managed in Git. Disconnect the repository in Source to edit services, routes, volumes, and jobs here.",
                             )
                         })
                 }} <div hidden={move || context.tab.get() != "Source"}>
@@ -702,6 +704,9 @@ fn ApplicationSettings() -> impl IntoView {
                     </div>
                     <div hidden={move || context.tab.get() != "Volumes"}>
                         <VolumeSettings />
+                    </div>
+                    <div hidden={move || context.tab.get() != "Jobs"}>
+                        <jobs::JobSettings />
                     </div>
                 </fieldset>
             </div>

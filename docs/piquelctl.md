@@ -167,6 +167,8 @@ piquelctl app volume remove notes data --yes
 piquelctl app route add notes notes.example.com web 3000 --yes
 piquelctl app route redirect notes www.notes.example.com https://notes.example.com --yes
 piquelctl app route remove notes notes.example.com --yes
+piquelctl app job set notes migrate web --timeout-seconds 600 --yes -- notes migrate
+piquelctl app job remove notes migrate --yes
 piquelctl app service health http notes web 8080 --path /live --check-timeout 3 --yes
 piquelctl app service health interval notes web 20 --yes
 piquelctl app service health clear notes web --yes
@@ -183,8 +185,12 @@ Route edits preserve other routes and use the inspected generation to reject
 concurrent changes. `route redirect` defaults to status 308 and appends the
 request path and query to the destination; use `--status` and
 `--no-preserve-path` to change that. Deploy after saving to activate or remove public routing.
+`job set` adds a job after the existing ones, or replaces the job with that name
+in place, keeping its timeout unless `--timeout-seconds` is given (300 for a new
+job). Jobs run in their saved order before each rollout; like routes, job edits
+preserve the other jobs and use the inspected generation.
 
-Command, argument, and `depends-on` arrays preserve individual elements; place
+Command, argument, job command, and `depends-on` arrays preserve individual elements; place
 command options before `--`. An empty array clears the setting. Optional limits and pinned
 commits use `--clear`; health checks use `health clear`. Nested Git/health settings
 require the corresponding source/check to be configured first. Use `--help` on

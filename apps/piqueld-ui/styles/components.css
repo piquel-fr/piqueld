@@ -385,6 +385,14 @@
         color: var(--ink);
     }
 
+    /* One job in the job editor, set apart from its neighbours. */
+    .job-draft {
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: var(--page);
+    }
+
     .secret-box {
         margin: 0;
         padding: 10px 12px;

@@ -65,6 +65,7 @@ immutable deployment snapshot commit in the same transaction.
 | POST | `/volumes` | `{ "name": "data" }` |
 | DELETE | `/volumes/{volume}` | None; mounted volumes are rejected |
 | PUT | `/routes` | `{ "value": [{ "hostname": "notes.example.com", "service": "web", "port": 3000 }] }`; replaces this application's routes |
+| PUT | `/jobs` | `{ "value": [{ "name": "migrate", "service": "web", "command": ["notes", "migrate"], "run": "before-rollout", "timeout_seconds": 300 }] }`; replaces the jobs, in execution order |
 | PUT | `/services/{service}/name` | `{ "value": "worker" }` |
 | PUT | `/services/{service}/replicas` | `{ "value": 3 }` |
 | PUT | `/services/{service}/source` | `{ "value": Source }` |
@@ -88,8 +89,9 @@ source/check settings require the appropriate variant; switch variants through
 missing resources are rejected. Optional values must explicitly use null to clear.
 The same validation and Git ownership rules apply even with `force=true`.
 Disconnecting a repository preserves saved services and volumes for local editing.
-Renaming a service updates its routes and dependents' `depends_on`; removing a
-service removes its routes and drops it from other services' `depends_on`.
+Renaming a service updates its routes, its jobs, and dependents' `depends_on`;
+removing a service removes its routes and jobs and drops it from other services'
+`depends_on`.
 Routes remain saved while ingress is disabled and become active only after deployment
 with ingress enabled in the daemon's read-only TOML configuration.
 

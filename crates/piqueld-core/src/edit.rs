@@ -1,6 +1,6 @@
 //! Typed changes to saved application configuration. No edit performs runtime work.
 use crate::manifest::{
-    ApplicationManifest, Build, GitRepository, HealthCheck, Mount, RepositoryManifest,
+    ApplicationManifest, Build, GitRepository, HealthCheck, Job, Mount, RepositoryManifest,
     ResourceLimits, Route, SecretMount, Service, Source, SourceRepository, Volume,
 };
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,7 @@ value_request! {
     SecretsValue: Vec<SecretMount>;
     VolumesValue: Vec<Volume>;
     RoutesValue: Vec<Route>;
+    JobsValue: Vec<Job>;
     RepositoryValue: Option<RepositoryManifest>;
 }
 
@@ -94,6 +95,8 @@ pub enum ApplicationEdit {
     Volumes(Vec<Volume>),
     /// Replace public routes owned by this application.
     Routes(Vec<Route>),
+    /// Replace the one-shot jobs; their order is their execution order.
+    Jobs(Vec<Job>),
     /// Remove a volume declaration; validation rejects remaining mounts.
     RemoveVolume(String),
 }
@@ -202,9 +205,9 @@ impl ApplicationEdit {
 
     /// Edits input in memory. The caller must validate the resulting manifest before saving.
     ///
-    /// Removing a service also drops its public routes and other services'
-    /// dependencies on it, and renaming a service repoints both, so references
-    /// never dangle.
+    /// Removing a service also drops its public routes, its jobs, and other
+    /// services' dependencies on it, and renaming a service repoints them all,
+    /// so references never dangle.
     /// Removing a volume leaves mounts in place for validation to reject.
     /// # Errors
     /// Rejects missing/duplicate resources and incompatible nested fields.
@@ -276,6 +279,7 @@ impl ApplicationEdit {
             }
             Self::Volumes(volumes) => manifest.spec.volumes = volumes,
             Self::Routes(routes) => manifest.spec.routes = routes,
+            Self::Jobs(jobs) => manifest.spec.jobs = jobs,
             Self::AddVolume(volume) => {
                 if manifest.spec.volumes.iter().any(|v| v.name == volume.name) {
                     return Err(EditError::AlreadyExists {
@@ -312,8 +316,8 @@ impl ApplicationEdit {
                 "connect a manifest repository before editing its settings",
             ))
     }
-    /// Repoints routes and dependencies naming service `old` to `new`, or drops
-    /// them when `new` is `None` because the service was removed.
+    /// Repoints routes, jobs, and dependencies naming service `old` to `new`, or
+    /// drops them when `new` is `None` because the service was removed.
     fn retarget_service(manifest: &mut ApplicationManifest, old: &str, new: Option<&String>) {
         manifest.spec.routes.retain_mut(|route| {
             if route.service.as_deref() != Some(old) {
@@ -321,6 +325,12 @@ impl ApplicationEdit {
             }
             route.service = new.cloned();
             new.is_some()
+        });
+        manifest.spec.jobs.retain_mut(|job| {
+            if job.service != old {
+                return true;
+            }
+            new.inspect(|new| job.service.clone_from(new)).is_some()
         });
         for service in &mut manifest.spec.services {
             service.depends_on.retain_mut(|dependency| {
@@ -523,10 +533,12 @@ pub struct EditOptions {
 #[cfg(test)]
 mod tests {
     use super::{ApplicationEdit, ServiceEdit};
-    use crate::manifest::{ApplicationManifest, ApplicationSpec, Metadata, Route, Service, Source};
+    use crate::manifest::{
+        ApplicationManifest, ApplicationSpec, Job, JobRun, Metadata, Route, Service, Source,
+    };
 
     #[test]
-    fn service_edits_keep_routes_and_dependencies_attached_to_existing_services() {
+    fn service_edits_keep_routes_jobs_and_dependencies_attached_to_existing_services() {
         let service = |name: &str, depends_on: &[&str]| Service {
             name: name.into(),
             source: Source::Image {
@@ -558,6 +570,15 @@ mod tests {
         )])
         .apply(&mut manifest)
         .unwrap();
+        ApplicationEdit::Jobs(vec![Job {
+            name: "migrate".into(),
+            service: "web".into(),
+            command: vec!["migrate".into()],
+            run: JobRun::BeforeRollout,
+            timeout_seconds: 300,
+        }])
+        .apply(&mut manifest)
+        .unwrap();
         ApplicationEdit::Service {
             name: "web".into(),
             edit: ServiceEdit::Name("frontend".into()),
@@ -565,12 +586,14 @@ mod tests {
         .apply(&mut manifest)
         .unwrap();
         assert_eq!(manifest.spec.routes[0].service.as_deref(), Some("frontend"));
+        assert_eq!(manifest.spec.jobs[0].service, "frontend");
         assert_eq!(manifest.spec.services[1].depends_on, ["frontend"]);
         manifest.clone().validate().unwrap();
         ApplicationEdit::RemoveService("frontend".into())
             .apply(&mut manifest)
             .unwrap();
         assert_eq!(manifest.spec.routes, [] as [Route; 0]);
+        assert_eq!(manifest.spec.jobs, [] as [Job; 0]);
         assert_eq!(manifest.spec.services[0].depends_on, [] as [String; 0]);
         manifest.validate().unwrap();
     }

@@ -23,7 +23,9 @@ Applications also has a clickable directory with each application's health and
 last deployment time.
 
 Applications have one main tab row: Overview (the default), Services, Source,
-Routes, Volumes, Secrets, Deployments, Builds, Logs, and Events. The Routes tab
+Routes, Volumes, Jobs, Secrets, Deployments, Builds, Logs, and Events. The Jobs
+tab adds, edits, reorders, and removes the one-shot jobs that run before each
+rollout, with one row per command element; saving replaces only the job list. The Routes tab
 edits public hostnames, each pointing at a service port or a redirect, and shows each deployed route's HTTPS readiness and
 diagnostics. Saving routes updates only the route field; Deploy activates the
 change. Services lists saved services with their observed health merged in.

@@ -8,8 +8,9 @@ use crate::{
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
-    ApplicationView, Build, Client, GitRepository, HealthCheck, Mount, Redirect, RedirectStatus,
-    RepositoryManifest, Route, SavedApplication, Service, Source, SourceRepository, Volume,
+    ApplicationView, Build, Client, GitRepository, HealthCheck, Job, JobRun, Mount, Redirect,
+    RedirectStatus, RepositoryManifest, Route, SavedApplication, Service, Source, SourceRepository,
+    Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit},
 };
 
@@ -336,6 +337,36 @@ pub(crate) enum RouteCommand {
     Remove(RouteTarget),
 }
 #[derive(Debug, Args)]
+pub(crate) struct JobTarget {
+    /// Application name or stable ID.
+    app: String,
+    /// Job name.
+    job: String,
+    #[command(flatten)]
+    flags: EditFlags,
+}
+#[derive(Debug, Args)]
+pub(crate) struct SetJobArgs {
+    #[command(flatten)]
+    target: JobTarget,
+    /// Service whose prepared image, environment, secrets, and mounts the job reuses.
+    service: String,
+    /// Seconds before the job fails the deployment (1–86400). Defaults to the
+    /// job's current timeout, or 300 for a new job.
+    #[arg(long)]
+    timeout_seconds: Option<u32>,
+    /// Command elements after --, replacing the service's command and arguments.
+    #[arg(last = true, required = true)]
+    command: Vec<String>,
+}
+#[derive(Debug, Subcommand)]
+pub(crate) enum JobCommand {
+    /// Add a job that runs before rollout, or replace the job with this name in place.
+    Set(SetJobArgs),
+    /// Remove a job by name.
+    Remove(JobTarget),
+}
+#[derive(Debug, Args)]
 pub(crate) struct RepositoryTarget {
     /// Application name or stable ID.
     app: String,
@@ -630,6 +661,61 @@ impl RouteCommand {
             current,
             &target.flags,
             &ApplicationEdit::Routes(routes),
+        )
+        .await
+    }
+}
+impl JobCommand {
+    /// Edits jobs client-side and saves the whole list, like routes: a new job
+    /// runs after the existing ones, a replaced job keeps its position, and
+    /// removing an unknown job is an input error.
+    pub(crate) async fn run(
+        &self,
+        cli: &Cli,
+        client: &Client,
+        console: &mut Console,
+    ) -> Result<()> {
+        let target = match self {
+            Self::Set(args) => &args.target,
+            Self::Remove(target) => target,
+        };
+        let current = resolve_application(client, &target.app).await?;
+        let mut jobs = current.application.to_manifest().spec.jobs;
+        let existing = jobs.iter().position(|job| job.name == target.job);
+        match (self, existing) {
+            (Self::Set(args), existing) => {
+                let job = Job {
+                    name: target.job.clone(),
+                    service: args.service.clone(),
+                    command: args.command.clone(),
+                    run: JobRun::BeforeRollout,
+                    timeout_seconds: args
+                        .timeout_seconds
+                        .or_else(|| existing.map(|index| jobs[index].timeout_seconds))
+                        .unwrap_or(Job::DEFAULT_TIMEOUT_SECONDS),
+                };
+                match existing {
+                    Some(index) => jobs[index] = job,
+                    None => jobs.push(job),
+                }
+            }
+            (Self::Remove(_), Some(index)) => {
+                jobs.remove(index);
+            }
+            (Self::Remove(_), None) => {
+                return Err(CliError::new(
+                    ErrorKind::Input,
+                    format!("job {:?} was not found", target.job),
+                ));
+            }
+        }
+        save_loaded(
+            cli,
+            client,
+            console,
+            current,
+            &target.flags,
+            &ApplicationEdit::Jobs(jobs),
         )
         .await
     }

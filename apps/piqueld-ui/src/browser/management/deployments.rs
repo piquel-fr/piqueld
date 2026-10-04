@@ -459,7 +459,7 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
     }
 }
 
-/// The services and volumes captured in a deployment's configuration snapshot.
+/// The services, volumes, and jobs captured in a deployment's configuration snapshot.
 #[component]
 fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
     view! {
@@ -481,6 +481,31 @@ fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
                             spec.volumes.into_iter().map(|v| v.name).collect::<Vec<_>>().join(", ")
                         }}
                     </p>
+                </div>
+                <div class="snapshot-service">
+                    <h4>"Jobs"</h4>
+                    {if spec.jobs.is_empty() {
+                        view! { <p class="hint">"None"</p> }.into_any()
+                    } else {
+                        view! {
+                            <ol class="hint">
+                                {spec
+                                    .jobs
+                                    .into_iter()
+                                    .map(|job| {
+                                        view! {
+                                            <li>
+                                                <strong>{job.name}</strong>
+                                                {format!(" on {}, up to {}s: ", job.service, job.timeout_seconds)}
+                                                <code>{job.command.join(" ")}</code>
+                                            </li>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </ol>
+                        }
+                            .into_any()
+                    }}
                 </div>
             }
         }}

@@ -112,6 +112,7 @@ async fn app(
         AppCommand::Service { command } => command.run(cli, client, console).await,
         AppCommand::Volume { command } => command.run(cli, client, console).await,
         AppCommand::Route { command } => command.run(cli, client, console).await,
+        AppCommand::Job { command } => command.run(cli, client, console).await,
         AppCommand::Repository { command } => command.run(cli, client, console).await,
         AppCommand::Manifest { name_or_id } => {
             let app = resolve_application(client, name_or_id).await?;

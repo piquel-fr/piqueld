@@ -347,6 +347,10 @@ never runs jobs. A deployment that is superseded or cancelled stops its running
 job. Each run, its bounded output, and Docker's explanation of a failed task
 are kept in the application's build history.
 
+Besides applying a manifest, jobs can be edited with `piquelctl app job`, the
+dashboard's Jobs tab, or `PUT /api/v1/applications/{id}/jobs`. Renaming a
+service repoints its jobs; removing a service removes them.
+
 ## Public routes
 
 ```toml

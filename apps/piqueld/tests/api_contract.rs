@@ -3024,6 +3024,72 @@ async fn route_field_edits_follow_service_renames_and_removals() {
 }
 
 #[tokio::test]
+async fn job_field_edit_replaces_jobs_in_order_and_validates_atomically() {
+    use piqueld_client::{
+        Job, JobRun,
+        edit::{ApplicationEdit, EditOptions},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let id = &saved.application_id;
+    let job = |name: &str, service: &str| Job {
+        name: name.into(),
+        service: service.into(),
+        command: vec!["notes".into(), name.into()],
+        run: JobRun::BeforeRollout,
+        timeout_seconds: 60,
+    };
+    let options = |generation| EditOptions {
+        expected_generation: Some(generation),
+        ..EditOptions::default()
+    };
+    let jobs = vec![job("seed", "web"), job("migrate", "web")];
+    api.client
+        .edit_application(id, &ApplicationEdit::Jobs(jobs.clone()), &options(1))
+        .await
+        .unwrap();
+    let jobs_of = async || {
+        api.client
+            .application(id)
+            .await
+            .unwrap()
+            .application
+            .to_manifest()
+            .spec
+            .jobs
+    };
+    assert_eq!(jobs_of().await, jobs);
+    let error = api
+        .client
+        .edit_application(
+            id,
+            &ApplicationEdit::Jobs(vec![job("migrate", "missing")]),
+            &options(2),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, piqueld_client::ClientError::Api { status, error }
+            if *status == http::StatusCode::UNPROCESSABLE_ENTITY
+                && error.details.to_string().contains("job_service_missing")),
+        "{error:?}"
+    );
+    assert_eq!(jobs_of().await, jobs);
+    let events = api.client.events(Some(id), None, 100).await.unwrap();
+    let recorded = events
+        .items
+        .iter()
+        .find(|event| event.kind == "application_edited")
+        .unwrap();
+    assert_eq!(recorded.phase.as_deref(), Some("jobs"));
+}
+
+#[tokio::test]
 async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision() {
     use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
     let temp = tempfile::tempdir().unwrap();
