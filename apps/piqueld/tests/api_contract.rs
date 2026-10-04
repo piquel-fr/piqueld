@@ -276,11 +276,14 @@ async fn typed_client_exercises_polling_lifecycle_over_tcp() {
 
 async fn assert_create_plan(client: &Client, manifest: &ApplicationManifest) {
     let preview = client
-        .plan_application(&ApplyApplicationRequest {
-            expected_generation: None,
-            expected_application_id: None,
-            manifest: manifest.clone(),
-        })
+        .plan_application(
+            &ApplyApplicationRequest {
+                expected_generation: None,
+                expected_application_id: None,
+                manifest: manifest.clone(),
+            },
+            None,
+        )
         .await
         .expect("create preview succeeds");
     assert!(matches!(
@@ -832,7 +835,7 @@ async fn replace_and_plan(
     let mut preview_request = request;
     preview_request.expected_generation = Some(replaced.generation);
     client
-        .plan_application(&preview_request)
+        .plan_application(&preview_request, None)
         .await
         .expect("preview succeeds");
     replaced
@@ -2023,7 +2026,7 @@ async fn preview_resolves_images_again_and_redacts_manifest_and_runtime_configur
         .environment
         .insert("TOKEN".into(), "new-private-value".into());
     request.manifest.spec.services[0].command = vec!["command-private-value".into()];
-    let preview = api.client.plan_application(&request).await.unwrap();
+    let preview = api.client.plan_application(&request, None).await.unwrap();
     assert_eq!(preview.generation, 1);
     assert!(!preview.identical);
     assert!(
@@ -2359,7 +2362,7 @@ async fn docker_outage_allows_acceptance_and_preserves_receipt_replay() {
     changed.expected_application_id = Some(accepted.environment_id.clone());
     changed.manifest.spec.services[0].replicas = 2;
     assert!(
-        matches!(api.client.plan_application(&changed).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status==StatusCode::SERVICE_UNAVAILABLE)
+        matches!(api.client.plan_application(&changed, None).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status==StatusCode::SERVICE_UNAVAILABLE)
     );
     let next = api.client.apply_and_deploy(&changed).await.unwrap();
     assert_ne!(next.operation_id, accepted.operation_id);
@@ -2477,7 +2480,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
         .unavailable
         .store(false, std::sync::atomic::Ordering::Relaxed);
     request.expected_generation = Some(saved.generation);
-    let preview = api.client.plan_application(&request).await.unwrap();
+    let preview = api.client.plan_application(&request, None).await.unwrap();
     assert!(!preview.identical);
     assert!(!preview.changes.is_empty());
 }
@@ -4820,4 +4823,80 @@ async fn environments_deploy_independently_and_runtime_commands_never_pick_one()
     };
     assert_eq!(deleted.operations.len(), 2);
     assert_eq!(deleted.generation, saved.generation + 1);
+}
+
+#[tokio::test]
+async fn previews_compare_with_the_selected_environment() {
+    use piqueld::api::{ApplicationError, Mutation};
+    use piqueld::store::StoreError;
+    let temp = tempfile::tempdir().unwrap();
+    let service = state(&temp).await;
+    let (saved, staging) = two_environments(&service).await;
+    let production = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
+    service
+        .accept(
+            Mutation::deploy(staging.id.clone()),
+            Some(saved.generation),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    let plan = |environment: Option<piqueld_core::EnvironmentId>| {
+        let service = service.clone();
+        async move {
+            service
+                .plan(
+                    manifest().validate().unwrap(),
+                    None,
+                    None,
+                    environment.as_ref(),
+                )
+                .await
+        }
+    };
+
+    // Without a selection, several environments leave no runtime baseline.
+    let unselected = plan(None).await.unwrap();
+    assert!(unselected.operation.is_none() && unselected.plan.actions.is_empty());
+
+    let deployed = plan(Some(staging.id.clone())).await.unwrap();
+    assert!(deployed.identical);
+    assert!(deployed.operation.is_some());
+    let resolves_image = |plan: &piqueld_core::api::PlanView| {
+        plan.plan
+            .actions
+            .iter()
+            .any(|action| matches!(action.kind, ActionKind::ResolveImage { .. }))
+    };
+    assert!(resolves_image(&deployed));
+
+    let undeployed = plan(Some(production)).await.unwrap();
+    assert!(!undeployed.identical && undeployed.operation.is_none());
+    assert!(!undeployed.changes.is_empty() && resolves_image(&undeployed));
+
+    // An environment of another application is never used as a baseline.
+    let mut other = manifest();
+    other.metadata.name = "other".into();
+    service
+        .accept(
+            Mutation::save(other.validate().unwrap(), None, false),
+            Some(0),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    let foreign = service.applications(None, None).await.unwrap().items;
+    let foreign = foreign
+        .iter()
+        .find(|application| application.name == "other")
+        .unwrap()
+        .environments[0]
+        .id
+        .clone();
+    assert!(matches!(
+        plan(Some(foreign)).await,
+        Err(ApplicationError::Store(StoreError::NotFound))
+    ));
 }

@@ -264,12 +264,30 @@ pub(crate) async fn validate(console: &mut Console, file: &Path) -> Result<()> {
     })
 }
 
-/// Previews a manifest. A blocked plan is still printed, then fails with a
-/// conflict error that repeats the blocking diagnostics.
+/// Previews a manifest, against `--env` when given. A blocked plan is still
+/// printed, then fails with a conflict error that repeats the blocking diagnostics.
 async fn plan_command(console: &mut Console, client: &Client, args: &ManifestArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
+    let environment = match &args.environment {
+        Some(environment) => {
+            let name = manifest_name(&manifest, &args.file)?;
+            Some(
+                environments::select(client, &name, Some(environment))
+                    .await?
+                    .1
+                    .id,
+            )
+        }
+        None => None,
+    };
     let plan = client
-        .plan_application_toml_with_generation(&manifest, args.expected_generation)
+        .plan_application_toml_with_generation(
+            &manifest,
+            args.expected_generation,
+            environment
+                .as_ref()
+                .map(piqueld_client::EnvironmentId::as_str),
+        )
         .await?;
     console.emit(&plan)?;
     if plan.plan.is_blocked() {

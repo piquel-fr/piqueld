@@ -39,7 +39,7 @@ piquelctl app show <name-or-id>
 piquelctl app logs <name-or-id> [--service <name>]
 piquelctl app validate --file application.toml
 piquelctl app exec <name-or-id> <service> [--env <env>] [-i] [-t] -- <command>...
-piquelctl app plan --file application.toml
+piquelctl app plan --file application.toml [--env <env>]
 piquelctl app apply --file application.toml
 piquelctl app apply --file application.toml --deploy
 piquelctl app delete <name-or-id> [--environments <names>]

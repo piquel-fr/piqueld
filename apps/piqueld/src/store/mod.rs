@@ -707,6 +707,7 @@ mod observability_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api;
 
     #[tokio::test]
     async fn existing_applications_become_one_production_environment_with_the_same_id() {
@@ -738,7 +739,8 @@ mod tests {
             "INSERT INTO applications(id,name,desired_json,generation,created_at_ms,updated_at_ms) VALUES('{id}','notes','{desired}',3,1,2);
              INSERT INTO application_status(application_id,state,updated_at_ms) VALUES('{id}','ready',2);
              INSERT INTO operations(id,application_id,kind,state,generation,created_at_ms,updated_at_ms,finished_at_ms) VALUES('operation-1','{id}','refresh','succeeded',3,1,2,2);
-             INSERT INTO events(application_id,operation_id,kind,created_at_ms) VALUES('{id}','operation-1','operation_succeeded',2);"
+             INSERT INTO events(application_id,operation_id,kind,created_at_ms) VALUES('{id}','operation-1','operation_succeeded',2);
+             INSERT INTO request_receipts VALUES('legacy-deploy','fingerprint','{{\"Operation\":{{\"operation_id\":\"operation-1\",\"application_id\":\"{id}\",\"generation\":3}}}}',9000000000000000);"
         ))
         .execute(&pool)
         .await
@@ -768,6 +770,46 @@ mod tests {
         assert_eq!(operation.generation, 3);
         let events = store.events(Some(&environment.id), None, 10).await.unwrap();
         assert_eq!(events.items.len(), 1);
+
+        // Deletion also removes receipts accepted before environments existed.
+        let (api::MutationResponse::Deleted(deleted), _) = store
+            .accept(
+                api::Mutation::DeleteApplication {
+                    id: id.clone(),
+                    environments: Vec::new(),
+                },
+                Some(3),
+                false,
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("deleted")
+        };
+        let deletion = &deleted.operations[0].operation_id;
+        store
+            .transition_operation(
+                deletion,
+                OperationState::Requested,
+                OperationState::Running,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .finish_delete_operation(&store.operation(deletion).await.unwrap())
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.application(&id).await,
+            Err(StoreError::NotFound)
+        ));
+        let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_receipts")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(receipts, 0);
     }
 
     #[tokio::test]

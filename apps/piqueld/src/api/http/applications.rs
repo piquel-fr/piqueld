@@ -13,7 +13,7 @@ use piqueld_core::api::{
     ApplicationSummary, ApplicationView, ApplyApplicationRequest, DeletedApplication, Envelope,
     Page, PlanView, RenameApplicationRequest, RenamedApplication, SavedApplication,
 };
-use piqueld_core::{ApplicationId, EnvironmentName};
+use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName};
 use serde::Deserialize;
 
 /// Cursor pagination for the application list.
@@ -192,7 +192,7 @@ pub(super) async fn delete(
 #[utoipa::path(
     post, path = "/api/v1/applications/plan", operation_id = "planApplication",
     summary = "Preview an application manifest",
-    params(("X-Expected-Generation"=Option<u64>,Header,description="TOML only: inspected intent revision; zero requires absence. JSON uses `expected_generation` in the request body."),("X-Expected-Application-Id"=Option<String>,Header,description="TOML only: inspected application identity. JSON uses `expected_application_id` in the request body.")),
+    params(PlanQuery,("X-Expected-Generation"=Option<u64>,Header,description="TOML only: inspected intent revision; zero requires absence. JSON uses `expected_generation` in the request body."),("X-Expected-Application-Id"=Option<String>,Header,description="TOML only: inspected application identity. JSON uses `expected_application_id` in the request body.")),
     request_body(content((ApplyApplicationRequest = "application/json"), (String = "application/toml"), (String = "text/toml"))),
     responses(
         (status = 200, description = "Preview", body = Envelope<PlanView>),
@@ -208,11 +208,32 @@ pub(super) async fn delete(
 )]
 pub(super) async fn plan(
     State(state): State<ApiState>,
+    query: Result<Query<PlanQuery>, QueryRejection>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let Query(query) = query.map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "query_invalid",
+            "environment must appear at most once",
+        )
+    })?;
+    let environment = query.environment.map(EnvironmentId::parse).transpose()?;
     let (manifest, expected, expected_id) = parse_manifest(&headers, &request_body(body)?)?;
-    Ok(ok(state.plan(manifest, expected, expected_id).await?))
+    Ok(ok(state
+        .plan(manifest, expected, expected_id, environment.as_ref())
+        .await?))
+}
+
+/// Environment a preview compares against.
+#[derive(Default, Deserialize, utoipa::IntoParams)]
+#[serde(default, deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub(super) struct PlanQuery {
+    /// Environment of the application whose latest deployment and runtime the
+    /// preview compares against; defaults to its only environment.
+    environment: Option<String>,
 }
 
 /// Unwraps a buffered body, reporting the size limit as 413

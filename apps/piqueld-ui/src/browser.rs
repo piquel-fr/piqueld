@@ -482,8 +482,8 @@ fn load_detail(client: Client, signals: DashboardSignals, id: String) {
     });
 }
 
-/// Loads the application, then the detail of its environment named or
-/// identified by `selected`, or of its first environment.
+/// Loads the application, then the detail of the environment identified or
+/// named by `selected`, or of its first environment when none is selected.
 async fn environment_detail(
     client: &Client,
     id: &str,
@@ -493,13 +493,17 @@ async fn environment_detail(
         .application(id)
         .await
         .map_err(|error| client_error_message(&error))?;
-    let environment = selected
-        .and_then(|selected| application.environment(selected))
-        .or_else(|| application.environments.first())
-        .ok_or_else(|| {
+    // A selection that no longer exists is reported instead of silently
+    // replaced, so later actions never target another environment.
+    let environment = match selected {
+        Some(selected) => application.environment(selected).ok_or_else(|| {
+            "The selected environment no longer exists. Select another environment.".to_owned()
+        })?,
+        None => application.environments.first().ok_or_else(|| {
             "This application has no environments. Create one with `piquelctl env create`."
                 .to_owned()
-        })?;
+        })?,
+    };
     client
         .environment_detail(environment.id.as_str())
         .await

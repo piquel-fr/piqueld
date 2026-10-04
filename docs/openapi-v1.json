@@ -3245,7 +3245,7 @@
                 "type": "integer"
               },
               "identical": {
-                "description": "Whether this specification matches the baseline: the latest deployment\nsnapshot of the application's only environment, or the saved\nconfiguration when it has several.",
+                "description": "Whether this specification matches the baseline: the latest deployment\nsnapshot of the selected environment (by default the application's only\none), or the saved configuration when none is selected and it has several.",
                 "type": "boolean"
               },
               "operation": {
@@ -3256,7 +3256,7 @@
                         "$ref": "#/components/schemas/Operation"
                       }
                     ],
-                    "description": "Latest operation of the application's only environment at the time of comparison."
+                    "description": "Latest operation of the selected environment at the time of comparison."
                   },
                   {
                     "enum": [
@@ -3269,7 +3269,7 @@
               },
               "plan": {
                 "$ref": "#/components/schemas/Plan",
-                "description": "Ordered runtime plan for the application's only environment; unresolved\nimages are explicit actions. Empty when it has several environments."
+                "description": "Ordered runtime plan for the selected environment; unresolved images are\nexplicit actions. Empty when no environment is selected."
               },
               "rollouts": {
                 "description": "Effective rollout of each service, sorted by service name.",
@@ -5094,7 +5094,7 @@
             "type": "integer"
           },
           "identical": {
-            "description": "Whether this specification matches the baseline: the latest deployment\nsnapshot of the application's only environment, or the saved\nconfiguration when it has several.",
+            "description": "Whether this specification matches the baseline: the latest deployment\nsnapshot of the selected environment (by default the application's only\none), or the saved configuration when none is selected and it has several.",
             "type": "boolean"
           },
           "operation": {
@@ -5105,7 +5105,7 @@
                     "$ref": "#/components/schemas/Operation"
                   }
                 ],
-                "description": "Latest operation of the application's only environment at the time of comparison."
+                "description": "Latest operation of the selected environment at the time of comparison."
               },
               {
                 "enum": [
@@ -5118,7 +5118,7 @@
           },
           "plan": {
             "$ref": "#/components/schemas/Plan",
-            "description": "Ordered runtime plan for the application's only environment; unresolved\nimages are explicit actions. Empty when it has several environments."
+            "description": "Ordered runtime plan for the selected environment; unresolved images are\nexplicit actions. Empty when no environment is selected."
           },
           "rollouts": {
             "description": "Effective rollout of each service, sorted by service name.",
@@ -7178,6 +7178,15 @@
       "post": {
         "operationId": "planApplication",
         "parameters": [
+          {
+            "description": "Environment of the application whose latest deployment and runtime the\npreview compares against; defaults to its only environment.",
+            "in": "query",
+            "name": "environment",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "description": "TOML only: inspected intent revision; zero requires absence. JSON uses `expected_generation` in the request body.",
             "in": "header",

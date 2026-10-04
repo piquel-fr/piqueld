@@ -453,3 +453,79 @@ async fn mounted_declared_secrets_are_generated_once_and_never_replace_values() 
         .collect::<Vec<_>>();
     assert_eq!(generations, [("manual".into(), 1), ("token".into(), 1)]);
 }
+
+#[tokio::test]
+async fn sibling_environment_deletions_do_not_block_another_environments_deployment() {
+    use crate::api::{Mutation, MutationResponse};
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let app = application();
+    let captured = with_secret(&app);
+    store.save_application(&captured, None, None).await.unwrap();
+    let production = environment(&app);
+    let (MutationResponse::Environment(staging), _) = store
+        .accept(
+            Mutation::CreateEnvironment {
+                application: app.id().clone(),
+                name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
+            },
+            Some(1),
+            false,
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("environment")
+    };
+    for environment in [&production, &staging.id] {
+        store
+            .put_secret(environment, "token", 0, b"value".to_vec())
+            .await
+            .unwrap();
+    }
+    // Production captures a deployment that mounts the secret, then the shared
+    // configuration stops mounting it.
+    let deployment = store.request_deploy(&production, Some(1)).await.unwrap();
+    store
+        .accept(
+            Mutation::Save {
+                application: Box::new(app.clone()),
+                expected_application_id: Some(app.id().to_string()),
+                deploy: false,
+            },
+            Some(1),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .begin_secret_deletion(&staging.id, "token", 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .pin_secrets(&deployment, &captured)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    // Shared configuration still cannot start using the secret being deleted.
+    assert!(matches!(
+        store
+            .accept(
+                Mutation::Save {
+                    application: Box::new(captured.clone()),
+                    expected_application_id: Some(app.id().to_string()),
+                    deploy: false,
+                },
+                Some(2),
+                false,
+                None,
+            )
+            .await,
+        Err(StoreError::SecretDeleting)
+    ));
+}

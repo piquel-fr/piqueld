@@ -400,12 +400,15 @@ impl Client {
     Sends a `POST` request to `/api/v1/applications/plan`
 
     Arguments:
+    - `environment`: Environment of the application whose latest deployment and runtime the
+    preview compares against; defaults to its only environment.
     - `x_expected_application_id`: TOML only: inspected application identity. JSON uses `expected_application_id` in the request body.
     - `x_expected_generation`: TOML only: inspected intent revision; zero requires absence. JSON uses `expected_generation` in the request body.
     - `body`
     */
     pub async fn plan_application<'a>(
         &'a self,
+        environment: Option<&'a str>,
         x_expected_application_id: Option<&'a str>,
         x_expected_generation: Option<u64>,
         body: &'a piqueld_core::api::ApplyApplicationRequest,
@@ -434,6 +437,10 @@ impl Client {
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
             .json(&body)
+            .query(&progenitor_client::QueryParam::new(
+                "environment",
+                &environment,
+            ))
             .headers(header_map)
             .build()?;
         let info = OperationInfo {

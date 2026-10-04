@@ -153,17 +153,23 @@ impl Client {
         .map(|response| response.data)
     }
 
-    /// Previews applying an application without mutating runtime state.
+    /// Previews applying an application without mutating runtime state, against
+    /// `environment` (by default the application's only environment).
     ///
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn plan_application(
         &self,
         request: &ApplyApplicationRequest,
+        environment: Option<&str>,
     ) -> Result<PlanView, ClientError> {
-        generated_result(self.generated.plan_application(None, None, request).await)
-            .await
-            .map(|response| response.data)
+        generated_result(
+            self.generated
+                .plan_application(environment, None, None, request)
+                .await,
+        )
+        .await
+        .map(|response| response.data)
     }
 
     /// Creates an application from TOML, requiring its name to be absent.
@@ -231,11 +237,12 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn plan_application_toml(&self, manifest: &str) -> Result<PlanView, ClientError> {
-        self.plan_application_toml_with_generation(manifest, None)
+        self.plan_application_toml_with_generation(manifest, None, None)
             .await
     }
 
-    /// Previews TOML conditioned on the optional current generation.
+    /// Previews TOML conditioned on the optional current generation, against
+    /// `environment` (by default the application's only environment).
     ///
     /// Progenitor generates only one request media type per operation. The generated
     /// plan endpoint uses JSON, so this TOML variant uses the shared TOML adapter.
@@ -245,13 +252,22 @@ impl Client {
         &self,
         manifest: &str,
         expected: Option<u64>,
+        environment: Option<&str>,
     ) -> Result<PlanView, ClientError> {
         let headers = expected
             .map(|expected| vec![("X-Expected-Generation", expected.to_string())])
             .unwrap_or_default();
-        self.send_toml::<Envelope<PlanView>>("/api/v1/applications/plan", &[], &headers, manifest)
-            .await
-            .map(|response| response.data)
+        let query = environment
+            .map(|environment| vec![("environment", environment.to_owned())])
+            .unwrap_or_default();
+        self.send_toml::<Envelope<PlanView>>(
+            "/api/v1/applications/plan",
+            &query,
+            &headers,
+            manifest,
+        )
+        .await
+        .map(|response| response.data)
     }
 
     /// Renames an idle application without touching its runtime resources.

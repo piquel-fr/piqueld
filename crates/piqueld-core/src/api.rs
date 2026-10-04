@@ -102,12 +102,19 @@ impl ApplicationView {
         }
     }
 
-    /// Finds an environment by name or stable ID.
+    /// Finds an environment by stable ID, then by name. IDs win because a name
+    /// can equal another environment's ID.
     #[must_use]
-    pub fn environment(&self, name_or_id: &str) -> Option<&EnvironmentView> {
-        self.environments.iter().find(|environment| {
-            environment.name.as_str() == name_or_id || environment.id.as_str() == name_or_id
-        })
+    pub fn environment(&self, id_or_name: &str) -> Option<&EnvironmentView> {
+        let environments = &self.environments;
+        environments
+            .iter()
+            .find(|environment| environment.id.as_str() == id_or_name)
+            .or_else(|| {
+                environments
+                    .iter()
+                    .find(|environment| environment.name.as_str() == id_or_name)
+            })
     }
 }
 
@@ -179,15 +186,15 @@ pub struct PlanView {
     /// Current intent revision; zero means the name is absent.
     pub generation: u64,
     /// Whether this specification matches the baseline: the latest deployment
-    /// snapshot of the application's only environment, or the saved
-    /// configuration when it has several.
+    /// snapshot of the selected environment (by default the application's only
+    /// one), or the saved configuration when none is selected and it has several.
     pub identical: bool,
-    /// Latest operation of the application's only environment at the time of comparison.
+    /// Latest operation of the selected environment at the time of comparison.
     pub operation: Option<Operation>,
     /// Safe changes relative to the baseline.
     pub changes: Vec<ManifestChange>,
-    /// Ordered runtime plan for the application's only environment; unresolved
-    /// images are explicit actions. Empty when it has several environments.
+    /// Ordered runtime plan for the selected environment; unresolved images are
+    /// explicit actions. Empty when no environment is selected.
     pub plan: Plan,
     /// Effective rollout of each service, sorted by service name.
     pub rollouts: Vec<ServiceRolloutView>,
@@ -676,4 +683,53 @@ pub struct RouteStatus {
     pub state: String,
     /// Public diagnostic explaining DNS, TLS, or gateway readiness.
     pub message: String,
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::{ApplicationView, EnvironmentView};
+    use crate::{ApplicationId, EnvironmentId, EnvironmentName, EnvironmentSource};
+
+    fn environment(id: &str, name: &str) -> EnvironmentView {
+        EnvironmentView {
+            id: EnvironmentId::parse(id).unwrap(),
+            application_id: ApplicationId::parse("app-notes-01").unwrap(),
+            name: EnvironmentName::parse(name).unwrap(),
+            source: EnvironmentSource::Saved,
+            resolved_generation: None,
+            delete_intent: false,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn stable_ids_select_before_names_that_look_like_them() {
+        let manifest = crate::parse_toml(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec]",
+        )
+        .unwrap()
+        .normalize(ApplicationId::parse("app-notes-01").unwrap());
+        let view = ApplicationView {
+            spec_hash: manifest.spec_hash(),
+            application: manifest,
+            generation: 1,
+            delete_intent: false,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            // Name order puts the impostor first.
+            environments: vec![
+                environment("env-impostor-01", "app-notes-01"),
+                environment("app-notes-01", "production"),
+            ],
+        };
+        assert_eq!(
+            view.environment("app-notes-01").unwrap().name.as_str(),
+            "production"
+        );
+        assert_eq!(
+            view.environment("production").unwrap().id.as_str(),
+            "app-notes-01"
+        );
+    }
 }

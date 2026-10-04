@@ -44,7 +44,7 @@ when the complete normalized manifest is needed.
 | GET | `/api/v1/openapi.json` | Generated API schema |
 | GET | `/api/v1/applications` | Paginated application summaries (up to 100 per page) |
 | GET | `/api/v1/applications/{id}` | Full latest accepted application intent and its environments |
-| POST | `/api/v1/applications/plan` | Preview a manifest without pulling images |
+| POST | `/api/v1/applications/plan` | Preview a manifest without pulling images; `environment=ID` selects the environment to compare with |
 | POST | `/api/v1/applications/apply` | Save configuration by name; `?deploy=true` also deploys its only environment |
 | DELETE | `/api/v1/applications/{id}` | Request deletion of every environment; no body. `environments=a,b` must name every environment when there are several |
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment |
@@ -235,11 +235,13 @@ The response includes the inspected generation (zero for an absent name), an
 `identical` flag, latest operation, redacted manifest field changes, a runtime
 plan, and each service's effective rollout order (`derived` or `explicit`) and
 monitor window. A `start-first` order set on a service with a writable volume adds
-a non-blocking `rollout_start_first_writable_volume` warning to the plan. For an
-application with one environment, manifest differences compare
-against that environment's last deployment snapshot, not saved configuration. With
-several environments (or none), they compare against saved configuration and the
-runtime plan is empty, since apply deploys none of them. Image tags report resolution requirements even when unchanged,
+a non-blocking `rollout_start_first_writable_volume` warning to the plan. Manifest
+differences and the runtime plan compare with the environment selected by
+`environment=ID` (by default the application's only environment): its last
+deployment snapshot, not saved configuration, and its observed runtime. Without a
+selection and with several environments (or none), they compare against saved
+configuration and the runtime plan is empty. An environment of another
+application returns 404. Image tags report resolution requirements even when unchanged,
 matching Deploy's refresh behavior. Environment,
 command, argument, and health-check values are redacted in previews, including
 runtime actions. Execution computes its own unredacted plan after preparation.

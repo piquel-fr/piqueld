@@ -2247,3 +2247,72 @@ fn deleting_an_application_with_several_environments_names_every_one() {
     assert_eq!(assert_json_success(&output)["volumes_retained"], true);
     let _ = server.finish();
 }
+
+#[test]
+fn stable_ids_select_environments_before_names_that_look_like_them() {
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => {
+            let mut view = app_view("app-notes-01", "notes");
+            // Name order lists the impostor named like production's ID first.
+            view["environments"]
+                .as_array_mut()
+                .expect("environments")
+                .insert(
+                    0,
+                    environment("app-notes-01", "env-impostor-01", "app-notes-01"),
+                );
+            Reply::json(view)
+        }
+        "/api/v1/environments/app-notes-01?expected_generation=1" => {
+            assert_eq!(request.method, "DELETE");
+            Reply::accepted(accepted("app-notes-01"))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(
+        &server,
+        &[
+            "env",
+            "delete",
+            "app-notes-01",
+            "app-notes-01",
+            "--yes",
+            "--no-wait",
+        ],
+    );
+    assert_eq!(
+        assert_json_success(&output)["accepted"]["environment_id"],
+        "app-notes-01"
+    );
+    let _ = server.finish();
+}
+
+#[test]
+fn plan_compares_with_the_named_environment() {
+    let directory = tempdir().expect("manifest directory");
+    let manifest = write_manifest(&directory);
+    let server = start_server(false, 3, move |request| match request.path.as_str() {
+        "/api/v1/applications?limit=100" => {
+            Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
+        }
+        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
+        "/api/v1/applications/plan?environment=env-staging-01" => Reply::json(plan("app-notes-01")),
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(
+        &server,
+        &[
+            "app",
+            "plan",
+            "--file",
+            manifest.to_str().expect("manifest path"),
+            "--env",
+            "staging",
+        ],
+    );
+    assert_eq!(
+        assert_json_success(&output)["application_id"],
+        "app-notes-01"
+    );
+    let _ = server.finish();
+}

@@ -58,10 +58,14 @@ pub(super) fn DeploymentActions() -> impl IntoView {
             expected_generation: Some(app.generation),
             expected_application_id: Some(app.application.id().to_string()),
         };
+        let environment = context.environment_id();
         context.busy.set(true);
         context.set_error(None);
         spawn_local(async move {
-            match Client::browser().plan_application(&request).await {
+            match Client::browser()
+                .plan_application(&request, Some(&environment))
+                .await
+            {
                 Ok(plan) => preview.set(Some(plan)),
                 Err(error) => context.set_error(Some(client_error_message(&error))),
             }

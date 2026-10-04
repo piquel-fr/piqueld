@@ -6,6 +6,14 @@ use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName};
 use sha2::{Digest, Sha256};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
+/// Application deletion as serialized before environments existed, in its
+/// original field order, so its request fingerprint still matches.
+#[derive(serde::Serialize)]
+struct LegacyDelete<'a> {
+    kind: &'static str,
+    id: &'a ApplicationId,
+}
+
 /// A mutation's outcome inside its transaction.
 struct Accepted {
     /// Response returned to the caller and stored for replay.
@@ -41,7 +49,15 @@ impl Store {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_ms();
         let fingerprint = Self::mutation_fingerprint(&mutation, expected_generation, force)?;
-        if let Some(response) = Self::replay_on(&mut tx, request_id, &fingerprint, now).await? {
+        let legacy = Self::legacy_fingerprint(&mutation, expected_generation, force)?;
+        if let Some(response) = Self::replay_on(
+            &mut tx,
+            request_id,
+            [Some(&fingerprint), legacy.as_ref()],
+            now,
+        )
+        .await?
+        {
             return Ok((response, false));
         }
         // Replay the original acceptance before applying an override to current intent.
@@ -74,7 +90,7 @@ impl Store {
     /// Hashes the full request (mutation, precondition, and `force`) so a reused
     /// request ID can be told apart from an exact retry.
     fn mutation_fingerprint(
-        mutation: &Mutation,
+        mutation: &impl serde::Serialize,
         expected_generation: Option<u64>,
         force: bool,
     ) -> Result<String, StoreError> {
@@ -87,12 +103,31 @@ impl Store {
         ))
     }
 
-    /// Returns the stored response for an unexpired receipt with a matching
-    /// fingerprint, `ReplayConflict` for a mismatched one, or `None` without a receipt.
+    /// Fingerprints the form a request had before environments existed, when
+    /// it differs, so receipts accepted by an older daemon still replay.
+    /// Deleting an application was then `{"kind":"delete","id":...}`.
+    fn legacy_fingerprint(
+        mutation: &Mutation,
+        expected_generation: Option<u64>,
+        force: bool,
+    ) -> Result<Option<String>, StoreError> {
+        let Mutation::DeleteApplication { id, environments } = mutation else {
+            return Ok(None);
+        };
+        if !environments.is_empty() {
+            return Ok(None);
+        }
+        let legacy = LegacyDelete { kind: "delete", id };
+        Self::mutation_fingerprint(&legacy, expected_generation, force).map(Some)
+    }
+
+    /// Returns the stored response for an unexpired receipt with one of the
+    /// request's `fingerprints`, `ReplayConflict` for a mismatched one, or
+    /// `None` without a receipt.
     async fn replay_on(
         connection: &mut SqliteConnection,
         request_id: Option<&str>,
-        fingerprint: &str,
+        fingerprints: [Option<&String>; 2],
         now: i64,
     ) -> Result<Option<MutationResponse>, StoreError> {
         let Some(request_id) = request_id else {
@@ -102,7 +137,7 @@ impl Store {
             .fetch_optional(connection).await.map_err(StoreError::database)?;
         receipt
             .map(|receipt| {
-                if receipt.fingerprint != fingerprint {
+                if !fingerprints.contains(&Some(&receipt.fingerprint)) {
                     return Err(StoreError::ReplayConflict);
                 }
                 serde_json::from_str(&receipt.response_json).map_err(StoreError::corrupt)
@@ -530,6 +565,46 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Application deletions accepted before environments existed must still replay.
+    #[tokio::test]
+    async fn application_deletions_accepted_before_environments_replay() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let id = ApplicationId::parse("app-legacy-01").unwrap();
+        let original = Sha256::digest(br#"[{"kind":"delete","id":"app-legacy-01"},3,false]"#);
+        let fingerprint = format!("{original:x}");
+        let response = r#"{"Operation":{"operation_id":"operation-1","application_id":"app-legacy-01","generation":4}}"#;
+        sqlx::query!(
+            "INSERT INTO request_receipts(request_id,fingerprint,response_json,expires_at_ms) VALUES('legacy-delete',?1,?2,?3)",
+            fingerprint,
+            response,
+            i64::MAX
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let delete = || Mutation::DeleteApplication {
+            id: id.clone(),
+            environments: Vec::new(),
+        };
+        let (MutationResponse::Operation(replayed), wake) = store
+            .accept(delete(), Some(3), false, Some("legacy-delete"))
+            .await
+            .unwrap()
+        else {
+            panic!("legacy operation response")
+        };
+        assert!(!wake);
+        assert_eq!(replayed.operation_id, "operation-1");
+        assert_eq!(replayed.environment_id, "app-legacy-01");
+        assert!(matches!(
+            store
+                .accept(delete(), Some(2), false, Some("legacy-delete"))
+                .await,
+            Err(StoreError::ReplayConflict)
+        ));
+    }
 
     /// Receipts recorded before deploy overrides existed must still replay.
     #[test]

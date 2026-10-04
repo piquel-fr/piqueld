@@ -112,11 +112,13 @@ impl ApplicationService {
     /// Previews validated intent without pulling images or saving configuration.
     ///
     /// Checks the generation and identity preconditions when supplied (unlike
-    /// apply, they are optional). For an application with one environment,
-    /// builds a runtime plan against its current observation and diffs the
-    /// manifest against its latest deployment's captured input (no baseline
-    /// after a delete). With several environments (or none), diffs against the
-    /// saved configuration without a runtime plan, since apply deploys none of them.
+    /// apply, they are optional). For `environment`, or the application's only
+    /// environment when it is omitted, builds a runtime plan against its current
+    /// observation and diffs the manifest against its latest deployment's
+    /// captured input (no baseline after a delete). Without an environment and
+    /// with several (or none), diffs against the saved configuration without a
+    /// runtime plan, since apply deploys none of them. An `environment` of
+    /// another application is `NotFound`.
     /// # Errors
     /// Returns precondition, storage, or runtime errors.
     /// # Panics
@@ -126,6 +128,7 @@ impl ApplicationService {
         manifest: ValidatedApplication,
         expected: Option<u64>,
         expected_id: Option<String>,
+        environment: Option<&EnvironmentId>,
     ) -> Result<PlanView, ApplicationError> {
         let current = self.store.find_by_name(manifest.name().as_str()).await?;
         crate::store::Store::check_generation(
@@ -145,13 +148,20 @@ impl ApplicationService {
             |app| app.application.id().clone(),
         );
         let application = manifest.normalize(id.clone());
-        let environments = match &current {
-            Some(_) => self.store.environments(&id).await?,
-            None => Vec::new(),
-        };
-        let environment = match environments.as_slice() {
-            [environment] => Some(self.store.get(&environment.id).await?),
-            _ => None,
+        let environment = match (environment, &current) {
+            (Some(environment), Some(_)) => {
+                let environment = self.store.get(environment).await?;
+                if environment.environment.application_id != id {
+                    return Err(StoreError::NotFound.into());
+                }
+                Some(environment)
+            }
+            (Some(_), None) => return Err(StoreError::NotFound.into()),
+            (None, Some(_)) => match self.store.environments(&id).await?.as_slice() {
+                [environment] => Some(self.store.get(&environment.id).await?),
+                _ => None,
+            },
+            (None, None) => None,
         };
         let (operation, baseline, mut plan) = if let Some(environment) = &environment {
             let operation = self

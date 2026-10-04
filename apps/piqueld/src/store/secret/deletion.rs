@@ -8,16 +8,36 @@ pub(crate) struct SecretDeletion {
     pub(crate) versions: Vec<String>,
 }
 
+/// Environments whose pending secret deletions a manifest must not reference.
+pub(crate) enum SecretScope<'a> {
+    /// Every environment of the manifest's application: saved configuration is
+    /// shared by all of them.
+    Application,
+    /// The one environment a deployment prepares.
+    Environment(&'a EnvironmentId),
+}
+
 impl Store {
     /// Rejects a manifest that references a secret currently being deleted
-    /// from any of its application's environments.
+    /// from an environment in `scope`.
     pub(crate) async fn check_secret_references(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         app: &NormalizedApplication,
+        scope: SecretScope<'_>,
     ) -> Result<(), StoreError> {
-        let id = app.id().as_str();
-        let deleting = sqlx::query_scalar!("SELECT name FROM environment_secrets WHERE environment_id IN (SELECT id FROM environments WHERE application_id=?1) AND deletion_id IS NOT NULL",id)
-            .fetch_all(&mut **tx).await.map_err(StoreError::database)?;
+        let deleting = match scope {
+            SecretScope::Application => {
+                let id = app.id().as_str();
+                sqlx::query_scalar!("SELECT name FROM environment_secrets WHERE environment_id IN (SELECT id FROM environments WHERE application_id=?1) AND deletion_id IS NOT NULL",id)
+                    .fetch_all(&mut **tx).await
+            }
+            SecretScope::Environment(environment) => {
+                let id = environment.as_str();
+                sqlx::query_scalar!("SELECT name FROM environment_secrets WHERE environment_id=?1 AND deletion_id IS NOT NULL",id)
+                    .fetch_all(&mut **tx).await
+            }
+        }
+        .map_err(StoreError::database)?;
         if deleting
             .iter()
             .any(|name| Self::references_secret(app, name))

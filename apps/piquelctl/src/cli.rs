@@ -247,6 +247,10 @@ pub(crate) struct ManifestArgs {
     /// Require this intent generation; zero requires an absent application.
     #[arg(long)]
     pub(crate) expected_generation: Option<u64>,
+    /// Compare with this environment's deployment and runtime; defaults to the
+    /// application's only environment.
+    #[arg(long = "env", value_name = "ENV")]
+    pub(crate) environment: Option<String>,
 }
 
 #[derive(Debug, Args)]
