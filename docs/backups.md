@@ -1,7 +1,7 @@
 # Backup and restore
 
-A consistent backup is the database, the secret master key, and the ingress
-gateway's state, taken together. `piqueld backup` writes all of it into one
+A consistent backup is the database, the secret master key, the ingress
+gateway's state, and the tailnet node's identity, taken together. `piqueld backup` writes all of it into one
 uncompressed tar archive and is safe to run while the daemon is up:
 
 | Entry | Contents |
@@ -10,9 +10,10 @@ uncompressed tar archive and is safe to run while the daemon is up:
 | `piqueld.db` | `SQLite` online snapshot (`VACUUM INTO`), including committed WAL data |
 | `secrets.key` | Secret master key, when one has been generated |
 | `ingress/data`, `ingress/config` | Caddy certificates and configuration, when ingress has run |
+| `tailscale` | Tailnet node state, without its socket, when the [tailnet node](configuration.md#tailnet-node) has run |
 
-Archives contain the secret master key, so they are as sensitive as the data
-directory itself. They are written with mode `0600`; copy them off the host.
+Archives contain the secret master key and the tailnet node's key, so they are
+as sensitive as the data directory itself. They are written with mode `0600`; copy them off the host.
 
 ## Creating backups
 
@@ -26,7 +27,7 @@ sudo -u piqueld piqueld --config /etc/piqueld/config.toml backup --directory /va
 
 `--output` refuses to overwrite an existing file. `--directory` writes
 `piqueld-<unix-ms>.tar`; with `--keep N` it then deletes all but the newest `N`
-such archives. If `secrets.key` is replaced while the database is copied (only
+such archives. Files with other names in the directory are never deleted. If `secrets.key` is replaced while the database is copied (only
 lost-key recovery or the first secret does this), the backup fails and can be
 retried. Gateway files are copied as they are; a certificate renewed during the
 backup is re-issued if needed.
@@ -64,10 +65,17 @@ sudo systemctl start piqueld
 Restore only writes into an empty or absent data directory and holds the data
 directory lock, so it refuses to run alongside the daemon. It rejects archives
 whose schema is newer than the binary supports, unknown archive formats, and
-entries outside the layout above. The
-database must pass `PRAGMA integrity_check` and match its manifest before
-anything is moved into place. The restored database keeps its archived schema;
-the daemon migrates it on its next start.
+entries outside the layout above. The database must pass
+`PRAGMA integrity_check` and match its manifest before anything is moved into
+place. Restored files get mode `0600` and directories `0700`, whatever the
+archive says. The database is moved into place last; if restore is interrupted
+before then, the daemon refuses to start until the data directory is emptied
+and restore is run again. The restored database keeps its archived schema; the
+daemon migrates it on its next start.
+
+The restored tailnet node keeps its name, so passkeys bound to it keep working.
+Stop the original installation first: two daemons with the same node state
+compete for one tailnet identity.
 
 Restore reverts application edits, accounts, and deployment history accepted
 after the backup. Reconciliation then observes the current Docker state against

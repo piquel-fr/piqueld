@@ -17,6 +17,16 @@ let
   # private $CREDENTIALS_DIRECTORY, so the files may stay root-only, and the
   # daemon resolves the credential name there.
   webhookCredential = index: "webhook-${toString index}";
+  # Every unit loading `configuration` needs these, since the daemon resolves
+  # credential-backed settings while reading it.
+  credentials =
+    lib.optional (tailscale.auth_key_file != null) "ts-auth-key:${tailscale.auth_key_file}"
+    ++ lib.concatLists (
+      lib.imap0 (
+        index: destination:
+        lib.optional (destination.url_file != null) "${webhookCredential index}:${destination.url_file}"
+      ) destinations
+    );
   configuration = (pkgs.formats.toml { }).generate "piqueld.toml" (
     lib.recursiveUpdate (withoutNulls cfg.settings) (
       {
@@ -311,14 +321,7 @@ in
       ++ lib.optional (usesTailscale || cfg.settings.tailscale.enabled) config.services.tailscale.package;
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/piqueld --config ${configuration}";
-        LoadCredential =
-          lib.optional (tailscale.auth_key_file != null) "ts-auth-key:${tailscale.auth_key_file}"
-          ++ lib.concatLists (
-            lib.imap0 (
-              index: destination:
-              lib.optional (destination.url_file != null) "${webhookCredential index}:${destination.url_file}"
-            ) destinations
-          );
+        LoadCredential = credentials;
         User = "piqueld";
         Group = "piqueld";
         SupplementaryGroups = [ "docker" ];
@@ -352,6 +355,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${cfg.package}/bin/piqueld --config ${configuration} backup --directory ${cfg.backup.directory} --keep ${toString cfg.backup.keep}";
+        LoadCredential = credentials;
         User = "piqueld";
         Group = "piqueld";
         UMask = "0077";

@@ -64,7 +64,8 @@ enum Command {
 ///
 /// 1. Loads configuration and initializes tracing; maintenance subcommands
 ///    (`backup`, `restore`) run here and exit.
-/// 2. Prepares and locks the data directory, then validates and locks the runtime
+/// 2. Prepares and locks the data directory, refusing state left by an
+///    interrupted restore, then validates and locks the runtime
 ///    directory and binds every listener, so misconfiguration fails before any
 ///    state is opened.
 /// 3. Starts the application service and reconciliation controller.
@@ -94,6 +95,7 @@ async fn main() -> Result<()> {
             config.server.data_dir.display()
         )
     })?;
+    Backups::new(&config.server.data_dir).ensure_restore_complete()?;
     // Bind all endpoints before opening state or starting background work.
     let runtime_dir = piqueld::RuntimeDir::acquire(&config.server.runtime_dir).await?;
     let tcp_listeners = config.server.bind_tcp().await?;

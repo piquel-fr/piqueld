@@ -170,7 +170,7 @@ auth_key_file = "ts-auth-key" # $CREDENTIALS_DIRECTORY/ts-auth-key
 - The tailnet needs MagicDNS and HTTPS certificates enabled.
 - Node state and the `tailscaled` socket live in `<data_dir>/tailscale`, so the
   node identity, its name and the passkeys bound to it follow the data directory
-  rather than the host.
+  rather than the host. [Backups](backups.md) include the node state.
 - piqueld owns the node's preferences and its Serve configuration for port 443,
   and rewrites both at every start.
 - `auth_key_file` is only needed for the first login. Without it, startup logs a

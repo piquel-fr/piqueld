@@ -2,8 +2,9 @@
 //!
 //! An archive is an uncompressed tar file containing `manifest.json` (always the
 //! first entry), an `SQLite` online snapshot of `piqueld.db`, `secrets.key` when
-//! present, and the ingress gateway's `ingress/{data,config}` state. Archives are
-//! written while the daemon runs and restored only into an empty data directory.
+//! present, the ingress gateway's `ingress/{data,config}` state, and the tailnet
+//! node's `tailscale` state. Archives are written while the daemon runs and
+//! restored only into an empty data directory.
 
 use super::{SCHEMA_VERSION, Store, StoreError, ensure_database_target, now_ms};
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,7 @@ use std::{
     fs::{self, File},
     io::{self, BufReader, BufWriter, Write},
     num::NonZeroUsize,
-    os::unix::fs::DirBuilderExt,
+    os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -28,6 +29,13 @@ const SECRET_KEY: &str = "secrets.key";
 const INGRESS: &str = "ingress";
 /// Gateway state; `ingress/control` only holds a runtime socket.
 const INGRESS_STATE: [&str; 2] = ["ingress/data", "ingress/config"];
+/// Tailnet node identity, as laid out by `ServerConfig::tailscale_dir`.
+const TAILNET: &str = "tailscale";
+/// Top-level restored state, in publication order: the database moves last, so
+/// a data directory without it never looks like a completed restore.
+const PUBLISHED: [&str; 4] = [SECRET_KEY, INGRESS, TAILNET, DATABASE];
+/// Name prefix of the staging directory restore unpacks into.
+const RESTORE_STAGING: &str = ".restore-";
 /// Pre-migration archives kept in `<data_dir>/backups`.
 const PRE_MIGRATION_KEEP: usize = 3;
 
@@ -82,6 +90,12 @@ pub enum BackupError {
     /// The archive has no database.
     #[error("archive does not contain {DATABASE}")]
     MissingDatabase,
+    /// A restore was interrupted before its database was moved into place.
+    #[error(
+        "an interrupted restore left {}; empty the data directory and run piqueld restore again",
+        .0.display()
+    )]
+    InterruptedRestore(PathBuf),
     /// The database contradicts itself or its manifest.
     #[error("database is inconsistent: {0}")]
     Inconsistent(&'static str),
@@ -127,22 +141,29 @@ pub struct BackupManifest {
 }
 
 impl BackupManifest {
-    /// Describes the database behind `connection`, rejecting schemas it cannot represent.
+    /// Describes the database behind `connection`, rejecting schemas it cannot
+    /// represent and metadata that `Store::open` would reject.
     async fn read(connection: &mut SqliteConnection) -> Result<Self, BackupError> {
         let schema_version = schema_version(connection).await?;
         if schema_version == 0 {
             return Err(BackupError::Uninitialized);
         }
-        let instance_id =
-            sqlx::query_scalar!("SELECT instance_id FROM instance_metadata WHERE singleton=1")
-                .fetch_one(&mut *connection)
-                .await
-                .map_err(BackupError::database("read the instance identity"))?;
+        let metadata = sqlx::query!(
+            "SELECT instance_id,schema_version FROM instance_metadata WHERE singleton=1"
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(BackupError::database("read the instance metadata"))?;
+        if u64::try_from(metadata.schema_version).ok() != Some(schema_version) {
+            return Err(BackupError::Inconsistent(
+                "recorded schema version differs from user_version",
+            ));
+        }
         Ok(Self {
             format: ARCHIVE_FORMAT,
             schema_version,
             daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
-            instance_id,
+            instance_id: metadata.instance_id,
             created_at_ms: now_ms(),
         })
     }
@@ -210,8 +231,7 @@ impl<'a> Backups<'a> {
     /// Returns the failed step; a partial archive is never left at `output`.
     pub async fn create(&self, output: &Path) -> Result<BackupManifest, BackupError> {
         let mut connection = connect(&self.data_dir.join(DATABASE)).await?;
-        let manifest = BackupManifest::read(&mut connection).await?;
-        self.write(&mut connection, &manifest, output).await?;
+        let manifest = self.write(&mut connection, output).await?;
         // Older schemas lack the column; the daemon records nothing until it migrates.
         if manifest.schema_version == SCHEMA_VERSION {
             sqlx::query!(
@@ -242,7 +262,7 @@ impl<'a> Backups<'a> {
         create_private_dir(directory)?;
         let output = directory.join(format!("piqueld-{}.tar", now_ms()));
         let manifest = self.create(&output).await?;
-        prune(directory, "piqueld-", keep.get())?;
+        Rotation::Scheduled.prune(directory, keep.get())?;
         Ok((output, manifest))
     }
 
@@ -254,13 +274,13 @@ impl<'a> Backups<'a> {
     ) -> Result<PathBuf, BackupError> {
         let directory = self.data_dir.join("backups");
         create_private_dir(&directory)?;
-        let manifest = BackupManifest::read(connection).await?;
         let output = directory.join(format!(
             "pre-{}-{}.tar",
-            manifest.schema_version, manifest.created_at_ms
+            schema_version(connection).await?,
+            now_ms()
         ));
-        self.write(connection, &manifest, &output).await?;
-        prune(&directory, "pre-", PRE_MIGRATION_KEEP)?;
+        self.write(connection, &output).await?;
+        Rotation::PreMigration.prune(&directory, PRE_MIGRATION_KEEP)?;
         Ok(output)
     }
 
@@ -269,7 +289,8 @@ impl<'a> Backups<'a> {
     ///
     /// # Errors
     /// Rejects newer schemas, unexpected entries, damaged databases, and a
-    /// running daemon. Nothing is moved into the data directory on failure.
+    /// running daemon. Nothing is left in the data directory on failure; see
+    /// [`Self::ensure_restore_complete`] for interruptions.
     pub async fn restore(&self, archive: &Path) -> Result<BackupManifest, BackupError> {
         let data_dir = self.data_dir;
         crate::prepare_data_dir(data_dir)
@@ -284,7 +305,7 @@ impl<'a> Backups<'a> {
         }
 
         let staging = tempfile::Builder::new()
-            .prefix(".restore-")
+            .prefix(RESTORE_STAGING)
             .tempdir_in(data_dir)
             .map_err(BackupError::io("create staging directory in", data_dir))?;
         let manifest = {
@@ -295,26 +316,44 @@ impl<'a> Backups<'a> {
                 .map_err(BackupError::Task)??
         };
         verify(&staging.path().join(DATABASE), &manifest).await?;
-
-        for name in [DATABASE, SECRET_KEY, INGRESS] {
-            let source = staging.path().join(name);
-            if source.exists() {
-                fs::rename(&source, data_dir.join(name))
-                    .map_err(BackupError::io("move restored state into", data_dir))?;
-            }
-        }
-        sync_dir(data_dir)?;
+        publish(staging.path(), data_dir)?;
         Ok(manifest)
     }
 
-    /// Snapshots the database and key, then archives them with ingress state
-    /// under `manifest`, which describes the database behind `connection`.
+    /// Refuses a data directory left by an interrupted restore: one holding a
+    /// restore staging directory but no database. The daemon checks this before
+    /// creating any state, so it never starts an empty instance over partly
+    /// restored state.
+    ///
+    /// # Errors
+    /// Returns [`BackupError::InterruptedRestore`] or the I/O failure.
+    pub fn ensure_restore_complete(&self) -> Result<(), BackupError> {
+        if self.data_dir.join(DATABASE).exists() {
+            return Ok(());
+        }
+        let entries = fs::read_dir(self.data_dir)
+            .map_err(BackupError::io("read data directory", self.data_dir))?;
+        for entry in entries {
+            let entry = entry.map_err(BackupError::io("read data directory", self.data_dir))?;
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(RESTORE_STAGING))
+            {
+                return Err(BackupError::InterruptedRestore(entry.path()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Snapshots the database and key, then archives them with ingress and
+    /// tailnet state. The manifest is read from the snapshot itself, so it
+    /// describes the archived database even if a migration commits meanwhile.
     async fn write(
         &self,
         connection: &mut SqliteConnection,
-        manifest: &BackupManifest,
         output: &Path,
-    ) -> Result<(), BackupError> {
+    ) -> Result<BackupManifest, BackupError> {
         let parent = parent_of(output);
         let snapshot = NamedTempFile::new_in(parent)
             .map_err(BackupError::io("create database snapshot in", parent))?;
@@ -335,6 +374,11 @@ impl<'a> Backups<'a> {
         if read_key(&key_path)? != key {
             return Err(BackupError::KeyChanged);
         }
+        let mut copy = connect(snapshot.path()).await?;
+        let manifest = BackupManifest::read(&mut copy).await?;
+        copy.close()
+            .await
+            .map_err(BackupError::database("close the database snapshot"))?;
 
         let archive = Archive {
             manifest: manifest.clone(),
@@ -345,7 +389,8 @@ impl<'a> Backups<'a> {
         };
         tokio::task::spawn_blocking(move || archive.write())
             .await
-            .map_err(BackupError::Task)?
+            .map_err(BackupError::Task)??;
+        Ok(manifest)
     }
 }
 
@@ -403,6 +448,7 @@ impl Archive {
                 entries.tree(&self.data_dir.join(name), Path::new(name))?;
             }
         }
+        entries.tree(&self.data_dir.join(TAILNET), Path::new(TAILNET))?;
 
         let mut writer = builder
             .into_inner()
@@ -454,7 +500,8 @@ impl<W: Write> Entries<'_, W> {
     }
 
     /// Appends a directory tree in name order. Files are read whole, since the
-    /// gateway may rewrite them while the archive is being written.
+    /// gateway or tailscaled may rewrite them while the archive is being
+    /// written. Runtime sockets are skipped; their owners recreate them.
     fn tree(&mut self, source: &Path, name: &Path) -> Result<(), BackupError> {
         let metadata = match fs::symlink_metadata(source) {
             Ok(metadata) => metadata,
@@ -464,6 +511,9 @@ impl<W: Write> Entries<'_, W> {
         if metadata.is_file() {
             let data = fs::read(source).map_err(BackupError::io("read", source))?;
             return self.file(name, &data);
+        }
+        if metadata.file_type().is_socket() {
+            return Ok(());
         }
         if !metadata.is_dir() {
             tracing::warn!(path = %source.display(), "skipping special file in backup");
@@ -509,30 +559,56 @@ fn extract(archive: &Path, staging: &Path) -> Result<BackupManifest, BackupError
             .path()
             .map_err(BackupError::io("read archive", archive))?
             .into_owned();
-        let allowed = match entry.header().entry_type() {
-            tar::EntryType::Regular => {
-                path == Path::new(DATABASE)
-                    || path == Path::new(SECRET_KEY)
-                    || INGRESS_STATE.iter().any(|state| path.starts_with(state))
+        let in_tree =
+            INGRESS_STATE.iter().any(|state| path.starts_with(state)) || path.starts_with(TAILNET);
+        // Modes are fixed rather than taken from the archive, since the daemon
+        // rejects a non-private key or state directory.
+        let mode = match entry.header().entry_type() {
+            tar::EntryType::Regular
+                if in_tree || path == Path::new(DATABASE) || path == Path::new(SECRET_KEY) =>
+            {
+                0o600
             }
-            tar::EntryType::Directory => {
-                path == Path::new(INGRESS)
-                    || INGRESS_STATE.iter().any(|state| path.starts_with(state))
-            }
-            _ => false,
+            tar::EntryType::Directory if in_tree || path == Path::new(INGRESS) => 0o700,
+            _ => return Err(BackupError::UnexpectedEntry(path)),
         };
-        if !allowed
-            || !entry
-                .unpack_in(staging)
-                .map_err(BackupError::io("unpack archive into", staging))?
+        if !entry
+            .unpack_in(staging)
+            .map_err(BackupError::io("unpack archive into", staging))?
         {
             return Err(BackupError::UnexpectedEntry(path));
         }
+        let unpacked = staging.join(&path);
+        fs::set_permissions(&unpacked, fs::Permissions::from_mode(mode))
+            .map_err(BackupError::io("set permissions of", &unpacked))?;
     }
     if !staging.join(DATABASE).is_file() {
         return Err(BackupError::MissingDatabase);
     }
     Ok(manifest)
+}
+
+/// Moves restored state from `staging` into `data_dir` in [`PUBLISHED`] order.
+/// If a move fails, state already moved is moved back, leaving `data_dir`
+/// empty again so the restore can be retried.
+fn publish(staging: &Path, data_dir: &Path) -> Result<(), BackupError> {
+    let mut moved = Vec::new();
+    for name in PUBLISHED {
+        let source = staging.join(name);
+        if !source.exists() {
+            continue;
+        }
+        if let Err(error) = fs::rename(&source, data_dir.join(name)) {
+            for name in moved {
+                if let Err(undo) = fs::rename(data_dir.join(name), staging.join(name)) {
+                    tracing::error!(%undo, name, "could not undo a partial restore");
+                }
+            }
+            return Err(BackupError::io("move restored state into", data_dir)(error));
+        }
+        moved.push(name);
+    }
+    sync_dir(data_dir)
 }
 
 /// Checks a restored database's integrity and that it matches its manifest.
@@ -572,27 +648,60 @@ fn read_key(path: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, BackupError> {
     }
 }
 
-/// Deletes all but the newest `keep` archives named `<prefix>…-<ms>.tar`.
-fn prune(directory: &Path, prefix: &str, keep: usize) -> Result<(), BackupError> {
-    let mut archives = Vec::new();
-    for entry in fs::read_dir(directory).map_err(BackupError::io("read directory", directory))? {
-        let name = entry
-            .map_err(BackupError::io("read directory", directory))?
-            .file_name();
-        let created = name
-            .to_str()
-            .and_then(|name| name.strip_prefix(prefix)?.strip_suffix(".tar"))
-            .and_then(|stem| stem.rsplit('-').next()?.parse::<i64>().ok());
-        if let Some(created) = created {
-            archives.push((created, name));
+/// Archive families that rotation deletes from. Only exact generated names
+/// match, so archives named by hand in the same directory are never deleted.
+#[derive(Clone, Copy)]
+enum Rotation {
+    /// `piqueld-<ms>.tar`, written by `piqueld backup --directory`.
+    Scheduled,
+    /// `pre-<schema>-<ms>.tar`, written before migrations.
+    PreMigration,
+}
+
+impl Rotation {
+    /// Creation time encoded in `name`, if it belongs to this family.
+    fn created_at(self, name: &str) -> Option<i64> {
+        let stem = name.strip_suffix(".tar")?;
+        let created = match self {
+            Self::Scheduled => stem.strip_prefix("piqueld-")?,
+            Self::PreMigration => {
+                let (schema, created) = stem.strip_prefix("pre-")?.split_once('-')?;
+                decimal(schema)?;
+                created
+            }
+        };
+        decimal(created)
+    }
+
+    /// Deletes all but the newest `keep` archives of this family in `directory`.
+    fn prune(self, directory: &Path, keep: usize) -> Result<(), BackupError> {
+        let mut archives = Vec::new();
+        for entry in
+            fs::read_dir(directory).map_err(BackupError::io("read directory", directory))?
+        {
+            let name = entry
+                .map_err(BackupError::io("read directory", directory))?
+                .file_name();
+            if let Some(created) = name.to_str().and_then(|name| self.created_at(name)) {
+                archives.push((created, name));
+            }
         }
+        archives.sort_unstable_by(|left, right| right.cmp(left));
+        for (_, name) in archives.into_iter().skip(keep) {
+            let path = directory.join(name);
+            fs::remove_file(&path).map_err(BackupError::io("delete old backup", &path))?;
+        }
+        Ok(())
     }
-    archives.sort_unstable_by(|left, right| right.cmp(left));
-    for (_, name) in archives.into_iter().skip(keep) {
-        let path = directory.join(name);
-        fs::remove_file(&path).map_err(BackupError::io("delete old backup", &path))?;
+}
+
+/// Parses an unsigned decimal with no sign or other characters.
+fn decimal(text: &str) -> Option<i64> {
+    if text.bytes().all(|byte| byte.is_ascii_digit()) {
+        text.parse().ok()
+    } else {
+        None
     }
-    Ok(())
 }
 
 fn create_private_dir(path: &Path) -> Result<(), BackupError> {
@@ -651,7 +760,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backup_restores_database_key_and_ingress_state() {
+    async fn backup_restores_database_key_ingress_and_tailnet_state() {
         let source = tempfile::tempdir().unwrap();
         let store = Store::open(source.path().join(DATABASE)).await.unwrap();
         fs::write(source.path().join(SECRET_KEY), [7; 32]).unwrap();
@@ -659,6 +768,11 @@ mod tests {
         fs::write(source.path().join("ingress/data/caddy/cert.pem"), b"cert").unwrap();
         fs::create_dir_all(source.path().join("ingress/control")).unwrap();
         fs::write(source.path().join("ingress/control/runtime"), b"skip").unwrap();
+        fs::create_dir_all(source.path().join(TAILNET)).unwrap();
+        fs::write(source.path().join("tailscale/tailscaled.state"), b"node").unwrap();
+        let _socket =
+            std::os::unix::net::UnixListener::bind(source.path().join("tailscale/tailscaled.sock"))
+                .unwrap();
 
         let output = source.path().join("backup.tar");
         let written = Backups::new(source.path()).create(&output).await.unwrap();
@@ -682,6 +796,11 @@ mod tests {
             b"cert"
         );
         assert!(!data_dir.join("ingress/control").exists());
+        assert_eq!(
+            fs::read(data_dir.join("tailscale/tailscaled.state")).unwrap(),
+            b"node"
+        );
+        assert!(!data_dir.join("tailscale/tailscaled.sock").exists());
         let reopened = Store::open(data_dir.join(DATABASE)).await.unwrap();
         assert_eq!(reopened.instance_id(), store.instance_id());
 
@@ -744,18 +863,19 @@ mod tests {
     }
 
     #[test]
-    fn prune_keeps_the_newest_archives_with_a_matching_prefix() {
+    fn prune_keeps_the_newest_archives_with_exact_generated_names() {
         let directory = tempfile::tempdir().unwrap();
         for name in [
             "pre-9-100.tar",
             "pre-10-300.tar",
             "pre-10-200.tar",
             "pre-10-50.tar",
+            "pre-manual-1.tar",
             "piqueld-1.tar",
         ] {
             fs::write(directory.path().join(name), b"").unwrap();
         }
-        prune(directory.path(), "pre-", 2).unwrap();
+        Rotation::PreMigration.prune(directory.path(), 2).unwrap();
         let mut remaining: Vec<_> = fs::read_dir(directory.path())
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
@@ -763,7 +883,31 @@ mod tests {
         remaining.sort();
         assert_eq!(
             remaining,
-            ["piqueld-1.tar", "pre-10-200.tar", "pre-10-300.tar"]
+            [
+                "piqueld-1.tar",
+                "pre-10-200.tar",
+                "pre-10-300.tar",
+                "pre-manual-1.tar"
+            ]
         );
+        assert_eq!(Rotation::Scheduled.created_at("piqueld-5.tar"), Some(5));
+        assert_eq!(
+            Rotation::Scheduled.created_at("piqueld-before-upgrade-5.tar"),
+            None
+        );
+    }
+
+    #[test]
+    fn interrupted_restores_are_refused_until_the_database_is_in_place() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let backups = Backups::new(data_dir.path());
+        backups.ensure_restore_complete().unwrap();
+        fs::create_dir(data_dir.path().join(".restore-abc")).unwrap();
+        assert!(matches!(
+            backups.ensure_restore_complete(),
+            Err(BackupError::InterruptedRestore(_))
+        ));
+        fs::write(data_dir.path().join(DATABASE), b"").unwrap();
+        backups.ensure_restore_complete().unwrap();
     }
 }
