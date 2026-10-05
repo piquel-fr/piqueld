@@ -72,6 +72,16 @@ impl Reply {
         }
     }
 
+    /// Accepts an exec WebSocket; see [`echo_exec`].
+    fn upgrade() -> Self {
+        Self {
+            status: "101 Switching Protocols",
+            content_type: "",
+            body: Vec::new(),
+            drop_connection: false,
+        }
+    }
+
     fn dropped() -> Self {
         Self {
             status: "200 OK",
@@ -205,12 +215,25 @@ fn serve_stream<S>(
     let Some(request) = read_request(&mut stream) else {
         return;
     };
+    let websocket_key = request.headers.get("sec-websocket-key").cloned();
     records
         .lock()
         .expect("request records")
         .push(request.clone());
     let reply = handler.lock().expect("request handler")(request);
     if reply.drop_connection {
+        return;
+    }
+    if reply.status == Reply::upgrade().status {
+        let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(
+            websocket_key.expect("WebSocket key").as_bytes(),
+        );
+        write!(
+            stream,
+            "HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: websocket\r\nsec-websocket-accept: {accept}\r\n\r\n"
+        )
+        .expect("upgrade response");
+        echo_exec(stream);
         return;
     }
     let header = format!(
@@ -232,6 +255,44 @@ fn serve_stream<S>(
             "HTTP response: {error}"
         );
     }
+}
+
+/// Checks the exec request for `cat -`, echoes standard input until it
+/// closes, then reports stderr and exit code 3. A client that disconnects
+/// first gets nothing.
+fn echo_exec<S: Read + Write>(stream: S) {
+    use piqueld_client::exec::{ExecFrame, ExecInput, ExecOutput};
+    use tokio_tungstenite::tungstenite::{Message, WebSocket, protocol::Role};
+    let mut socket = WebSocket::from_raw_socket(stream, Role::Server, None);
+    let Ok(Message::Text(request)) = socket.read() else {
+        panic!("exec request")
+    };
+    assert_eq!(
+        serde_json::from_str::<Value>(request.as_str()).expect("exec request"),
+        json!({"service": "web", "command": ["cat", "-"], "stdin": true, "tty": null})
+    );
+    let mut stdin = Vec::new();
+    loop {
+        match socket.read() {
+            Ok(Message::Binary(data)) => match ExecInput::decode(&data).expect("exec input") {
+                ExecInput::Stdin(data) => stdin.extend(data),
+                ExecInput::CloseStdin => break,
+                frame @ ExecInput::Resize(_) => panic!("unexpected exec input {frame:?}"),
+            },
+            Ok(message) => panic!("unexpected exec message {message:?}"),
+            Err(_) => return,
+        }
+    }
+    for frame in [
+        ExecOutput::Stdout(stdin),
+        ExecOutput::Stderr(b"closed".to_vec()),
+        ExecOutput::Exit(3),
+    ] {
+        socket
+            .send(Message::binary(frame.encode()))
+            .expect("exec output");
+    }
+    let _ = socket.close(None);
 }
 
 fn read_request<S: Read>(stream: &mut S) -> Option<Request> {
@@ -510,6 +571,65 @@ fn repeated_pagination_cursor_is_rejected() {
     assert!(!output.status.success());
     assert_eq!(output.stdout, b"");
     assert!(String::from_utf8_lossy(&output.stderr).contains("repeated pagination cursor"));
+    let _ = server.finish();
+}
+
+/// Runs `app exec notes web -i -- cat -` against an echo server, feeding `stdin`.
+fn exec_cat(stdin: Stdio, input: &[u8]) -> (TestServer, Output) {
+    let server = start_server(false, 2, |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
+        "/api/v1/applications/app-notes-01/exec" => {
+            assert_eq!(request.method, "GET");
+            assert_eq!(request.headers["upgrade"], "websocket");
+            Reply::upgrade()
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let Endpoint::Tcp(url) = &server.endpoint else {
+        unreachable!("TCP server")
+    };
+    let mut child = support::command()
+        .args([
+            "--url",
+            url,
+            "app",
+            "exec",
+            "app-notes-01",
+            "web",
+            "-i",
+            "--",
+        ])
+        .args(["cat", "-"])
+        .stdin(stdin)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("piquelctl process");
+    if let Some(mut pipe) = child.stdin.take() {
+        pipe.write_all(input).expect("stdin is forwarded");
+    }
+    let output = child.wait_with_output().expect("piquelctl exits");
+    (server, output)
+}
+
+#[test]
+fn exec_forwards_stdin_streams_output_and_exits_with_the_command_code() {
+    let (server, output) = exec_cat(Stdio::piped(), b"hello");
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(output.stdout, b"hello");
+    assert_eq!(output.stderr, b"closed");
+    let _ = server.finish();
+}
+
+#[test]
+fn exec_fails_instead_of_closing_stdin_when_it_cannot_be_read() {
+    // Reading a directory fails with EISDIR.
+    let directory = fs::File::open(env!("CARGO_MANIFEST_DIR")).expect("directory");
+    let (server, output) = exec_cat(directory.into(), b"");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, b"");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+    assert!(stderr.contains("could not read standard input"), "{stderr}");
     let _ = server.finish();
 }
 

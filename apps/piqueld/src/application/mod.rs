@@ -4,7 +4,7 @@ mod runtime;
 pub use runtime::ApplicationRuntime;
 
 use crate::{
-    docker::DockerError,
+    docker::{DockerError, Exec, ExecIo},
     store::{StoreError, StoredApplication},
 };
 use async_trait::async_trait;
@@ -31,6 +31,9 @@ pub enum BoundaryError {
 }
 
 /// Resolves accepted intent during execution and observes runtime for API reads.
+///
+/// Methods have no default implementations: every adapter states its own
+/// behavior, so a new method cannot be silently missing from one of them.
 #[async_trait]
 pub trait RuntimeBoundary: Send + Sync + 'static {
     /// Reads recent workload logs from Docker.
@@ -46,28 +49,26 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
         stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<piqueld_core::api::ApplicationLogs, BoundaryError>;
 
-    /// Returns separate Engine and Swarm probe results. Unknown adapters fail closed.
-    async fn readiness(&self) -> (bool, bool) {
-        (false, false)
-    }
+    /// Returns separate Engine and Swarm probe results.
+    async fn readiness(&self) -> (bool, bool);
 
     /// Removes the supplied versions after logical-reference checks succeed.
-    ///
-    /// The default implementation only accepts an empty list so adapters without
-    /// secret support fail closed.
     async fn remove_secrets(
         &self,
-        _application: &ApplicationId,
+        application: &ApplicationId,
         names: &[String],
-    ) -> Result<(), BoundaryError> {
-        if names.is_empty() {
-            Ok(())
-        } else {
-            Err(DockerError::Unavailable("secret removal").into())
-        }
-    }
+    ) -> Result<(), BoundaryError>;
+    /// Creates a command in one running task of the application's service.
+    /// Returns `None` when the service has no running task.
+    async fn create_exec(
+        &self,
+        application: &ApplicationId,
+        request: &piqueld_core::exec::ExecRequest,
+    ) -> Result<Option<Exec>, BoundaryError>;
+    /// Streams a created command until it exits and returns its exit code.
+    async fn run_exec(&self, exec: &Exec, io: ExecIo) -> Result<i64, BoundaryError>;
     /// Wakes the reconciler after a mutation requests an immediate scan.
-    fn trigger_reconciliation(&self) {}
+    fn trigger_reconciliation(&self);
     /// Resolves all mutable inputs into a complete immutable target.
     async fn prepare(
         &self,

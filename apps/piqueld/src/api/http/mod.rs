@@ -30,6 +30,7 @@ mod builds;
 mod deployments;
 mod editing;
 mod events;
+mod exec;
 mod logs;
 mod observability;
 mod openapi;
@@ -357,20 +358,28 @@ impl From<piqueld_core::ValidationErrors> for ApiError {
     }
 }
 
-impl IntoResponse for ApiError {
-    /// Renders the JSON error body. The placeholder `request_id` is replaced
-    /// with the real one by `bind_error_request_id`.
-    fn into_response(self) -> Response {
-        let body = ErrorBody {
+impl ApiError {
+    /// Builds the public JSON error body. Its placeholder `request_id` is
+    /// replaced with the real one by `bind_error_request_id`, or by the exec
+    /// stream before it writes a terminal failure frame.
+    fn body(&self) -> ErrorBody {
+        ErrorBody {
             code: self.code.into(),
             message: self.message.into(),
-            details: self.details,
+            details: self.details.clone(),
             request_id: uuid::Uuid::now_v7().simple().to_string(),
-        };
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    /// Renders the JSON error body with the error's status, diagnostic
+    /// extension, and optional `Allow` header.
+    fn into_response(self) -> Response {
         let mut response = (
             self.status,
             [(header::CONTENT_TYPE, JSON)],
-            axum::Json(body),
+            axum::Json(self.body()),
         )
             .into_response();
         if let Some(diagnostic) = self.diagnostic {
@@ -553,6 +562,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(observability::deliveries))
         .routes(routes!(observability::retry_delivery))
         .routes(routes!(logs::get))
+        .routes(routes!(exec::exec))
         .routes(routes!(builds::list))
         .routes(routes!(builds::logs))
         .routes(routes!(operations::get))
@@ -628,26 +638,45 @@ async fn bind_error_request_id(
     if let Some(request_id) = request_id {
         error.request_id = request_id;
     }
-    if parts.status.is_server_error() && error.code != "configuration_unavailable" {
-        let diagnostic = parts
-            .extensions
-            .get::<piqueld_core::observability::Diagnostic>()
-            .cloned()
-            .unwrap_or_else(|| {
-                piqueld_core::observability::Diagnostic::from_recorded_code(
-                    format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
-                    &error.code,
-                    error.message.clone(),
-                )
-            });
+    let diagnostic = parts
+        .extensions
+        .get::<piqueld_core::observability::Diagnostic>()
+        .cloned();
+    state
+        .record_failure(parts.status, &mut error, diagnostic, application.as_ref())
+        .await;
+    let bytes = serde_json::to_vec(&error).unwrap_or_else(|_| b"{}".to_vec());
+    Response::from_parts(parts, Body::from(bytes))
+}
+
+impl ApiState {
+    /// Records a server error's diagnostic (`diagnostic`, or a synthesized one)
+    /// and exposes its ID as `details.diagnostic_id`. Client errors and
+    /// `configuration_unavailable` are left untouched.
+    async fn record_failure(
+        &self,
+        status: StatusCode,
+        error: &mut ErrorBody,
+        diagnostic: Option<piqueld_core::observability::Diagnostic>,
+        application: Option<&piqueld_core::ApplicationId>,
+    ) {
+        if !status.is_server_error() || error.code == "configuration_unavailable" {
+            return;
+        }
+        let diagnostic = diagnostic.unwrap_or_else(|| {
+            piqueld_core::observability::Diagnostic::from_recorded_code(
+                format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
+                &error.code,
+                error.message.clone(),
+            )
+        });
         // Storage failures are not written back to the failing store: retrying the
         // write would only queue behind the global writer during the outage.
         if !matches!(
             error.code.as_str(),
             "storage_unavailable" | "schema_mismatch"
         ) {
-            state
-                .record_diagnostic(&diagnostic, Some(&error.request_id), application.as_ref())
+            self.record_diagnostic(&diagnostic, Some(&error.request_id), application)
                 .await;
         }
         tracing::error!(diagnostic_id=%diagnostic.id, request_id=%error.request_id, code=%diagnostic.code, "API request failed");
@@ -656,8 +685,6 @@ async fn bind_error_request_id(
         }
         error.details["diagnostic_id"] = json!(diagnostic.id);
     }
-    let bytes = serde_json::to_vec(&error).unwrap_or_else(|_| b"{}".to_vec());
-    Response::from_parts(parts, Body::from(bytes))
 }
 
 /// Fallback when the dashboard is embedded: API paths get JSON 404s,
@@ -883,6 +910,11 @@ impl From<ApplicationError> for ApiError {
                 StatusCode::BAD_REQUEST,
                 "logs_query_invalid",
                 "Tail must be 1–1000 and time window 1–86400 seconds",
+            ),
+            ApplicationError::ServiceNotRunning => Self::new(
+                StatusCode::CONFLICT,
+                "service_not_running",
+                "Service has no running task; deploy it or check its health",
             ),
             ApplicationError::ConfigurationUnavailable => Self::new(
                 StatusCode::SERVICE_UNAVAILABLE,

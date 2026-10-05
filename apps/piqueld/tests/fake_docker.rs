@@ -318,6 +318,31 @@ impl DockerApi for FakeDocker {
         self.registry.lock().await.pull("git-build");
         Ok(Sha256Digest::parse(format!("sha256:{}", "b".repeat(64))).unwrap())
     }
+    /// Build output is not recorded.
+    async fn build_image_recorded(
+        &self,
+        dockerfile: &std::path::Path,
+        context: &std::path::Path,
+        _log: Option<&piqueld::build::BuildLog>,
+    ) -> Result<Sha256Digest, DockerError> {
+        self.build_image(dockerfile, context).await
+    }
+    /// The reconciler never runs commands.
+    async fn create_exec(
+        &self,
+        _instance: &InstanceId,
+        _application: &ApplicationId,
+        _request: &piqueld_core::exec::ExecRequest,
+    ) -> Result<Option<piqueld::docker::Exec>, DockerError> {
+        Err(DockerError::Unavailable("create exec"))
+    }
+    async fn run_exec(
+        &self,
+        _exec: &piqueld::docker::Exec,
+        _io: piqueld::docker::ExecIo,
+    ) -> Result<i64, DockerError> {
+        Err(DockerError::Unavailable("run exec"))
+    }
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
         let _probe = self.images.enter().await;
         if reference.contains("/slow:")

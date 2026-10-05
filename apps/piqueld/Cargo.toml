@@ -28,7 +28,7 @@ openssl.workspace = true
 url.workspace = true
 webauthn-rs-core.workspace = true
 async-trait.workspace = true
-axum.workspace = true
+axum = { workspace = true, features = ["ws"] }
 bollard.workspace = true
 clap.workspace = true
 futures-util.workspace = true
@@ -69,6 +69,8 @@ http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+# Drives exec WebSockets frame by frame.
+tokio-tungstenite.workspace = true
 
 [build-dependencies]
 tokio.workspace = true

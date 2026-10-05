@@ -6,6 +6,7 @@
 pub mod api;
 pub mod codes;
 pub mod event;
+pub mod exec;
 pub mod identity;
 pub use event::Event;
 pub mod manifest;

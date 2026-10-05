@@ -4,5 +4,5 @@ pub mod http;
 mod service;
 
 pub use service::{
-    ApplicationError, ApplicationService, ManifestExport, Mutation, MutationResponse,
+    ApplicationError, ApplicationService, ExecSession, ManifestExport, Mutation, MutationResponse,
 };

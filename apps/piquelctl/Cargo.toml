@@ -13,11 +13,14 @@ tempfile.workspace = true
 indicatif.workspace = true
 clap.workspace = true
 futures-util.workspace = true
+http.workspace = true
 piqueld-client.workspace = true
+# Raw mode and window size for `app exec --tty`.
+rustix = { workspace = true, features = ["termios"] }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-std"] }
 uuid.workspace = true
 
 [lints]
@@ -25,3 +28,5 @@ workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Serves exec WebSockets from the blocking test server.
+tokio-tungstenite.workspace = true

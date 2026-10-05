@@ -129,9 +129,9 @@ async fn authenticate(
 ///
 /// 1. Throttles ceremony start endpoints per peer IP (429 with `Retry-After`).
 /// 2. Takes the credential from `Authorization: Bearer`, else the session cookie.
-/// 3. Blocks cross-site mutations: any mismatched `Origin` is rejected, and
-///    cookie-authenticated or bearer-less ceremony mutations must send the
-///    configured origin.
+/// 3. Blocks cross-site mutations and upgrades: any mismatched `Origin` is
+///    rejected, and cookie-authenticated or bearer-less ceremony mutations must
+///    send the configured origin.
 /// 4. Inserts the resolved `Identity` as an extension. Invalid credentials on
 ///    public routes are ignored; missing or invalid ones elsewhere yield 401.
 async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
@@ -167,10 +167,12 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
         .headers()
         .get(header::ORIGIN)
         .and_then(|v| v.to_str().ok());
+    // A WebSocket opens with GET, but browsers send cookies on cross-site
+    // handshakes, so it is checked like a mutation.
     let mutation = !matches!(
         *request.method(),
         Method::GET | Method::HEAD | Method::OPTIONS
-    );
+    ) || request.headers().contains_key(header::UPGRADE);
     let ceremony = request.uri().path().contains("/auth/register/")
         || request.uri().path().contains("/auth/login/");
     if mutation

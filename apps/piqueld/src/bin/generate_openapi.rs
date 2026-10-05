@@ -183,6 +183,13 @@ impl Generator {
             .get_mut("paths")
             .and_then(Value::as_object_mut)
             .context("OpenAPI document has no paths object")?;
+        // Generated WebSocket methods return `reqwest::Upgraded`, which WASM
+        // builds lack, so the exec WebSocket is written by hand in
+        // `piqueld_client::exec` for native targets.
+        ensure!(
+            paths.remove("/api/v1/applications/{id}/exec").is_some(),
+            "missing exec operation"
+        );
         // Readiness uses a typed readiness body for 503. Progenitor cannot
         // generate two different error-body types for one operation; preserve
         // its existing readiness decoder and let middleware errors use the

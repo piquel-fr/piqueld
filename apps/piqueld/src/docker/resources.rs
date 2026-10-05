@@ -445,6 +445,24 @@ impl DockerApi for BollardDocker {
             .await
     }
 
+    async fn create_exec(
+        &self,
+        instance: &super::InstanceId,
+        application: &ApplicationId,
+        request: &piqueld_core::exec::ExecRequest,
+    ) -> Result<Option<super::Exec>, DockerError> {
+        DockerTimeout::Request
+            .run(
+                "create exec",
+                self.create_task_exec(instance, application, request),
+            )
+            .await
+    }
+
+    async fn run_exec(&self, exec: &super::Exec, io: super::ExecIo) -> Result<i64, DockerError> {
+        self.run_task_exec(exec, io).await
+    }
+
     async fn ping(&self) -> Result<(), DockerError> {
         DockerTimeout::Request
             .run("ping Docker", async {

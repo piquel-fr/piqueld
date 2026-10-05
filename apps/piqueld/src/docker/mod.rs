@@ -71,6 +71,8 @@ pub struct BollardDocker {
 mod timeout;
 pub(crate) use timeout::DockerTimeout;
 mod engine;
+mod exec;
+pub use exec::{Exec, ExecIo};
 mod limited;
 mod logs;
 pub(crate) use limited::LimitedDocker;
@@ -144,6 +146,9 @@ pub enum SwarmState {
 
 #[async_trait]
 /// The runtime operations required by the reconciler.
+///
+/// Methods have no default implementations: every adapter states its own
+/// behavior, so a new method cannot be silently missing from one of them.
 pub trait DockerApi: Send + Sync + 'static {
     /// Reads a bounded historical log window without storing it in piqueld.
     async fn application_logs(
@@ -164,39 +169,36 @@ pub trait DockerApi: Send + Sync + 'static {
     /// Pulls an image reference and returns its immutable repository digest.
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError>;
     /// Builds local Docker inputs into an immutable image, streaming output
-    /// into `_log` when given. The default ignores the log and delegates to
-    /// [`DockerApi::build_image`].
+    /// into `log` when given.
     async fn build_image_recorded(
         &self,
         dockerfile: &Path,
         context: &Path,
-        _log: Option<&crate::build::BuildLog>,
-    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
-        self.build_image(dockerfile, context).await
-    }
+        log: Option<&crate::build::BuildLog>,
+    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError>;
     /// Provisions an immutable secret with the expected application ownership.
-    /// The default reports secrets as unsupported.
     async fn ensure_secret(
         &self,
-        _name: &str,
-        _value: &[u8],
-        _ownership: &BTreeMap<String, String>,
-    ) -> Result<(), DockerError> {
-        Err(DockerError::Unavailable("secret creation"))
-    }
+        name: &str,
+        value: &[u8],
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError>;
     /// Removes only secrets matching the expected application ownership.
-    /// The default succeeds for an empty list and is otherwise unsupported.
     async fn remove_secrets(
         &self,
         names: &[String],
-        _ownership: &BTreeMap<String, String>,
-    ) -> Result<(), DockerError> {
-        if names.is_empty() {
-            Ok(())
-        } else {
-            Err(DockerError::Unavailable("secret removal"))
-        }
-    }
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError>;
+    /// Creates a command in one running task of an owned service.
+    /// Returns `None` when the service has no running task.
+    async fn create_exec(
+        &self,
+        instance: &InstanceId,
+        application: &ApplicationId,
+        request: &piqueld_core::exec::ExecRequest,
+    ) -> Result<Option<Exec>, DockerError>;
+    /// Streams a created command until it exits and returns its exit code.
+    async fn run_exec(&self, exec: &Exec, io: ExecIo) -> Result<i64, DockerError>;
     /// Builds a local image without persisting output.
     async fn build_image(
         &self,

@@ -251,6 +251,34 @@ impl Store {
         .map_err(StoreError::database)?;
         Ok(())
     }
+
+    /// Records an informational application event outside any operation.
+    /// # Errors
+    /// Returns storage errors.
+    pub(crate) async fn record_application_event(
+        &self,
+        application: &ApplicationId,
+        kind: &str,
+        message: &str,
+        resource: &str,
+    ) -> Result<(), StoreError> {
+        let _writer = self.writers.lock().await;
+        let app = application.as_str();
+        let now = now_ms();
+        sqlx::query!(
+            "INSERT INTO events(application_id,kind,message,resource,created_at_ms) VALUES(?1,?2,?3,?4,?5)",
+            app,
+            kind,
+            message,
+            resource,
+            now,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        Ok(())
+    }
+
     /// Logs a control-plane failure and records it in the journal, falling back
     /// to the daemon log alone when the journal write fails.
     pub(crate) async fn report_diagnostic(

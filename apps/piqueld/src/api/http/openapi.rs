@@ -40,7 +40,9 @@ use utoipa::{OpenApi, ToResponse};
         Envelope<SecretMetadata>,
         Envelope<bool>,
         Route,
-        RoutesValue
+        RoutesValue,
+        // The first message of the exec WebSocket.
+        piqueld_core::exec::ExecRequest
     ))
 )]
 struct ApiDoc;

@@ -227,6 +227,142 @@ impl SwarmScenario {
         );
     }
 
+    /// Runs `script` in the web task, sending `stdin`, and returns output and exit code.
+    /// Creates `script` as a `/bin/sh -c` command in the running `web` task.
+    async fn create_exec(
+        &self,
+        script: &str,
+        tty: Option<piqueld_core::exec::TerminalSize>,
+    ) -> piqueld::docker::Exec {
+        use piqueld_core::exec::{ExecCommand, ExecRequest};
+        let instance = InstanceId::parse(&self.labels["io.piqueld.instance"]).unwrap();
+        let request = ExecRequest {
+            service: piqueld_core::ServiceName::parse("web").unwrap(),
+            command: ExecCommand::parse(vec!["/bin/sh".into(), "-c".into(), script.into()])
+                .unwrap(),
+            stdin: true,
+            tty,
+        };
+        self.engine
+            .docker
+            .create_exec(&instance, &self.app, &request)
+            .await
+            .unwrap()
+            .expect("web has a running task")
+    }
+
+    /// Runs `script` with `stdin` and returns its stdout, stderr and exit code.
+    async fn exec(
+        &self,
+        script: &str,
+        stdin: &[u8],
+        tty: Option<piqueld_core::exec::TerminalSize>,
+    ) -> (Vec<u8>, Vec<u8>, i64) {
+        use piqueld_core::exec::{ExecInput, ExecOutput};
+        let exec = self.create_exec(script, tty).await;
+        let (input, input_rx) = tokio::sync::mpsc::channel(4);
+        let (output_tx, mut output) = tokio::sync::mpsc::channel(16);
+        // Dropping `_connected` before the command exits would disconnect.
+        let (_connected, disconnected) = tokio::sync::oneshot::channel();
+        input.send(ExecInput::Stdin(stdin.to_vec())).await.unwrap();
+        input.send(ExecInput::CloseStdin).await.unwrap();
+        let io = piqueld::docker::ExecIo {
+            input: input_rx,
+            output: output_tx,
+            disconnected,
+        };
+        let drain = async {
+            let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+            while let Some(frame) = output.recv().await {
+                match frame {
+                    ExecOutput::Stdout(data) => stdout.extend(data),
+                    ExecOutput::Stderr(data) => stderr.extend(data),
+                    frame => panic!("unexpected exec output {frame:?}"),
+                }
+            }
+            (stdout, stderr)
+        };
+        let (code, (stdout, stderr)) = tokio::time::timeout(
+            Duration::from_secs(60),
+            futures_util::future::join(self.engine.docker.run_exec(&exec, io), drain),
+        )
+        .await
+        .expect("exec finishes");
+        (stdout, stderr, code.unwrap())
+    }
+
+    async fn assert_exec(&self) {
+        let (stdout, stderr, code) = self.exec("cat; echo failed >&2; exit 3", b"in", None).await;
+        assert_eq!(
+            (stdout.as_slice(), stderr.as_slice(), code),
+            (&b"in"[..], &b"failed\n"[..], 3)
+        );
+        let size = piqueld_core::exec::TerminalSize {
+            width: 91,
+            height: 17,
+        };
+        let (stdout, stderr, code) = self.exec("stty size", b"", Some(size)).await;
+        assert_eq!(String::from_utf8(stdout).unwrap().trim(), "17 91");
+        assert_eq!(stderr, b"");
+        assert_eq!(code, 0);
+        // Unread input must not stop output from draining.
+        let (stdout, _, code) = self
+            .exec("head -c 8388608 /dev/zero", &vec![0; 8 << 20], None)
+            .await;
+        assert_eq!((stdout.len(), code), (8 << 20, 0));
+        // A disconnected client ends a silent session, even while its unread
+        // input blocks the command's standard input.
+        let exec = self.create_exec("sleep 300", None).await;
+        let (input, input_rx) = tokio::sync::mpsc::channel(1);
+        let (output, _output_rx) = tokio::sync::mpsc::channel(1);
+        input
+            .send(piqueld_core::exec::ExecInput::Stdin(vec![0; 8 << 20]))
+            .await
+            .unwrap();
+        let (connected, disconnected) = tokio::sync::oneshot::channel();
+        let io = piqueld::docker::ExecIo {
+            input: input_rx,
+            output,
+            disconnected,
+        };
+        // Disconnect only once the 8 MiB write is blocked on the unread pipe.
+        let disconnect = async {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            drop(connected);
+        };
+        let (stopped, ()) = tokio::time::timeout(
+            Duration::from_secs(30),
+            futures_util::future::join(self.engine.docker.run_exec(&exec, io), disconnect),
+        )
+        .await
+        .expect("a disconnect stops the session");
+        assert!(stopped.is_err());
+        let instance = InstanceId::parse(&self.labels["io.piqueld.instance"]).unwrap();
+        let mut missing = piqueld_core::exec::ExecRequest {
+            service: piqueld_core::ServiceName::parse("absent").unwrap(),
+            command: piqueld_core::exec::ExecCommand::parse(vec!["true".into()]).unwrap(),
+            stdin: false,
+            tty: None,
+        };
+        let docker = &self.engine.docker;
+        assert!(
+            docker
+                .create_exec(&instance, &self.app, &missing)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        missing.service = piqueld_core::ServiceName::parse("web").unwrap();
+        let other = InstanceId::parse("another-instance").unwrap();
+        assert!(
+            docker
+                .create_exec(&other, &self.app, &missing)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
     async fn add_http_service(&self) -> DesiredService {
         let mut http_service = self.service.clone();
         http_service.logical_name = piqueld_core::ServiceName::parse("http").unwrap();
@@ -719,6 +855,7 @@ impl SwarmScenario {
 async fn swarm_init_create_replica_drift_restart_jobs_delete_and_volume_retention() {
     let mut scenario = SwarmScenario::new().await;
     scenario.assert_logs().await;
+    scenario.assert_exec().await;
     let http_service = scenario.add_http_service().await;
     scenario.assert_healthchecks(&http_service).await;
     scenario.scale_and_reconnect().await;
