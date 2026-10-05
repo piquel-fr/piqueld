@@ -65,6 +65,8 @@ struct Inner {
     origin: String,
     /// Whether the origin is HTTPS, which enables `Secure` and `__Host-` cookies.
     secure: bool,
+    /// The origin's explicit port, which names its cookies.
+    port: Option<u16>,
     /// Pending passkey ceremonies keyed by their random ceremony ID.
     ceremonies: Mutex<HashMap<String, ceremonies::Pending>>,
     /// Pending CLI device logins keyed by the hash of their device code.
@@ -118,6 +120,7 @@ impl Auth {
             webauthn,
             origin: origin.origin().ascii_serialization(),
             secure: origin.scheme() == "https",
+            port: origin.port(),
             ceremonies: Mutex::new(HashMap::new()),
             devices: Mutex::new(HashMap::new()),
             throttle: Mutex::new(throttle::Throttle::default()),
@@ -257,12 +260,20 @@ impl Auth {
     }
     /// Returns the cookie name for this origin. HTTPS origins use the `__Host-`
     /// prefix so sibling subdomains, such as deployed applications, cannot set
-    /// or shadow piqueld cookies.
+    /// or shadow piqueld cookies. Browsers share cookies between the ports of a
+    /// host, so an explicit port is part of the name: daemons served on several
+    /// ports of one host keep separate sessions.
+    ///
+    /// ```text
+    /// https://piqueld.example       __Host-piqueld_session
+    /// https://piqueld.example:8443  __Host-piqueld_session_8443
+    /// http://localhost:7845         piqueld_session_7845
+    /// ```
     pub(crate) fn cookie_name(&self, name: &str) -> String {
-        if self.0.secure {
-            format!("__Host-{name}")
-        } else {
-            name.to_owned()
+        let prefix = if self.0.secure { "__Host-" } else { "" };
+        match self.0.port {
+            Some(port) => format!("{prefix}{name}_{port}"),
+            None => format!("{prefix}{name}"),
         }
     }
     /// Builds a strict, `HttpOnly` `Set-Cookie` value that expires after `age` seconds.

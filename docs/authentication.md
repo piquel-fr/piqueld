@@ -160,7 +160,10 @@ alone. Do not put token values into connection profiles or Nix configuration.
 
 Browser sessions use HTTP-only, SameSite=Strict cookies. For HTTPS origins they
 are also Secure and use the `__Host-` name prefix, so applications on sibling
-subdomains cannot set or shadow them. Cookie-authenticated mutations require the configured Origin.
+subdomains cannot set or shadow them. Browsers share cookies between the ports of
+a host, so an origin with an explicit port, such as `https://host:8443`, adds it
+to the cookie names, keeping daemons served on different ports signed in
+separately. Cookie-authenticated mutations require the configured Origin.
 API/CLI credentials use `Authorization: Bearer …`. No tokens are automatically
 renewed. All API listeners require account authentication, regardless of socket
 group membership or Tailscale connectivity. The optional `metrics.listen`

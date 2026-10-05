@@ -13,7 +13,7 @@ test('setup gates anonymous access, closes permanently, and supports username-le
     invitation: daemon.setup.split('#invite=')[1], user_id: null,
     username: 'intruder', display_name: '', passkey_name: 'Test',
   })).status).toBe(401);
-  const cookie = (await page.context().cookies()).find(cookie => cookie.name === 'piqueld_session');
+  const cookie = (await page.context().cookies()).find(cookie => cookie.name.startsWith('piqueld_session_'));
   expect(cookie?.httpOnly).toBe(true);
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Sign in with a passkey', exact: true })).toBeVisible();
