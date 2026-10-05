@@ -104,6 +104,8 @@ impl RuntimeBoundary for FakeRuntime {
         Ok(i64::try_from(read).unwrap())
     }
 
+    fn trigger_reconciliation(&self) {}
+
     async fn readiness(&self) -> (bool, bool) {
         (
             true,

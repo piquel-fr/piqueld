@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use piqueld::{
     api::http::{ApiState, UiAssets},
     application::{BoundaryError, RuntimeBoundary},
+    docker::{DockerError, Exec, ExecIo},
     store::{Store, StoredApplication},
 };
 use piqueld_core::{
@@ -28,7 +29,7 @@ impl RuntimeBoundary for Runtime {
         _: &NormalizedApplication,
         _: &ResolutionSet,
     ) -> Result<ResolvedApplication, BoundaryError> {
-        Err(piqueld::docker::DockerError::Unavailable("browser fixture").into())
+        Err(DockerError::Unavailable("browser fixture").into())
     }
     async fn check_available(&self) -> Result<(), BoundaryError> {
         Ok(())
@@ -36,6 +37,31 @@ impl RuntimeBoundary for Runtime {
     async fn observe(&self, _: &StoredApplication) -> Result<ObservedApplication, BoundaryError> {
         Ok(ObservedApplication::default())
     }
+    async fn readiness(&self) -> (bool, bool) {
+        (false, false)
+    }
+    async fn remove_secrets(
+        &self,
+        _: &ApplicationId,
+        names: &[String],
+    ) -> Result<(), BoundaryError> {
+        if names.is_empty() {
+            Ok(())
+        } else {
+            Err(DockerError::Unavailable("browser fixture").into())
+        }
+    }
+    async fn create_exec(
+        &self,
+        _: &ApplicationId,
+        _: &piqueld_core::exec::ExecRequest,
+    ) -> Result<Option<Exec>, BoundaryError> {
+        Err(DockerError::Unavailable("browser fixture").into())
+    }
+    async fn run_exec(&self, _: &Exec, _: ExecIo) -> Result<i64, BoundaryError> {
+        Err(DockerError::Unavailable("browser fixture").into())
+    }
+    fn trigger_reconciliation(&self) {}
 }
 
 #[tokio::main]
