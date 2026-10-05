@@ -45,7 +45,7 @@ test('the application page stays whole and each environment has its own page', a
   // With several environments, deploying starts by choosing one.
   await page.getByRole('button', { name: 'Deploy…', exact: true }).click();
   await expect(applicationTab(page, 'Environments')).toHaveAttribute('aria-current', 'page');
-  const environments = page.getByRole('table', { name: 'Environments' });
+  const environments = page.getByRole('list', { name: 'Environments' });
   await expect(environments.getByRole('link')).toHaveText(['production', 'staging']);
 
   // Application history spans every environment.
@@ -102,12 +102,14 @@ test('the dashboard creates, renames and deletes only the chosen environment', a
   await remove.click();
   expect((await deleted).status()).toBe(202);
   await expect(applicationTab(page, 'Environments')).toHaveAttribute('aria-current', 'page');
-  const row = page.getByRole('row').filter({ hasText: 'preview' });
+  const row = page.getByRole('listitem').filter({ hasText: 'preview' });
   await expect(row).toContainText('Deleting');
   await expect(row.getByRole('button', { name: 'Deploy to preview', exact: true })).toBeDisabled();
-  await expect(page.getByRole('row').filter({ hasText: 'production' }).getByRole('button', { name: 'Deploy to production', exact: true })).toBeEnabled();
+  await expect(page.getByRole('listitem').filter({ hasText: 'production' }).getByRole('button', { name: 'Deploy to production', exact: true })).toBeEnabled();
 
-  await row.getByRole('link', { name: 'preview', exact: true }).click();
+  // The whole row opens the environment, not only its name.
+  await row.click({ position: { x: 400, y: 10 } });
+  await expect(title(page)).toHaveText('preview');
   await expect(page.getByRole('button', { name: 'Deploy to preview', exact: true })).toBeDisabled();
   const retried = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${qa}/reconcile?`));
   await page.getByRole('button', { name: 'Retry deletion', exact: true }).click();

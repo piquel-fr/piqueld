@@ -111,8 +111,9 @@ impl EditorContext {
     }
 }
 
-/// The application's environments with their health and latest deployment,
-/// each linking to its page, plus creation of new ones.
+/// The application's environments with their health and latest deployment.
+/// Each whole row opens the environment's page; its Deploy button deploys it.
+/// Also creates new environments.
 #[component]
 pub(super) fn EnvironmentList() -> impl IntoView {
     let context = editor();
@@ -139,94 +140,81 @@ pub(super) fn EnvironmentList() -> impl IntoView {
                 </div>
                 <NewEnvironment />
             </div>
-            <section class="card card-flush">
-                {move || {
-                    let environments = context.saved.with(|saved| saved.environments.clone());
-                    if environments.is_empty() {
-                        return empty("No environments yet. Create one to deploy this application.");
-                    }
-                    let navigate = navigate.clone();
-                    view! {
-                        <table class="table" aria-label="Environments">
-                            <thead>
-                                <tr>
-                                    <th>"Environment"</th>
-                                    <th>"Health"</th>
-                                    <th>"Latest deployment"</th>
-                                    <th></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {environments
-                                    .into_iter()
-                                    .map(|environment| {
-                                        let id = environment.id.to_string();
-                                        let href = context.environment_href(&id);
-                                        let deployments = format!("{href}?tab=deployments");
-                                        let navigate = navigate.clone();
-                                        let deleting = environment.delete_intent;
-                                        let name = environment.name.to_string();
-                                        let label = format!("Deploy to {name}");
-                                        let health = environment_row(signals, &id).map(|row| row.health());
-                                        view! {
-                                            <tr>
-                                                <td>
-                                                    <A href={href}>
-                                                        <strong>{name.clone()}</strong>
-                                                    </A>
-                                                </td>
-                                                <td>
-                                                    {if deleting {
-                                                        badge(Tone::Warn, "Deleting")
-                                                    } else {
-                                                        health.map(health_badge).into_any()
-                                                    }}
-                                                </td>
-                                                <td>
-                                                    {latest(&id)
-                                                        .map_or_else(
-                                                            || view! { <span class="muted">"Never"</span> }.into_any(),
-                                                            |operation| {
-                                                                view! {
-                                                                    <span class="btn-group">
-                                                                        {operation_badge(operation.state)}
-                                                                        {when(operation.created_at_ms)}
-                                                                    </span>
-                                                                }
-                                                                    .into_any()
-                                                            },
-                                                        )}
-                                                </td>
-                                                <td class="actions">
-                                                    <button
-                                                        type="button"
-                                                        class="btn btn-sm"
-                                                        aria-label={label}
-                                                        disabled={move || context.action_blocked() || deleting}
-                                                        on:click={move |_| {
-                                                            let navigate = navigate.clone();
-                                                            let deployments = deployments.clone();
-                                                            context
-                                                                .deploy(
-                                                                    id.clone(),
-                                                                    move || navigate(&deployments, NavigateOptions::default()),
-                                                                );
-                                                        }}
-                                                    >
-                                                        {icon(Icon::Rocket)}
-                                                        "Deploy"
-                                                    </button>
-                                                </td>
-                                            </tr>
-                                        }
-                                    })
-                                    .collect_view()}
-                            </tbody>
-                        </table>
-                    }
-                        .into_any()
-                }}
-            </section>
+            {move || {
+                let environments = context.saved.with(|saved| saved.environments.clone());
+                if environments.is_empty() {
+                    return empty("No environments yet. Create one to deploy this application.");
+                }
+                let navigate = navigate.clone();
+                view! {
+                    <ul class="list" aria-label="Environments">
+                        {environments
+                            .into_iter()
+                            .map(|environment| {
+                                let id = environment.id.to_string();
+                                let href = context.environment_href(&id);
+                                let deployments = format!("{href}?tab=deployments");
+                                let navigate = navigate.clone();
+                                let deleting = environment.delete_intent;
+                                let name = environment.name.to_string();
+                                let label = format!("Deploy to {name}");
+                                let health = environment_row(signals, &id).map(|row| row.health());
+                                let latest = latest(&id);
+                                view! {
+                                    <li class="list-row list-row-link">
+                                        <span class="title">
+                                            <A href={href}>{name}</A>
+                                            <small>{id.clone()}</small>
+                                        </span>
+                                        <span class="meta">
+                                            {latest
+                                                .map_or_else(
+                                                    || "Never deployed".into_any(),
+                                                    |operation| {
+                                                        view! {
+                                                            <span class="btn-group">
+                                                                {operation_badge(operation.state)}
+                                                                {when(operation.created_at_ms)}
+                                                            </span>
+                                                        }
+                                                            .into_any()
+                                                    },
+                                                )}
+                                        </span>
+                                        {if deleting {
+                                            badge(Tone::Warn, "Deleting")
+                                        } else {
+                                            health.map(health_badge).into_any()
+                                        }}
+                                        <button
+                                            type="button"
+                                            class="btn btn-sm"
+                                            aria-label={label}
+                                            disabled={move || context.action_blocked() || deleting}
+                                            on:click={move |_| {
+                                                let navigate = navigate.clone();
+                                                let deployments = deployments.clone();
+                                                context
+                                                    .deploy(
+                                                        id.clone(),
+                                                        move || navigate(&deployments, NavigateOptions::default()),
+                                                    );
+                                            }}
+                                        >
+                                            {icon(Icon::Rocket)}
+                                            "Deploy"
+                                        </button>
+                                        <span class="chevron" aria-hidden="true">
+                                            {icon(Icon::ChevronRight)}
+                                        </span>
+                                    </li>
+                                }
+                            })
+                            .collect_view()}
+                    </ul>
+                }
+                    .into_any()
+            }}
         </div>
     }
 }

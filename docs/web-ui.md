@@ -28,7 +28,7 @@ of its environments. Saving changes future deployments of every environment;
 running deployments keep their captured configuration. The **Environments** tab
 lists the environments with their health and latest deployment, deploys any one
 of them, and creates new ones, including for an application with no
-environments. Each environment opens its own page,
+environments. Clicking anywhere on an environment's row opens its own page,
 `/dashboard/applications/<app>/environments/<environment>`, with a breadcrumb
 back to the application. Its Overview shows the runtime status and renames or
 deletes the environment; its other tabs are Deployments, Secrets (the
