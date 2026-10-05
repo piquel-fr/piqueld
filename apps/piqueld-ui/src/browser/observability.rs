@@ -976,6 +976,7 @@ pub(super) fn AuditPage() -> impl IntoView {
                                                             </td>
                                                             <td class="muted">
                                                                 {event.peer.unwrap_or_else(|| "Unix socket".into())}
+                                                                {event.tailnet.map(|who| format!(" ({who})"))}
                                                             </td>
                                                         </tr>
                                                     }

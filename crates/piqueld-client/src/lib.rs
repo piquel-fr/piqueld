@@ -30,6 +30,8 @@ pub mod exec;
 pub use piqueld_core::access;
 /// Audit trail contracts.
 pub use piqueld_core::audit;
+/// Tailnet identities and the token bindings they satisfy.
+pub use piqueld_core::tailnet;
 
 mod generated;
 

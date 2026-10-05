@@ -405,7 +405,8 @@ it. Use `piquelctl login` for passkey login through the browser, `whoami` to ins
 the current account and its grants, and `logout` to revoke it. `piquelctl account`
 lists accounts, replaces their grants (`access`), and creates invitation (`invite`)
 and passkey enrollment (`enroll`) links. `piquelctl token create|list|revoke`
-manages API tokens for your account, and `login` accepts the same grant options
+manages API tokens for your account (`--tailnet` binds one to a tailnet user
+or tag), and `login` accepts the same grant options
 to ask for a limited session; see [authorization](authorization.md).
 `piquelctl audit` reads the [audit trail](observability.md#audit-trail), one line
 per request with the application or environment it addressed, filtered

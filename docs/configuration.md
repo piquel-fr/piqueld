@@ -171,7 +171,10 @@ supervises a dedicated `tailscaled` in userspace-networking mode, separate from
 any host Tailscale daemon, so `tailscaled` and `tailscale` must be on `PATH`.
 That `tailscaled` terminates TLS with the tailnet-issued certificate and
 forwards connections to a loopback listener with a PROXY protocol header that
-carries the client's tailnet address.
+carries the client's tailnet address. The listener accepts connections only
+from processes running as the daemon's own user that still hold their end of
+the connection, checked against the kernel's socket table, so other local
+users cannot pose as a tailnet peer.
 
 ```toml
 [tailscale]
@@ -195,6 +198,11 @@ auth_key_file = "ts-auth-key" # $CREDENTIALS_DIRECTORY/ts-auth-key
   `server.allowed_hosts`.
 - The node has its own tailnet IP, so it never competes with managed ingress
   for port 443.
+- piqueld asks its `tailscaled` who each peer is (`tailscale whois`, one
+  lookup at a time). The [audit trail](observability.md#audit-trail) records
+  that tailnet user or tag and node, cached for a minute per address. API
+  tokens can be [bound to a tailnet identity](authorization.md#tailnet-bound-tokens),
+  which is always checked with a fresh lookup.
 
 Startup fails if the node cannot start or obtain a certificate. While running,
 piqueld refreshes the login state and certificate every minute; Tailscale renews

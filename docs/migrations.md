@@ -172,6 +172,9 @@ outstanding admin recovery link. Releases apply it together with
 `0017_audit.sql`, so the trail is still empty; records written by pre-release
 builds cannot be linked and are dropped.
 
+`0019_tailnet.sql` stores the tailnet user or tag a token is bound to and the
+tailnet identity behind each audited request.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

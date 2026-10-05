@@ -2,6 +2,7 @@
 use super::ApiError;
 use crate::auth::{Auth, AuthError, Identity};
 use crate::store::StoreError;
+use crate::tailnet::TailnetLookup;
 use axum::{
     Extension, Json, Router,
     extract::{ConnectInfo, Request},
@@ -14,7 +15,8 @@ use piqueld_core::auth::{
     DeviceStartRequest, DeviceToken, Directory, Manage, Managed, RecoveryLink, RegistrationStart,
     Session, SetupLink, User,
 };
-use std::net::SocketAddr;
+use piqueld_core::tailnet::TailnetPeer;
+use std::{net::SocketAddr, sync::Arc};
 
 /// Authentication boundary that every API router requires and applies itself.
 /// Daemon listeners use the passkey [`Auth`] service; tests may supply a fake.
@@ -102,15 +104,36 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 }
 /// Authentication middleware for API paths; other paths pass through. Every API
 /// response, including rejections, is marked `Cache-Control: no-store`.
+///
+/// On the tailnet node's listener, the peer's tailnet identity is looked up
+/// first and attached to the request (for token bindings) and the response
+/// (for the audit trail).
 async fn authenticate(
     axum::extract::State(auth): axum::extract::State<Auth>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     if !super::ui::is_api_path(request.uri().path()) {
         return next.run(request).await;
     }
+    let tailnet = match TailnetSource::of(request.extensions()) {
+        Some(source) => source.whois(false).await,
+        None => None,
+    };
+    if let Some(tailnet) = &tailnet {
+        request.extensions_mut().insert(tailnet.clone());
+    }
     let mut response = authorize(&auth, request, next).await;
+    // A fresh lookup made while authorizing replaces the cached identity,
+    // even when it failed: the trail must not name a peer authorization
+    // could not establish.
+    let tailnet = match response.extensions_mut().remove::<FreshTailnet>() {
+        Some(FreshTailnet(fresh)) => fresh,
+        None => tailnet,
+    };
+    if let Some(tailnet) = tailnet {
+        response.extensions_mut().insert(tailnet);
+    }
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         header::HeaderValue::from_static("no-store"),
@@ -124,7 +147,9 @@ async fn authenticate(
 /// 3. Blocks cross-site mutations and upgrades: any mismatched `Origin` is
 ///    rejected, and cookie-authenticated or bearer-less ceremony mutations must
 ///    send the configured origin.
-/// 4. Inserts the resolved `Identity` as an extension, on the request for
+/// 4. Refuses tokens bound to a tailnet identity unless the request came
+///    from a matching tailnet peer (401 `tailnet_binding_mismatch`).
+/// 5. Inserts the resolved `Identity` as an extension, on the request for
 ///    handlers and on the response for outer layers. Missing or invalid
 ///    credentials leave it out; the route's access requirement then decides
 ///    whether the request needs one (see `access::enforce`).
@@ -189,6 +214,26 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
             Err(error) => return ApiError::from(error).into_response(),
         }
     }
+    // A bound token works only from a matching tailnet peer, checked with a
+    // fresh lookup rather than the cached one used to describe the request.
+    // The audit trail then describes the peer as authorization saw it.
+    let mut fresh = None;
+    if let Some(resolved) = &identity {
+        let source = TailnetSource::of(request.extensions());
+        fresh = FreshTailnet::check(resolved, source.as_ref()).await;
+        if let Some(lookup) = &fresh
+            && !lookup.matches(resolved)
+        {
+            let mut response = binding_mismatch().into_response();
+            response.extensions_mut().insert(resolved.clone());
+            response.extensions_mut().insert(lookup.clone());
+            return response;
+        }
+    }
+    // Handlers see the peer authorization established, too.
+    if let Some(FreshTailnet(Some(peer))) = &fresh {
+        request.extensions_mut().insert(peer.clone());
+    }
     if let Some(identity) = &identity {
         request.extensions_mut().insert(identity.clone());
     }
@@ -197,7 +242,77 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
     if let Some(identity) = identity {
         response.extensions_mut().insert(identity);
     }
+    if let Some(fresh) = fresh {
+        response.extensions_mut().insert(fresh);
+    }
     response
+}
+/// The outcome of the fresh tailnet lookup made to check a bound token,
+/// `None` inside when it failed. `authenticate` describes the request's peer
+/// with it instead of the cached identity.
+#[derive(Clone)]
+pub(super) struct FreshTailnet(pub(super) Option<TailnetPeer>);
+
+impl FreshTailnet {
+    /// Looks the request's peer up afresh when `identity` is bound to a
+    /// tailnet identity; `None` for unbound identities.
+    pub(super) async fn check(identity: &Identity, source: Option<&TailnetSource>) -> Option<Self> {
+        identity.tailnet.as_ref()?;
+        Some(Self(match source {
+            Some(source) => source.whois(true).await,
+            None => None,
+        }))
+    }
+
+    /// Whether the peer satisfies `identity`'s binding.
+    pub(super) fn matches(&self, identity: &Identity) -> bool {
+        identity
+            .tailnet
+            .as_ref()
+            .zip(self.0.as_ref())
+            .is_some_and(|(binding, peer)| binding.matches(peer))
+    }
+}
+
+/// Refusal of a bound token used from anywhere but a matching tailnet peer.
+pub(super) fn binding_mismatch() -> ApiError {
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "tailnet_binding_mismatch",
+        "This token is bound to a tailnet identity; use it through the daemon's tailnet node from a matching device",
+    )
+}
+
+/// Where a request came from on the tailnet node's listener: the lookup and
+/// the connection's address. Absent on other listeners.
+#[derive(Clone)]
+pub(super) struct TailnetSource {
+    lookup: Arc<dyn TailnetLookup>,
+    peer: SocketAddr,
+}
+
+impl TailnetSource {
+    fn of(extensions: &axum::http::Extensions) -> Option<Self> {
+        let lookup = extensions.get::<Arc<dyn TailnetLookup>>().cloned()?;
+        let ConnectInfo(peer) = *extensions.get::<ConnectInfo<SocketAddr>>()?;
+        Some(Self { lookup, peer })
+    }
+
+    /// The peer's tailnet identity, from the cache unless `fresh`.
+    async fn whois(&self, fresh: bool) -> Option<TailnetPeer> {
+        self.lookup.whois(self.peer, fresh).await
+    }
+}
+
+impl<S: Send + Sync> axum::extract::OptionalFromRequestParts<S> for TailnetSource {
+    type Rejection = std::convert::Infallible;
+
+    fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> impl Future<Output = Result<Option<Self>, Self::Rejection>> + Send {
+        std::future::ready(Ok(Self::of(&parts.extensions)))
+    }
 }
 /// Attaches a valid caller's identity to a refusal made before
 /// authentication, so the audit trail names it, without refreshing its

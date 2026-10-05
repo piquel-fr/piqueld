@@ -23,6 +23,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use piqueld_core::audit::AuditOutcome;
+use piqueld_core::tailnet::TailnetPeer;
 use piqueld_core::{
     ApplicationId, EnvironmentId,
     access::{AppPermission, Denied, GlobalPermission, Permission, Target},
@@ -295,6 +296,7 @@ pub(super) async fn audit(
     let response = next.run(request).await;
     let extensions = response.extensions();
     let answer = Answer {
+        tailnet: extensions.get::<TailnetPeer>().map(TailnetPeer::describe),
         status: response.status(),
         denied: extensions.get::<Denied>().copied(),
         identity: extensions.get::<Identity>().cloned(),
@@ -316,6 +318,8 @@ pub(super) struct SignedIn(pub(super) piqueld_core::auth::User);
 
 /// What the audit trail needs from a response.
 struct Answer {
+    /// Tailnet identity of the peer, described.
+    tailnet: Option<String>,
     status: StatusCode,
     /// Authorization refusal behind an error response.
     denied: Option<Denied>,
@@ -362,12 +366,18 @@ impl Audit {
     /// in, ran a command, or read sensitive data (logs, configuration,
     /// manifests, the account directory), and counts refusals. Recording happens in the background
     /// (see `ApplicationService::record_audit`); the response never waits.
+    /// The request's ID, matching `x-request-id` and daemon logs.
+    pub(super) fn request_id(&self) -> Option<&str> {
+        self.request_id.as_deref()
+    }
+
     /// Records a refusal decided after the response was sent, e.g. a
     /// command refused after its WebSocket upgrade was allowed.
     pub(super) fn refused_later(
         self,
         state: &super::ApiState,
         identity: Identity,
+        tailnet: Option<&TailnetPeer>,
         error: &ApiError,
     ) {
         let answer = Answer {
@@ -375,12 +385,14 @@ impl Audit {
             denied: error.denied,
             identity: Some(identity),
             signed_in: None,
+            tailnet: tailnet.map(TailnetPeer::describe),
         };
         self.record(state, answer);
     }
 
     fn record(self, state: &super::ApiState, answer: Answer) {
         let Answer {
+            tailnet,
             status,
             denied,
             identity,
@@ -430,6 +442,7 @@ impl Audit {
             credential_kind: credential.map(|identity| identity.kind.as_str()),
             scoped: credential.map(|identity| identity.scoped),
             peer: self.peer.map(|peer| peer.to_string()),
+            tailnet,
             request_id: self.request_id,
             application_id,
             environment_id,

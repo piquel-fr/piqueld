@@ -9,6 +9,15 @@ use super::access::{Authority, Caller, Holder};
 use super::{Attribution, Store, StoreError, now_secs};
 use piqueld_core::access::{GlobalPermission, Grants, Permission};
 use piqueld_core::auth::{Account, CredentialView, Directory, InvitationView, PasskeyView, User};
+use piqueld_core::tailnet::TailnetBinding;
+
+/// Parses a stored tailnet binding.
+fn binding(stored: Option<String>) -> Result<Option<TailnetBinding>, StoreError> {
+    stored
+        .map(TailnetBinding::try_from)
+        .transpose()
+        .map_err(|_| StoreError::Corrupt)
+}
 use sqlx::{Sqlite, SqliteConnection, query::Query, sqlite::SqliteArguments};
 use std::fmt;
 
@@ -186,6 +195,8 @@ pub(crate) struct CredentialOwner {
     pub(crate) scoped: bool,
     /// Last recorded use in Unix seconds, letting callers skip frequent refreshes.
     pub(crate) last_used_at: i64,
+    /// Tailnet user or tag the credential is bound to, if any.
+    pub(crate) tailnet: Option<TailnetBinding>,
 }
 
 impl Store {
@@ -505,7 +516,7 @@ impl Store {
         let idle = now - SESSION_IDLE_SECS;
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let row = sqlx::query!(
-            r#"SELECT c.id AS "credential_id!",c.kind,c.last_used_at,c.scoped AS "scoped: bool",u.id AS "id!",u.username,u.display_name FROM auth_credentials c JOIN auth_users u ON u.id=c.user_id WHERE c.secret_hash=?1 AND (c.expires_at IS NULL OR c.expires_at>?2) AND (c.kind!='browser' OR c.last_used_at>?3)"#,
+            r#"SELECT c.id AS "credential_id!",c.kind,c.last_used_at,c.scoped AS "scoped: bool",c.tailnet,u.id AS "id!",u.username,u.display_name FROM auth_credentials c JOIN auth_users u ON u.id=c.user_id WHERE c.secret_hash=?1 AND (c.expires_at IS NULL OR c.expires_at>?2) AND (c.kind!='browser' OR c.last_used_at>?3)"#,
             hash,
             now,
             idle
@@ -530,6 +541,7 @@ impl Store {
             grants: authority.grants,
             scoped: authority.scoped,
             last_used_at: row.last_used_at,
+            tailnet: binding(row.tailnet)?,
         }))
     }
 
@@ -655,7 +667,7 @@ impl Store {
         .await
         .map_err(StoreError::database)?;
         let rows = sqlx::query!(
-            r#"SELECT id AS "id!",user_id,kind,name,last_used_at,expires_at,scoped AS "scoped: bool" FROM auth_credentials WHERE (expires_at IS NULL OR expires_at>?1) AND (kind!='browser' OR last_used_at>?2) ORDER BY created_at"#,
+            r#"SELECT id AS "id!",user_id,kind,name,last_used_at,expires_at,scoped AS "scoped: bool",tailnet FROM auth_credentials WHERE (expires_at IS NULL OR expires_at>?1) AND (kind!='browser' OR last_used_at>?2) ORDER BY created_at"#,
             now,
             idle
         )
@@ -677,6 +689,7 @@ impl Store {
                 last_used_at: row.last_used_at,
                 expires_at: row.expires_at,
                 grants,
+                tailnet: binding(row.tailnet)?,
             });
         }
         let rows = sqlx::query!(
@@ -886,11 +899,13 @@ impl Store {
     }
 
     /// Stores an API token for the caller's own account, limited to grants the
-    /// caller holds. Scoped callers cannot create tokens.
+    /// caller holds and optionally bound to a tailnet user or tag. Scoped
+    /// callers cannot create tokens.
     pub(crate) async fn create_token(
         &self,
         caller: Caller<'_>,
         credential: &NewCredential<'_>,
+        tailnet: Option<&TailnetBinding>,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let authority = caller.load(&mut tx).await?;
@@ -902,6 +917,15 @@ impl Store {
                 .map_err(StoreError::Denied)?;
         }
         credential.insert(&mut tx, &authority.user_id).await?;
+        let tailnet = tailnet.map(TailnetBinding::as_str);
+        sqlx::query!(
+            "UPDATE auth_credentials SET tailnet=?1 WHERE id=?2",
+            tailnet,
+            credential.id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
         let actor = Attribution {
             user_id: Some(&authority.user_id),
             credential_id: Some(caller.credential_id),

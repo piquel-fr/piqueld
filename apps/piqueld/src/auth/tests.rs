@@ -213,6 +213,7 @@ async fn accounts_manage_themselves_and_last_admin_deletion_is_atomic() {
                 grants: Grants::admin(),
                 name: "automation".into(),
                 days: None,
+                tailnet: None,
             },
         )
         .await
@@ -493,6 +494,7 @@ async fn changes_use_the_callers_current_grants() {
                     grants: developer(),
                     name: "late".into(),
                     days: None,
+                    tailnet: None,
                 },
             )
             .await,
@@ -607,6 +609,7 @@ async fn tokens_act_within_their_grants_and_cannot_create_credentials() {
         grants,
         name: "ci".into(),
         days: Some(30),
+        tailnet: None,
     };
     let deploy = Preset::Deploy.grants(&Scope::All);
     assert_eq!(
@@ -707,6 +710,7 @@ async fn scoped_credentials_follow_their_owner_and_never_widen() {
                 grants: Grants::admin(),
                 name: "ops".into(),
                 days: None,
+                tailnet: None,
             },
         )
         .await
@@ -759,6 +763,7 @@ async fn scoped_credentials_follow_their_owner_and_never_widen() {
                 grants: Grants::admin(),
                 name: "ops".into(),
                 days: None,
+                tailnet: None,
             },
         )
         .await
@@ -794,11 +799,16 @@ async fn scoped_credentials_follow_their_owner_and_never_widen() {
 async fn token_lifetimes_are_bounded_and_legacy_secrets_authenticate() {
     let f = Fixture::new().await;
     let alice = f.identity("alice", &Grants::admin()).await;
-    let auth = Auth::configured(&f.auth.0.store, "http://localhost:7845", Some(30)).unwrap();
+    let tokens = TokenPolicy {
+        max_days: Some(30),
+        tailnet: false,
+    };
+    let auth = Auth::configured(&f.auth.0.store, "http://localhost:7845", tokens).unwrap();
     let token = |days| Manage::CreateToken {
         grants: developer(),
         name: "ci".into(),
         days,
+        tailnet: None,
     };
     for days in [None, Some(31)] {
         assert!(matches!(
@@ -1522,6 +1532,7 @@ async fn privileged_grants_and_tokens_raise_security_events() {
             grants: developer(),
             name: name.into(),
             days,
+            tailnet: None,
         };
         f.auth.manage(&admin, token).await.unwrap();
     }
@@ -1538,4 +1549,22 @@ async fn privileged_grants_and_tokens_raise_security_events() {
             ),
         ]
     );
+}
+
+/// Without the daemon's tailnet node, a token bound to a tailnet identity
+/// could never be used, so creating one is refused.
+#[tokio::test]
+async fn tailnet_bindings_need_the_tailnet_node() {
+    let f = Fixture::new().await;
+    let admin = f.identity("admin", &Grants::admin()).await;
+    let token = Manage::CreateToken {
+        grants: developer(),
+        name: "ci".into(),
+        days: Some(1),
+        tailnet: Some(piqueld_core::tailnet::TailnetBinding::parse("tag:ci").unwrap()),
+    };
+    assert!(matches!(
+        f.auth.manage(&admin, token).await,
+        Err(AuthError::Invalid(message)) if message.contains("tailscale.enabled")
+    ));
 }

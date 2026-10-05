@@ -134,10 +134,12 @@ async fn main() -> Result<()> {
     let tailnet_supervisor = tailnet.map(|node| {
         let mut hosts = config.server.allowed_hosts.clone();
         hosts.push(node.dns_name().to_owned());
+        // Only this listener's requests carry a tailnet identity.
+        let whois: std::sync::Arc<dyn piqueld::tailnet::TailnetLookup> = node.whois();
         let (listener, supervisor) = node.listener(cancellation.clone());
         tcp_apis.push(spawn_tcp_api(
             listener,
-            web_router(hosts),
+            web_router(hosts).layer(axum::Extension(whois)),
             cancellation.clone(),
         ));
         supervisor
