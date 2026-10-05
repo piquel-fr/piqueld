@@ -550,8 +550,8 @@ impl Store {
             .map_err(StoreError::corrupt)?;
         let error_code = failed.then_some(code.as_str());
         let event = sqlx::query!(
-            "INSERT INTO events(scope,environment_id,kind,message,error_code,diagnostic_id,diagnostic_json,created_at_ms)
-            VALUES(?1,?2,'dependency_health_changed',?3,?4,?5,?6,?7)",
+            "INSERT INTO events(scope,application_id,environment_id,kind,message,error_code,diagnostic_id,diagnostic_json,
+            created_at_ms) VALUES(?1,(SELECT application_id FROM environments WHERE id=?2),?2,'dependency_health_changed',?3,?4,?5,?6,?7)",
             scope,
             application,
             summary,

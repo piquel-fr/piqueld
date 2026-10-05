@@ -94,7 +94,7 @@ impl Store {
         sqlx::query!("INSERT INTO secret_versions(environment_id,name,generation,swarm_name,nonce,ciphertext) VALUES(?1,?2,?3,?4,?5,?6)",id,name,generation,swarm_name,envelope.nonce,envelope.ciphertext).execute(&mut *tx).await.map_err(StoreError::database)?;
         // History records the logical name and version, never the value.
         let message = format!("Stored secret version {generation}");
-        sqlx::query!("INSERT INTO events(environment_id,kind,message,resource,created_at_ms) VALUES(?1,'secret_saved',?2,?3,?4)",id,message,name,now).execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!("INSERT INTO events(application_id,environment_id,kind,message,resource,created_at_ms) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'secret_saved',?2,?3,?4)",id,message,name,now).execute(&mut *tx).await.map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(SecretMetadata {
             name: name.into(),

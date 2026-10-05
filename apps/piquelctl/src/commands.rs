@@ -43,19 +43,34 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
         Command::Env { command } => command.run(cli, client, console).await,
         Command::Builds(args) => match &args.command {
             BuildCommand::List {
+                application,
                 environment,
                 cursor,
-            } => builds(console, client, environment.as_deref(), cursor.as_deref()).await,
+            } => console.emit(
+                &client
+                    .builds(
+                        application.as_deref(),
+                        environment.as_deref(),
+                        cursor.as_deref(),
+                    )
+                    .await?,
+            ),
             BuildCommand::Logs { id, before } => build_logs(console, client, *id, *before).await,
         },
         Command::Operation(args) => operation(console, client, args).await,
         Command::Events {
+            application,
             environment,
             cursor,
             limit,
         } => {
             let page = client
-                .events(environment.as_deref(), cursor.as_deref(), *limit)
+                .events(
+                    application.as_deref(),
+                    environment.as_deref(),
+                    cursor.as_deref(),
+                    *limit,
+                )
                 .await?;
             console.emit(&page)
         }
@@ -140,16 +155,6 @@ async fn app(
             console.emit(&crate::output::reports::ManifestReport(manifest))
         }
     }
-}
-
-/// Emits one page of build attempts, optionally filtered by environment.
-async fn builds(
-    console: &mut Console,
-    client: &Client,
-    environment: Option<&str>,
-    cursor: Option<&str>,
-) -> Result<()> {
-    console.emit(&client.builds(environment, cursor).await?)
 }
 
 /// Emits one page of build output, then warns about expired or truncated output

@@ -63,7 +63,7 @@ impl Store {
             .fetch_one(&mut *tx).await.map_err(StoreError::database)?;
         let now = super::now_ms();
         // Each affected application's history explains why its values need replacing.
-        sqlx::query!("INSERT INTO events(environment_id,kind,message,created_at_ms) SELECT environment_id,'secret_values_discarded','Secret key recovery discarded '||COUNT(*)||' stored values; store replacements, then deploy',?1 FROM secret_versions WHERE available=1 GROUP BY environment_id",now)
+        sqlx::query!("INSERT INTO events(application_id,environment_id,kind,message,created_at_ms) SELECT (SELECT application_id FROM environments WHERE id=secret_versions.environment_id),environment_id,'secret_values_discarded','Secret key recovery discarded '||COUNT(*)||' stored values; store replacements, then deploy',?1 FROM secret_versions WHERE available=1 GROUP BY environment_id",now)
             .execute(&mut *tx).await.map_err(StoreError::database)?;
         sqlx::query!(
             "UPDATE secret_versions SET available=0,nonce=X'',ciphertext=X'' WHERE available=1"

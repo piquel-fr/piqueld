@@ -32,7 +32,7 @@ impl Store {
         Self::write_status(tx, id, "not_deployed", None, now).await?;
         let message = format!("created environment {name}");
         sqlx::query!(
-            "INSERT INTO events(environment_id,kind,message,created_at_ms) VALUES(?1,'environment_created',?2,?3)",
+            "INSERT INTO events(application_id,environment_id,kind,message,created_at_ms) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'environment_created',?2,?3)",
             id,
             message,
             now
@@ -85,7 +85,7 @@ impl Store {
         .map_err(StoreError::constraint)?;
         let message = format!("renamed environment {old} to {name}");
         sqlx::query!(
-            "INSERT INTO events(environment_id,kind,message,created_at_ms) VALUES(?1,'environment_renamed',?2,?3)",
+            "INSERT INTO events(application_id,environment_id,kind,message,created_at_ms) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'environment_renamed',?2,?3)",
             id,
             message,
             now

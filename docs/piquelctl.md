@@ -55,7 +55,7 @@ piquelctl env delete <app> <env>
 piquelctl env deploy <app> [<env>]
 piquelctl env reconcile <app> [<env>]
 piquelctl env logs <app> [<env>] [--service <name>]
-piquelctl events --environment <environment-id> --limit 50
+piquelctl events --application <application-id> --limit 50
 ```
 
 An application owns the saved manifest; its environments deploy it, each with its
@@ -321,8 +321,10 @@ networks, and volumes. It saves without deployment unless `--deploy` is given. A
 advances generation and records an event. Update `metadata.name` in your manifest
 file afterward; the CLI does not edit files automatically.
 
-`events` reads one page, oldest first. `--environment ID` optionally filters by
-stable environment ID. Deleted environments have no retained history. Use `--cursor CURSOR` for subsequent
+`events` reads one page, oldest first. `--application ID` optionally filters by
+stable application ID: application-wide events such as edits and renames, and the
+events of all its environments, including deleted ones. `--environment ID` filters
+by stable environment ID. Deleting an application removes its history. Use `--cursor CURSOR` for subsequent
 pages and `--limit N` (1–100, default 50). JSON includes the next cursor.
 
 By default, apply with `--deploy`, delete, reconcile, deploy, and operation poll every 250 ms
@@ -459,8 +461,9 @@ An empty list prints `No profiles configured.` in human mode, or
 `--quiet` suppresses human results, information, and progress, but preserves JSON,
 warnings, errors, and authorized prompts.
 
-`piquelctl builds list [--environment ID] [--cursor CURSOR]` lists one page of build
-attempts and job runs. `piquelctl builds logs ID [--before BYTE_OFFSET]` reads the newest bounded
+`piquelctl builds list [--application ID] [--environment ID] [--cursor CURSOR]` lists one
+page of build attempts and job runs, optionally of one application's environments or
+of one environment. `piquelctl builds logs ID [--before BYTE_OFFSET]` reads the newest bounded
 output page, or an older page before the supplied cursor. It prints the cursor
 for loading older output when available. Both support `--json`.
 

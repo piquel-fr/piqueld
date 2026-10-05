@@ -2331,6 +2331,25 @@
                 "nullable": true,
                 "type": "string"
               },
+              "application_id": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/ApplicationId"
+                      }
+                    ],
+                    "description": "Related application, including for events of its deleted environments."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
               "attempt": {
                 "description": "Execution attempt for attempt-related events.",
                 "format": "int64",
@@ -2377,7 +2396,7 @@
                         "$ref": "#/components/schemas/EnvironmentId"
                       }
                     ],
-                    "description": "Related environment, when applicable."
+                    "description": "Related environment; absent for application-wide events such as edits."
                   },
                   {
                     "enum": [
@@ -2864,6 +2883,25 @@
                       "nullable": true,
                       "type": "string"
                     },
+                    "application_id": {
+                      "oneOf": [
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/components/schemas/ApplicationId"
+                            }
+                          ],
+                          "description": "Related application, including for events of its deleted environments."
+                        },
+                        {
+                          "enum": [
+                            null
+                          ],
+                          "nullable": true,
+                          "type": "string"
+                        }
+                      ]
+                    },
                     "attempt": {
                       "description": "Execution attempt for attempt-related events.",
                       "format": "int64",
@@ -2910,7 +2948,7 @@
                               "$ref": "#/components/schemas/EnvironmentId"
                             }
                           ],
-                          "description": "Related environment, when applicable."
+                          "description": "Related environment; absent for application-wide events such as edits."
                         },
                         {
                           "enum": [
@@ -3807,6 +3845,25 @@
             "nullable": true,
             "type": "string"
           },
+          "application_id": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ApplicationId"
+                  }
+                ],
+                "description": "Related application, including for events of its deleted environments."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "attempt": {
             "description": "Execution attempt for attempt-related events.",
             "format": "int64",
@@ -3853,7 +3910,7 @@
                     "$ref": "#/components/schemas/EnvironmentId"
                   }
                 ],
-                "description": "Related environment, when applicable."
+                "description": "Related environment; absent for application-wide events such as edits."
               },
               {
                 "enum": [
@@ -3937,7 +3994,7 @@
         "type": "object"
       },
       "EventScope": {
-        "description": "Ownership of historical data, independent of its contextual application ID.",
+        "description": "Ownership of historical data, independent of its contextual application and environment.",
         "enum": [
           "application",
           "daemon"
@@ -16366,9 +16423,18 @@
     },
     "/api/v1/builds": {
       "get": {
-        "description": "Optionally filtered to one environment. Follow `next_cursor` to load older\nbuilds.",
+        "description": "Optionally filtered to one application or environment. Follow `next_cursor` to load older\nbuilds.",
         "operationId": "listBuilds",
         "parameters": [
+          {
+            "description": "Only include builds of this application's environments.",
+            "in": "query",
+            "name": "application_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "description": "Only include builds for this environment.",
             "in": "query",
@@ -17940,6 +18006,15 @@
         "operationId": "listEvents",
         "parameters": [
           {
+            "description": "Only include events of this application and all its environments.",
+            "in": "query",
+            "name": "application_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "Only include events about this environment.",
             "in": "query",
             "name": "environment_id",
@@ -18113,6 +18188,15 @@
         "description": "Events arrive oldest first, resuming after the `Last-Event-ID` header or\n`cursor` (from the beginning when both are absent). Invalid cursors fail with\n400 and pruned history with 410 before the stream opens. The stream emits:\n- `event` messages with `id: v1:<event-id>` for each matching event;\n- ID-only messages that advance the resume position past filtered-out events;\n- a final `history_expired` or `stream_error` message, after which the\n  stream ends and history must be reloaded before reconnecting.",
         "operationId": "streamEvents",
         "parameters": [
+          {
+            "description": "Only include events of this application and all its environments.",
+            "in": "query",
+            "name": "application_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "description": "Only include events about this environment.",
             "in": "query",

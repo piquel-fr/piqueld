@@ -107,6 +107,10 @@ pub(crate) enum Command {
     Operation(OperationArgs),
     /// Read one page of informational events, oldest first.
     Events {
+        /// Filter by stable application ID: its own events and those of all its
+        /// environments, including deleted ones.
+        #[arg(long)]
+        application: Option<String>,
         /// Filter by stable environment ID, including deleted environments.
         #[arg(long)]
         environment: Option<String>,
@@ -222,6 +226,9 @@ pub(crate) struct BuildArgs {
 pub(crate) enum BuildCommand {
     /// List recent build attempts, newest first.
     List {
+        /// Filter by stable application ID: builds of all its environments.
+        #[arg(long)]
+        application: Option<String>,
         /// Filter by stable environment ID.
         #[arg(long)]
         environment: Option<String>,

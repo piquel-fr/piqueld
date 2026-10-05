@@ -1022,13 +1022,18 @@ async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
             .iter()
             .all(|old| events.items.iter().any(|event| event.id == old.id))
     );
+    // Staging's history stays in the application's history until it is deleted.
     assert!(
         store
             .events(Some(staging), None, 100)
             .await
             .unwrap()
             .items
-            .is_empty()
+            .iter()
+            .any(|event| event
+                .application_id
+                .as_ref()
+                .is_some_and(|application| application.as_str() == production.as_str()))
     );
     assert_eq!(store.secrets(production).await.unwrap()[0].generation, 1);
     let values = harness.docker.secret_values.lock().await;
@@ -2843,7 +2848,7 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
 
 impl ControllerHarness {
     async fn assert_git_build_history(&self, id: &EnvironmentId) {
-        let builds = self.store.builds(Some(id), None, 50).await.unwrap();
+        let builds = self.store.builds(None, Some(id), None, 50).await.unwrap();
         assert_eq!(
             builds.items.len(),
             3,
@@ -3710,7 +3715,7 @@ impl ControllerHarness {
     ) -> (piqueld_core::api::BuildRecord, String) {
         let run = self
             .store
-            .builds(Some(application), None, 10)
+            .builds(None, Some(application), None, 10)
             .await
             .unwrap()
             .items
@@ -4191,7 +4196,7 @@ async fn recorded_success_survives_a_crash_before_cleanup() {
         loop {
             let builds = harness
                 .store
-                .builds(Some(&operation.environment_id), None, 10)
+                .builds(None, Some(&operation.environment_id), None, 10)
                 .await
                 .unwrap();
             if builds

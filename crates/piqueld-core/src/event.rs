@@ -1,5 +1,5 @@
 //! Informational control-plane history; never used to reconstruct engine state.
-use crate::EnvironmentId;
+use crate::{ApplicationId, EnvironmentId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -8,7 +8,10 @@ use utoipa::ToSchema;
 pub struct Event {
     /// Monotonic event identity used for pagination.
     pub id: i64,
-    /// Related environment, when applicable.
+    /// Related application, including for events of its deleted environments.
+    #[serde(default)]
+    pub application_id: Option<ApplicationId>,
+    /// Related environment; absent for application-wide events such as edits.
     pub environment_id: Option<EnvironmentId>,
     /// Related operation, retained even if that operation is pruned.
     pub operation_id: Option<String>,

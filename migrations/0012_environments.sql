@@ -37,6 +37,14 @@ ALTER TABLE operations RENAME COLUMN application_id TO environment_id;
 ALTER TABLE deployments RENAME COLUMN application_id TO environment_id;
 ALTER TABLE builds RENAME COLUMN application_id TO environment_id;
 ALTER TABLE events RENAME COLUMN application_id TO environment_id;
+-- Events also name their application, so its history spans every environment,
+-- including deleted ones, and application-wide events are recorded once with
+-- no environment.
+DROP INDEX event_application;
+ALTER TABLE events ADD COLUMN application_id TEXT;
+UPDATE events SET application_id=environment_id;
+CREATE INDEX event_application ON events(application_id,id);
+CREATE INDEX event_environment ON events(environment_id,id);
 ALTER TABLE active_actions RENAME COLUMN application_id TO environment_id;
 ALTER TABLE notification_conditions RENAME COLUMN application_id TO environment_id;
 ALTER TABLE application_secrets RENAME TO environment_secrets;

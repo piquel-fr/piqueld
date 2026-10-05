@@ -382,7 +382,7 @@ impl Store {
                 Self::save_configuration_on(tx, &application, Some(current.generation)).await?;
             let generation = i64::try_from(saved.generation).map_err(StoreError::corrupt)?;
             let app_id = id.as_str();
-            sqlx::query!("INSERT INTO events(environment_id,generation,kind,message,phase,resource,created_at_ms) SELECT id,?2,'application_edited','Saved application configuration',?3,?4,?5 FROM environments WHERE application_id=?1",app_id,generation,field,resource,now).execute(&mut **tx).await.map_err(StoreError::database)?;
+            sqlx::query!("INSERT INTO events(application_id,generation,kind,message,phase,resource,created_at_ms) VALUES(?1,?2,'application_edited','Saved application configuration',?3,?4,?5)",app_id,generation,field,resource,now).execute(&mut **tx).await.map_err(StoreError::database)?;
             saved
         };
         Self::deploy_saved(tx, &id, &application, &mut saved, deploy).await?;
@@ -476,7 +476,7 @@ impl Store {
             .execute(&mut **tx).await.map_err(StoreError::database)?;
         if old_name.as_str() != name {
             let message = format!("renamed {old_name} to {name}");
-            sqlx::query!("INSERT INTO events(environment_id,generation,kind,message,created_at_ms) SELECT id,?2,'application_renamed',?3,?4 FROM environments WHERE application_id=?1",id,revision,message,now).execute(&mut **tx).await.map_err(StoreError::database)?;
+            sqlx::query!("INSERT INTO events(application_id,generation,kind,message,created_at_ms) VALUES(?1,?2,'application_renamed',?3,?4)",id,revision,message,now).execute(&mut **tx).await.map_err(StoreError::database)?;
         }
         Ok(RenamedApplication {
             application_id: id,

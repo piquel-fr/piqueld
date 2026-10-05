@@ -85,11 +85,15 @@ impl ApplicationService {
     /// Returns pagination or storage errors.
     pub async fn builds(
         &self,
-        id: Option<&EnvironmentId>,
+        application: Option<&ApplicationId>,
+        environment: Option<&EnvironmentId>,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<BuildRecord>, ApplicationError> {
-        Ok(self.store.builds(id, cursor, limit).await?)
+        Ok(self
+            .store
+            .builds(application, environment, cursor, limit)
+            .await?)
     }
 
     /// Reads the newest bounded page of persisted build output (chunks in

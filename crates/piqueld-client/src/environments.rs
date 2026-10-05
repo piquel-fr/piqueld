@@ -170,17 +170,21 @@ impl Client {
         .map(|response| response.data)
     }
 
-    /// Reads one page of informational events, including history of deleted environments.
+    /// Reads one page of informational events, oldest first, optionally of one
+    /// application (its own and all its environments' events) or environment,
+    /// including history of deleted environments.
     /// # Errors
     /// Returns transport, API, decoding, or pagination errors.
     pub async fn events(
         &self,
+        application_id: Option<&str>,
         environment_id: Option<&str>,
         cursor: Option<&str>,
         limit: u16,
     ) -> Result<Page<piqueld_core::Event>, ClientError> {
         self.filtered_events(
             &piqueld_core::observability::EventFilter {
+                application_id: application_id.map(str::to_owned),
                 environment_id: environment_id.map(str::to_owned),
                 ..Default::default()
             },

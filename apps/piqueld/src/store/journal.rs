@@ -248,9 +248,9 @@ impl Store {
             .transpose()
             .map_err(StoreError::corrupt)?;
         sqlx::query!(
-            "INSERT INTO events(environment_id,operation_id,generation,attempt,kind,message,error_code,phase,
-            resource,created_at_ms,scope,action_id,retry,duration_ms,diagnostic_id,diagnostic_json)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,
+            error_code,phase,resource,created_at_ms,scope,action_id,retry,duration_ms,diagnostic_id,
+            diagnostic_json) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             action.environment_id,
             action.operation_id,
             action.generation,
@@ -283,8 +283,9 @@ impl Store {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_ms();
         sqlx::query!(
-            "INSERT INTO events(environment_id,operation_id,generation,attempt,kind,message,phase,resource,created_at_ms,
-            scope,action_id,retry) SELECT environment_id,operation_id,generation,attempt,'action_outcome_unknown',
+            "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,phase,
+            resource,created_at_ms,scope,action_id,retry) SELECT (SELECT application_id FROM environments WHERE id=active_actions.environment_id),
+            environment_id,operation_id,generation,attempt,'action_outcome_unknown',
             'Execution was interrupted before its result was committed; reconciliation will inspect current runtime state',
             phase,resource,?1,CASE WHEN environment_id IS NULL THEN 'daemon' ELSE 'application' END,
             id,retry

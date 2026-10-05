@@ -1494,7 +1494,7 @@ fn events_cli_reads_a_filtered_page() {
         assert_eq!(request.method, "GET");
         assert_eq!(
             request.path,
-            "/api/v1/events?cursor=v1%3A7&environment_id=app-notes-01&limit=2"
+            "/api/v1/events?application_id=app-notes&cursor=v1%3A7&environment_id=app-notes-01&limit=2"
         );
         Reply::json(
             json!({"items":[{"id":8,"environment_id":"app-notes-01","operation_id":"operation-01","generation":1,"attempt":2,"kind":"operation_succeeded","message":null,"error_code":null,"phase":null,"resource":null,"created_at_ms":123}],"next_cursor":null}),
@@ -1504,6 +1504,8 @@ fn events_cli_reads_a_filtered_page() {
         &server,
         &[
             "events",
+            "--application",
+            "app-notes",
             "--environment",
             "app-notes-01",
             "--cursor",

@@ -183,10 +183,10 @@ impl Store {
 
     /// Atomically completes deletion after the controller verifies resource absence.
     /// Marks the operation succeeded, then removes the environment's
-    /// notification state, open actions, environment-scoped events, replay
-    /// receipts, and finally the environment row itself. Deleting an
-    /// application's last environment also removes the application when its
-    /// deletion was requested.
+    /// notification state, open actions, replay receipts, and finally the
+    /// environment row itself. Its events stay in the application's history.
+    /// Deleting an application's last environment also removes the application
+    /// and its history when its deletion was requested.
     ///
     /// # Errors
     /// Returns a storage error or `IllegalTransition` for stale work.
@@ -214,13 +214,6 @@ impl Store {
             .execute(&mut *tx)
             .await
             .map_err(StoreError::database)?;
-        sqlx::query!(
-            "DELETE FROM events WHERE environment_id=?1 AND scope='application'",
-            app_id
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
         // Receipts accepted before environments existed name the environment `application_id`.
         sqlx::query!("DELETE FROM request_receipts WHERE json_extract(response_json,'$.Operation.environment_id')=?1 OR json_extract(response_json,'$.Operation.application_id')=?1 OR json_extract(response_json,'$.Environment.id')=?1",app_id).execute(&mut *tx).await.map_err(StoreError::database)?;
         let application = sqlx::query_scalar!(
@@ -244,7 +237,7 @@ impl Store {
     }
 
     /// Removes an application being deleted once none of its environments
-    /// remain, together with its replay receipts.
+    /// remain, together with its application-owned events and replay receipts.
     pub(super) async fn finish_application_delete_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
@@ -258,6 +251,13 @@ impl Store {
         .map_err(StoreError::database)?
         .rows_affected();
         if removed == 1 {
+            sqlx::query!(
+                "DELETE FROM events WHERE application_id=?1 AND scope='application'",
+                id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(StoreError::database)?;
             sqlx::query!("DELETE FROM request_receipts WHERE json_extract(response_json,'$.Saved.application_id')=?1 OR json_extract(response_json,'$.Rename.application_id')=?1 OR json_extract(response_json,'$.Deleted.application_id')=?1",id).execute(&mut **tx).await.map_err(StoreError::database)?;
         }
         Ok(())
@@ -355,7 +355,7 @@ impl Store {
     pub async fn recover_interrupted(&self) -> Result<u64, StoreError> {
         let now = now_ms();
         let (_writer, mut tx) = self.begin_immediate().await?;
-        sqlx::query!("INSERT INTO events(environment_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT environment_id,id,generation,attempt,'operation_interrupted','daemon restarted during execution',error_code,phase,resource,?1 FROM operations WHERE state='running'",now).execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!("INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT (SELECT application_id FROM environments WHERE id=operations.environment_id),environment_id,id,generation,attempt,'operation_interrupted','daemon restarted during execution',error_code,phase,resource,?1 FROM operations WHERE state='running'",now).execute(&mut *tx).await.map_err(StoreError::database)?;
         let interrupted =
             sqlx::query_scalar!(r#"SELECT id AS "id!" FROM operations WHERE state='running'"#)
                 .fetch_all(&mut *tx)
@@ -397,7 +397,7 @@ impl Store {
         now: i64,
     ) -> Result<Operation, StoreError> {
         let app_id = app.as_str();
-        sqlx::query!("INSERT INTO events(environment_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT environment_id,id,generation,attempt,'operation_superseded','superseded by newer intent',error_code,phase,resource,?1 FROM operations WHERE environment_id=?2 AND state IN ('requested','running')",now,app_id).execute(&mut **tx).await.map_err(StoreError::database)?;
+        sqlx::query!("INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT (SELECT application_id FROM environments WHERE id=?2),environment_id,id,generation,attempt,'operation_superseded','superseded by newer intent',error_code,phase,resource,?1 FROM operations WHERE environment_id=?2 AND state IN ('requested','running')",now,app_id).execute(&mut **tx).await.map_err(StoreError::database)?;
         sqlx::query!("UPDATE operations SET state='superseded',error_code=NULL,error_message=NULL,finished_at_ms=?1,updated_at_ms=?1 WHERE environment_id=?2 AND state IN ('requested','running')",now,app_id)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
         let superseded=sqlx::query_scalar!(r#"SELECT id AS "id!" FROM operations WHERE environment_id=?1 AND state='superseded' AND updated_at_ms=?2"#,app_id,now).fetch_all(&mut **tx).await.map_err(StoreError::database)?;

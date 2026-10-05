@@ -85,9 +85,10 @@ not make event details unreadable. SQLite file size need not immediately shrink
 when rows are deleted; free pages can be reused.
 
 Analytics reports when an interval extends before detailed history began or
-includes explicitly pruned history. Aggregates cover retained environments;
-deleting an environment removes its contribution. Event streaming detects
-retention gaps conservatively across both scopes. Deleting an environment's
+includes explicitly pruned history. Event-based aggregates cover retained
+applications: a deleted environment's events stay in its application's history,
+and deleting the application removes them. Event streaming detects
+retention gaps conservatively across both scopes. Deleting an application's
 history intentionally removes that data rather than exposing deletion tombstones.
 
 ## API and dashboard
@@ -105,7 +106,8 @@ All administrative routes use the existing API access boundary. See the generate
 | `GET /api/v1/notifications/deliveries` | Credential-free delivery history |
 | `POST /api/v1/notifications/deliveries/{id}/retry` | Retry a failed delivery under current policy |
 
-Event filters: `environment_id`, `operation_id`, `attempt`, `action_id`, `kind`,
+Event filters: `application_id` (application-wide events and those of all its
+environments), `environment_id`, `operation_id`, `attempt`, `action_id`, `kind`,
 `error_code`, `errors_only`, `scope`, `since_ms`, `until_ms`, and `descending`.
 Pages contain at most 100 records and use opaque `v1:<id>` cursors. Oldest-first
 ordering remains the default. Timestamps are Unix milliseconds.

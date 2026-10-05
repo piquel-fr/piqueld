@@ -19,6 +19,8 @@ use serde::Deserialize;
 #[serde(default, deny_unknown_fields)]
 #[into_params(parameter_in=Query)]
 pub(super) struct EventQuery {
+    /// Only include events of this application and all its environments.
+    application_id: Option<String>,
     /// Only include events about this environment.
     environment_id: Option<String>,
     /// Only include events of this operation.
@@ -52,6 +54,7 @@ impl EventQuery {
     /// Extracts the store filter; pagination fields are handled separately.
     fn filter(&self) -> EventFilter {
         EventFilter {
+            application_id: self.application_id.clone(),
             environment_id: self.environment_id.clone(),
             operation_id: self.operation_id.clone(),
             attempt: self.attempt,

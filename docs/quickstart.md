@@ -46,7 +46,7 @@ work. Use the same development socket for repair, source refresh, and history:
 ```console
 just run --socket /tmp/piqueld-dev-run/piqueld.sock app reconcile notes --yes
 just run --socket /tmp/piqueld-dev-run/piqueld.sock app deploy notes --yes
-just run --socket /tmp/piqueld-dev-run/piqueld.sock events --environment <environment-id>
+just run --socket /tmp/piqueld-dev-run/piqueld.sock events --application <application-id>
 ```
 
 The application got one environment, `production`, which shares its ID. Add

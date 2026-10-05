@@ -221,6 +221,10 @@ async fn existing_applications_become_one_production_environment_with_the_same_i
     assert_eq!(operation.generation, 3);
     let events = store.events(Some(&environment.id), None, 10).await.unwrap();
     assert_eq!(events.items.len(), 1);
+    assert_eq!(
+        events.items[0].application_id.as_ref(),
+        Some(&environment.application_id)
+    );
     legacy
         .assert_runtime(&store, &environment.id, &operation)
         .await;

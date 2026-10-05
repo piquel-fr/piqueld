@@ -21,6 +21,7 @@ impl Client {
             self.generated
                 .list_events(
                     filter.action_id.as_deref(),
+                    filter.application_id.as_deref(),
                     filter.attempt,
                     cursor,
                     filter.descending.then_some(true),

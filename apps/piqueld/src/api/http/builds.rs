@@ -5,7 +5,7 @@ use axum::{
     response::IntoResponse,
 };
 use piqueld_core::{
-    EnvironmentId,
+    ApplicationId, EnvironmentId,
     api::{BuildLogPage, BuildRecord, Envelope, Page},
 };
 use serde::Deserialize;
@@ -14,6 +14,8 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in=Query)]
 pub(super) struct BuildQuery {
+    /// Only include builds of this application's environments.
+    application_id: Option<String>,
     /// Only include builds for this environment.
     environment_id: Option<String>,
     /// `next_cursor` from a previous page.
@@ -25,7 +27,7 @@ pub(super) struct BuildQuery {
 
 /// Lists Git source builds, newest first.
 ///
-/// Optionally filtered to one environment. Follow `next_cursor` to load older
+/// Optionally filtered to one application or environment. Follow `next_cursor` to load older
 /// builds.
 #[utoipa::path(get,path="/api/v1/builds",operation_id="listBuilds",params(BuildQuery),
     responses((status=200,description="Build history, newest first",body=Envelope<Page<BuildRecord>>),
@@ -41,10 +43,12 @@ pub(super) async fn list(
             "invalid build query",
         )
     })?;
-    let id = query.environment_id.map(EnvironmentId::parse).transpose()?;
+    let application = query.application_id.map(ApplicationId::parse).transpose()?;
+    let environment = query.environment_id.map(EnvironmentId::parse).transpose()?;
     Ok(ok(state
         .builds(
-            id.as_ref(),
+            application.as_ref(),
+            environment.as_ref(),
             query.cursor.as_deref(),
             query.limit.unwrap_or(50),
         )

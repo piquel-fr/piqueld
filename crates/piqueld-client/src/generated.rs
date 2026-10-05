@@ -5720,18 +5720,20 @@ impl Client {
     }
     /*Lists Git source builds, newest first
 
-    Optionally filtered to one environment. Follow `next_cursor` to load older
+    Optionally filtered to one application or environment. Follow `next_cursor` to load older
     builds.
 
     Sends a `GET` request to `/api/v1/builds`
 
     Arguments:
+    - `application_id`: Only include builds of this application's environments.
     - `cursor`: `next_cursor` from a previous page.
     - `environment_id`: Only include builds for this environment.
     - `limit`: Page size; defaults to 50.
     */
     pub async fn list_builds<'a>(
         &'a self,
+        application_id: Option<&'a str>,
         cursor: Option<&'a str>,
         environment_id: Option<&'a str>,
         limit: Option<i64>,
@@ -5755,6 +5757,10 @@ impl Client {
                 ::reqwest::header::ACCEPT,
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
+            .query(&progenitor_client::QueryParam::new(
+                "application_id",
+                &application_id,
+            ))
             .query(&progenitor_client::QueryParam::new("cursor", &cursor))
             .query(&progenitor_client::QueryParam::new(
                 "environment_id",
@@ -6839,6 +6845,7 @@ impl Client {
 
     Arguments:
     - `action_id`: Only include events of this runtime action.
+    - `application_id`: Only include events of this application and all its environments.
     - `attempt`: Only include events of this operation attempt.
     - `cursor`: `next_cursor` from a previous page; for streams, a `v1:<event-id>` SSE ID to
     resume after.
@@ -6856,6 +6863,7 @@ impl Client {
     pub async fn list_events<'a>(
         &'a self,
         action_id: Option<&'a str>,
+        application_id: Option<&'a str>,
         attempt: Option<u64>,
         cursor: Option<&'a str>,
         descending: Option<bool>,
@@ -6887,6 +6895,10 @@ impl Client {
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
             .query(&progenitor_client::QueryParam::new("action_id", &action_id))
+            .query(&progenitor_client::QueryParam::new(
+                "application_id",
+                &application_id,
+            ))
             .query(&progenitor_client::QueryParam::new("attempt", &attempt))
             .query(&progenitor_client::QueryParam::new("cursor", &cursor))
             .query(&progenitor_client::QueryParam::new(
@@ -6951,6 +6963,7 @@ impl Client {
 
     Arguments:
     - `action_id`: Only include events of this runtime action.
+    - `application_id`: Only include events of this application and all its environments.
     - `attempt`: Only include events of this operation attempt.
     - `cursor`: `next_cursor` from a previous page; for streams, a `v1:<event-id>` SSE ID to
     resume after.
@@ -6968,6 +6981,7 @@ impl Client {
     pub async fn stream_events<'a>(
         &'a self,
         action_id: Option<&'a str>,
+        application_id: Option<&'a str>,
         attempt: Option<u64>,
         cursor: Option<&'a str>,
         descending: Option<bool>,
@@ -6992,6 +7006,10 @@ impl Client {
             .client
             .get(url)
             .query(&progenitor_client::QueryParam::new("action_id", &action_id))
+            .query(&progenitor_client::QueryParam::new(
+                "application_id",
+                &application_id,
+            ))
             .query(&progenitor_client::QueryParam::new("attempt", &attempt))
             .query(&progenitor_client::QueryParam::new("cursor", &cursor))
             .query(&progenitor_client::QueryParam::new(

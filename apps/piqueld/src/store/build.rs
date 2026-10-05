@@ -1,12 +1,14 @@
 //! Build records outlive operation retention; output is chunked and bounded.
 use super::{Store, StoreError, now_ms, page_limit};
 use piqueld_core::{
-    EnvironmentId,
+    ApplicationId, EnvironmentId,
     api::{BuildLogChunk, BuildLogPage, BuildRecord, BuildState, LogStream, Page},
     manifest::Source,
 };
+use sqlx::{QueryBuilder, Sqlite};
 
-/// `builds` row shared by the environment-scoped and global listing queries.
+/// `builds` row read by the build listing.
+#[derive(sqlx::FromRow)]
 struct BuildRow {
     id: i64,
     environment_id: String,
@@ -215,12 +217,14 @@ impl Store {
         .map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)
     }
-    /// Lists build attempts newest first, optionally scoped to an environment.
+    /// Lists build attempts newest first, optionally limited to the
+    /// environments of one application and/or to one environment.
     /// # Errors
     /// Returns invalid pagination or database errors.
     pub async fn builds(
         &self,
-        application: Option<&EnvironmentId>,
+        application: Option<&ApplicationId>,
+        environment: Option<&EnvironmentId>,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<BuildRecord>, StoreError> {
@@ -237,32 +241,29 @@ impl Store {
         if before < 1 {
             return Err(StoreError::InvalidInput);
         }
-        let mut rows = if let Some(application) = application {
-            let app = application.as_str();
-            sqlx::query_as!(
-                BuildRow,
-                "SELECT id AS \"id!\",environment_id,operation_id,service,job,source_json,state,
-                 started_at_ms,finished_at_ms,commit_hash,image_id,exit_code,log_bytes,log_truncated,log_expired
-                 FROM builds WHERE environment_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
-                app,
-                before,
-                fetch
-            )
-            .fetch_all(&self.pool)
-            .await
-        } else {
-            sqlx::query_as!(
-                BuildRow,
-                "SELECT id AS \"id!\",environment_id,operation_id,service,job,source_json,state,
-                 started_at_ms,finished_at_ms,commit_hash,image_id,exit_code,log_bytes,log_truncated,log_expired
-                 FROM builds WHERE id<?1 ORDER BY id DESC LIMIT ?2",
-                before,
-                fetch
-            )
-            .fetch_all(&self.pool)
-            .await
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT id,environment_id,operation_id,service,job,source_json,state,started_at_ms,\
+             finished_at_ms,commit_hash,image_id,exit_code,log_bytes,log_truncated,log_expired \
+             FROM builds WHERE id<",
+        );
+        query.push_bind(before);
+        if let Some(environment) = environment {
+            query
+                .push(" AND environment_id=")
+                .push_bind(environment.as_str());
         }
-        .map_err(StoreError::database)?;
+        if let Some(application) = application {
+            query
+                .push(" AND environment_id IN (SELECT id FROM environments WHERE application_id=")
+                .push_bind(application.as_str())
+                .push(")");
+        }
+        query.push(" ORDER BY id DESC LIMIT ").push_bind(fetch);
+        let mut rows = query
+            .build_query_as::<BuildRow>()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(StoreError::database)?;
         let more = rows.len() > limit;
         rows.truncate(limit);
         let next_cursor = more
@@ -486,7 +487,7 @@ mod tests {
             assert_eq!(chunk.text, "a".repeat(4096));
         }
         let records = store
-            .builds(Some(&EnvironmentId::default_for(app.id())), None, 50)
+            .builds(None, Some(&EnvironmentId::default_for(app.id())), None, 50)
             .await
             .unwrap();
         assert_eq!(records.items[0].state, BuildState::Succeeded);
@@ -533,12 +534,13 @@ mod tests {
                 .unwrap();
         }
         let first = store
-            .builds(Some(&EnvironmentId::default_for(app.id())), None, 1)
+            .builds(None, Some(&EnvironmentId::default_for(app.id())), None, 1)
             .await
             .unwrap();
         assert_eq!(first.items[0].id, latest);
         let second = store
             .builds(
+                None,
                 Some(&EnvironmentId::default_for(app.id())),
                 first.next_cursor.as_deref(),
                 1,
@@ -547,12 +549,14 @@ mod tests {
             .unwrap();
         assert_eq!(second.items[0].id, id);
         assert!(second.next_cursor.is_none());
-        let global = store.builds(None, None, 1).await.unwrap();
+        let global = store.builds(None, None, None, 1).await.unwrap();
         assert_eq!(global.items[0].environment_id, other.id().as_str());
+        let application = store.builds(Some(app.id()), None, None, 1).await.unwrap();
+        assert_eq!(application.items[0].id, latest);
         let absent = EnvironmentId::parse("app-absent").unwrap();
         assert!(
             store
-                .builds(Some(&absent), None, 1)
+                .builds(None, Some(&absent), None, 1)
                 .await
                 .unwrap()
                 .items
@@ -606,7 +610,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .builds(Some(&EnvironmentId::default_for(app.id())), None, 50)
+                .builds(None, Some(&EnvironmentId::default_for(app.id())), None, 50)
                 .await
                 .unwrap()
                 .items[0]
@@ -619,7 +623,7 @@ mod tests {
             .unwrap();
         store.prune_build_logs().await.unwrap();
         assert!(store.build_logs(id, None, None).await.unwrap().expired);
-        let records = store.builds(None, None, 50).await.unwrap();
+        let records = store.builds(None, None, None, 50).await.unwrap();
         assert_eq!(records.items.len(), 1);
         assert_eq!(records.items[0].state, BuildState::Succeeded);
         let interrupted = store
@@ -633,12 +637,12 @@ mod tests {
             .await
             .unwrap();
         store.recover_builds().await.unwrap();
-        let page = store.builds(None, None, 1).await.unwrap();
+        let page = store.builds(None, None, None, 1).await.unwrap();
         assert_eq!(page.items[0].id, interrupted);
         assert_eq!(page.items[0].state, BuildState::Interrupted);
         assert_eq!(
             store
-                .builds(None, page.next_cursor.as_deref(), 1)
+                .builds(None, None, page.next_cursor.as_deref(), 1)
                 .await
                 .unwrap()
                 .items[0]

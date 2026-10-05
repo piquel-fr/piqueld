@@ -261,7 +261,14 @@ async fn typed_client_exercises_polling_lifecycle_over_tcp() {
     let client = Client::tcp(&format!("http://{address}/")).expect("valid client endpoint");
     let manifest = manifest();
 
-    assert!(client.builds(None, None).await.unwrap().items.is_empty());
+    assert!(
+        client
+            .builds(None, None, None)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
     assert!(
         matches!(client.build_logs(999,None,None).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
     );
@@ -1724,12 +1731,13 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
         .unwrap();
     assert_eq!(reconciled.operation_id, refreshed.operation_id);
     let first_page = client
-        .events(Some(&first.environment_id), None, 2)
+        .events(None, Some(&first.environment_id), None, 2)
         .await
         .unwrap();
     assert_eq!(first_page.items.len(), 2);
     let second_page = client
         .events(
+            None,
             Some(&first.environment_id),
             first_page.next_cursor.as_deref(),
             100,
@@ -2813,7 +2821,7 @@ async fn exec_streams_over_both_transports_and_records_history_without_the_comma
     }
     // Completion is recorded before the final frame is sent.
     let commands = Client::unix(&socket)
-        .events(Some(&app.environment_id), None, 100)
+        .events(None, Some(&app.environment_id), None, 100)
         .await
         .unwrap()
         .items
@@ -3246,7 +3254,7 @@ async fn job_field_edit_replaces_jobs_in_order_and_validates_atomically() {
         "{error:?}"
     );
     assert_eq!(jobs_of().await, jobs);
-    let events = api.client.events(Some(id), None, 100).await.unwrap();
+    let events = api.client.events(Some(id), None, None, 100).await.unwrap();
     let recorded = events
         .items
         .iter()
@@ -3945,7 +3953,7 @@ async fn typed_edits_record_safe_field_history() {
         .unwrap();
     let events = api
         .client
-        .events(Some(&saved.application_id), None, 100)
+        .events(Some(&saved.application_id), None, None, 100)
         .await
         .unwrap();
     let recorded = events
@@ -4044,7 +4052,12 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
         Some(("service_update_failed", "Update paused")),
     )
     .await;
-    let events = api.client.events(None, None, 100).await.unwrap().items;
+    let events = api
+        .client
+        .events(None, None, None, 100)
+        .await
+        .unwrap()
+        .items;
     let after = events[events.len() - 2].id;
     let router = router(
         ApiState::new(api.store.clone(), api.runtime.clone()),
@@ -4313,7 +4326,7 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
 /// Secret lifecycle history names secrets and journals cleanup without values.
 async fn assert_secret_history(client: &Client, application_id: &str) {
     let history = client
-        .events(Some(application_id), None, 100)
+        .events(None, Some(application_id), None, 100)
         .await
         .unwrap()
         .items;
@@ -4823,6 +4836,78 @@ async fn environments_deploy_independently_and_runtime_commands_never_pick_one()
     };
     assert_eq!(deleted.operations.len(), 2);
     assert_eq!(deleted.generation, saved.generation + 1);
+}
+
+#[tokio::test]
+async fn application_history_spans_its_environments() {
+    use piqueld::api::Mutation;
+    use piqueld_core::observability::EventFilter;
+    let temp = tempfile::tempdir().unwrap();
+    let service = state(&temp).await;
+    let (saved, staging) = two_environments(&service).await;
+    let application = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
+    let production = piqueld_core::EnvironmentId::default_for(&application);
+    service
+        .accept(
+            Mutation::Rename {
+                id: application.clone(),
+                name: "renamed".into(),
+            },
+            Some(saved.generation),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    service
+        .accept(
+            Mutation::deploy(production.clone()),
+            Some(saved.generation + 1),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    let events = |filter: EventFilter| {
+        let service = service.clone();
+        async move {
+            service
+                .filtered_events(&filter, None, 100)
+                .await
+                .unwrap()
+                .items
+                .into_iter()
+                .map(|event| (event.kind, event.environment_id))
+                .collect::<Vec<_>>()
+        }
+    };
+
+    // Application-wide events are recorded once, without an environment, and
+    // the application's history includes every environment's events.
+    let history = events(EventFilter {
+        application_id: Some(application.to_string()),
+        ..EventFilter::default()
+    })
+    .await;
+    assert!(history.contains(&("environment_created".into(), Some(staging.id.clone()))));
+    assert_eq!(
+        history
+            .iter()
+            .filter(|(kind, _)| kind == "application_renamed")
+            .collect::<Vec<_>>(),
+        [&("application_renamed".to_owned(), None)]
+    );
+    let production_history = events(EventFilter {
+        environment_id: Some(production.to_string()),
+        ..EventFilter::default()
+    })
+    .await;
+    assert!(!production_history.is_empty());
+    assert!(
+        production_history
+            .iter()
+            .all(|(_, environment)| environment.as_ref() == Some(&production))
+    );
 }
 
 #[tokio::test]

@@ -233,8 +233,9 @@ The CLI treats supersession as success with an explicit outcome and stops waitin
 immediately, without following the replacement. Each execution increments
 `attempt`. Deployment attempt outcomes remain available even after event pruning.
 Deletion retains volumes and completes only after runtime absence is verified.
-It then removes the environment, its operations, deployments, attempts, events,
-and receipts. Clients waiting for deletion poll environment (or application)
+It then removes the environment, its operations, deployments, attempts, builds,
+and receipts. Its events stay in the application's history until the application
+is deleted. Clients waiting for deletion poll environment (or application)
 absence; its operation endpoint also returns 404 after cleanup.
 
 Preview returns 200 with a `PlanView`, no durable changes, and no image pulls.
@@ -344,7 +345,8 @@ process-liveness endpoint. A separate `ingress` object reports gateway health an
 per-route public HTTPS readiness without affecting `ready`; see
 [ingress](ingress.md#status-and-recovery). No registry checks are introduced.
 
-`GET /api/v1/builds` lists attempts newest first, with optional `environment_id`,
+`GET /api/v1/builds` lists attempts newest first, with optional `application_id`,
+`environment_id`,
 `cursor`, and `limit` (1–100, default 50). Each executed Git-service preparation
 creates an independent record before checkout. Image pulls do not create records.
 Outcomes are running, succeeded, failed, or interrupted. Resolved commits and

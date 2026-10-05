@@ -1,5 +1,5 @@
 //! Immutable diagnostic history, independent of operation retention.
-use super::{EnvironmentId, Store, StoreError, new_id, now_ms, page_limit};
+use super::{ApplicationId, EnvironmentId, Store, StoreError, new_id, now_ms, page_limit};
 use piqueld_core::{
     Event,
     api::Page,
@@ -57,11 +57,12 @@ impl Store {
             .transpose()
             .map_err(StoreError::corrupt)?;
         sqlx::query!(
-            "INSERT INTO events(environment_id,operation_id,generation,attempt,kind,message,error_code,phase,
-            resource,created_at_ms,scope,diagnostic_id,diagnostic_json) SELECT environment_id,id,
-            generation,attempt,?1,?2,error_code,phase,resource,?3,?4,?5,?6
-            FROM operations
-            WHERE id=?7",
+            "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,
+            error_code,phase,resource,created_at_ms,scope,diagnostic_id,diagnostic_json)
+            SELECT e.application_id,o.environment_id,o.id,o.generation,o.attempt,?1,?2,o.error_code,o.phase,
+            o.resource,?3,?4,?5,?6
+            FROM operations o LEFT JOIN environments e ON e.id=o.environment_id
+            WHERE o.id=?7",
             kind,
             message,
             now,
@@ -232,8 +233,9 @@ impl Store {
         let json = serde_json::to_string(&diagnostic).map_err(StoreError::corrupt)?;
         let now = now_ms();
         sqlx::query!(
-            "INSERT INTO events(scope,environment_id,kind,message,error_code,diagnostic_id,diagnostic_json,request_id,
-            created_at_ms) SELECT ?1,?2,'diagnostic',?3,?4,?5,?6,?7,?8
+            "INSERT INTO events(scope,application_id,environment_id,kind,message,error_code,diagnostic_id,
+            diagnostic_json,request_id,created_at_ms)
+            SELECT ?1,(SELECT application_id FROM environments WHERE id=?2),?2,'diagnostic',?3,?4,?5,?6,?7,?8
             WHERE ?1='daemon' OR EXISTS(SELECT 1
             FROM environments
             WHERE id=?2)",
@@ -266,7 +268,8 @@ impl Store {
         let id = environment.as_str();
         let now = now_ms();
         sqlx::query!(
-            "INSERT INTO events(environment_id,kind,message,resource,created_at_ms) VALUES(?1,?2,?3,?4,?5)",
+            "INSERT INTO events(application_id,environment_id,kind,message,resource,created_at_ms)
+            VALUES((SELECT application_id FROM environments WHERE id=?1),?1,?2,?3,?4,?5)",
             id,
             kind,
             message,
@@ -364,7 +367,8 @@ impl Store {
     }
 }
 
-/// Rejects inverted time ranges and malformed environment IDs in an event filter.
+/// Rejects inverted time ranges and malformed application or environment IDs
+/// in an event filter.
 fn validate_filter(filter: &EventFilter) -> Result<(), StoreError> {
     if filter
         .since_ms
@@ -372,6 +376,9 @@ fn validate_filter(filter: &EventFilter) -> Result<(), StoreError> {
         .is_some_and(|(a, b)| a > b)
     {
         return Err(StoreError::InvalidInput);
+    }
+    if let Some(id) = &filter.application_id {
+        ApplicationId::parse(id).map_err(StoreError::invalid_input)?;
     }
     if let Some(id) = &filter.environment_id {
         EnvironmentId::parse(id).map_err(StoreError::invalid_input)?;
@@ -383,6 +390,7 @@ fn validate_filter(filter: &EventFilter) -> Result<(), StoreError> {
 #[derive(sqlx::FromRow)]
 struct EventRow {
     id: i64,
+    application_id: Option<String>,
     environment_id: Option<String>,
     operation_id: Option<String>,
     generation: Option<i64>,
@@ -413,7 +421,7 @@ impl EventRow {
         fetch: i64,
     ) -> Result<QueryBuilder<'_, Sqlite>, StoreError> {
         let mut query = QueryBuilder::new(
-            "SELECT id, environment_id, operation_id, generation, attempt, kind, message, error_code, \
+            "SELECT id, application_id, environment_id, operation_id, generation, attempt, kind, message, error_code, \
              phase, resource, created_at_ms, scope, action_id, retry, retry_delay_ms, duration_ms, \
              request_id, diagnostic_json FROM events WHERE id",
         );
@@ -421,6 +429,7 @@ impl EventRow {
             .push(if filter.descending { " < " } else { " > " })
             .push_bind(cursor);
         for (column, value) in [
+            ("application_id", filter.application_id.as_deref()),
             ("environment_id", filter.environment_id.as_deref()),
             ("operation_id", filter.operation_id.as_deref()),
             ("action_id", filter.action_id.as_deref()),
@@ -465,6 +474,11 @@ impl EventRow {
     fn into_event(self) -> Result<Event, StoreError> {
         Ok(Event {
             id: self.id,
+            application_id: self
+                .application_id
+                .map(ApplicationId::parse)
+                .transpose()
+                .map_err(StoreError::corrupt)?,
             environment_id: self
                 .environment_id
                 .map(EnvironmentId::parse)
@@ -532,10 +546,17 @@ mod tests {
                 (EventFilter::default(), "INTEGER PRIMARY KEY"),
                 (
                     EventFilter {
-                        environment_id: Some("app-query".into()),
+                        application_id: Some("app-query".into()),
                         ..Default::default()
                     },
                     "event_application",
+                ),
+                (
+                    EventFilter {
+                        environment_id: Some("app-query".into()),
+                        ..Default::default()
+                    },
+                    "event_environment",
                 ),
                 (
                     EventFilter {
