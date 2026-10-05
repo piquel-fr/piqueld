@@ -2,6 +2,7 @@
 
 use super::ApplicationService;
 use crate::{
+    backup::Backups,
     config::DaemonConfig,
     docker::{BollardDocker, DockerApi},
     reconcile::Controller,
@@ -24,7 +25,8 @@ impl ApplicationService {
     /// A controller failure cancels the token so all transports shut down together.
     ///
     /// Steps, in order:
-    /// 1. Open the store and initialize authentication.
+    /// 1. Back up a database that needs migrating, then open the store and
+    ///    initialize authentication.
     /// 2. Reserve the website's hostname so applications cannot route it.
     /// 3. Connect Docker, interrupt stale actions, and ensure a Swarm manager
     ///    (journaled as an `ensure_swarm` action).
@@ -37,14 +39,7 @@ impl ApplicationService {
         config: &DaemonConfig,
         cancellation: CancellationToken,
     ) -> anyhow::Result<(Self, crate::auth::Auth, JoinHandle<Result<(), StoreError>>)> {
-        let store = Arc::new(
-            Store::open(config.server.database_path())
-                .await
-                .context("failed to open control-plane state")?
-                .with_build_history(config.build_history.clone())
-                .with_observability(config),
-        );
-        info!(path = %config.server.database_path().display(), "opened control-plane state");
+        let store = Arc::new(Self::open_store(config).await?);
         let auth = crate::auth::Auth::initialize(&store, config).await?;
         // Application routes must never serve the website origin or its subdomains,
         // which could otherwise act on its passkeys or cookies.
@@ -136,5 +131,25 @@ impl ApplicationService {
             result
         });
         Ok((service, auth, controller))
+    }
+
+    /// Opens the store, first writing a pre-migration backup when the database
+    /// needs migrating: migrations are forward-only, so it is the previous
+    /// binary's rollback point.
+    async fn open_store(config: &DaemonConfig) -> anyhow::Result<Store> {
+        if let Some((archive, manifest)) = Backups::new(&config.server.data_dir)
+            .before_migration()
+            .await
+            .context("pre-migration backup failed; no migration was applied")?
+        {
+            info!(path = %archive.display(), schema = manifest.schema_version, "wrote pre-migration backup");
+        }
+        let store = Store::open(config.server.database_path())
+            .await
+            .context("failed to open control-plane state")?
+            .with_build_history(config.build_history.clone())
+            .with_observability(config);
+        info!(path = %config.server.database_path().display(), "opened control-plane state");
+        Ok(store)
     }
 }

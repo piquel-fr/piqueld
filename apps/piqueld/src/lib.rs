@@ -4,6 +4,8 @@ pub mod api;
 pub mod application;
 /// Passkey authentication and durable sessions.
 pub mod auth;
+/// Archives of daemon state and their restore.
+pub mod backup;
 /// Executor-independent durable build recording.
 pub mod build;
 pub mod config;

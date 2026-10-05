@@ -17,6 +17,16 @@ let
   # private $CREDENTIALS_DIRECTORY, so the files may stay root-only, and the
   # daemon resolves the credential name there.
   webhookCredential = index: "webhook-${toString index}";
+  # Every unit loading `configuration` needs these, since the daemon resolves
+  # credential-backed settings while reading it.
+  credentials =
+    lib.optional (tailscale.auth_key_file != null) "ts-auth-key:${tailscale.auth_key_file}"
+    ++ lib.concatLists (
+      lib.imap0 (
+        index: destination:
+        lib.optional (destination.url_file != null) "${webhookCredential index}:${destination.url_file}"
+      ) destinations
+    );
   configuration = (pkgs.formats.toml { }).generate "piqueld.toml" (
     lib.recursiveUpdate (withoutNulls cfg.settings) (
       {
@@ -57,6 +67,24 @@ in
       type = lib.types.str;
       default = "/run/piqueld";
       description = "Runtime directory below /run containing piqueld.sock. Group members can connect; account authentication is still required.";
+    };
+    backup = {
+      enable = lib.mkEnableOption "scheduled backups with `piqueld backup`, safe while the daemon runs";
+      schedule = lib.mkOption {
+        type = lib.types.str;
+        default = "daily";
+        description = "systemd OnCalendar expression; missed runs start at the next boot.";
+      };
+      directory = lib.mkOption {
+        type = lib.types.strMatching "/.+";
+        default = "/var/backups/piqueld";
+        description = "Private directory receiving timestamped archives. Archives contain the secret master key; copy them off the host.";
+      };
+      keep = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 7;
+        description = "Number of newest archives to retain in the directory.";
+      };
     };
     settings = lib.mkOption {
       type = lib.types.submodule {
@@ -293,14 +321,7 @@ in
       ++ lib.optional (usesTailscale || cfg.settings.tailscale.enabled) config.services.tailscale.package;
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/piqueld --config ${configuration}";
-        LoadCredential =
-          lib.optional (tailscale.auth_key_file != null) "ts-auth-key:${tailscale.auth_key_file}"
-          ++ lib.concatLists (
-            lib.imap0 (
-              index: destination:
-              lib.optional (destination.url_file != null) "${webhookCredential index}:${destination.url_file}"
-            ) destinations
-          );
+        LoadCredential = credentials;
         User = "piqueld";
         Group = "piqueld";
         SupplementaryGroups = [ "docker" ];
@@ -324,6 +345,35 @@ in
           cfg.dataDir
           cfg.runtimeDir
         ];
+      };
+    };
+    systemd.tmpfiles.rules = lib.mkIf cfg.backup.enable [
+      "d ${cfg.backup.directory} 0700 piqueld piqueld -"
+    ];
+    systemd.services.piqueld-backup = lib.mkIf cfg.backup.enable {
+      description = "piqueld state backup";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${cfg.package}/bin/piqueld --config ${configuration} backup --directory ${cfg.backup.directory} --keep ${toString cfg.backup.keep}";
+        LoadCredential = credentials;
+        User = "piqueld";
+        Group = "piqueld";
+        UMask = "0077";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ReadWritePaths = [
+          cfg.dataDir
+          cfg.backup.directory
+        ];
+      };
+    };
+    systemd.timers.piqueld-backup = lib.mkIf cfg.backup.enable {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnCalendar = cfg.backup.schedule;
+        Persistent = true;
       };
     };
   };

@@ -46,7 +46,7 @@ when the complete normalized manifest is needed.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/v1/system/status` | Daemon status |
+| GET | `/api/v1/system/status` | Daemon status and backup recency |
 | GET | `/api/v1/system/configuration` | Effective read-only host settings |
 | GET | `/api/v1/openapi.json` | Generated API schema |
 | GET | `/api/v1/applications` | Paginated application summaries (up to 100 per page) |

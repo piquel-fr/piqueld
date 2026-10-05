@@ -2,12 +2,13 @@
 
 use anyhow::{Context, Result};
 use axum::{extract::connect_info::Connected, serve::IncomingStream};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use piqueld::api::ApplicationService;
 use piqueld::api::http::{ApiState, UiAssets};
+use piqueld::backup::Backups;
 use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::tailnet::Node;
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, num::NonZeroUsize, path::PathBuf};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -29,14 +30,42 @@ struct Args {
     ///
     /// Without this flag, `/etc/piqueld/config.toml` is read if it exists;
     /// otherwise built-in defaults are used.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", global = true)]
     config: Option<PathBuf>,
+    /// Run a maintenance command instead of the daemon.
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// Maintenance commands operating on the configured data directory.
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Archive the database, secret key, and ingress state. Safe while the daemon runs.
+    Backup {
+        /// Write the archive to this path, which must not exist.
+        #[arg(long, value_name = "PATH", required_unless_present = "directory")]
+        output: Option<PathBuf>,
+        /// Write a timestamped archive into this directory instead.
+        #[arg(long, value_name = "DIR", conflicts_with = "output")]
+        directory: Option<PathBuf>,
+        /// With --directory, keep only this many newest archives.
+        #[arg(long, value_name = "N", requires = "directory")]
+        keep: Option<NonZeroUsize>,
+    },
+    /// Restore an archive into an empty data directory. The daemon must be stopped.
+    Restore {
+        /// Archive written by `piqueld backup`.
+        #[arg(value_name = "PATH")]
+        archive: PathBuf,
+    },
 }
 
 /// Starts the daemon and runs until a shutdown signal.
 ///
-/// 1. Loads configuration and initializes tracing.
-/// 2. Prepares and locks the data directory, then validates and locks the runtime
+/// 1. Loads configuration and initializes tracing; maintenance subcommands
+///    (`backup`, `restore`) run here and exit.
+/// 2. Prepares and locks the data directory, refusing state left by an
+///    interrupted restore, then validates and locks the runtime
 ///    directory and binds every listener, so misconfiguration fails before any
 ///    state is opened.
 /// 3. Starts the application service and reconciliation controller.
@@ -47,6 +76,9 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let mut config = load_config(args.config.as_deref())?;
     piqueld::config::init_tracing().context("failed to initialize tracing")?;
+    if let Some(command) = args.command {
+        return command.run(&config.server.data_dir).await;
+    }
 
     piqueld::prepare_data_dir(&config.server.data_dir)
         .await
@@ -63,6 +95,7 @@ async fn main() -> Result<()> {
             config.server.data_dir.display()
         )
     })?;
+    Backups::new(&config.server.data_dir).ensure_restore_complete()?;
     // Bind all endpoints before opening state or starting background work.
     let runtime_dir = piqueld::RuntimeDir::acquire(&config.server.runtime_dir).await?;
     let tcp_listeners = config.server.bind_tcp().await?;
@@ -150,6 +183,52 @@ async fn main() -> Result<()> {
         supervisor.await.context("tailnet supervisor failed")??;
     }
     Ok(())
+}
+
+impl Command {
+    async fn run(self, data_dir: &std::path::Path) -> Result<()> {
+        let backups = Backups::new(data_dir);
+        match self {
+            Self::Backup {
+                output: Some(output),
+                ..
+            } => {
+                let manifest = backups
+                    .create(&output)
+                    .await
+                    .with_context(|| format!("failed to back up {}", data_dir.display()))?;
+                info!(path = %output.display(), schema = manifest.schema_version, "backup written");
+            }
+            Self::Backup {
+                directory: Some(directory),
+                keep,
+                ..
+            } => {
+                let (output, manifest) = backups
+                    .create_rotated(&directory, keep.unwrap_or(NonZeroUsize::MAX))
+                    .await
+                    .with_context(|| format!("failed to back up {}", data_dir.display()))?;
+                info!(path = %output.display(), schema = manifest.schema_version, "backup written");
+            }
+            Self::Backup { .. } => unreachable!("clap requires --output or --directory"),
+            Self::Restore { archive } => {
+                let manifest = backups.restore(&archive).await.with_context(|| {
+                    format!(
+                        "failed to restore {} into {}",
+                        archive.display(),
+                        data_dir.display()
+                    )
+                })?;
+                info!(
+                    instance = manifest.instance_id,
+                    schema = manifest.schema_version,
+                    daemon_version = manifest.daemon_version,
+                    "restore complete; start the daemon to resume"
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Reports dashboard availability once at startup so a binary without the

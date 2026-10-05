@@ -531,7 +531,8 @@ fn status_works_over_tcp_and_unix_with_clean_json() {
                 "status": "running",
                 "api_version": "v1",
                 "daemon_version": "0.1.0",
-                "instance_id": "instance-test"
+                "instance_id": "instance-test",
+                "backup": {"last_success_at_ms": null, "stale": true}
             }))
         });
         let output = run(&server, &["status"]);
@@ -1398,7 +1399,7 @@ fn read_request_uses_the_full_command_timeout() {
     let server = start_server(false, 1, |_| {
         thread::sleep(Duration::from_millis(650));
         Reply::json(
-            json!({"status": "ok", "daemon_version": "test", "api_version": "v1", "instance_id": "test"}),
+            json!({"status": "ok", "daemon_version": "test", "api_version": "v1", "instance_id": "test", "backup": {"last_success_at_ms": null, "stale": true}}),
         )
     });
     let output = run_with_timeout(&server, &["status"], "1s");
@@ -1744,7 +1745,8 @@ fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
     for json in [false, true] {
         let server = start_server(false, 1, |_| {
             Reply::json(json!({
-                "status":"running", "api_version":"v1", "daemon_version":"test", "instance_id":"instance-test"
+                "status":"running", "api_version":"v1", "daemon_version":"test", "instance_id":"instance-test",
+                "backup": {"last_success_at_ms": null, "stale": true}
             }))
         });
         let output = run_with_format(&server, &["--quiet", "status"], "2s", json);

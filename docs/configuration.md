@@ -170,7 +170,7 @@ auth_key_file = "ts-auth-key" # $CREDENTIALS_DIRECTORY/ts-auth-key
 - The tailnet needs MagicDNS and HTTPS certificates enabled.
 - Node state and the `tailscaled` socket live in `<data_dir>/tailscale`, so the
   node identity, its name and the passkeys bound to it follow the data directory
-  rather than the host.
+  rather than the host. [Backups](backups.md) include the node state.
 - piqueld owns the node's preferences and its Serve configuration for port 443,
   and rewrites both at every start.
 - `auth_key_file` is only needed for the first login. Without it, startup logs a
@@ -256,7 +256,8 @@ Supply new values under the existing names, then explicitly Deploy. The first ne
 value generates a fresh key. Deployments pinned to discarded values fail with
 `secret_unavailable` before changing running services. Recovery replaces the
 storage key, not the passwords or API tokens themselves, and is not a guarantee of
-secure erasure from existing backups. Back up the new key with the database.
+secure erasure from existing backups. Take a new `piqueld backup` so the new key
+is archived with the database; see [backup and restore](backups.md).
 
 ## Managed application ingress
 

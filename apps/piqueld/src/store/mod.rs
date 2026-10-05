@@ -4,6 +4,8 @@
 mod acceptance;
 mod application;
 mod auth;
+mod backup;
+pub(crate) use backup::DatabaseFile;
 mod build;
 mod deployment;
 mod environment;
@@ -373,7 +375,7 @@ impl Store {
     /// Returns a sanitized storage or schema compatibility error.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let path = path.as_ref();
-        ensure_database_target(path)?;
+        ensure_database_target(path).map_err(StoreError::path)?;
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -527,15 +529,15 @@ impl Store {
 /// Verifies the database target is a regular file or absent before `SQLite`
 /// creates it. The parent directory's privacy is enforced by the daemon's data
 /// directory preparation, not here.
-fn ensure_database_target(path: &Path) -> Result<(), StoreError> {
+fn ensure_database_target(path: &Path) -> std::io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => Ok(()),
-        Ok(_) => Err(StoreError::path(std::io::Error::new(
+        Ok(_) => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "database path is not a regular file",
-        ))),
+        )),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(StoreError::path(error)),
+        Err(error) => Err(error),
     }
 }
 
