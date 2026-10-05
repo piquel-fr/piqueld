@@ -185,6 +185,7 @@ piquelctl app service arguments notes web --yes -- --listen "0.0.0.0:8080"
 piquelctl app service depends-on notes web --yes -- postgres
 piquelctl app service rollout notes worker --order stop-first --monitor-seconds 60 --yes
 piquelctl app service add notes worker --git https://example.com/app.git --branch main --yes
+piquelctl app service source git notes web https://example.com/app.git --target runtime --build-arg ORIGIN=https://notes.example.com --yes
 piquelctl app service source git notes web https://example.com/app.git --branch main --yes
 piquelctl app service source branch notes web release --yes
 piquelctl app service source commit notes web --clear --yes

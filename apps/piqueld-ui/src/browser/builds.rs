@@ -460,6 +460,8 @@ fn source_details(source: Source) -> AnyView {
                 Build::Docker {
                     dockerfile,
                     context,
+                    args,
+                    target,
                 },
         } => view! {
             <dt>"Repository"</dt>
@@ -474,7 +476,36 @@ fn source_details(source: Source) -> AnyView {
             <dd>
                 <code>{context}</code>
             </dd>
+            {target
+                .map(|target| {
+                    view! {
+                        <dt>"Build target"</dt>
+                        <dd>
+                            <code>{target}</code>
+                        </dd>
+                    }
+                })}
+            {(!args.is_empty())
+                .then(|| {
+                    view! {
+                        <dt>"Build arguments"</dt>
+                        <dd>
+                            <code>{build_arguments(&args)}</code>
+                        </dd>
+                    }
+                })}
         }
         .into_any(),
     }
+}
+
+/// Renders Docker build arguments as space-separated `KEY="VALUE"` pairs.
+/// Values are quoted and escaped so spaces cannot read as extra arguments.
+pub(in crate::browser) fn build_arguments(
+    args: &std::collections::BTreeMap<String, String>,
+) -> String {
+    args.iter()
+        .map(|(key, value)| format!("{key}={value:?}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }

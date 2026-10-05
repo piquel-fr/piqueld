@@ -300,6 +300,13 @@ pub enum Build {
         /// Build context relative to the repository root.
         #[serde(default = "default_build_context")]
         context: String,
+        /// Values passed as `--build-arg`. They are recorded in image
+        /// metadata, so sensitive values belong in secrets instead.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        args: BTreeMap<String, String>,
+        /// Multi-stage build target; the final stage when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
     },
 }
 

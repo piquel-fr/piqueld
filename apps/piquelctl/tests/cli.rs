@@ -2084,7 +2084,7 @@ fn git_service_creation_does_not_require_a_placeholder_image() {
         assert_eq!(body["name"], "worker");
         assert_eq!(
             body["source"],
-            json!({"type":"git","repository":{"url":"https://example.com/app.git","branch":"release"},"build":{"type":"docker","dockerfile":"build/Dockerfile","context":"build"}})
+            json!({"type":"git","repository":{"url":"https://example.com/app.git","branch":"release"},"build":{"type":"docker","dockerfile":"build/Dockerfile","context":"build","args":{"ORIGIN":"https://a=b"},"target":"runtime"}})
         );
         Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
     });
@@ -2104,6 +2104,10 @@ fn git_service_creation_does_not_require_a_placeholder_image() {
             "build/Dockerfile",
             "--context",
             "build",
+            "--build-arg",
+            "ORIGIN=https://a=b",
+            "--target",
+            "runtime",
             "--yes",
         ],
     );

@@ -39,6 +39,18 @@ pub const ENVIRONMENT_VALUE_INVALID: &str = "environment_value_invalid";
 pub const ENVIRONMENT_COUNT_EXCESSIVE: &str = "environment_count_excessive";
 /// Environment value exceeds its byte budget.
 pub const ENVIRONMENT_VALUE_EXCESSIVE: &str = "environment_value_excessive";
+/// Docker build argument name violates its alphabet rule.
+pub const BUILD_ARG_NAME_INVALID: &str = "build_arg_name_invalid";
+/// Docker build argument value contains forbidden bytes.
+pub const BUILD_ARG_VALUE_INVALID: &str = "build_arg_value_invalid";
+/// Docker build argument map exceeds its entry budget.
+pub const BUILD_ARG_COUNT_EXCESSIVE: &str = "build_arg_count_excessive";
+/// Docker build argument value exceeds its byte budget.
+pub const BUILD_ARG_VALUE_EXCESSIVE: &str = "build_arg_value_excessive";
+/// Docker build arguments together exceed their byte budget.
+pub const BUILD_ARG_TOTAL_EXCESSIVE: &str = "build_arg_total_excessive";
+/// Docker build target is not a valid stage name.
+pub const BUILD_TARGET_INVALID: &str = "build_target_invalid";
 /// Mount references an undeclared volume.
 pub const MOUNT_VOLUME_MISSING: &str = "mount_volume_missing";
 /// Mount target is not a normalized absolute container path.

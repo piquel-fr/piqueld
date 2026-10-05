@@ -69,6 +69,10 @@ pub struct ServiceForm {
     pub dockerfile: String,
     /// Build context relative to the repository root.
     pub context: String,
+    /// Docker build argument rows; duplicate keys are rejected.
+    pub build_args: Vec<(String, String)>,
+    /// Optional multi-stage build target; blank builds the final stage.
+    pub target: String,
     /// Replica count, before numeric validation.
     pub replicas: String,
     /// Environment rows; duplicate keys are rejected.
@@ -114,12 +118,10 @@ impl From<&Service> for ServiceForm {
             commit: String::new(),
             dockerfile: "Dockerfile".into(),
             context: ".".into(),
+            build_args: Vec::new(),
+            target: String::new(),
             replicas: service.replicas.to_string(),
-            environment: service
-                .environment
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            environment: service.environment.clone().into_iter().collect(),
             command: service.command.clone(),
             arguments: service.arguments.clone(),
             mounts: service.mounts.clone(),
@@ -158,6 +160,8 @@ impl From<&Service> for ServiceForm {
                     Build::Docker {
                         dockerfile,
                         context,
+                        args,
+                        target,
                     },
             } => {
                 form.source_kind = "self".into();
@@ -169,6 +173,8 @@ impl From<&Service> for ServiceForm {
                 }
                 form.dockerfile.clone_from(dockerfile);
                 form.context.clone_from(context);
+                form.build_args = args.clone().into_iter().collect();
+                form.target = target.clone().unwrap_or_default();
             }
         }
         match &service.healthcheck {
@@ -200,6 +206,7 @@ impl From<&Service> for ServiceForm {
     }
 }
 impl ServiceForm {
+    /// Builds the edited source.
     fn source(&self) -> Result<Source, String> {
         let repository = match self.source_kind.as_str() {
             "image" => {
@@ -220,8 +227,25 @@ impl ServiceForm {
             build: Build::Docker {
                 dockerfile: self.dockerfile.clone(),
                 context: self.context.clone(),
+                args: Self::unique_keys("Build argument", &self.build_args)?,
+                target: (!self.target.is_empty()).then(|| self.target.clone()),
             },
         })
+    }
+
+    /// Collects key/value rows into a map, rejecting keys that appear twice.
+    /// `noun` names the rows in the error.
+    fn unique_keys(
+        noun: &str,
+        rows: &[(String, String)],
+    ) -> Result<std::collections::BTreeMap<String, String>, String> {
+        let mut values = std::collections::BTreeMap::new();
+        for (key, value) in rows {
+            if values.insert(key.clone(), value.clone()).is_some() {
+                return Err(format!("{noun} key {key:?} appears more than once."));
+            }
+        }
+        Ok(values)
     }
 
     /// Parses the selected health check kind and its numeric fields.
@@ -277,7 +301,8 @@ impl ServiceForm {
 
     /// Applies a single group to a fresh copy of saved configuration.
     /// # Errors
-    /// Returns actionable errors for malformed numeric fields or duplicate environment keys.
+    /// Returns actionable errors for malformed numeric fields or duplicate
+    /// environment or build argument keys.
     pub fn patch(&self, section: Section, service: &mut Service) -> Result<(), String> {
         match section {
             Section::General => {
@@ -288,13 +313,7 @@ impl ServiceForm {
                     .map_err(|_| "Replicas must be an integer between 0 and 65535.")?;
             }
             Section::Environment => {
-                let mut values = std::collections::BTreeMap::new();
-                for (key, value) in &self.environment {
-                    if values.insert(key.clone(), value.clone()).is_some() {
-                        return Err(format!("Environment key {key:?} appears more than once."));
-                    }
-                }
-                service.environment = values;
+                service.environment = Self::unique_keys("Environment", &self.environment)?;
             }
             Section::Process => {
                 service.command.clone_from(&self.command);
@@ -397,7 +416,7 @@ mod tests {
         }
     }
     #[test]
-    fn git_source_round_trips_when_scaling_changes() {
+    fn git_source_round_trips_and_edits_build_settings() {
         let mut saved = service();
         saved.source = Source::Git {
             repository: SourceRepository::Git(GitRepository {
@@ -408,6 +427,8 @@ mod tests {
             build: Build::Docker {
                 dockerfile: "infra/Dockerfile".into(),
                 context: "app".into(),
+                args: [("ORIGIN".into(), "https://example.com".into())].into(),
+                target: Some("runtime".into()),
             },
         };
         let source = saved.source.clone();
@@ -416,6 +437,16 @@ mod tests {
         draft.patch(Section::General, &mut saved).unwrap();
         assert_eq!(saved.source, source);
         assert_eq!(saved.replicas, 3);
+
+        draft.build_args.clear();
+        draft.target.clear();
+        draft.patch(Section::General, &mut saved).unwrap();
+        assert!(matches!(
+            &saved.source,
+            Source::Git { build: Build::Docker { args, target: None, .. }, .. } if args.is_empty()
+        ));
+        draft.build_args = vec![("A".into(), "1".into()), ("A".into(), "2".into())];
+        assert!(draft.patch(Section::General, &mut saved).is_err());
     }
     #[test]
     fn invalid_text_and_duplicate_keys_are_not_silently_discarded() {
