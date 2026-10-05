@@ -1,4 +1,5 @@
-//! Account access: `whoami` and `account list|access|invite|enroll`.
+//! Account access: `whoami`, `account list|access|invite|enroll`, and
+//! `token create|list|revoke`.
 //!
 //! Grants are given with `--preset` and `--permission`, limited to the
 //! applications named with `--app` (every application when omitted). Grants
@@ -11,9 +12,9 @@ use crate::{
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
-    Client,
+    ApplicationId, Client,
     access::{Grant, Grants, Permission, Preset, Scope},
-    auth::{Account, Directory, Manage, Session},
+    auth::{Account, CredentialView, Directory, Manage, Session},
 };
 use serde::Serialize;
 use std::{collections::BTreeMap, io};
@@ -73,22 +74,50 @@ fn parse_permission(value: &str) -> std::result::Result<Permission, String> {
 }
 
 impl GrantArgs {
-    /// Resolves `--app` names and builds the selected grants.
+    /// Whether no grant option was given at all.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.preset.is_none() && self.permissions.is_empty() && self.applications.is_empty()
+    }
+
+    /// Resolves `--app` names through the daemon and builds the selected grants.
     async fn grants(&self, client: &Client) -> Result<Grants> {
+        let mut ids = std::collections::BTreeSet::new();
+        for application in &self.applications {
+            let view = crate::commands::resolve_application(client, application).await?;
+            ids.insert(view.application.id().clone());
+        }
+        self.build(ids)
+    }
+
+    /// Builds the selected grants with `--app` values taken as application
+    /// IDs, for `login`, which cannot look names up before signing in.
+    pub(crate) fn grants_by_id(&self) -> Result<Grants> {
+        let ids = self
+            .applications
+            .iter()
+            .map(|id| {
+                ApplicationId::parse(id.as_str()).map_err(|_| {
+                    CliError::new(
+                        ErrorKind::Input,
+                        format!("--app {id:?} must be an application ID when signing in"),
+                    )
+                })
+            })
+            .collect::<Result<_>>()?;
+        self.build(ids)
+    }
+
+    /// Builds the selected grants on `ids`, or every application when empty.
+    fn build(&self, ids: std::collections::BTreeSet<ApplicationId>) -> Result<Grants> {
         if self.preset.is_none() && self.permissions.is_empty() {
             return Err(CliError::new(
                 ErrorKind::Input,
                 "select grants with --preset or --permission",
             ));
         }
-        let scope = if self.applications.is_empty() {
+        let scope = if ids.is_empty() {
             Scope::All
         } else {
-            let mut ids = std::collections::BTreeSet::new();
-            for application in &self.applications {
-                let view = crate::commands::resolve_application(client, application).await?;
-                ids.insert(view.application.id().clone());
-            }
             Scope::Only(ids)
         };
         let mut grants = self
@@ -98,6 +127,76 @@ impl GrantArgs {
             grants.grant_within(*permission, &scope);
         }
         Ok(grants)
+    }
+}
+
+// `token` subcommands; `///` on variants and fields is user-facing help.
+#[derive(Debug, Subcommand)]
+pub(crate) enum TokenCommand {
+    /// Create an API token for your account, limited to the selected grants.
+    Create {
+        /// Token name.
+        name: String,
+        #[command(flatten)]
+        grants: GrantArgs,
+        /// Lifetime in days.
+        #[arg(long, default_value_t = 90, conflicts_with = "no_expiry", value_parser = clap::value_parser!(u32).range(1..))]
+        days: u32,
+        /// Never expire (refused when the daemon limits token lifetimes).
+        #[arg(long)]
+        no_expiry: bool,
+    },
+    /// List your sessions and tokens.
+    List,
+    /// Revoke one of your sessions or tokens by ID.
+    Revoke {
+        /// Credential ID from `token list`.
+        id: String,
+    },
+}
+
+impl TokenCommand {
+    /// Runs one `token` subcommand.
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        match self {
+            Self::Create {
+                name,
+                grants,
+                days,
+                no_expiry,
+            } => {
+                let grants = grants.grants(client).await?;
+                let managed = client
+                    .auth_manage(&Manage::CreateToken {
+                        grants,
+                        name: name.clone(),
+                        days: (!no_expiry).then_some(*days),
+                    })
+                    .await?;
+                let token = managed.token.ok_or_else(|| {
+                    CliError::new(ErrorKind::General, "the daemon returned no token")
+                        .invalid_response()
+                })?;
+                console.emit(&TokenReport { token })
+            }
+            Self::List => {
+                let me = client.auth_me().await?;
+                let directory = client.auth_directory().await?;
+                let names = Names::load(client).await;
+                let credentials = directory
+                    .credentials
+                    .into_iter()
+                    .filter(|credential| credential.user_id == me.user.id)
+                    .collect::<Vec<_>>();
+                console.emit(&CredentialsReport { credentials, names })
+            }
+            Self::Revoke { id } => {
+                client
+                    .auth_manage(&Manage::RevokeCredential { id: id.clone() })
+                    .await?;
+                console.info(format_args!("revoked {id}"))
+            }
+        }
     }
 }
 
@@ -246,7 +345,12 @@ impl Report for SessionReport {
     }
     fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
         let user = &self.session.user;
-        out.line(format_args!("{} ({})", user.username, user.id))?;
+        let limited = if self.session.scoped {
+            ", limited credential"
+        } else {
+            ""
+        };
+        out.line(format_args!("{} ({}{limited})", user.username, user.id))?;
         self.names.render(&self.session.grants, out)
     }
 }
@@ -268,6 +372,50 @@ impl Report for AccountsReport<'_> {
                 account.user.username, account.user.id
             ))?;
             self.names.render(&account.grants, out)?;
+        }
+        Ok(())
+    }
+}
+
+/// A newly created token; human output is the bare secret so it can be piped.
+#[derive(Serialize)]
+struct TokenReport {
+    token: String,
+}
+impl Report for TokenReport {
+    type Json = Self;
+    fn json(&self) -> &Self {
+        self
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        out.line(&self.token)
+    }
+}
+
+/// The caller's sessions and tokens with their limits.
+struct CredentialsReport {
+    credentials: Vec<CredentialView>,
+    names: Names,
+}
+impl Report for CredentialsReport {
+    type Json = [CredentialView];
+    fn json(&self) -> &[CredentialView] {
+        &self.credentials
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        for credential in &self.credentials {
+            let expires = credential.expires_at.map_or_else(
+                || "never expires".into(),
+                |at| format!("expires at Unix {at}"),
+            );
+            out.line(format_args!(
+                "{} {} {} ({expires})",
+                credential.id, credential.kind, credential.name
+            ))?;
+            match &credential.grants {
+                Some(grants) => self.names.render(grants, out)?,
+                None => out.line("  the account's full access")?,
+            }
         }
         Ok(())
     }
@@ -319,5 +467,18 @@ mod tests {
         };
         assert_eq!(find(&directory, "user-1").unwrap().user.username, "Bob");
         assert_eq!(find(&directory, "bob").unwrap().user.id, "user-1");
+    }
+
+    /// `--app` alone selects nothing, so it is refused instead of silently
+    /// asking for the account's full access.
+    #[test]
+    fn applications_without_permissions_are_refused() {
+        let args = GrantArgs {
+            preset: None,
+            permissions: Vec::new(),
+            applications: vec!["app-blog0000".into()],
+        };
+        assert!(!args.is_empty());
+        assert!(args.grants_by_id().is_err());
     }
 }

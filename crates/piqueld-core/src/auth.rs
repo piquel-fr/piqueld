@@ -20,6 +20,9 @@ pub struct Session {
     pub user: User,
     /// Effective grants of the credential used for this request.
     pub grants: Grants,
+    /// Whether the credential is limited to its own grants, like an API
+    /// token; such credentials cannot create credentials.
+    pub scoped: bool,
 }
 /// An account and its grants.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -89,6 +92,9 @@ pub struct PasskeyView {
 /// Revocable browser session, CLI session, or automation token metadata.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct CredentialView {
+    /// Grants this credential is limited to, within its account's current
+    /// access; absent when it acts with the account's full access.
+    pub grants: Option<Grants>,
     /// Revocation identifier, never a bearer secret.
     pub id: String,
     /// Account identifier.
@@ -201,8 +207,11 @@ pub enum Manage {
         id: String,
     },
     /// Create an automation token for the caller's own account; callers supply
-    /// 90 days for the default.
+    /// 90 days for the default. The token acts with `grants`, limited by the
+    /// account's current access, and cannot create credentials itself.
     CreateToken {
+        /// Grants the token is limited to; the caller must hold them.
+        grants: Grants,
         /// Token label.
         name: String,
         /// Lifetime in days; absent means no expiry.
@@ -216,6 +225,14 @@ pub struct Managed {
     pub token: Option<String>,
     /// Newly created invitation or enrollment link.
     pub invitation_url: Option<String>,
+}
+/// Optional limits for a CLI device login.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
+pub struct DeviceStartRequest {
+    /// Grants the issued CLI session is limited to; absent for the approving
+    /// account's full access.
+    #[serde(default)]
+    pub grants: Option<Grants>,
 }
 /// Device login challenge for an interactive CLI.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -258,6 +275,8 @@ pub struct DeviceRequest {
     pub age: u32,
     /// Seconds until the request expires.
     pub expires_in: u32,
+    /// Grants the session is limited to; absent for the approver's full access.
+    pub grants: Option<Grants>,
 }
 /// Poll result; the token is returned exactly once after explicit approval.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

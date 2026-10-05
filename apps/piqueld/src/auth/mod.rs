@@ -22,6 +22,8 @@ const DAY: i64 = 86_400;
 const CEREMONY_LIFETIME: i64 = 300;
 /// Capacity of each in-memory pending map (ceremonies and device logins).
 const MAX_PENDING: usize = 1024;
+/// Prefix of credential secrets issued since authorization was introduced.
+const CREDENTIAL_PREFIX: &str = "pqd_";
 
 /// Authentication failure with internal diagnostics retained for logging.
 #[derive(Debug, thiserror::Error)]
@@ -77,6 +79,9 @@ struct Inner {
     throttle: Mutex<throttle::Throttle>,
     /// Link written by [`Auth::prepare_setup`] while the installation is unclaimed.
     setup_link: Mutex<Option<String>>,
+    /// Longest API token lifetime in days (`auth.max_token_days`); `None`
+    /// allows tokens that never expire.
+    max_token_days: Option<u32>,
 }
 
 impl Auth {
@@ -90,7 +95,7 @@ impl Auth {
         store: &crate::store::Store,
         config: &crate::config::DaemonConfig,
     ) -> anyhow::Result<Self> {
-        let auth = Self::new(store, config.public_url())?;
+        let auth = Self::configured(store, config.public_url(), config.auth.max_token_days)?;
         let path = config.server.data_dir.join("setup-link");
         auth.prepare_setup(&path).await?;
         if auth.0.setup_link.lock().await.is_some() {
@@ -102,10 +107,23 @@ impl Auth {
         Ok(auth)
     }
 
-    /// Constructs the service for one exact browser origin.
+    /// Constructs the service for one exact browser origin, without a token
+    /// lifetime limit.
     /// # Errors
     /// Rejects origins that `WebAuthn` cannot safely use.
     pub fn new(store: &crate::store::Store, public_url: &str) -> Result<Self> {
+        Self::configured(store, public_url, None)
+    }
+
+    /// Constructs the service for one exact browser origin, limiting API
+    /// tokens to `max_token_days` when set.
+    /// # Errors
+    /// Rejects origins that `WebAuthn` cannot safely use.
+    pub fn configured(
+        store: &crate::store::Store,
+        public_url: &str,
+        max_token_days: Option<u32>,
+    ) -> Result<Self> {
         let origin = Self::validate_origin(public_url)?;
         let host = origin
             .domain()
@@ -128,6 +146,7 @@ impl Auth {
             devices: Mutex::new(HashMap::new()),
             throttle: Mutex::new(throttle::Throttle::default()),
             setup_link: Mutex::new(None),
+            max_token_days,
         })))
     }
 
@@ -245,18 +264,29 @@ impl Auth {
         uuid::Uuid::now_v7().to_string()
     }
     /// Generates a credential secret, returning it with the record to store.
-    fn new_credential(
+    /// `grants` limits a scoped credential; `None` acts with the account's
+    /// full access.
+    ///
+    /// Secrets carry the [`CREDENTIAL_PREFIX`] so leaked ones are easy to find
+    /// with secret scanners:
+    ///
+    /// ```text
+    /// pqd_q2C5Rk9…   (4 + 43 characters)
+    /// ```
+    fn new_credential<'a>(
         kind: CredentialKind,
-        name: &str,
+        name: &'a str,
         expires_at: Option<i64>,
-    ) -> Result<(String, NewCredential<'_>)> {
-        let secret = Self::secret()?;
+        grants: Option<&'a piqueld_core::access::Grants>,
+    ) -> Result<(String, NewCredential<'a>)> {
+        let secret = format!("{CREDENTIAL_PREFIX}{}", Self::secret()?);
         let credential = NewCredential {
             id: Self::id(),
             secret_hash: Self::hash(&secret),
             kind,
             name,
             expires_at,
+            grants,
         };
         Ok((secret, credential))
     }

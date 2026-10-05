@@ -238,28 +238,44 @@ impl Store {
 
     /// Removes an application being deleted once none of its environments
     /// remain, together with its application-owned events and replay receipts.
+    /// Its grants cascade with it; scoped credentials that held grants only
+    /// there would be left with no access, so they are revoked.
     pub(super) async fn finish_application_delete_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
     ) -> Result<(), StoreError> {
-        let removed = sqlx::query!(
-            "DELETE FROM applications WHERE id=?1 AND delete_intent=1 AND NOT EXISTS(SELECT 1 FROM environments WHERE application_id=?1)",
+        let removable = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM applications WHERE id=?1 AND delete_intent=1 AND NOT EXISTS(SELECT 1 FROM environments WHERE application_id=?1)) AS "removable!: bool""#,
+            id
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        if !removable {
+            return Ok(());
+        }
+        sqlx::query!(
+            "DELETE FROM auth_credentials WHERE scoped=1
+             AND id IN (SELECT credential_id FROM auth_grants WHERE application_id=?1)
+             AND NOT EXISTS (SELECT 1 FROM auth_grants g WHERE g.credential_id=auth_credentials.id
+                 AND (g.application_id IS NULL OR g.application_id<>?1))",
             id
         )
         .execute(&mut **tx)
         .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        if removed == 1 {
-            sqlx::query!(
-                "DELETE FROM events WHERE application_id=?1 AND scope='application'",
-                id
-            )
+        .map_err(StoreError::database)?;
+        sqlx::query!("DELETE FROM applications WHERE id=?1", id)
             .execute(&mut **tx)
             .await
             .map_err(StoreError::database)?;
-            sqlx::query!("DELETE FROM request_receipts WHERE json_extract(response_json,'$.Saved.application_id')=?1 OR json_extract(response_json,'$.Rename.application_id')=?1 OR json_extract(response_json,'$.Deleted.application_id')=?1",id).execute(&mut **tx).await.map_err(StoreError::database)?;
-        }
+        sqlx::query!(
+            "DELETE FROM events WHERE application_id=?1 AND scope='application'",
+            id
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        sqlx::query!("DELETE FROM request_receipts WHERE json_extract(response_json,'$.Saved.application_id')=?1 OR json_extract(response_json,'$.Rename.application_id')=?1 OR json_extract(response_json,'$.Deleted.application_id')=?1",id).execute(&mut **tx).await.map_err(StoreError::database)?;
         Ok(())
     }
 

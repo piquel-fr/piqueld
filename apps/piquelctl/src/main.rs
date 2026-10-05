@@ -53,7 +53,7 @@ async fn main() -> ExitCode {
         }
         profiles.resolve(&mut cli, &matches)?;
         match &cli.command {
-            cli::Command::Login => {
+            cli::Command::Login { .. } => {
                 let client = commands::build_client(&cli)?;
                 auth::login(&cli, &client, &mut console).await?;
             }

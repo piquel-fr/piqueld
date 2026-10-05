@@ -332,6 +332,11 @@ impl From<Denied> for ApiError {
                 "permission_exceeded",
                 "The account or grants include access you do not hold",
             ),
+            Denied::Scoped => Self::new(
+                StatusCode::FORBIDDEN,
+                "credential_scoped",
+                "Credentials with limited access, like API tokens, cannot create credentials",
+            ),
         }
     }
 }

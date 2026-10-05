@@ -11,7 +11,8 @@ use axum::{
 };
 use piqueld_core::auth::{
     AuthStatus, Ceremony, CeremonyFinish, DeviceApprove, DevicePoll, DeviceRequest, DeviceStart,
-    DeviceToken, Directory, Manage, Managed, RegistrationStart, Session, SetupLink, User,
+    DeviceStartRequest, DeviceToken, Directory, Manage, Managed, RegistrationStart, Session,
+    SetupLink, User,
 };
 use std::net::SocketAddr;
 
@@ -242,6 +243,7 @@ pub(super) async fn me(Extension(identity): Extension<Identity>) -> Json<Session
     Json(Session {
         user: identity.user,
         grants: identity.grants,
+        scoped: identity.scoped,
     })
 }
 /// Starts passkey registration.
@@ -354,14 +356,38 @@ pub(super) async fn manage(
 /// Starts a device sign-in for a command-line client.
 ///
 /// Public. Returns a device code to poll with and a user code to approve in a
-/// signed-in browser. Rate limited per client address (429 with `Retry-After`).
-#[utoipa::path(post,path="/api/v1/auth/device/start",operation_id="authDeviceStart",responses((status=200,body=DeviceStart)))]
+/// signed-in browser. A JSON body, which may be omitted, limits the issued session to
+/// `grants`, which the approver must hold. Rate limited per client address
+/// (429 with `Retry-After`).
+#[utoipa::path(post,path="/api/v1/auth/device/start",operation_id="authDeviceStart",request_body=DeviceStartRequest,responses((status=200,body=DeviceStart)))]
 pub(super) async fn device_start(
     Extension(auth): Extension<Auth>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    body: axum::body::Bytes,
 ) -> Result<Json<DeviceStart>, ApiError> {
     let requester = peer.map(|Extension(ConnectInfo(peer))| peer.ip());
-    Ok(Json(auth.device_start(requester).await?))
+    let request = if body.is_empty() {
+        DeviceStartRequest::default()
+    } else {
+        super::decode_json::<DeviceStartRequest>(&body)?
+    };
+    Ok(Json(auth.device_start(requester, request.grants).await?))
+}
+/// Marks [`device_start`]'s request body optional in the `OpenAPI` document:
+/// older clients send none.
+pub(super) fn optional_body<S>(
+    (schemas, mut paths, router): utoipa_axum::router::UtoipaMethodRouter<S>,
+) -> utoipa_axum::router::UtoipaMethodRouter<S> {
+    for item in paths.paths.values_mut() {
+        if let Some(body) = item
+            .post
+            .as_mut()
+            .and_then(|operation| operation.request_body.as_mut())
+        {
+            body.required = Some(utoipa::openapi::Required::False);
+        }
+    }
+    (schemas, paths, router)
 }
 /// Polls a device sign-in.
 ///

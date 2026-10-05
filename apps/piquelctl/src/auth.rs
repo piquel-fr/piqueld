@@ -201,7 +201,7 @@ impl Credentials {
     /// Adds a bearer token to `client`: `PIQUELD_TOKEN` wins over the saved login.
     /// `login` skips this, and without any token the client is returned unchanged.
     pub(crate) fn attach(cli: &Cli, client: Client) -> Result<Client> {
-        if matches!(cli.command, Command::Login) {
+        if matches!(cli.command, Command::Login { .. }) {
             return Ok(client);
         }
         let token = match std::env::var("PIQUELD_TOKEN") {
@@ -297,7 +297,11 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
             "daemon needs its first account; run piquelctl setup-link on the daemon host",
         ));
     }
-    let start = client.auth_device_start().await?;
+    let limit = match &cli.command {
+        crate::cli::Command::Login { limit } if !limit.is_empty() => Some(limit.grants_by_id()?),
+        _ => None,
+    };
+    let start = client.auth_device_start(limit).await?;
     console.prompt_lines(&[
         format!("Open {}", start.verification_uri),
         format!("Enter code: {}", start.user_code),

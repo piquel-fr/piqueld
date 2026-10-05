@@ -251,6 +251,20 @@ impl Scope {
         }
     }
 
+    /// Applications in `self` that `covered` does not include. Every
+    /// application minus a list stays every application, since later
+    /// applications remain uncovered.
+    #[must_use]
+    pub fn without(&self, covered: &Self) -> Self {
+        match (self, covered) {
+            (_, Self::All) => Self::NONE,
+            (Self::All, Self::Only(_)) => Self::All,
+            (Self::Only(ours), Self::Only(theirs)) => {
+                Self::Only(ours.difference(theirs).cloned().collect())
+            }
+        }
+    }
+
     /// The application list, or `None` for every application.
     #[must_use]
     pub fn applications(&self) -> Option<&BTreeSet<ApplicationId>> {
@@ -305,6 +319,10 @@ pub enum Denied {
     /// the caller does not hold.
     #[error("the account or grants include access you do not hold")]
     Exceeds,
+    /// Credentials with limited access, like API tokens, cannot create
+    /// credentials: tokens, passkeys, enrollment links, or CLI logins.
+    #[error("credentials with limited access cannot create credentials")]
+    Scoped,
 }
 
 /// The application a change applies to.
@@ -321,7 +339,13 @@ pub enum Target<'a> {
     Unknown,
 }
 
-/// A validated set of grants. Grants for the same permission merge into one.
+/// A validated set of grants in canonical form, so equal access compares
+/// equal:
+///
+/// - grants for the same permission merge into one;
+/// - nothing `admin` already covers is listed again;
+/// - `apps:read` lists every application readable through other
+///   application permissions, since they imply it.
 ///
 /// Use [`Grants::intersection`] to limit one set by another, e.g. a token by
 /// its owner's current access.
@@ -379,6 +403,27 @@ impl Grants {
                     .extend(scope);
             }
         }
+        self.normalize();
+    }
+
+    /// Restores the canonical form described on [`Grants`].
+    fn normalize(&mut self) {
+        let admin = self.admin_scope();
+        if admin == Scope::All {
+            self.apps.clear();
+            self.global.clear();
+            return;
+        }
+        let mut readable = Scope::NONE;
+        for scope in self.apps.values_mut() {
+            *scope = scope.without(&admin);
+            readable.extend(scope);
+        }
+        self.apps.insert(AppPermission::Read, readable);
+        self.apps.retain(|_, scope| !scope.is_empty());
+        if admin.is_empty() {
+            self.admin = None;
+        }
     }
 
     /// Adds every grant of `other`.
@@ -393,6 +438,7 @@ impl Grants {
                 .extend(scope);
         }
         self.global.extend(other.global.iter().copied());
+        self.normalize();
     }
 
     /// Whether these grants hold nothing.
@@ -561,29 +607,25 @@ impl Grants {
     /// Access held by both sets, e.g. a token limited by its owner.
     #[must_use]
     pub fn intersection(&self, other: &Self) -> Self {
-        let admin = self.admin_scope().intersection(&other.admin_scope());
         let mut result = Self {
-            admin: (!admin.is_empty()).then_some(admin),
-            ..Self::default()
+            admin: Some(self.admin_scope().intersection(&other.admin_scope())),
+            apps: AppPermission::ALL
+                .iter()
+                .map(|permission| {
+                    let ours = self.app_scope(*permission);
+                    (
+                        *permission,
+                        ours.intersection(&other.app_scope(*permission)),
+                    )
+                })
+                .collect(),
+            global: GlobalPermission::ALL
+                .iter()
+                .copied()
+                .filter(|permission| self.has_global(*permission) && other.has_global(*permission))
+                .collect(),
         };
-        // `apps:read` comes last: it is implied by every other permission, so
-        // only what they and `admin` do not already cover is kept explicitly.
-        for permission in AppPermission::ALL.iter().rev() {
-            let scope = self
-                .app_scope(*permission)
-                .intersection(&other.app_scope(*permission));
-            if !result.app_scope(*permission).covers(&scope) {
-                result.apps.insert(*permission, scope);
-            }
-        }
-        for permission in GlobalPermission::ALL {
-            if !result.has_global(*permission)
-                && self.has_global(*permission)
-                && other.has_global(*permission)
-            {
-                result.global.insert(*permission);
-            }
-        }
+        result.normalize();
         result
     }
 
@@ -603,10 +645,11 @@ impl Grants {
             result.admin = Some(scope.clone());
         }
         for (permission, held) in &self.apps {
-            if *held != Scope::All && !result.admin_scope().contains(id) {
+            if *held != Scope::All {
                 result.apps.insert(*permission, scope.clone());
             }
         }
+        result.normalize();
         result
     }
 
@@ -876,6 +919,30 @@ mod tests {
             grants(&[("apps:write", Some(&["app-new00000"]))])
         );
         assert!(Grants::admin().for_created_application(&new).is_empty());
+    }
+
+    /// Equal access has one representation however it was written.
+    #[test]
+    fn equal_access_compares_equal() {
+        let blog = Some(&["app-blog0000"][..]);
+        assert_eq!(
+            grants(&[("apps:deploy", blog)]),
+            grants(&[("apps:read", blog), ("apps:deploy", blog)])
+        );
+        assert_eq!(
+            grants(&[("admin", blog), ("apps:delete", blog), ("logs:read", None)]),
+            grants(&[("admin", blog), ("logs:read", None)])
+        );
+        assert_eq!(
+            grants(&[("admin", None), ("system:read", None)]),
+            Grants::admin()
+        );
+        assert_eq!(
+            Preset::Developer
+                .grants(&Scope::All)
+                .intersection(&grants(&[("apps:deploy", blog)])),
+            grants(&[("apps:deploy", blog)])
+        );
     }
 
     /// The wire list round-trips canonically and rejects invalid scopes.

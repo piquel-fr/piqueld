@@ -33,7 +33,7 @@ impl Fixture {
             display_name: String::new(),
         };
         self.auth.0.store.seed_auth_user(&user, grants).await;
-        let (token, credential) = Auth::new_credential(kind, "Test", expires).unwrap();
+        let (token, credential) = Auth::new_credential(kind, "Test", expires, None).unwrap();
         self.auth
             .0
             .store
@@ -43,12 +43,10 @@ impl Fixture {
         (user.id, token)
     }
 
-    /// Seeds an account holding `grants` behind a non-expiring token, and
-    /// returns the identity that token authenticates as.
+    /// Seeds an account holding `grants` behind a non-expiring CLI session
+    /// with the account's full access, and returns its identity.
     async fn identity(&self, name: &str, grants: &Grants) -> Identity {
-        let (_, token) = self
-            .account(name, CredentialKind::Token, None, grants)
-            .await;
+        let (_, token) = self.account(name, CredentialKind::Cli, None, grants).await;
         self.auth.authenticate(&token).await.unwrap()
     }
 
@@ -212,6 +210,7 @@ async fn accounts_manage_themselves_and_last_admin_deletion_is_atomic() {
         .manage(
             &bob,
             Manage::CreateToken {
+                grants: Grants::admin(),
                 name: "automation".into(),
                 days: None,
             },
@@ -491,6 +490,7 @@ async fn changes_use_the_callers_current_grants() {
             .manage(
                 &bob,
                 Manage::CreateToken {
+                    grants: developer(),
                     name: "late".into(),
                     days: None,
                 },
@@ -592,6 +592,283 @@ async fn links_are_revalidated_when_redeemed_and_revoked() {
         };
         assert!(!f.auth.0.store.add_passkey(redeem, passkey).await.unwrap());
     }
+}
+
+/// Tokens act with their grants within the owner's current access, carry the
+/// `pqd_` prefix, and cannot create credentials of any kind.
+#[tokio::test]
+async fn tokens_act_within_their_grants_and_cannot_create_credentials() {
+    let f = Fixture::new().await;
+    let root = f.identity("root", &Grants::admin()).await;
+    f.passkey(&root).await;
+    let alice = f.identity("alice", &developer()).await;
+    let token = |grants: Grants| Manage::CreateToken {
+        grants,
+        name: "ci".into(),
+        days: Some(30),
+    };
+    let deploy = Preset::Deploy.grants(&Scope::All);
+    assert_eq!(
+        denied(f.auth.manage(&alice, token(Grants::admin())).await),
+        Denied::Exceeds
+    );
+    let secret = f
+        .auth
+        .manage(&alice, token(deploy.clone()))
+        .await
+        .unwrap()
+        .token
+        .unwrap();
+    assert!(secret.starts_with("pqd_"));
+    let ci = f.auth.authenticate(&secret).await.unwrap();
+    assert!(ci.scoped);
+    assert_eq!(ci.grants, deploy);
+    // The owner's current access limits the token.
+    let read_only = Preset::ReadOnly.grants(&Scope::All);
+    f.auth
+        .manage(
+            &root,
+            Manage::SetGrants {
+                user_id: alice.user.id.clone(),
+                grants: read_only.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        f.auth.authenticate(&secret).await.unwrap().grants,
+        read_only.intersection(&deploy)
+    );
+    // No credential can be created through a token, even within its grants.
+    for command in [
+        token(Grants::default()),
+        Manage::CreateEnrollment {
+            user_id: alice.user.id.clone(),
+        },
+        Manage::CreateInvitation {
+            grants: Grants::default(),
+        },
+    ] {
+        assert_eq!(denied(f.auth.manage(&ci, command).await), Denied::Scoped);
+    }
+    let passkey = NewPasskey {
+        id: "token-key",
+        name: "Key",
+        credential: "{}",
+    };
+    let owner = PasskeyOwner::Existing(ci.caller(), &alice.user.id);
+    assert!(matches!(
+        f.auth.0.store.add_passkey(owner, passkey).await,
+        Err(StoreError::Denied(Denied::Scoped))
+    ));
+    let start = f.auth.device_start(None, None).await.unwrap();
+    assert!(matches!(
+        f.auth.device_approve(&start.user_code, &ci).await,
+        Err(AuthError::Denied(Denied::Scoped))
+    ));
+}
+
+/// A token keeps no access its owner lost after it authenticated: writes
+/// re-read the owner's grants, and a scoped credential without grants can do
+/// nothing.
+#[tokio::test]
+async fn scoped_credentials_follow_their_owner_and_never_widen() {
+    let f = Fixture::new().await;
+    let root = f.identity("root", &Grants::admin()).await;
+    f.passkey(&root).await;
+    let alice = f.identity("alice", &Grants::admin()).await;
+    let bob = f.identity("bob", &developer()).await;
+    let secret = f
+        .auth
+        .manage(
+            &alice,
+            Manage::CreateToken {
+                grants: Grants::admin(),
+                name: "ops".into(),
+                days: None,
+            },
+        )
+        .await
+        .unwrap()
+        .token
+        .unwrap();
+    // Authenticated as an administrator's token, then the owner is demoted.
+    let ops = f.auth.authenticate(&secret).await.unwrap();
+    f.auth
+        .manage(
+            &root,
+            Manage::SetGrants {
+                user_id: alice.user.id.clone(),
+                grants: developer(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        denied(
+            f.auth
+                .manage(
+                    &ops,
+                    Manage::RevokeAll {
+                        user_id: bob.user.id.clone(),
+                    },
+                )
+                .await
+        ),
+        Denied::Missing(Permission::Global(GlobalPermission::AccountsManage))
+    );
+    // Neither a token nor a limited CLI login hands out lasting access, even
+    // within its grants.
+    let read_only = Preset::ReadOnly.grants(&Scope::All);
+    let admin = Grants::admin();
+    let (secret, credential) =
+        Auth::new_credential(CredentialKind::Cli, "limited", None, Some(&admin)).unwrap();
+    f.auth
+        .0
+        .store
+        .insert_credential(&root.user.id, &credential)
+        .await
+        .unwrap();
+    let limited = f.auth.authenticate(&secret).await.unwrap();
+    let root_secret = f
+        .auth
+        .manage(
+            &root,
+            Manage::CreateToken {
+                grants: Grants::admin(),
+                name: "ops".into(),
+                days: None,
+            },
+        )
+        .await
+        .unwrap()
+        .token
+        .unwrap();
+    let token = f.auth.authenticate(&root_secret).await.unwrap();
+    for scoped in [&limited, &token] {
+        let grant = Manage::SetGrants {
+            user_id: bob.user.id.clone(),
+            grants: read_only.clone(),
+        };
+        assert_eq!(denied(f.auth.manage(scoped, grant).await), Denied::Scoped);
+    }
+    let empty = Grants::default();
+    let (secret, credential) =
+        Auth::new_credential(CredentialKind::Token, "empty", None, Some(&empty)).unwrap();
+    f.auth
+        .0
+        .store
+        .insert_credential(&alice.user.id, &credential)
+        .await
+        .unwrap();
+    let nothing = f.auth.authenticate(&secret).await.unwrap();
+    assert!(nothing.scoped);
+    assert!(nothing.grants.is_empty());
+}
+
+/// `auth.max_token_days` bounds new tokens, and secrets issued before the
+/// `pqd_` prefix still authenticate, including ones that happen to start
+/// with it.
+#[tokio::test]
+async fn token_lifetimes_are_bounded_and_legacy_secrets_authenticate() {
+    let f = Fixture::new().await;
+    let alice = f.identity("alice", &Grants::admin()).await;
+    let auth = Auth::configured(&f.auth.0.store, "http://localhost:7845", Some(30)).unwrap();
+    let token = |days| Manage::CreateToken {
+        grants: developer(),
+        name: "ci".into(),
+        days,
+    };
+    for days in [None, Some(31)] {
+        assert!(matches!(
+            auth.manage(&alice, token(days)).await,
+            Err(AuthError::Invalid(_))
+        ));
+    }
+    auth.manage(&alice, token(Some(30))).await.unwrap();
+    for legacy in ["l".repeat(43), format!("pqd_{}", "A".repeat(39))] {
+        let credential = crate::store::NewCredential {
+            id: Auth::id(),
+            secret_hash: Auth::hash(&legacy),
+            kind: CredentialKind::Token,
+            name: "legacy",
+            expires_at: None,
+            grants: Some(&Grants::admin()),
+        };
+        f.auth
+            .0
+            .store
+            .insert_credential(&alice.user.id, &credential)
+            .await
+            .unwrap();
+        assert_eq!(
+            f.auth.authenticate(&legacy).await.unwrap().grants,
+            Grants::admin()
+        );
+    }
+}
+
+/// A CLI login can ask for less than the approver's access; the approver must
+/// hold what it asks for, and the issued session is limited to it.
+#[tokio::test]
+async fn device_logins_can_request_limited_sessions() {
+    let f = Fixture::new().await;
+    let alice = f.identity("alice", &developer()).await;
+    let start = f
+        .auth
+        .device_start(None, Some(Grants::admin()))
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.auth.device_approve(&start.user_code, &alice).await,
+        Err(AuthError::Denied(Denied::Exceeds))
+    ));
+    let read_only = Preset::ReadOnly.grants(&Scope::All);
+    let start = f
+        .auth
+        .device_start(None, Some(read_only.clone()))
+        .await
+        .unwrap();
+    let request = f.auth.device_inspect(&start.user_code).await.unwrap();
+    assert_eq!(request.grants.as_ref(), Some(&read_only));
+    f.auth
+        .device_approve(&start.user_code, &alice)
+        .await
+        .unwrap();
+    let result = f.auth.device_poll(&start.device_code).await.unwrap();
+    let session = f
+        .auth
+        .authenticate(result.token.as_ref().unwrap())
+        .await
+        .unwrap();
+    assert!(session.scoped);
+    assert_eq!(session.grants, read_only);
+    // Issuance re-checks the approver, who may have lost the access since.
+    let root = f.identity("root", &Grants::admin()).await;
+    f.passkey(&root).await;
+    let start = f
+        .auth
+        .device_start(None, Some(read_only.clone()))
+        .await
+        .unwrap();
+    f.auth
+        .device_approve(&start.user_code, &alice)
+        .await
+        .unwrap();
+    f.auth
+        .manage(
+            &root,
+            Manage::SetGrants {
+                user_id: alice.user.id.clone(),
+                grants: Preset::Deploy.grants(&Scope::All),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.auth.device_poll(&start.device_code).await,
+        Err(AuthError::Store(StoreError::Denied(Denied::Exceeds)))
+    ));
 }
 
 #[tokio::test]
@@ -712,7 +989,7 @@ async fn device_approval_is_explicit_single_use_and_bound_to_a_live_session() {
         )
         .await;
     let identity = f.auth.authenticate(&token).await.unwrap();
-    let start = f.auth.device_start(None).await.unwrap();
+    let start = f.auth.device_start(None, None).await.unwrap();
     assert_eq!(
         f.auth.device_poll(&start.device_code).await.unwrap().status,
         "authorization_pending"
@@ -745,7 +1022,7 @@ async fn device_approval_is_explicit_single_use_and_bound_to_a_live_session() {
         .await
         .unwrap();
     assert!(f.auth.device_poll(&start.device_code).await.is_err());
-    let start = f.auth.device_start(None).await.unwrap();
+    let start = f.auth.device_start(None, None).await.unwrap();
     f.auth
         .device_approve(&start.user_code, &identity)
         .await
@@ -1100,7 +1377,7 @@ async fn device_inspection_reports_the_requester_until_approval() {
         .await;
     let identity = f.auth.authenticate(&token).await.unwrap();
     let peer = "192.0.2.7".parse().unwrap();
-    let start = f.auth.device_start(Some(peer)).await.unwrap();
+    let start = f.auth.device_start(Some(peer), None).await.unwrap();
     assert_eq!(start.requester.as_deref(), Some("192.0.2.7"));
     let request = f
         .auth
@@ -1121,7 +1398,7 @@ async fn device_inspection_reports_the_requester_until_approval() {
         .await
         .unwrap();
     assert!(f.auth.device_inspect(&start.user_code).await.is_err());
-    let local = f.auth.device_start(None).await.unwrap();
+    let local = f.auth.device_start(None, None).await.unwrap();
     assert!(local.requester.is_none());
     assert!(
         f.auth

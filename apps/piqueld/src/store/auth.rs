@@ -5,7 +5,7 @@
 //! behind the shared writer, and account changes refuse to lock everyone out.
 //! Changes to an account take the [`Caller`], whose authority over the account
 //! is checked against both sides' current grants inside the same transaction.
-use super::access::{Caller, Holder};
+use super::access::{Authority, Caller, Holder};
 use super::{Store, StoreError, now_secs};
 use piqueld_core::access::{GlobalPermission, Grants, Permission};
 use piqueld_core::auth::{Account, CredentialView, Directory, InvitationView, PasskeyView, User};
@@ -78,6 +78,9 @@ pub(crate) struct NewCredential<'a> {
     pub(crate) name: &'a str,
     /// Absolute expiry in Unix seconds; `None` never expires.
     pub(crate) expires_at: Option<i64>,
+    /// Grants a scoped credential is limited to; `None` acts with the
+    /// account's full access.
+    pub(crate) grants: Option<&'a Grants>,
 }
 
 impl NewCredential<'_> {
@@ -86,19 +89,24 @@ impl NewCredential<'_> {
     async fn insert(&self, db: &mut SqliteConnection, user_id: &str) -> Result<(), StoreError> {
         let now = now_secs();
         let kind = self.kind.as_str();
+        let scoped = self.grants.is_some();
         sqlx::query!(
-            "INSERT INTO auth_credentials(id,user_id,secret_hash,kind,name,created_at,last_used_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?6,?7)",
+            "INSERT INTO auth_credentials(id,user_id,secret_hash,kind,name,created_at,last_used_at,expires_at,scoped) VALUES(?1,?2,?3,?4,?5,?6,?6,?7,?8)",
             self.id,
             user_id,
             self.secret_hash,
             kind,
             self.name,
             now,
-            self.expires_at
+            self.expires_at,
+            scoped
         )
-        .execute(db)
+        .execute(&mut *db)
         .await
         .map_err(StoreError::constraint)?;
+        if let Some(grants) = self.grants {
+            Holder::Credential(&self.id).replace(db, grants).await?;
+        }
         Ok(())
     }
 }
@@ -159,8 +167,10 @@ pub(crate) struct CredentialOwner {
     pub(crate) credential_id: String,
     /// Account that owns the credential.
     pub(crate) user: User,
-    /// The account's current grants.
+    /// The credential's effective grants.
     pub(crate) grants: Grants,
+    /// Whether the credential is limited to its own grants.
+    pub(crate) scoped: bool,
     /// Last recorded use in Unix seconds, letting callers skip frequent refreshes.
     pub(crate) last_used_at: i64,
 }
@@ -266,7 +276,9 @@ impl Store {
         let now = now_secs();
         let user_id = match &owner {
             PasskeyOwner::Existing(caller, user_id) => {
-                if caller.load(&mut tx).await?.0 != *user_id {
+                let authority = caller.load(&mut tx).await?;
+                authority.require_unscoped()?;
+                if authority.user_id != *user_id {
                     return Ok(false);
                 }
                 *user_id
@@ -421,8 +433,8 @@ impl Store {
         }))
     }
 
-    /// Finds the account for a live credential by its secret hash, with the
-    /// account's grants read from the same snapshot. This is read-only, so
+    /// Finds the account for a live credential by its secret hash, with its
+    /// effective grants read from the same snapshot. This is read-only, so
     /// authenticating never waits for writers.
     pub(crate) async fn credential_owner(
         &self,
@@ -432,7 +444,7 @@ impl Store {
         let idle = now - SESSION_IDLE_SECS;
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let row = sqlx::query!(
-            r#"SELECT c.id AS "credential_id!",c.last_used_at,u.id AS "id!",u.username,u.display_name FROM auth_credentials c JOIN auth_users u ON u.id=c.user_id WHERE c.secret_hash=?1 AND (c.expires_at IS NULL OR c.expires_at>?2) AND (c.kind!='browser' OR c.last_used_at>?3)"#,
+            r#"SELECT c.id AS "credential_id!",c.last_used_at,c.scoped AS "scoped: bool",u.id AS "id!",u.username,u.display_name FROM auth_credentials c JOIN auth_users u ON u.id=c.user_id WHERE c.secret_hash=?1 AND (c.expires_at IS NULL OR c.expires_at>?2) AND (c.kind!='browser' OR c.last_used_at>?3)"#,
             hash,
             now,
             idle
@@ -443,7 +455,8 @@ impl Store {
         let Some(row) = row else {
             return Ok(None);
         };
-        let grants = Holder::User(&row.id).grants(&mut tx).await?;
+        let authority =
+            Authority::read(&mut tx, row.id.clone(), &row.credential_id, row.scoped).await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(Some(CredentialOwner {
             credential_id: row.credential_id,
@@ -452,7 +465,8 @@ impl Store {
                 username: row.username,
                 display_name: row.display_name,
             },
-            grants,
+            grants: authority.grants,
+            scoped: authority.scoped,
             last_used_at: row.last_used_at,
         }))
     }
@@ -479,29 +493,35 @@ impl Store {
         Ok(rows == 1)
     }
 
-    /// Issues `credential` to the account behind the live credential
-    /// `approver_id`. Returns `None` when that approving session has ended.
+    /// Issues `credential` to the account behind the approving credential, if
+    /// the approver may still create credentials and holds every grant the new
+    /// one is limited to. Returns `None` when the approving session has ended.
     pub(crate) async fn issue_for_credential_owner(
         &self,
-        approver_id: &str,
+        approver: Caller<'_>,
         credential: &NewCredential<'_>,
     ) -> Result<Option<User>, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let now = now_secs();
-        let idle = now - SESSION_IDLE_SECS;
-        let Some(user) = sqlx::query_as!(
-            User,
-            r#"SELECT u.id AS "id!",u.username,u.display_name FROM auth_users u JOIN auth_credentials c ON c.user_id=u.id WHERE c.id=?1 AND (c.expires_at IS NULL OR c.expires_at>?2) AND (c.kind!='browser' OR c.last_used_at>?3)"#,
-            approver_id,
-            now,
-            idle
-        )
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        else {
-            return Ok(None);
+        let authority = match approver.load(&mut tx).await {
+            Ok(authority) => authority,
+            Err(StoreError::CredentialRevoked) => return Ok(None),
+            Err(error) => return Err(error),
         };
+        authority.require_unscoped()?;
+        if let Some(grants) = credential.grants {
+            authority
+                .grants
+                .may_grant(grants)
+                .map_err(StoreError::Denied)?;
+        }
+        let user = sqlx::query_as!(
+            User,
+            r#"SELECT id AS "id!",username,display_name FROM auth_users WHERE id=?1"#,
+            authority.user_id
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
         credential.insert(&mut tx, &user.id).await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(Some(user))
@@ -570,15 +590,31 @@ impl Store {
         .fetch_all(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        let credentials = sqlx::query_as!(
-            CredentialView,
-            r#"SELECT id AS "id!",user_id,kind,name,last_used_at,expires_at FROM auth_credentials WHERE (expires_at IS NULL OR expires_at>?1) AND (kind!='browser' OR last_used_at>?2) ORDER BY created_at"#,
+        let rows = sqlx::query!(
+            r#"SELECT id AS "id!",user_id,kind,name,last_used_at,expires_at,scoped AS "scoped: bool" FROM auth_credentials WHERE (expires_at IS NULL OR expires_at>?1) AND (kind!='browser' OR last_used_at>?2) ORDER BY created_at"#,
             now,
             idle
         )
         .fetch_all(&mut *tx)
         .await
         .map_err(StoreError::database)?;
+        let mut credentials = Vec::with_capacity(rows.len());
+        for row in rows {
+            let grants = if row.scoped {
+                Some(Holder::Credential(&row.id).grants(&mut tx).await?)
+            } else {
+                None
+            };
+            credentials.push(CredentialView {
+                id: row.id,
+                user_id: row.user_id,
+                kind: row.kind,
+                name: row.name,
+                last_used_at: row.last_used_at,
+                expires_at: row.expires_at,
+                grants,
+            });
+        }
         let rows = sqlx::query!(
             r#"SELECT id AS "id!",issuer_id,user_id,expires_at FROM auth_invitations WHERE expires_at>?1 ORDER BY expires_at"#,
             now
@@ -691,8 +727,8 @@ impl Store {
     }
 
     /// Stores an account invitation that gives the created account `grants`,
-    /// if `caller` may manage accounts and holds every grant. `add_passkey`
-    /// consumes it.
+    /// if `caller` may manage accounts, holds every grant, and is not scoped:
+    /// redeeming it yields a passkey and session. `add_passkey` consumes it.
     pub(crate) async fn create_invitation(
         &self,
         caller: Caller<'_>,
@@ -700,9 +736,10 @@ impl Store {
         grants: &Grants,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let (issuer, authority) = caller.load(&mut tx).await?;
-        Self::may_invite(&authority, grants)?;
-        Self::insert_invitation_on(&mut tx, invitation, &issuer, None).await?;
+        let authority = caller.load(&mut tx).await?;
+        authority.require_unscoped()?;
+        Self::may_invite(&authority.grants, grants)?;
+        Self::insert_invitation_on(&mut tx, invitation, &authority.user_id, None).await?;
         Holder::Invitation(&invitation.id)
             .replace(&mut tx, grants)
             .await?;
@@ -726,8 +763,9 @@ impl Store {
         user_id: &str,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let (issuer, _) = Self::check_account_on(&mut tx, caller, user_id).await?;
-        Self::insert_invitation_on(&mut tx, invitation, &issuer, Some(user_id)).await?;
+        let authority = Self::check_account_on(&mut tx, caller, user_id).await?;
+        authority.require_unscoped()?;
+        Self::insert_invitation_on(&mut tx, invitation, &authority.user_id, Some(user_id)).await?;
         tx.commit().await.map_err(StoreError::database)
     }
 
@@ -771,9 +809,9 @@ impl Store {
                 Self::check_account_on(&mut tx, caller, &user_id).await?;
             }
             Some(None) => {
-                let (_, authority) = caller.load(&mut tx).await?;
+                let authority = caller.load(&mut tx).await?;
                 let grants = Holder::Invitation(id).grants(&mut tx).await?;
-                Self::may_invite(&authority, &grants)?;
+                Self::may_invite(&authority.grants, &grants)?;
             }
         }
         sqlx::query!("DELETE FROM auth_invitations WHERE id=?1", id)
@@ -783,15 +821,23 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)
     }
 
-    /// Stores an API token for the caller's own account.
+    /// Stores an API token for the caller's own account, limited to grants the
+    /// caller holds. Scoped callers cannot create tokens.
     pub(crate) async fn create_token(
         &self,
         caller: Caller<'_>,
         credential: &NewCredential<'_>,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let (user_id, _) = caller.load(&mut tx).await?;
-        credential.insert(&mut tx, &user_id).await?;
+        let authority = caller.load(&mut tx).await?;
+        authority.require_unscoped()?;
+        if let Some(grants) = credential.grants {
+            authority
+                .grants
+                .may_grant(grants)
+                .map_err(StoreError::Denied)?;
+        }
+        credential.insert(&mut tx, &authority.user_id).await?;
         tx.commit().await.map_err(StoreError::database)
     }
 }
@@ -870,6 +916,7 @@ mod tests {
             kind: CredentialKind::Browser,
             name: "Browser",
             expires_at: Some(now_secs() + SESSION_IDLE_SECS),
+            grants: None,
         };
         store
             .insert_credential(&user.id, &credential)
@@ -929,6 +976,7 @@ mod tests {
             kind: CredentialKind::Browser,
             name: "Browser",
             expires_at: Some(now_secs() + SESSION_IDLE_SECS),
+            grants: None,
         };
         store
             .insert_credential(&user.id, &credential)

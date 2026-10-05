@@ -631,6 +631,7 @@ async fn secret_writes_use_the_callers_current_grants() {
         kind: CredentialKind::Token,
         name: "Test",
         expires_at: None,
+        grants: None,
     };
     store
         .insert_credential(&user.id, &credential)

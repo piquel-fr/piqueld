@@ -404,7 +404,9 @@ link (`--open` also opens it in the default browser); only the Unix socket serve
 it. Use `piquelctl login` for passkey login through the browser, `whoami` to inspect
 the current account and its grants, and `logout` to revoke it. `piquelctl account`
 lists accounts, replaces their grants (`access`), and creates invitation (`invite`)
-and passkey enrollment (`enroll`) links; see [authorization](authorization.md). Saved credentials are separate
+and passkey enrollment (`enroll`) links. `piquelctl token create|list|revoke`
+manages API tokens for your account, and `login` accepts the same grant options
+to ask for a limited session; see [authorization](authorization.md). Saved credentials are separate
 from profiles. `PIQUELD_TOKEN` supplies an automation token; `--account` selects
 a saved account. See [authentication](authentication.md) for details.
 

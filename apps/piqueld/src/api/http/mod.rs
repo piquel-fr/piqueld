@@ -604,7 +604,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(authenticated!(auth::logout))
         .routes(authenticated!(auth::directory))
         .routes(authenticated!(auth::manage))
-        .routes(public!(auth::device_start))
+        .routes(auth::optional_body(public!(auth::device_start)))
         .routes(public!(auth::device_poll))
         .routes(authenticated!(auth::device_inspect))
         .routes(authenticated!(auth::device_approve))

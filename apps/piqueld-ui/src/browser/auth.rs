@@ -666,6 +666,16 @@ fn DeviceApproval(who: String) -> impl IntoView {
                             <dd>{requester_label(pending.requester.as_deref())}</dd>
                             <dt>"Started"</dt>
                             <dd>{age_label(pending.age)}</dd>
+                            <dt>"Access"</dt>
+                            <dd>
+                                {pending
+                                    .grants
+                                    .as_ref()
+                                    .map_or_else(
+                                        || "Your account's full access".into_any(),
+                                        summary,
+                                    )}
+                            </dd>
                         </dl>
                         <p class="hint" style="margin-top:12px">
                             "piquelctl printed the address it connected from. Approve only if it matches this request."
@@ -965,6 +975,11 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
     let passkey_name = RwSignal::new("New passkey".to_owned());
     let token_name = RwSignal::new(String::new());
     let days = RwSignal::new("90".to_owned());
+    // New tokens start read-only within the account's access.
+    let token_grants = RwSignal::new(Grants::default());
+    let token_initial = piqueld_client::access::Preset::ReadOnly
+        .grants(&piqueld_client::access::Scope::All)
+        .intersection(&account.grants);
     let editing = RwSignal::new(false);
     let grants = RwSignal::new(account.grants.clone());
     let initial = StoredValue::new(account.grants.clone());
@@ -998,6 +1013,7 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
         };
         match parsed {
             Ok(days) => feedback.manage(Manage::CreateToken {
+                grants: token_grants.get_untracked(),
                 name: token_name.get_untracked(),
                 days,
             }),
@@ -1199,6 +1215,7 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
                                 <tr>
                                     <th>"Name"</th>
                                     <th>"Kind"</th>
+                                    <th>"Access"</th>
                                     <th>"Last used"</th>
                                     <th>"Expires"</th>
                                     <th></th>
@@ -1213,6 +1230,12 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
                                             <tr>
                                                 <td>{credential.name}</td>
                                                 <td>{badge(Tone::Neutral, credential.kind)}</td>
+                                                <td>
+                                                    {credential
+                                                        .grants
+                                                        .as_ref()
+                                                        .map_or_else(|| "Full account access".into_any(), summary)}
+                                                </td>
                                                 <td class="muted">
                                                     {when(credential.last_used_at * 1000)}
                                                 </td>
@@ -1248,6 +1271,17 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
             {own
                 .then(|| {
                     view! {
+                        <div class="section-header">
+                            <h3>"New API token"</h3>
+                        </div>
+                        <p class="hint">
+                            "Tokens act with these grants, limited by this account's access, and cannot create credentials."
+                        </p>
+                        <GrantEditor
+                            initial={token_initial}
+                            value={token_grants}
+                            limit={account.grants.clone()}
+                        />
                         <div class="form-row" style="margin-top:14px">
                             {text_input("New token name", token_name, String::clone, |v, s| *v = s)}
                             <label class="field">

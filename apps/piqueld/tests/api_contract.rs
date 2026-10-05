@@ -37,6 +37,7 @@ impl Authenticator for FakeAuth {
             },
             credential_id: "contract-admin".into(),
             grants: piqueld_core::access::Grants::admin(),
+            scoped: false,
         }))
     }
 }

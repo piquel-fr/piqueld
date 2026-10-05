@@ -33,13 +33,14 @@ use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_descrip
 /// `main` handles them before the timeout supervisor starts.
 pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     match &cli.command {
-        Command::Login => unreachable!("login has its own interactive deadline"),
+        Command::Login { .. } => unreachable!("login has its own interactive deadline"),
         Command::Logout => crate::auth::logout(cli, client, console).await,
         Command::Whoami => console.emit(&crate::accounts::SessionReport {
             session: client.auth_me().await?,
             names: crate::accounts::Names::load(client).await,
         }),
         Command::Account { command } => command.run(cli, client, console).await,
+        Command::Token { command } => command.run(client, console).await,
         Command::SetupLink { open } => crate::auth::setup_link(cli, client, console, *open).await,
         Command::Profiles => unreachable!("profiles are listed before connecting"),
         Command::Secrets { action } => action.run(cli, client, console).await,
