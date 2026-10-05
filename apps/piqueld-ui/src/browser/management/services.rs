@@ -69,9 +69,8 @@ pub(super) fn ServiceList() -> impl IntoView {
                             <A
                                 attr:class="list-row"
                                 href={format!(
-                                    "/dashboard/applications/{id}/services/{}{}",
+                                    "/dashboard/applications/{id}/services/{}",
                                     service.name,
-                                    context.environment_query(),
                                 )}
                             >
                                 <span class="app-icon" aria-hidden="true">
@@ -110,14 +109,7 @@ pub(super) fn ServiceList() -> impl IntoView {
 #[component]
 pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     let context = editor();
-    let app_href = move || {
-        let query = context.environment_query();
-        let separator = if query.is_empty() { '?' } else { '&' };
-        format!(
-            "/dashboard/applications/{}{query}{separator}tab=services",
-            context.id()
-        )
-    };
+    let app_href = move || format!("/dashboard/applications/{}?tab=services", context.id());
     if !context
         .manifest()
         .spec
@@ -190,9 +182,6 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
         <EditorFeedback />
         <Tabs label="Service sections" options={&SERVICE_TABS} selected={selected} />
         <div class="stack">
-            <Show when={move || selected.get() != "Logs"}>
-                <super::SharedConfigurationNotice />
-            </Show>
             {move || {
                 (context.managed() && selected.get() != "Logs")
                     .then(|| {
@@ -202,8 +191,47 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
                         )
                     })
             }} <Show when={move || selected.get() == "Logs"}>
-                <super::logs::ApplicationLogs fixed_service={log_service.clone()} />
+                <ServiceLogs name={log_service.clone()} />
             </Show> {groups}
+        </div>
+    }
+    .into_any()
+}
+
+/// Logs of one service in the application's only environment. With several
+/// environments, links to each environment's logs instead.
+#[component]
+fn ServiceLogs(name: String) -> impl IntoView {
+    let context = editor();
+    if context.environment.get_untracked().is_some() {
+        return view! { <super::logs::ApplicationLogs fixed_service={name} /> }.into_any();
+    }
+    view! {
+        <div class="stack-sm">
+            {notice(Tone::Info, "Logs are read per environment. Choose one to read this service's logs.")}
+            <div class="btn-group">
+                {move || {
+                    context
+                        .saved
+                        .get()
+                        .environments
+                        .into_iter()
+                        .map(|environment| {
+                            view! {
+                                <A
+                                    attr:class="btn"
+                                    href={format!(
+                                        "{}?tab=logs",
+                                        context.environment_href(environment.id.as_str()),
+                                    )}
+                                >
+                                    {environment.name.to_string()}
+                                </A>
+                            }
+                        })
+                        .collect_view()
+                }}
+            </div>
         </div>
     }
     .into_any()

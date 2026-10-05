@@ -4902,12 +4902,11 @@ async fn application_history_spans_its_environments() {
         ..EventFilter::default()
     })
     .await;
-    assert!(!production_history.is_empty());
-    assert!(
-        production_history
-            .iter()
-            .all(|(_, environment)| environment.as_ref() == Some(&production))
-    );
+    let in_production = |(_, environment): &(String, Option<piqueld_core::EnvironmentId>)| {
+        environment.as_ref() == Some(&production)
+    };
+    assert!(production_history.iter().any(in_production));
+    assert!(production_history.iter().all(in_production));
 }
 
 #[tokio::test]

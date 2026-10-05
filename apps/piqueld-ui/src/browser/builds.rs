@@ -22,12 +22,16 @@ pub(super) fn BuildsPage() -> impl IntoView {
     }
 }
 
-/// Build list, optionally scoped to one `environment`. A 3-second loop refetches
+/// Build list, optionally scoped to one `application`'s environments or to one
+/// `environment`. A 3-second loop refetches
 /// the first page on demand or while any build is running (skipped while the tab
 /// is hidden). Once older pages have been loaded, refreshed builds are merged by
 /// ID instead of replacing the list so the extra pages are kept.
 #[component]
-pub(super) fn BuildHistory(#[prop(optional, into)] environment: Option<String>) -> impl IntoView {
+pub(super) fn BuildHistory(
+    #[prop(optional, into)] application: Option<String>,
+    #[prop(optional, into)] environment: Option<String>,
+) -> impl IntoView {
     let records = RwSignal::new(Vec::<BuildRecord>::new());
     let cursor = RwSignal::new(None::<String>);
     let paginated = RwSignal::new(false);
@@ -36,7 +40,7 @@ pub(super) fn BuildHistory(#[prop(optional, into)] environment: Option<String>) 
     let refresh = RwSignal::new(true);
     let alive = Alive::new();
     let scoped = environment.is_some();
-    let environment = StoredValue::new(environment);
+    let scope = StoredValue::new((application, environment));
     spawn_local(async move {
         while alive.get() {
             let running = records
@@ -47,8 +51,10 @@ pub(super) fn BuildHistory(#[prop(optional, into)] environment: Option<String>) 
             {
                 refresh.set(false);
                 loading.set(true);
-                let environment = environment.get_value();
-                let result = Client::browser().builds(environment.as_deref(), None).await;
+                let (application, environment) = scope.get_value();
+                let result = Client::browser()
+                    .builds(application.as_deref(), environment.as_deref(), None)
+                    .await;
                 if !alive.get() {
                     break;
                 }
@@ -82,11 +88,15 @@ pub(super) fn BuildHistory(#[prop(optional, into)] environment: Option<String>) 
     });
     let older = move |_| {
         loading.set(true);
-        let environment = environment.get_value();
+        let (application, environment) = scope.get_value();
         let next = cursor.get_untracked();
         spawn_local(async move {
             match Client::browser()
-                .builds(environment.as_deref(), next.as_deref())
+                .builds(
+                    application.as_deref(),
+                    environment.as_deref(),
+                    next.as_deref(),
+                )
                 .await
             {
                 Ok(page) => {

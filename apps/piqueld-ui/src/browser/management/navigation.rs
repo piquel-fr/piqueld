@@ -59,7 +59,7 @@ pub(super) fn guard_navigation(dirty: RwSignal<BTreeSet<String>>) {
     let guard = use_context::<HistoryGuard>().expect("history guard installed before router");
     let location = use_location();
     Effect::new(move |_| {
-        // Query-only navigation (including environment selection) keeps this
+        // Query-only navigation (such as `?tab=` links) keeps this
         // editor mounted, so cancellation must restore its latest address.
         location.pathname.track();
         location.search.track();

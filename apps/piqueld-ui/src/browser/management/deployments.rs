@@ -3,52 +3,35 @@ use super::super::format::timestamp;
 use super::super::ui::{
     Icon, Modal, Tabs, Tone, badge, empty, icon, notice, operation_badge, when,
 };
-use super::{client_error_message, editor, mutation_client, transport_failure};
+use super::{client_error_message, editor};
 use crate::browser::Alive;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use leptos_router::NavigateOptions;
+use leptos_router::hooks::use_navigate;
 use piqueld_client::{ApplyApplicationRequest, Client, DeploymentView, Page, Rollout, Source};
 
-/// "Preview" and "Deploy" buttons for the saved configuration. Preview asks the
-/// daemon for a plan (cleared whenever the saved view changes); Deploy starts a
-/// deployment of the saved generation, retrying once on transport failure, then
-/// switches to the deployments tab.
+/// "Preview" and "Deploy" buttons for the saved configuration and the editor's
+/// target environment. Preview asks the daemon for a plan (cleared whenever the
+/// saved view or target changes); Deploy starts a deployment of the saved
+/// generation, then shows the environment's deployments. Without a single target
+/// (an application with several environments or none), Deploy opens the
+/// Environments tab to choose one.
 #[component]
 pub(super) fn DeploymentActions() -> impl IntoView {
     let context = editor();
     let preview = RwSignal::new(None::<piqueld_client::PlanView>);
+    let navigate = use_navigate();
     let deploy = move |_| {
-        context.set_error(None);
-        let client = match mutation_client() {
-            Ok(client) => client,
-            Err(error) => {
-                context.set_error(Some(error));
-                return;
-            }
-        };
-        let app = context.saved.get_untracked();
         let environment = context.environment_id();
-        context.busy.set(true);
-        spawn_local(async move {
-            let mut result = client
-                .deploy_environment(&environment, app.generation, None)
-                .await;
-            if result.as_ref().is_err_and(transport_failure) {
-                result = client
-                    .deploy_environment(&environment, app.generation, None)
-                    .await;
+        let href = format!("{}?tab=deployments", context.environment_href(&environment));
+        let navigate = navigate.clone();
+        context.deploy(environment, move || {
+            if context.environment_page() {
+                context.tab.set("Deployments");
+            } else {
+                navigate(&href, NavigateOptions::default());
             }
-            match result {
-                Ok(_) => {
-                    context.tab.set("Deployments");
-                    context
-                        .notice
-                        .set("Deployment accepted. Follow its progress below.".into());
-                    context.dashboard.with_value(|d| d.refresh.run(()));
-                }
-                Err(error) => context.failure(&error),
-            }
-            context.busy.set(false);
         });
     };
     let inspect = move |_| {
@@ -78,25 +61,46 @@ pub(super) fn DeploymentActions() -> impl IntoView {
         preview.set(None);
     });
     view! {
-        <button
-            type="button"
-            class="btn"
-            disabled={move || context.environment_action_blocked()}
-            on:click={inspect}
-            title="Show what deploying the saved configuration would change"
+        <Show
+            when={move || context.environment.get().is_some()}
+            fallback={move || {
+                view! {
+                    <button
+                        type="button"
+                        class="btn btn-primary"
+                        title="Choose an environment to deploy"
+                        on:click={move |_| context.tab.set("Environments")}
+                    >
+                        {icon(Icon::Rocket)}
+                        "Deploy…"
+                    </button>
+                }
+            }}
         >
-            {icon(Icon::Eye)}
-            "Preview"
-        </button>
-        <button
-            type="button"
-            class="btn btn-primary"
-            disabled={move || context.environment_action_blocked()}
-            on:click={deploy}
-        >
-            {icon(Icon::Rocket)}
-            {move || context.selected_environment().map_or_else(|| "Deploy".into(), |env| format!("Deploy to {}", env.name))}
-        </button>
+            <button
+                type="button"
+                class="btn"
+                disabled={move || context.environment_action_blocked()}
+                on:click={inspect}
+                title="Show what deploying the saved configuration would change"
+            >
+                {icon(Icon::Eye)}
+                "Preview"
+            </button>
+            <button
+                type="button"
+                class="btn btn-primary"
+                disabled={move || context.environment_action_blocked()}
+                on:click={deploy.clone()}
+            >
+                {icon(Icon::Rocket)}
+                {move || {
+                    context
+                        .selected_environment()
+                        .map_or_else(|| "Deploy".into(), |env| format!("Deploy to {}", env.name))
+                }}
+            </button>
+        </Show>
         <DeploymentPreview preview={preview} />
     }
 }

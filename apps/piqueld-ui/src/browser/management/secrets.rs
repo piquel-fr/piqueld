@@ -9,12 +9,12 @@ use piqueld_client::{
     edit::{ApplicationEdit, ServiceEdit},
 };
 
-/// Secrets tab. Loads secret metadata (never values), writes or deletes secrets
-/// guarded by their generation, and clears the value field as soon as it is
-/// submitted. After a failed write or delete, actions stay disabled until the
-/// metadata is refreshed. Also renders `SecretFiles` for every service.
+/// An environment's Secrets tab. Loads secret metadata (never values), writes or
+/// deletes secrets guarded by their generation, and clears the value field as
+/// soon as it is submitted. After a failed write or delete, actions stay
+/// disabled until the metadata is refreshed.
 #[component]
-pub(super) fn ApplicationSecrets() -> impl IntoView {
+pub(super) fn EnvironmentSecrets() -> impl IntoView {
     let context = editor();
     let metadata = RwSignal::new(Vec::<piqueld_client::SecretMetadata>::new());
     let ready = RwSignal::new(false);
@@ -199,7 +199,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                     <div>
                         <h3>"Secrets"</h3>
                         <p>
-                            "Values belong to the selected environment and are write-only. Replace a value, then deploy this environment to adopt the new version; running deployments keep theirs."
+                            "Values belong to this environment and are write-only. The application's secret files choose where they are mounted. Replace a value, then deploy this environment to adopt the new version; running deployments keep theirs."
                         </p>
                     </div>
                     <button
@@ -313,34 +313,36 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                     </fieldset>
                 </div>
             </section>
-            {move || {
-                context
-                    .managed()
-                    .then(|| {
-                        notice(
-                            Tone::Info,
-                            "Secret file references are managed in the repository manifest.",
-                        )
-                    })
-            }}
-            <fieldset class="stack" disabled={move || context.blocked() || context.managed()}>
-                <super::SharedConfigurationNotice />
-                <For
-                    each={move || {
-                        context
-                            .saved
-                            .get()
-                            .application
-                            .spec()
-                            .services
-                            .iter()
-                            .map(|s| s.name.to_string())
-                            .collect::<Vec<_>>()
-                    }}
-                    key={|name| name.clone()}
-                    children={move |name| view! { <SecretFiles service_name={name} /> }}
-                />
-            </fieldset>
+        </div>
+    }
+}
+
+/// The application's Secrets tab: every service's secret file references.
+/// Values are stored per environment, on each environment's page.
+#[component]
+pub(super) fn SecretFileSettings() -> impl IntoView {
+    let context = editor();
+    view! {
+        <div class="stack">
+            {notice(
+                Tone::Info,
+                "Secret files mount stored secrets into services. Their values are set per environment, in each environment's Secrets tab.",
+            )}
+            <For
+                each={move || {
+                    context
+                        .saved
+                        .get()
+                        .application
+                        .spec()
+                        .services
+                        .iter()
+                        .map(|s| s.name.to_string())
+                        .collect::<Vec<_>>()
+                }}
+                key={|name| name.clone()}
+                children={move |name| view! { <SecretFiles service_name={name} /> }}
+            />
         </div>
     }
 }

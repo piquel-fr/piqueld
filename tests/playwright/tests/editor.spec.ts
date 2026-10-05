@@ -4,6 +4,8 @@ import type { Page } from '@playwright/test';
 const title = (page: Page) => page.locator('.detail-title h1');
 const tab = (page: Page, name: string) =>
   page.getByRole('navigation', { name: 'Application sections' }).getByRole('button', { name, exact: true });
+const environmentTab = (page: Page, name: string) =>
+  page.getByRole('navigation', { name: 'Environment sections' }).getByRole('button', { name, exact: true });
 /** Save buttons exist for every settings group; only the edited group's is shown. */
 const visible = (page: Page, name: string) => page.getByRole('button', { name, exact: true }).locator('visible=true');
 
@@ -53,7 +55,7 @@ test('adds a service and edits it on the service page', async ({ page, account }
   const row = page.locator('a.list-row', { hasText: 'web' });
   await expect(row).toContainText('1 replicas');
   await row.click();
-  await expect(page).toHaveURL(/\/services\/web\?environment=[^&]+$/);
+  await expect(page).toHaveURL(/\/services\/web$/);
   await expect(title(page)).toHaveText('web');
   await expect(visible(page, 'Save changes')).toHaveCount(0);
   await page.getByLabel('Replicas', { exact: true }).fill('3');
@@ -90,17 +92,18 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await tab(page, 'Routes').click();
   await expect(page.getByLabel('Hostname', { exact: true })).toHaveValue('shop.example.com');
 
-  await page.getByRole('button', { name: 'Manage environments', exact: true }).click();
-  const manager = page.getByRole('dialog', { name: 'Manage environments' });
-  await manager.getByLabel('Environment name', { exact: true }).fill('staging');
+  await tab(page, 'Environments').click();
+  await page.getByRole('button', { name: 'New environment', exact: true }).click();
+  const creator = page.getByRole('dialog', { name: 'Create environment' });
+  await creator.getByLabel('Environment name', { exact: true }).fill('staging');
   const conflict = page.waitForResponse(response => response.request().method() === 'POST' && /\/environments(?:\?|$)/.test(response.url()));
-  await manager.getByRole('button', { name: 'Create environment', exact: true }).click();
+  await creator.getByRole('button', { name: 'Create environment', exact: true }).click();
   const response = await conflict;
   expect(response.status()).toBe(409);
   expect(await response.json()).toMatchObject({ code: 'hostname_conflict', details: { hostname: 'shop.example.com', environment: 'production' } });
-  await expect(manager).toContainText('environments currently share application routes');
-  await expect(manager).toContainText('until per-environment configuration is supported');
-  await manager.getByRole('button', { name: 'Close dialog' }).click();
+  await expect(creator).toContainText('environments currently share application routes');
+  await expect(creator).toContainText('until per-environment configuration is supported');
+  await creator.getByRole('button', { name: 'Close dialog' }).click();
 
   await page.getByRole('button', { name: 'Preview', exact: true }).click();
   const preview = page.getByRole('dialog', { name: 'Deployment preview' });
@@ -111,8 +114,8 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await page.keyboard.press('Escape');
   await expect(preview).toBeHidden();
 
-  await page.getByRole('button', { name: 'Deploy to production', exact: true }).click();
-  await expect(tab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
+  await page.locator('.detail-head').getByRole('button', { name: 'Deploy to production', exact: true }).click();
+  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
   const deployment = page.locator('.expander', { hasText: 'Deployment #' });
   await expect(deployment).toBeVisible();
   await deployment.getByRole('button', { name: /Deployment #/ }).click();

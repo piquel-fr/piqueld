@@ -129,13 +129,16 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
         reopened.operation(&deleted.id).await,
         Err(StoreError::NotFound)
     ));
+    // Its events stay in the application's history until the application is deleted.
+    let events = reopened
+        .events(Some(&environment(&application)), None, 100)
+        .await
+        .unwrap();
     assert!(
-        reopened
-            .events(Some(&environment(&application)), None, 100)
-            .await
-            .unwrap()
+        events
             .items
-            .is_empty()
+            .iter()
+            .any(|event| event.application_id.as_ref() == Some(application.id()))
     );
 }
 

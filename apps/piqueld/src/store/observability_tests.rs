@@ -93,10 +93,12 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
         .record_diagnostic(&failure, None, Some(&op.environment_id))
         .await
         .unwrap();
-    let (MutationResponse::Operation(delete), _) = store
+    // Application history, including its environments', goes with the application.
+    let (MutationResponse::Deleted(deleted), _) = store
         .accept(
-            Mutation::Delete {
-                id: op.environment_id.clone(),
+            Mutation::DeleteApplication {
+                id: ApplicationId::parse(op.environment_id.as_str()).unwrap(),
+                environments: Vec::new(),
             },
             None,
             true,
@@ -107,6 +109,7 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
     else {
         panic!("delete");
     };
+    let delete = &deleted.operations[0];
     store
         .transition_operation(
             &delete.operation_id,

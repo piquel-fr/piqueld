@@ -23,7 +23,7 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::{A, Outlet, ParentRoute, Route, Router, Routes};
-use leptos_router::hooks::{use_params_map, use_query_map};
+use leptos_router::hooks::use_params_map;
 use leptos_router::path;
 use piqueld_client::system::ReadinessStatus;
 use piqueld_client::{
@@ -55,6 +55,16 @@ struct EnvironmentRow {
     environment: EnvironmentView,
     status: Option<EnvironmentStatusView>,
     status_error: Option<String>,
+}
+
+impl EnvironmentRow {
+    /// Health from the environment's status; missing or failed reads show as pending.
+    fn health(&self) -> ApplicationHealth {
+        match (&self.status, &self.status_error) {
+            (Some(status), None) => ApplicationHealth::from_server_state(status.state),
+            _ => ApplicationHealth::Pending,
+        }
+    }
 }
 
 impl ApplicationRow {
@@ -98,7 +108,7 @@ struct DashboardSignals {
     readiness_error: RwSignal<Option<String>>,
     pagination_incomplete: RwSignal<bool>,
     selected_id: RwSignal<Option<String>>,
-    /// Environment of the selected application whose runtime is shown.
+    /// Environment page being shown, from the route; `None` on application pages.
     selected_environment: RwSignal<Option<String>>,
     detail: RwSignal<Option<EnvironmentDetailView>>,
     detail_loading: RwSignal<bool>,
@@ -193,6 +203,10 @@ fn App() -> impl IntoView {
                         path={path!("applications/:id/services/:service")}
                         view={ApplicationDetailPage}
                     />
+                    <Route
+                        path={path!("applications/:id/environments/:environment")}
+                        view={ApplicationDetailPage}
+                    />
                     <Route path={path!("*any")} view={NotFoundPage} />
                 </ParentRoute>
             </Routes>
@@ -252,24 +266,22 @@ fn dashboard_context() -> DashboardContext {
     use_context().expect("dashboard routes are descendants of DashboardLayout")
 }
 
-/// Route wrapper for `/applications/:id[/services/:service]`. Loads the selected
-/// application's detail into the shared signals when the ID changes, and keys
-/// `management::ApplicationPage` on the route so it remounts on navigation. The
-/// optional `environment` query parameter selects the environment shown.
+/// Route wrapper for `/applications/:id[/services/:service|/environments/:environment]`.
+/// Loads the shown environment's detail into the shared signals when the route
+/// changes, and keys `management::ApplicationPage` on the route so it remounts
+/// on navigation.
 #[component]
 fn ApplicationDetailPage() -> impl IntoView {
     let context = dashboard_context();
     let signals = context.signals;
     let params = use_params_map();
-    let query = use_query_map();
     let client = context.client.clone();
 
     Effect::new(move |_| {
-        let id = params.with(|params| params.get("id"));
+        let (id, environment) = params.with(|params| (params.get("id"), params.get("environment")));
         let Some(id) = id else {
             return;
         };
-        let environment = query.with(|query| query.get("environment"));
         if signals.selected_id.get_untracked().as_deref() == Some(id.as_str())
             && signals.detail.get_untracked().is_some()
             && environment == signals.selected_environment.get_untracked()
@@ -286,13 +298,25 @@ fn ApplicationDetailPage() -> impl IntoView {
         <For
             each={move || {
                 params
-                    .with(|p| p.get("id").map(|id| (id, p.get("service"))))
+                    .with(|p| {
+                        p.get("id")
+                            .map(|id| {
+                                let page = match (p.get("service"), p.get("environment")) {
+                                    (Some(service), _) => management::Page::Service(service),
+                                    (None, Some(environment)) => {
+                                        management::Page::Environment(environment)
+                                    }
+                                    (None, None) => management::Page::Application,
+                                };
+                                (id, page)
+                            })
+                    })
                     .into_iter()
                     .collect::<Vec<_>>()
             }}
             key={|route| route.clone()}
-            children={move |(id, service)| {
-                view! { <management::ApplicationPage id={id} service={service} /> }
+            children={move |(id, page)| {
+                view! { <management::ApplicationPage id={id} page={page} /> }
             }}
         />
     }
@@ -452,9 +476,9 @@ fn start_refresh(
     });
 }
 
-/// Fetches detail for the selected environment of application `id` (its first
-/// environment when none is selected), ignoring the response if a newer request
-/// started or the selection changed meanwhile.
+/// Fetches detail for the shown environment of application `id`: the route's
+/// environment, or on application pages its only environment. Ignores the
+/// response if a newer request started or the selection changed meanwhile.
 fn load_detail(client: Client, signals: DashboardSignals, id: String) {
     let request = signals.detail_request.get_untracked().wrapping_add(1);
     signals.detail_request.set(request);
@@ -469,25 +493,21 @@ fn load_detail(client: Client, signals: DashboardSignals, id: String) {
             return;
         }
         match result {
-            Ok(detail) => {
-                signals
-                    .selected_environment
-                    .set(Some(detail.environment.id.to_string()));
-                signals.detail.set(Some(detail));
-            }
+            Ok(detail) => signals.detail.set(detail),
             Err(error) => signals.detail_error.set(Some(error)),
         }
         signals.detail_loading.set(false);
     });
 }
 
-/// Loads the application, then the environment with the selected ID, or its
-/// first environment when none is selected.
+/// Loads the application, then the environment with the selected ID or, with
+/// no selection, its only environment. Applications with several environments
+/// (or none) have no environment detail of their own.
 async fn environment_detail(
     client: &Client,
     id: &str,
     selected: Option<&str>,
-) -> Result<EnvironmentDetailView, String> {
+) -> Result<Option<EnvironmentDetailView>, String> {
     let application = client
         .application(id)
         .await
@@ -499,16 +519,16 @@ async fn environment_detail(
             .environments
             .iter()
             .find(|environment| environment.id.as_str() == selected)
-            .ok_or_else(|| {
-                "The selected environment no longer exists. Select another environment.".to_owned()
-            })?,
-        None => application.environments.first().ok_or_else(|| {
-            "This application has no environments. Create one with Manage environments.".to_owned()
-        })?,
+            .ok_or_else(|| "This environment no longer exists.".to_owned())?,
+        None => match application.sole_environment() {
+            Ok(environment) => environment,
+            Err(_) => return Ok(None),
+        },
     };
     client
         .environment_detail(environment.id.as_str())
         .await
+        .map(Some)
         .map_err(|error| client_error_message(&error))
 }
 
@@ -649,25 +669,23 @@ fn connection_label(state: ConnectionState) -> &'static str {
 }
 
 /// Health badge for a row: the least healthy of its environments, or not
-/// deployed without any. Missing or failed status reads show as pending.
+/// deployed without any.
 fn row_health(row: &ApplicationRow) -> ApplicationHealth {
     row.environments
         .iter()
-        .map(|environment| {
-            environment.status_error.as_ref().map_or_else(
-                || {
-                    environment
-                        .status
-                        .as_ref()
-                        .map_or(ApplicationHealth::Pending, |status| {
-                            ApplicationHealth::from_server_state(status.state)
-                        })
-                },
-                |_| ApplicationHealth::Pending,
-            )
-        })
+        .map(EnvironmentRow::health)
         .max_by_key(|health| health.severity())
         .unwrap_or(ApplicationHealth::NotDeployed)
+}
+
+/// The listed row of an environment, for its health and status.
+fn environment_row(signals: DashboardSignals, environment: &str) -> Option<EnvironmentRow> {
+    signals.applications.with(|rows| {
+        rows.iter()
+            .flat_map(|row| &row.environments)
+            .find(|row| row.environment.id.as_str() == environment)
+            .cloned()
+    })
 }
 
 /// The application and dashboard address of an environment in the current
@@ -682,7 +700,7 @@ fn environment_link(signals: DashboardSignals, environment: &str) -> Option<(Str
                     (
                         format!("{}/{}", row.application.name, listed.environment.name),
                         format!(
-                            "/dashboard/applications/{}?environment={environment}",
+                            "/dashboard/applications/{}/environments/{environment}",
                             row.application.id
                         ),
                     )

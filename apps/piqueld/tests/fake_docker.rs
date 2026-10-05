@@ -1022,18 +1022,13 @@ async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
             .iter()
             .all(|old| events.items.iter().any(|event| event.id == old.id))
     );
-    // Staging's history stays in the application's history until it is deleted.
+    // Staging's events stay in the application's history until it is deleted.
+    let staging_events = store.events(Some(staging), None, 100).await.unwrap();
     assert!(
-        store
-            .events(Some(staging), None, 100)
-            .await
-            .unwrap()
+        staging_events
             .items
             .iter()
-            .any(|event| event
-                .application_id
-                .as_ref()
-                .is_some_and(|application| application.as_str() == production.as_str()))
+            .any(|event| event.environment_id.as_ref() == Some(staging))
     );
     assert_eq!(store.secrets(production).await.unwrap()[0].generation, 1);
     let values = harness.docker.secret_values.lock().await;

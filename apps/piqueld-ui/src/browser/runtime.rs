@@ -1,4 +1,4 @@
-//! Application runtime overview: lifecycle status, observed services, and diagnostics.
+//! Environment runtime overview: lifecycle status, observed services, and diagnostics.
 use super::format::timestamp;
 use super::ui::{Icon, Tone, badge, empty, health_badge, icon, notice, operation_badge, when};
 use super::{DashboardSignals, dashboard_context, load_detail};
@@ -6,7 +6,7 @@ use crate::state::ApplicationHealth;
 use leptos::prelude::*;
 use piqueld_client::{Client, DiagnosticView, EnvironmentDetailView, ObservedServiceView};
 
-/// Live runtime detail for the application editor's Overview tab.
+/// Live runtime detail for an environment page's Overview tab.
 #[component]
 pub(super) fn RuntimeOverview() -> impl IntoView {
     let dashboard = dashboard_context();
@@ -176,7 +176,7 @@ fn detail_view(
                     </div>
                 </header>
                 {if observed.services.is_empty() {
-                    empty("No services are running for this application.")
+                    empty("No services are running in this environment.")
                 } else {
                     view! {
                         <table class="table">

@@ -9,17 +9,19 @@ mod secrets;
 mod services;
 mod settings;
 
+use super::format::timestamp;
 use super::runtime::RuntimeOverview;
-use super::ui::{Icon, Modal, PageHeader, Tabs, Tone, health_badge, icon, notice, text_input};
-use super::{client_error_message, dashboard_context, row_health};
+use super::ui::{
+    Icon, Modal, PageHeader, Tabs, Tone, badge, health_badge, icon, notice, text_input,
+};
+use super::{client_error_message, dashboard_context, environment_row, row_health};
 
 use deployments::{DeploymentActions, DeploymentHistory};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::NavigateOptions;
 use leptos_router::components::A;
-use leptos_router::hooks::{query_signal_with_options, use_navigate};
-use leptos_router::params::ParamsMap;
+use leptos_router::hooks::use_navigate;
 use logs::ApplicationLogs;
 pub(super) use navigation::HistoryGuard;
 use navigation::guard_navigation;
@@ -27,31 +29,67 @@ use piqueld_client::{
     ApplicationManifest, ApplicationSpec, ApplicationView, Client, ClientError, Metadata,
     edit::{ApplicationEdit, EditOptions},
 };
-use secrets::ApplicationSecrets;
+use secrets::{EnvironmentSecrets, SecretFileSettings};
 use settings::{MetadataSettings, NewService, RepositorySettings, VolumeSettings};
 use std::collections::BTreeSet;
 
-const APPLICATION_TABS: [&str; 11] = [
+const APPLICATION_TABS: [&str; 10] = [
     "Overview",
+    "Environments",
     "Services",
     "Source",
     "Routes",
     "Volumes",
     "Jobs",
     "Secrets",
-    "Deployments",
     "Builds",
-    "Logs",
     "Events",
 ];
+
+const ENVIRONMENT_TABS: [&str; 5] = ["Overview", "Deployments", "Secrets", "Logs", "Events"];
+
+/// Which page of an application the route shows.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Page {
+    /// Shared configuration, environments, and application-wide history.
+    Application,
+    /// One service's shared configuration.
+    Service(String),
+    /// One environment's runtime, deployments, secrets, logs, and history.
+    Environment(String),
+}
+
+impl Page {
+    /// Tabs of the page; service pages have their own section tabs.
+    const fn tabs(&self) -> &'static [&'static str] {
+        match self {
+            Self::Environment(_) => &ENVIRONMENT_TABS,
+            Self::Application | Self::Service(_) => &APPLICATION_TABS,
+        }
+    }
+
+    /// The initial tab: `?deployment=` opens deployments, `?tab=` names a tab.
+    fn initial_tab(&self, query: &leptos_router::params::ParamsMap) -> &'static str {
+        let requested = if query.get("deployment").is_some() {
+            Some("deployments".to_owned())
+        } else {
+            query.get("tab")
+        };
+        self.tabs()
+            .iter()
+            .find(|tab| requested.as_deref() == Some(tab.to_lowercase().as_str()))
+            .unwrap_or(&"Overview")
+    }
+}
 
 /// State shared by every section of one application editor, provided as context.
 #[derive(Clone, Copy)]
 struct EditorContext {
     dashboard: StoredValue<super::DashboardContext>,
     saved: RwSignal<ApplicationView>,
-    /// Environment whose runtime, history, and secrets are shown; `None` until
-    /// its detail loads. Changes only when another environment is selected.
+    page: StoredValue<Page>,
+    /// Environment that runtime actions target: the environment page's, or on
+    /// application pages the only environment. `None` with several or none.
     environment: Memo<Option<String>>,
     dirty: RwSignal<BTreeSet<String>>,
     busy: RwSignal<bool>,
@@ -99,13 +137,12 @@ impl EditorContext {
                 })
             })
     }
-    /// Keeps service navigation scoped to the selected environment.
-    fn environment_query(self) -> String {
-        let mut query = ParamsMap::new();
-        if let Some(id) = self.environment.get() {
-            query.insert("environment", id);
-        }
-        query.to_query_string()
+    /// Dashboard address of one of the application's environments.
+    fn environment_href(self, environment: &str) -> String {
+        format!(
+            "/dashboard/applications/{}/environments/{environment}",
+            self.id()
+        )
     }
     fn name(self) -> String {
         self.saved
@@ -203,6 +240,49 @@ impl EditorContext {
         });
     }
 }
+impl EditorContext {
+    /// Whether this is an environment page rather than the application page.
+    fn environment_page(self) -> bool {
+        self.page
+            .with_value(|page| matches!(page, Page::Environment(_)))
+    }
+
+    /// Deploys the saved revision to `environment`, retrying once on transport
+    /// failure, then runs `accepted`.
+    fn deploy(self, environment: String, accepted: impl FnOnce() + 'static) {
+        self.set_error(None);
+        let client = match mutation_client() {
+            Ok(client) => client,
+            Err(error) => {
+                self.set_error(Some(error));
+                return;
+            }
+        };
+        let generation = self.saved.with_untracked(|saved| saved.generation);
+        self.busy.set(true);
+        spawn_local(async move {
+            let mut result = client
+                .deploy_environment(&environment, generation, None)
+                .await;
+            if result.as_ref().is_err_and(transport_failure) {
+                result = client
+                    .deploy_environment(&environment, generation, None)
+                    .await;
+            }
+            match result {
+                Ok(_) => {
+                    self.notice
+                        .set("Deployment accepted. Follow its progress below.".into());
+                    accepted();
+                    self.dashboard.with_value(|d| d.refresh.run(()));
+                }
+                Err(error) => self.failure(&error),
+            }
+            self.busy.set(false);
+        });
+    }
+}
+
 /// Returns the enclosing `EditorContext`.
 fn editor() -> EditorContext {
     use_context().expect("application editor context")
@@ -391,10 +471,9 @@ pub(super) fn CreateApplication() -> impl IntoView {
     }
 }
 
-/// Loads saved application `id` once and mounts `ApplicationEditor`, either for
-/// the whole application or for one `service`.
+/// Loads saved application `id` once and mounts `ApplicationEditor` for `page`.
 #[component]
-pub(super) fn ApplicationPage(id: String, service: Option<String>) -> impl IntoView {
+pub(super) fn ApplicationPage(id: String, page: Page) -> impl IntoView {
     let initial = RwSignal::new(None::<ApplicationView>);
     let error = RwSignal::new(None::<String>);
     spawn_local(async move {
@@ -424,37 +503,45 @@ pub(super) fn ApplicationPage(id: String, service: Option<String>) -> impl IntoV
             initial
                 .get()
                 .map(|initial| {
-                    view! { <ApplicationEditor initial={initial} service={service.clone()} /> }
+                    view! { <ApplicationEditor initial={initial} page={page.clone()} /> }
                 })
         }}
     }
 }
 
 /// Provides `EditorContext`, guards navigation while edits are unsaved, and renders
-/// either a single service editor or the tabbed application editor. The initial
-/// tab comes from the `deployment` or `tab=services` query parameters.
+/// the application page, a service editor, or an environment page. The initial
+/// tab comes from the `deployment` or `tab` query parameters.
 #[component]
-fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl IntoView {
+fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
     let query = leptos_router::hooks::use_query_map();
     let dashboard = dashboard_context();
-    let selected = dashboard.signals.selected_environment;
+    let saved = RwSignal::new(initial);
+    let shown = match &page {
+        Page::Environment(environment) => Some(environment.clone()),
+        Page::Application | Page::Service(_) => None,
+    };
     let context = EditorContext {
         dashboard: StoredValue::new(dashboard),
-        saved: RwSignal::new(initial),
-        environment: Memo::new(move |_| selected.get()),
+        saved,
+        environment: Memo::new(move |_| {
+            shown.clone().or_else(|| {
+                saved.with(|saved| {
+                    saved
+                        .sole_environment()
+                        .ok()
+                        .map(|environment| environment.id.to_string())
+                })
+            })
+        }),
         dirty: RwSignal::new(BTreeSet::new()),
         busy: RwSignal::new(false),
         uncertain: RwSignal::new(false),
         error: RwSignal::new(None),
         diagnostic_id: RwSignal::new(None),
         notice: RwSignal::new(String::new()),
-        tab: RwSignal::new(if query.with(|q| q.get("deployment").is_some()) {
-            "Deployments"
-        } else if query.with(|q| q.get("tab").is_some_and(|tab| tab == "services")) {
-            "Services"
-        } else {
-            "Overview"
-        }),
+        tab: RwSignal::new(query.with_untracked(|query| page.initial_tab(query))),
+        page: StoredValue::new(page.clone()),
     };
     provide_context(context);
     let signals = context.dashboard.with_value(|d| d.signals);
@@ -477,9 +564,19 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         }
     });
     guard_navigation(context.dirty);
-    if let Some(name) = service {
-        return view! { <services::ServiceEditor name={name} /> }.into_any();
+    match page {
+        Page::Service(name) => view! { <services::ServiceEditor name={name} /> }.into_any(),
+        Page::Environment(_) => view! { <EnvironmentPage /> }.into_any(),
+        Page::Application => view! { <ApplicationSections /> }.into_any(),
     }
+}
+
+/// The application page: shared configuration, its environments, and history
+/// across all of them.
+#[component]
+fn ApplicationSections() -> impl IntoView {
+    let context = editor();
+    let signals = context.dashboard.with_value(|d| d.signals);
     let id = context.id();
     let health = move || {
         let id = context.id();
@@ -494,9 +591,6 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
             <A href="/dashboard/applications">"Applications"</A>
             {icon(Icon::ChevronRight)}
             <span>{move || context.name()}</span>
-            {icon(Icon::ChevronRight)}
-            <EnvironmentSelector />
-            <environments::EnvironmentManager />
         </nav>
         <header class="detail-head">
             <div class="detail-title">
@@ -520,77 +614,157 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         <Tabs label="Application sections" options={&APPLICATION_TABS} selected={context.tab} />
         <div hidden={move || context.tab.get() != "Overview"}>
             <div class="stack">
-                <RuntimeOverview />
+                <ApplicationOverview />
                 <DeleteApplication />
             </div>
         </div>
+        <div hidden={move || context.tab.get() != "Environments"}>
+            <environments::EnvironmentList />
+        </div>
         <ApplicationSettings />
-        // Environment-scoped sections remount when another environment is selected.
-        {move || {
-            context
-                .environment
-                .get()
-                .map(|_| {
-                    view! {
-                        <div hidden={move || context.tab.get() != "Secrets"}>
-                            <ApplicationSecrets />
-                        </div>
-                        <div hidden={move || context.tab.get() != "Deployments"}>
-                            <DeploymentHistory />
-                        </div>
-                        <Show when={move || context.tab.get() == "Builds"}>
-                            <super::builds::BuildHistory environment={context.environment_id()} />
-                        </Show>
-                        <Show when={move || context.tab.get() == "Logs"}>
-                            <ApplicationLogs />
-                        </Show>
-                        <Show when={move || context.tab.get() == "Events"}>
-                            <super::observability::EventHistory environment={context.environment_id()} />
-                        </Show>
-                    }
-                })
-        }}
+        <Show when={move || context.tab.get() == "Builds"}>
+            <super::builds::BuildHistory application={context.id()} />
+        </Show>
+        <Show when={move || context.tab.get() == "Events"}>
+            <super::observability::EventHistory application={context.id()} />
+        </Show>
     }
-    .into_any()
 }
 
-/// Selects the environment whose runtime, history, logs, and secrets are shown.
-/// Lists the application's environments, refreshed without replacing local edits.
+/// Identity and revision of the application.
 #[component]
-fn EnvironmentSelector() -> impl IntoView {
+fn ApplicationOverview() -> impl IntoView {
     let context = editor();
-    let environments = move || context.saved.with(|saved| saved.environments.clone());
-    let (_, set_environment) = query_signal_with_options::<String>(
-        "environment",
-        NavigateOptions {
-            scroll: false,
-            ..Default::default()
-        },
-    );
-    let select = move |event| set_environment.set(Some(event_target_value(&event)));
     view! {
-        <select
-            class="select-compact"
-            aria-label="Environment"
-            prop:value={move || context.environment.get().unwrap_or_default()}
-            disabled={move || context.blocked() || context.dirty.with(|dirty| !dirty.is_empty())}
-            on:change={select}
-        >
+        <section class="card" aria-labelledby="application-heading">
+            <header>
+                <div>
+                    <h3 id="application-heading">"Application"</h3>
+                    <p>
+                        "Configuration shared by every environment. Each environment deploys it with its own secrets, volumes, and history."
+                    </p>
+                </div>
+            </header>
             {move || {
-                environments()
-                    .into_iter()
-                    .map(|environment| {
-                        let id = environment.id.to_string();
+                context
+                    .saved
+                    .with(|saved| {
                         view! {
-                            <option value={id.clone()} prop:selected={move || context.environment.get().as_deref() == Some(id.as_str())}>
-                                {environment.name.to_string()}
-                            </option>
+                            <dl class="kv">
+                                <dt>"Application ID"</dt>
+                                <dd>
+                                    <code>{saved.application.id().to_string()}</code>
+                                </dd>
+                                <dt>"Configuration"</dt>
+                                <dd>
+                                    {format!(
+                                        "Revision {} · {}",
+                                        saved.generation,
+                                        if context.managed() {
+                                            "managed in Git"
+                                        } else {
+                                            "saved in piqueld"
+                                        },
+                                    )}
+                                </dd>
+                                <dt>"Environments"</dt>
+                                <dd>
+                                    {saved
+                                        .environments
+                                        .iter()
+                                        .map(|environment| environment.name.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")}
+                                </dd>
+                                <dt>"Created"</dt>
+                                <dd>{timestamp(saved.created_at_ms)}</dd>
+                                <dt>"Updated"</dt>
+                                <dd>{timestamp(saved.updated_at_ms)}</dd>
+                            </dl>
                         }
                     })
-                    .collect_view()
             }}
-        </select>
+        </section>
     }
+}
+
+/// One environment: its runtime, deployments, secrets, logs, and history, with
+/// rename and deletion on its overview.
+#[component]
+fn EnvironmentPage() -> impl IntoView {
+    let context = editor();
+    let signals = context.dashboard.with_value(|d| d.signals);
+    let id = context.environment_id();
+    let app_href = move || format!("/dashboard/applications/{}?tab=environments", context.id());
+    if context.selected_environment().is_none() {
+        return view! {
+            <div class="stack-sm">
+                {notice(Tone::Bad, "This environment no longer exists.")}
+                <div class="btn-group">
+                    <A attr:class="btn" href={app_href}>
+                        {icon(Icon::ArrowLeft)}
+                        "Back to environments"
+                    </A>
+                </div>
+            </div>
+        }
+        .into_any();
+    }
+    let name = move || {
+        context
+            .selected_environment()
+            .map(|environment| environment.name.to_string())
+            .unwrap_or_default()
+    };
+    let health = {
+        let id = id.clone();
+        move || environment_row(signals, &id).map(|row| row.health())
+    };
+    let deleting = move || {
+        context
+            .selected_environment()
+            .is_some_and(|environment| environment.delete_intent)
+    };
+    view! {
+        <nav class="breadcrumb" aria-label="Breadcrumb">
+            <A href="/dashboard/applications">"Applications"</A>
+            {icon(Icon::ChevronRight)}
+            <A href={app_href}>{move || context.name()}</A>
+            {icon(Icon::ChevronRight)}
+            <span>{name}</span>
+        </nav>
+        <header class="detail-head">
+            <div class="detail-title">
+                <h1>{name}</h1>
+                {move || health().map(health_badge)}
+                {move || deleting().then(|| badge(Tone::Warn, "Deleting"))}
+            </div>
+            <div class="page-actions">
+                <DeploymentActions />
+            </div>
+        </header>
+        <EditorFeedback />
+        <Tabs label="Environment sections" options={&ENVIRONMENT_TABS} selected={context.tab} />
+        <div hidden={move || context.tab.get() != "Overview"}>
+            <div class="stack">
+                <RuntimeOverview />
+                <environments::EnvironmentSettings />
+            </div>
+        </div>
+        <div hidden={move || context.tab.get() != "Deployments"}>
+            <DeploymentHistory />
+        </div>
+        <div hidden={move || context.tab.get() != "Secrets"}>
+            <EnvironmentSecrets />
+        </div>
+        <Show when={move || context.tab.get() == "Logs"}>
+            <ApplicationLogs />
+        </Show>
+        <Show when={move || context.tab.get() == "Events"}>
+            <super::observability::EventHistory environment={id.clone()} />
+        </Show>
+    }
+    .into_any()
 }
 
 /// Danger-zone card that deletes the application (guarded by the saved
@@ -721,7 +895,7 @@ pub(super) fn HostPage() -> impl IntoView {
 }
 
 /// Save status, error with reload button and diagnostic link, and a conflict
-/// notice when the polled detail shows a newer generation than the editor's.
+/// notice when the polled listing shows a newer generation than the editor's.
 #[component]
 fn EditorFeedback() -> impl IntoView {
     let context = editor();
@@ -730,10 +904,11 @@ fn EditorFeedback() -> impl IntoView {
         context.busy.get() || (context.dirty.get().is_empty() && !context.notice.get().is_empty())
     };
     let conflict = move || {
-        signals.detail.with(|detail| {
-            detail
-                .as_ref()
-                .is_some_and(|d| d.application.generation > context.saved.get().generation)
+        signals.applications.with(|rows| {
+            rows.iter().any(|row| {
+                row.application.id.as_str() == context.id()
+                    && row.application.generation > context.saved.get().generation
+            })
         })
     };
     view! {
@@ -796,24 +971,26 @@ fn EditorFeedback() -> impl IntoView {
     }
 }
 
-/// Source, services, routes, volumes and jobs tabs. Service, route, volume and
-/// job editing is disabled while the application is managed from a Git manifest.
+/// Source, services, routes, volumes, jobs and secret file tabs. Editing them is
+/// disabled while the application is managed from a Git manifest.
 #[component]
 fn ApplicationSettings() -> impl IntoView {
     let context = editor();
     view! {
         <div hidden={move || {
-            !matches!(context.tab.get(), "Source" | "Services" | "Routes" | "Volumes" | "Jobs")
+            !matches!(
+                context.tab.get(),
+                "Source" | "Services" | "Routes" | "Volumes" | "Jobs" | "Secrets"
+            )
         }}>
             <div class="stack">
-                <SharedConfigurationNotice />
                 {move || {
                     context
                         .managed()
                         .then(|| {
                             notice(
                                 Tone::Info,
-                                "Runtime configuration is managed in Git. Disconnect the repository in Source to edit services, routes, volumes, and jobs here.",
+                                "Runtime configuration is managed in Git. Disconnect the repository in Source to edit services, routes, volumes, jobs, and secret files here.",
                             )
                         })
                 }} <div hidden={move || context.tab.get() != "Source"}>
@@ -840,17 +1017,11 @@ fn ApplicationSettings() -> impl IntoView {
                     <div hidden={move || context.tab.get() != "Jobs"}>
                         <jobs::JobSettings />
                     </div>
+                    <div hidden={move || context.tab.get() != "Secrets"}>
+                        <SecretFileSettings />
+                    </div>
                 </fieldset>
             </div>
         </div>
     }
-}
-
-/// Appears beside shared application forms, including individual service settings.
-#[component]
-fn SharedConfigurationNotice() -> impl IntoView {
-    notice(
-        Tone::Info,
-        "Shared across all environments. Saving changes the configuration each environment will use on its next deployment; running deployments keep their current settings.",
-    )
 }

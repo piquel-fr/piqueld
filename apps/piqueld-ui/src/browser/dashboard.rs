@@ -422,7 +422,7 @@ fn RecentDeployments() -> impl IntoView {
                                                 <tr>
                                                     <td>
                                                         <A href={format!(
-                                                            "/dashboard/applications/{application}?environment={}&deployment={}",
+                                                            "/dashboard/applications/{application}/environments/{}?deployment={}",
                                                             op.environment_id,
                                                             op.id,
                                                         )}>{name}</A>

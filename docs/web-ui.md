@@ -19,45 +19,54 @@ Applications, and Builds; the Observe section (Events, Errors, Analytics,
 Notifications); and the System section (Daemon status, Host settings, Accounts).
 Its footer shows daemon connectivity and the signed-in account with a sign-out
 button. The home page and Applications show the five most recent deployments
-across applications; each row opens that deployment in its application history.
+across applications; each row opens that deployment in its environment's history.
 Applications also has a clickable directory with each application's health (its
 least healthy environment) and last deployment time.
 
-An application's page has an **Environment** selector in its breadcrumb. The
-selected environment's runtime overview, deployments, logs, secrets, builds, and
-events are shown, and **Preview** and **Deploy to <environment>** target it;
-configuration forms are labelled **Shared across all environments** and edit
-the application's shared manifest. Saving changes future deployments; running
-deployments keep their captured configuration. Secret values belong to the selected
-environment, while secret file references remain shared. `?environment=<id>` in the address selects
-an environment by ID. The selector updates this address, and service navigation
-preserves it, so reloading keeps the same selection. Links from deployments, builds,
-and events also use it. A selected
-environment that no longer exists is reported rather than replaced by another.
-**Manage environments** (the settings button beside the selector) creates, renames, and deletes environments,
-including creating one for an application with no environments. Deletion confirms
-the environment name, retains its Docker volumes, and leaves the application and
-other environments intact. Deployment actions are disabled for missing or deleting
-environments; **Retry deletion** resumes cleanup when needed.
+An application's page holds its shared configuration and history across all
+of its environments. Saving changes future deployments of every environment;
+running deployments keep their captured configuration. The **Environments** tab
+lists the environments with their health and latest deployment, deploys any one
+of them, and creates new ones, including for an application with no
+environments. Each environment opens its own page,
+`/dashboard/applications/<app>/environments/<environment>`, with a breadcrumb
+back to the application. Its Overview shows the runtime status and renames or
+deletes the environment; its other tabs are Deployments, Secrets (the
+environment's secret values), Logs, and Events. Deletion confirms the environment
+name, retains its Docker volumes, and leaves the application and other
+environments intact; **Retry deletion** resumes cleanup when needed. An
+environment page whose environment no longer exists says so rather than showing
+another environment.
+
+**Preview** and **Deploy to <environment>** on an environment page target that
+environment. On the application page they target its only environment; with
+several, **Deploy…** opens the Environments tab to choose one. Deployment actions
+are disabled for deleting environments. A service's Logs tab reads the only
+environment's logs, or links to each environment's logs.
 
 Environments currently share routes. A second environment cannot reserve the same
 hostnames; the error names the environment already reserving them and explains
 that per-environment configuration is needed. Environment-specific hostnames are
 planned with manifest variables.
 
-Applications have one main tab row: Overview (the default), Services, Source,
-Routes, Volumes, Jobs, Secrets, Deployments, Builds, Logs, and Events. The Jobs
+Applications have one main tab row: Overview (the default), Environments,
+Services, Source, Routes, Volumes, Jobs, Secrets, Builds, and Events. The Jobs
 tab adds, edits, reorders, and removes the one-shot jobs that run before each
 rollout, with one row per command element; saving replaces only the job list.
 Jobs inherit the referenced service's startup dependencies, which start or
 update and become healthy first. Other services wait for all jobs to succeed;
 dependency changes remain if a job fails. The Routes tab
 edits public hostnames, each pointing at a service port or a redirect, and shows each deployed route's HTTPS readiness and
-diagnostics. Saving routes updates only the route field; Deploy activates the
-change. Services lists saved services with their observed health merged in.
-The Overview tab shows the runtime status, the latest operation, observed
-services, reconciliation diagnostics, and the delete action. The Events tab has
-an **Errors only** filter. Each service row opens a service page with a
+diagnostics in every environment. Saving routes updates only the route field;
+Deploy activates the change. Services lists saved services, with their observed
+health merged in when the application has one environment. The Secrets tab
+edits each service's secret file references; values are set on environment
+pages. The Overview tab shows the application's identity, configuration
+revision, and environments, and the delete action. Builds and Events cover every
+environment, each linking to its environment, and include application-wide
+events such as edits and renames; a deleted environment's events remain until
+the application is deleted. Events has an **Errors only** filter. An environment's Overview shows the runtime status, the latest operation,
+observed services, and reconciliation diagnostics. Each service row opens a service page with a
 breadcrumb back to the application and tabs for source and scaling,
 environment, command and arguments, volume mounts, health checks, startup
 dependencies, rollout, resource limits, and logs. Startup dependencies list the
@@ -66,7 +75,7 @@ from mounts, stop first, or start first) and an optional monitor window, blank
 for the 30-second default. Service form drafts are retained when switching tabs.
 Selecting None for a health check hides its remaining fields.
 The pencil beside the application name opens its rename form.
-The Deployments tab lists expandable deployment rows with Details, Snapshot,
+An environment's Deployments tab lists expandable deployment rows with Details, Snapshot,
 and Attempts sections. Attempts load when first opened; refresh and older-attempt
 controls appear below the list. Operation IDs appear only in deployment Details. Current target, last successful deployment, and observed runtime health
 are distinct. History remains until the environment is deleted. Deploying an

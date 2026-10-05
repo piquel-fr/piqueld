@@ -94,16 +94,18 @@ pub(super) fn ErrorsPage() -> impl IntoView {
 }
 
 /// Filterable, paginated event list (50 per page), optionally scoped to one
-/// application. Also honours an `?operation=` query filter; changing any filter
+/// application (with all its environments) or one environment. Also honours an `?operation=` query filter; changing any filter
 /// or the operation resets to the newest page. Auto-refreshes via `Refresh`.
 #[component]
 pub(super) fn EventHistory(
+    #[prop(optional, into)] application: Option<String>,
     #[prop(optional, into)] environment: Option<String>,
     #[prop(optional)] errors_only: bool,
 ) -> impl IntoView {
     let refresh = Refresh::new();
     let scoped = environment.is_some();
-    let environment = StoredValue::new(environment);
+    let owned = scoped || application.is_some();
+    let scope_filter = StoredValue::new((application, environment));
     let query = use_query_map();
     let cursor = RwSignal::new(None::<String>);
     Effect::new(move |previous: Option<Option<String>>| {
@@ -130,8 +132,10 @@ pub(super) fn EventHistory(
             query.get(),
         );
         async move {
+            let (application_id, environment_id) = scope_filter.get_value();
             let filter = EventFilter {
-                environment_id: environment.get_value(),
+                application_id,
+                environment_id,
                 operation_id: query.get("operation"),
                 kind: (!kind.is_empty()).then_some(kind),
                 error_code: (!code.is_empty()).then_some(code),
@@ -154,7 +158,7 @@ pub(super) fn EventHistory(
     let reset = move || cursor.set(None);
     view! {
         <div class="toolbar">
-            {period_select(days, true, reset)} <Show when={move || !scoped}>
+            {period_select(days, true, reset)} <Show when={move || !owned}>
                 <label class="field">
                     <span>"Scope"</span>
                     <select on:change={move |e| {
@@ -308,13 +312,16 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
                         .collect_view()}
                 </div>
                 <div class="event-links">
-                    {(!scoped)
-                        .then(|| {
-                            event
-                                .environment_id
-                                .and_then(|id| environment_link(dashboard_context().signals, id.as_str()))
-                                .map(|(_, href)| view! { <A href={href}>"Environment"</A> })
-                        })}
+                    {
+                        let signals = dashboard_context().signals;
+                        let environment = event.environment_id.filter(|_| !scoped);
+                        move || {
+                            environment
+                                .as_ref()
+                                .and_then(|id| environment_link(signals, id.as_str()))
+                                .map(|(label, href)| view! { <A href={href}>{label}</A> })
+                        }
+                    }
                     {event
                         .operation_id
                         .map(|id| {

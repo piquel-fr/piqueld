@@ -1,10 +1,14 @@
 //! Environment lifecycle controls; configuration continues to belong to the application.
-use super::super::ui::{Icon, Modal, Tone, icon, notice, text_input};
+use super::super::environment_row;
+use super::super::ui::{
+    Icon, Modal, Tone, badge, empty, health_badge, icon, notice, operation_badge, text_input, when,
+};
 use super::{EditorContext, editor, mutation_client, transport_failure};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::NavigateOptions;
-use leptos_router::hooks::query_signal_with_options;
+use leptos_router::components::A;
+use leptos_router::hooks::use_navigate;
 use piqueld_client::{Client, ClientError, EnvironmentName, EnvironmentRequest, EnvironmentView};
 
 enum EnvironmentChange {
@@ -55,7 +59,7 @@ impl EditorContext {
     fn change_environment(
         self,
         change: EnvironmentChange,
-        done: Callback<Option<EnvironmentView>>,
+        done: impl FnOnce(Option<EnvironmentView>) + 'static,
     ) {
         if self.action_blocked() {
             return;
@@ -97,7 +101,7 @@ impl EditorContext {
                     } else {
                         "Environment deletion accepted. Its volumes will be retained.".into()
                     });
-                    done.run(environment);
+                    done(environment);
                     self.dashboard.with_value(|d| d.refresh.run(()));
                 }
                 Err(error) => self.failure(&error),
@@ -107,20 +111,133 @@ impl EditorContext {
     }
 }
 
-/// One manager works for applications with zero, one or several environments.
+/// The application's environments with their health and latest deployment,
+/// each linking to its page, plus creation of new ones.
 #[component]
-pub(super) fn EnvironmentManager() -> impl IntoView {
+pub(super) fn EnvironmentList() -> impl IntoView {
+    let context = editor();
+    let signals = context.dashboard.with_value(|d| d.signals);
+    let navigate = use_navigate();
+    // Latest deployment of an environment among the listed deployments.
+    let latest = move |environment: &str| {
+        signals.applications.with(|rows| {
+            rows.iter()
+                .flat_map(|row| &row.deployments)
+                .filter(|deployment| deployment.operation.environment_id.as_str() == environment)
+                .max_by_key(|deployment| deployment.operation.created_at_ms)
+                .map(|deployment| deployment.operation.clone())
+        })
+    };
+    view! {
+        <div class="stack">
+            <div class="section-header">
+                <div>
+                    <h2>"Environments"</h2>
+                    <p>
+                        "Every environment deploys the application's configuration with its own secrets, volumes, and history."
+                    </p>
+                </div>
+                <NewEnvironment />
+            </div>
+            <section class="card card-flush">
+                {move || {
+                    let environments = context.saved.with(|saved| saved.environments.clone());
+                    if environments.is_empty() {
+                        return empty("No environments yet. Create one to deploy this application.");
+                    }
+                    let navigate = navigate.clone();
+                    view! {
+                        <table class="table" aria-label="Environments">
+                            <thead>
+                                <tr>
+                                    <th>"Environment"</th>
+                                    <th>"Health"</th>
+                                    <th>"Latest deployment"</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {environments
+                                    .into_iter()
+                                    .map(|environment| {
+                                        let id = environment.id.to_string();
+                                        let href = context.environment_href(&id);
+                                        let deployments = format!("{href}?tab=deployments");
+                                        let navigate = navigate.clone();
+                                        let deleting = environment.delete_intent;
+                                        let name = environment.name.to_string();
+                                        let label = format!("Deploy to {name}");
+                                        let health = environment_row(signals, &id).map(|row| row.health());
+                                        view! {
+                                            <tr>
+                                                <td>
+                                                    <A href={href}>
+                                                        <strong>{name.clone()}</strong>
+                                                    </A>
+                                                </td>
+                                                <td>
+                                                    {if deleting {
+                                                        badge(Tone::Warn, "Deleting")
+                                                    } else {
+                                                        health.map(health_badge).into_any()
+                                                    }}
+                                                </td>
+                                                <td>
+                                                    {latest(&id)
+                                                        .map_or_else(
+                                                            || view! { <span class="muted">"Never"</span> }.into_any(),
+                                                            |operation| {
+                                                                view! {
+                                                                    <span class="btn-group">
+                                                                        {operation_badge(operation.state)}
+                                                                        {when(operation.created_at_ms)}
+                                                                    </span>
+                                                                }
+                                                                    .into_any()
+                                                            },
+                                                        )}
+                                                </td>
+                                                <td class="actions">
+                                                    <button
+                                                        type="button"
+                                                        class="btn btn-sm"
+                                                        aria-label={label}
+                                                        disabled={move || context.action_blocked() || deleting}
+                                                        on:click={move |_| {
+                                                            let navigate = navigate.clone();
+                                                            let deployments = deployments.clone();
+                                                            context
+                                                                .deploy(
+                                                                    id.clone(),
+                                                                    move || navigate(&deployments, NavigateOptions::default()),
+                                                                );
+                                                        }}
+                                                    >
+                                                        {icon(Icon::Rocket)}
+                                                        "Deploy"
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </tbody>
+                        </table>
+                    }
+                        .into_any()
+                }}
+            </section>
+        </div>
+    }
+}
+
+/// "New environment" button and dialog; opens the created environment.
+#[component]
+fn NewEnvironment() -> impl IntoView {
     let context = editor();
     let opened = RwSignal::new(false);
-    let editing = RwSignal::new(None::<String>);
     let name = RwSignal::new(String::new());
-    let (_, select) = query_signal_with_options::<String>(
-        "environment",
-        NavigateOptions {
-            scroll: false,
-            ..Default::default()
-        },
-    );
+    let navigate = use_navigate();
     let submit = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
         let value = name.get_untracked();
@@ -128,93 +245,156 @@ pub(super) fn EnvironmentManager() -> impl IntoView {
             context.set_error(Some(error.to_string()));
             return;
         }
-        let change = editing.get_untracked().map_or_else(
-            || EnvironmentChange::Create(value.clone()),
-            |id| EnvironmentChange::Rename {
-                id,
-                name: value.clone(),
-            },
-        );
-        context.change_environment(
-            change,
-            Callback::new(move |environment: Option<EnvironmentView>| {
-                if let Some(environment) = environment {
-                    select.set(Some(environment.id.to_string()));
-                }
-                editing.set(None);
-                name.set(String::new());
-                opened.set(false);
-            }),
-        );
+        let navigate = navigate.clone();
+        context.change_environment(EnvironmentChange::Create(value), move |environment| {
+            opened.set(false);
+            name.set(String::new());
+            if let Some(environment) = environment {
+                navigate(
+                    &context.environment_href(environment.id.as_str()),
+                    NavigateOptions::default(),
+                );
+            }
+        });
     };
     view! {
         <button
             type="button"
-            class="btn btn-ghost btn-icon"
-            aria-label="Manage environments"
-            title="Manage environments"
+            class="btn btn-primary"
             disabled={move || context.action_blocked()}
             on:click={move |_| opened.set(true)}
         >
-            {icon(Icon::Settings)}
+            {icon(Icon::Plus)}
+            "New environment"
         </button>
-        <Modal title="Manage environments" opened={opened} busy={context.busy} on_close={Callback::new(move |()| {
-            editing.set(None);
-            name.set(String::new());
-        })}>
-            <div class="stack-sm">
-                <p class="hint">"Every environment deploys the shared application configuration with its own secrets, volumes and history."</p>
-                <For each={move || context.saved.get().environments} key={|env| env.id.clone()} children={move |env| {
-                    let id = env.id.to_string();
-                    let rename_id = id.clone();
-                    let environment = Signal::derive(move || context.saved.with(|saved| saved.environments.iter().find(|current| current.id == env.id).cloned().unwrap_or_else(|| env.clone())));
-                    let deleting = move || environment.get().delete_intent;
-                    view! {
-                        <div class="section-header">
-                            <span>{move || environment.get().name.to_string()}{move || deleting().then_some(" (deleting)")}</span>
-                            <div class="btn-group">
-                                <button type="button" class="btn btn-sm" disabled={move || context.action_blocked() || deleting()} on:click={move |_| {
-                                    editing.set(Some(rename_id.clone()));
-                                    name.set(environment.get_untracked().name.to_string());
-                                }}>"Rename"</button>
-                                <button type="button" class="btn btn-sm btn-danger" disabled={move || context.action_blocked()} on:click={move |_| {
-                                    if deleting() {
-                                        context.change_environment(EnvironmentChange::RetryDeletion(id.clone()), Callback::new(|_| {}));
-                                        return;
-                                    }
-                                    let environment_name = environment.get_untracked().name;
-                                    if window().confirm_with_message(&format!("Delete environment {environment_name}, its services, secrets and deployment history? The application and other environments remain. Docker volume data will be retained.")).unwrap_or(false) {
-                                        let deleted = id.clone();
-                                        context.change_environment(EnvironmentChange::Delete(id.clone()), Callback::new(move |_| {
-                                            if editing.get_untracked().as_ref() == Some(&deleted) {
-                                                editing.set(None);
-                                                name.set(String::new());
-                                            }
-                                        }));
-                                    }
-                                }}>{move || if deleting() { "Retry deletion" } else { "Delete" }}</button>
-                            </div>
-                        </div>
-                    }
-                }} />
-                <form class="stack-sm" on:submit={submit}>
-                    <fieldset disabled={move || context.action_blocked()}>
-                        {text_input("Environment name", name, String::clone, |value, input| *value = input)}
-                    </fieldset>
-                    <div class="form-actions">
-                        <button type="submit" class="btn btn-primary" disabled={move || context.action_blocked()}>
-                            {move || if editing.get().is_some() { "Rename environment" } else { "Create environment" }}
-                        </button>
-                        <Show when={move || editing.get().is_some()}>
-                            <button type="button" class="btn" disabled={move || context.blocked()} on:click={move |_| {
-                                editing.set(None);
-                                name.set(String::new());
-                            }}>"Cancel rename"</button>
-                        </Show>
-                    </div>
-                </form>
+        <Modal
+            title="Create environment"
+            opened={opened}
+            busy={context.busy}
+            on_close={Callback::new(move |()| name.set(String::new()))}
+        >
+            <form class="stack-sm" on:submit={submit}>
+                <fieldset class="stack-sm" disabled={move || context.action_blocked()}>
+                    <p class="hint">
+                        "The environment starts empty and deploys the application's configuration with its own secrets, volumes, and history."
+                    </p>
+                    {text_input("Environment name", name, String::clone, |value, input| *value = input)}
+                </fieldset>
                 {move || context.error.get().map(|error| notice(Tone::Bad, error))}
-            </div>
+                <div class="form-actions">
+                    <button
+                        type="submit"
+                        class="btn btn-primary"
+                        disabled={move || context.action_blocked()}
+                    >
+                        "Create environment"
+                    </button>
+                </div>
+            </form>
         </Modal>
+    }
+}
+
+/// Rename and deletion of the environment page's environment. Deletion returns
+/// to the application's environments once accepted.
+#[component]
+pub(super) fn EnvironmentSettings() -> impl IntoView {
+    let context = editor();
+    let navigate = use_navigate();
+    let id = StoredValue::new(context.environment_id());
+    let current = move || {
+        context
+            .selected_environment()
+            .map(|environment| environment.name.to_string())
+            .unwrap_or_default()
+    };
+    let name = RwSignal::new(current());
+    let deleting = move || {
+        context
+            .selected_environment()
+            .is_some_and(|environment| environment.delete_intent)
+    };
+    let rename = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        let value = name.get_untracked();
+        if let Err(error) = EnvironmentName::parse(&value) {
+            context.set_error(Some(error.to_string()));
+            return;
+        }
+        context.change_environment(
+            EnvironmentChange::Rename {
+                id: id.get_value(),
+                name: value,
+            },
+            |_| {},
+        );
+    };
+    let delete = move |_| {
+        if deleting() {
+            context.change_environment(EnvironmentChange::RetryDeletion(id.get_value()), |_| {});
+            return;
+        }
+        let message = format!(
+            "Delete environment {}, its services, secrets and deployment history? The application and other environments remain. Docker volume data will be retained.",
+            current()
+        );
+        if !window().confirm_with_message(&message).unwrap_or(false) {
+            return;
+        }
+        let navigate = navigate.clone();
+        let href = format!("/dashboard/applications/{}?tab=environments", context.id());
+        context.change_environment(EnvironmentChange::Delete(id.get_value()), move |_| {
+            navigate(&href, NavigateOptions::default());
+        });
+    };
+    view! {
+        <section class="card">
+            <header>
+                <div>
+                    <h3>"Environment"</h3>
+                    <p>"Renaming changes only the name; nothing is redeployed."</p>
+                </div>
+            </header>
+            <form class="stack-sm" on:submit={rename}>
+                <fieldset class="stack-sm" disabled={move || context.action_blocked() || deleting()}>
+                    {text_input("Environment name", name, String::clone, |value, input| *value = input)}
+                    <dl class="kv">
+                        <dt>"Environment ID"</dt>
+                        <dd>
+                            <code>{id.get_value()}</code>
+                        </dd>
+                    </dl>
+                </fieldset>
+                <div class="form-actions">
+                    <button
+                        type="submit"
+                        class="btn"
+                        disabled={move || {
+                            context.action_blocked() || deleting() || name.get() == current()
+                        }}
+                    >
+                        "Rename environment"
+                    </button>
+                </div>
+            </form>
+        </section>
+        <section class="card card-danger">
+            <header>
+                <div>
+                    <h3>"Delete environment"</h3>
+                    <p>
+                        "Removes this environment's running services, secrets, and deployment history. Its events stay in the application's history. Docker volumes and their data are retained."
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    class="btn btn-danger"
+                    disabled={move || context.action_blocked()}
+                    on:click={delete}
+                >
+                    {move || if deleting() { "Retry deletion" } else { "Delete environment" }}
+                </button>
+            </header>
+        </section>
     }
 }
