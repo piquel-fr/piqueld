@@ -95,9 +95,8 @@ just docker-test
 Both `just test` and `just docker-test` use nextest and emit JUnit XML at
 `target/nextest/<profile>/junit.xml` (`default` locally). CI selects separate
 `ci` and `docker-ci` profiles, runs all selected tests even after failures,
-and preserves reports as workflow artifacts. Blacksmith automatically discovers
-these XML files for test analytics. Doc and browser checks use separate runners
-and are not included in these nextest reports.
+and preserves reports as workflow artifacts. Doc and browser checks use
+separate runners and are not included in these nextest reports.
 
 The reproducible Nix package can be built with `nix build`; use `nix develop`
 for the development shell.
