@@ -187,7 +187,8 @@ async fn existing_applications_become_one_production_environment_with_the_same_i
         .connect_with(options)
         .await
         .unwrap();
-    let before = MIGRATIONS.len() - 1;
+    // Schema just before `0012_environments.sql`.
+    let before = 11;
     for (index, migration) in MIGRATIONS.iter().take(before).enumerate() {
         Store::apply_migration(&pool, index + 1, migration)
             .await
