@@ -499,12 +499,13 @@ fn source_details(source: Source) -> AnyView {
     }
 }
 
-/// Renders Docker build arguments as space-separated `KEY=VALUE` pairs.
+/// Renders Docker build arguments as space-separated `KEY="VALUE"` pairs.
+/// Values are quoted and escaped so spaces cannot read as extra arguments.
 pub(in crate::browser) fn build_arguments(
     args: &std::collections::BTreeMap<String, String>,
 ) -> String {
     args.iter()
-        .map(|(key, value)| format!("{key}={value}"))
+        .map(|(key, value)| format!("{key}={value:?}"))
         .collect::<Vec<_>>()
         .join(" ")
 }
