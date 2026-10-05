@@ -105,6 +105,13 @@ and the daemon does not add CORS, telemetry, or a public binding. Passkey login
 establishes an HTTP-only session cookie; the Accounts page manages accounts and
 their grants, invitations, passkey enrollment links, and tokens. Pages and actions
 the signed-in account cannot use are hidden; see [authorization](authorization.md).
+A link from `piquelctl sign-in-link` opens a page that signs the browser in as
+the [host operator](authentication.md#the-host-operator) for 12 hours, without
+an account. The dashboard then shows "Host operator" as the signed-in user and
+hides actions that need an account: adding passkeys, creating tokens,
+invitation and enrollment links, and CLI login approval. Accounts with
+`accounts:manage` see live host operator sessions on the Accounts page and can
+revoke them.
 The Audit page shows the [audit trail](observability.md#audit-trail), naming the
 application or environment each request addressed, and each
 session or token links to its own activity. New tokens can be bound to a

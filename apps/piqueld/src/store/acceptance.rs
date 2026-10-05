@@ -113,14 +113,8 @@ impl Store {
                     .await?;
             }
         }
-        if let (Some(authority), Actor::Account(caller)) = (&caller, actor) {
-            Self::attribute_on(
-                &mut tx,
-                &authority.user_id,
-                caller.credential_id,
-                first_event,
-            )
-            .await?;
+        if !matches!(actor, Actor::Daemon) {
+            Self::attribute_on(&mut tx, actor.attribution(), first_event).await?;
         }
         if let Some(request_id) = request_id {
             let response_json =
@@ -137,32 +131,35 @@ impl Store {
         Ok((accepted.response, accepted.wake))
     }
 
-    /// Records the account and credential behind a mutation on the events it
-    /// wrote, those since `first_event` in this transaction, and on the
-    /// operations it created or restarted, whose later events inherit them.
-    /// Those are left `requested` with new events; operations it superseded
-    /// or returned unchanged, e.g. by repeating a request, keep their actor.
+    /// Records who requested a mutation (an account and its credential, or
+    /// the host operator) on the events it wrote, those since `first_event`
+    /// in this transaction, and on the operations it created or restarted,
+    /// whose later events inherit it. Those are left `requested` with new
+    /// events; operations it superseded or returned unchanged, e.g. by
+    /// repeating a request, keep their actor.
     async fn attribute_on(
         tx: &mut Transaction<'_, Sqlite>,
-        user_id: &str,
-        credential_id: &str,
+        by: super::Attribution<'_>,
         first_event: i64,
     ) -> Result<(), StoreError> {
+        let operator = by.operator_uid();
         sqlx::query!(
-            "UPDATE operations SET actor_user_id=?1,actor_credential_id=?2
+            "UPDATE operations SET actor_user_id=?1,actor_credential_id=?2,actor_operator_uid=?3
              WHERE state='requested'
-             AND id IN (SELECT operation_id FROM events WHERE id>=?3 AND operation_id IS NOT NULL)",
-            user_id,
-            credential_id,
+             AND id IN (SELECT operation_id FROM events WHERE id>=?4 AND operation_id IS NOT NULL)",
+            by.user_id,
+            by.credential_id,
+            operator,
             first_event
         )
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
         sqlx::query!(
-            "UPDATE events SET actor_user_id=?1,actor_credential_id=?2 WHERE id>=?3",
-            user_id,
-            credential_id,
+            "UPDATE events SET actor_user_id=?1,actor_credential_id=?2,actor_operator_uid=?3 WHERE id>=?4",
+            by.user_id,
+            by.credential_id,
+            operator,
             first_event
         )
         .execute(&mut **tx)
@@ -251,7 +248,8 @@ impl Store {
     }
 
     /// Returns the stored response for an unexpired receipt of `owner` (the
-    /// account, or `None` for the daemon) with one of the request's
+    /// account, or `None` for the daemon and the host operator, which may act
+    /// on everything) with one of the request's
     /// `fingerprints`, `ReplayConflict` for another owner's or a mismatched
     /// one, or `None` without a receipt.
     async fn replay_on(

@@ -94,7 +94,7 @@ pub(super) async fn put(
     }
     Ok(ok(state
         .put_secret(
-            crate::api::Actor::Account(identity.caller()),
+            identity.actor(),
             &EnvironmentId::parse(id)?,
             &name,
             generation,
@@ -117,7 +117,7 @@ pub(super) async fn delete(
     let generation = expected(&headers)?;
     state
         .delete_secret(
-            crate::api::Actor::Account(identity.caller()),
+            identity.actor(),
             &EnvironmentId::parse(id)?,
             &name,
             generation,
@@ -138,7 +138,5 @@ pub(super) async fn recover_key(
     State(state): State<ApiState>,
     axum::Extension(identity): axum::Extension<crate::auth::Identity>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(ok(state
-        .recover_secret_key(crate::api::Actor::Account(identity.caller()))
-        .await?))
+    Ok(ok(state.recover_secret_key(identity.actor()).await?))
 }

@@ -1002,6 +1002,7 @@ fn refused(peer: &str) -> NewAuditEvent {
         application_id: None,
         environment_id: None,
         permission: None,
+        operator: None,
     }
 }
 

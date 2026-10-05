@@ -5,6 +5,7 @@ use super::{Store, StoreError, now_secs};
 use piqueld_core::{
     ApplicationId, EnvironmentId,
     access::{AppPermission, Grants, Permission, Scope, Target},
+    auth::HostOperator,
 };
 use sqlx::SqliteConnection;
 
@@ -19,24 +20,35 @@ pub(crate) enum Holder<'a> {
     Invitation(&'a str),
 }
 
-/// Who submits a write. Account callers are re-read and checked inside the
-/// writing transaction, so a concurrent demotion or revocation always wins.
+/// Who submits a write. Account callers and host operator sessions are
+/// re-read inside the writing transaction, so a concurrent demotion or
+/// revocation always wins.
 #[derive(Clone, Copy, Debug)]
 pub enum Actor<'a> {
     /// The daemon itself or a trusted embedding, e.g. tests; never restricted.
     Daemon,
+    /// The host operator, never restricted but recorded as itself, over the
+    /// Unix socket or through a browser `session`.
+    Operator {
+        /// Unix user acting.
+        operator: HostOperator,
+        /// Browser session it acts through, if any.
+        session: Option<&'a str>,
+    },
     /// A signed-in caller.
     Account(Caller<'a>),
 }
 
-/// Who caused a record: an account and the credential it used, both absent
-/// for the daemon itself.
+/// Who caused a record: an account and the credential it used, or the host
+/// operator and its browser session; all absent for the daemon itself.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Attribution<'a> {
     /// Account that acted.
     pub user_id: Option<&'a str>,
-    /// Credential it acted with.
+    /// Credential (or host operator session) it acted with.
     pub credential_id: Option<&'a str>,
+    /// The host operator, when it acted instead of an account.
+    pub operator: Option<HostOperator>,
 }
 
 impl<'a> Actor<'a> {
@@ -45,22 +57,52 @@ impl<'a> Actor<'a> {
     pub fn attribution(self) -> Attribution<'a> {
         match self {
             Self::Daemon => Attribution::default(),
+            Self::Operator { operator, session } => Attribution {
+                user_id: None,
+                credential_id: session,
+                operator: Some(operator),
+            },
             Self::Account(caller) => Attribution {
                 user_id: Some(caller.user_id),
                 credential_id: Some(caller.credential_id),
+                operator: None,
             },
         }
     }
 }
 
+impl Attribution<'_> {
+    /// The host operator's Unix user ID, as stored in `actor_operator_uid`.
+    pub(crate) fn operator_uid(self) -> Option<u32> {
+        self.operator.map(|operator| operator.uid)
+    }
+}
+
 impl Actor<'_> {
-    /// Re-reads an account caller's ID and grants; `None` for the daemon.
+    /// Re-reads an account caller's ID and grants; `None` for the daemon and
+    /// the host operator, which are unrestricted. A host operator session
+    /// that ended since authentication is `CredentialRevoked`.
     pub(crate) async fn load(
         self,
         db: &mut SqliteConnection,
     ) -> Result<Option<Authority>, StoreError> {
         match self {
-            Self::Daemon => Ok(None),
+            Self::Daemon | Self::Operator { session: None, .. } => Ok(None),
+            Self::Operator {
+                session: Some(id), ..
+            } => {
+                let now = now_secs();
+                sqlx::query_scalar!(
+                    r#"SELECT EXISTS(SELECT 1 FROM auth_operator_sessions WHERE id=?1 AND redeemed=1 AND expires_at>?2) AS "live!: bool""#,
+                    id,
+                    now
+                )
+                .fetch_one(db)
+                .await
+                .map_err(StoreError::database)?
+                .then_some(None)
+                .ok_or(StoreError::CredentialRevoked)
+            }
             Self::Account(caller) => caller.load(db).await.map(Some),
         }
     }
@@ -317,47 +359,43 @@ impl Store {
             .await
     }
 
-    /// Replaces an account's grants, if `caller` may change that account, holds
+    /// Replaces an account's grants, if `actor` may change that account, holds
     /// every new grant, and is not scoped: access handed to another account
     /// outlives the credential handing it out. Refuses to leave no
     /// administrator able to sign in.
     pub(crate) async fn set_user_grants(
         &self,
-        caller: Caller<'_>,
+        actor: Actor<'_>,
         user_id: &str,
         grants: &Grants,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let caller_credential = caller.credential_id;
-        let caller = Self::check_account_on(&mut tx, caller, user_id).await?;
-        caller.require_unscoped()?;
-        caller
-            .grants
-            .may_grant(grants)
-            .map_err(StoreError::Denied)?;
-        let actor = Attribution {
-            user_id: Some(&caller.user_id),
-            credential_id: Some(caller_credential),
-        };
-        Self::replace_user_grants_on(&mut tx, user_id, grants, actor, "by an account change")
-            .await?;
+        if let Some(caller) = Self::check_account_on(&mut tx, actor, user_id).await? {
+            caller.require_unscoped()?;
+            caller
+                .grants
+                .may_grant(grants)
+                .map_err(StoreError::Denied)?;
+        }
+        let how = "by an account change";
+        Self::replace_user_grants_on(&mut tx, user_id, grants, actor.attribution(), how).await?;
         Self::require_an_admin(&mut tx).await?;
         tx.commit().await.map_err(StoreError::database)
     }
 
-    /// Checks that `caller` may change the account `user_id`, against both
-    /// sides' current grants, and returns the caller's authority. Scoped
-    /// callers cannot change their own account, which needs no permission and
-    /// would exceed their grants. Unknown accounts are checked as holding
-    /// nothing, then reported `NotFound`, so only callers allowed to manage
-    /// accounts learn whether one exists.
+    /// Checks that `actor` may change the account `user_id`, against both
+    /// sides' current grants, and returns an account caller's authority (see
+    /// [`Actor::load`]). Scoped callers cannot change their own account, which
+    /// needs no permission and would exceed their grants. Unknown accounts are
+    /// checked as holding nothing, then reported `NotFound`, so only callers
+    /// allowed to manage accounts learn whether one exists.
     pub(crate) async fn check_account_on(
         db: &mut SqliteConnection,
-        caller: Caller<'_>,
+        actor: Actor<'_>,
         user_id: &str,
-    ) -> Result<Authority, StoreError> {
-        let caller = caller.load(&mut *db).await?;
-        if caller.user_id == user_id {
+    ) -> Result<Option<Authority>, StoreError> {
+        let caller = actor.load(&mut *db).await?;
+        if let Some(caller) = caller.as_ref().filter(|caller| caller.user_id == user_id) {
             caller.require_unscoped()?;
         }
         let exists = sqlx::query_scalar!(
@@ -367,11 +405,13 @@ impl Store {
         .fetch_one(&mut *db)
         .await
         .map_err(StoreError::database)?;
-        let target = Holder::User(user_id).grants(db).await?;
-        caller
-            .grants
-            .may_change_account(caller.user_id == user_id, &target)
-            .map_err(StoreError::Denied)?;
+        if let Some(caller) = &caller {
+            let target = Holder::User(user_id).grants(db).await?;
+            caller
+                .grants
+                .may_change_account(caller.user_id == user_id, &target)
+                .map_err(StoreError::Denied)?;
+        }
         if exists {
             Ok(caller)
         } else {

@@ -72,7 +72,8 @@ impl Store {
         let now = super::now_ms();
         let by = actor.attribution();
         // Each affected application's history explains why its values need replacing.
-        sqlx::query!("INSERT INTO events(application_id,environment_id,kind,message,created_at_ms,actor_user_id,actor_credential_id) SELECT (SELECT application_id FROM environments WHERE id=secret_versions.environment_id),environment_id,'secret_values_discarded','Secret key recovery discarded '||COUNT(*)||' stored values; store replacements, then deploy',?1,?2,?3 FROM secret_versions WHERE available=1 GROUP BY environment_id",now,by.user_id,by.credential_id)
+        let operator = by.operator_uid();
+        sqlx::query!("INSERT INTO events(application_id,environment_id,kind,message,created_at_ms,actor_user_id,actor_credential_id,actor_operator_uid) SELECT (SELECT application_id FROM environments WHERE id=secret_versions.environment_id),environment_id,'secret_values_discarded','Secret key recovery discarded '||COUNT(*)||' stored values; store replacements, then deploy',?1,?2,?3,?4 FROM secret_versions WHERE available=1 GROUP BY environment_id",now,by.user_id,by.credential_id,operator)
             .execute(&mut *tx).await.map_err(StoreError::database)?;
         sqlx::query!(
             "UPDATE secret_versions SET available=0,nonce=X'',ciphertext=X'' WHERE available=1"

@@ -17,6 +17,8 @@ pub(crate) enum SecurityEvent {
     DenialBurst,
     /// An admin recovery link was issued over the Unix socket.
     RecoveryIssued,
+    /// A host operator sign-in link was issued over the Unix socket.
+    OperatorSignInIssued,
     /// A credential was used from an address it had not used before.
     NewAddress,
     /// The secret master key was recovered, discarding stored values.
@@ -24,11 +26,12 @@ pub(crate) enum SecurityEvent {
 }
 
 impl SecurityEvent {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::AdminGranted,
         Self::PrivilegedToken,
         Self::DenialBurst,
         Self::RecoveryIssued,
+        Self::OperatorSignInIssued,
         Self::NewAddress,
         Self::SecretKeyRecovered,
     ];
@@ -40,6 +43,7 @@ impl SecurityEvent {
             Self::PrivilegedToken => "privileged_token_created",
             Self::DenialBurst => "access_denial_burst",
             Self::RecoveryIssued => "admin_recovery_issued",
+            Self::OperatorSignInIssued => "operator_sign_in_issued",
             Self::NewAddress => "credential_new_address",
             Self::SecretKeyRecovered => "secret_key_recovered",
         }
@@ -68,14 +72,16 @@ impl Store {
     ) -> Result<(), StoreError> {
         let kind = event.kind();
         let now = now_ms();
+        let operator = actor.operator_uid();
         sqlx::query!(
-            "INSERT INTO events(scope,kind,message,created_at_ms,actor_user_id,actor_credential_id)
-            VALUES('daemon',?1,?2,?3,?4,?5)",
+            "INSERT INTO events(scope,kind,message,created_at_ms,actor_user_id,actor_credential_id,actor_operator_uid)
+            VALUES('daemon',?1,?2,?3,?4,?5,?6)",
             kind,
             message,
             now,
             actor.user_id,
             actor.credential_id,
+            operator,
         )
         .execute(db)
         .await
@@ -235,6 +241,7 @@ impl Store {
                 let actor = Attribution {
                     user_id: Some(user_id),
                     credential_id: Some(credential_id),
+                    operator: None,
                 };
                 Self::security_event_on(&mut tx, SecurityEvent::NewAddress, &message, actor)
                     .await?;

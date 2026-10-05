@@ -18,24 +18,16 @@ use piqueld_client::{
 #[component]
 pub(super) fn Sidebar() -> impl IntoView {
     let signals = dashboard_context().signals;
-    let user = super::auth::auth_user();
+    let who = super::auth::signed_in();
     // Pages the caller could not load anything on are hidden; the daemon
     // enforces every permission regardless.
     let system = super::access::can(piqueld_client::access::Permission::Global(
         piqueld_client::access::GlobalPermission::SystemRead,
     ));
-    let display_name = move || {
-        user.get().map(|user| {
-            if user.display_name.is_empty() {
-                user.username
-            } else {
-                user.display_name
-            }
-        })
-    };
+    let display_name = move || who.get().map(|who| who.name().to_owned());
     let initial = move || {
-        user.get()
-            .and_then(|user| user.username.chars().next())
+        who.get()
+            .and_then(|who| who.name().chars().next())
             .map_or_else(|| "?".to_owned(), |first| first.to_string())
     };
     view! {

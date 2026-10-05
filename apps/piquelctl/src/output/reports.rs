@@ -438,8 +438,9 @@ report!(Page<Event>, self, out, {
             event.error_code.as_deref().unwrap_or(""),
             event.message.as_deref().unwrap_or(""),
             event
-                .actor_user_id
-                .as_deref()
+                .actor_operator
+                .map(|operator| operator.to_string())
+                .or_else(|| event.actor_user_id.clone())
                 .map_or_else(String::new, |actor| format!("  by {actor}"))
         ))?;
     }

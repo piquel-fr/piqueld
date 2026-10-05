@@ -23,6 +23,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use piqueld_core::audit::AuditOutcome;
+use piqueld_core::auth::Principal;
 use piqueld_core::tailnet::TailnetPeer;
 use piqueld_core::{
     ApplicationId, EnvironmentId,
@@ -302,19 +303,23 @@ pub(super) async fn audit(
         identity: extensions.get::<Identity>().cloned(),
         signed_in: extensions
             .get::<SignedIn>()
-            .map(|SignedIn(user)| user.clone()),
+            .map(|SignedIn(who)| who.clone()),
     };
-    if let (Some(identity), Some(peer)) = (&answer.identity, audit.peer) {
-        state.observe_address(&identity.credential_id, &identity.user.id, peer);
+    if let Some(identity) = &answer.identity
+        && let (Some(user), Some(credential), Some(peer)) =
+            (identity.user(), identity.credential_id(), audit.peer)
+    {
+        state.observe_address(credential, &user.id, peer);
     }
     audit.record(&state, answer);
     response
 }
 
-/// Account signed in by a public request, e.g. passkey login or a completed
-/// CLI login, attached to its response so the audit trail names who signed in.
+/// Who a public request signed in, e.g. by passkey login, a completed CLI
+/// login, or a host operator sign-in link, attached to its response so the
+/// audit trail names who signed in.
 #[derive(Clone)]
-pub(super) struct SignedIn(pub(super) piqueld_core::auth::User);
+pub(super) struct SignedIn(pub(super) Principal);
 
 /// What the audit trail needs from a response.
 struct Answer {
@@ -325,8 +330,8 @@ struct Answer {
     denied: Option<Denied>,
     /// Caller that authentication resolved, if any.
     identity: Option<Identity>,
-    /// Account a sign-in request signed in.
-    signed_in: Option<piqueld_core::auth::User>,
+    /// Who a sign-in request signed in.
+    signed_in: Option<Principal>,
 }
 
 /// One API request, as the audit trail will record it.
@@ -423,10 +428,15 @@ impl Audit {
         } else {
             AuditOutcome::Allowed
         };
-        // A sign-in names the account it signed in; any credential the request
-        // also carried belongs to whoever was signed in before.
+        // A sign-in names who it signed in; any credential the request also
+        // carried belongs to whoever was signed in before.
         let credential = identity.as_ref().filter(|_| signed_in.is_none());
-        let user = signed_in.or_else(|| identity.as_ref().map(|identity| identity.user.clone()));
+        let who = signed_in.or_else(|| identity.as_ref().map(Identity::principal));
+        let (user, operator) = match who {
+            Some(Principal::User(user)) => (Some(user), None),
+            Some(Principal::Operator(operator)) => (None, Some(operator)),
+            None => (None, None),
+        };
         let permission = match denied {
             Some(Denied::Missing(permission)) => Some(permission.as_str()),
             _ => None,
@@ -439,8 +449,12 @@ impl Audit {
             status: status.as_u16(),
             user_id: user.as_ref().map(|user| user.id.clone()),
             username: user.map(|user| user.username),
-            credential_id: credential.map(|identity| identity.credential_id.clone()),
-            credential_kind: credential.map(|identity| identity.kind.as_str()),
+            credential_id: credential
+                .and_then(Identity::credential_id)
+                .map(str::to_owned),
+            credential_kind: credential
+                .and_then(Identity::kind)
+                .map(crate::store::CredentialKind::as_str),
             scoped: credential.map(|identity| identity.scoped),
             peer: self.peer.map(|peer| peer.to_string()),
             tailnet,
@@ -448,6 +462,7 @@ impl Audit {
             application_id,
             environment_id,
             permission,
+            operator,
         });
     }
 }

@@ -3,8 +3,11 @@
 piqueld uses passkeys for browser login. What each account may do is decided by
 its grants; see [authorization](authorization.md). The first account administers
 the installation, and accounts with `accounts:manage` manage accounts whose access
-they hold themselves. If every administrator loses access, the host's operator
-can [recover administrator access](#recovering-administrator-access).
+they hold themselves. Whoever controls the daemon's host, the
+[host operator](#the-host-operator), needs no account: it uses the CLI on the
+host without signing in, can sign a browser in with a one-time link, and can
+[recover administrator access](#recovering-administrator-access) if every
+administrator loses it.
 
 ## Upgrading an existing installation
 
@@ -18,7 +21,8 @@ can [recover administrator access](#recovering-administrator-access).
 3. Start the upgraded daemon, open the link printed by `piquelctl setup-link`, and
    create the first account. Existing applications continue reconciling, but all
    API clients now need credentials, including clients connecting over a Unix
-   socket.
+   socket, except the [host operator](#the-host-operator) (root or the daemon's
+   own user) on that socket.
 4. Run `piquelctl login` for interactive clients. Create automation tokens and
    update scripts, deployment jobs, and API health checks that previously used
    anonymous access. TCP `/health` remains public. Verify a browser edit and an
@@ -109,11 +113,67 @@ protects stored credentials, not access to the authenticators themselves: if eve
 administrator loses their passkeys and all sessions/tokens become unusable, see
 [recovering administrator access](#recovering-administrator-access).
 
+## The host operator
+
+Whoever controls the daemon's host already controls piqueld: they can read and
+replace its database, its secret key, and the Docker engine it drives. piqueld
+calls them the **host operator** and lets them act without an account, which
+is simpler for them and leaves a clearer trail than editing the database. It
+grants nothing they do not already have, so there is no setting to turn it off.
+
+**Who it is.** A request over the daemon's Unix socket is from the host operator
+when the kernel reports (`SO_PEERCRED`) that the process on the other end runs
+as **root** or as the **user the daemon runs as**. Nothing the client sends can
+claim it. Members of the socket's group are not the host operator; they still
+sign in with their own account. Over TCP or the tailnet, nobody is.
+
+**Using the CLI without signing in.** On the daemon host, `piquelctl` run by
+root or the daemon's user acts as the host operator, with `admin` on every
+application, whenever it sends no token:
+
+```console
+$ sudo piquelctl whoami
+host operator (uid 0)
+```
+
+A token keeps its meaning: a `piquelctl` with a saved login, or with
+`PIQUELD_TOKEN` set, acts as that account even when run by root.
+
+**Signing a browser in.** `piquelctl sign-in-link`, run the same way, prints a
+link that signs one browser in as the host operator:
+
+```console
+sudo piquelctl sign-in-link
+```
+
+It works once, within 10 minutes; the browser session it opens lasts 12 hours
+and has no idle timeout. It works before setup too, so a fresh installation can
+be tried from a browser before anyone registers a passkey. Like
+[recovery](#recovering-administrator-access), it is served only over the Unix
+socket and only to the host operator; anyone else gets 404. Only hashes of the
+link's and the session's secrets are stored.
+
+**What it may do.** The host operator holds `admin` on every application, so it
+may do anything an administrator may, except what needs an account: it owns no
+passkeys or API tokens, cannot issue invitation or enrollment links, and cannot
+approve CLI logins. The dashboard shows it as "Host operator" and hides those
+actions. It is not an account, so every account rule still holds: in particular,
+some account must keep `admin` and a passkey.
+
+**How it is recorded.** History and the [audit trail](observability.md#audit-trail)
+attribute its requests to the host operator and its Unix user, e.g.
+`host operator (uid 0)`, and to its browser session, if any. Issuing a sign-in
+link raises a [`security` notification](observability.md#security-notifications)
+("A host operator sign-in link was issued over the Unix socket to uid 0"), and
+the daemon logs a warning. Live host operator browser sessions are listed on
+the dashboard's **Accounts** page and by `piquelctl account list`; revoke one
+there, with `piquelctl token revoke <id>`, or by signing out.
+
 ## Recovering administrator access
 
 When no administrator can sign in (every passkey is lost and every session and
-token has expired or been revoked), the host's operator can create a new
-administrator account. On the daemon host, run:
+token has expired or been revoked), the [host operator](#the-host-operator) can
+create a new administrator account. On the daemon host, run:
 
 ```console
 sudo piquelctl recover-admin
@@ -124,20 +184,11 @@ passkey: the new account receives `admin` on every application. Then sign in
 and repair access: revoke the lost credentials, remove passkeys that are gone,
 and delete the recovery account if it is no longer needed.
 
-**Who may use it.** Recovery assumes that whoever controls the host already
-controls piqueld: they can read and replace its database, its secret key, and
-the Docker engine it drives. So the only check is that the request comes from
-that operator:
-
-- It is served only over the daemon's Unix socket. Over TCP or the tailnet, the
-  endpoint answers 404, like the setup link.
-- The daemon asks the kernel which user is on the other end of the socket
-  connection (`SO_PEERCRED`) and accepts only **root** or the **user the daemon
-  runs as**. Members of the socket's group, who may otherwise use the socket
-  with their own credentials, cannot recover access. The check cannot be
-  satisfied by anything the client sends.
-- It is refused with 409 `setup_pending` before the first account exists; use
-  `piquelctl setup-link` then.
+**Who may use it.** Only the [host operator](#the-host-operator): the endpoint is
+served only over the daemon's Unix socket and only to root or the daemon's own
+user. Over TCP or the tailnet, and to members of the socket's group, it answers
+404, like the setup link. It is refused with 409 `setup_pending` before the
+first account exists; use `piquelctl setup-link` then.
 
 **What the link does.**
 
@@ -221,6 +272,7 @@ alone. Do not put token values into connection profiles or Nix configuration.
 | Browser session | 24 hours without API use, or 7 days total |
 | CLI session | 30 days; repeat browser login afterward |
 | Automation token | 90 days by default; custom days or no expiry, within `auth.max_token_days` |
+| Host operator browser session | 12 hours |
 
 Browser sessions use HTTP-only, SameSite=Strict cookies. For HTTPS origins they
 are also Secure and use the `__Host-` name prefix, so applications on sibling
@@ -230,7 +282,8 @@ to the cookie names, keeping daemons served on different ports signed in
 separately. Cookie-authenticated mutations require the configured Origin.
 API/CLI credentials use `Authorization: Bearer …`. No tokens are automatically
 renewed. All API listeners require account authentication, regardless of socket
-group membership or Tailscale connectivity. The optional `metrics.listen`
+group membership or Tailscale connectivity; only the
+[host operator](#the-host-operator) on the Unix socket needs none. The optional `metrics.listen`
 endpoint serves only `GET /metrics` and is not authenticated; see
 [observability](observability.md#optional-metrics-and-future-external-services).
 
@@ -248,8 +301,11 @@ still works when the server has already invalidated the session.
 
 The generated [OpenAPI contract](openapi-v1.json) documents `/api/v1/auth`:
 status, current account and its grants, registration and login ceremonies, logout,
-the account directory, management commands, and device start/poll/inspect/approve
-operations. `POST /auth/manage` accepts a tagged `action`; actions on other
+the account directory, management commands, device start/poll/inspect/approve
+operations, and the host operator's links: `POST /auth/recovery` and
+`POST /auth/sign-in-link` (Unix socket only), and `POST /auth/login/operator`,
+which redeems a sign-in link. `GET /auth/me` reports either a `user` or, for the
+host operator, an `operator` with its Unix user ID. `POST /auth/manage` accepts a tagged `action`; actions on other
 accounts follow the [authorization](authorization.md#managing-accounts) rules.
 Management responses never return existing credential secrets.
 The device protocol uses the device-code interaction pattern; the JSON endpoints

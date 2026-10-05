@@ -5425,6 +5425,51 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Redeems a host operator sign-in link
+
+    Public. Signs the browser in as the host operator with a 12-hour session
+    cookie. Used, expired, and unknown links fail with 401.
+
+    Sends a `POST` request to `/api/v1/auth/login/operator`
+
+    */
+    pub async fn auth_operator_sign_in<'a>(
+        &'a self,
+        body: &'a piqueld_core::auth::OperatorSignIn,
+    ) -> Result<ResponseValue<piqueld_core::auth::Session>, Error<piqueld_core::api::ErrorBody>>
+    {
+        let url = format!("{}/api/v1/auth/login/operator", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_operator_sign_in",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Starts a passkey sign-in
 
     Public. Usernameless: any discoverable passkey for this site may answer.
@@ -5557,7 +5602,10 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Gets the signed-in user and what the current credential may do
+    /*Gets who is signed in and what the current credential may do
+
+    Token-less requests over the Unix socket from root or the daemon's own
+    user act as the host operator.
 
     Sends a `GET` request to `/api/v1/auth/me`
 
@@ -5599,18 +5647,18 @@ impl Client {
     }
     /*Issues a one-time admin recovery link
 
-    Public, but only over the Unix socket and only to root or the daemon's own
-    user, identified by the kernel (`SO_PEERCRED`); anyone else gets 404. The
-    link is valid for 24 hours, replaces any earlier one, and registers a new
-    account with `admin` on every application. Issuing it raises a `security`
-    notification.
+    Public, but only over the Unix socket and only to the host operator: root
+    or the daemon's own user, identified by the kernel (`SO_PEERCRED`); anyone
+    else gets 404. The link is valid for 24 hours, replaces any earlier one,
+    and registers a new account with `admin` on every application. Issuing it
+    raises a `security` notification.
 
     Sends a `POST` request to `/api/v1/auth/recovery`
 
     */
     pub async fn auth_recover_admin<'a>(
         &'a self,
-    ) -> Result<ResponseValue<piqueld_core::auth::RecoveryLink>, Error<piqueld_core::api::ErrorBody>>
+    ) -> Result<ResponseValue<piqueld_core::auth::OperatorLink>, Error<piqueld_core::api::ErrorBody>>
     {
         let url = format!("{}/api/v1/auth/recovery", self.baseurl,);
         let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
@@ -5786,6 +5834,54 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Issues a one-time host operator sign-in link
+
+    Public, but only over the Unix socket and only to the host operator, like
+    `authRecoverAdmin`; anyone else gets 404. The link works once within ten
+    minutes and signs a browser in as the host operator, with `admin` on every
+    application, for 12 hours. Issuing it raises a `security` notification.
+
+    Sends a `POST` request to `/api/v1/auth/sign-in-link`
+
+    */
+    pub async fn auth_sign_in_link<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<piqueld_core::auth::OperatorLink>, Error<piqueld_core::api::ErrorBody>>
+    {
+        let url = format!("{}/api/v1/auth/sign-in-link", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_sign_in_link",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             _ => Err(Error::UnexpectedResponse(response)),

@@ -22,7 +22,11 @@ developer.
 ## Inspect and operate
 
 In a second terminal, open the first-account setup link and create an account
-with a passkey, then sign in:
+with a passkey, then sign in. The daemon runs as your user, so over its socket
+the CLI also works without `login`, as the
+[host operator](authentication.md#the-host-operator); `piquelctl sign-in-link`
+signs a browser in the same way, without a passkey. Over TCP, `login` is
+required:
 
 ```console
 just run --socket /tmp/piqueld-dev-run/piqueld.sock setup-link --open

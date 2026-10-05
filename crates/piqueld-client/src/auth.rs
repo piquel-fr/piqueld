@@ -16,13 +16,34 @@ impl Client {
         crate::client::generated_result(self.generated.auth_setup_link().await).await
     }
     /// Issues a one-time admin recovery link. Only the daemon's Unix socket
-    /// serves it, and only to root or the daemon's own user.
+    /// serves it, and only to the host operator (root or the daemon's own user).
     /// # Errors
     /// Returns setup-pending, transport, decoding, or API failures.
-    pub async fn auth_recover_admin(&self) -> Result<RecoveryLink, ClientError> {
+    pub async fn auth_recover_admin(&self) -> Result<OperatorLink, ClientError> {
         crate::client::generated_result(self.generated.auth_recover_admin().await).await
     }
-    /// Returns the signed-in account and what the current credential may do.
+    /// Issues a one-time link that signs a browser in as the host operator.
+    /// Only the daemon's Unix socket serves it, and only to the host operator.
+    /// # Errors
+    /// Returns transport, decoding, or API failures.
+    pub async fn auth_sign_in_link(&self) -> Result<OperatorLink, ClientError> {
+        crate::client::generated_result(self.generated.auth_sign_in_link().await).await
+    }
+    /// Redeems a host operator sign-in link's secret, setting the browser
+    /// session cookie.
+    /// # Errors
+    /// Returns authentication, transport, decoding, or API failures.
+    pub async fn auth_operator_sign_in(&self, secret: &str) -> Result<Session, ClientError> {
+        crate::client::generated_result(
+            self.generated
+                .auth_operator_sign_in(&OperatorSignIn {
+                    secret: secret.into(),
+                })
+                .await,
+        )
+        .await
+    }
+    /// Returns who is signed in and what the current credential may do.
     /// # Errors
     /// Returns authentication, transport, decoding, or API failures.
     pub async fn auth_me(&self) -> Result<Session, ClientError> {

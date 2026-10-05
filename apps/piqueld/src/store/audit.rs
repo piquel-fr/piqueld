@@ -9,11 +9,12 @@
 use super::{Attribution, Store, StoreError, now_ms, page_limit};
 use piqueld_core::api::Page;
 use piqueld_core::audit::{AuditEvent, AuditFilter, AuditLink, AuditOutcome, AuditVerification};
+use piqueld_core::auth::HostOperator;
 use sqlx::{QueryBuilder, SqliteConnection};
 
 /// Columns read into [`AuditRow`].
 const COLUMNS: &str = "id,created_at_ms,action,outcome,status,user_id,username,credential_id,\
-    credential_kind,scoped,peer,request_id,application_id,environment_id,permission,link,tailnet";
+    credential_kind,scoped,peer,request_id,application_id,environment_id,permission,link,tailnet,operator_uid";
 
 /// An audited request to record.
 pub(crate) struct NewAuditEvent {
@@ -35,6 +36,8 @@ pub(crate) struct NewAuditEvent {
     /// Environment the route names by ID; its application is recorded too.
     pub(crate) environment_id: Option<String>,
     pub(crate) permission: Option<&'static str>,
+    /// The host operator, when it made the request instead of an account.
+    pub(crate) operator: Option<HostOperator>,
 }
 
 /// Raw `audit_events` row.
@@ -57,6 +60,7 @@ struct AuditRow {
     permission: Option<String>,
     link: Option<String>,
     tailnet: Option<String>,
+    operator_uid: Option<i64>,
 }
 
 impl NewAuditEvent {
@@ -80,15 +84,18 @@ impl NewAuditEvent {
             permission: self.permission.map(str::to_owned),
             link: None,
             tailnet: self.tailnet.clone(),
+            operator_uid: self.operator.map(|operator| i64::from(operator.uid)),
         }
     }
 }
 
 impl AuditRow {
     /// This row's link after `previous`: lowercase hex SHA-256 of a JSON
-    /// array holding `previous` and every field, in column order. `tailnet`,
-    /// added later, is appended only when present, so links of earlier rows
-    /// stay valid.
+    /// array holding `previous` and every field, in column order. `tailnet`
+    /// and `operator_uid`, added later, are appended only when present, so
+    /// links of earlier rows stay valid: `[fields, tailnet]` with a tailnet
+    /// identity alone, `[fields, tailnet, operator_uid]` (`tailnet` possibly
+    /// null) with an operator.
     fn link_from(&self, previous: &str) -> Result<String, StoreError> {
         use sha2::{Digest, Sha256};
         let fields = (
@@ -109,9 +116,10 @@ impl AuditRow {
             &self.environment_id,
             &self.permission,
         );
-        let bytes = match &self.tailnet {
-            None => serde_json::to_vec(&fields),
-            Some(tailnet) => serde_json::to_vec(&(fields, tailnet)),
+        let bytes = match (&self.tailnet, self.operator_uid) {
+            (None, None) => serde_json::to_vec(&fields),
+            (Some(tailnet), None) => serde_json::to_vec(&(fields, tailnet)),
+            (tailnet, Some(operator)) => serde_json::to_vec(&(fields, tailnet, operator)),
         }
         .map_err(StoreError::corrupt)?;
         Ok(format!("{:x}", Sha256::digest(bytes)))
@@ -135,6 +143,7 @@ impl AuditRow {
             application_id: self.application_id,
             environment_id: self.environment_id,
             permission: self.permission,
+            operator: self.operator_uid.map(Store::host_operator).transpose()?,
         })
     }
 }
@@ -178,7 +187,7 @@ impl Store {
         }
         row.link = Some(row.link_from(&head.link)?);
         sqlx::query!(
-            "INSERT INTO audit_events(created_at_ms,action,outcome,status,user_id,username,credential_id,credential_kind,scoped,peer,request_id,application_id,environment_id,permission,link,id,tailnet) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+            "INSERT INTO audit_events(created_at_ms,action,outcome,status,user_id,username,credential_id,credential_kind,scoped,peer,request_id,application_id,environment_id,permission,link,id,tailnet,operator_uid) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
             row.created_at_ms,
             row.action,
             row.outcome,
@@ -196,6 +205,7 @@ impl Store {
             row.link,
             row.id,
             row.tailnet,
+            row.operator_uid,
         )
         .execute(&mut *tx)
         .await
@@ -204,6 +214,7 @@ impl Store {
             let actor = Attribution {
                 user_id: row.user_id.as_deref(),
                 credential_id: row.credential_id.as_deref(),
+                operator: event.operator,
             };
             let (peer, username) = (row.peer.as_deref(), row.username.as_deref());
             Self::check_denial_burst_on(&mut tx, peer, actor, username, row.created_at_ms).await?;

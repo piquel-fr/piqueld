@@ -25,7 +25,9 @@ are created with mode `0700`; existing components are never chmodded.
 
 The Unix API socket is separate, at `<runtime_dir>/piqueld.sock`. It is always
 `0660`, owned by the daemon's user and effective group. Group membership allows
-connections; account authentication is also required.
+connections; account authentication is also required, except for root and the
+daemon's own user, who act as the
+[host operator](authentication.md#the-host-operator).
 
 The service manager or installer must create the runtime directory before
 startup. Use daemon ownership and mode `0750` for group access, or `0700` for

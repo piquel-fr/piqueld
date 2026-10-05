@@ -402,8 +402,15 @@ registry management and advanced interactive CLI flows remain future work.
 Use `piquelctl setup-link` on the daemon host to print the first-account setup
 link (`--open` also opens it in the default browser); only the Unix socket serves
 it. Use `piquelctl login` for passkey login through the browser, `whoami` to inspect
-the current account and its grants, and `logout` to revoke it. `piquelctl account`
-lists accounts, replaces their grants (`access`), and creates invitation (`invite`)
+the current account and its grants, and `logout` to revoke it. On the daemon host,
+root and the daemon's own user need no login: without a token, they act over the
+Unix socket as the [host operator](authentication.md#the-host-operator), with
+`admin` on every application, and `whoami` prints `host operator (uid 0)`. Run
+that way, `piquelctl sign-in-link` prints a one-time link (valid for 10
+minutes) that signs a browser in as the host operator for 12 hours; it raises a
+security notification. `piquelctl account`
+lists accounts (and live host operator browser sessions), replaces their grants
+(`access`), and creates invitation (`invite`)
 and passkey enrollment (`enroll`) links. `piquelctl token create|list|revoke`
 manages API tokens for your account (`--tailnet` binds one to a tailnet user
 or tag), and `login` accepts the same grant options

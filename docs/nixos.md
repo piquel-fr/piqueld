@@ -58,7 +58,8 @@ The socket is `/run/piqueld/piqueld.sock`, owned by `piqueld:piqueld` with mode
 to the socket without sudo. Membership permits only a socket connection; run
 `piquelctl login` to authenticate an account before `piquelctl status` or other
 API operations. It grants no direct access to private state or permission to
-replace the socket.
+replace the socket. Root (`sudo piquelctl …`) and the `piqueld` user act as the
+[host operator](authentication.md#the-host-operator) without logging in.
 Only the existing `piqueld.service` is needed; no proxy or socket unit is required.
 
 Custom `runtimeDir` values must be dedicated directories below `/run`. Configure

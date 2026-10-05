@@ -12,8 +12,8 @@ use axum::{
 };
 use piqueld_core::auth::{
     AuthStatus, Ceremony, CeremonyFinish, DeviceApprove, DevicePoll, DeviceRequest, DeviceStart,
-    DeviceStartRequest, DeviceToken, Directory, Manage, Managed, RecoveryLink, RegistrationStart,
-    Session, SetupLink, User,
+    DeviceStartRequest, DeviceToken, Directory, HostOperator, Manage, Managed, OperatorLink,
+    OperatorSignIn, Principal, RegistrationStart, Session, SetupLink, User,
 };
 use piqueld_core::tailnet::TailnetPeer;
 use std::{net::SocketAddr, sync::Arc};
@@ -149,7 +149,9 @@ async fn authenticate(
 ///    send the configured origin.
 /// 4. Refuses tokens bound to a tailnet identity unless the request came
 ///    from a matching tailnet peer (401 `tailnet_binding_mismatch`).
-/// 5. Inserts the resolved `Identity` as an extension, on the request for
+/// 5. Without any credential, a Unix socket request from root or the
+///    daemon's own user acts as the host operator (see `UnixPeer`).
+/// 6. Inserts the resolved `Identity` as an extension, on the request for
 ///    handlers and on the response for outer layers. Missing or invalid
 ///    credentials leave it out; the route's access requirement then decides
 ///    whether the request needs one (see `access::enforce`).
@@ -213,6 +215,8 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
             Err(AuthError::Unauthorized) => {}
             Err(error) => return ApiError::from(error).into_response(),
         }
+    } else if let Some(operator) = super::UnixPeer::host_operator(request.extensions()) {
+        identity = Some(Identity::operator(operator, None));
     }
     // A bound token works only from a matching tailnet peer, checked with a
     // fresh lookup rather than the cached one used to describe the request.
@@ -326,21 +330,59 @@ async fn refused(auth: &Auth, secret: Option<&str>, mut response: Response) -> R
     response
 }
 /// Returns the user as JSON, setting a seven-day session cookie when a new
-/// session `token` was issued. The audit trail then records who signed in;
-/// otherwise, e.g. adding a passkey to the caller's account, the caller.
+/// session `token` was issued.
 fn session_response(auth: &Auth, user: User, token: Option<String>) -> Response {
-    let signed_in = super::access::SignedIn(user.clone());
-    let mut response = Json(user).into_response();
-    if let Some(token) = token {
-        response.extensions_mut().insert(signed_in);
+    let who = Principal::User(user.clone());
+    signed_in(auth, who, user, token.map(|token| (token, 7 * 86400)))
+}
+/// Returns `body` as JSON, setting a session cookie that lasts `age`
+/// seconds when a new session `(token, age)` was issued. The audit trail
+/// then records `who` signed in; otherwise, e.g. adding a passkey to the
+/// caller's account, the caller.
+fn signed_in(
+    auth: &Auth,
+    who: Principal,
+    body: impl serde::Serialize,
+    session: Option<(String, i64)>,
+) -> Response {
+    let mut response = Json(body).into_response();
+    if let Some((token, age)) = session {
+        response
+            .extensions_mut()
+            .insert(super::access::SignedIn(who));
         response.headers_mut().append(
             header::SET_COOKIE,
-            auth.cookie("piqueld_session", &token, 7 * 86400)
+            auth.cookie("piqueld_session", &token, age)
                 .parse()
                 .expect("generated cookie is valid"),
         );
     }
     response
+}
+/// The host operator making a Unix socket request (see `UnixPeer`). Anyone
+/// else is answered as if the route did not exist.
+pub(super) struct OperatorPeer(HostOperator);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for OperatorPeer {
+    type Rejection = ApiError;
+
+    fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> impl Future<Output = Result<Self, ApiError>> + Send {
+        std::future::ready(
+            super::UnixPeer::host_operator(&parts.extensions)
+                .map(Self)
+                .ok_or_else(hidden),
+        )
+    }
+}
+/// 404 for a route the caller may not know about, which looks absent but is
+/// recorded as a refusal in the audit trail.
+fn hidden() -> ApiError {
+    let mut error = ApiError::endpoint_not_found();
+    error.denied = Some(piqueld_core::access::Denied::Hidden);
+    error
 }
 /// Reads the ceremony binding cookie that ties a passkey finish request to the
 /// browser that started it; missing cookies are unauthorized.
@@ -376,47 +418,66 @@ pub(super) async fn setup_link(
     Extension(auth): Extension<Auth>,
     unix: Option<Extension<super::UnixSocket>>,
 ) -> Result<Json<SetupLink>, ApiError> {
+    // Looks absent over TCP, but the audit trail records the refusal.
     if unix.is_none() {
-        // Looks absent over TCP, but the audit trail records the refusal.
-        let mut error = ApiError::endpoint_not_found();
-        error.denied = Some(piqueld_core::access::Denied::Hidden);
-        return Err(error);
+        return Err(hidden());
     }
     Ok(Json(auth.setup_link().await?))
 }
 /// Issues a one-time admin recovery link.
 ///
-/// Public, but only over the Unix socket and only to root or the daemon's own
-/// user, identified by the kernel (`SO_PEERCRED`); anyone else gets 404. The
-/// link is valid for 24 hours, replaces any earlier one, and registers a new
-/// account with `admin` on every application. Issuing it raises a `security`
-/// notification.
-#[utoipa::path(post,path="/api/v1/auth/recovery",operation_id="authRecoverAdmin",responses((status=200,body=RecoveryLink),(status=404,response=inline(super::openapi::ApiErrorResponse)),
+/// Public, but only over the Unix socket and only to the host operator: root
+/// or the daemon's own user, identified by the kernel (`SO_PEERCRED`); anyone
+/// else gets 404. The link is valid for 24 hours, replaces any earlier one,
+/// and registers a new account with `admin` on every application. Issuing it
+/// raises a `security` notification.
+#[utoipa::path(post,path="/api/v1/auth/recovery",operation_id="authRecoverAdmin",responses((status=200,body=OperatorLink),(status=404,response=inline(super::openapi::ApiErrorResponse)),
     (status=409,response=inline(super::openapi::ApiErrorResponse))))]
 pub(super) async fn recover_admin(
     Extension(auth): Extension<Auth>,
-    unix: Option<Extension<super::UnixSocket>>,
-    peer: Option<Extension<ConnectInfo<super::UnixPeer>>>,
-) -> Result<Json<RecoveryLink>, ApiError> {
-    let operator = rustix::process::geteuid().as_raw();
-    let uid = peer
-        .and_then(|Extension(ConnectInfo(peer))| peer.uid)
-        .filter(|uid| unix.is_some() && (*uid == 0 || *uid == operator));
-    let Some(uid) = uid else {
-        let mut error = ApiError::endpoint_not_found();
-        error.denied = Some(piqueld_core::access::Denied::Hidden);
-        return Err(error);
-    };
-    Ok(Json(auth.recover_admin(&format!("uid {uid}")).await?))
+    OperatorPeer(operator): OperatorPeer,
+) -> Result<Json<OperatorLink>, ApiError> {
+    Ok(Json(auth.recover_admin(operator).await?))
 }
-/// Gets the signed-in user and what the current credential may do.
+/// Issues a one-time host operator sign-in link.
+///
+/// Public, but only over the Unix socket and only to the host operator, like
+/// `authRecoverAdmin`; anyone else gets 404. The link works once within ten
+/// minutes and signs a browser in as the host operator, with `admin` on every
+/// application, for 12 hours. Issuing it raises a `security` notification.
+#[utoipa::path(post,path="/api/v1/auth/sign-in-link",operation_id="authSignInLink",responses((status=200,body=OperatorLink),(status=404,response=inline(super::openapi::ApiErrorResponse))))]
+pub(super) async fn sign_in_link(
+    Extension(auth): Extension<Auth>,
+    OperatorPeer(operator): OperatorPeer,
+) -> Result<Json<OperatorLink>, ApiError> {
+    Ok(Json(auth.sign_in_link(operator).await?))
+}
+/// Redeems a host operator sign-in link.
+///
+/// Public. Signs the browser in as the host operator with a 12-hour session
+/// cookie. Used, expired, and unknown links fail with 401.
+#[utoipa::path(post,path="/api/v1/auth/login/operator",operation_id="authOperatorSignIn",request_body=OperatorSignIn,responses((status=200,body=Session)))]
+pub(super) async fn operator_sign_in(
+    Extension(auth): Extension<Auth>,
+    Json(input): Json<OperatorSignIn>,
+) -> Result<Response, ApiError> {
+    let (operator, token) = auth.operator_sign_in(&input.secret).await?;
+    let session = Identity::operator(operator, None).session();
+    let age = crate::auth::OPERATOR_SESSION_LIFETIME;
+    Ok(signed_in(
+        &auth,
+        session.principal.clone(),
+        session,
+        Some((token, age)),
+    ))
+}
+/// Gets who is signed in and what the current credential may do.
+///
+/// Token-less requests over the Unix socket from root or the daemon's own
+/// user act as the host operator.
 #[utoipa::path(get,path="/api/v1/auth/me",operation_id="authMe",responses((status=200,body=Session)))]
 pub(super) async fn me(Extension(identity): Extension<Identity>) -> Json<Session> {
-    Json(Session {
-        user: identity.user,
-        grants: identity.grants,
-        scoped: identity.scoped,
-    })
+    Json(identity.session())
 }
 /// Starts passkey registration.
 ///
@@ -582,7 +643,10 @@ pub(super) async fn device_poll(
     Json(input): Json<DevicePoll>,
 ) -> Result<Response, ApiError> {
     let token = auth.device_poll(&input.device_code).await?;
-    let signed_in = token.user.clone().map(super::access::SignedIn);
+    let signed_in = token
+        .user
+        .clone()
+        .map(|user| super::access::SignedIn(Principal::User(user)));
     let mut response = Json(token).into_response();
     if let Some(signed_in) = signed_in {
         response.extensions_mut().insert(signed_in);
