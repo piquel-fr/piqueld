@@ -57,12 +57,14 @@ and `app logs` then need an environment, so use `piquelctl env deploy notes stag
 
 The development toolchain serves the dashboard through the running
 daemon, exactly like a deployment: run `just dev` instead of the commands
-above (`just dev` also prepares the runtime directory), give the first embedded build a moment to compile the dashboard, and
-open `http://localhost:7845/dashboard/` in a browser to inspect the overview,
-application list, and detail routes alongside `piquelctl`; refresh after Rust
-or CSS changes. Any other daemon built with `--features embedded-ui` ships its
-own dashboard bundle inside the binary, as described in
-[`web-ui.md`](web-ui.md).
+above. It runs an isolated instance for the worktree, with its own Docker
+engine, on its own localhost port (see [`development.md`](development.md)). Give
+the first embedded build a moment to compile the dashboard, open the URL that
+`just dev wait` prints to inspect the overview, application list, and detail
+routes, and use `just ctl` instead of `just run --socket ...` for `piquelctl`;
+refresh after Rust or CSS changes. Any other daemon built with
+`--features embedded-ui` ships its own dashboard bundle inside the binary, as
+described in [`web-ui.md`](web-ui.md).
 
 When finished, delete the application with its environments and note that
 their named volumes are retained (with several environments, add

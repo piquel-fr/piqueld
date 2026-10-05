@@ -7,7 +7,7 @@ use piqueld::api::ApplicationService;
 use piqueld::api::http::{ApiState, UiAssets};
 use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::tailnet::Node;
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, os::unix::fs::OpenOptionsExt, path::PathBuf};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -31,6 +31,30 @@ struct Args {
     /// otherwise built-in defaults are used.
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
+
+    /// Also append JSON logs to this file, created with mode `0600`.
+    ///
+    /// Standard output keeps its usual format, so tools can query the logs
+    /// while a person watches the terminal.
+    #[arg(long, value_name = "PATH")]
+    log_file: Option<PathBuf>,
+}
+
+impl Args {
+    /// Opens `--log-file` for appending, creating it private when missing.
+    fn open_log_file(&self) -> Result<Option<std::fs::File>> {
+        self.log_file
+            .as_ref()
+            .map(|path| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .mode(0o600)
+                    .open(path)
+                    .with_context(|| format!("failed to open log file {}", path.display()))
+            })
+            .transpose()
+    }
 }
 
 /// Starts the daemon and runs until a shutdown signal.
@@ -46,7 +70,7 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
     let mut config = load_config(args.config.as_deref())?;
-    piqueld::config::init_tracing().context("failed to initialize tracing")?;
+    piqueld::config::init_tracing(args.open_log_file()?).context("failed to initialize tracing")?;
 
     piqueld::prepare_data_dir(&config.server.data_dir)
         .await

@@ -3,7 +3,7 @@
   "scripts": [
     {
       "name": "Setup Worktree",
-      "command": "just build",
+      "command": "just dev config && just build",
       "icon": "configure",
       "runOnWorktreeCreate": true
     },

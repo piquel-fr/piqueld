@@ -445,14 +445,18 @@ pub enum ConfigError {
 ///
 /// Interactive terminals and the systemd journal receive plain text. The
 /// journal gets it without colors or timestamps, which it records itself.
-/// Other pipes (containers, log collectors) receive structured JSON.
+/// Other pipes (containers, log collectors) receive structured JSON. A
+/// `log_file` additionally receives JSON, so tools can query the logs while a
+/// person watches the terminal.
 ///
 /// # Errors
 ///
 /// Invalid or absent `RUST_LOG` values fall back to the `info` filter. The
 /// returned error is only from subscriber initialization, such as when another
 /// global subscriber is already installed.
-pub fn init_tracing() -> Result<(), tracing_subscriber::util::TryInitError> {
+pub fn init_tracing(
+    log_file: Option<std::fs::File>,
+) -> Result<(), tracing_subscriber::util::TryInitError> {
     use std::io::IsTerminal as _;
     let layer = if std::io::stdout().is_terminal() {
         tracing_subscriber::fmt::layer().compact().boxed()
@@ -468,6 +472,11 @@ pub fn init_tracing() -> Result<(), tracing_subscriber::util::TryInitError> {
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(layer)
+        .with(log_file.map(|file| {
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(std::sync::Arc::new(file))
+        }))
         .try_init()
 }
 

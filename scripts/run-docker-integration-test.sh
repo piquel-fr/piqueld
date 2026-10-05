@@ -37,7 +37,8 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-dind_image="${PIQUELD_DIND_IMAGE:-docker:29.6.2-dind@sha256:bfec1f5159c63a81ca6fdedbd81404d2c0e16378ed0feec3bb3fbf3998847659}"
+# shellcheck source=scripts/dind.sh
+source "$(dirname "$0")/dind.sh"
 runtime_dir="$(mktemp -d -t piqueld-dind.XXXXXXXX)"
 socket_path="$runtime_dir/docker.sock"
 container_id=""
@@ -68,46 +69,26 @@ container_id="$(docker run \
   --storage-driver=vfs \
 )"
 
-for _attempt in {1..60}; do
-  if docker exec \
-    --env DOCKER_HOST=unix:///piqueld-socket/docker.sock \
-    "$container_id" \
-    docker info \
-    >/dev/null 2>&1
-  then
-    docker exec "$container_id" chmod 666 /piqueld-socket/docker.sock
-    # A hung test must not hang the harness forever; --kill-after forces a
-    # SIGKILL when the test runner ignores the initial SIGTERM.
-    if command -v timeout >/dev/null 2>&1; then
-      test_wrapper=(timeout --kill-after=30s "${PIQUELD_DOCKER_TEST_TIMEOUT:-15m}")
-    else
-      echo "docker-test requires GNU timeout to bound the test run" >&2
-      exit 1
-    fi
-    http_port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "80/tcp") 0).HostPort}}' "$container_id")"
-    https_port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "443/tcp") 0).HostPort}}' "$container_id")"
-    PIQUELD_DOCKER_ISOLATED=1 \
-      PIQUELD_DOCKER_SOCKET="$socket_path" \
-      PIQUELD_DOCKER_DATA_DIR="$runtime_dir" \
-      PIQUELD_INGRESS_HTTP_PORT="$http_port" \
-      PIQUELD_INGRESS_HTTPS_PORT="$https_port" \
-      "${test_wrapper[@]}" \
-      cargo nextest run --locked -p piqueld --lib --run-ignored only --no-capture -E 'test(ingress_caddy)' --test-threads=1
-    # Tests share one daemon and mutate its Swarm state.
-    PIQUELD_DOCKER_ISOLATED=1 \
-      PIQUELD_DOCKER_SOCKET="$socket_path" \
-      "${test_wrapper[@]}" \
-      cargo nextest run --locked -p piqueld --test docker_integration --run-ignored only --test-threads=1
-    exit 0
-  fi
-  if [[ "$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null || true)" != "true" ]]; then
-    echo "the isolated Docker daemon exited before becoming ready" >&2
-    docker logs "$container_id" >&2 || true
-    exit 1
-  fi
-  sleep 1
-done
-
-echo "the isolated Docker daemon did not become ready within 60 seconds" >&2
-docker logs "$container_id" >&2 || true
-exit 1
+dind_wait "$container_id"
+# A hung test must not hang the harness forever; --kill-after forces a SIGKILL
+# when the test runner ignores the initial SIGTERM.
+if command -v timeout >/dev/null 2>&1; then
+  test_wrapper=(timeout --kill-after=30s "${PIQUELD_DOCKER_TEST_TIMEOUT:-15m}")
+else
+  echo "docker-test requires GNU timeout to bound the test run" >&2
+  exit 1
+fi
+http_port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "80/tcp") 0).HostPort}}' "$container_id")"
+https_port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "443/tcp") 0).HostPort}}' "$container_id")"
+PIQUELD_DOCKER_ISOLATED=1 \
+  PIQUELD_DOCKER_SOCKET="$socket_path" \
+  PIQUELD_DOCKER_DATA_DIR="$runtime_dir" \
+  PIQUELD_INGRESS_HTTP_PORT="$http_port" \
+  PIQUELD_INGRESS_HTTPS_PORT="$https_port" \
+  "${test_wrapper[@]}" \
+  cargo nextest run --locked -p piqueld --lib --run-ignored only --no-capture -E 'test(ingress_caddy)' --test-threads=1
+# Tests share one daemon and mutate its Swarm state.
+PIQUELD_DOCKER_ISOLATED=1 \
+  PIQUELD_DOCKER_SOCKET="$socket_path" \
+  "${test_wrapper[@]}" \
+  cargo nextest run --locked -p piqueld --test docker_integration --run-ignored only --test-threads=1

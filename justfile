@@ -81,9 +81,15 @@ build-embedded:
 daemon-embedded *ARGS:
     @cargo run --package piqueld --bin piqueld --features embedded-ui -- {{ARGS}}
 
-# Full local development: the watcher and daemon are cleaned up together.
-dev:
-    @bash ./scripts/dev.sh
+# Isolated development instance for this worktree (docs/development.md).
+[positional-arguments]
+dev *ARGS:
+    @bash ./scripts/dev.sh "$@"
+
+# piquelctl from this worktree, connected to its development instance.
+[positional-arguments]
+ctl *ARGS:
+    @bash ./scripts/dev.sh ctl "$@"
 
 # Generate the OpenAPI document, client, and manifest JSON Schema together.
 generate:
