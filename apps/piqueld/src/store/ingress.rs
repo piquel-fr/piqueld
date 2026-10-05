@@ -1,26 +1,27 @@
 //! Transactional hostname ownership and the gateway's durable routing projection.
 use super::{Store, StoreError};
 use piqueld_core::{
-    ApplicationId,
+    EnvironmentId,
     manifest::{Hostname, ValidatedRoute},
 };
 use sqlx::{Sqlite, SqliteConnection, SqliteExecutor, Transaction};
 use std::collections::BTreeMap;
 
-/// Routes the gateway serves, keyed by owning application in a stable order.
-pub(crate) type RoutingTable = BTreeMap<ApplicationId, Vec<ValidatedRoute>>;
+/// Routes the gateway serves, keyed by owning environment in a stable order.
+pub(crate) type RoutingTable = BTreeMap<EnvironmentId, Vec<ValidatedRoute>>;
 
 impl Store {
-    /// Finalizes writes to application intent, deployment inputs/targets, or gateway state.
+    /// Finalizes writes to application intent, deployment inputs/targets, or
+    /// gateway state, given the environments whose hostnames they may change.
     /// Refresh ownership from the final transaction state before committing, so a
     /// hostname conflict rolls back the mutation, events, and replay receipt together.
     /// Write helpers must leave this to their transaction owner rather than checking
     /// intermediate state (a save can also replace the pending deployment).
-    pub(super) async fn commit_application_changes<'a>(
+    pub(super) async fn commit_environment_changes<'a>(
         mut tx: Transaction<'_, Sqlite>,
-        applications: impl IntoIterator<Item = &'a str>,
+        environments: impl IntoIterator<Item = &'a str>,
     ) -> Result<(), StoreError> {
-        for id in applications {
+        for id in environments {
             Self::reserve_hostnames_on(&mut tx, id).await?;
         }
         tx.commit().await.map_err(StoreError::database)
@@ -82,11 +83,11 @@ impl Store {
     /// ever acknowledged.
     pub(crate) async fn applied_routes(
         &self,
-        id: &ApplicationId,
+        id: &EnvironmentId,
     ) -> Result<Vec<ValidatedRoute>, StoreError> {
         let id = id.as_str();
         let json = sqlx::query_scalar!(
-            "SELECT applied_json FROM application_routes WHERE application_id=?1",
+            "SELECT applied_json FROM environment_routes WHERE environment_id=?1",
             id
         )
         .fetch_optional(&self.pool)
@@ -101,35 +102,36 @@ impl Store {
 
     /// Whether the application has desired or applied routes, i.e. whether the
     /// gateway may still hold state for it.
-    pub(crate) async fn has_routes(&self, id: &ApplicationId) -> Result<bool, StoreError> {
+    pub(crate) async fn has_routes(&self, id: &EnvironmentId) -> Result<bool, StoreError> {
         let id = id.as_str();
-        Ok(sqlx::query_scalar!("SELECT EXISTS(SELECT 1 FROM application_routes WHERE application_id=?1 AND (json_array_length(desired_json)>0 OR json_array_length(applied_json)>0))",id)
+        Ok(sqlx::query_scalar!("SELECT EXISTS(SELECT 1 FROM environment_routes WHERE environment_id=?1 AND (json_array_length(desired_json)>0 OR json_array_length(applied_json)>0))",id)
             .fetch_one(&self.pool).await.map_err(StoreError::database)? != 0)
     }
 
     /// Recomputes reservations inside the transaction changing their source.
     /// Captured deployment inputs also reserve names while a newer save is pending.
     ///
-    /// Collects every hostname the application could still serve (saved spec,
-    /// resolved spec, latest operation target and captured input, desired and
-    /// applied gateway routes), rejects any within an installation hostname, then
-    /// replaces the application's `hostname_reservations` rows. A unique
-    /// violation means another application owns the name and maps to
-    /// `StoreError::HostnameConflict`.
+    /// Collects every hostname the environment could still serve (its
+    /// application's saved spec, resolved spec, latest operation target and
+    /// captured input, desired and applied gateway routes), rejects any within
+    /// an installation hostname, then replaces the environment's
+    /// `hostname_reservations` rows. A unique violation means another
+    /// environment owns the name. Sibling conflicts identify that environment
+    /// and explain the current shared-route limitation.
     async fn reserve_hostnames_on(
         connection: &mut SqliteConnection,
-        application_id: &str,
+        environment_id: &str,
     ) -> Result<(), StoreError> {
         let names = sqlx::query_scalar!(r#"
             SELECT DISTINCT json_extract(r.value, '$.hostname') AS "hostname!: String" FROM (
-                SELECT json_extract(desired_json,'$.spec.routes') AS routes FROM applications WHERE id=?1
-                UNION ALL SELECT json_extract(resolved_json,'$.routes') FROM applications WHERE id=?1
-                UNION ALL SELECT json_extract(target_json,'$.routes') FROM operations WHERE id=(SELECT id FROM operations WHERE application_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1)
-                UNION ALL SELECT json_extract(application_json,'$.spec.routes') FROM deployment_inputs WHERE operation_id=(SELECT id FROM operations WHERE application_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1)
-                UNION ALL SELECT desired_json FROM application_routes WHERE application_id=?1
-                UNION ALL SELECT applied_json FROM application_routes WHERE application_id=?1
+                SELECT json_extract(a.desired_json,'$.spec.routes') AS routes FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?1
+                UNION ALL SELECT json_extract(resolved_json,'$.routes') FROM environments WHERE id=?1
+                UNION ALL SELECT json_extract(target_json,'$.routes') FROM operations WHERE id=(SELECT id FROM operations WHERE environment_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1)
+                UNION ALL SELECT json_extract(application_json,'$.spec.routes') FROM deployment_inputs WHERE operation_id=(SELECT id FROM operations WHERE environment_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1)
+                UNION ALL SELECT desired_json FROM environment_routes WHERE environment_id=?1
+                UNION ALL SELECT applied_json FROM environment_routes WHERE environment_id=?1
             ) AS sources, json_each(sources.routes) AS r
-        "#, application_id).fetch_all(&mut *connection).await.map_err(StoreError::database)?;
+        "#, environment_id).fetch_all(&mut *connection).await.map_err(StoreError::database)?;
         let installation = Self::installation_hostnames(&mut *connection).await?;
         for hostname in &names {
             let parsed = Hostname::parse(hostname.as_str()).map_err(StoreError::corrupt)?;
@@ -140,30 +142,41 @@ impl Store {
             }
         }
         sqlx::query!(
-            "DELETE FROM hostname_reservations WHERE application_id=?1",
-            application_id
+            "DELETE FROM hostname_reservations WHERE environment_id=?1",
+            environment_id
         )
         .execute(&mut *connection)
         .await
         .map_err(StoreError::database)?;
         for hostname in names {
-            sqlx::query!(
-                "INSERT INTO hostname_reservations(hostname,application_id) VALUES(?1,?2)",
+            let result = sqlx::query!(
+                "INSERT INTO hostname_reservations(hostname,environment_id) VALUES(?1,?2)",
                 hostname,
-                application_id
+                environment_id
             )
             .execute(&mut *connection)
-            .await
-            .map_err(|error| {
-                if error
+            .await;
+            if let Err(error) = result {
+                if !error
                     .as_database_error()
                     .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
                 {
-                    StoreError::HostnameConflict { hostname }
-                } else {
-                    StoreError::database(error)
+                    return Err(StoreError::database(error));
                 }
-            })?;
+                let sibling = sqlx::query_scalar!(
+                    r#"SELECT owner.name AS "name!" FROM hostname_reservations r JOIN environments owner ON owner.id=r.environment_id JOIN environments contender ON contender.id=?2 WHERE r.hostname=?1 AND owner.application_id=contender.application_id"#,
+                    hostname,
+                    environment_id
+                ).fetch_optional(&mut *connection).await.map_err(StoreError::database)?;
+                return Err(match sibling {
+                    Some(name) => StoreError::SharedHostnameConflict {
+                        hostname,
+                        environment: piqueld_core::EnvironmentName::parse(name)
+                            .map_err(StoreError::corrupt)?,
+                    },
+                    None => StoreError::HostnameConflict { hostname },
+                });
+            }
         }
         Ok(())
     }
@@ -175,22 +188,22 @@ impl Store {
     /// superseded deployment cannot publish stale routes.
     pub(crate) async fn stage_routes(
         &self,
-        application_id: &ApplicationId,
+        environment_id: &EnvironmentId,
         routes: &[ValidatedRoute],
         ready: bool,
         operation_id: Option<&str>,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let id = application_id.as_str();
+        let id = environment_id.as_str();
         if let Some(operation_id) = operation_id {
-            let current = sqlx::query_scalar!("SELECT EXISTS(SELECT 1 FROM operations WHERE id=?1 AND application_id=?2 AND state='running' AND id=(SELECT id FROM operations WHERE application_id=?2 ORDER BY created_at_ms DESC,id DESC LIMIT 1))",operation_id,id)
+            let current = sqlx::query_scalar!("SELECT EXISTS(SELECT 1 FROM operations WHERE id=?1 AND environment_id=?2 AND state='running' AND id=(SELECT id FROM operations WHERE environment_id=?2 ORDER BY created_at_ms DESC,id DESC LIMIT 1))",operation_id,id)
                 .fetch_one(&mut *tx).await.map_err(StoreError::database)?;
             if current == 0 {
                 return Err(StoreError::IllegalTransition);
             }
         }
         let previous = sqlx::query_scalar!(
-            "SELECT desired_json FROM application_routes WHERE application_id=?1",
+            "SELECT desired_json FROM environment_routes WHERE environment_id=?1",
             id
         )
         .fetch_optional(&mut *tx)
@@ -208,9 +221,9 @@ impl Store {
             desired.retain(|old| routes.iter().any(|new| new.hostname == old.hostname));
         }
         let json = serde_json::to_string(&desired).map_err(StoreError::corrupt)?;
-        sqlx::query!("INSERT INTO application_routes(application_id,desired_json) VALUES(?1,?2) ON CONFLICT(application_id) DO UPDATE SET desired_json=excluded.desired_json",id,json)
+        sqlx::query!("INSERT INTO environment_routes(environment_id,desired_json) VALUES(?1,?2) ON CONFLICT(environment_id) DO UPDATE SET desired_json=excluded.desired_json",id,json)
             .execute(&mut *tx).await.map_err(StoreError::database)?;
-        Self::commit_application_changes(tx, [id]).await
+        Self::commit_environment_changes(tx, [id]).await
     }
 
     /// Routes the gateway should serve. Hostnames reserved by the installation
@@ -218,7 +231,7 @@ impl Store {
     pub(crate) async fn routing_table(&self) -> Result<RoutingTable, StoreError> {
         let installation = Self::installation_hostnames(&self.pool).await?;
         sqlx::query!(
-            "SELECT application_id,desired_json FROM application_routes ORDER BY application_id"
+            "SELECT environment_id,desired_json FROM environment_routes ORDER BY environment_id"
         )
         .fetch_all(&self.pool)
         .await
@@ -233,7 +246,7 @@ impl Store {
                     .any(|domain| route.hostname.is_within(domain))
             });
             Ok((
-                ApplicationId::parse(row.application_id).map_err(StoreError::corrupt)?,
+                EnvironmentId::parse(row.environment_id).map_err(StoreError::corrupt)?,
                 routes,
             ))
         })
@@ -245,11 +258,11 @@ impl Store {
     /// Called only after this exact table is accepted (or the gateway is stopped).
     pub(crate) async fn acknowledge_routes(&self, table: &RoutingTable) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        for (application_id, routes) in table {
-            let id = application_id.as_str();
+        for (environment_id, routes) in table {
+            let id = environment_id.as_str();
             let json = serde_json::to_string(routes).map_err(StoreError::corrupt)?;
             sqlx::query!(
-                "UPDATE application_routes SET applied_json=?1 WHERE application_id=?2",
+                "UPDATE environment_routes SET applied_json=?1 WHERE environment_id=?2",
                 json,
                 id
             )
@@ -257,7 +270,7 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         }
-        Self::commit_application_changes(tx, table.keys().map(ApplicationId::as_str)).await
+        Self::commit_environment_changes(tx, table.keys().map(EnvironmentId::as_str)).await
     }
 }
 
@@ -281,7 +294,7 @@ mod tests {
         }
         piqueld_core::parse_toml(&text)
             .unwrap()
-            .normalize(ApplicationId::parse("input-app").unwrap())
+            .normalize(piqueld_core::ApplicationId::parse("input-app").unwrap())
     }
 
     async fn save(
@@ -313,7 +326,7 @@ mod tests {
         let store = Store::open(directory.path().join("db")).await.unwrap();
         let early = app("early", Some("app.piqueld.example.com"));
         let saved = save(&store, early.clone(), true).await.unwrap();
-        let id = ApplicationId::parse(saved.application_id).unwrap();
+        let id = EnvironmentId::parse(saved.application_id).unwrap();
         store
             .stage_routes(&id, &early.spec().routes, true, None)
             .await
@@ -341,6 +354,33 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn environments_of_one_application_cannot_share_a_hostname() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let saved = save(&store, app("one", Some("site.example.com")), false)
+            .await
+            .unwrap();
+        let staging = Mutation::CreateEnvironment {
+            application: piqueld_core::ApplicationId::parse(&saved.application_id).unwrap(),
+            name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
+        };
+        assert!(matches!(
+            store.accept(staging, None, true, None).await,
+            Err(StoreError::SharedHostnameConflict { hostname, environment })
+                if hostname == "site.example.com" && environment.as_str() == "production"
+        ));
+        assert_eq!(
+            store
+                .environments(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "failed creation rolls back the environment"
+        );
     }
 
     #[tokio::test]
@@ -372,7 +412,7 @@ mod tests {
             .await
             .unwrap();
         let saved = save(&store, app("two", None), false).await.unwrap();
-        let id = ApplicationId::parse(saved.application_id).unwrap();
+        let id = EnvironmentId::parse(saved.application_id).unwrap();
         let result = store
             .accept(
                 Mutation::Save {
@@ -387,12 +427,12 @@ mod tests {
             .await;
         assert!(matches!(result, Err(StoreError::HostnameConflict { .. })));
         assert_eq!(
-            store.get(&id).await.unwrap().application.spec().routes,
+            store.get(&id).await.unwrap().manifest().spec().routes,
             [] as [piqueld_core::manifest::ValidatedRoute; 0]
         );
         assert!(
             store
-                .latest_operation_for_application(&id)
+                .latest_operation_for_environment(&id)
                 .await
                 .unwrap()
                 .is_none()
@@ -439,7 +479,7 @@ mod tests {
         let store = Store::open(directory.path().join("db")).await.unwrap();
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), false).await.unwrap();
-        let id = ApplicationId::parse(saved.application_id).unwrap();
+        let id = EnvironmentId::parse(saved.application_id).unwrap();
         store
             .stage_routes(&id, &input.spec().routes, true, None)
             .await
@@ -495,8 +535,15 @@ mod tests {
             )
             .await
             .unwrap();
-        let fetched =
-            app("one", Some("taken.example.com")).with_id(operation.application_id.clone());
+        let fetched = app("one", Some("taken.example.com")).with_id(
+            store
+                .get(&operation.environment_id)
+                .await
+                .unwrap()
+                .manifest()
+                .id()
+                .clone(),
+        );
         assert!(matches!(
             store
                 .save_deployment_input(&operation, &fetched, None)
@@ -524,7 +571,7 @@ mod tests {
         save(&store, app("one", Some("new.example.com")), true)
             .await
             .unwrap();
-        let id = ApplicationId::parse(saved.application_id).unwrap();
+        let id = EnvironmentId::parse(saved.application_id).unwrap();
         assert!(matches!(
             store
                 .stage_routes(&id, &input.spec().routes, true, Some(&operation))
@@ -540,7 +587,7 @@ mod tests {
         let store = Store::open(directory.path().join("db")).await.unwrap();
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), false).await.unwrap();
-        let id = ApplicationId::parse(saved.application_id).unwrap();
+        let id = EnvironmentId::parse(saved.application_id).unwrap();
         store
             .stage_routes(&id, &input.spec().routes, true, None)
             .await

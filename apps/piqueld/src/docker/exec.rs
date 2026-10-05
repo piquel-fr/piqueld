@@ -8,7 +8,7 @@ use bollard::{
 };
 use futures_util::StreamExt;
 use piqueld_core::{
-    ApplicationId, InstanceId,
+    EnvironmentId, InstanceId,
     exec::{ExecInput, ExecOutput, ExecRequest},
 };
 use std::{collections::HashMap, convert::Infallible};
@@ -45,11 +45,11 @@ impl BollardDocker {
     pub(super) async fn create_task_exec(
         &self,
         instance: &InstanceId,
-        application: &ApplicationId,
+        environment: &EnvironmentId,
         request: &ExecRequest,
     ) -> Result<Option<Exec>, DockerError> {
         let services = self
-            .owned_services(instance, application, Some(request.service.as_str()))
+            .owned_services(instance, environment, Some(request.service.as_str()))
             .await?;
         let Some(service) = services.into_keys().next() else {
             return Ok(None);

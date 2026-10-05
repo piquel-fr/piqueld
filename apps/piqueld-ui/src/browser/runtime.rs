@@ -1,12 +1,12 @@
-//! Application runtime overview: lifecycle status, observed services, and diagnostics.
+//! Environment runtime overview: lifecycle status, observed services, and diagnostics.
 use super::format::timestamp;
 use super::ui::{Icon, Tone, badge, empty, health_badge, icon, notice, operation_badge, when};
 use super::{DashboardSignals, dashboard_context, load_detail};
 use crate::state::ApplicationHealth;
 use leptos::prelude::*;
-use piqueld_client::{ApplicationDetailView, Client, DiagnosticView, ObservedServiceView};
+use piqueld_client::{Client, DiagnosticView, EnvironmentDetailView, ObservedServiceView};
 
-/// Live runtime detail for the application editor's Overview tab.
+/// Live runtime detail for an environment page's Overview tab.
 #[component]
 pub(super) fn RuntimeOverview() -> impl IntoView {
     let dashboard = dashboard_context();
@@ -54,7 +54,7 @@ pub(super) fn RuntimeOverview() -> impl IntoView {
 /// runtime status, observed services, and diagnostics cards, and a button that
 /// reloads only this application's detail.
 fn detail_view(
-    detail: &ApplicationDetailView,
+    detail: &EnvironmentDetailView,
     signals: DashboardSignals,
     client: Client,
 ) -> AnyView {
@@ -136,7 +136,8 @@ fn detail_view(
                         {format!(
                             "{} saved · {} resolved",
                             app.generation,
-                            app
+                            detail
+                                .environment
                                 .resolved_generation
                                 .map_or_else(|| "none".to_owned(), |value| value.to_string()),
                         )}
@@ -150,6 +151,11 @@ fn detail_view(
                             observed.volume_count,
                             if observed.volume_count == 1 { "" } else { "s" },
                         )}
+                    </dd>
+                    <dt>"Environment"</dt>
+                    <dd>
+                        {detail.environment.name.to_string()} " "
+                        <code>{detail.environment.id.to_string()}</code>
                     </dd>
                     <dt>"Application ID"</dt>
                     <dd>
@@ -170,7 +176,7 @@ fn detail_view(
                     </div>
                 </header>
                 {if observed.services.is_empty() {
-                    empty("No services are running for this application.")
+                    empty("No services are running in this environment.")
                 } else {
                     view! {
                         <table class="table">

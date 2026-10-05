@@ -29,7 +29,7 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
         refresh.set(true);
     });
     let alive = Alive::new();
-    let id = context.id();
+    let id = context.environment_id();
     spawn_local(async move {
         let mut elapsed = 30;
         while alive.get() {
@@ -38,7 +38,7 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
                 loading.set(true);
                 let filter = (service.get_untracked(), stream.get_untracked());
                 let result = Client::browser()
-                    .filtered_application_logs(
+                    .filtered_environment_logs(
                         &id,
                         (!filter.0.is_empty()).then_some(filter.0.as_str()),
                         200,

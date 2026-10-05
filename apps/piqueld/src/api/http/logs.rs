@@ -5,7 +5,7 @@ use axum::{
     response::IntoResponse,
 };
 use piqueld_core::{
-    ApplicationId,
+    EnvironmentId,
     api::{ApplicationLogs, Envelope},
 };
 /// Query parameters for recent container output.
@@ -35,11 +35,11 @@ impl Default for LogQuery {
         }
     }
 }
-/// Gets recent container output for an application.
+/// Gets recent container output for an environment.
 ///
 /// Output can be narrowed to one service and one stream. Out-of-range `tail` or
 /// `since_seconds` values fail with 400 `logs_query_invalid`.
-#[utoipa::path(get,path="/api/v1/applications/{id}/logs",operation_id="applicationLogs",params(("id"=String,Path),LogQuery),
+#[utoipa::path(get,path="/api/v1/environments/{id}/logs",operation_id="environmentLogs",params(("id"=String,Path),LogQuery),
  responses((status=200,description="Recent Docker output",body=Envelope<ApplicationLogs>),
  (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=502,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn get(
@@ -54,7 +54,7 @@ pub(super) async fn get(
             "Invalid log query",
         )
     })?;
-    let id = ApplicationId::parse(id)?;
+    let id = EnvironmentId::parse(id)?;
     Ok(ok(state
         .logs(
             &id,

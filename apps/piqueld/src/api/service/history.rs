@@ -3,7 +3,7 @@
 use super::{ApplicationError, ApplicationService};
 use crate::store::StoreError;
 use piqueld_core::{
-    ApplicationId, Event, Operation,
+    ApplicationId, EnvironmentId, Event, Operation,
     api::{ApplicationLogs, BuildLogPage, BuildRecord, DeploymentView, LogStream, Page},
 };
 
@@ -20,7 +20,7 @@ impl ApplicationService {
     /// # Errors
     /// Returns absence, storage, or TOML serialization errors.
     pub async fn manifest(&self, id: &ApplicationId) -> Result<ManifestExport, ApplicationError> {
-        let application = self.store.get(id).await?.application;
+        let application = self.store.application(id).await?.application;
         Ok(ManifestExport {
             filename: format!("{}.toml", application.metadata().name),
             contents: toml::to_string_pretty(&application.to_manifest())
@@ -40,25 +40,25 @@ impl ApplicationService {
     /// Returns pagination, absence, or storage errors.
     pub async fn deployments(
         &self,
-        id: &ApplicationId,
+        id: &EnvironmentId,
         cursor: Option<&str>,
     ) -> Result<Page<DeploymentView>, ApplicationError> {
         Ok(self.store.deployments(id, cursor, 3).await?)
     }
 
-    /// Lists retained attempts for a deployment owned by this application.
+    /// Lists retained attempts for a deployment owned by this environment.
     /// # Errors
     /// Returns pagination, absence, ownership, or storage errors.
     pub async fn deployment_attempts(
         &self,
-        id: &ApplicationId,
+        id: &EnvironmentId,
         deployment: &str,
         cursor: Option<&str>,
     ) -> Result<Page<Operation>, ApplicationError> {
         let operation = self.store.operation(deployment).await?;
-        // Hide other applications' operations, and reject operations that are
+        // Hide other environments' operations, and reject operations that are
         // not deployments (they have no captured manifest).
-        if operation.application_id != *id {
+        if operation.environment_id != *id {
             return Err(StoreError::NotFound.into());
         }
         self.store.deployment_manifest(deployment).await?;
@@ -73,7 +73,7 @@ impl ApplicationService {
     /// Returns pagination or storage errors.
     pub async fn events(
         &self,
-        id: Option<&ApplicationId>,
+        id: Option<&EnvironmentId>,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Event>, ApplicationError> {
@@ -85,11 +85,15 @@ impl ApplicationService {
     /// Returns pagination or storage errors.
     pub async fn builds(
         &self,
-        id: Option<&ApplicationId>,
+        application: Option<&ApplicationId>,
+        environment: Option<&EnvironmentId>,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<BuildRecord>, ApplicationError> {
-        Ok(self.store.builds(id, cursor, limit).await?)
+        Ok(self
+            .store
+            .builds(application, environment, cursor, limit)
+            .await?)
     }
 
     /// Reads the newest bounded page of persisted build output (chunks in
@@ -106,12 +110,12 @@ impl ApplicationService {
         Ok(self.store.build_logs(id, before, stream).await?)
     }
 
-    /// Reads bounded runtime logs for an existing application.
+    /// Reads bounded runtime logs for an existing environment.
     /// # Errors
     /// Returns invalid query, absence, storage, or runtime errors.
     pub async fn logs(
         &self,
-        id: &ApplicationId,
+        id: &EnvironmentId,
         service: Option<&str>,
         tail: u16,
         since_seconds: u32,

@@ -16,7 +16,8 @@ use crate::{
 pub use exec::ExecSession;
 pub use history::ManifestExport;
 use piqueld_core::{
-    ApplicationId, NormalizedApplication, ValidatedApplication, api::SecretMetadata,
+    ApplicationId, EnvironmentId, EnvironmentName, NormalizedApplication, ValidatedApplication,
+    api::SecretMetadata,
 };
 use std::sync::Arc;
 
@@ -52,7 +53,8 @@ pub enum ApplicationError {
     Runtime(#[from] BoundaryError),
 }
 
-/// Validated application mutation. Its serialization defines request replay identity.
+/// Validated application or environment mutation. Its serialization defines
+/// request replay identity.
 #[derive(Debug, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Mutation {
@@ -62,7 +64,7 @@ pub enum Mutation {
         application: Box<NormalizedApplication>,
         /// Inspected application identity.
         expected_application_id: Option<String>,
-        /// Whether to create a deployment after saving.
+        /// Whether to create a deployment of the only environment after saving.
         deploy: bool,
     },
     /// Edit saved configuration under the same revision check and transaction.
@@ -71,33 +73,55 @@ pub enum Mutation {
         id: ApplicationId,
         /// Typed field or resource change.
         edit: Box<piqueld_core::edit::ApplicationEdit>,
-        /// Capture a deployment after saving.
+        /// Capture a deployment of the only environment after saving.
         deploy: bool,
     },
-    /// Deploy the latest saved configuration.
-    Deploy {
-        /// Stable application identity.
-        id: ApplicationId,
-        /// Fetch the manifest from this revision instead, without saving it.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        revision: Option<piqueld_core::manifest::ManifestRevision>,
-    },
-    /// Request resource deletion.
-    Delete {
-        /// Stable application ID.
-        id: ApplicationId,
-    },
-    /// Repair accepted intent.
-    Reconcile {
-        /// Stable application ID.
-        id: ApplicationId,
-    },
-    /// Change only the user-facing name.
+    /// Change only the application's user-facing name.
     Rename {
         /// Stable application ID.
         id: ApplicationId,
         /// Validated new name.
         name: String,
+    },
+    /// Delete an application with all its environments.
+    DeleteApplication {
+        /// Stable application ID.
+        id: ApplicationId,
+        /// Names of every environment, required when there are several.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        environments: Vec<EnvironmentName>,
+    },
+    /// Add an environment to an application.
+    CreateEnvironment {
+        /// Stable application ID.
+        application: ApplicationId,
+        /// Name, unique within the application.
+        name: EnvironmentName,
+    },
+    /// Change only an environment's name.
+    RenameEnvironment {
+        /// Stable environment ID.
+        id: EnvironmentId,
+        /// New name, unique within the application.
+        name: EnvironmentName,
+    },
+    /// Deploy the application's latest saved configuration to an environment.
+    Deploy {
+        /// Stable environment identity.
+        id: EnvironmentId,
+        /// Fetch the manifest from this revision instead, without saving it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        revision: Option<piqueld_core::manifest::ManifestRevision>,
+    },
+    /// Request an environment's resource deletion.
+    Delete {
+        /// Stable environment ID.
+        id: EnvironmentId,
+    },
+    /// Repair an environment's accepted intent.
+    Reconcile {
+        /// Stable environment ID.
+        id: EnvironmentId,
     },
 }
 
@@ -110,12 +134,16 @@ pub enum MutationResponse {
     Operation(piqueld_core::api::AcceptedOperation),
     /// Completed metadata mutation.
     Rename(piqueld_core::api::RenamedApplication),
+    /// Created or renamed environment.
+    Environment(piqueld_core::api::EnvironmentView),
+    /// Accepted application deletion.
+    Deleted(piqueld_core::api::DeletedApplication),
 }
 
 impl Mutation {
     /// Deploys saved configuration at its configured manifest revision.
     #[must_use]
-    pub fn deploy(id: ApplicationId) -> Self {
+    pub fn deploy(id: EnvironmentId) -> Self {
         Self::Deploy { id, revision: None }
     }
 
@@ -205,7 +233,7 @@ impl ApplicationService {
         self
     }
 
-    /// Recovers from a lost master key by discarding every application's stored values.
+    /// Recovers from a lost master key by discarding every environment's stored values.
     /// # Errors
     /// Returns an error if the current key still works, or storage errors.
     pub async fn recover_secret_key(
@@ -217,12 +245,12 @@ impl ApplicationService {
     /// Lists secret metadata without exposing stored values.
     ///
     /// # Errors
-    /// Returns a storage error when the application or its metadata cannot be read.
+    /// Returns a storage error when the environment or its metadata cannot be read.
     pub async fn secrets(
         &self,
-        application: &ApplicationId,
+        environment: &EnvironmentId,
     ) -> Result<Vec<SecretMetadata>, ApplicationError> {
-        Ok(self.store.secrets(application).await?)
+        Ok(self.store.secrets(environment).await?)
     }
 
     /// Stores a new secret version after checking the inspected generation.
@@ -231,14 +259,14 @@ impl ApplicationService {
     /// Returns a validation, generation conflict, or storage error.
     pub async fn put_secret(
         &self,
-        application: &ApplicationId,
+        environment: &EnvironmentId,
         name: &str,
         expected_generation: i64,
         value: Vec<u8>,
     ) -> Result<SecretMetadata, ApplicationError> {
         Ok(self
             .store
-            .put_secret(application, name, expected_generation, value)
+            .put_secret(environment, name, expected_generation, value)
             .await?)
     }
 
@@ -255,22 +283,22 @@ impl ApplicationService {
     /// Returns when the secret is referenced or storage or runtime cleanup fails.
     pub async fn delete_secret(
         &self,
-        application: &ApplicationId,
+        environment: &EnvironmentId,
         name: &str,
         expected_generation: i64,
     ) -> Result<(), ApplicationError> {
         let deletion = self
             .store
-            .begin_secret_deletion(application, name, expected_generation)
+            .begin_secret_deletion(environment, name, expected_generation)
             .await?;
         let journal = self
             .store
-            .begin_application_action(application, "remove_secrets", Some(name))
+            .begin_application_action(environment, "remove_secrets", Some(name))
             .await?;
         let result = match self.store.action_request(&journal, 1).await {
             Ok(()) => {
                 self.runtime
-                    .remove_secrets(application, &deletion.versions)
+                    .remove_secrets(environment, &deletion.versions)
                     .await
             }
             Err(error) => Err(error.into()),
@@ -283,7 +311,7 @@ impl ApplicationService {
             .await?;
         result?;
         self.store
-            .finish_secret_deletion(application, name, &deletion.id)
+            .finish_secret_deletion(environment, name, &deletion.id)
             .await?;
         Ok(())
     }
@@ -314,9 +342,12 @@ impl ApplicationService {
                         || (expected_generation != Some(0) && expected_application_id.is_none())
                 }
                 Mutation::Edit { .. }
+                | Mutation::Rename { .. }
+                | Mutation::DeleteApplication { .. }
+                | Mutation::CreateEnvironment { .. }
+                | Mutation::RenameEnvironment { .. }
                 | Mutation::Deploy { .. }
-                | Mutation::Delete { .. }
-                | Mutation::Rename { .. } => expected_generation.is_none(),
+                | Mutation::Delete { .. } => expected_generation.is_none(),
                 Mutation::Reconcile { .. } => false,
             };
             if missing {

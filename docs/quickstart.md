@@ -49,6 +49,10 @@ just run --socket /tmp/piqueld-dev-run/piqueld.sock app deploy notes --yes
 just run --socket /tmp/piqueld-dev-run/piqueld.sock events --application <application-id>
 ```
 
+The application got one environment, `production`, which shares its ID. Add
+another with `piquelctl env create notes staging`; `app deploy`, `app reconcile`,
+and `app logs` then need an environment, so use `piquelctl env deploy notes staging`.
+
 ## Dashboard and cleanup
 
 The development toolchain serves the dashboard through the running
@@ -60,8 +64,9 @@ or CSS changes. Any other daemon built with `--features embedded-ui` ships its
 own dashboard bundle inside the binary, as described in
 [`web-ui.md`](web-ui.md).
 
-When finished, delete the application and note that its named volumes are
-retained:
+When finished, delete the application with its environments and note that
+their named volumes are retained (with several environments, add
+`--environments production,staging`):
 
 ```console
 just run --socket /tmp/piqueld-dev-run/piqueld.sock app delete notes --yes

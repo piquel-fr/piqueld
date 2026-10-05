@@ -25,6 +25,7 @@ impl Client {
                     filter.attempt,
                     cursor,
                     filter.descending.then_some(true),
+                    filter.environment_id.as_deref(),
                     filter.error_code.as_deref(),
                     filter.errors_only.then_some(true),
                     filter.kind.as_deref(),
@@ -60,13 +61,13 @@ impl Client {
     /// Returns transport, decoding or API errors.
     pub async fn deployment_analytics(
         &self,
-        application: Option<&str>,
+        environment: Option<&str>,
         since: Option<i64>,
         until: Option<i64>,
     ) -> Result<DeploymentAnalytics, ClientError> {
         generated_result(
             self.generated
-                .deployment_analytics(application, since, until)
+                .deployment_analytics(environment, since, until)
                 .await,
         )
         .await

@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
 };
 use piqueld_core::{
-    ApplicationId,
+    EnvironmentId,
     api::{Envelope, SecretMetadata},
 };
 
@@ -25,15 +25,15 @@ impl utoipa::PartialSchema for SecretValue {
     }
 }
 
-/// Lists an application's secrets.
+/// Lists an environment's secrets.
 ///
 /// Returns metadata only; secret values are write-only and never returned.
-#[utoipa::path(get,path="/api/v1/applications/{id}/secrets",operation_id="applicationSecrets",params(("id"=String,Path)),responses((status=200,description="Secret metadata",body=Envelope<Vec<SecretMetadata>>),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+#[utoipa::path(get,path="/api/v1/environments/{id}/secrets",operation_id="environmentSecrets",params(("id"=String,Path)),responses((status=200,description="Secret metadata",body=Envelope<Vec<SecretMetadata>>),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn list(
     State(state): State<ApiState>,
     ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(ok(state.secrets(&ApplicationId::parse(id)?).await?))
+    Ok(ok(state.secrets(&EnvironmentId::parse(id)?).await?))
 }
 
 /// Reads the mandatory non-negative `X-Expected-Generation` header; `0` means
@@ -58,7 +58,7 @@ fn expected(headers: &HeaderMap) -> Result<i64, ApiError> {
 /// `X-Expected-Generation` must be 0 to create a secret, or its current
 /// generation to replace it; a mismatch fails with 409. Running services keep
 /// their value until the next deployment. The response carries metadata only.
-#[utoipa::path(put,path="/api/v1/applications/{id}/secrets/{name}",operation_id="putApplicationSecret",params(("id"=String,Path),("name"=String,Path),("X-Expected-Generation"=i64,Header)),request_body(content=inline(SecretValue),content_type="application/octet-stream"),responses((status=200,description="Updated metadata; no secret value",body=Envelope<SecretMetadata>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+#[utoipa::path(put,path="/api/v1/environments/{id}/secrets/{name}",operation_id="putEnvironmentSecret",params(("id"=String,Path),("name"=String,Path),("X-Expected-Generation"=i64,Header)),request_body(content=inline(SecretValue),content_type="application/octet-stream"),responses((status=200,description="Updated metadata; no secret value",body=Envelope<SecretMetadata>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn put(
     State(state): State<ApiState>,
     ApiPath((id, name)): ApiPath<(String, String)>,
@@ -92,7 +92,7 @@ pub(super) async fn put(
         ));
     }
     Ok(ok(state
-        .put_secret(&ApplicationId::parse(id)?, &name, generation, body.to_vec())
+        .put_secret(&EnvironmentId::parse(id)?, &name, generation, body.to_vec())
         .await?))
 }
 
@@ -100,7 +100,7 @@ pub(super) async fn put(
 ///
 /// Fails with 409 while the configuration or a deployment still references it.
 /// If cleanup is interrupted, retrying the deletion finishes it.
-#[utoipa::path(delete,path="/api/v1/applications/{id}/secrets/{name}",operation_id="deleteApplicationSecret",params(("id"=String,Path),("name"=String,Path),("X-Expected-Generation"=i64,Header)),responses((status=200,description="Secret deleted",body=Envelope<bool>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+#[utoipa::path(delete,path="/api/v1/environments/{id}/secrets/{name}",operation_id="deleteEnvironmentSecret",params(("id"=String,Path),("name"=String,Path),("X-Expected-Generation"=i64,Header)),responses((status=200,description="Secret deleted",body=Envelope<bool>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn delete(
     State(state): State<ApiState>,
     ApiPath((id, name)): ApiPath<(String, String)>,
@@ -108,14 +108,14 @@ pub(super) async fn delete(
 ) -> Result<impl IntoResponse, ApiError> {
     let generation = expected(&headers)?;
     state
-        .delete_secret(&ApplicationId::parse(id)?, &name, generation)
+        .delete_secret(&EnvironmentId::parse(id)?, &name, generation)
         .await?;
     Ok(ok(true))
 }
 
 /// Recovers from a lost secret master key.
 ///
-/// Discards stored secret values for all applications; metadata and running
+/// Discards stored secret values for all environments; metadata and running
 /// services are kept. Fails with 409 while the current key still works. The next
 /// value write generates a new key.
 #[utoipa::path(post,path="/api/v1/system/secrets/recover-key",operation_id="recoverSecretKey",

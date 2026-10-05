@@ -5,11 +5,11 @@ pub use runtime::ApplicationRuntime;
 
 use crate::{
     docker::{DockerError, Exec, ExecIo},
-    store::{StoreError, StoredApplication},
+    store::{StoreError, StoredEnvironment},
 };
 use async_trait::async_trait;
 use piqueld_core::{
-    ApplicationId, CompileError, NormalizedApplication, ObservedApplication,
+    CompileError, EnvironmentId, NormalizedApplication, ObservedApplication,
     resource::ResolvedApplication,
 };
 
@@ -42,7 +42,7 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
     /// look-back window in seconds, and `stream` optionally filters stdout or stderr.
     async fn logs(
         &self,
-        id: &ApplicationId,
+        id: &EnvironmentId,
         service: Option<&str>,
         tail: u16,
         since: u32,
@@ -55,31 +55,32 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
     /// Removes the supplied versions after logical-reference checks succeed.
     async fn remove_secrets(
         &self,
-        application: &ApplicationId,
+        environment: &EnvironmentId,
         names: &[String],
     ) -> Result<(), BoundaryError>;
-    /// Creates a command in one running task of the application's service.
+    /// Creates a command in one running task of the environment's service.
     /// Returns `None` when the service has no running task.
     async fn create_exec(
         &self,
-        application: &ApplicationId,
+        environment: &EnvironmentId,
         request: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<Exec>, BoundaryError>;
     /// Streams a created command until it exits and returns its exit code.
     async fn run_exec(&self, exec: &Exec, io: ExecIo) -> Result<i64, BoundaryError>;
     /// Wakes the reconciler after a mutation requests an immediate scan.
     fn trigger_reconciliation(&self);
-    /// Resolves all mutable inputs into a complete immutable target.
+    /// Resolves all mutable inputs into a complete immutable target for an environment.
     async fn prepare(
         &self,
+        environment: &EnvironmentId,
         application: &NormalizedApplication,
         resolutions: &piqueld_core::ResolutionSet,
     ) -> Result<ResolvedApplication, BoundaryError>;
     /// Checks Docker availability without preparing images or changing runtime resources.
     async fn check_available(&self) -> Result<(), BoundaryError>;
-    /// Captures current runtime state for a stored application.
+    /// Captures current runtime state for a stored environment.
     async fn observe(
         &self,
-        application: &StoredApplication,
+        application: &StoredEnvironment,
     ) -> Result<ObservedApplication, BoundaryError>;
 }

@@ -1,5 +1,5 @@
 //! Immutable diagnostic history, independent of operation retention.
-use super::{ApplicationId, Store, StoreError, new_id, now_ms, page_limit};
+use super::{ApplicationId, EnvironmentId, Store, StoreError, new_id, now_ms, page_limit};
 use piqueld_core::{
     Event,
     api::Page,
@@ -9,7 +9,7 @@ use sqlx::{QueryBuilder, Sqlite, Transaction};
 
 impl Store {
     /// Records an event of `kind` copying the operation's current context
-    /// (application, generation, attempt, error, phase, resource).
+    /// (environment, generation, attempt, error, phase, resource).
     /// For a failed operation it attaches a diagnostic, reusing the one already
     /// recorded for the same attempt and error code so repeated events share one
     /// occurrence ID.
@@ -57,11 +57,12 @@ impl Store {
             .transpose()
             .map_err(StoreError::corrupt)?;
         sqlx::query!(
-            "INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,error_code,phase,
-            resource,created_at_ms,scope,diagnostic_id,diagnostic_json) SELECT application_id,id,
-            generation,attempt,?1,?2,error_code,phase,resource,?3,?4,?5,?6
-            FROM operations
-            WHERE id=?7",
+            "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,
+            error_code,phase,resource,created_at_ms,scope,diagnostic_id,diagnostic_json)
+            SELECT e.application_id,o.environment_id,o.id,o.generation,o.attempt,?1,?2,o.error_code,o.phase,
+            o.resource,?3,?4,?5,?6
+            FROM operations o LEFT JOIN environments e ON e.id=o.environment_id
+            WHERE o.id=?7",
             kind,
             message,
             now,
@@ -81,13 +82,13 @@ impl Store {
     /// Returns storage or pagination errors.
     pub async fn events(
         &self,
-        application: Option<&ApplicationId>,
+        application: Option<&EnvironmentId>,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Event>, StoreError> {
         self.filtered_events(
             &EventFilter {
-                application_id: application.map(ToString::to_string),
+                environment_id: application.map(ToString::to_string),
                 ..EventFilter::default()
             },
             cursor,
@@ -220,7 +221,7 @@ impl Store {
         &self,
         diagnostic: &Diagnostic,
         request_id: Option<&str>,
-        application: Option<&ApplicationId>,
+        application: Option<&EnvironmentId>,
     ) -> Result<(), StoreError> {
         let _writer = self.writers.lock().await;
         let mut diagnostic = diagnostic.clone();
@@ -228,14 +229,15 @@ impl Store {
             diagnostic.scope = EventScope::Daemon;
         }
         let scope = diagnostic.scope.as_str();
-        let app = application.map(ApplicationId::as_str);
+        let app = application.map(EnvironmentId::as_str);
         let json = serde_json::to_string(&diagnostic).map_err(StoreError::corrupt)?;
         let now = now_ms();
         sqlx::query!(
-            "INSERT INTO events(scope,application_id,kind,message,error_code,diagnostic_id,diagnostic_json,request_id,
-            created_at_ms) SELECT ?1,?2,'diagnostic',?3,?4,?5,?6,?7,?8
+            "INSERT INTO events(scope,application_id,environment_id,kind,message,error_code,diagnostic_id,
+            diagnostic_json,request_id,created_at_ms)
+            SELECT ?1,(SELECT application_id FROM environments WHERE id=?2),?2,'diagnostic',?3,?4,?5,?6,?7,?8
             WHERE ?1='daemon' OR EXISTS(SELECT 1
-            FROM applications
+            FROM environments
             WHERE id=?2)",
             scope,
             app,
@@ -252,22 +254,28 @@ impl Store {
         Ok(())
     }
 
-    /// Records an informational application event outside any operation.
+    /// Records an informational environment event outside any operation. The
+    /// event stays in `application`'s history even if the environment has been
+    /// deleted meanwhile, and is skipped once the application itself is gone,
+    /// since its history has been removed.
     /// # Errors
     /// Returns storage errors.
-    pub(crate) async fn record_application_event(
+    pub(crate) async fn record_environment_event(
         &self,
         application: &ApplicationId,
+        environment: &EnvironmentId,
         kind: &str,
         message: &str,
         resource: &str,
     ) -> Result<(), StoreError> {
         let _writer = self.writers.lock().await;
-        let app = application.as_str();
+        let (application, environment) = (application.as_str(), environment.as_str());
         let now = now_ms();
         sqlx::query!(
-            "INSERT INTO events(application_id,kind,message,resource,created_at_ms) VALUES(?1,?2,?3,?4,?5)",
-            app,
+            "INSERT INTO events(application_id,environment_id,kind,message,resource,created_at_ms)
+            SELECT ?1,?2,?3,?4,?5,?6 WHERE EXISTS(SELECT 1 FROM applications WHERE id=?1)",
+            application,
+            environment,
             kind,
             message,
             resource,
@@ -284,7 +292,7 @@ impl Store {
     pub(crate) async fn report_diagnostic(
         &self,
         diagnostic: &Diagnostic,
-        application: Option<&ApplicationId>,
+        application: Option<&EnvironmentId>,
     ) {
         tracing::error!(diagnostic_id=%diagnostic.id, code=%diagnostic.code, summary=%diagnostic.summary, "control-plane failure");
         if let Err(error) = self.record_diagnostic(diagnostic, None, application).await {
@@ -364,7 +372,8 @@ impl Store {
     }
 }
 
-/// Rejects inverted time ranges and malformed application IDs in an event filter.
+/// Rejects inverted time ranges and malformed application or environment IDs
+/// in an event filter.
 fn validate_filter(filter: &EventFilter) -> Result<(), StoreError> {
     if filter
         .since_ms
@@ -376,6 +385,9 @@ fn validate_filter(filter: &EventFilter) -> Result<(), StoreError> {
     if let Some(id) = &filter.application_id {
         ApplicationId::parse(id).map_err(StoreError::invalid_input)?;
     }
+    if let Some(id) = &filter.environment_id {
+        EnvironmentId::parse(id).map_err(StoreError::invalid_input)?;
+    }
     Ok(())
 }
 
@@ -384,6 +396,7 @@ fn validate_filter(filter: &EventFilter) -> Result<(), StoreError> {
 struct EventRow {
     id: i64,
     application_id: Option<String>,
+    environment_id: Option<String>,
     operation_id: Option<String>,
     generation: Option<i64>,
     attempt: Option<i64>,
@@ -413,7 +426,7 @@ impl EventRow {
         fetch: i64,
     ) -> Result<QueryBuilder<'_, Sqlite>, StoreError> {
         let mut query = QueryBuilder::new(
-            "SELECT id, application_id, operation_id, generation, attempt, kind, message, error_code, \
+            "SELECT id, application_id, environment_id, operation_id, generation, attempt, kind, message, error_code, \
              phase, resource, created_at_ms, scope, action_id, retry, retry_delay_ms, duration_ms, \
              request_id, diagnostic_json FROM events WHERE id",
         );
@@ -422,6 +435,7 @@ impl EventRow {
             .push_bind(cursor);
         for (column, value) in [
             ("application_id", filter.application_id.as_deref()),
+            ("environment_id", filter.environment_id.as_deref()),
             ("operation_id", filter.operation_id.as_deref()),
             ("action_id", filter.action_id.as_deref()),
             ("kind", filter.kind.as_deref()),
@@ -468,6 +482,11 @@ impl EventRow {
             application_id: self
                 .application_id
                 .map(ApplicationId::parse)
+                .transpose()
+                .map_err(StoreError::corrupt)?,
+            environment_id: self
+                .environment_id
+                .map(EnvironmentId::parse)
                 .transpose()
                 .map_err(StoreError::corrupt)?,
             operation_id: self.operation_id,
@@ -524,6 +543,46 @@ mod tests {
     use sqlx::{Execute, Row};
 
     #[tokio::test]
+    async fn environment_events_keep_their_application_until_it_is_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let app = piqueld_core::parse_toml(include_str!(
+            "../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
+        ))
+        .unwrap()
+        .normalize(ApplicationId::parse("app-event-test").unwrap());
+        store.save_application(&app, None, None).await.unwrap();
+        // An environment deleted while a command was running.
+        let deleted = EnvironmentId::parse("env-deleted").unwrap();
+        let gone = ApplicationId::parse("app-deleted").unwrap();
+        for application in [app.id(), &gone] {
+            store
+                .record_environment_event(application, &deleted, "command_finished", "done", "web")
+                .await
+                .unwrap();
+        }
+        let history = store
+            .filtered_events(
+                &EventFilter {
+                    environment_id: Some(deleted.to_string()),
+                    ..EventFilter::default()
+                },
+                None,
+                10,
+            )
+            .await
+            .unwrap()
+            .items;
+        assert_eq!(
+            history
+                .iter()
+                .map(|event| event.application_id.as_ref())
+                .collect::<Vec<_>>(),
+            [Some(app.id())]
+        );
+    }
+
+    #[tokio::test]
     async fn history_pages_use_indexes_without_sorting_retained_events() {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::open(temp.path().join("db")).await.unwrap();
@@ -536,6 +595,13 @@ mod tests {
                         ..Default::default()
                     },
                     "event_application",
+                ),
+                (
+                    EventFilter {
+                        environment_id: Some("app-query".into()),
+                        ..Default::default()
+                    },
+                    "event_environment",
                 ),
                 (
                     EventFilter {

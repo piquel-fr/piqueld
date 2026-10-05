@@ -297,9 +297,7 @@ fn application_row(row: ApplicationRow) -> AnyView {
     let subtitle = if row.application.delete_intent {
         "Deletion requested".to_owned()
     } else {
-        row.status
-            .as_ref()
-            .and_then(|status| status.message.clone())
+        row.message()
             .unwrap_or_else(|| format!("Generation {}", row.application.generation))
     };
     let latest = row
@@ -381,17 +379,18 @@ fn RecentDeployments() -> impl IntoView {
                                     .into_iter()
                                     .map(move |deployment| (
                                         row.application.name.clone(),
+                                        row.application.id.to_string(),
                                         deployment,
                                     ))
                             })
                             .collect::<Vec<_>>();
                         deployments
                             .sort_by(|a, b| {
-                                b.1
+                                b.2
                                     .operation
                                     .created_at_ms
-                                    .cmp(&a.1.operation.created_at_ms)
-                                    .then_with(|| b.1.operation.id.cmp(&a.1.operation.id))
+                                    .cmp(&a.2.operation.created_at_ms)
+                                    .then_with(|| b.2.operation.id.cmp(&a.2.operation.id))
                             });
                         if deployments.is_empty() {
                             return empty(
@@ -417,14 +416,14 @@ fn RecentDeployments() -> impl IntoView {
                                     {deployments
                                         .into_iter()
                                         .take(5)
-                                        .map(|(name, deployment)| {
+                                        .map(|(name, application, deployment)| {
                                             let op = deployment.operation;
                                             view! {
                                                 <tr>
                                                     <td>
                                                         <A href={format!(
-                                                            "/dashboard/applications/{}?deployment={}",
-                                                            op.application_id,
+                                                            "/dashboard/applications/{application}/environments/{}?deployment={}",
+                                                            op.environment_id,
                                                             op.id,
                                                         )}>{name}</A>
                                                     </td>

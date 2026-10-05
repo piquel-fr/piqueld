@@ -4,10 +4,10 @@ use piqueld::{
     api::http::{ApiState, UiAssets},
     application::{BoundaryError, RuntimeBoundary},
     docker::{DockerError, Exec, ExecIo},
-    store::{Store, StoredApplication},
+    store::{Store, StoredEnvironment},
 };
 use piqueld_core::{
-    ApplicationId, NormalizedApplication, ObservedApplication, ResolutionSet,
+    EnvironmentId, NormalizedApplication, ObservedApplication, ResolutionSet,
     resource::ResolvedApplication,
 };
 use std::sync::Arc;
@@ -16,7 +16,7 @@ struct Runtime;
 impl RuntimeBoundary for Runtime {
     async fn logs(
         &self,
-        _: &ApplicationId,
+        _: &EnvironmentId,
         _: Option<&str>,
         _: u16,
         _: u32,
@@ -26,6 +26,7 @@ impl RuntimeBoundary for Runtime {
     }
     async fn prepare(
         &self,
+        _: &EnvironmentId,
         _: &NormalizedApplication,
         _: &ResolutionSet,
     ) -> Result<ResolvedApplication, BoundaryError> {
@@ -34,7 +35,7 @@ impl RuntimeBoundary for Runtime {
     async fn check_available(&self) -> Result<(), BoundaryError> {
         Ok(())
     }
-    async fn observe(&self, _: &StoredApplication) -> Result<ObservedApplication, BoundaryError> {
+    async fn observe(&self, _: &StoredEnvironment) -> Result<ObservedApplication, BoundaryError> {
         Ok(ObservedApplication::default())
     }
     async fn readiness(&self) -> (bool, bool) {
@@ -42,7 +43,7 @@ impl RuntimeBoundary for Runtime {
     }
     async fn remove_secrets(
         &self,
-        _: &ApplicationId,
+        _: &EnvironmentId,
         names: &[String],
     ) -> Result<(), BoundaryError> {
         if names.is_empty() {
@@ -53,7 +54,7 @@ impl RuntimeBoundary for Runtime {
     }
     async fn create_exec(
         &self,
-        _: &ApplicationId,
+        _: &EnvironmentId,
         _: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<Exec>, BoundaryError> {
         Err(DockerError::Unavailable("browser fixture").into())

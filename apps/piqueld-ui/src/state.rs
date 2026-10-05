@@ -132,6 +132,18 @@ impl ApplicationHealth {
         }
     }
 
+    /// Rank used to summarize several environments by their least healthy one.
+    #[must_use]
+    pub const fn severity(self) -> u8 {
+        match self {
+            Self::Converged => 0,
+            Self::NotDeployed => 1,
+            Self::Pending => 2,
+            Self::Degraded => 3,
+            Self::Failed => 4,
+        }
+    }
+
     /// Converts observed service health to a UI health category.
     #[must_use]
     pub fn from_convergence(value: &Convergence) -> Self {

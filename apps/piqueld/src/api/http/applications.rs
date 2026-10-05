@@ -9,12 +9,11 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use piqueld_core::ApplicationId;
 use piqueld_core::api::{
-    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationSummary,
-    ApplicationView, ApplyApplicationRequest, Envelope, Page, PlanView, RenameApplicationRequest,
-    RenamedApplication, SavedApplication,
+    ApplicationSummary, ApplicationView, ApplyApplicationRequest, DeletedApplication, Envelope,
+    Page, PlanView, RenameApplicationRequest, RenamedApplication, SavedApplication,
 };
+use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName};
 use serde::Deserialize;
 
 /// Cursor pagination for the application list.
@@ -56,7 +55,7 @@ pub(super) async fn list(
     get,
     path = "/api/v1/applications/{id}",
     operation_id = "getApplication",
-    summary = "Get an application",
+    summary = "Get an application and its environments",
     params(("id" = String, Path, min_length = 8, max_length = 64)),
     responses(
         (status = 200, description = "Success", body = Envelope<ApplicationView>),
@@ -71,32 +70,6 @@ pub(super) async fn get(
     ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(ok(state.application(&ApplicationId::parse(id)?).await?))
-}
-
-// Combines saved intent with a live runtime observation; runtime outages are
-// reported as diagnostics rather than failing the request.
-#[utoipa::path(
-    get,
-    path = "/api/v1/applications/{id}/detail",
-    operation_id = "getApplicationDetail",
-    summary = "Get desired and observed application state",
-    params(("id" = String, Path, min_length = 8, max_length = 64)),
-    responses(
-        (status = 200, description = "Success", body = Envelope<ApplicationDetailView>),
-        (status = 400, response = inline(ApiErrorResponse)),
-        (status = 404, response = inline(ApiErrorResponse)),
-        (status = 502, response = inline(ApiErrorResponse)),
-        (status = 500, response = inline(ApiErrorResponse)),
-        (status = 503, response = inline(ApiErrorResponse)),
-    )
-)]
-pub(super) async fn detail(
-    State(state): State<ApiState>,
-    ApiPath(id): ApiPath<String>,
-) -> Result<impl IntoResponse, ApiError> {
-    Ok(ok(state
-        .application_detail(&ApplicationId::parse(id)?)
-        .await?))
 }
 
 // Saves a whole manifest (JSON or TOML, see `parse_manifest`) by name,
@@ -149,18 +122,32 @@ pub(super) async fn apply(
 pub(super) struct ApplyQuery {
     /// Explicitly bypass revision and identity preconditions.
     pub(super) force: bool,
-    /// Deploy the saved configuration; omission saves only.
+    /// Deploy the saved configuration to the application's only environment; omission saves only.
     deploy: bool,
 }
 
-// Accepts a deletion operation; named volumes are retained.
+/// Application deletion preconditions and confirmation.
+#[derive(Default, Deserialize, utoipa::IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub(super) struct DeleteApplicationQuery {
+    /// Current application revision; required unless forced.
+    expected_generation: Option<u64>,
+    /// Explicitly bypass the revision precondition. Never skips confirmation.
+    #[serde(default)]
+    force: bool,
+    /// Comma-separated names of every environment; required when there are several.
+    environments: Option<String>,
+}
+
+// Accepts a deletion operation for every environment; named volumes are retained.
 #[utoipa::path(
     delete, path = "/api/v1/applications/{id}", operation_id = "deleteApplication",
-    summary = "Delete services and networks, retaining volumes",
-    params(("id" = String, Path, min_length = 8, max_length = 64), GenerationQuery,("Idempotency-Key"=Option<String>,Header)),
+    summary = "Delete an application and all its environments, retaining volumes",
+    params(("id" = String, Path, min_length = 8, max_length = 64), DeleteApplicationQuery,("Idempotency-Key"=Option<String>,Header)),
     responses(
         (status = 409, response = inline(ApiErrorResponse)),
-        (status = 202, description = "Deletion operation", body = Envelope<AcceptedOperation>),
+        (status = 202, description = "Deletion operations", body = Envelope<DeletedApplication>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 404, response = inline(ApiErrorResponse)),
         (status = 500, response = inline(ApiErrorResponse)),
@@ -171,13 +158,27 @@ pub(super) async fn delete(
     State(state): State<ApiState>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
+    query: Result<Query<DeleteApplicationQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiError> {
-    let query = GenerationQuery::decode(query)?;
+    let Query(query) = query.map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "query_invalid",
+            "expected_generation must be an integer and force must be true or false",
+        )
+    })?;
+    let environments = query
+        .environments
+        .iter()
+        .flat_map(|names| names.split(','))
+        .filter(|name| !name.is_empty())
+        .map(EnvironmentName::parse)
+        .collect::<Result<_, _>>()?;
     accept_mutation(
         &state,
-        Mutation::Delete {
+        Mutation::DeleteApplication {
             id: ApplicationId::parse(id)?,
+            environments,
         },
         query.expected_generation,
         query.force,
@@ -191,7 +192,7 @@ pub(super) async fn delete(
 #[utoipa::path(
     post, path = "/api/v1/applications/plan", operation_id = "planApplication",
     summary = "Preview an application manifest",
-    params(("X-Expected-Generation"=Option<u64>,Header,description="TOML only: inspected intent revision; zero requires absence. JSON uses `expected_generation` in the request body."),("X-Expected-Application-Id"=Option<String>,Header,description="TOML only: inspected application identity. JSON uses `expected_application_id` in the request body.")),
+    params(PlanQuery,("X-Expected-Generation"=Option<u64>,Header,description="TOML only: inspected intent revision; zero requires absence. JSON uses `expected_generation` in the request body."),("X-Expected-Application-Id"=Option<String>,Header,description="TOML only: inspected application identity. JSON uses `expected_application_id` in the request body.")),
     request_body(content((ApplyApplicationRequest = "application/json"), (String = "application/toml"), (String = "text/toml"))),
     responses(
         (status = 200, description = "Preview", body = Envelope<PlanView>),
@@ -207,11 +208,32 @@ pub(super) async fn delete(
 )]
 pub(super) async fn plan(
     State(state): State<ApiState>,
+    query: Result<Query<PlanQuery>, QueryRejection>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let Query(query) = query.map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "query_invalid",
+            "environment must appear at most once",
+        )
+    })?;
+    let environment = query.environment.map(EnvironmentId::parse).transpose()?;
     let (manifest, expected, expected_id) = parse_manifest(&headers, &request_body(body)?)?;
-    Ok(ok(state.plan(manifest, expected, expected_id).await?))
+    Ok(ok(state
+        .plan(manifest, expected, expected_id, environment.as_ref())
+        .await?))
+}
+
+/// Environment a preview compares against.
+#[derive(Default, Deserialize, utoipa::IntoParams)]
+#[serde(default, deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub(super) struct PlanQuery {
+    /// Environment of the application whose latest deployment and runtime the
+    /// preview compares against; defaults to its only environment.
+    environment: Option<String>,
 }
 
 /// Unwraps a buffered body, reporting the size limit as 413
@@ -232,29 +254,6 @@ pub(super) fn request_body(body: Result<Bytes, BytesRejection>) -> Result<Bytes,
             )
         }
     })
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/v1/applications/{id}/status",
-    operation_id = "applicationStatus",
-    summary = "Get application status",
-    params(("id" = String, Path, min_length = 8, max_length = 64)),
-    responses(
-        (status = 200, description = "Success", body = Envelope<ApplicationStatusView>),
-        (status = 400, response = inline(ApiErrorResponse)),
-        (status = 404, response = inline(ApiErrorResponse)),
-        (status = 500, response = inline(ApiErrorResponse)),
-        (status = 503, response = inline(ApiErrorResponse)),
-    )
-)]
-pub(super) async fn status(
-    State(state): State<ApiState>,
-    ApiPath(id): ApiPath<String>,
-) -> Result<impl IntoResponse, ApiError> {
-    Ok(ok(state
-        .application_status(&ApplicationId::parse(id)?)
-        .await?))
 }
 
 #[derive(Default, Deserialize, utoipa::IntoParams)]
@@ -282,39 +281,9 @@ impl GenerationQuery {
     }
 }
 
-/// Reconciles an application.
-///
-/// Returns 202 with a durable operation that repairs the runtime to match the
-/// accepted configuration. Unlike other mutations, `expected_generation` is
-/// optional. Repeating a request with the same `Idempotency-Key` returns the
-/// original response.
-#[utoipa::path(post,path="/api/v1/applications/{id}/reconcile",operation_id="reconcileApplication",
-    params(("id"=String,Path),GenerationQuery,("Idempotency-Key"=Option<String>,Header)),
-    responses((status=202,description="Reconciliation accepted",body=Envelope<AcceptedOperation>),
-    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
-    (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
-pub(super) async fn reconcile(
-    State(state): State<ApiState>,
-    ApiPath(id): ApiPath<String>,
-    headers: HeaderMap,
-    query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
-) -> Result<Response, ApiError> {
-    let query = GenerationQuery::decode(query)?;
-    accept_mutation(
-        &state,
-        Mutation::Reconcile {
-            id: ApplicationId::parse(id)?,
-        },
-        query.expected_generation,
-        query.force,
-        &headers,
-    )
-    .await
-}
-
 /// Submits a mutation with the request's `Idempotency-Key` and renders the
 /// acceptance: 202 when a durable operation was started (including a save that
-/// also deploys), 200 for a plain save or rename.
+/// also deploys, or a deletion), 200 for a plain save, rename, or environment change.
 pub(super) async fn accept_mutation(
     state: &ApiState,
     mutation: Mutation,
@@ -336,6 +305,8 @@ pub(super) async fn accept_mutation(
             }
         }
         MutationResponse::Rename(renamed) => Ok(ok(renamed).into_response()),
+        MutationResponse::Environment(environment) => Ok(ok(environment).into_response()),
+        MutationResponse::Deleted(deleted) => Ok(accepted(deleted)),
     }
 }
 

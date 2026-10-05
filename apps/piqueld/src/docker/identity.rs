@@ -1,7 +1,7 @@
 use super::{
-    APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, CreateImageOptionsBuilder, Docker,
-    DockerError, HashMap, INSTANCE_LABEL, ImageSource, MANAGED_LABEL, ResourceKind, SERVICE_LABEL,
-    TryStreamExt, docker_resource_name, docker_resource_readable_prefix,
+    APPLICATION_LABEL, BTreeMap, BollardDocker, CreateImageOptionsBuilder, Docker, DockerError,
+    EnvironmentId, HashMap, INSTANCE_LABEL, ImageSource, MANAGED_LABEL, ResourceKind,
+    SERVICE_LABEL, TryStreamExt, docker_resource_name, docker_resource_readable_prefix,
 };
 
 impl BollardDocker {
@@ -11,7 +11,7 @@ impl BollardDocker {
     /// app-notes → {"label": ["<APPLICATION_LABEL>=app-notes"]}
     /// ```
     pub(super) fn application_label_filter(
-        application: &ApplicationId,
+        application: &EnvironmentId,
     ) -> HashMap<String, Vec<String>> {
         HashMap::from([(
             "label".to_owned(),
@@ -22,7 +22,7 @@ impl BollardDocker {
     /// Builds the complementary name filter used to detect canonical resources
     /// whose ownership labels are missing or belong to another application.
     pub(super) fn application_name_filter(
-        application: &ApplicationId,
+        application: &EnvironmentId,
     ) -> HashMap<String, Vec<String>> {
         HashMap::from([(
             "name".to_owned(),
@@ -43,13 +43,13 @@ impl BollardDocker {
     pub(super) fn relevant(
         name: &str,
         labels: &BTreeMap<String, String>,
-        app: &ApplicationId,
+        app: &EnvironmentId,
     ) -> bool {
         if let Some(owner) = labels.get(APPLICATION_LABEL) {
             if owner == app.as_str() {
                 return true;
             }
-            if let Ok(owner) = ApplicationId::parse(owner.clone()) {
+            if let Ok(owner) = EnvironmentId::parse(owner.clone()) {
                 if piqueld_core::DockerNetworkName::parse(name).is_ok_and(|name| {
                     name.is_for_application(&owner) && !name.is_for_application(app)
                 }) {
@@ -123,7 +123,7 @@ impl BollardDocker {
         let observed = observed.into_iter().collect::<BTreeMap<_, _>>();
         let Some(application) = expected
             .get(APPLICATION_LABEL)
-            .and_then(|value| ApplicationId::parse(value.clone()).ok())
+            .and_then(|value| EnvironmentId::parse(value.clone()).ok())
         else {
             return false;
         };
@@ -220,8 +220,8 @@ mod tests {
     #[test]
     fn shared_prefix_does_not_include_foreign_canonical_resources() {
         let prefix = "a".repeat(42);
-        let app = ApplicationId::parse(format!("{prefix}-one")).unwrap();
-        let foreign = ApplicationId::parse(format!("{prefix}-two")).unwrap();
+        let app = EnvironmentId::parse(format!("{prefix}-one")).unwrap();
+        let foreign = EnvironmentId::parse(format!("{prefix}-two")).unwrap();
         assert_eq!(
             docker_resource_readable_prefix(&app),
             docker_resource_readable_prefix(&foreign)

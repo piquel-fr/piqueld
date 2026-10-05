@@ -3,6 +3,7 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos::wasm_bindgen::JsCast;
 use leptos::wasm_bindgen::closure::Closure;
+use leptos_router::hooks::use_location;
 use std::collections::BTreeSet;
 
 /// The editor location to restore if the user cancels a back/forward navigation.
@@ -56,14 +57,22 @@ pub(super) fn guard_navigation(dirty: RwSignal<BTreeSet<String>>) {
     });
     on_cleanup(move || listener.remove());
     let guard = use_context::<HistoryGuard>().expect("history guard installed before router");
-    guard.0.set(Some(GuardedLocation {
-        dirty,
-        url: window().location().href().unwrap_or_default(),
-        state: window()
-            .history()
-            .and_then(|h| h.state())
-            .unwrap_or_default(),
-    }));
+    let location = use_location();
+    Effect::new(move |_| {
+        // Query-only navigation (such as `?tab=` links) keeps this
+        // editor mounted, so cancellation must restore its latest address.
+        location.pathname.track();
+        location.search.track();
+        location.hash.track();
+        guard.0.set(Some(GuardedLocation {
+            dirty,
+            url: window().location().href().unwrap_or_default(),
+            state: window()
+                .history()
+                .and_then(|h| h.state())
+                .unwrap_or_default(),
+        }));
+    });
     on_cleanup(move || guard.0.set(None));
     let callback = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
         if dirty.get_untracked().is_empty() {

@@ -8,8 +8,10 @@
 #[cfg(target_os = "windows")]
 compile_error!("Windows is not supported by piqueld-client");
 
-/// Application desired-state, planning, and observation contracts.
+/// Application desired-state and planning contracts.
 pub mod applications;
+/// Environment lifecycle, deployment, and observation contracts.
+pub mod environments;
 /// Durable history and observability controls.
 pub mod observability;
 /// Generated OpenAPI document retrieval.
@@ -32,12 +34,16 @@ mod client;
 mod secrets;
 
 pub use applications::{
-    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationSummary,
-    ApplicationView, ApplyApplicationRequest, DeploymentView, DiagnosticView,
-    ListApplicationsOptions, MAX_APPLICATION_PAGE_SIZE, ObservedApplicationView,
-    ObservedServiceView, PlanView, RenameApplicationRequest, RenamedApplication, SavedApplication,
+    AcceptedOperation, ApplicationSummary, ApplicationView, ApplyApplicationRequest,
+    DeletedApplication, DeploymentView, DiagnosticView, ListApplicationsOptions,
+    MAX_APPLICATION_PAGE_SIZE, ObservedApplicationView, ObservedServiceView, PlanView,
+    RenameApplicationRequest, RenamedApplication, SavedApplication,
 };
 pub use client::Client;
+pub use environments::{
+    EnvironmentDetailView, EnvironmentName, EnvironmentRequest, EnvironmentSource,
+    EnvironmentStatusView, EnvironmentView,
+};
 pub use piqueld_core::manifest::{
     ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, Job, JobRun,
     ManifestRepository, ManifestRevision, Metadata, Mount, Redirect, RedirectStatus,
@@ -46,8 +52,8 @@ pub use piqueld_core::manifest::{
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{
-    ApplicationId, ApplicationName, ServiceName, TomlDiagnostic, ValidatedApplication,
-    ValidationError, ValidationErrors,
+    ApplicationId, ApplicationName, EnvironmentId, ServiceName, TomlDiagnostic,
+    ValidatedApplication, ValidationError, ValidationErrors,
 };
 pub use piqueld_core::{
     ApplicationState, Convergence, Event, Operation, OperationKind, OperationState,

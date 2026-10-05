@@ -1,26 +1,58 @@
-//! Stable application identity and deterministic Docker-safe names.
+//! Stable application and environment identities and deterministic Docker-safe names.
 
 use crate::names::validated_string;
 use sha2::{Digest, Sha256};
 
+/// Shared persistence ID format: 8-64 lowercase ASCII letters, digits, or
+/// internal hyphens.
+fn valid_id(value: &str) -> bool {
+    (8..=64).contains(&value.len())
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && value
+            .bytes()
+            .last()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
 validated_string!(
     /// Stable internal application identity. It is assigned by persistence and is not
-    /// derived from editable application metadata.
+    /// derived from editable application metadata. An application owns the shared
+    /// manifest and its environments; it has no runtime resources of its own.
+    ///
+    /// ```compile_fail
+    /// use piqueld_core::{ApplicationId, EnvironmentId};
+    /// let environment: EnvironmentId = ApplicationId::parse("app-00000001").unwrap();
+    /// ```
     ApplicationId, ApplicationIdError,
     "application IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens",
-    |value: &str| (8..=64).contains(&value.len())
-            && value
-                .bytes()
-                .next()
-                .is_some_and(|byte| byte.is_ascii_alphanumeric())
-            && value
-                .bytes()
-                .last()
-                .is_some_and(|byte| byte.is_ascii_alphanumeric())
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    valid_id
 );
+
+validated_string!(
+    /// Stable internal environment identity, assigned by persistence. Docker names,
+    /// ownership labels, secret encryption context, and history all derive from it.
+    /// Environments migrated from single-environment applications keep the
+    /// application ID they had before environments existed.
+    EnvironmentId, EnvironmentIdError,
+    "environment IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens",
+    valid_id
+);
+
+impl EnvironmentId {
+    /// The ID of the environment created with an application. It reuses the
+    /// application's ID, as every environment migrated from a single-environment
+    /// application does; further environments receive their own IDs.
+    #[must_use]
+    pub fn default_for(application: &ApplicationId) -> Self {
+        Self(application.as_str().to_owned())
+    }
+}
 
 /// Managed Docker resource category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,7 +82,7 @@ impl ResourceKind {
 /// Produces a stable, collision-resistant Docker name no longer than 63 bytes.
 ///
 /// The readable part may be truncated; uniqueness comes from the digest suffix
-/// over the full application ID, kind, and logical name.
+/// over the full environment ID, kind, and logical name.
 ///
 /// ```text
 /// (01jz8r7b4w-test, Service, Some("web")) -> piqueld-01jz8r7b4w-test-service-web-<12 hex>
@@ -58,7 +90,7 @@ impl ResourceKind {
 /// ```
 #[must_use]
 pub fn docker_resource_name(
-    id: &ApplicationId,
+    id: &EnvironmentId,
     kind: ResourceKind,
     logical_name: Option<&str>,
 ) -> String {
@@ -74,13 +106,13 @@ const NAME_SUFFIX_LEN: usize = 12;
 /// Number of hyphens bounding the readable head in bounded Docker names.
 const NAME_SEPARATOR_LEN: usize = 2;
 
-/// Returns the readable name prefix shared by all resources of an application.
+/// Returns the readable name prefix shared by all resources of an environment.
 ///
 /// Prefixes are advisory and not unique: distinct identities can sanitize to
 /// the same readable head, so ownership decisions must use labels and exact
 /// names instead.
 #[must_use]
-pub fn docker_resource_readable_prefix(id: &ApplicationId) -> String {
+pub fn docker_resource_readable_prefix(id: &EnvironmentId) -> String {
     let head_len = 63usize.saturating_sub("piqueld".len() + NAME_SUFFIX_LEN + NAME_SEPARATOR_LEN);
     let mut head = sanitize(id.as_str())
         .chars()
@@ -141,7 +173,7 @@ mod tests {
 
     #[test]
     fn names_are_bounded_safe_stable_and_distinct() {
-        let id = ApplicationId::parse("01jz8r7b4w-test").unwrap();
+        let id = EnvironmentId::parse("01jz8r7b4w-test").unwrap();
         let a = docker_resource_name(&id, ResourceKind::Service, Some(&"a".repeat(100)));
         let b = docker_resource_name(
             &id,
@@ -162,23 +194,23 @@ mod tests {
 
     #[test]
     fn readable_prefix_matches_names_with_a_trailing_hyphen_at_the_limit() {
-        let id = ApplicationId::parse(format!("{}-a", "a".repeat(41))).unwrap();
+        let id = EnvironmentId::parse(format!("{}-a", "a".repeat(41))).unwrap();
         let name = docker_resource_name(&id, ResourceKind::Network, None);
         assert!(name.starts_with(&docker_resource_readable_prefix(&id)));
     }
 
     #[test]
     fn deserialization_preserves_the_id_invariant() {
-        assert!(serde_json::from_str::<ApplicationId>(r#""01jz8r7b4w-test""#).is_ok());
-        assert!(serde_json::from_str::<ApplicationId>(r#""--------""#).is_err());
-        assert!(serde_json::from_str::<ApplicationId>(r#""UPPERCASE""#).is_err());
+        assert!(serde_json::from_str::<EnvironmentId>(r#""01jz8r7b4w-test""#).is_ok());
+        assert!(serde_json::from_str::<EnvironmentId>(r#""--------""#).is_err());
+        assert!(serde_json::from_str::<EnvironmentId>(r#""UPPERCASE""#).is_err());
     }
 
     #[test]
     fn parsing_returns_a_typed_error() {
         assert_eq!(
-            ApplicationId::parse("UPPERCASE").unwrap_err(),
-            ApplicationIdError
+            EnvironmentId::parse("UPPERCASE").unwrap_err(),
+            EnvironmentIdError
         );
     }
 }

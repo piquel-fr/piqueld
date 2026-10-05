@@ -1,7 +1,7 @@
 //! Event history, diagnostics, daemon statistics, analytics, and notification deliveries.
-use super::client_error_message;
 use super::format::{bytes, duration, duration_f64, duration_secs, now_ms, timestamp};
 use super::ui::{Icon, PageHeader, Tone, badge, empty, icon, metric, notice, when};
+use super::{client_error_message, dashboard_context, environment_link};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
@@ -94,16 +94,18 @@ pub(super) fn ErrorsPage() -> impl IntoView {
 }
 
 /// Filterable, paginated event list (50 per page), optionally scoped to one
-/// application. Also honours an `?operation=` query filter; changing any filter
+/// application (with all its environments) or one environment. Also honours an `?operation=` query filter; changing any filter
 /// or the operation resets to the newest page. Auto-refreshes via `Refresh`.
 #[component]
 pub(super) fn EventHistory(
     #[prop(optional, into)] application: Option<String>,
+    #[prop(optional, into)] environment: Option<String>,
     #[prop(optional)] errors_only: bool,
 ) -> impl IntoView {
     let refresh = Refresh::new();
-    let scoped = application.is_some();
-    let application = StoredValue::new(application);
+    let scoped = environment.is_some();
+    let owned = scoped || application.is_some();
+    let scope_filter = StoredValue::new((application, environment));
     let query = use_query_map();
     let cursor = RwSignal::new(None::<String>);
     Effect::new(move |previous: Option<Option<String>>| {
@@ -130,8 +132,10 @@ pub(super) fn EventHistory(
             query.get(),
         );
         async move {
+            let (application_id, environment_id) = scope_filter.get_value();
             let filter = EventFilter {
-                application_id: application.get_value(),
+                application_id,
+                environment_id,
                 operation_id: query.get("operation"),
                 kind: (!kind.is_empty()).then_some(kind),
                 error_code: (!code.is_empty()).then_some(code),
@@ -154,7 +158,7 @@ pub(super) fn EventHistory(
     let reset = move || cursor.set(None);
     view! {
         <div class="toolbar">
-            {period_select(days, true, reset)} <Show when={move || !scoped}>
+            {period_select(days, true, reset)} <Show when={move || !owned}>
                 <label class="field">
                     <span>"Scope"</span>
                     <select on:change={move |e| {
@@ -308,18 +312,16 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
                         .collect_view()}
                 </div>
                 <div class="event-links">
-                    {(!scoped)
-                        .then(|| {
-                            event
-                                .application_id
-                                .map(|id| {
-                                    view! {
-                                        <A href={format!(
-                                            "/dashboard/applications/{id}",
-                                        )}>"Application"</A>
-                                    }
-                                })
-                        })}
+                    {
+                        let signals = dashboard_context().signals;
+                        let environment = event.environment_id.filter(|_| !scoped);
+                        move || {
+                            environment
+                                .as_ref()
+                                .and_then(|id| environment_link(signals, id.as_str()))
+                                .map(|(label, href)| view! { <A href={href}>{label}</A> })
+                        }
+                    }
                     {event
                         .operation_id
                         .map(|id| {
@@ -428,20 +430,19 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
                 <dl class="kv">
                     <dt>"Recorded"</dt>
                     <dd>{timestamp(event.created_at_ms)}</dd>
-                    <dt>"Application"</dt>
+                    <dt>"Environment"</dt>
                     <dd>
                         {event
-                            .application_id
+                            .environment_id
                             .clone()
                             .map_or_else(
                                 || "Daemon".into_any(),
                                 |id| {
-                                    view! {
-                                        <A href={format!(
-                                            "/dashboard/applications/{id}",
-                                        )}>{id.to_string()}</A>
-                                    }
-                                        .into_any()
+                                    environment_link(dashboard_context().signals, id.as_str())
+                                        .map_or_else(
+                                            || view! { <code>{id.to_string()}</code> }.into_any(),
+                                            |(label, href)| view! { <A href={href}>{label}</A> }.into_any(),
+                                        )
                                 },
                             )}
                     </dd>

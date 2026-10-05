@@ -45,7 +45,7 @@ impl<D: DockerApi> Controller<D> {
             })
             .map(|job| job.for_operation(&operation.id))
             .collect::<Vec<_>>();
-        let ownership = self.ownership_labels(&operation.application_id);
+        let ownership = self.ownership_labels(&operation.environment_id);
         // A run left by an earlier operation must not overlap this deployment,
         // even one without jobs. This operation's own runs are kept only while
         // a job is pending, because one of them may be resumed.
@@ -62,7 +62,7 @@ impl<D: DockerApi> Controller<D> {
         for job in &jobs {
             // A completed run must stop before another job of this operation
             // starts: cleanup selects runs by operation ID.
-            self.retry_job_cleanup(&operation.application_id).await?;
+            self.retry_job_cleanup(&operation.environment_id).await?;
             self.prepare_job_dependencies(operation, target, job, &ownership, cancellation)
                 .await?;
             self.run_job(operation, job, &ownership, cancellation)
@@ -89,7 +89,7 @@ impl<D: DockerApi> Controller<D> {
             let observed = self
                 .observe_with_retry(operation, cancellation, deadline)
                 .await?;
-            let accepted_routes = self.store.applied_routes(&operation.application_id).await?;
+            let accepted_routes = self.store.applied_routes(&operation.environment_id).await?;
             let plan = Plan::from_request(
                 &PlanRequest::Reconcile {
                     desired: target
@@ -137,7 +137,7 @@ impl<D: DockerApi> Controller<D> {
             .await?;
         let attempt = crate::build::BuildAttempt::start(
             Arc::clone(&self.store),
-            &operation.application_id,
+            &operation.environment_id,
             &operation.id,
             job.container.logical_name.as_str(),
             &job.container.source.requested(),
@@ -200,7 +200,7 @@ impl<D: DockerApi> Controller<D> {
                 // Retain the terminal job error so retrying bookkeeping never
                 // reruns a timed-out or failed migration.
                 self.store
-                    .report_diagnostic(&error.diagnostic(), Some(&operation.application_id))
+                    .report_diagnostic(&error.diagnostic(), Some(&operation.environment_id))
                     .await;
             }
         }
@@ -401,7 +401,7 @@ impl<D: DockerApi> Controller<D> {
     /// request cannot remove a newly started run of the same operation.
     pub(super) async fn retry_job_cleanup(
         &self,
-        application: &piqueld_core::ApplicationId,
+        application: &piqueld_core::EnvironmentId,
     ) -> Result<(), OperationError> {
         let _guard = self.mutations.lock().await;
         let ownership = self.ownership_labels(application);

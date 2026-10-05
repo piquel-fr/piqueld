@@ -2,7 +2,9 @@
 use piqueld_core::edit::ApplicationEdit;
 use piqueld_core::manifest::{Build, GitRepository, ManifestRevision, Source, SourceRepository};
 use piqueld_core::resource::{ResolvedSource, Sha256Digest};
-use piqueld_core::{ApplicationId, InstanceId, ResolutionSet, compile_application, parse_json};
+use piqueld_core::{
+    ApplicationId, EnvironmentId, InstanceId, ResolutionSet, compile_application, parse_json,
+};
 
 fn manifest() -> serde_json::Value {
     serde_json::json!({
@@ -73,7 +75,8 @@ fn git_resolution_retains_commit_and_local_image_and_rejects_mismatched_inputs()
         },
     );
     let instance = InstanceId::parse("test").unwrap();
-    let resolved = compile_application(&app, instance.clone(), &resolutions).unwrap();
+    let environment = EnvironmentId::parse("example-id").unwrap();
+    let resolved = compile_application(&app, &environment, instance.clone(), &resolutions).unwrap();
     assert_eq!(resolved.services[0].image.as_str(), image_id.as_str());
     assert_eq!(resolved.reusable_resolutions(&app), resolutions);
     let mut changed = app.to_manifest();
@@ -86,7 +89,7 @@ fn git_resolution_retains_commit_and_local_image_and_rejects_mismatched_inputs()
     };
     repository.commit = Some("c".repeat(40));
     let changed = changed.validate().unwrap().normalize(app.id().clone());
-    assert!(compile_application(&changed, instance, &resolutions).is_err());
+    assert!(compile_application(&changed, &environment, instance, &resolutions).is_err());
     assert!(resolved.reusable_resolutions(&changed).sources.is_empty());
 }
 

@@ -3,51 +3,35 @@ use super::super::format::timestamp;
 use super::super::ui::{
     Icon, Modal, Tabs, Tone, badge, empty, icon, notice, operation_badge, when,
 };
-use super::{client_error_message, editor, mutation_client, transport_failure};
+use super::{client_error_message, editor};
 use crate::browser::Alive;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use leptos_router::NavigateOptions;
+use leptos_router::hooks::use_navigate;
 use piqueld_client::{ApplyApplicationRequest, Client, DeploymentView, Page, Rollout, Source};
 
-/// "Preview" and "Deploy" buttons for the saved configuration. Preview asks the
-/// daemon for a plan (cleared whenever the saved view changes); Deploy starts a
-/// deployment of the saved generation, retrying once on transport failure, then
-/// switches to the deployments tab.
+/// "Preview" and "Deploy" buttons for the saved configuration and the editor's
+/// target environment. Preview asks the daemon for a plan (cleared whenever the
+/// saved view or target changes); Deploy starts a deployment of the saved
+/// generation, then shows the environment's deployments. Without a single target
+/// (an application with several environments or none), Deploy opens the
+/// Environments tab to choose one.
 #[component]
 pub(super) fn DeploymentActions() -> impl IntoView {
     let context = editor();
     let preview = RwSignal::new(None::<piqueld_client::PlanView>);
+    let navigate = use_navigate();
     let deploy = move |_| {
-        context.set_error(None);
-        let client = match mutation_client() {
-            Ok(client) => client,
-            Err(error) => {
-                context.set_error(Some(error));
-                return;
+        let environment = context.environment_id();
+        let href = format!("{}?tab=deployments", context.environment_href(&environment));
+        let navigate = navigate.clone();
+        context.deploy(environment, move || {
+            if context.environment_page() {
+                context.tab.set("Deployments");
+            } else {
+                navigate(&href, NavigateOptions::default());
             }
-        };
-        let app = context.saved.get_untracked();
-        context.busy.set(true);
-        spawn_local(async move {
-            let mut result = client
-                .deploy_application(app.application.id().as_str(), app.generation, None)
-                .await;
-            if result.as_ref().is_err_and(transport_failure) {
-                result = client
-                    .deploy_application(app.application.id().as_str(), app.generation, None)
-                    .await;
-            }
-            match result {
-                Ok(_) => {
-                    context.tab.set("Deployments");
-                    context
-                        .notice
-                        .set("Deployment accepted. Follow its progress below.".into());
-                    context.dashboard.with_value(|d| d.refresh.run(()));
-                }
-                Err(error) => context.failure(&error),
-            }
-            context.busy.set(false);
         });
     };
     let inspect = move |_| {
@@ -57,10 +41,14 @@ pub(super) fn DeploymentActions() -> impl IntoView {
             expected_generation: Some(app.generation),
             expected_application_id: Some(app.application.id().to_string()),
         };
+        let environment = context.environment_id();
         context.busy.set(true);
         context.set_error(None);
         spawn_local(async move {
-            match Client::browser().plan_application(&request).await {
+            match Client::browser()
+                .plan_application(&request, Some(&environment))
+                .await
+            {
                 Ok(plan) => preview.set(Some(plan)),
                 Err(error) => context.set_error(Some(client_error_message(&error))),
             }
@@ -69,28 +57,50 @@ pub(super) fn DeploymentActions() -> impl IntoView {
     };
     Effect::new(move |_| {
         context.saved.track();
+        context.environment.track();
         preview.set(None);
     });
     view! {
-        <button
-            type="button"
-            class="btn"
-            disabled={move || context.action_blocked()}
-            on:click={inspect}
-            title="Show what deploying the saved configuration would change"
+        <Show
+            when={move || context.environment.get().is_some()}
+            fallback={move || {
+                view! {
+                    <button
+                        type="button"
+                        class="btn btn-primary"
+                        title="Choose an environment to deploy"
+                        on:click={move |_| context.tab.set("Environments")}
+                    >
+                        {icon(Icon::Rocket)}
+                        "Deploy…"
+                    </button>
+                }
+            }}
         >
-            {icon(Icon::Eye)}
-            "Preview"
-        </button>
-        <button
-            type="button"
-            class="btn btn-primary"
-            disabled={move || context.action_blocked()}
-            on:click={deploy}
-        >
-            {icon(Icon::Rocket)}
-            "Deploy"
-        </button>
+            <button
+                type="button"
+                class="btn"
+                disabled={move || context.environment_action_blocked()}
+                on:click={inspect}
+                title="Show what deploying the saved configuration would change"
+            >
+                {icon(Icon::Eye)}
+                "Preview"
+            </button>
+            <button
+                type="button"
+                class="btn btn-primary"
+                disabled={move || context.environment_action_blocked()}
+                on:click={deploy.clone()}
+            >
+                {icon(Icon::Rocket)}
+                {move || {
+                    context
+                        .selected_environment()
+                        .map_or_else(|| "Deploy".into(), |env| format!("Deploy to {}", env.name))
+                }}
+            </button>
+        </Show>
         <DeploymentPreview preview={preview} />
     }
 }
@@ -246,7 +256,7 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
     let cursor = RwSignal::new(None::<String>);
     let error = RwSignal::new(None::<String>);
     let loading = RwSignal::new(false);
-    let id = context.id();
+    let id = context.environment_id();
     context.poll_deployments(id.clone(), history, cursor, paginated, error, loading);
     let more = move |_| {
         let id = id.clone();
@@ -551,13 +561,13 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
         if loading.get_untracked() {
             return;
         }
-        let app_id = op.application_id.to_string();
+        let environment = op.environment_id.to_string();
         let deployment_id = op.id.clone();
         let active = active.clone();
         loading.set(true);
         spawn_local(async move {
             let result = Client::browser()
-                .deployment_attempts(&app_id, &deployment_id, next.as_deref())
+                .deployment_attempts(&environment, &deployment_id, next.as_deref())
                 .await;
             if !active.get() {
                 return;

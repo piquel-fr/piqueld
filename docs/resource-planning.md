@@ -23,7 +23,7 @@ piqueld owns and reports blocking ownership or immutable-configuration conflicts
 Foreign resources are never mutated.
 
 A deletion plan removes owned services and networks. Named volumes appear as
-informational retention actions and remain available after application deletion.
+informational retention actions and remain available after environment deletion.
 
 Plans describe current work and are safe to recompute. The controller executes
 an action and observes again; plans are not persisted as operation steps.

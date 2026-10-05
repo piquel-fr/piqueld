@@ -199,7 +199,7 @@ impl Ingress {
     ) -> Result<(
         RoutingTable,
         BTreeSet<String>,
-        BTreeMap<piqueld_core::ApplicationId, String>,
+        BTreeMap<piqueld_core::EnvironmentId, String>,
     )> {
         let mut table = desired.clone();
         let mut networks = BTreeSet::new();
@@ -214,7 +214,7 @@ impl Ingress {
                     networks.insert(name);
                 }
                 Err(error) => {
-                    tracing::error!(application_id=%id, network=%name, error=?error,
+                    tracing::error!(environment_id=%id, network=%name, error=?error,
                         "preserving accepted destinations; other applications can still update");
                     let mut accepted = self.store.applied_routes(id).await?;
                     accepted.retain(|old| routes.iter().any(|new| new.hostname == old.hostname));
@@ -230,7 +230,7 @@ impl Ingress {
     /// application on this instance, and is an attachable overlay.
     async fn check_ingress_network(
         &self,
-        id: &piqueld_core::ApplicationId,
+        id: &piqueld_core::EnvironmentId,
         name: &str,
     ) -> Result<()> {
         let network = self
@@ -427,7 +427,7 @@ impl Ingress {
                     .is_some_and(|container| container["State"]["Running"] == true),
                 "cannot replace gateway: retained routes for application {id} lack a verified network and the old gateway is not running"
             );
-            tracing::warn!(application_id=%id,
+            tracing::warn!(environment_id=%id,
                 "deferring gateway replacement until retained route networks are repaired or routes are withdrawn");
             return Ok(());
         }

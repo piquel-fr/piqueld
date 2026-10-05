@@ -1,20 +1,20 @@
 use super::{
     ApplicationState, Arc, CancellationToken, Controller, DockerApi, Duration, MAX_PAGE_SIZE,
-    Notify, OperationState, Plan, PlanRequest, StoreError, StoredApplication, blocked_plan_message,
+    Notify, OperationState, Plan, PlanRequest, StoreError, StoredEnvironment, blocked_plan_message,
 };
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::collections::{HashMap, HashSet};
 use tracing::Instrument;
 
 /// Result of a discovery pass: whether it was a full scan, and each selected
-/// application with the ID of its latest operation.
-type Discovered = (bool, Vec<(StoredApplication, String)>);
+/// environment with the ID of its latest operation.
+type Discovered = (bool, Vec<(StoredEnvironment, String)>);
 /// Application/diagnostic-code pairs already recorded during one discovery pass.
-type ScanFailures = Arc<tokio::sync::Mutex<HashSet<(piqueld_core::ApplicationId, String)>>>;
+type ScanFailures = Arc<tokio::sync::Mutex<HashSet<(piqueld_core::EnvironmentId, String)>>>;
 
 impl<D: DockerApi> Controller<D> {
-    /// One event loop polls application futures and discovery concurrently. No
-    /// application holds the loop while waiting for Docker, `SQLite`, or a timer.
+    /// One event loop polls environment futures and discovery concurrently. No
+    /// environment holds the loop while waiting for Docker, `SQLite`, or a timer.
     /// Failures are recorded inside each future, never in the loop body: a job
     /// suspended while holding the writer or a failure set must keep being polled.
     /// Process startup closes abandoned actions before any worker starts; this
@@ -63,13 +63,13 @@ impl<D: DockerApi> Controller<D> {
                             recovered=true;
                             let failures = ScanFailures::default();
                             for (application,operation_id) in applications {
-                                let id=application.application.id().clone();
+                                let id=application.id().clone();
                                 // Full scans refresh health, with at most one job per application.
                                 if full && health_active.insert(id.clone()) {
                                     let health_id=id.clone();
                                     let health_operation=operation_id.clone();
                                     let health_failures=Arc::clone(&failures);
-                                    let span = tracing::debug_span!("application_health", application_id = %id, operation_id = %operation_id, generation = application.generation);
+                                    let span = tracing::debug_span!("application_health", environment_id = %id, operation_id = %operation_id, generation = application.application.generation);
                                     health_jobs.push(async move {
                                         let result=async {
                                             self.maintain_active(&health_id,&health_operation).await?;
@@ -78,9 +78,9 @@ impl<D: DockerApi> Controller<D> {
                                         }.await;
                                         if let Err(error)=result {
                                             if let Err(report_error)=self.record_scan_diagnostic(&health_id,&error.diagnostic(),&health_failures).await {
-                                                tracing::error!(application_id=%health_id,error=?report_error,"health diagnostic could not be persisted");
+                                                tracing::error!(environment_id=%health_id,error=?report_error,"health diagnostic could not be persisted");
                                             }
-                                            tracing::warn!(application_id=%health_id,operation_id=%health_operation,generation=application.generation,%error,"health reporting failed");
+                                            tracing::warn!(environment_id=%health_id,operation_id=%health_operation,generation=application.application.generation,%error,"health reporting failed");
                                         }
                                         health_id
                                     }.instrument(span));
@@ -118,7 +118,7 @@ impl<D: DockerApi> Controller<D> {
     }
 
     /// Recovers interrupted work on the first pass, prunes history on full
-    /// scans, and finds applications to process. Failures are reported here.
+    /// scans, and finds environments to process. Failures are reported here.
     async fn discovery_pass(
         &self,
         recover: bool,
@@ -150,10 +150,10 @@ impl<D: DockerApi> Controller<D> {
         }
     }
 
-    /// Pages through all applications and selects those needing work. A full scan
-    /// selects every application with an operation; otherwise only requested,
+    /// Pages through all environments and selects those needing work. A full scan
+    /// selects every environment with an operation; otherwise only requested,
     /// cleanly running, or retry-due operations are selected.
-    async fn discover(&self, full: bool) -> Result<Vec<(StoredApplication, String)>, StoreError> {
+    async fn discover(&self, full: bool) -> Result<Vec<(StoredEnvironment, String)>, StoreError> {
         let mut cursor = None;
         let mut applications = Vec::new();
         loop {
@@ -161,7 +161,7 @@ impl<D: DockerApi> Controller<D> {
             for app in page.items {
                 if let Some(operation) = self
                     .store
-                    .latest_operation_for_application(app.application.id())
+                    .latest_operation_for_environment(app.id())
                     .await?
                     && (full
                         || operation.state == OperationState::Requested
@@ -181,7 +181,7 @@ impl<D: DockerApi> Controller<D> {
 
     /// Runs one concurrent observation/reconciliation pass, also used by runtime tests.
     /// # Errors
-    /// Returns a store error if applications cannot be discovered or processed.
+    /// Returns a store error if environments cannot be discovered or processed.
     pub async fn scan(&self, cancellation: &CancellationToken) -> Result<(), StoreError> {
         let applications = self.discover(true).await?;
         let mut jobs = FuturesUnordered::new();
@@ -245,23 +245,19 @@ impl<D: DockerApi> Controller<D> {
         )
     }
 
-    /// Retries pending cleanup before processing the application's latest
+    /// Retries pending cleanup before processing the environment's latest
     /// operation. Cleanup alone never reopens a terminal job failure. Normal
     /// execution still runs when due, enforcing its backoff and cleanup fence.
-    #[tracing::instrument(skip_all, fields(application_id = %application.application.id(), generation = application.generation))]
+    #[tracing::instrument(skip_all, fields(environment_id = %application.id(), generation = application.application.generation))]
     async fn scan_application(
         &self,
-        application: &StoredApplication,
+        application: &StoredEnvironment,
         cancellation: &CancellationToken,
         failures: &ScanFailures,
     ) -> Result<(), StoreError> {
-        if let Err(error) = self.retry_job_cleanup(application.application.id()).await {
-            self.record_scan_diagnostic(
-                application.application.id(),
-                &error.diagnostic(),
-                failures,
-            )
-            .await?;
+        if let Err(error) = self.retry_job_cleanup(application.id()).await {
+            self.record_scan_diagnostic(application.id(), &error.diagnostic(), failures)
+                .await?;
         }
         self.scan_latest_operation(application, cancellation, failures)
             .await
@@ -272,19 +268,19 @@ impl<D: DockerApi> Controller<D> {
     /// 1. Repairs drift in the active target while a newer target is unpromoted.
     /// 2. Runs requested, cleanly running, or retry-due operations.
     /// 3. Otherwise plans the latest target against fresh observations: blocked
-    ///    plans degrade the application, converged plans mark it ready, and drift
+    ///    plans degrade the environment, converged plans mark it ready, and drift
     ///    after success (or a cleared permanent blocker) reopens the operation.
     ///
     /// Observation failures are recorded as deduplicated diagnostics, not errors.
     async fn scan_latest_operation(
         &self,
-        application: &StoredApplication,
+        application: &StoredEnvironment,
         cancellation: &CancellationToken,
         failures: &ScanFailures,
     ) -> Result<(), StoreError> {
         let Some(latest) = self
             .store
-            .latest_operation_for_application(application.application.id())
+            .latest_operation_for_environment(application.id())
             .await?
         else {
             return Ok(());
@@ -304,12 +300,12 @@ impl<D: DockerApi> Controller<D> {
             };
             return Box::pin(self.run_operation(&operation, cancellation)).await;
         }
-        let application = self.store.get(application.application.id()).await?;
-        let observed = match self.docker.observe(application.application.id()).await {
+        let application = self.store.get(application.id()).await?;
+        let observed = match self.docker.observe(application.id()).await {
             Ok(observed) => observed,
             Err(error) => {
                 self.record_scan_diagnostic(
-                    application.application.id(),
+                    application.id(),
                     &super::OperationError::from(error).diagnostic(),
                     failures,
                 )
@@ -321,9 +317,9 @@ impl<D: DockerApi> Controller<D> {
         // authorize corrective work once newer intent has been accepted.
         let prepared = self.store.prepared_target(&latest.id).await?;
         let target = prepared.as_ref().or(application.resolved.as_ref());
-        let request = if application.delete_intent {
+        let request = if application.delete_intent() {
             PlanRequest::Delete {
-                application_id: application.application.id().clone(),
+                environment_id: application.id().clone(),
                 instance_id: piqueld_core::InstanceId::parse(self.store.instance_id())
                     .expect("valid store identity"),
             }
@@ -345,11 +341,11 @@ impl<D: DockerApi> Controller<D> {
                 .await?;
             return Ok(());
         }
-        if prepared.is_none() && !application.delete_intent {
+        if prepared.is_none() && !application.delete_intent() {
             return Ok(());
         }
         if !plan_requires_execution(&plan)
-            && !application.delete_intent
+            && !application.delete_intent()
             && !Self::failure_outlives_converged_plan(&latest)
         {
             self.store
@@ -375,7 +371,7 @@ impl<D: DockerApi> Controller<D> {
             }
             if let Some(operation) = self
                 .store
-                .request_reconcile(application.application.id(), &latest.id)
+                .request_reconcile(application.id(), &latest.id)
                 .await?
             {
                 Box::pin(self.run_operation(&operation, cancellation)).await?;
@@ -388,34 +384,27 @@ impl<D: DockerApi> Controller<D> {
     /// a failed repair never prevents the latest operation from executing.
     async fn repair_before_execution(
         &self,
-        application: &StoredApplication,
+        application: &StoredEnvironment,
         operation_id: &str,
         failures: &ScanFailures,
     ) -> Result<(), StoreError> {
-        if let Err(error) = self
-            .maintain_active(application.application.id(), operation_id)
-            .await
-        {
+        if let Err(error) = self.maintain_active(application.id(), operation_id).await {
             if let super::OperationError::Journal(error) = error {
                 return Err(error);
             }
-            self.record_scan_diagnostic(
-                application.application.id(),
-                &error.diagnostic(),
-                failures,
-            )
-            .await?;
+            self.record_scan_diagnostic(application.id(), &error.diagnostic(), failures)
+                .await?;
             tracing::warn!(%error,"active target repair failed");
         }
         Ok(())
     }
 
-    /// Records a diagnostic at most once per application and code within a pass.
+    /// Records a diagnostic at most once per environment and code within a pass.
     /// A health job and reconciliation can observe the same failure concurrently;
     /// the lock is held across the write so only one of them records it.
     async fn record_scan_diagnostic(
         &self,
-        application: &piqueld_core::ApplicationId,
+        application: &piqueld_core::EnvironmentId,
         diagnostic: &piqueld_core::observability::Diagnostic,
         failures: &ScanFailures,
     ) -> Result<(), StoreError> {
@@ -441,7 +430,7 @@ impl<D: DockerApi> Controller<D> {
     /// left to the deployment so repair cannot revert or remove them.
     async fn maintain_active(
         &self,
-        id: &piqueld_core::ApplicationId,
+        id: &piqueld_core::EnvironmentId,
         operation_id: &str,
     ) -> Result<(), super::OperationError> {
         let operation = self.store.operation(operation_id).await?;
@@ -470,7 +459,7 @@ impl<D: DockerApi> Controller<D> {
         let _guard = self.mutations.lock().await;
         if self
             .store
-            .latest_operation_for_application(id)
+            .latest_operation_for_environment(id)
             .await?
             .is_none_or(|op| op.id != operation_id)
             || self.store.is_promoted(operation_id).await?

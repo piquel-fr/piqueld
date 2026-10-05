@@ -27,8 +27,8 @@ use leptos_router::hooks::use_params_map;
 use leptos_router::path;
 use piqueld_client::system::ReadinessStatus;
 use piqueld_client::{
-    ApplicationDetailView, ApplicationStatusView, ApplicationSummary, Client, ClientError,
-    ListApplicationsOptions, Page, SystemStatus,
+    ApplicationSummary, Client, ClientError, EnvironmentDetailView, EnvironmentStatusView,
+    EnvironmentView, ListApplicationsOptions, Page, SystemStatus,
 };
 use std::sync::{
     Arc,
@@ -36,16 +36,47 @@ use std::sync::{
 };
 use web_sys::window as browser_window;
 
-/// One application in the dashboard list, with its status and deployment
-/// history fetched alongside; per-application failures are kept as messages
-/// so one broken application does not fail the whole refresh.
+/// One application in the dashboard list, with its environments' statuses and
+/// deployment history fetched alongside; per-application failures are kept as
+/// messages so one broken application does not fail the whole refresh.
 #[derive(Clone, Debug)]
 struct ApplicationRow {
     application: ApplicationSummary,
-    status: Option<ApplicationStatusView>,
-    status_error: Option<String>,
+    environments: Vec<EnvironmentRow>,
+    /// Deployments of every environment.
     deployments: Vec<piqueld_client::DeploymentView>,
     deployment_error: Option<String>,
+}
+
+/// One environment of a listed application with its status, or the reason it
+/// could not be read.
+#[derive(Clone, Debug)]
+struct EnvironmentRow {
+    environment: EnvironmentView,
+    status: Option<EnvironmentStatusView>,
+    status_error: Option<String>,
+}
+
+impl EnvironmentRow {
+    /// Health from the environment's status; missing or failed reads show as pending.
+    fn health(&self) -> ApplicationHealth {
+        match (&self.status, &self.status_error) {
+            (Some(status), None) => ApplicationHealth::from_server_state(status.state),
+            _ => ApplicationHealth::Pending,
+        }
+    }
+}
+
+impl ApplicationRow {
+    /// The first status message among the application's environments.
+    fn message(&self) -> Option<String> {
+        self.environments.iter().find_map(|row| {
+            row.status
+                .as_ref()
+                .and_then(|status| status.message.clone())
+                .map(|message| format!("{}: {message}", row.environment.name))
+        })
+    }
 }
 
 /// Everything one successful refresh loaded, applied to `DashboardSignals` at once.
@@ -77,7 +108,9 @@ struct DashboardSignals {
     readiness_error: RwSignal<Option<String>>,
     pagination_incomplete: RwSignal<bool>,
     selected_id: RwSignal<Option<String>>,
-    detail: RwSignal<Option<ApplicationDetailView>>,
+    /// Environment page being shown, from the route; `None` on application pages.
+    selected_environment: RwSignal<Option<String>>,
+    detail: RwSignal<Option<EnvironmentDetailView>>,
     detail_loading: RwSignal<bool>,
     detail_request: RwSignal<u64>,
     detail_error: RwSignal<Option<String>>,
@@ -97,6 +130,7 @@ impl DashboardSignals {
             readiness_error: RwSignal::new(None),
             pagination_incomplete: RwSignal::new(false),
             selected_id: RwSignal::new(None),
+            selected_environment: RwSignal::new(None),
             detail: RwSignal::new(None),
             detail_loading: RwSignal::new(false),
             detail_request: RwSignal::new(0),
@@ -169,6 +203,10 @@ fn App() -> impl IntoView {
                         path={path!("applications/:id/services/:service")}
                         view={ApplicationDetailPage}
                     />
+                    <Route
+                        path={path!("applications/:id/environments/:environment")}
+                        view={ApplicationDetailPage}
+                    />
                     <Route path={path!("*any")} view={NotFoundPage} />
                 </ParentRoute>
             </Routes>
@@ -228,9 +266,10 @@ fn dashboard_context() -> DashboardContext {
     use_context().expect("dashboard routes are descendants of DashboardLayout")
 }
 
-/// Route wrapper for `/applications/:id[/services/:service]`. Loads the selected
-/// application's detail into the shared signals when the ID changes, and keys
-/// `management::ApplicationPage` on the route so it remounts on navigation.
+/// Route wrapper for `/applications/:id[/services/:service|/environments/:environment]`.
+/// Loads the shown environment's detail into the shared signals when the route
+/// changes, and keys `management::ApplicationPage` on the route so it remounts
+/// on navigation.
 #[component]
 fn ApplicationDetailPage() -> impl IntoView {
     let context = dashboard_context();
@@ -239,16 +278,18 @@ fn ApplicationDetailPage() -> impl IntoView {
     let client = context.client.clone();
 
     Effect::new(move |_| {
-        let id = params.with(|params| params.get("id"));
+        let (id, environment) = params.with(|params| (params.get("id"), params.get("environment")));
         let Some(id) = id else {
             return;
         };
         if signals.selected_id.get_untracked().as_deref() == Some(id.as_str())
             && signals.detail.get_untracked().is_some()
+            && environment == signals.selected_environment.get_untracked()
         {
             return;
         }
         signals.selected_id.set(Some(id.clone()));
+        signals.selected_environment.set(environment);
         signals.detail.set(None);
         load_detail(client.clone(), signals, id);
     });
@@ -257,13 +298,25 @@ fn ApplicationDetailPage() -> impl IntoView {
         <For
             each={move || {
                 params
-                    .with(|p| p.get("id").map(|id| (id, p.get("service"))))
+                    .with(|p| {
+                        p.get("id")
+                            .map(|id| {
+                                let page = match (p.get("service"), p.get("environment")) {
+                                    (Some(service), _) => management::Page::Service(service),
+                                    (None, Some(environment)) => {
+                                        management::Page::Environment(environment)
+                                    }
+                                    (None, None) => management::Page::Application,
+                                };
+                                (id, page)
+                            })
+                    })
                     .into_iter()
                     .collect::<Vec<_>>()
             }}
             key={|route| route.clone()}
-            children={move |(id, service)| {
-                view! { <management::ApplicationPage id={id} service={service} /> }
+            children={move |(id, page)| {
+                view! { <management::ApplicationPage id={id} page={page} /> }
             }}
         />
     }
@@ -423,26 +476,60 @@ fn start_refresh(
     });
 }
 
-/// Fetches detail for application `id`, ignoring the response if a newer request
-/// started or the selection changed meanwhile.
+/// Fetches detail for the shown environment of application `id`: the route's
+/// environment, or on application pages its only environment. Ignores the
+/// response if a newer request started or the selection changed meanwhile.
 fn load_detail(client: Client, signals: DashboardSignals, id: String) {
     let request = signals.detail_request.get_untracked().wrapping_add(1);
     signals.detail_request.set(request);
     signals.detail_loading.set(true);
     signals.detail_error.set(None);
+    let selected = signals.selected_environment.get_untracked();
     spawn_local(async move {
-        let result = client.application_detail(&id).await;
+        let result = environment_detail(&client, &id, selected.as_deref()).await;
         if signals.detail_request.try_get_untracked() != Some(request)
             || signals.selected_id.get_untracked().as_deref() != Some(id.as_str())
         {
             return;
         }
         match result {
-            Ok(detail) => signals.detail.set(Some(detail)),
-            Err(error) => signals.detail_error.set(Some(client_error_message(&error))),
+            Ok(detail) => signals.detail.set(detail),
+            Err(error) => signals.detail_error.set(Some(error)),
         }
         signals.detail_loading.set(false);
     });
+}
+
+/// Loads the application, then the environment with the selected ID or, with
+/// no selection, its only environment. Applications with several environments
+/// (or none) have no environment detail of their own.
+async fn environment_detail(
+    client: &Client,
+    id: &str,
+    selected: Option<&str>,
+) -> Result<Option<EnvironmentDetailView>, String> {
+    let application = client
+        .application(id)
+        .await
+        .map_err(|error| client_error_message(&error))?;
+    // A selection that no longer exists is reported instead of silently
+    // replaced, so later actions never target another environment.
+    let environment = match selected {
+        Some(selected) => application
+            .environments
+            .iter()
+            .find(|environment| environment.id.as_str() == selected)
+            .ok_or_else(|| "This environment no longer exists.".to_owned())?,
+        None => match application.sole_environment() {
+            Ok(environment) => environment,
+            Err(_) => return Ok(None),
+        },
+    };
+    client
+        .environment_detail(environment.id.as_str())
+        .await
+        .map(Some)
+        .map_err(|error| client_error_message(&error))
 }
 
 /// Background loop that triggers a refresh after each `PollController` delay
@@ -467,7 +554,8 @@ fn spawn_poll_loop(
 }
 
 /// Loads system status, readiness and every application page (bounded by
-/// `MAX_PAGES`), fetching each application's status and deployments concurrently.
+/// `MAX_PAGES`), fetching each application's environment statuses and
+/// deployments concurrently.
 /// Only system status and listing failures abort; readiness and per-application
 /// errors are recorded in the snapshot.
 async fn fetch_snapshot(client: &Client) -> Result<DashboardSnapshot, LoadFailure> {
@@ -496,19 +584,28 @@ async fn fetch_snapshot(client: &Client) -> Result<DashboardSnapshot, LoadFailur
         let statuses = futures_util::stream::iter(page.items.into_iter().map(|application| {
             let client = client.clone();
             async move {
-                let id = application.id.to_string();
-                let (status, status_error) = match client.application_status(&id).await {
-                    Ok(status) => (Some(status), None),
-                    Err(error) => (None, Some(client_error_message(&error))),
-                };
-                let (deployments, deployment_error) = match client.deployments(&id, None).await {
-                    Ok(page) => (page.items, None),
-                    Err(error) => (Vec::new(), Some(client_error_message(&error))),
-                };
+                let mut environments = Vec::with_capacity(application.environments.len());
+                let mut deployments = Vec::new();
+                let mut deployment_error = None;
+                for environment in &application.environments {
+                    let id = environment.id.as_str();
+                    let (status, status_error) = match client.environment_status(id).await {
+                        Ok(status) => (Some(status), None),
+                        Err(error) => (None, Some(client_error_message(&error))),
+                    };
+                    match client.deployments(id, None).await {
+                        Ok(page) => deployments.extend(page.items),
+                        Err(error) => deployment_error = Some(client_error_message(&error)),
+                    }
+                    environments.push(EnvironmentRow {
+                        environment: environment.clone(),
+                        status,
+                        status_error,
+                    });
+                }
                 ApplicationRow {
                     application,
-                    status,
-                    status_error,
+                    environments,
                     deployments,
                     deployment_error,
                 }
@@ -571,16 +668,43 @@ fn connection_label(state: ConnectionState) -> &'static str {
     }
 }
 
-/// Health badge for a row; missing or failed status reads show as pending.
+/// Health badge for a row: the least healthy of its environments, or not
+/// deployed without any.
 fn row_health(row: &ApplicationRow) -> ApplicationHealth {
-    row.status_error.as_ref().map_or_else(
-        || {
-            row.status
-                .as_ref()
-                .map_or(ApplicationHealth::Pending, |status| {
-                    ApplicationHealth::from_server_state(status.state)
+    row.environments
+        .iter()
+        .map(EnvironmentRow::health)
+        .max_by_key(|health| health.severity())
+        .unwrap_or(ApplicationHealth::NotDeployed)
+}
+
+/// The listed row of an environment, for its health and status.
+fn environment_row(signals: DashboardSignals, environment: &str) -> Option<EnvironmentRow> {
+    signals.applications.with(|rows| {
+        rows.iter()
+            .flat_map(|row| &row.environments)
+            .find(|row| row.environment.id.as_str() == environment)
+            .cloned()
+    })
+}
+
+/// The application and dashboard address of an environment in the current
+/// listing, or `None` when it is not listed (for example after deletion).
+fn environment_link(signals: DashboardSignals, environment: &str) -> Option<(String, String)> {
+    signals.applications.with(|rows| {
+        rows.iter().find_map(|row| {
+            row.environments
+                .iter()
+                .find(|listed| listed.environment.id.as_str() == environment)
+                .map(|listed| {
+                    (
+                        format!("{}/{}", row.application.name, listed.environment.name),
+                        format!(
+                            "/dashboard/applications/{}/environments/{environment}",
+                            row.application.id
+                        ),
+                    )
                 })
-        },
-        |_| ApplicationHealth::Pending,
-    )
+        })
+    })
 }

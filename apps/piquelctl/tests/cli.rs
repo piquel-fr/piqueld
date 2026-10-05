@@ -413,7 +413,23 @@ fn app_view(id: &str, name: &str) -> Value {
                 "volumes": [{"name": "data"}]
             }
         },
-        "generation": 1, "resolved_generation": 1, "spec_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "generation": 1, "spec_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delete_intent": false,
+        "created_at_ms": 1,
+        "updated_at_ms": 1,
+        "environments": [environment(id, id, "production")]
+    })
+}
+
+/// An environment of application `application`; the `production` environment
+/// created with an application shares its ID.
+fn environment(application: &str, id: &str, name: &str) -> Value {
+    json!({
+        "id": id,
+        "application_id": application,
+        "name": name,
+        "source": "saved",
+        "resolved_generation": 1,
         "delete_intent": false,
         "created_at_ms": 1,
         "updated_at_ms": 1
@@ -425,10 +441,10 @@ fn app_summary(id: &str, name: &str) -> Value {
         "id": id,
         "name": name,
         "generation": 1,
-        "resolved_generation": 1,
         "delete_intent": false,
         "created_at_ms": 1,
-        "updated_at_ms": 1
+        "updated_at_ms": 1,
+        "environments": [environment(id, id, "production")]
     })
 }
 
@@ -439,7 +455,7 @@ fn page(items: Vec<Value>, next_cursor: Option<&str>) -> Value {
 
 fn status(id: &str, state: &str) -> Value {
     json!({
-        "application_id": id,
+        "environment_id": id,
         "state": state,
         "message": null,
         "updated_at_ms": 1
@@ -462,15 +478,28 @@ fn plan(id: &str) -> Value {
 fn accepted(id: &str) -> Value {
     json!({
         "generation": 1, "operation_id": "operation-01",
+        "environment_id": id
+    })
+}
+
+/// A saved configuration with an accepted deployment, as returned by apply.
+fn saved_deployment(id: &str) -> Value {
+    json!({
+        "generation": 1, "operation_id": "operation-01",
         "application_id": id
     })
+}
+
+/// An accepted application deletion with one environment.
+fn deleted(id: &str) -> Value {
+    json!({"application_id": id, "generation": 2, "operations": [accepted(id)]})
 }
 
 fn operation(state: &str) -> Value {
     let failed = state == "failed";
     json!({
         "id": "operation-01",
-        "application_id": "app-notes-01",
+        "environment_id": "app-notes-01",
         "kind": "apply", "generation": 1, "attempt": 1,
         "state": state,
         "error_code": if failed { json!("runtime_failed") } else { Value::Null },
@@ -530,10 +559,10 @@ fn list_paginates_and_includes_reconciliation_status() {
                     Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
                 }
             }
-            "/api/v1/applications/app-first-01/status" => {
+            "/api/v1/environments/app-first-01/status" => {
                 Reply::json(status("app-first-01", "ready"))
             }
-            "/api/v1/applications/app-notes-01/status" => {
+            "/api/v1/environments/app-notes-01/status" => {
                 Reply::json(status("app-notes-01", "degraded"))
             }
             path => panic!("unexpected path {path}"),
@@ -541,7 +570,10 @@ fn list_paginates_and_includes_reconciliation_status() {
         let output = run(&server, &["app", "list"]);
         let value = assert_json_success(&output);
         assert_eq!(value["items"].as_array().expect("items").len(), 2);
-        assert_eq!(value["items"][1]["status"]["state"], "degraded");
+        assert_eq!(
+            value["items"][1]["environments"][0]["status"]["state"],
+            "degraded"
+        );
         assert_eq!(output.stderr, b"");
         let _ = server.finish();
     }
@@ -578,7 +610,7 @@ fn repeated_pagination_cursor_is_rejected() {
 fn exec_cat(stdin: Stdio, input: &[u8]) -> (TestServer, Output) {
     let server = start_server(false, 2, |request| match request.path.as_str() {
         "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
-        "/api/v1/applications/app-notes-01/exec" => {
+        "/api/v1/environments/app-notes-01/exec" => {
             assert_eq!(request.method, "GET");
             assert_eq!(request.headers["upgrade"], "websocket");
             Reply::upgrade()
@@ -644,7 +676,7 @@ fn show_resolves_name_across_pages_and_id_directly() {
             Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
         }
         "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
-        "/api/v1/applications/app-notes-01/status" => Reply::json(status("app-notes-01", "ready")),
+        "/api/v1/environments/app-notes-01/status" => Reply::json(status("app-notes-01", "ready")),
         path => panic!("unexpected path {path}"),
     });
     let output = run(&first_server, &["app", "show", "notes"]);
@@ -657,12 +689,12 @@ fn show_resolves_name_across_pages_and_id_directly() {
 
     let second_server = start_server(false, 2, move |request| match request.path.as_str() {
         "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
-        "/api/v1/applications/app-notes-01/status" => Reply::json(status("app-notes-01", "ready")),
+        "/api/v1/environments/app-notes-01/status" => Reply::json(status("app-notes-01", "ready")),
         path => panic!("unexpected path {path}"),
     });
     let output = run(&second_server, &["app", "show", "app-notes-01"]);
     let value = assert_json_success(&output);
-    assert_eq!(value["status"]["state"], "ready");
+    assert_eq!(value["environments"][0]["status"]["state"], "ready");
     let _ = second_server.finish();
 }
 
@@ -684,7 +716,7 @@ fn apply_deploy_confirmation_and_transport_retry_are_exercised() {
                         request.headers.get("content-type"),
                         Some(&"application/toml".to_owned())
                     );
-                    Reply::accepted(accepted("app-notes-01"))
+                    Reply::accepted(saved_deployment("app-notes-01"))
                 }
             }
             path => panic!("unexpected path {path}"),
@@ -761,7 +793,9 @@ fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
     let manifest = write_manifest(&directory);
     let server = start_server(false, 3, move |request| match request.path.as_str() {
         "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
-        "/api/v1/applications/apply?deploy=true" => Reply::accepted(accepted("app-notes-01")),
+        "/api/v1/applications/apply?deploy=true" => {
+            Reply::accepted(saved_deployment("app-notes-01"))
+        }
         "/api/v1/operations/operation-01" => Reply::json(operation("failed")),
         path => panic!("unexpected path {path}"),
     });
@@ -792,6 +826,7 @@ fn human_plan_keeps_actions_and_diagnostics_when_configuration_matches_the_deplo
         let server = start_server(true, 1, move |_| {
             let mut preview = plan("app-notes-01");
             preview["identical"] = json!(identical);
+            preview["operation"] = operation("succeeded");
             if !identical {
                 preview["changes"] = json!([{
                     "field": "services.web.replicas",
@@ -846,10 +881,10 @@ fn partial_list_failures_preserve_results_and_context_in_all_modes() {
                     ],
                     None,
                 )),
-                "/api/v1/applications/app-first-01/status" => {
+                "/api/v1/environments/app-first-01/status" => {
                     Reply::json(status("app-first-01", "ready"))
                 }
-                "/api/v1/applications/app-notes-01/status" => Reply {
+                "/api/v1/environments/app-notes-01/status" => Reply {
                     content_type: "text/html",
                     body: b"<html>wrong service</html>".to_vec(),
                     ..Reply::json(Value::Null)
@@ -865,16 +900,22 @@ fn partial_list_failures_preserve_results_and_context_in_all_modes() {
             assert!(output.status.success());
             if json {
                 let value = assert_json_success(&output);
-                assert_eq!(value["items"][0]["status"]["state"], "ready");
-                assert!(value["items"][1]["status"].is_null());
+                assert_eq!(
+                    value["items"][0]["environments"][0]["status"]["state"],
+                    "ready"
+                );
+                assert!(value["items"][1]["environments"][0]["status"].is_null());
                 assert_eq!(value["items"][1]["application"]["name"], "notes");
             } else if quiet {
                 assert_eq!(output.stdout, b"");
             } else {
-                assert!(String::from_utf8_lossy(&output.stdout).contains("notes  unavailable"));
+                assert!(
+                    String::from_utf8_lossy(&output.stdout)
+                        .contains("notes  production unavailable")
+                );
             }
             let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(stderr.contains("Warning: notes: status unavailable"));
+            assert!(stderr.contains("Warning: notes/production: status unavailable"));
             assert!(stderr.contains("Endpoint:"));
             assert!(stderr.contains("Endpoint source: flag --url"));
             assert!(stderr.contains("Hint:"));
@@ -1011,7 +1052,9 @@ fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
     let manifest = write_manifest(&directory);
     let server = start_server(true, 3, move |request| match request.path.as_str() {
         "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
-        "/api/v1/applications/apply?deploy=true" => Reply::accepted(accepted("app-notes-01")),
+        "/api/v1/applications/apply?deploy=true" => {
+            Reply::accepted(saved_deployment("app-notes-01"))
+        }
         "/api/v1/operations/operation-01" => {
             let mut value = operation("failed");
             value["phase"] = json!("ensure_network");
@@ -1038,7 +1081,7 @@ fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
     assert!(stderr.contains("Resource: app-notes-network"));
     assert!(stderr.contains("Code: runtime_failed"));
     assert!(stderr.contains("Message: runtime reconciliation failed"));
-    assert!(stderr.contains("Hint: retry with `piquelctl app reconcile app-notes-01`"));
+    assert!(stderr.contains("Hint: retry with `piquelctl env reconcile <APP> app-notes-01`"));
     assert!(!stderr.contains("created_at_ms"));
     let _ = server.finish();
 }
@@ -1133,7 +1176,7 @@ fn delete_reports_named_volume_retention_and_operation_completion() {
             }
             "/api/v1/applications/app-notes-01?expected_generation=1" => {
                 deleting = true;
-                Reply::accepted(accepted("app-notes-01"))
+                Reply::accepted(deleted("app-notes-01"))
             }
             "/api/v1/applications/app-notes-01" => {
                 let mut reply = Reply::json(Value::Null);
@@ -1163,7 +1206,7 @@ fn delete_stops_on_failed_or_cancelled_operation() {
             }
             "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
             "/api/v1/applications/app-notes-01?expected_generation=1" => {
-                Reply::accepted(accepted("app-notes-01"))
+                Reply::accepted(deleted("app-notes-01"))
             }
             "/api/v1/operations/operation-01" => Reply::json(operation(state)),
             path => panic!("unexpected path {path}"),
@@ -1274,7 +1317,7 @@ fn ctrl_c_ends_a_pending_secret_read_from_stdin() {
     let (listed, secrets_listed) = mpsc::channel();
     let server = start_server(false, 2, move |request| match request.path.as_str() {
         "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
-        "/api/v1/applications/app-notes-01/secrets" => {
+        "/api/v1/environments/app-notes-01/secrets" => {
             listed.send(()).expect("test is waiting");
             Reply::json(json!([]))
         }
@@ -1415,7 +1458,7 @@ fn reconcile_and_deploy_retry_transport() {
             assert_eq!(
                 request.path,
                 format!(
-                    "/api/v1/applications/app-notes-01/{action}{}",
+                    "/api/v1/environments/app-notes-01/{action}{}",
                     if action == "deploy" {
                         "?expected_generation=1"
                     } else {
@@ -1451,10 +1494,10 @@ fn events_cli_reads_a_filtered_page() {
         assert_eq!(request.method, "GET");
         assert_eq!(
             request.path,
-            "/api/v1/events?application_id=app-notes-01&cursor=v1%3A7&limit=2"
+            "/api/v1/events?application_id=app-notes&cursor=v1%3A7&environment_id=app-notes-01&limit=2"
         );
         Reply::json(
-            json!({"items":[{"id":8,"application_id":"app-notes-01","operation_id":"operation-01","generation":1,"attempt":2,"kind":"operation_succeeded","message":null,"error_code":null,"phase":null,"resource":null,"created_at_ms":123}],"next_cursor":null}),
+            json!({"items":[{"id":8,"environment_id":"app-notes-01","operation_id":"operation-01","generation":1,"attempt":2,"kind":"operation_succeeded","message":null,"error_code":null,"phase":null,"resource":null,"created_at_ms":123}],"next_cursor":null}),
         )
     });
     let output = run(
@@ -1462,6 +1505,8 @@ fn events_cli_reads_a_filtered_page() {
         &[
             "events",
             "--application",
+            "app-notes",
+            "--environment",
             "app-notes-01",
             "--cursor",
             "v1:7",
@@ -1617,7 +1662,7 @@ fn force_does_not_skip_confirmation_and_explicit_force_is_sent_to_the_endpoint()
             if mutations == 1 {
                 Reply::dropped()
             } else {
-                Reply::accepted(accepted("app-notes-01"))
+                Reply::accepted(saved_deployment("app-notes-01"))
             }
         });
         let mut args = vec![
@@ -1655,7 +1700,9 @@ fn apply_returns_superseded_success_without_following_the_replacement() {
     let manifest = write_manifest(&directory);
     let server = start_server(false, 3, |request| match request.path.as_str() {
         "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
-        "/api/v1/applications/apply?deploy=true" => Reply::accepted(accepted("app-notes-01")),
+        "/api/v1/applications/apply?deploy=true" => {
+            Reply::accepted(saved_deployment("app-notes-01"))
+        }
         "/api/v1/operations/operation-01" => Reply::json(operation("superseded")),
         _ => panic!("unexpected request {}", request.path),
     });
@@ -2070,7 +2117,7 @@ fn secret_key_recovery_requires_confirmation() {
         assert_eq!(request.method, "POST");
         assert_eq!(request.path, "/api/v1/system/secrets/recover-key");
         Reply::json(json!({
-            "affected_applications": 2,
+            "affected_environments": 2,
             "affected_secrets": 3,
             "discarded_versions": 4,
         }))
@@ -2084,10 +2131,190 @@ fn secret_key_recovery_requires_confirmation() {
         String::from_utf8_lossy(&recovery.stderr)
     );
     assert!(String::from_utf8_lossy(&recovery.stdout).contains("4 values discarded"));
-    assert!(String::from_utf8_lossy(&recovery.stderr).contains("ALL applications"));
+    assert!(String::from_utf8_lossy(&recovery.stderr).contains("ALL environments"));
     assert_eq!(
         server.finish().len(),
         1,
         "unconfirmed recovery must not reach the server"
     );
+}
+
+/// An application with `production` and `staging` environments.
+fn two_environment_view() -> Value {
+    let mut view = app_view("app-notes-01", "notes");
+    view["environments"]
+        .as_array_mut()
+        .expect("environments")
+        .push(environment("app-notes-01", "env-staging-01", "staging"));
+    view
+}
+
+#[test]
+fn runtime_app_commands_never_pick_one_of_several_environments() {
+    for action in ["deploy", "reconcile", "logs"] {
+        let server = start_server(false, 1, move |request| match request.path.as_str() {
+            "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
+            path => panic!("unexpected path {path}"),
+        });
+        let mut args = vec!["app", action, "app-notes-01"];
+        if action != "logs" {
+            args.push("--yes");
+        }
+        let output = run(&server, &args);
+        assert_eq!(output.status.code(), Some(2));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("environment required"), "{stderr}");
+        assert!(stderr.contains("production, staging"), "{stderr}");
+        assert_eq!(server.finish().len(), 1, "no mutation was sent");
+    }
+}
+
+#[test]
+fn env_commands_target_the_named_environment() {
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
+        "/api/v1/environments/env-staging-01/deploy?expected_generation=1" => {
+            assert_eq!(request.method, "POST");
+            Reply::accepted(accepted("env-staging-01"))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(
+        &server,
+        &[
+            "env",
+            "deploy",
+            "app-notes-01",
+            "staging",
+            "--yes",
+            "--no-wait",
+        ],
+    );
+    assert_eq!(
+        assert_json_success(&output)["environment_id"],
+        "env-staging-01"
+    );
+    let _ = server.finish();
+
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
+        "/api/v1/applications/app-notes-01/environments" => {
+            assert_eq!(request.method, "POST");
+            let body: Value = serde_json::from_slice(&request.body).expect("JSON body");
+            assert_eq!(body, json!({"name": "staging", "expected_generation": 1}));
+            Reply::json(environment("app-notes-01", "env-staging-01", "staging"))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(
+        &server,
+        &["env", "create", "app-notes-01", "staging", "--yes"],
+    );
+    assert_eq!(assert_json_success(&output)["name"], "staging");
+    let _ = server.finish();
+}
+
+#[test]
+fn deleting_an_application_with_several_environments_names_every_one() {
+    let server = start_server(false, 1, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(&server, &["app", "delete", "app-notes-01", "--yes"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--environments production,staging"));
+    assert_eq!(server.finish().len(), 1, "no deletion was sent");
+
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
+        "/api/v1/applications/app-notes-01?environments=staging%2Cproduction&expected_generation=1" =>
+        {
+            assert_eq!(request.method, "DELETE");
+            Reply::accepted(deleted("app-notes-01"))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(
+        &server,
+        &[
+            "app",
+            "delete",
+            "app-notes-01",
+            "--environments",
+            "staging,production",
+            "--yes",
+            "--no-wait",
+        ],
+    );
+    assert_eq!(assert_json_success(&output)["volumes_retained"], true);
+    let _ = server.finish();
+}
+
+#[test]
+fn stable_ids_select_environments_before_names_that_look_like_them() {
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => {
+            let mut view = app_view("app-notes-01", "notes");
+            // Name order lists the impostor named like production's ID first.
+            view["environments"]
+                .as_array_mut()
+                .expect("environments")
+                .insert(
+                    0,
+                    environment("app-notes-01", "env-impostor-01", "app-notes-01"),
+                );
+            Reply::json(view)
+        }
+        "/api/v1/environments/app-notes-01?expected_generation=1" => {
+            assert_eq!(request.method, "DELETE");
+            Reply::accepted(accepted("app-notes-01"))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(
+        &server,
+        &[
+            "env",
+            "delete",
+            "app-notes-01",
+            "app-notes-01",
+            "--yes",
+            "--no-wait",
+        ],
+    );
+    assert_eq!(
+        assert_json_success(&output)["accepted"]["environment_id"],
+        "app-notes-01"
+    );
+    let _ = server.finish();
+}
+
+#[test]
+fn plan_compares_with_the_named_environment() {
+    let directory = tempdir().expect("manifest directory");
+    let manifest = write_manifest(&directory);
+    let server = start_server(false, 3, move |request| match request.path.as_str() {
+        "/api/v1/applications?limit=100" => {
+            Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
+        }
+        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
+        "/api/v1/applications/plan?environment=env-staging-01" => Reply::json(plan("app-notes-01")),
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(
+        &server,
+        &[
+            "app",
+            "plan",
+            "--file",
+            manifest.to_str().expect("manifest path"),
+            "--env",
+            "staging",
+        ],
+    );
+    assert_eq!(
+        assert_json_success(&output)["application_id"],
+        "app-notes-01"
+    );
+    let _ = server.finish();
 }

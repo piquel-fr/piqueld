@@ -1,5 +1,5 @@
 //! Persist intent before a runtime request and record its observed outcome afterward.
-use super::{ApplicationId, Store, StoreError, new_id, now_ms};
+use super::{EnvironmentId, Store, StoreError, new_id, now_ms};
 use piqueld_core::observability::{Diagnostic, DiagnosticCode, EventScope};
 use sqlx::{Sqlite, Transaction};
 
@@ -12,7 +12,7 @@ use sqlx::{Sqlite, Transaction};
 pub(crate) struct JournalAction {
     pub(crate) id: String,
     operation_id: Option<String>,
-    application_id: Option<String>,
+    environment_id: Option<String>,
     generation: Option<i64>,
     phase: String,
     resource: Option<String>,
@@ -21,7 +21,7 @@ pub(crate) struct JournalAction {
 }
 impl Store {
     /// Journals a runtime request before it is made, optionally under an
-    /// operation whose application, generation, and attempt are copied onto the
+    /// operation whose environment, generation, and attempt are copied onto the
     /// action. Without an operation the action is daemon-scoped.
     pub(crate) async fn begin_action(
         &self,
@@ -37,7 +37,7 @@ impl Store {
         let action = JournalAction {
             id: new_id("action"),
             operation_id: operation.map(str::to_owned),
-            application_id: op.as_ref().map(|o| o.application_id.to_string()),
+            environment_id: op.as_ref().map(|o| o.environment_id.to_string()),
             generation: op
                 .as_ref()
                 .map(|o| i64::try_from(o.generation))
@@ -56,10 +56,10 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)?;
         Ok(action)
     }
-    /// Journals an application-owned runtime request made outside any operation.
+    /// Journals an environment-owned runtime request made outside any operation.
     pub(crate) async fn begin_application_action(
         &self,
-        application: &ApplicationId,
+        application: &EnvironmentId,
         phase: &str,
         resource: Option<&str>,
     ) -> Result<JournalAction, StoreError> {
@@ -67,7 +67,7 @@ impl Store {
         let action = JournalAction {
             id: new_id("action"),
             operation_id: None,
-            application_id: Some(application.to_string()),
+            environment_id: Some(application.to_string()),
             generation: None,
             phase: phase.to_owned(),
             resource: resource.map(str::to_owned),
@@ -84,11 +84,11 @@ impl Store {
         action: &JournalAction,
     ) -> Result<(), StoreError> {
         sqlx::query!(
-            "INSERT INTO active_actions(id,operation_id,application_id,generation,phase,resource,attempt,started_at_ms)
+            "INSERT INTO active_actions(id,operation_id,environment_id,generation,phase,resource,attempt,started_at_ms)
             VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             action.id,
             action.operation_id,
-            action.application_id,
+            action.environment_id,
             action.generation,
             action.phase,
             action.resource,
@@ -221,7 +221,7 @@ impl Store {
         message: Option<&str>,
     ) -> Result<(), StoreError> {
         let diagnostic = diagnostic.cloned().map(|mut d| {
-            if action.application_id.is_none() {
+            if action.environment_id.is_none() {
                 d.scope = EventScope::Daemon;
             }
             d
@@ -232,7 +232,7 @@ impl Store {
             .then_some(now.saturating_sub(action.started_at_ms));
         let scope = diagnostic
             .map_or(
-                if action.application_id.is_some() {
+                if action.environment_id.is_some() {
                     EventScope::Application
                 } else {
                     EventScope::Daemon
@@ -248,10 +248,10 @@ impl Store {
             .transpose()
             .map_err(StoreError::corrupt)?;
         sqlx::query!(
-            "INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,error_code,phase,
-            resource,created_at_ms,scope,action_id,retry,duration_ms,diagnostic_id,diagnostic_json)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
-            action.application_id,
+            "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,
+            error_code,phase,resource,created_at_ms,scope,action_id,retry,duration_ms,diagnostic_id,
+            diagnostic_json) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            action.environment_id,
             action.operation_id,
             action.generation,
             action.attempt,
@@ -283,10 +283,11 @@ impl Store {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_ms();
         sqlx::query!(
-            "INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,phase,resource,created_at_ms,
-            scope,action_id,retry) SELECT application_id,operation_id,generation,attempt,'action_outcome_unknown',
+            "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,phase,
+            resource,created_at_ms,scope,action_id,retry) SELECT (SELECT application_id FROM environments WHERE id=active_actions.environment_id),
+            environment_id,operation_id,generation,attempt,'action_outcome_unknown',
             'Execution was interrupted before its result was committed; reconciliation will inspect current runtime state',
-            phase,resource,?1,CASE WHEN application_id IS NULL THEN 'daemon' ELSE 'application' END,
+            phase,resource,?1,CASE WHEN environment_id IS NULL THEN 'daemon' ELSE 'application' END,
             id,retry
             FROM active_actions
             WHERE ?2 IS NULL OR operation_id=?2",

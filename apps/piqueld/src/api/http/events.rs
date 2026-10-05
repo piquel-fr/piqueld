@@ -19,8 +19,10 @@ use serde::Deserialize;
 #[serde(default, deny_unknown_fields)]
 #[into_params(parameter_in=Query)]
 pub(super) struct EventQuery {
-    /// Only include events about this application.
+    /// Only include events of this application and all its environments.
     application_id: Option<String>,
+    /// Only include events about this environment.
+    environment_id: Option<String>,
     /// Only include events of this operation.
     operation_id: Option<String>,
     /// Only include events of this operation attempt.
@@ -33,7 +35,7 @@ pub(super) struct EventQuery {
     error_code: Option<String>,
     /// Only include diagnostic (failure) events.
     errors_only: Option<bool>,
-    /// Only include application-owned or daemon-owned history.
+    /// Only include environment-owned or daemon-owned history.
     scope: Option<EventScope>,
     /// Inclusive Unix millisecond lower bound.
     since_ms: Option<i64>,
@@ -53,6 +55,7 @@ impl EventQuery {
     fn filter(&self) -> EventFilter {
         EventFilter {
             application_id: self.application_id.clone(),
+            environment_id: self.environment_id.clone(),
             operation_id: self.operation_id.clone(),
             attempt: self.attempt,
             action_id: self.action_id.clone(),

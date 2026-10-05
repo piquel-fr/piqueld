@@ -23,7 +23,7 @@ async fn sqlx_applies_migrations_and_preserves_instance_identity() {
     .fetch_one(&mut connection)
     .await
     .unwrap();
-    assert_eq!(table_count, 33);
+    assert_eq!(table_count, 34);
 
     let schema_version: i64 = sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(&mut connection)
@@ -88,7 +88,7 @@ async fn upgrades_legacy_configuration_to_latest_recoverable_deployment() {
         snapshots,
         vec![("op-second".into(), manifest_json, 2, None)]
     );
-    let state: String = sqlx::query_scalar("SELECT state FROM application_status")
+    let state: String = sqlx::query_scalar("SELECT state FROM environment_status")
         .fetch_one(&mut connection)
         .await
         .unwrap();
@@ -100,8 +100,9 @@ async fn upgrades_legacy_configuration_to_latest_recoverable_deployment() {
     assert!(violations.is_empty());
     for query in [
         "SELECT COUNT(*) FROM applications WHERE id='app-deleted'",
-        "SELECT COUNT(*) FROM operations WHERE application_id='app-deleted'",
-        "SELECT COUNT(*) FROM events WHERE application_id='app-deleted'",
+        "SELECT COUNT(*) FROM environments WHERE id='app-deleted'",
+        "SELECT COUNT(*) FROM operations WHERE environment_id='app-deleted'",
+        "SELECT COUNT(*) FROM events WHERE environment_id='app-deleted'",
         "SELECT COUNT(*) FROM request_receipts WHERE request_id='delete-key'",
     ] {
         let count: i64 = sqlx::query_scalar(query)
@@ -111,7 +112,7 @@ async fn upgrades_legacy_configuration_to_latest_recoverable_deployment() {
         assert_eq!(count, 0, "{query}");
     }
     let retained: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE application_id='app-legacy'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE environment_id='app-legacy'")
             .fetch_one(&mut connection)
             .await
             .unwrap();

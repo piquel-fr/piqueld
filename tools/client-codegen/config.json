@@ -6,9 +6,9 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::AcceptedOperation>"
     },
     {
-      "schema": "Envelope_ApplicationDetailView",
-      "name": "EnvelopeApplicationDetailView",
-      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::ApplicationDetailView>"
+      "schema": "Envelope_EnvironmentDetailView",
+      "name": "EnvelopeEnvironmentDetailView",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::EnvironmentDetailView>"
     },
     {
       "schema": "Envelope_ApplicationLogs",
@@ -16,14 +16,24 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::ApplicationLogs>"
     },
     {
-      "schema": "Envelope_ApplicationStatusView",
-      "name": "EnvelopeApplicationStatusView",
-      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::ApplicationStatusView>"
+      "schema": "Envelope_EnvironmentStatusView",
+      "name": "EnvelopeEnvironmentStatusView",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::EnvironmentStatusView>"
     },
     {
       "schema": "Envelope_ApplicationView",
       "name": "EnvelopeApplicationView",
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::ApplicationView>"
+    },
+    {
+      "schema": "Envelope_DeletedApplication",
+      "name": "EnvelopeDeletedApplication",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::DeletedApplication>"
+    },
+    {
+      "schema": "Envelope_EnvironmentView",
+      "name": "EnvelopeEnvironmentView",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::EnvironmentView>"
     },
     {
       "schema": "Envelope_BuildLogPage",
@@ -114,6 +124,11 @@
       "schema": "RenameApplicationRequest",
       "name": "RenameApplicationRequest",
       "rustType": "piqueld_core::api::RenameApplicationRequest"
+    },
+    {
+      "schema": "EnvironmentRequest",
+      "name": "EnvironmentRequest",
+      "rustType": "piqueld_core::api::EnvironmentRequest"
     },
     {
       "schema": "LogStream",

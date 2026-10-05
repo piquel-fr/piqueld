@@ -5,7 +5,7 @@ use crate::resource::{
     Convergence, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
     ResolutionRequirement, ResolvedApplication,
 };
-use crate::{ApplicationId, InstanceId};
+use crate::{EnvironmentId, InstanceId};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -27,7 +27,7 @@ pub enum PlanRequest {
     /// Remove runtime resources for an application while retaining volumes.
     Delete {
         /// Application whose runtime resources are removed.
-        application_id: ApplicationId,
+        environment_id: EnvironmentId,
         /// Control-plane instance that owns the resources.
         instance_id: InstanceId,
     },
@@ -366,9 +366,9 @@ impl Plan {
         let mut plan = match request {
             PlanRequest::Reconcile { desired } => Self::reconcile(desired, observed),
             PlanRequest::Delete {
-                application_id,
+                environment_id,
                 instance_id,
-            } => Self::deletion(application_id, instance_id, observed),
+            } => Self::deletion(environment_id, instance_id, observed),
             PlanRequest::Preview {
                 unresolved,
                 desired,
@@ -877,7 +877,7 @@ impl Plan {
     /// then remove owned networks, and retain owned volumes. Any unowned
     /// observed resource is a blocking collision rather than being ignored.
     fn deletion(
-        application_id: &ApplicationId,
+        environment_id: &EnvironmentId,
         instance_id: &InstanceId,
         observed: &ObservedApplication,
     ) -> Self {
@@ -885,7 +885,7 @@ impl Plan {
         let mut waits = Vec::new();
         let mut collisions = BTreeSet::new();
         for service in sorted_by_name(&observed.services, |service| &service.name) {
-            if service.is_owned_by(instance_id, application_id) {
+            if service.is_owned_by(instance_id, environment_id) {
                 plan.actions.push(PlanAction::new(
                     ActionKind::RemoveService {
                         name: service.name.clone(),
@@ -899,7 +899,7 @@ impl Plan {
         }
         plan.actions.append(&mut waits);
         for network in sorted_by_name(&observed.networks, |network| &network.name) {
-            if network.is_owned_by(instance_id, application_id) {
+            if network.is_owned_by(instance_id, environment_id) {
                 plan.actions.push(PlanAction::new(
                     ActionKind::RemoveNetwork {
                         name: network.name.clone(),
@@ -911,7 +911,7 @@ impl Plan {
             }
         }
         for volume in sorted_by_name(&observed.volumes, |volume| &volume.name) {
-            if volume.is_owned_by(instance_id, application_id) {
+            if volume.is_owned_by(instance_id, environment_id) {
                 plan.actions.push(PlanAction::new(
                     ActionKind::RetainVolume {
                         name: volume.name.clone(),

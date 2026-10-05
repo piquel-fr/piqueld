@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::manifest::{ApplicationManifest, RolloutOrder, RolloutOrderSource};
-use crate::{ApplicationState, Convergence, NormalizedApplication, Operation, Plan};
+use crate::{
+    ApplicationId, ApplicationState, Convergence, EnvironmentId, EnvironmentName,
+    EnvironmentSource, NormalizedApplication, Operation, Plan,
+};
 
 /// Versioned prefix used by all API endpoints.
 pub const API_PREFIX: &str = "/api/v1";
@@ -47,12 +50,88 @@ pub struct ErrorBody {
 /// Metadata returned when listing applications.
 pub struct ApplicationSummary {
     /// Stable application identifier.
-    pub id: crate::ApplicationId,
+    pub id: ApplicationId,
     /// Editable application name.
     pub name: String,
     /// Current manifest or deletion-intent revision.
     pub generation: u64,
-    /// Revision of the last completely resolved target, not a convergence guarantee.
+    /// Whether deletion has been requested.
+    pub delete_intent: bool,
+    /// Creation timestamp in Unix milliseconds.
+    pub created_at_ms: i64,
+    /// Last update timestamp in Unix milliseconds.
+    pub updated_at_ms: i64,
+    /// Environments in name order.
+    pub environments: Vec<EnvironmentView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Public application state returned by the API.
+pub struct ApplicationView {
+    /// Normalized application manifest, shared by every environment.
+    pub application: NormalizedApplication,
+    /// Current manifest or deletion-intent revision.
+    pub generation: u64,
+    /// Hash of the normalized desired specification.
+    pub spec_hash: String,
+    /// Whether deletion has been requested.
+    pub delete_intent: bool,
+    /// Creation timestamp in Unix milliseconds.
+    pub created_at_ms: i64,
+    /// Last update timestamp in Unix milliseconds.
+    pub updated_at_ms: i64,
+    /// Environments in name order.
+    pub environments: Vec<EnvironmentView>,
+}
+
+impl ApplicationView {
+    /// Selects the environment runtime commands use when none is named: the
+    /// application's only environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns the environment names when there is not exactly one, so callers
+    /// never pick an environment silently.
+    pub fn sole_environment(&self) -> Result<&EnvironmentView, Vec<EnvironmentName>> {
+        match self.environments.as_slice() {
+            [environment] => Ok(environment),
+            environments => Err(environments
+                .iter()
+                .map(|environment| environment.name.clone())
+                .collect()),
+        }
+    }
+
+    /// Finds an environment by stable ID, then by name. IDs win because a name
+    /// can equal another environment's ID.
+    #[must_use]
+    pub fn environment(&self, id_or_name: &str) -> Option<&EnvironmentView> {
+        let environments = &self.environments;
+        environments
+            .iter()
+            .find(|environment| environment.id.as_str() == id_or_name)
+            .or_else(|| {
+                environments
+                    .iter()
+                    .find(|environment| environment.name.as_str() == id_or_name)
+            })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+/// A deployable unit of an application, with its own deployment history,
+/// status, volumes, generated secrets, routes, and Docker network.
+pub struct EnvironmentView {
+    /// Stable environment identifier; runtime names derive from it.
+    pub id: EnvironmentId,
+    /// Owning application.
+    pub application_id: ApplicationId,
+    /// Name, unique within the application.
+    pub name: EnvironmentName,
+    /// Where deployments come from.
+    pub source: EnvironmentSource,
+    /// Application revision of the last completely resolved target, not a
+    /// convergence guarantee.
     pub resolved_generation: Option<u64>,
     /// Whether deletion has been requested.
     pub delete_intent: bool,
@@ -62,23 +141,14 @@ pub struct ApplicationSummary {
     pub updated_at_ms: i64,
 }
 
+/// Creates or renames an environment, conditioned on the inspected application revision.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-/// Public application state returned by the API.
-pub struct ApplicationView {
-    /// Normalized application manifest.
-    pub application: NormalizedApplication,
-    /// Current manifest or deletion-intent revision.
-    pub generation: u64,
-    /// Revision of the last completely resolved target, not a convergence guarantee.
-    pub resolved_generation: Option<u64>,
-    /// Hash of the normalized desired specification.
-    pub spec_hash: String,
-    /// Whether deletion has been requested.
-    pub delete_intent: bool,
-    /// Creation timestamp in Unix milliseconds.
-    pub created_at_ms: i64,
-    /// Last update timestamp in Unix milliseconds.
-    pub updated_at_ms: i64,
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentRequest {
+    /// Environment name, unique within the application.
+    pub name: String,
+    /// Current application revision, required unless explicitly forced.
+    pub expected_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -96,12 +166,14 @@ pub struct ApplyApplicationRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-/// Operation accepted by an application mutation endpoint.
+/// Operation accepted by a mutation endpoint.
 pub struct AcceptedOperation {
     /// Asynchronous operation identifier.
     pub operation_id: String,
-    /// Stable application identifier.
-    pub application_id: String,
+    /// Environment the operation changes. Receipts stored before environments
+    /// existed name it `application_id`.
+    #[serde(alias = "application_id")]
+    pub environment_id: String,
     /// Accepted intent revision.
     pub generation: u64,
 }
@@ -113,13 +185,16 @@ pub struct PlanView {
     pub application_id: String,
     /// Current intent revision; zero means the name is absent.
     pub generation: u64,
-    /// Whether this specification matches the latest deployment snapshot.
+    /// Whether this specification matches the baseline: the latest deployment
+    /// snapshot of the selected environment (by default the application's only
+    /// one), or the saved configuration when none is selected and it has several.
     pub identical: bool,
-    /// Latest operation at the time of comparison.
+    /// Latest operation of the selected environment at the time of comparison.
     pub operation: Option<Operation>,
-    /// Safe changes relative to the latest deployment snapshot.
+    /// Safe changes relative to the baseline.
     pub changes: Vec<ManifestChange>,
-    /// Ordered runtime plan; unresolved images are explicit actions.
+    /// Ordered runtime plan for the selected environment; unresolved images are
+    /// explicit actions. Empty when no environment is selected.
     pub plan: Plan,
     /// Effective rollout of each service, sorted by service name.
     pub rollouts: Vec<ServiceRolloutView>,
@@ -139,10 +214,10 @@ pub struct ServiceRolloutView {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-/// Current application reconciliation status.
-pub struct ApplicationStatusView {
-    /// Stable application identifier.
-    pub application_id: String,
+/// Current environment reconciliation status.
+pub struct EnvironmentStatusView {
+    /// Stable environment identifier.
+    pub environment_id: String,
     /// Machine-readable lifecycle state.
     pub state: ApplicationState,
     /// Observed runtime health, independent of operation progress.
@@ -182,7 +257,7 @@ pub struct ObservedServiceView {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
-/// Bounded observed runtime state for one application.
+/// Bounded observed runtime state for one environment.
 pub struct ObservedApplicationView {
     /// Observed services in desired service order.
     pub services: Vec<ObservedServiceView>,
@@ -193,12 +268,14 @@ pub struct ObservedApplicationView {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-/// Read-only application detail composed at the API boundary.
-pub struct ApplicationDetailView {
-    /// Desired application.
+/// Read-only environment detail composed at the API boundary.
+pub struct EnvironmentDetailView {
+    /// The environment.
+    pub environment: EnvironmentView,
+    /// Its application and shared desired configuration.
     pub application: ApplicationView,
-    /// Durable application lifecycle status.
-    pub status: ApplicationStatusView,
+    /// Durable environment lifecycle status.
+    pub status: EnvironmentStatusView,
     /// Sanitized runtime observation.
     pub observed: ObservedApplicationView,
     /// Most recent durable operation, when one exists.
@@ -260,10 +337,21 @@ impl From<&Operation> for AcceptedOperation {
     fn from(operation: &Operation) -> Self {
         Self {
             operation_id: operation.id.clone(),
-            application_id: operation.application_id.to_string(),
+            environment_id: operation.environment_id.to_string(),
             generation: operation.generation,
         }
     }
+}
+
+/// Accepted application deletion: one delete operation per environment.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct DeletedApplication {
+    /// Stable application identity.
+    pub application_id: String,
+    /// Revision after requesting deletion.
+    pub generation: u64,
+    /// Deletion of each environment; the application disappears with the last one.
+    pub operations: Vec<AcceptedOperation>,
 }
 
 /// Saved application configuration, optionally accompanied by a deployment.
@@ -431,8 +519,8 @@ pub struct ReadinessStatus {
 pub struct BuildRecord {
     /// Monotonic build identifier.
     pub id: i64,
-    /// Owning application ID.
-    pub application_id: String,
+    /// Owning environment ID.
+    pub environment_id: String,
     /// Source operation ID, retained even after operation pruning.
     pub operation_id: String,
     /// Logical service name; for job runs, the service whose container the job reuses.
@@ -524,7 +612,7 @@ mod log_tests {
 /// Metadata only: secret values are never returned.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct SecretMetadata {
-    /// Application-scoped logical name.
+    /// Environment-scoped logical name.
     pub name: String,
     /// Current version, used for optimistic writes.
     pub generation: i64,
@@ -541,8 +629,8 @@ pub struct SecretMetadata {
 /// Metadata-only result of lost-key recovery. Never rotates application credentials.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct SecretKeyRecovery {
-    /// Applications whose stored values were discarded.
-    pub affected_applications: i64,
+    /// Environments whose stored values were discarded.
+    pub affected_environments: i64,
     /// Logical secrets whose stored values were discarded.
     pub affected_secrets: i64,
     /// Stored versions discarded; already unavailable versions are excluded.
@@ -584,8 +672,8 @@ pub struct TailnetStatus {
 /// Public HTTPS readiness is separate from application rollout success.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct RouteStatus {
-    /// Owning application identity.
-    pub application_id: String,
+    /// Owning environment identity.
+    pub environment_id: String,
     /// Exact public DNS hostname.
     pub hostname: String,
     /// Backend service or redirect.
@@ -595,4 +683,53 @@ pub struct RouteStatus {
     pub state: String,
     /// Public diagnostic explaining DNS, TLS, or gateway readiness.
     pub message: String,
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::{ApplicationView, EnvironmentView};
+    use crate::{ApplicationId, EnvironmentId, EnvironmentName, EnvironmentSource};
+
+    fn environment(id: &str, name: &str) -> EnvironmentView {
+        EnvironmentView {
+            id: EnvironmentId::parse(id).unwrap(),
+            application_id: ApplicationId::parse("app-notes-01").unwrap(),
+            name: EnvironmentName::parse(name).unwrap(),
+            source: EnvironmentSource::Saved,
+            resolved_generation: None,
+            delete_intent: false,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn stable_ids_select_before_names_that_look_like_them() {
+        let manifest = crate::parse_toml(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec]",
+        )
+        .unwrap()
+        .normalize(ApplicationId::parse("app-notes-01").unwrap());
+        let view = ApplicationView {
+            spec_hash: manifest.spec_hash(),
+            application: manifest,
+            generation: 1,
+            delete_intent: false,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            // Name order puts the impostor first.
+            environments: vec![
+                environment("env-impostor-01", "app-notes-01"),
+                environment("app-notes-01", "production"),
+            ],
+        };
+        assert_eq!(
+            view.environment("app-notes-01").unwrap().name.as_str(),
+            "production"
+        );
+        assert_eq!(
+            view.environment("production").unwrap().id.as_str(),
+            "app-notes-01"
+        );
+    }
 }

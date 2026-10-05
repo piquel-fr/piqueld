@@ -1,20 +1,21 @@
-//! Application queries and previews shared by every transport.
+//! Application and environment queries and previews shared by every transport.
 use super::views::{application_view, detail_diagnostics, observed_view, status_view};
 use super::{ApplicationError, ApplicationService, BoundaryError};
-use crate::store::{StoreError, StoredApplication};
+use crate::store::{StoreError, StoredEnvironment};
 use piqueld_core::{
-    ApplicationId, NormalizedApplication, ObservedApplication, Plan, PlanRequest, ResolutionSet,
-    ValidatedApplication,
+    ApplicationId, EnvironmentId, NormalizedApplication, ObservedApplication, Plan, PlanRequest,
+    ResolutionSet, ValidatedApplication,
     api::{
-        ApplicationDetailView, ApplicationStatusView, ApplicationSummary, ApplicationView,
-        DiagnosticView, MAX_APPLICATION_PAGE_SIZE, ManifestChange, Page, PlanView,
-        ServiceRolloutView,
+        ApplicationSummary, ApplicationView, DiagnosticView, EnvironmentDetailView,
+        EnvironmentStatusView, EnvironmentView, MAX_APPLICATION_PAGE_SIZE, ManifestChange, Page,
+        PlanView, ServiceRolloutView,
     },
     compile_application, preview_resolution,
 };
 
 impl ApplicationService {
-    /// Lists saved application summaries without observing the runtime.
+    /// Lists saved application summaries and their environments without
+    /// observing the runtime.
     /// # Errors
     /// Returns invalid pagination or storage errors.
     pub async fn applications(
@@ -26,8 +27,7 @@ impl ApplicationService {
         if !(1..=MAX_APPLICATION_PAGE_SIZE).contains(&limit) {
             return Err(ApplicationError::InvalidPagination);
         }
-        let page = self
-            .store
+        self.store
             .list_summaries(cursor, usize::from(limit))
             .await
             .map_err(|error| match error {
@@ -35,50 +35,45 @@ impl ApplicationService {
                     ApplicationError::InvalidPagination
                 }
                 error => error.into(),
-            })?;
-        Ok(Page {
-            items: page
-                .items
-                .into_iter()
-                .map(|stored| ApplicationSummary {
-                    id: stored.id,
-                    name: stored.name,
-                    generation: stored.generation,
-                    resolved_generation: stored.resolved_generation,
-                    delete_intent: stored.delete_intent,
-                    created_at_ms: stored.created_at_ms,
-                    updated_at_ms: stored.updated_at_ms,
-                })
-                .collect(),
-            next_cursor: page.next_cursor,
-        })
+            })
     }
-    /// Reads saved application intent.
+    /// Reads saved application intent and its environments.
     /// # Errors
     /// Returns absence or storage errors.
     pub async fn application(
         &self,
         id: &ApplicationId,
     ) -> Result<ApplicationView, ApplicationError> {
-        Ok(application_view(self.store.get(id).await?))
+        let application = self.store.application(id).await?;
+        let environments = self.store.environments(id).await?;
+        Ok(application_view(application, environments))
+    }
+    /// Reads an environment's metadata.
+    /// # Errors
+    /// Returns absence or storage errors.
+    pub async fn environment(
+        &self,
+        id: &EnvironmentId,
+    ) -> Result<EnvironmentView, ApplicationError> {
+        Ok(self.store.get(id).await?.environment)
     }
     /// Reads persisted deployment progress and runtime health.
     /// # Errors
     /// Returns absence or storage errors.
-    pub async fn application_status(
+    pub async fn environment_status(
         &self,
-        id: &ApplicationId,
-    ) -> Result<ApplicationStatusView, ApplicationError> {
+        id: &EnvironmentId,
+    ) -> Result<EnvironmentStatusView, ApplicationError> {
         Ok(status_view(self.store.status(id).await?))
     }
     /// Combines saved intent, observed state, history, and bounded diagnostics.
     /// Runtime outages are returned as diagnostics so saved intent remains readable.
     /// # Errors
     /// Returns absence or storage errors.
-    pub async fn application_detail(
+    pub async fn environment_detail(
         &self,
-        id: &ApplicationId,
-    ) -> Result<ApplicationDetailView, ApplicationError> {
+        id: &EnvironmentId,
+    ) -> Result<EnvironmentDetailView, ApplicationError> {
         let (stored, status) = self.store.get_with_status(id).await?;
         let (observed, observation_error) = if stored.resolved.is_none() {
             (ObservedApplication::default(), None)
@@ -86,7 +81,7 @@ impl ApplicationService {
             match self.runtime.observe(&stored).await {
                 Ok(observed) => (observed, None),
                 Err(error) => {
-                    tracing::warn!(%error,"application detail observation failed");
+                    tracing::warn!(%error,"environment detail observation failed");
                     (ObservedApplication::default(),Some(DiagnosticView{code:"runtime_unavailable".into(),message:"Runtime observation is unavailable. Saved configuration and deployment history are still available.".into()}))
                 }
             }
@@ -97,12 +92,17 @@ impl ApplicationService {
             observation_error.is_none() && status.state == piqueld_core::ApplicationState::Ready,
         );
         let status = status_view(status);
-        let latest_operation = self.store.latest_operation_for_application(id).await?;
+        let latest_operation = self.store.latest_operation_for_environment(id).await?;
         let mut diagnostics =
             detail_diagnostics(&status, &observed_view, latest_operation.as_ref());
         diagnostics.extend(observation_error);
-        Ok(ApplicationDetailView {
-            application: application_view(stored),
+        let environments = self
+            .store
+            .environments(&stored.environment.application_id)
+            .await?;
+        Ok(EnvironmentDetailView {
+            environment: stored.environment,
+            application: application_view(stored.application, environments),
             status,
             observed: observed_view,
             latest_operation,
@@ -112,9 +112,13 @@ impl ApplicationService {
     /// Previews validated intent without pulling images or saving configuration.
     ///
     /// Checks the generation and identity preconditions when supplied (unlike
-    /// apply, they are optional), builds a runtime plan against current
-    /// observation, and diffs the manifest against the latest deployment's
-    /// captured input (no baseline after a delete).
+    /// apply, they are optional). For `environment`, or the application's only
+    /// environment when it is omitted, builds a runtime plan against its current
+    /// observation and diffs the manifest against its latest deployment's
+    /// captured input (no baseline after a delete). Without an environment and
+    /// with several (or none), diffs against the saved configuration without a
+    /// runtime plan, since apply deploys none of them. An `environment` of
+    /// another application is `NotFound`.
     /// # Errors
     /// Returns precondition, storage, or runtime errors.
     /// # Panics
@@ -124,6 +128,7 @@ impl ApplicationService {
         manifest: ValidatedApplication,
         expected: Option<u64>,
         expected_id: Option<String>,
+        environment: Option<&EnvironmentId>,
     ) -> Result<PlanView, ApplicationError> {
         let current = self.store.find_by_name(manifest.name().as_str()).await?;
         crate::store::Store::check_generation(
@@ -143,24 +148,44 @@ impl ApplicationService {
             |app| app.application.id().clone(),
         );
         let application = manifest.normalize(id.clone());
-        let mut plan = self.preview_plan(&application, current.as_ref()).await?;
-        plan.warn_rollouts(&application);
-        let operation = if let Some(current) = &current {
-            self.store
-                .latest_operation_for_application(current.application.id())
-                .await?
-        } else {
-            None
-        };
-        let baseline = if let Some(op) = &operation {
-            if op.kind == piqueld_core::OperationKind::Delete {
-                None
-            } else {
-                Some(self.store.deployment_manifest(&op.id).await?)
+        let environment = match (environment, &current) {
+            (Some(environment), Some(_)) => {
+                let environment = self.store.get(environment).await?;
+                if environment.environment.application_id != id {
+                    return Err(StoreError::NotFound.into());
+                }
+                Some(environment)
             }
-        } else {
-            None
+            (Some(_), None) => return Err(StoreError::NotFound.into()),
+            (None, Some(_)) => match self.store.environments(&id).await?.as_slice() {
+                [environment] => Some(self.store.get(&environment.id).await?),
+                _ => None,
+            },
+            (None, None) => None,
         };
+        let (operation, baseline, mut plan) = if let Some(environment) = &environment {
+            let operation = self
+                .store
+                .latest_operation_for_environment(environment.id())
+                .await?;
+            let baseline = match &operation {
+                Some(op) if op.kind != piqueld_core::OperationKind::Delete => {
+                    Some(self.store.deployment_manifest(&op.id).await?)
+                }
+                _ => None,
+            };
+            let plan = self
+                .preview_plan(&application, environment.id(), Some(environment))
+                .await?;
+            (operation, baseline, plan)
+        } else if let Some(current) = &current {
+            (None, Some(current.application.clone()), Plan::default())
+        } else {
+            let environment = EnvironmentId::default_for(&id);
+            let plan = self.preview_plan(&application, &environment, None).await?;
+            (None, None, plan)
+        };
+        plan.warn_rollouts(&application);
         Ok(PlanView {
             application_id: id.to_string(),
             generation: current.as_ref().map_or(0, |app| app.generation),
@@ -173,16 +198,18 @@ impl ApplicationService {
             rollouts: ServiceRolloutView::for_application(&application),
         })
     }
-    /// Plans the runtime changes for `app` against the current observation.
+    /// Plans the runtime changes for `app` in `environment` against the
+    /// current observation of `current`, or of nothing for a new environment.
     ///
     /// Images are not resolved, so the desired state is only compiled when no
     /// references need resolution; otherwise the plan lists them as unresolved.
-    /// New applications still require a reachable runtime. Configuration values
+    /// New environments still require a reachable runtime. Configuration values
     /// are redacted from the returned plan.
     async fn preview_plan(
         &self,
         app: &NormalizedApplication,
-        current: Option<&StoredApplication>,
+        environment: &EnvironmentId,
+        current: Option<&StoredEnvironment>,
     ) -> Result<piqueld_core::Plan, ApplicationError> {
         let observed = if let Some(current) = current {
             self.runtime.observe(current).await?
@@ -196,6 +223,7 @@ impl ApplicationService {
             Some(
                 compile_application(
                     app,
+                    environment,
                     piqueld_core::InstanceId::parse(self.store.instance_id())
                         .map_err(StoreError::corrupt)?,
                     &resolutions,

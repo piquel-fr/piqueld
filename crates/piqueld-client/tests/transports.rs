@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post},
 };
 use piqueld_client::{
-    AcceptedOperation, Client, ClientError, Envelope, ListApplicationsOptions, SystemStatus,
+    Client, ClientError, Envelope, ListApplicationsOptions, SavedApplication, SystemStatus,
 };
 use std::{path::PathBuf, sync::Mutex, time::Duration};
 use tempfile::TempDir;
@@ -47,16 +47,16 @@ fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-async fn capture_toml_apply(headers: HeaderMap, body: String) -> Json<Envelope<AcceptedOperation>> {
+async fn capture_toml_apply(headers: HeaderMap, body: String) -> Json<Envelope<SavedApplication>> {
     *CAPTURED.lock().unwrap() = Some(CapturedRequest {
         content_type: header_value(&headers, "content-type"),
         expected_generation: header_value(&headers, "x-expected-generation"),
         body,
     });
     Json(Envelope {
-        data: AcceptedOperation {
+        data: SavedApplication {
             generation: 1,
-            operation_id: "op-1".into(),
+            operation_id: Some("op-1".into()),
             application_id: "app-1".into(),
         },
     })

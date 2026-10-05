@@ -8,7 +8,7 @@ use piqueld::application::RuntimeBoundary;
 use piqueld::docker::{BollardDocker, DockerApi, DockerError, JobRuns, JobStatus};
 use piqueld_core::manifest::HealthCheck;
 use piqueld_core::resource::{DesiredNetwork, DesiredService, DesiredVolume, ResolvedSource};
-use piqueld_core::{ApplicationId, InstanceId, ResourceKind, docker_resource_name};
+use piqueld_core::{ApplicationId, EnvironmentId, InstanceId, ResourceKind, docker_resource_name};
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 struct IsolatedDocker {
@@ -62,7 +62,7 @@ impl IsolatedDocker {
 
 struct SwarmScenario {
     engine: IsolatedDocker,
-    app: ApplicationId,
+    app: EnvironmentId,
     labels: BTreeMap<String, String>,
     network: DesiredNetwork,
     volume: DesiredVolume,
@@ -73,7 +73,7 @@ impl SwarmScenario {
     async fn new() -> Self {
         let engine = IsolatedDocker::from_env().await;
         let suffix = uuid::Uuid::now_v7().simple().to_string();
-        let app = ApplicationId::parse(format!("app-{}", &suffix[..16])).unwrap();
+        let app = EnvironmentId::parse(format!("app-{}", &suffix[..16])).unwrap();
         let instance = InstanceId::parse("integration-instance").unwrap();
         let spec_hash = format!("sha256:{}", "a".repeat(64));
         let labels = BTreeMap::from([
@@ -876,6 +876,7 @@ async fn git_build_runs_as_a_local_swarm_image() {
     let app = piqueld_core::parse_json(&manifest.to_string())
         .unwrap()
         .normalize(ApplicationId::parse("git-local-build").unwrap());
+    let environment = EnvironmentId::default_for(app.id());
     let runtime = piqueld::application::ApplicationRuntime::new(
         std::sync::Arc::new(docker.clone()),
         InstanceId::parse("git-build-test").unwrap(),
@@ -883,17 +884,17 @@ async fn git_build_runs_as_a_local_swarm_image() {
         Duration::from_mins(2),
     );
     let target = runtime
-        .prepare(&app, &piqueld_core::ResolutionSet::default())
+        .prepare(&environment, &app, &piqueld_core::ResolutionSet::default())
         .await
         .unwrap();
     docker.ensure_network(&target.networks[0]).await.unwrap();
-    let observed = docker.observe(app.id()).await.unwrap();
+    let observed = docker.observe(&environment).await.unwrap();
     assert!(observed.networks[0].runtime_configuration_matches);
     docker.ensure_network(&target.networks[0]).await.unwrap();
     engine.ensure_service_eventually(&target.services[0]).await;
     tokio::time::timeout(Duration::from_mins(1), async {
         loop {
-            let observed = docker.observe(app.id()).await.unwrap();
+            let observed = docker.observe(&environment).await.unwrap();
             if observed
                 .services
                 .iter()

@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Ownership of historical data, independent of its contextual application ID.
+/// Ownership of historical data, independent of its contextual application and environment.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EventScope {
@@ -46,8 +46,10 @@ pub struct Diagnostic {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct EventFilter {
-    /// Contextual application ID, including references retained in daemon history.
+    /// Application ID: its own events and those of all its environments.
     pub application_id: Option<String>,
+    /// Contextual environment ID, including references retained in daemon history.
+    pub environment_id: Option<String>,
     /// Operation identity.
     pub operation_id: Option<String>,
     /// Execution attempt.

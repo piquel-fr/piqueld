@@ -38,17 +38,43 @@ piquelctl app list
 piquelctl app show <name-or-id>
 piquelctl app logs <name-or-id> [--service <name>]
 piquelctl app validate --file application.toml
-piquelctl app exec <name-or-id> <service> [-i] [-t] -- <command>...
-piquelctl app plan --file application.toml
+piquelctl app exec <name-or-id> <service> [--env <env>] [-i] [-t] -- <command>...
+piquelctl app plan --file application.toml [--env <env>]
 piquelctl app apply --file application.toml
 piquelctl app apply --file application.toml --deploy
-piquelctl app delete <name-or-id>
+piquelctl app delete <name-or-id> [--environments <names>]
 piquelctl operation <operation-id>
 piquelctl app reconcile <name-or-id>
 piquelctl app deploy <name-or-id>
 piquelctl app rename <name-or-id> <new-name>
+piquelctl env list <app>
+piquelctl env create <app> <name>
+piquelctl env show <app> [<env>]
+piquelctl env rename <app> <env> <new-name>
+piquelctl env delete <app> <env>
+piquelctl env deploy <app> [<env>]
+piquelctl env reconcile <app> [<env>]
+piquelctl env logs <app> [<env>] [--service <name>]
 piquelctl events --application <application-id> --limit 50
 ```
+
+An application owns the saved manifest; its environments deploy it, each with its
+own deployments, status, volumes, secrets, routes, and network. Applications have
+an environment named `production` from creation (existing applications were
+migrated to one that kept their ID). `env` commands select an environment by name
+or stable ID; `ENV` may be omitted only when the application has exactly one.
+`app deploy`, `app reconcile`, and `app logs` act on the application's only
+environment and fail with an "environment required" input error naming the
+environments when it has several; they never pick one. With several
+environments, `app delete` requires `--environments a,b` naming every one.
+`env delete` keeps the application and retains the environment's named volumes.
+Environment creation, renames and deletions are conditioned on the inspected
+application revision like other mutations (`--expected-generation`, `--force`).
+
+Manifest settings remain shared, including routes. Creating another environment
+for an application with hostname routes fails with `hostname_conflict`, naming
+the sibling environment that reserves the hostname and explaining the shared-route
+limitation. Environment-specific hostnames are planned with manifest variables.
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit
 HTTP or HTTPS origin such as `http://127.0.0.1:7845/`; the two transport options are
@@ -83,9 +109,12 @@ written to stderr, so stdout remains valid JSON.
 | --- | --- |
 | `profiles` | `{ "profiles": [{ "name": string, "endpoint": string }] }` |
 | `status` | `SystemStatus` |
-| `app list` | `{ "items": [{ "application": ApplicationSummary, "status": ApplicationStatusView }], "next_cursor": null }` |
-| `app show` | `{ "application": ApplicationView, "status": ApplicationStatusView }` |
-| `app logs` | `ApplicationLogs` |
+| `app list` | `{ "items": [{ "application": ApplicationSummary, "environments": [EnvironmentRow] }], "next_cursor": null }` |
+| `app show` | `{ "application": ApplicationView, "environments": [EnvironmentRow] }` |
+| `env list` | `[EnvironmentRow]`, where `EnvironmentRow` is `{ "environment": EnvironmentView, "status": EnvironmentStatusView or null }` |
+| `env show` | `{ "application": ApplicationView, "environment": EnvironmentView, "status": EnvironmentStatusView }` |
+| `env create` / `env rename` | `EnvironmentView` |
+| `app logs` / `env logs` | `ApplicationLogs` |
 | `app validate` | `{ "application": string }` |
 | `app exec` | None; the command's raw output |
 | `app plan` | `PlanView` |
@@ -94,12 +123,14 @@ written to stderr, so stdout remains valid JSON.
 | `app apply` | `SavedApplication` with null `operation_id` |
 | `app apply --deploy --no-wait` | `SavedApplication` with a deployment operation ID |
 | `app apply --deploy` | `{ "saved": SavedApplication, "outcome": OperationState, "operation": Operation }` |
-| `app delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": true }` |
-| `app delete` | `{ "accepted": AcceptedOperation, "outcome": "deleted", "volumes_retained": true }` |
+| `app delete --no-wait` | `{ "deleted": DeletedApplication, "volumes_retained": true }` |
+| `app delete` | `{ "deleted": DeletedApplication, "outcome": "deleted", "volumes_retained": true }` |
+| `env delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": true }` |
+| `env delete` | `{ "accepted": AcceptedOperation, "outcome": "deleted", "volumes_retained": true }` |
 | `operation --no-wait` | `Operation` |
 | `operation` | `Operation` |
-| `app reconcile` / `app deploy` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
-| `app reconcile --no-wait` / `app deploy --no-wait` | `AcceptedOperation` |
+| `app`/`env` `reconcile` / `deploy` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
+| `app`/`env` `reconcile --no-wait` / `deploy --no-wait` | `AcceptedOperation` |
 | `events` | `{ "items": [Event], "next_cursor": string or null }` |
 
 The DTO fields and error envelope are defined by the versioned API and the
@@ -234,7 +265,8 @@ piquelctl app exec piquel-fr db -i -- psql < dump.sql
 piquelctl app exec piquel-fr auth -it -- /bin/sh
 ```
 
-The command runs inside the task, so it shares the task's image, environment,
+It runs in the application's only environment; with several, `--env ENV` names
+one. The command runs inside the task, so it shares the task's image, environment,
 secrets, mounts and networks. It works over every transport, uses account
 authentication and needs no SSH access. Output streams to stdout and stderr, and
 `piquelctl` exits with the command's exit code. `-i` forwards standard input.
@@ -243,7 +275,7 @@ and puts it in raw mode, so Ctrl-C reaches the command. `--timeout` bounds the
 WebSocket handshake, not the session.
 
 The service needs a running task; otherwise the command fails with
-`service_not_running`. Application history records `command_started` and
+`service_not_running`. The environment's history records `command_started` and
 `command_finished` events with the account, task and exit code, never the
 command. Ending `piquelctl` early closes the stream, but the command may keep
 running in the task.
@@ -290,7 +322,9 @@ advances generation and records an event. Update `metadata.name` in your manifes
 file afterward; the CLI does not edit files automatically.
 
 `events` reads one page, oldest first. `--application ID` optionally filters by
-stable ID. Deleted applications have no retained history. Use `--cursor CURSOR` for subsequent
+stable application ID: application-wide events such as edits and renames, and the
+events of all its environments, including deleted ones. `--environment ID` filters
+by stable environment ID. Deleting an application removes its history. Use `--cursor CURSOR` for subsequent
 pages and `--limit N` (1–100, default 50). JSON includes the next cursor.
 
 By default, apply with `--deploy`, delete, reconcile, deploy, and operation poll every 250 ms
@@ -319,13 +353,14 @@ the current account, and `logout` to revoke it. Saved credentials are separate
 from profiles. `PIQUELD_TOKEN` supplies an automation token; `--account` selects
 a saved account. See [authentication](authentication.md) for details.
 
-`app deploy` fetches repository-backed configuration when configured, then explicitly
-resolves image or Git build sources. It supersedes pending work for the selected
-application. Use `--yes` to skip interactive confirmation, `--no-wait` to return
+`app deploy` and `env deploy` fetch repository-backed configuration when configured,
+then explicitly resolve image or Git build sources. They supersede pending work for
+the selected environment. Use `--yes` to skip interactive confirmation, `--no-wait` to return
 after acceptance, or a longer global `--timeout` for builds. `--branch NAME` or
 `--commit SHA` fetches a repository-backed manifest from another revision for this
 deployment only, without saving it; for example, to test a feature branch. The
-server continues deployment if the CLI wait times out. `app reconcile` retries or repairs the latest
+server continues deployment if the CLI wait times out. `app reconcile` and
+`env reconcile` retry or repair the latest
 deployment snapshot and prepared target without refreshing sources.
 
 Human output uses bold labels and color on terminals, application lists,
@@ -369,7 +404,7 @@ prints an outcome; dropping the last unfinished handle clears its transient row
 without claiming the server-side operation was cancelled.
 
 `piquelctl app logs NAME_OR_ID [--service NAME] [--tail 200] [--since-seconds 3600]`
-reads a recent Docker snapshot with timestamps, service, task, and stream labels.
+(or `env logs APP [ENV]` with the same options) reads a recent Docker snapshot with timestamps, service, task, and stream labels.
 `--json` returns the structured records and a truncation indicator.
 
 ## Connection profiles
@@ -426,12 +461,15 @@ An empty list prints `No profiles configured.` in human mode, or
 `--quiet` suppresses human results, information, and progress, but preserves JSON,
 warnings, errors, and authorized prompts.
 
-`piquelctl builds list [--application ID] [--cursor CURSOR]` lists one page of build
-attempts and job runs. `piquelctl builds logs ID [--before BYTE_OFFSET]` reads the newest bounded
+`piquelctl builds list [--application ID] [--environment ID] [--cursor CURSOR]` lists one
+page of build attempts and job runs, optionally of one application's environments or
+of one environment. `piquelctl builds logs ID [--before BYTE_OFFSET]` reads the newest bounded
 output page, or an older page before the supplied cursor. It prints the cursor
 for loading older output when available. Both support `--json`.
 
-Application secrets are write-only:
+Secrets belong to one environment (application-wide secrets come later) and are
+write-only. `--env ENV` selects the environment; it may be omitted when the
+application has exactly one:
 
 ```sh
 piquelctl app secret notes list
@@ -449,14 +487,14 @@ Manifests can declare secrets that piqueld generates when a deployment first mou
 see [application manifests](application-manifest.md).
 
 If the daemon's `secrets.key` is lost and no backup exists, recover by discarding
-stored values across ALL applications:
+stored values across ALL environments:
 
 ```sh
 piquelctl secrets recover-key --yes
 ```
 
 The command requires confirmation (`--yes` for automation), refuses while the
-current key still works, and reports affected application, secret and version
+current key still works, and reports affected environment, secret and version
 counts. Running Docker services are left alone. `app secret APP list` marks
 discarded values as unavailable; set replacement values using the same names, then
 Deploy explicitly.

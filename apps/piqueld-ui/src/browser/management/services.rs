@@ -109,7 +109,7 @@ pub(super) fn ServiceList() -> impl IntoView {
 #[component]
 pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     let context = editor();
-    let app_href = format!("/dashboard/applications/{}?tab=services", context.id());
+    let app_href = move || format!("/dashboard/applications/{}?tab=services", context.id());
     if !context
         .manifest()
         .spec
@@ -134,11 +134,11 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     }
     let navigate = use_navigate();
     let remove_name = name.clone();
-    let return_href = app_href.clone();
+    let return_href = app_href;
     let remove = move |_| {
         if !window().confirm_with_message("Remove this service and its routes from saved configuration? Its running containers remain until Deploy.").unwrap_or(false) {return;}
         let navigate = navigate.clone();
-        let href = return_href.clone();
+        let href = return_href();
         context.save(
             ApplicationEdit::RemoveService(remove_name.clone()),
             Callback::new(move |_| navigate(&href, NavigateOptions::default())),
@@ -191,9 +191,52 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
                         )
                     })
             }} <Show when={move || selected.get() == "Logs"}>
-                <super::logs::ApplicationLogs fixed_service={log_service.clone()} />
+                <ServiceLogs name={log_service.clone()} />
             </Show> {groups}
         </div>
     }
     .into_any()
+}
+
+/// Logs of one service in the application's only environment. With several
+/// environments, links to each environment's logs instead. Remounts when the
+/// target environment changes, so polling never keeps a stale target.
+#[component]
+fn ServiceLogs(name: String) -> impl IntoView {
+    let context = editor();
+    move || {
+        if context.environment.get().is_some() {
+            return view! { <super::logs::ApplicationLogs fixed_service={name.clone()} /> }
+                .into_any();
+        }
+        view! {
+            <div class="stack-sm">
+                {notice(Tone::Info, "Logs are read per environment. Choose one to read this service's logs.")}
+                <div class="btn-group">
+                    {move || {
+                        context
+                            .saved
+                            .get()
+                            .environments
+                            .into_iter()
+                            .map(|environment| {
+                                view! {
+                                    <A
+                                        attr:class="btn"
+                                        href={format!(
+                                            "{}?tab=logs",
+                                            context.environment_href(environment.id.as_str()),
+                                        )}
+                                    >
+                                        {environment.name.to_string()}
+                                    </A>
+                                }
+                            })
+                            .collect_view()
+                    }}
+                </div>
+            </div>
+        }
+        .into_any()
+    }
 }

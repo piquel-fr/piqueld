@@ -15,7 +15,7 @@ use futures_util::{
     stream::{SplitSink, SplitStream},
 };
 use piqueld_core::{
-    ApplicationId,
+    EnvironmentId,
     exec::{ExecFrame, ExecInput, ExecOutput, ExecRequest, MAX_MESSAGE_BYTES},
 };
 use std::time::Duration;
@@ -45,7 +45,7 @@ impl<S: Send + Sync> FromRequestParts<S> for ExecUpgrade {
     }
 }
 
-#[utoipa::path(get,path="/api/v1/applications/{id}/exec",operation_id="execApplicationCommand",params(("id"=String,Path)),
+#[utoipa::path(get,path="/api/v1/environments/{id}/exec",operation_id="execEnvironmentCommand",params(("id"=String,Path)),
  description="Opens a WebSocket whose first message is a JSON ExecRequest; see piqueld_core::exec.",
  responses((status=101,description="Switched to a WebSocket streaming the command"),
  (status=400,response=inline(ApiErrorResponse)),(status=426,response=inline(ApiErrorResponse))))]
@@ -56,7 +56,7 @@ pub(super) async fn exec(
     identity: Option<Extension<Identity>>,
     request_id: Option<Extension<RequestId>>,
 ) -> Result<Response, ApiError> {
-    let id = ApplicationId::parse(id)?;
+    let id = EnvironmentId::parse(id)?;
     let account = identity.map_or_else(
         || "An unidentified caller".to_owned(),
         |Extension(identity)| identity.user.username,

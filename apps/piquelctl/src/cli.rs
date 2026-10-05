@@ -4,7 +4,7 @@
 use clap::{Args, Parser, Subcommand};
 use std::{path::PathBuf, time::Duration};
 
-/// Essential commands for inspecting and operating applications.
+/// Essential commands for inspecting and operating applications and their environments.
 #[derive(Debug, Parser)]
 #[command(
     name = "piquelctl",
@@ -96,15 +96,24 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: AppCommand,
     },
+    /// Create, inspect, deploy, and delete an application's environments.
+    Env {
+        #[command(subcommand)]
+        command: crate::environments::EnvCommand,
+    },
     /// Inspect build attempts and their persisted output.
     Builds(BuildArgs),
     /// Inspect or wait for one asynchronous operation.
     Operation(OperationArgs),
     /// Read one page of informational events, oldest first.
     Events {
-        /// Filter by stable application ID, including deleted applications.
+        /// Filter by stable application ID: its own events and those of all its
+        /// environments, including deleted ones.
         #[arg(long)]
         application: Option<String>,
+        /// Filter by stable environment ID, including deleted environments.
+        #[arg(long)]
+        environment: Option<String>,
         /// Continue after a cursor returned by the previous page.
         #[arg(long)]
         cursor: Option<String>,
@@ -143,33 +152,29 @@ pub(crate) enum AppCommand {
         #[command(subcommand)]
         command: crate::editing::RepositoryCommand,
     },
-    /// List applications and their concise reconciliation status.
+    /// List applications, their environments, and concise reconciliation status.
     List,
-    /// Show one application by name or ID.
+    /// Show one application and its environments by name or ID.
     Show {
         /// Application name or stable ID.
         name_or_id: String,
     },
-    /// Read a bounded snapshot of Docker application logs.
+    /// Read a bounded snapshot of Docker logs of the application's only environment.
     Logs {
         /// Application name or stable ID.
         name_or_id: String,
-        /// Only include output from this service; all services when omitted.
-        #[arg(long)]
-        service: Option<String>,
-        /// Maximum number of most recent lines, merged across the selected services.
-        #[arg(long,default_value_t=200,value_parser=clap::value_parser!(u16).range(1..=1000))]
-        tail: u16,
-        /// Only include output from the last N seconds.
-        #[arg(long,default_value_t=3600,value_parser=clap::value_parser!(u32).range(1..=86400))]
-        since_seconds: u32,
+        #[command(flatten)]
+        window: LogArgs,
     },
     /// Run a one-off command in a running task of a service, streaming its output.
     Exec(crate::exec::ExecArgs),
-    /// Manage application-scoped secret values and metadata.
+    /// Manage environment-scoped secret values and metadata.
     Secret {
         /// Application name or stable ID.
         application: String,
+        /// Environment name or stable ID; optional when the application has exactly one.
+        #[arg(long = "env", value_name = "ENV")]
+        environment: Option<String>,
         #[command(subcommand)]
         action: crate::secrets::SecretAction,
     },
@@ -183,11 +188,13 @@ pub(crate) enum AppCommand {
     Plan(ManifestArgs),
     /// Save a TOML manifest; optionally deploy with --deploy.
     Apply(ApplyArgs),
-    /// Confirm and delete an application by name or ID.
+    /// Confirm and delete an application and all its environments by name or ID.
     Delete(DeleteArgs),
-    /// Retry the latest operation once it has ended or failed, reusing its saved inputs.
+    /// Retry the latest operation of the application's only environment once it
+    /// has ended or failed, reusing its saved inputs.
     Reconcile(TargetArgs),
-    /// Deploy saved configuration, fetching the manifest and resolving sources again.
+    /// Deploy saved configuration to the application's only environment, fetching
+    /// the manifest and resolving sources again.
     Deploy(DeployArgs),
     /// Rename an idle application; optionally deploy with the change.
     Rename(RenameArgs),
@@ -219,9 +226,12 @@ pub(crate) struct BuildArgs {
 pub(crate) enum BuildCommand {
     /// List recent build attempts, newest first.
     List {
-        /// Filter by stable application ID.
+        /// Filter by stable application ID: builds of all its environments.
         #[arg(long)]
         application: Option<String>,
+        /// Filter by stable environment ID.
+        #[arg(long)]
+        environment: Option<String>,
         /// Continue after a cursor returned by the previous page.
         #[arg(long)]
         cursor: Option<String>,
@@ -244,6 +254,10 @@ pub(crate) struct ManifestArgs {
     /// Require this intent generation; zero requires an absent application.
     #[arg(long)]
     pub(crate) expected_generation: Option<u64>,
+    /// Compare with this environment's deployment and runtime; defaults to the
+    /// application's only environment.
+    #[arg(long = "env", value_name = "ENV")]
+    pub(crate) environment: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -281,7 +295,17 @@ pub(crate) struct DeploymentArgs {
 pub(crate) struct DeleteArgs {
     /// Application name or stable ID.
     pub(crate) name_or_id: String,
-    /// Require this intent generation.
+    /// Names of every environment, required when the application has several.
+    #[arg(long, value_delimiter = ',', value_name = "NAMES")]
+    pub(crate) environments: Vec<String>,
+    #[command(flatten)]
+    pub(crate) deletion: DeletionFlags,
+}
+
+// Precondition, confirmation, and waiting flags shared by deletions.
+#[derive(Debug, Args)]
+pub(crate) struct DeletionFlags {
+    /// Require this application revision.
     #[arg(long)]
     pub(crate) expected_generation: Option<u64>,
 
@@ -289,7 +313,7 @@ pub(crate) struct DeleteArgs {
     #[arg(long)]
     pub(crate) yes: bool,
 
-    /// Override intent preconditions (does not skip confirmation).
+    /// Override revision preconditions (does not skip confirmation).
     #[arg(long, conflicts_with = "expected_generation")]
     pub(crate) force: bool,
 
@@ -367,6 +391,13 @@ pub(crate) struct RenameArgs {
 pub(crate) struct DeployArgs {
     #[command(flatten)]
     pub(crate) target: TargetArgs,
+    #[command(flatten)]
+    pub(crate) revision: RevisionArgs,
+}
+
+// One-time manifest revision overrides for deployments.
+#[derive(Debug, Args)]
+pub(crate) struct RevisionArgs {
     /// Fetch the repository manifest from this branch, without saving it.
     #[arg(long, conflicts_with = "commit")]
     pub(crate) branch: Option<String>,
@@ -375,7 +406,7 @@ pub(crate) struct DeployArgs {
     pub(crate) commit: Option<String>,
 }
 
-impl DeployArgs {
+impl RevisionArgs {
     /// The one-time manifest revision, if overridden.
     pub(crate) fn revision(&self) -> Option<piqueld_client::ManifestRevision> {
         self.branch
@@ -394,7 +425,14 @@ impl DeployArgs {
 pub(crate) struct TargetArgs {
     /// Application name or stable ID.
     pub(crate) name_or_id: String,
-    /// Optionally require this intent generation.
+    #[command(flatten)]
+    pub(crate) flags: OperationFlags,
+}
+
+// Precondition, confirmation, and waiting flags shared by deploy and reconcile.
+#[derive(Debug, Args)]
+pub(crate) struct OperationFlags {
+    /// Optionally require this application revision.
     #[arg(long)]
     pub(crate) expected_generation: Option<u64>,
     /// Skip the interactive confirmation prompt.
@@ -403,4 +441,18 @@ pub(crate) struct TargetArgs {
     /// Return after the daemon accepts the operation.
     #[arg(long)]
     pub(crate) no_wait: bool,
+}
+
+// Log window shared by `app logs` and `env logs`.
+#[derive(Debug, Args)]
+pub(crate) struct LogArgs {
+    /// Only include output from this service; all services when omitted.
+    #[arg(long)]
+    pub(crate) service: Option<String>,
+    /// Maximum number of most recent lines, merged across the selected services.
+    #[arg(long,default_value_t=200,value_parser=clap::value_parser!(u16).range(1..=1000))]
+    pub(crate) tail: u16,
+    /// Only include output from the last N seconds.
+    #[arg(long,default_value_t=3600,value_parser=clap::value_parser!(u32).range(1..=86400))]
+    pub(crate) since_seconds: u32,
 }

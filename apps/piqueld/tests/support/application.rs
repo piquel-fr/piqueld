@@ -3,7 +3,7 @@
 use piqueld::api::{ApplicationError, ApplicationService, Mutation, MutationResponse};
 use piqueld::application::RuntimeBoundary;
 use piqueld::store::{Store, StoreError};
-use piqueld_core::{ApplicationId, Operation, ValidatedApplication};
+use piqueld_core::{EnvironmentId, Operation, ValidatedApplication};
 use std::sync::Arc;
 
 pub struct TestApplications {
@@ -77,25 +77,42 @@ impl TestApplications {
 
     pub async fn deploy(
         &self,
-        id: &ApplicationId,
+        id: &EnvironmentId,
         expected_generation: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
         self.submit(Mutation::deploy(id.clone()), expected_generation)
             .await
     }
 
+    /// Deletes the application of environment `id`, its only environment.
     pub async fn delete(
         &self,
-        id: &ApplicationId,
+        id: &EnvironmentId,
         expected_generation: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        self.submit(Mutation::Delete { id: id.clone() }, expected_generation)
-            .await
+        let application = self.store.get(id).await?.environment.application_id;
+        let MutationResponse::Deleted(deleted) = self
+            .service
+            .accept(
+                Mutation::DeleteApplication {
+                    id: application,
+                    environments: Vec::new(),
+                },
+                expected_generation,
+                expected_generation.is_none(),
+                None,
+            )
+            .await?
+        else {
+            return Err(StoreError::Corrupt.into());
+        };
+        let operation = deleted.operations.first().ok_or(StoreError::Corrupt)?;
+        self.service.operation(&operation.operation_id).await
     }
 
     pub async fn reconcile(
         &self,
-        id: &ApplicationId,
+        id: &EnvironmentId,
         expected_generation: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
         self.submit(Mutation::Reconcile { id: id.clone() }, expected_generation)

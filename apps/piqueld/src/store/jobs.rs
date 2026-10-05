@@ -1,5 +1,5 @@
 //! Durable requests to stop job runs, independent of deployment retries.
-use super::{ApplicationId, Store, StoreError};
+use super::{EnvironmentId, Store, StoreError};
 use sqlx::SqliteConnection;
 
 impl Store {
@@ -32,12 +32,12 @@ impl Store {
     /// Finds pending cleanup, including runs from superseded operations.
     pub(crate) async fn pending_job_cleanup(
         &self,
-        application: &ApplicationId,
+        environment: &EnvironmentId,
     ) -> Result<Vec<String>, StoreError> {
-        let application = application.as_str();
+        let environment = environment.as_str();
         sqlx::query_scalar!(
-            "SELECT job_cleanup.operation_id FROM job_cleanup JOIN operations ON operations.id=job_cleanup.operation_id WHERE operations.application_id=?1 ORDER BY job_cleanup.operation_id",
-            application
+            "SELECT job_cleanup.operation_id FROM job_cleanup JOIN operations ON operations.id=job_cleanup.operation_id WHERE operations.environment_id=?1 ORDER BY job_cleanup.operation_id",
+            environment
         )
         .fetch_all(&self.pool)
         .await
@@ -69,7 +69,7 @@ mod tests {
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='jobs'\n[spec]",
         )
         .unwrap()
-        .normalize(ApplicationId::parse("app-jobs").unwrap());
+        .normalize(piqueld_core::ApplicationId::parse("app-jobs").unwrap());
         let operation = store
             .save_application(&application, None, None)
             .await
@@ -120,7 +120,10 @@ mod tests {
 
         let store = Store::open(&path).await.unwrap();
         assert_eq!(
-            store.pending_job_cleanup(application.id()).await.unwrap(),
+            store
+                .pending_job_cleanup(&operation.environment_id)
+                .await
+                .unwrap(),
             std::slice::from_ref(&operation.id)
         );
         store
@@ -136,7 +139,10 @@ mod tests {
             .unwrap();
         assert_eq!(store.prune_finished_operations(i64::MAX).await.unwrap(), 0);
         assert_eq!(
-            store.pending_job_cleanup(application.id()).await.unwrap(),
+            store
+                .pending_job_cleanup(&operation.environment_id)
+                .await
+                .unwrap(),
             std::slice::from_ref(&operation.id)
         );
         store.finish_job_cleanup(&operation.id).await.unwrap();

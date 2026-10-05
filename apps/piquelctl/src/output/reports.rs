@@ -2,9 +2,10 @@
 use super::{HumanWriter, Report};
 use crate::{profiles::ProfileSummary, support::desired_replicas};
 use piqueld_client::{
-    AcceptedOperation, ActionReason, ActionRisk, ApplicationLogs, ApplicationStatusView,
-    ApplicationSummary, ApplicationView, BuildLogPage, BuildRecord, Event, Operation,
-    OperationState, Page, PlanView, SavedApplication, SecretMetadata, Source, SystemStatus,
+    AcceptedOperation, ActionReason, ActionRisk, ApplicationLogs, ApplicationSummary,
+    ApplicationView, BuildLogPage, BuildRecord, DeletedApplication, EnvironmentSource,
+    EnvironmentStatusView, EnvironmentView, Event, Operation, OperationState, Page, PlanView,
+    SavedApplication, SecretMetadata, Source, SystemStatus,
 };
 use serde::Serialize;
 use std::io;
@@ -76,38 +77,96 @@ report!(ProfilesReport<'_>, self, out, {
     Ok(())
 });
 
+/// One environment with its status, as listed by `env list` and inside `app list`.
+#[derive(Serialize)]
+pub(crate) struct EnvironmentRow {
+    pub(crate) environment: EnvironmentView,
+    /// `None` when the status request failed (rendered as `unavailable`).
+    pub(crate) status: Option<EnvironmentStatusView>,
+}
+
+impl EnvironmentRow {
+    /// Current state, or `unavailable` when the status could not be read.
+    fn state(&self) -> String {
+        self.status
+            .as_ref()
+            .map_or_else(|| "unavailable".to_owned(), |s| s.state.to_string())
+    }
+}
+
+/// Lowercase name of where an environment deploys from.
+fn source(source: EnvironmentSource) -> &'static str {
+    match source {
+        EnvironmentSource::Saved => "saved",
+        EnvironmentSource::Repository => "repository",
+    }
+}
+
+impl Report for Vec<EnvironmentRow> {
+    type Json = [EnvironmentRow];
+    fn json(&self) -> &Self::Json {
+        self
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        if self.is_empty() {
+            return out.line("No environments.");
+        }
+        out.heading("NAME  STATE  SOURCE  RESOLVED  ID")?;
+        for row in self {
+            let environment = &row.environment;
+            out.line(format_args!(
+                "{}  {}  {}  {}  {}",
+                environment.name,
+                row.state(),
+                source(environment.source),
+                environment
+                    .resolved_generation
+                    .map_or_else(|| "none".to_owned(), |v| v.to_string()),
+                environment.id
+            ))?;
+        }
+        Ok(())
+    }
+}
+
 /// One `app list` row.
 #[derive(Serialize)]
 pub(crate) struct ApplicationRow {
     pub(crate) application: ApplicationSummary,
-    /// `None` when the status request failed (rendered as `unavailable`).
-    pub(crate) status: Option<ApplicationStatusView>,
+    pub(crate) environments: Vec<EnvironmentRow>,
 }
 
 report!(Page<ApplicationRow>, self, out, {
     if self.items.is_empty() {
         return out.line("No applications.");
     }
-    out.heading("NAME  STATE  GENERATION  ID")?;
+    out.heading("NAME  ENVIRONMENTS  GENERATION  ID")?;
     for row in &self.items {
+        let environments = if row.environments.is_empty() {
+            "none".to_owned()
+        } else {
+            row.environments
+                .iter()
+                .map(|environment| {
+                    format!("{} {}", environment.environment.name, environment.state())
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         out.line(format_args!(
             "{}  {}  {}  {}",
-            row.application.name,
-            row.status
-                .as_ref()
-                .map_or_else(|| "unavailable".to_owned(), |s| s.state.to_string()),
-            row.application.generation,
-            row.application.id
+            row.application.name, environments, row.application.generation, row.application.id
         ))?;
     }
     Ok(())
 });
 
-/// `app show` result: configuration, intent and runtime state, and per-service sources.
+/// `app show` result: configuration, environments with their state, and
+/// per-service sources.
 #[derive(Serialize)]
 pub(crate) struct ShowReport<'a> {
     pub(crate) application: &'a ApplicationView,
-    pub(crate) status: &'a ApplicationStatusView,
+    pub(crate) environments: &'a [EnvironmentRow],
 }
 report!(ShowReport<'_>, self, out, {
     let app = self.application;
@@ -117,18 +176,23 @@ report!(ShowReport<'_>, self, out, {
         app.application.id()
     ))?;
     out.blank()?;
-    out.label("Intent", self.status.state)?;
-    out.label(
-        "Runtime",
-        self.status.runtime_health.as_deref().unwrap_or("unknown"),
-    )?;
     out.label("Configuration revision", app.generation)?;
-    out.label(
-        "Resolved revision",
-        app.resolved_generation
-            .map_or_else(|| "none".to_owned(), |v| v.to_string()),
-    )?;
     out.label("Replicas", desired_replicas(app))?;
+    for row in self.environments {
+        out.label(
+            "Environment",
+            format_args!(
+                "{} ({}): {}, deploys from {}",
+                row.environment.name,
+                row.environment.id,
+                row.state(),
+                source(row.environment.source)
+            ),
+        )?;
+    }
+    if self.environments.is_empty() {
+        out.label("Environments", "none")?;
+    }
     for service in &app.application.spec().services {
         out.blank()?;
         out.label("Service", &service.name)?;
@@ -154,6 +218,46 @@ report!(ShowReport<'_>, self, out, {
         out.line("Named volumes are retained on deletion.")?;
     }
     Ok(())
+});
+
+/// `env show` result: an environment's intent and runtime state.
+#[derive(Serialize)]
+pub(crate) struct EnvironmentShowReport<'a> {
+    pub(crate) application: &'a ApplicationView,
+    pub(crate) environment: &'a EnvironmentView,
+    pub(crate) status: &'a EnvironmentStatusView,
+}
+report!(EnvironmentShowReport<'_>, self, out, {
+    let environment = self.environment;
+    out.line(format_args!(
+        "{} of {} ({})",
+        environment.name,
+        self.application.application.metadata().name,
+        environment.id
+    ))?;
+    out.blank()?;
+    out.label("Intent", self.status.state)?;
+    out.label(
+        "Runtime",
+        self.status.runtime_health.as_deref().unwrap_or("unknown"),
+    )?;
+    out.label("Source", source(environment.source))?;
+    out.label("Configuration revision", self.application.generation)?;
+    out.label(
+        "Resolved revision",
+        environment
+            .resolved_generation
+            .map_or_else(|| "none".to_owned(), |v| v.to_string()),
+    )
+});
+
+report!(EnvironmentView, self, out, {
+    out.line(format_args!(
+        "Environment {} ({}), deploys from {}.",
+        self.name,
+        self.id,
+        source(self.source)
+    ))
 });
 
 report!(ApplicationLogs, self, out, {
@@ -188,7 +292,7 @@ report!(Page<BuildRecord>, self, out, {
         );
         out.line(format_args!(
             "{}  {}  {}  {:?}  {}",
-            build.id, build.application_id, subject, build.state, build.started_at_ms
+            build.id, build.environment_id, subject, build.state, build.started_at_ms
         ))?;
     }
     if let Some(cursor) = &self.next_cursor {
@@ -265,7 +369,7 @@ report!(Page<Event>, self, out, {
 report!(Operation, self, out, {
     out.label("Operation", &self.id)?;
     out.label("  State", self.state)?;
-    out.label("  Application", &self.application_id)?;
+    out.label("  Environment", &self.environment_id)?;
     if let Some(phase) = &self.phase {
         out.label("  Phase", phase.replace('_', " "))?;
     }
@@ -291,8 +395,8 @@ report!(SavedApplication, self, out, {
 
 report!(AcceptedOperation, self, out, {
     out.line(format_args!(
-        "Accepted operation {} for application {}",
-        self.operation_id, self.application_id
+        "Accepted operation {} for environment {}",
+        self.operation_id, self.environment_id
     ))
 });
 
@@ -318,11 +422,12 @@ report!(OperationOutcomeReport<'_>, self, out, {
     self.operation.render_human(out)
 });
 
-/// Deletion result. `outcome` is present only after waiting; volumes are always retained.
+/// Environment deletion result. `outcome` is present only after waiting; volumes
+/// are always retained.
 #[derive(Serialize)]
 pub(crate) struct DeletionReport<'a> {
     accepted: &'a AcceptedOperation,
-    /// `Some("deleted")` once the application is gone; omitted with `--no-wait`.
+    /// `Some("deleted")` once the environment is gone; omitted with `--no-wait`.
     #[serde(skip_serializing_if = "Option::is_none")]
     outcome: Option<&'static str>,
     volumes_retained: bool,
@@ -336,7 +441,7 @@ impl<'a> DeletionReport<'a> {
             volumes_retained: true,
         }
     }
-    /// Deletion awaited until the application disappeared.
+    /// Deletion awaited until the environment disappeared.
     pub(crate) fn completed(accepted: &'a AcceptedOperation) -> Self {
         Self {
             accepted,
@@ -348,8 +453,8 @@ impl<'a> DeletionReport<'a> {
 report!(DeletionReport<'_>, self, out, {
     if self.outcome.is_some() {
         out.line(format_args!(
-            "Application {} deleted (named volumes retained)",
-            self.accepted.application_id
+            "Environment {} deleted (named volumes retained)",
+            self.accepted.environment_id
         ))
     } else {
         out.line(format_args!(
@@ -357,6 +462,50 @@ report!(DeletionReport<'_>, self, out, {
             self.accepted.operation_id
         ))
     }
+});
+
+/// Application deletion result. `outcome` is present only after waiting;
+/// volumes are always retained.
+#[derive(Serialize)]
+pub(crate) struct ApplicationDeletionReport<'a> {
+    deleted: &'a DeletedApplication,
+    /// `Some("deleted")` once the application is gone; omitted with `--no-wait`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<&'static str>,
+    volumes_retained: bool,
+}
+impl<'a> ApplicationDeletionReport<'a> {
+    /// Deletion accepted but not awaited.
+    pub(crate) fn accepted(deleted: &'a DeletedApplication) -> Self {
+        Self {
+            deleted,
+            outcome: None,
+            volumes_retained: true,
+        }
+    }
+    /// Deletion awaited until the application disappeared.
+    pub(crate) fn completed(deleted: &'a DeletedApplication) -> Self {
+        Self {
+            deleted,
+            outcome: Some("deleted"),
+            volumes_retained: true,
+        }
+    }
+}
+report!(ApplicationDeletionReport<'_>, self, out, {
+    if self.outcome.is_some() {
+        return out.line(format_args!(
+            "Application {} deleted (named volumes retained)",
+            self.deleted.application_id
+        ));
+    }
+    for operation in &self.deleted.operations {
+        out.line(format_args!(
+            "Accepted operation {} for environment {} (named volumes retained)",
+            operation.operation_id, operation.environment_id
+        ))?;
+    }
+    Ok(())
 });
 
 /// Local `app validate` success; JSON carries the manifest's application name.
@@ -389,7 +538,11 @@ report!(PlanView, self, out, {
     out.label("Application", &self.application_id)?;
     if self.identical {
         out.blank()?;
-        out.line("Configuration matches the latest deployment snapshot.")?;
+        out.line(if self.operation.is_some() {
+            "Configuration matches the latest deployment snapshot."
+        } else {
+            "Configuration matches the saved configuration."
+        })?;
     }
     if !self.changes.is_empty() {
         out.blank()?;
@@ -528,8 +681,8 @@ impl Configuration {
 
 report!(piqueld_client::SecretKeyRecovery, self, out, {
     out.line(format_args!(
-        "Secret key recovered: {} values discarded across {} secrets in {} applications.",
-        self.discarded_versions, self.affected_secrets, self.affected_applications,
+        "Secret key recovered: {} values discarded across {} secrets in {} environments.",
+        self.discarded_versions, self.affected_secrets, self.affected_environments,
     ))?;
     out.line(
         "Running services keep their Docker secrets. Supply replacement values, then deploy.",

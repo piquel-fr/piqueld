@@ -7,26 +7,26 @@ collector management, or external daemon-outage monitoring in this implementatio
 
 ## History and diagnostics
 
-Saved typed edits record their field and resource in application history without
-copying configuration values.
+Saved typed edits record their field and resource once, in the application's
+history with no environment, without copying configuration values.
 
 Secret writes and deletions record `secret_saved` and `secret_deleted` events with
 the logical name as their resource; history never contains values. Removing a
 secret's Docker versions is a journaled `remove_secrets` action, whether it follows
-an API deletion (application-owned, without an operation) or application deletion.
+an API deletion (environment-owned, without an operation) or environment deletion.
 A missing, unreadable or non-matching master key produces a daemon-scoped
 `secret_storage_unavailable` diagnostic whose causal fact names the key condition.
 Deployments decrypt values before their service request, so this failure is never
 reported as a Docker error. Lost-key recovery records a daemon-scoped
 `secret_key_recovered` event with value counts, and `secret_values_discarded` in
-each affected application's history.
+each affected environment's history.
 
 Commands run with `app exec` record `command_started`, naming the account and
 task, and `command_finished` with its exit code. Their resource is the logical
 service. Commands are never recorded because their arguments can contain secrets.
 
 An operation groups execution attempts; an attempt groups actions. Action events
-carry an action ID, operation ID, application ID, generation, attempt, phase,
+carry an action ID, operation ID, environment ID, generation, attempt, phase,
 resource, request/retry number, and completed duration where applicable. Source
 preparation and runtime mutations, including managed ingress gateway changes,
 commit intent before executing. Each mutating request commits an
@@ -54,7 +54,7 @@ database. Other diagnostics are likewise log-only if their write fails.
 
 API failure occurrences are not sampled or deduplicated: repeated failed requests,
 including dashboard polling during an outage, each retain their request ID and
-diagnostic. Health and reconciliation observations of the same application and
+diagnostic. Health and reconciliation observations of the same environment and
 failure code share one diagnostic within a discovery pass. Separate passes retain
 their own occurrences. Use nonzero retention settings to bound historical growth.
 
@@ -69,12 +69,14 @@ bounded log and may contain text emitted by the build itself.
 
 ## Ownership and retention
 
-`scope` determines ownership, independently of a contextual `application_id`:
+`scope` determines ownership, independently of a contextual `environment_id`:
 
-- `application`: removed with application deletion, including diagnostic history,
-  deployment/build history, and associated webhook deliveries.
+- `application`: removed with application deletion, including diagnostic history
+  and associated webhook deliveries. Deleting an environment removes its
+  deployment and build history, while its events stay in the application's
+  history.
 - `daemon`: shared infrastructure or internal failures remain under daemon
-  retention, even when they refer to an application that has since been deleted.
+  retention, even when they refer to an environment that has since been deleted.
 
 `retention.event_days` and `retention.daemon_event_days` both default to 90 days
 and independently bound the two scopes; zero disables age-based pruning. Executing actions, open notification incidents, and pending deliveries
@@ -85,8 +87,9 @@ not make event details unreadable. SQLite file size need not immediately shrink
 when rows are deleted; free pages can be reused.
 
 Analytics reports when an interval extends before detailed history began or
-includes explicitly pruned history. Aggregates cover retained applications;
-deleting an application removes its contribution. Event streaming detects
+includes explicitly pruned history. Event-based aggregates cover retained
+applications: a deleted environment's events stay in its application's history,
+and deleting the application removes them. Event streaming detects
 retention gaps conservatively across both scopes. Deleting an application's
 history intentionally removes that data rather than exposing deletion tombstones.
 
@@ -105,7 +108,8 @@ All administrative routes use the existing API access boundary. See the generate
 | `GET /api/v1/notifications/deliveries` | Credential-free delivery history |
 | `POST /api/v1/notifications/deliveries/{id}/retry` | Retry a failed delivery under current policy |
 
-Event filters: `application_id`, `operation_id`, `attempt`, `action_id`, `kind`,
+Event filters: `application_id` (application-wide events and those of all its
+environments), `environment_id`, `operation_id`, `attempt`, `action_id`, `kind`,
 `error_code`, `errors_only`, `scope`, `since_ms`, `until_ms`, and `descending`.
 Pages contain at most 100 records and use opaque `v1:<id>` cursors. Oldest-first
 ordering remains the default. Timestamps are Unix milliseconds.
@@ -157,7 +161,7 @@ Webhook URLs are credentials. Use `url_file` instead of `url` to read one from a
 file, such as a systemd credential; see [configuration](configuration.md#credential-files).
 
 Build/deployment failures notify once until a successful operation clears that
-condition. Service degradation is observed at application health level. Docker,
+condition. Service degradation is observed at environment health level. Docker,
 Swarm and managed ingress gateway health are dependency conditions under
 `daemon_failures`; deployments failing because a dependency is unavailable do not
 notify separately. Dependency and service failures must remain continuously
@@ -199,7 +203,7 @@ count. Delivery history exposes safe failure summaries, never response bodies.
 
 Disabling a category/destination or changing its URL cancels pending deliveries
 at startup. Re-enabling activates new events only, without replaying historical
-failures. Deletion removes application-owned queued deliveries; a request already
+failures. Deletion removes environment-owned queued deliveries; a request already
 in flight cannot be unsent. Copies already delivered to external systems are
 outside piqueld's deletion policy.
 

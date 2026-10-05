@@ -126,7 +126,7 @@ impl Ingress {
         ready: bool,
     ) -> Result<()> {
         let _guard = self.update.lock().await;
-        let id = &operation.application_id;
+        let id = &operation.environment_id;
         let previous = self.store.applied_routes(id).await?;
         self.store
             .stage_routes(id, routes, ready, Some(&operation.id))
@@ -197,7 +197,7 @@ impl Ingress {
     /// only for `application` (or for any application when `None`).
     async fn synchronize_for(
         &self,
-        application: Option<&piqueld_core::ApplicationId>,
+        application: Option<&piqueld_core::EnvironmentId>,
     ) -> Result<()> {
         let mut failures = std::collections::BTreeMap::new();
         // Health messages name only the failed stage. Error details, which may
@@ -275,7 +275,7 @@ impl Ingress {
             .collect();
         let mut probes = stream::iter(routes).map(|(id,route)| async move {
             let mut status = RouteStatus {
-                application_id: id.to_string(), hostname: route.hostname.to_string(), target: route.target.clone(),
+                environment_id: id.to_string(), hostname: route.hostname.to_string(), target: route.target.clone(),
                 state: "disabled".into(), message: "Ingress is disabled in daemon configuration".into(),
             };
             if !self.enabled && !healthy {

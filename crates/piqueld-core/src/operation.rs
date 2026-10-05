@@ -1,11 +1,11 @@
 //! Shared asynchronous operation records.
 
-use crate::ApplicationId;
+use crate::EnvironmentId;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use utoipa::ToSchema;
 
-/// Application change being reconciled.
+/// Environment change being reconciled.
 /// Deployment operations retain the serialized kind `refresh` for compatibility
 /// with existing stored records and API clients.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
@@ -124,8 +124,10 @@ impl fmt::Display for OperationState {
 pub struct Operation {
     /// Stable operation identifier.
     pub id: String,
-    /// Stable application identifier.
-    pub application_id: ApplicationId,
+    /// Environment the operation changes. Records stored before environments
+    /// existed name it `application_id`; the value is the same.
+    #[serde(alias = "application_id")]
+    pub environment_id: EnvironmentId,
     /// Requested change.
     pub kind: OperationKind,
     /// Intent revision this operation targets.
@@ -157,7 +159,7 @@ pub struct Operation {
     pub finished_at_ms: Option<i64>,
 }
 
-/// Current application reconciliation status.
+/// Current environment reconciliation status.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ApplicationState {

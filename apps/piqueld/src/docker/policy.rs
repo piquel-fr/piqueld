@@ -307,7 +307,7 @@ mod tests {
     /// Desired service attached to its private network and mounting `mounts`.
     fn desired(mounts: Vec<DesiredMount>) -> DesiredService {
         let image = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
-        let application = piqueld_core::ApplicationId::parse("app-policy").unwrap();
+        let application = piqueld_core::EnvironmentId::parse("app-policy").unwrap();
         DesiredService {
             secrets: Vec::new(),
             logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
@@ -333,7 +333,7 @@ mod tests {
             )],
             labels: piqueld_core::Ownership {
                 instance_id: piqueld_core::InstanceId::parse("instance").unwrap(),
-                application_id: application,
+                environment_id: application,
                 service: Some(piqueld_core::ServiceName::parse("web").unwrap()),
                 spec_hash: format!("sha256:{}", "b".repeat(64)),
             }

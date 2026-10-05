@@ -7,7 +7,7 @@ use piqueld::api::http::{
     ApiState, Authenticator, EmbeddedBundle, UiAssets, api_router, router, web_router,
 };
 use piqueld::application::{BoundaryError, RuntimeBoundary};
-use piqueld::store::{Store, StoredApplication};
+use piqueld::store::{Store, StoredEnvironment};
 use piqueld_client::{AcceptedOperation, ApplyApplicationRequest, Client};
 use piqueld_core::{
     InstanceId, NormalizedApplication, ObservedApplication, ResolutionSet, compile_application,
@@ -47,7 +47,7 @@ struct FakeRuntime {
 impl RuntimeBoundary for FakeRuntime {
     async fn logs(
         &self,
-        _application: &piqueld_core::ApplicationId,
+        _application: &piqueld_core::EnvironmentId,
         service: Option<&str>,
         tail: u16,
         since: u32,
@@ -73,7 +73,7 @@ impl RuntimeBoundary for FakeRuntime {
     /// Only `web` has a running task.
     async fn create_exec(
         &self,
-        _application: &piqueld_core::ApplicationId,
+        _environment: &piqueld_core::EnvironmentId,
         request: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<piqueld::docker::Exec>, BoundaryError> {
         Ok(
@@ -115,7 +115,7 @@ impl RuntimeBoundary for FakeRuntime {
 
     async fn remove_secrets(
         &self,
-        _application: &piqueld_core::ApplicationId,
+        _application: &piqueld_core::EnvironmentId,
         _names: &[String],
     ) -> Result<(), BoundaryError> {
         if let Some(gate) = &self.cleanup_gate {
@@ -127,6 +127,7 @@ impl RuntimeBoundary for FakeRuntime {
 
     async fn prepare(
         &self,
+        environment: &piqueld_core::EnvironmentId,
         application: &NormalizedApplication,
         _reusable: &piqueld_core::ResolutionSet,
     ) -> Result<piqueld_core::ResolvedApplication, BoundaryError> {
@@ -152,6 +153,7 @@ impl RuntimeBoundary for FakeRuntime {
             .collect::<BTreeMap<_, _>>();
         let resolved = compile_application(
             application,
+            environment,
             self.instance.clone(),
             &ResolutionSet {
                 sources,
@@ -171,7 +173,7 @@ impl RuntimeBoundary for FakeRuntime {
 
     async fn observe(
         &self,
-        _application: &StoredApplication,
+        _application: &StoredEnvironment,
     ) -> Result<ObservedApplication, BoundaryError> {
         self.check_available().await?;
         Ok(ObservedApplication::default())
@@ -209,7 +211,11 @@ async fn fake_runtime_accepts_digest_pinned_requested_images() {
     };
 
     runtime
-        .prepare(&application, &ResolutionSet::default())
+        .prepare(
+            &piqueld_core::EnvironmentId::default_for(application.id()),
+            &application,
+            &ResolutionSet::default(),
+        )
         .await
         .expect("digest-pinned image resolves");
 }
@@ -255,7 +261,14 @@ async fn typed_client_exercises_polling_lifecycle_over_tcp() {
     let client = Client::tcp(&format!("http://{address}/")).expect("valid client endpoint");
     let manifest = manifest();
 
-    assert!(client.builds(None, None).await.unwrap().items.is_empty());
+    assert!(
+        client
+            .builds(None, None, None)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
     assert!(
         matches!(client.build_logs(999,None,None).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
     );
@@ -270,11 +283,14 @@ async fn typed_client_exercises_polling_lifecycle_over_tcp() {
 
 async fn assert_create_plan(client: &Client, manifest: &ApplicationManifest) {
     let preview = client
-        .plan_application(&ApplyApplicationRequest {
-            expected_generation: None,
-            expected_application_id: None,
-            manifest: manifest.clone(),
-        })
+        .plan_application(
+            &ApplyApplicationRequest {
+                expected_generation: None,
+                expected_application_id: None,
+                manifest: manifest.clone(),
+            },
+            None,
+        )
         .await
         .expect("create preview succeeds");
     assert!(matches!(
@@ -294,7 +310,7 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
         .await
         .expect("apply succeeds");
     request.expected_generation = Some(created.generation);
-    request.expected_application_id = Some(created.application_id.clone());
+    request.expected_application_id = Some(created.environment_id.clone());
     let replay = client
         .apply_and_deploy(&request)
         .await
@@ -304,27 +320,27 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
     assert_eq!(summaries.items.len(), 1);
     assert_eq!(
         summaries.items[0].id,
-        created.application_id.parse().unwrap()
+        created.environment_id.parse().unwrap()
     );
     assert_eq!(summaries.items[0].name, "notes");
     let summary_json = serde_json::to_value(&summaries.items[0]).unwrap();
     assert!(summary_json.get("application").is_none());
     let application = client
-        .application(&created.application_id)
+        .application(&created.environment_id)
         .await
         .expect("full application read succeeds");
     assert_eq!(application.application.spec().services.len(), 1);
     let detail = client
-        .application_detail(&created.application_id)
+        .environment_detail(&created.environment_id)
         .await
         .expect("detail succeeds");
     assert_eq!(
         detail.application.application.id().as_str(),
-        created.application_id
+        created.environment_id
     );
     assert_eq!(detail.application.application.spec().services.len(), 1);
     assert!(detail.observed.services.is_empty());
-    assert_eq!(detail.application.resolved_generation, None);
+    assert_eq!(detail.environment.resolved_generation, None);
     assert!(detail.diagnostics.is_empty());
     assert_eq!(
         client.operation(&created.operation_id).await.unwrap().kind,
@@ -541,7 +557,7 @@ async fn assert_api_routes(application: &axum::Router) {
     assert_eq!(openapi.0, axum::http::StatusCode::OK);
     let openapi: serde_json::Value = serde_json::from_str(&openapi.1).unwrap();
     assert_eq!(openapi["openapi"], "3.0.3");
-    assert!(openapi["paths"]["/api/v1/applications/{id}/detail"].is_object());
+    assert!(openapi["paths"]["/api/v1/environments/{id}/detail"].is_object());
 }
 
 async fn assert_api_only_and_ui_modes(temp: &TempDir) {
@@ -815,18 +831,18 @@ async fn replace_and_plan(
     manifest.spec.services[0].replicas = 2;
     let request = ApplyApplicationRequest {
         expected_generation: Some(created.generation),
-        expected_application_id: Some(created.application_id.clone()),
+        expected_application_id: Some(created.environment_id.clone()),
         manifest,
     };
     let replaced = client
         .apply_and_deploy(&request)
         .await
         .expect("replacement succeeds");
-    assert_eq!(replaced.application_id, created.application_id);
+    assert_eq!(replaced.environment_id, created.environment_id);
     let mut preview_request = request;
     preview_request.expected_generation = Some(replaced.generation);
     client
-        .plan_application(&preview_request)
+        .plan_application(&preview_request, None)
         .await
         .expect("preview succeeds");
     replaced
@@ -834,11 +850,15 @@ async fn replace_and_plan(
 
 async fn delete(client: &Client, created: &AcceptedOperation) {
     let deleted = client
-        .delete_application_with_generation(&created.application_id, Some(created.generation))
+        .delete_application_with_generation(&created.environment_id, Some(created.generation))
         .await
         .expect("delete succeeds");
     assert_eq!(
-        client.operation(&deleted.operation_id).await.unwrap().kind,
+        client
+            .operation(&deleted.operations[0].operation_id)
+            .await
+            .unwrap()
+            .kind,
         piqueld_core::OperationKind::Delete
     );
 }
@@ -1046,7 +1066,7 @@ impl Target<'_> {
         let repeated_branch = send_raw(
             self,
             Method::POST,
-            "/api/v1/applications/doesnotexist1/deploy?branch=a&branch=b",
+            "/api/v1/environments/doesnotexist1/deploy?branch=a&branch=b",
             &[],
             Vec::new(),
         )
@@ -1568,7 +1588,7 @@ async fn served_openapi_document_matches_the_generated_snapshot_and_resolves_ref
     );
     for (pointer, reference) in [
         (
-            "/components/schemas/ApplicationDetailView/properties/latest_operation",
+            "/components/schemas/EnvironmentDetailView/properties/latest_operation",
             "#/components/schemas/Operation",
         ),
         (
@@ -1686,38 +1706,39 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
         matches!(stale,piqueld_client::ClientError::Api {status,..} if status==axum::http::StatusCode::CONFLICT)
     );
     request.expected_generation = Some(1);
-    request.expected_application_id = Some(first.application_id.clone());
+    request.expected_application_id = Some(first.environment_id.clone());
     request.manifest.spec.services[0].replicas = 2;
     let changed = client.apply_and_deploy(&request).await.unwrap();
     assert_eq!(changed.generation, 2);
     // A one-time manifest revision needs a repository-backed manifest.
     let revision = piqueld_client::ManifestRevision::Branch("feature".into());
     let unbacked = client
-        .deploy_application(&first.application_id, 2, Some(&revision))
+        .deploy_environment(&first.environment_id, 2, Some(&revision))
         .await
         .unwrap_err();
     assert!(
         matches!(unbacked, piqueld_client::ClientError::Api { error, .. } if error.details.to_string().contains("manifest_repository_required"))
     );
     let refreshed = client
-        .deploy_application(&first.application_id, 2, None)
+        .deploy_environment(&first.environment_id, 2, None)
         .await
         .unwrap();
     assert_eq!(refreshed.generation, 2);
     assert_ne!(refreshed.operation_id, changed.operation_id);
     let reconciled = client
-        .reconcile_application(&first.application_id, Some(2))
+        .reconcile_environment(&first.environment_id, Some(2))
         .await
         .unwrap();
     assert_eq!(reconciled.operation_id, refreshed.operation_id);
     let first_page = client
-        .events(Some(&first.application_id), None, 2)
+        .events(None, Some(&first.environment_id), None, 2)
         .await
         .unwrap();
     assert_eq!(first_page.items.len(), 2);
     let second_page = client
         .events(
-            Some(&first.application_id),
+            None,
+            Some(&first.environment_id),
             first_page.next_cursor.as_deref(),
             100,
         )
@@ -1731,21 +1752,24 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
             .all(|event| event.id > first_page.items.last().unwrap().id)
     );
     let deletion = client
-        .delete_application_with_generation(&first.application_id, Some(2))
+        .delete_application_with_generation(&first.environment_id, Some(2))
         .await
         .unwrap();
     assert_eq!(deletion.generation, 3);
     assert!(
         client
-            .deploy_application(&first.application_id, 3, None)
+            .deploy_environment(&first.environment_id, 3, None)
             .await
             .is_err()
     );
     let repeated = client
-        .delete_application_with_generation(&first.application_id, Some(deletion.generation))
+        .delete_application_with_generation(&first.environment_id, Some(deletion.generation))
         .await
         .unwrap();
-    assert_eq!(repeated.operation_id, deletion.operation_id);
+    assert_eq!(
+        repeated.operations[0].operation_id,
+        deletion.operations[0].operation_id
+    );
     task.abort();
 }
 
@@ -1804,7 +1828,7 @@ async fn acceptance_receipts_survive_restart_and_supersession() {
     let accepted = keyed.apply_and_deploy(&request).await.unwrap();
     let mut replacement = request.clone();
     replacement.expected_generation = Some(1);
-    replacement.expected_application_id = Some(accepted.application_id.clone());
+    replacement.expected_application_id = Some(accepted.environment_id.clone());
     replacement.manifest.spec.services[0].replicas = 2;
     api.client.apply_and_deploy(&replacement).await.unwrap();
     drop(api);
@@ -1815,7 +1839,7 @@ async fn acceptance_receipts_survive_restart_and_supersession() {
     assert_eq!(replayed.generation, 1);
     assert_eq!(
         api.client
-            .application(&accepted.application_id)
+            .application(&accepted.environment_id)
             .await
             .unwrap()
             .generation,
@@ -1859,7 +1883,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     };
     let keyed = api.client.clone().with_request_id("rename-command");
     let error = keyed
-        .rename_application(&accepted.application_id, &request)
+        .rename_application(&accepted.environment_id, &request)
         .await
         .unwrap_err();
     assert!(
@@ -1871,19 +1895,19 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     )
     .await;
     let renamed = keyed
-        .rename_application(&accepted.application_id, &request)
+        .rename_application(&accepted.environment_id, &request)
         .await
         .unwrap();
-    assert_eq!(renamed.application_id, accepted.application_id);
+    assert_eq!(renamed.application_id, accepted.environment_id);
     assert_eq!(renamed.generation, 2);
     let replay = keyed
-        .rename_application(&accepted.application_id, &request)
+        .rename_application(&accepted.environment_id, &request)
         .await
         .unwrap();
     assert_eq!(replay.generation, 2);
     let app = api
         .client
-        .application(&accepted.application_id)
+        .application(&accepted.environment_id)
         .await
         .unwrap();
     assert_eq!(app.application.metadata().name.as_str(), "renamed");
@@ -1898,7 +1922,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     let mut identical = AcceptanceApi::request();
     identical.manifest.metadata.name = "renamed".into();
     identical.expected_generation = Some(2);
-    identical.expected_application_id = Some(accepted.application_id.clone());
+    identical.expected_application_id = Some(accepted.environment_id.clone());
     let no_op = api.client.apply_and_deploy(&identical).await.unwrap();
     assert_ne!(no_op.operation_id, accepted.operation_id);
     assert_eq!(no_op.generation, 3);
@@ -1918,7 +1942,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
         .unwrap();
     let mut stale = AcceptanceApi::request();
     stale.expected_generation = Some(1);
-    stale.expected_application_id = Some(accepted.application_id);
+    stale.expected_application_id = Some(accepted.environment_id);
     stale.manifest.spec.services[0].replicas = 3;
     let error = api.client.apply_and_deploy(&stale).await.unwrap_err();
     assert!(
@@ -1926,7 +1950,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     );
     assert_eq!(
         api.client
-            .application(&old_name.application_id)
+            .application(&old_name.environment_id)
             .await
             .unwrap()
             .application
@@ -1954,7 +1978,7 @@ async fn receipt_failure_rolls_back_acceptance_and_expired_keys_are_reusable() {
     assert!(keyed.apply_and_deploy(&request).await.is_err());
     assert_eq!(
         api.store.list(None, 50).await.unwrap().items,
-        [] as [piqueld::store::StoredApplication; 0]
+        [] as [piqueld::store::StoredEnvironment; 0]
     );
     sqlx::query("DROP TRIGGER reject_receipt")
         .execute(&mut connection)
@@ -1966,7 +1990,7 @@ async fn receipt_failure_rolls_back_acceptance_and_expired_keys_are_reusable() {
         .await
         .unwrap();
     let refreshed = keyed
-        .deploy_application(&accepted.application_id, 1, None)
+        .deploy_environment(&accepted.environment_id, 1, None)
         .await
         .unwrap();
     assert_ne!(refreshed.operation_id, accepted.operation_id);
@@ -1992,7 +2016,11 @@ async fn preview_resolves_images_again_and_redacts_manifest_and_runtime_configur
         unavailable: std::sync::atomic::AtomicBool::new(false),
     };
     let target = runtime
-        .prepare(&normalized, &ResolutionSet::default())
+        .prepare(
+            &piqueld_core::EnvironmentId::default_for(normalized.id()),
+            &normalized,
+            &ResolutionSet::default(),
+        )
         .await
         .unwrap();
     api.store
@@ -2006,7 +2034,7 @@ async fn preview_resolves_images_again_and_redacts_manifest_and_runtime_configur
         .environment
         .insert("TOKEN".into(), "new-private-value".into());
     request.manifest.spec.services[0].command = vec!["command-private-value".into()];
-    let preview = api.client.plan_application(&request).await.unwrap();
+    let preview = api.client.plan_application(&request, None).await.unwrap();
     assert_eq!(preview.generation, 1);
     assert!(!preview.identical);
     assert!(
@@ -2033,7 +2061,11 @@ async fn preview_resolves_images_again_and_redacts_manifest_and_runtime_configur
     }
     assert!(json.contains("redacted"));
     assert_eq!(
-        api.store.get(normalized.id()).await.unwrap().generation,
+        api.store
+            .application(normalized.id())
+            .await
+            .unwrap()
+            .generation,
         1,
         "preview is read-only"
     );
@@ -2063,21 +2095,23 @@ impl AcceptanceApi {
             .unwrap();
     }
 
-    async fn finish_deletion(&self, deletion: &AcceptedOperation) {
-        self.store
-            .transition_operation(
-                &deletion.operation_id,
-                piqueld_core::OperationState::Requested,
-                piqueld_core::OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
-        let operation = self.store.operation(&deletion.operation_id).await.unwrap();
-        self.store
-            .finish_delete_operation(&operation)
-            .await
-            .unwrap();
+    async fn finish_deletion(&self, deletion: &piqueld_core::api::DeletedApplication) {
+        for accepted in &deletion.operations {
+            self.store
+                .transition_operation(
+                    &accepted.operation_id,
+                    piqueld_core::OperationState::Requested,
+                    piqueld_core::OperationState::Running,
+                    None,
+                )
+                .await
+                .unwrap();
+            let operation = self.store.operation(&accepted.operation_id).await.unwrap();
+            self.store
+                .finish_delete_operation(&operation)
+                .await
+                .unwrap();
+        }
     }
 }
 
@@ -2098,7 +2132,7 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
         api.client.apply_and_deploy(&request).await.unwrap_err(),
         "precondition_required",
     );
-    request.expected_application_id = Some(accepted.application_id.clone());
+    request.expected_application_id = Some(accepted.environment_id.clone());
     request.manifest.spec.services[0].replicas = 2;
     let mut competing = request.clone();
     competing.manifest.spec.services[0].replicas = 3;
@@ -2110,39 +2144,39 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
     AcceptanceApi::assert_error(first.err().or(second.err()).unwrap(), "generation_conflict");
     AcceptanceApi::assert_error(
         api.client
-            .delete_application_with_generation(&accepted.application_id, None)
+            .delete_application_with_generation(&accepted.environment_id, None)
             .await
             .unwrap_err(),
         "precondition_required",
     );
     AcceptanceApi::assert_error(
         api.client
-            .delete_application_with_generation(&accepted.application_id, Some(1))
+            .delete_application_with_generation(&accepted.environment_id, Some(1))
             .await
             .unwrap_err(),
         "generation_conflict",
     );
     let refreshed = api
         .client
-        .deploy_application(&accepted.application_id, 2, None)
+        .deploy_environment(&accepted.environment_id, 2, None)
         .await
         .unwrap();
     assert_eq!(refreshed.generation, 2);
     let deletion = api
         .client
-        .delete_application_with_preconditions(&accepted.application_id, Some(1), true)
+        .delete_application_with_preconditions(&accepted.environment_id, Some(1), true, &[])
         .await
         .unwrap();
     assert_eq!(deletion.generation, 3);
     let reconciled = api
         .client
-        .reconcile_application(&accepted.application_id, None)
+        .reconcile_environment(&accepted.environment_id, None)
         .await
         .unwrap();
-    assert_eq!(reconciled.operation_id, deletion.operation_id);
+    assert_eq!(reconciled.operation_id, deletion.operations[0].operation_id);
     assert!(
         api.client
-            .deploy_application(&accepted.application_id, 2, None)
+            .deploy_environment(&accepted.environment_id, 2, None)
             .await
             .is_err()
     );
@@ -2161,7 +2195,7 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
         .unwrap();
     let deletion = api
         .client
-        .delete_application_with_generation(&original.application_id, Some(1))
+        .delete_application_with_generation(&original.environment_id, Some(1))
         .await
         .unwrap();
     api.finish_deletion(&deletion).await;
@@ -2170,9 +2204,9 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
         .apply_and_deploy(&AcceptanceApi::request())
         .await
         .unwrap();
-    assert_ne!(replacement.application_id, original.application_id);
+    assert_ne!(replacement.environment_id, original.environment_id);
     request.expected_generation = Some(1);
-    request.expected_application_id = Some(original.application_id);
+    request.expected_application_id = Some(original.environment_id);
     request.manifest.spec.services[0].replicas = 4;
     AcceptanceApi::assert_error(
         api.client.apply_and_deploy(&request).await.unwrap_err(),
@@ -2183,11 +2217,11 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
         .apply_and_deploy_with_force(&request, true)
         .await
         .unwrap();
-    assert_eq!(forced.application_id, replacement.application_id);
+    assert_eq!(forced.environment_id, replacement.environment_id);
     assert_eq!(forced.generation, 2);
     assert_eq!(
         api.client
-            .application(&forced.application_id)
+            .application(&forced.environment_id)
             .await
             .unwrap()
             .application
@@ -2206,7 +2240,7 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
     );
     assert_eq!(
         api.client
-            .application(&forced.application_id)
+            .application(&forced.environment_id)
             .await
             .unwrap()
             .generation,
@@ -2250,7 +2284,7 @@ async fn forced_receipts_replay_after_restart_without_overwriting_newer_intent()
     );
     let current = api
         .client
-        .application(&accepted.application_id)
+        .application(&accepted.environment_id)
         .await
         .unwrap();
     assert_eq!(current.generation, newer.generation);
@@ -2282,14 +2316,14 @@ async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
     };
     AcceptanceApi::assert_error(
         api.client
-            .rename_application(&accepted.application_id, &rename)
+            .rename_application(&accepted.environment_id, &rename)
             .await
             .unwrap_err(),
         "precondition_required",
     );
     AcceptanceApi::assert_error(
         api.client
-            .rename_application_with_force(&accepted.application_id, &rename, true)
+            .rename_application_with_force(&accepted.environment_id, &rename, true)
             .await
             .unwrap_err(),
         "application_busy",
@@ -2298,11 +2332,11 @@ async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
     rename.expected_generation = Some(99);
     let renamed = api
         .client
-        .rename_application_with_force(&accepted.application_id, &rename, true)
+        .rename_application_with_force(&accepted.environment_id, &rename, true)
         .await
         .unwrap();
     assert_eq!(renamed.generation, 2);
-    assert_eq!(renamed.application_id, accepted.application_id);
+    assert_eq!(renamed.application_id, accepted.environment_id);
     api.client
         .apply_and_deploy(&AcceptanceApi::request())
         .await
@@ -2310,7 +2344,7 @@ async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
     rename.name = "notes".into();
     AcceptanceApi::assert_error(
         api.client
-            .rename_application_with_force(&accepted.application_id, &rename, true)
+            .rename_application_with_force(&accepted.environment_id, &rename, true)
             .await
             .unwrap_err(),
         "application_name_collision",
@@ -2333,10 +2367,10 @@ async fn docker_outage_allows_acceptance_and_preserves_receipt_replay() {
     );
     let mut changed = request.clone();
     changed.expected_generation = Some(accepted.generation);
-    changed.expected_application_id = Some(accepted.application_id.clone());
+    changed.expected_application_id = Some(accepted.environment_id.clone());
     changed.manifest.spec.services[0].replicas = 2;
     assert!(
-        matches!(api.client.plan_application(&changed).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status==StatusCode::SERVICE_UNAVAILABLE)
+        matches!(api.client.plan_application(&changed, None).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status==StatusCode::SERVICE_UNAVAILABLE)
     );
     let next = api.client.apply_and_deploy(&changed).await.unwrap();
     assert_ne!(next.operation_id, accepted.operation_id);
@@ -2375,7 +2409,7 @@ impl DeployFixture for Client {
             .apply_application_with_options(request, force, true)
             .await?;
         Ok(AcceptedOperation {
-            application_id: saved.application_id,
+            environment_id: saved.application_id,
             generation: saved.generation,
             operation_id: saved.operation_id.expect("deployment requested"),
         })
@@ -2395,7 +2429,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     assert!(saved.operation_id.is_none());
     let detail = api
         .client
-        .application_detail(&saved.application_id)
+        .environment_detail(&saved.application_id)
         .await
         .unwrap();
     assert_eq!(
@@ -2405,12 +2439,12 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     assert!(detail.latest_operation.is_none());
     let first = api
         .client
-        .deploy_application(&saved.application_id, saved.generation, None)
+        .deploy_environment(&saved.application_id, saved.generation, None)
         .await
         .unwrap();
     let second = api
         .client
-        .deploy_application(&saved.application_id, saved.generation, None)
+        .deploy_environment(&saved.application_id, saved.generation, None)
         .await
         .unwrap();
     assert_ne!(first.operation_id, second.operation_id);
@@ -2446,7 +2480,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     );
     assert!(
         api.client
-            .deploy_application(&saved.application_id, 1, None)
+            .deploy_environment(&saved.application_id, 1, None)
             .await
             .is_err()
     );
@@ -2454,7 +2488,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
         .unavailable
         .store(false, std::sync::atomic::Ordering::Relaxed);
     request.expected_generation = Some(saved.generation);
-    let preview = api.client.plan_application(&request).await.unwrap();
+    let preview = api.client.plan_application(&request, None).await.unwrap();
     assert!(!preview.identical);
     assert!(!preview.changes.is_empty());
 }
@@ -2471,7 +2505,7 @@ async fn deploy_after_rename_captures_saved_name_and_spec() {
     api.finish_operation(&accepted.operation_id, None).await;
     api.client
         .rename_application(
-            &accepted.application_id,
+            &accepted.environment_id,
             &piqueld_client::RenameApplicationRequest {
                 name: "renamed".into(),
                 expected_generation: Some(1),
@@ -2483,11 +2517,11 @@ async fn deploy_after_rename_captures_saved_name_and_spec() {
     edited.manifest.metadata.name = "renamed".into();
     edited.manifest.spec.services[0].replicas = 2;
     edited.expected_generation = Some(2);
-    edited.expected_application_id = Some(accepted.application_id.clone());
+    edited.expected_application_id = Some(accepted.environment_id.clone());
     api.client.apply_application(&edited).await.unwrap();
     let refreshed = api
         .client
-        .deploy_application(&accepted.application_id, 3, None)
+        .deploy_environment(&accepted.environment_id, 3, None)
         .await
         .unwrap();
     let snapshot = api
@@ -2518,11 +2552,11 @@ async fn unavailable_observation_does_not_claim_services_are_missing() {
         .apply_and_deploy(&AcceptanceApi::request())
         .await
         .unwrap();
-    let id = piqueld_core::ApplicationId::parse(&accepted.application_id).unwrap();
+    let id = piqueld_core::EnvironmentId::parse(&accepted.environment_id).unwrap();
     let app = api.store.get(&id).await.unwrap();
     let target = api
         .runtime
-        .prepare(&app.application, &ResolutionSet::default())
+        .prepare(&id, app.manifest(), &ResolutionSet::default())
         .await
         .unwrap();
     api.store
@@ -2546,7 +2580,7 @@ async fn unavailable_observation_does_not_claim_services_are_missing() {
         .store(true, std::sync::atomic::Ordering::Relaxed);
     let detail = api
         .client
-        .application_detail(&accepted.application_id)
+        .environment_detail(&accepted.environment_id)
         .await
         .unwrap();
     assert!(
@@ -2628,13 +2662,13 @@ async fn routed_statuses_and_media_types_are_documented_in_openapi() {
         (Method::GET, "/applications", 200),
         (Method::GET, "/events", 200),
         (Method::GET, "/applications/{id}", 404),
-        (Method::GET, "/applications/{id}/detail", 404),
-        (Method::GET, "/applications/{id}/status", 404),
-        (Method::GET, "/applications/{id}/deployments", 404),
+        (Method::GET, "/environments/{id}/detail", 404),
+        (Method::GET, "/environments/{id}/status", 404),
+        (Method::GET, "/environments/{id}/deployments", 404),
         (Method::GET, "/operations/{id}", 404),
         (Method::POST, "/applications/apply", 400),
         (Method::POST, "/applications/plan", 400),
-        (Method::GET, "/applications/{id}/exec", 426),
+        (Method::GET, "/environments/{id}/exec", 426),
     ];
     for (method, suffix, status) in cases {
         let path = format!("/api/v1{suffix}");
@@ -2700,15 +2734,15 @@ async fn application_log_snapshot_validates_bounds_and_preserves_task_identity()
     let client = Client::tcp(&format!("http://{address}/")).unwrap();
     let app = create_and_inspect(&client, &manifest()).await;
     let logs = client
-        .application_logs(&app.application_id, Some("web"), 5, 60)
+        .environment_logs(&app.environment_id, Some("web"), 5, 60)
         .await
         .unwrap();
     assert_eq!(logs.items[0].task_id, "task-1");
     assert_eq!(logs.items[0].message, "hello");
     assert!(!logs.truncated);
     let stderr = client
-        .filtered_application_logs(
-            &app.application_id,
+        .filtered_environment_logs(
+            &app.environment_id,
             Some("web"),
             5,
             60,
@@ -2719,7 +2753,7 @@ async fn application_log_snapshot_validates_bounds_and_preserves_task_identity()
     assert!(stderr.items.is_empty());
     for (tail, since) in [(0, 60), (1001, 60), (5, 0), (5, 86401)] {
         let error = client
-            .application_logs(&app.application_id, Some("web"), tail, since)
+            .environment_logs(&app.environment_id, Some("web"), tail, since)
             .await
             .unwrap_err();
         assert!(
@@ -2757,7 +2791,7 @@ async fn exec_streams_over_both_transports_and_records_history_without_the_comma
         Client::tcp(&format!("http://{address}/")).unwrap(),
     ] {
         let (mut output, mut input) = client
-            .exec(&app.application_id, &request("web"))
+            .exec(&app.environment_id, &request("web"))
             .await
             .unwrap();
         input
@@ -2776,7 +2810,7 @@ async fn exec_streams_over_both_transports_and_records_history_without_the_comma
 
         // Start failures arrive after the handshake, with their HTTP status.
         let (mut output, _input) = client
-            .exec(&app.application_id, &request("worker"))
+            .exec(&app.environment_id, &request("worker"))
             .await
             .unwrap();
         assert!(matches!(
@@ -2787,7 +2821,7 @@ async fn exec_streams_over_both_transports_and_records_history_without_the_comma
     }
     // Completion is recorded before the final frame is sent.
     let commands = Client::unix(&socket)
-        .events(Some(&app.application_id), None, 100)
+        .events(None, Some(&app.environment_id), None, 100)
         .await
         .unwrap()
         .items
@@ -2807,8 +2841,8 @@ async fn exec_streams_over_both_transports_and_records_history_without_the_comma
     // A client detaching from a quiet session gets a clean Close reply.
     let (mut socket, _) = tokio_tungstenite::client_async(
         format!(
-            "ws://{address}/api/v1/applications/{}/exec",
-            app.application_id
+            "ws://{address}/api/v1/environments/{}/exec",
+            app.environment_id
         ),
         tokio::net::TcpStream::connect(address).await.unwrap(),
     )
@@ -2897,13 +2931,13 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
         .unwrap();
     assert_eq!(saved.operation_id, Some(replay.operation_id));
     assert_eq!(saved.generation, replay.generation);
-    let id = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
-    let direct = service.clone().application_detail(&id).await.unwrap();
+    let id = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
+    let direct = service.clone().environment_detail(&id).await.unwrap();
     let response = api_router(service.clone(), FakeAuth)
         .oneshot(
             Request::builder()
                 .header("host", "localhost")
-                .uri(format!("/api/v1/applications/{id}/detail"))
+                .uri(format!("/api/v1/environments/{id}/detail"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2943,7 +2977,11 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     };
     assert_eq!(replay.generation, saved.generation);
     assert_eq!(
-        service.application(&id).await.unwrap().generation,
+        service
+            .application(&piqueld_core::ApplicationId::parse(id.as_str()).unwrap())
+            .await
+            .unwrap()
+            .generation,
         saved.generation
     );
 }
@@ -2955,10 +2993,11 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
     let service = state(&temp).await;
     let manifest = manifest().validate().unwrap();
     let id = piqueld_core::ApplicationId::parse("absent-application").unwrap();
+    let environment = piqueld_core::EnvironmentId::parse("absent-application").unwrap();
     for mutation in [
         Mutation::save(manifest.clone(), None, false),
-        Mutation::deploy(id.clone()),
-        Mutation::Delete { id: id.clone() },
+        Mutation::deploy(environment.clone()),
+        Mutation::Delete { id: environment },
         Mutation::Rename {
             id,
             name: "renamed".into(),
@@ -3000,7 +3039,7 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
             .await,
         Err(ApplicationError::PreconditionRequired)
     ));
-    let id = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
+    let id = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
     assert!(matches!(
         service
             .accept(
@@ -3030,7 +3069,7 @@ async fn direct_service_validates_log_bounds_and_deployment_ownership() {
     use piqueld::api::{ApplicationError, Mutation, MutationResponse};
     let temp = tempfile::tempdir().unwrap();
     let service = state(&temp).await;
-    let missing = piqueld_core::ApplicationId::parse("absent-application").unwrap();
+    let missing = piqueld_core::EnvironmentId::parse("absent-application").unwrap();
     for (name, tail, since) in [
         (None, 0, 60),
         (None, 1001, 60),
@@ -3074,7 +3113,7 @@ async fn direct_service_validates_log_bounds_and_deployment_ownership() {
             piqueld::store::StoreError::NotFound
         ))
     ));
-    let id = piqueld_core::ApplicationId::parse(saved.application_id).unwrap();
+    let id = piqueld_core::EnvironmentId::parse(saved.application_id).unwrap();
     service
         .deployment_attempts(&id, &deployment, None)
         .await
@@ -3215,7 +3254,7 @@ async fn job_field_edit_replaces_jobs_in_order_and_validates_atomically() {
         "{error:?}"
     );
     assert_eq!(jobs_of().await, jobs);
-    let events = api.client.events(Some(id), None, 100).await.unwrap();
+    let events = api.client.events(Some(id), None, None, 100).await.unwrap();
     let recorded = events
         .items
         .iter()
@@ -3914,7 +3953,7 @@ async fn typed_edits_record_safe_field_history() {
         .unwrap();
     let events = api
         .client
-        .events(Some(&saved.application_id), None, 100)
+        .events(Some(&saved.application_id), None, None, 100)
         .await
         .unwrap();
     let recorded = events
@@ -3946,7 +3985,7 @@ async fn diagnostic_ids_correlate_api_failures_and_metrics_routes_are_isolated()
         .store(true, std::sync::atomic::Ordering::Relaxed);
     let error = api
         .client
-        .application_logs(&app.application_id, Some("web"), 5, 60)
+        .environment_logs(&app.environment_id, Some("web"), 5, 60)
         .await
         .unwrap_err();
     let piqueld_client::ClientError::Api { error, .. } = error else {
@@ -3956,8 +3995,8 @@ async fn diagnostic_ids_correlate_api_failures_and_metrics_routes_are_isolated()
     let event = api.client.diagnostic(id).await.unwrap();
     assert_eq!(event.request_id.as_deref(), Some(error.request_id.as_str()));
     assert_eq!(
-        event.application_id.as_ref().map(ToString::to_string),
-        Some(app.application_id.clone())
+        event.environment_id.as_ref().map(ToString::to_string),
+        Some(app.environment_id.clone())
     );
     assert_eq!(event.scope, piqueld_core::observability::EventScope::Daemon);
     let errors = api
@@ -4013,7 +4052,12 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
         Some(("service_update_failed", "Update paused")),
     )
     .await;
-    let events = api.client.events(None, None, 100).await.unwrap().items;
+    let events = api
+        .client
+        .events(None, None, None, 100)
+        .await
+        .unwrap()
+        .items;
     let after = events[events.len() - 2].id;
     let router = router(
         ApiState::new(api.store.clone(), api.runtime.clone()),
@@ -4282,7 +4326,7 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
 /// Secret lifecycle history names secrets and journals cleanup without values.
 async fn assert_secret_history(client: &Client, application_id: &str) {
     let history = client
-        .events(Some(application_id), None, 100)
+        .events(None, Some(application_id), None, 100)
         .await
         .unwrap()
         .items;
@@ -4331,8 +4375,8 @@ async fn secret_api_is_application_scoped_write_only_and_versioned() {
             Request::builder()
                 .method("PUT")
                 .uri(format!(
-                    "/api/v1/applications/{}/secrets/token",
-                    app.application_id
+                    "/api/v1/environments/{}/secrets/token",
+                    app.environment_id
                 ))
                 .header("host", "localhost")
                 .header("content-type", "application/octet-stream")
@@ -4348,7 +4392,7 @@ async fn secret_api_is_application_scoped_write_only_and_versioned() {
     assert!(!raw.contains("private-token-value"));
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["data"]["generation"], 1);
-    assert_eq!(client.secrets(&app.application_id).await.unwrap().len(), 1);
+    assert_eq!(client.secrets(&app.environment_id).await.unwrap().len(), 1);
     let reference = |secrets| ApplicationEdit::Service {
         name: "web".into(),
         edit: ServiceEdit::Secrets(secrets),
@@ -4359,7 +4403,7 @@ async fn secret_api_is_application_scoped_write_only_and_versioned() {
     };
     let saved = client
         .edit_application(
-            &app.application_id,
+            &app.environment_id,
             &reference(vec![mount.clone()]),
             &EditOptions {
                 expected_generation: Some(app.generation),
@@ -4370,7 +4414,7 @@ async fn secret_api_is_application_scoped_write_only_and_versioned() {
         .unwrap();
     assert_eq!(
         client
-            .application(&app.application_id)
+            .application(&app.environment_id)
             .await
             .unwrap()
             .application
@@ -4381,12 +4425,12 @@ async fn secret_api_is_application_scoped_write_only_and_versioned() {
         vec![mount]
     );
     assert!(matches!(
-        client.delete_secret(&app.application_id, "token", 1).await,
+        client.delete_secret(&app.environment_id, "token", 1).await,
         Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 409
     ));
     client
         .edit_application(
-            &app.application_id,
+            &app.environment_id,
             &reference(Vec::new()),
             &EditOptions {
                 expected_generation: Some(saved.generation),
@@ -4396,23 +4440,23 @@ async fn secret_api_is_application_scoped_write_only_and_versioned() {
         .await
         .unwrap();
     assert!(
-        matches!(client.put_secret(&app.application_id,"token",0,b"stale".to_vec()).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==409)
+        matches!(client.put_secret(&app.environment_id,"token",0,b"stale".to_vec()).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==409)
     );
     assert!(
         matches!(client.secrets("app-absent").await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
     );
     client
-        .delete_secret(&app.application_id, "token", 1)
+        .delete_secret(&app.environment_id, "token", 1)
         .await
         .unwrap();
     assert!(
         client
-            .secrets(&app.application_id)
+            .secrets(&app.environment_id)
             .await
             .unwrap()
             .is_empty()
     );
-    assert_secret_history(&client, &app.application_id).await;
+    assert_secret_history(&client, &app.environment_id).await;
     server.abort();
 }
 
@@ -4425,12 +4469,12 @@ async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
     let client = Client::tcp(&format!("http://{address}/")).unwrap();
     let app = create_and_inspect(&client, &manifest()).await;
     client
-        .put_secret(&app.application_id, "token", 0, b"value".to_vec())
+        .put_secret(&app.environment_id, "token", 0, b"value".to_vec())
         .await
         .unwrap();
     std::fs::remove_file(temp.path().join("secrets.key")).unwrap();
     let error = client
-        .put_secret(&app.application_id, "token", 1, b"replacement".to_vec())
+        .put_secret(&app.environment_id, "token", 1, b"replacement".to_vec())
         .await
         .unwrap_err();
     let piqueld_client::ClientError::Api { status, error, .. } = error else {
@@ -4467,6 +4511,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
         .validate()
         .unwrap()
         .normalize(piqueld_core::ApplicationId::parse("app-cleanup").unwrap());
+    let environment = piqueld_core::EnvironmentId::default_for(app.id());
     store.save_application(&app, None, None).await.unwrap();
     let gate = Arc::new(CleanupGate::default());
     let runtime = Arc::new(FakeRuntime {
@@ -4476,12 +4521,12 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
     });
     let service = ApiState::new(store.clone(), runtime.clone());
     service
-        .put_secret(app.id(), "token", 0, b"value".to_vec())
+        .put_secret(&environment, "token", 0, b"value".to_vec())
         .await
         .unwrap();
     let cleanup = {
         let service = service.clone();
-        let id = app.id().clone();
+        let id = environment.clone();
         tokio::spawn(async move { service.delete_secret(&id, "token", 1).await })
     };
     tokio::time::timeout(std::time::Duration::from_secs(2), gate.started.notified())
@@ -4489,7 +4534,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
         .unwrap();
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        service.put_secret(app.id(), "other", 0, b"unrelated".to_vec()),
+        service.put_secret(&environment, "other", 0, b"unrelated".to_vec()),
     )
     .await
     .unwrap()
@@ -4531,13 +4576,13 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
             .iter()
             .any(|event| event.phase.as_deref() == Some("remove_secrets")
                 && event.resource.as_deref() == Some("token")
-                && event.application_id.as_ref() == Some(app.id())
+                && event.environment_id.as_ref() == Some(&environment)
                 && event.diagnostic.is_some()),
         "{failed:#?}"
     );
     assert!(
         service
-            .secrets(app.id())
+            .secrets(&environment)
             .await
             .unwrap()
             .iter()
@@ -4549,8 +4594,11 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
         .unavailable
         .store(false, std::sync::atomic::Ordering::Relaxed);
     gate.release.notify_one();
-    service.delete_secret(app.id(), "token", 1).await.unwrap();
-    assert_eq!(service.secrets(app.id()).await.unwrap().len(), 1);
+    service
+        .delete_secret(&environment, "token", 1)
+        .await
+        .unwrap();
+    assert_eq!(service.secrets(&environment).await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -4566,7 +4614,12 @@ async fn secret_key_recovery_api_discards_values_only_for_an_unusable_key() {
         .await
         .unwrap();
     store
-        .put_secret(application.id(), "token", 0, b"private-value".to_vec())
+        .put_secret(
+            &piqueld_core::EnvironmentId::default_for(application.id()),
+            "token",
+            0,
+            b"private-value".to_vec(),
+        )
         .await
         .unwrap();
     let api = router(
@@ -4609,9 +4662,9 @@ async fn invalid_path_parameters_return_correlated_json_errors() {
         (Method::GET, "/api/v1/builds/not-a-number/logs"),
         (Method::GET, "/api/v1/diagnostics/%FF"),
         (Method::POST, "/api/v1/notifications/deliveries/%FF/retry"),
-        (Method::GET, "/api/v1/applications/%FF/secrets"),
-        (Method::PUT, "/api/v1/applications/app-test/secrets/%FF"),
-        (Method::DELETE, "/api/v1/applications/app-test/secrets/%FF"),
+        (Method::GET, "/api/v1/environments/%FF/secrets"),
+        (Method::PUT, "/api/v1/environments/app-test/secrets/%FF"),
+        (Method::DELETE, "/api/v1/environments/app-test/secrets/%FF"),
         (Method::GET, "/api/v1/applications/%FF"),
         (
             Method::PUT,
@@ -4643,4 +4696,291 @@ async fn invalid_path_parameters_return_correlated_json_errors() {
         assert_eq!(error.code, "path_invalid");
         assert_eq!(error.request_id, request_id);
     }
+}
+
+/// Saves the fixture application and adds a `staging` environment.
+async fn two_environments(
+    service: &ApiState,
+) -> (
+    piqueld_core::api::SavedApplication,
+    piqueld_core::api::EnvironmentView,
+) {
+    use piqueld::api::{ApplicationError, Mutation, MutationResponse};
+    use piqueld::store::StoreError;
+    let MutationResponse::Saved(saved) = service
+        .accept(
+            Mutation::save(manifest().validate().unwrap(), None, false),
+            Some(0),
+            false,
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("saved")
+    };
+    let application = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
+    let create = |name: &str| Mutation::CreateEnvironment {
+        application: application.clone(),
+        name: piqueld_core::EnvironmentName::parse(name).unwrap(),
+    };
+    let MutationResponse::Environment(staging) = service
+        .accept(create("staging"), Some(saved.generation), false, None)
+        .await
+        .unwrap()
+    else {
+        panic!("environment")
+    };
+    assert_ne!(staging.id.as_str(), application.as_str());
+    assert!(matches!(
+        service
+            .accept(create("staging"), Some(saved.generation), false, None)
+            .await,
+        Err(ApplicationError::Store(StoreError::AlreadyExists))
+    ));
+    (saved, staging)
+}
+
+#[tokio::test]
+async fn environments_deploy_independently_and_runtime_commands_never_pick_one() {
+    use piqueld::api::{ApplicationError, Mutation, MutationResponse};
+    use piqueld::store::StoreError;
+    use piqueld_core::EnvironmentName;
+    let temp = tempfile::tempdir().unwrap();
+    let service = state(&temp).await;
+    let (saved, staging) = two_environments(&service).await;
+    let application = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
+    let view = service.application(&application).await.unwrap();
+    assert_eq!(view.generation, saved.generation);
+    let production = view.environment("production").unwrap().id.clone();
+    assert_eq!(production.as_str(), application.as_str());
+    assert_eq!(view.sole_environment().unwrap_err().len(), 2);
+
+    // Saving with a deployment never picks one of several environments.
+    assert!(matches!(
+        service
+            .accept(
+                Mutation::save(
+                    manifest().validate().unwrap(),
+                    Some(saved.application_id.clone()),
+                    true,
+                ),
+                Some(saved.generation),
+                false,
+                None,
+            )
+            .await,
+        Err(ApplicationError::Store(StoreError::EnvironmentRequired { environments }))
+            if environments.len() == 2
+    ));
+
+    let MutationResponse::Operation(deployed) = service
+        .accept(
+            Mutation::deploy(staging.id.clone()),
+            Some(saved.generation),
+            false,
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("deployment")
+    };
+    assert_eq!(deployed.environment_id, staging.id.as_str());
+    assert!(
+        service
+            .environment_detail(&production)
+            .await
+            .unwrap()
+            .latest_operation
+            .is_none()
+    );
+    assert_eq!(
+        service
+            .environment_detail(&staging.id)
+            .await
+            .unwrap()
+            .latest_operation
+            .unwrap()
+            .id,
+        deployed.operation_id
+    );
+
+    // Deleting the application names every environment.
+    let delete = |names: &[&str]| Mutation::DeleteApplication {
+        id: application.clone(),
+        environments: names
+            .iter()
+            .map(|name| EnvironmentName::parse(*name).unwrap())
+            .collect(),
+    };
+    assert!(matches!(
+        service
+            .accept(delete(&["production"]), Some(saved.generation), false, None)
+            .await,
+        Err(ApplicationError::Store(
+            StoreError::ConfirmationRequired { .. }
+        ))
+    ));
+    let MutationResponse::Deleted(deleted) = service
+        .accept(
+            delete(&["staging", "production"]),
+            Some(saved.generation),
+            false,
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("deleted")
+    };
+    assert_eq!(deleted.operations.len(), 2);
+    assert_eq!(deleted.generation, saved.generation + 1);
+}
+
+#[tokio::test]
+async fn application_history_spans_its_environments() {
+    use piqueld::api::Mutation;
+    use piqueld_core::observability::EventFilter;
+    let temp = tempfile::tempdir().unwrap();
+    let service = state(&temp).await;
+    let (saved, staging) = two_environments(&service).await;
+    let application = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
+    let production = piqueld_core::EnvironmentId::default_for(&application);
+    service
+        .accept(
+            Mutation::Rename {
+                id: application.clone(),
+                name: "renamed".into(),
+            },
+            Some(saved.generation),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    service
+        .accept(
+            Mutation::deploy(production.clone()),
+            Some(saved.generation + 1),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    let events = |filter: EventFilter| {
+        let service = service.clone();
+        async move {
+            service
+                .filtered_events(&filter, None, 100)
+                .await
+                .unwrap()
+                .items
+                .into_iter()
+                .map(|event| (event.kind, event.environment_id))
+                .collect::<Vec<_>>()
+        }
+    };
+
+    // Application-wide events are recorded once, without an environment, and
+    // the application's history includes every environment's events.
+    let history = events(EventFilter {
+        application_id: Some(application.to_string()),
+        ..EventFilter::default()
+    })
+    .await;
+    assert!(history.contains(&("environment_created".into(), Some(staging.id.clone()))));
+    assert_eq!(
+        history
+            .iter()
+            .filter(|(kind, _)| kind == "application_renamed")
+            .collect::<Vec<_>>(),
+        [&("application_renamed".to_owned(), None)]
+    );
+    let production_history = events(EventFilter {
+        environment_id: Some(production.to_string()),
+        ..EventFilter::default()
+    })
+    .await;
+    let in_production = |(_, environment): &(String, Option<piqueld_core::EnvironmentId>)| {
+        environment.as_ref() == Some(&production)
+    };
+    assert!(production_history.iter().any(in_production));
+    assert!(production_history.iter().all(in_production));
+}
+
+#[tokio::test]
+async fn previews_compare_with_the_selected_environment() {
+    use piqueld::api::{ApplicationError, Mutation};
+    use piqueld::store::StoreError;
+    let temp = tempfile::tempdir().unwrap();
+    let service = state(&temp).await;
+    let (saved, staging) = two_environments(&service).await;
+    let production = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
+    service
+        .accept(
+            Mutation::deploy(staging.id.clone()),
+            Some(saved.generation),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    let plan = |environment: Option<piqueld_core::EnvironmentId>| {
+        let service = service.clone();
+        async move {
+            service
+                .plan(
+                    manifest().validate().unwrap(),
+                    None,
+                    None,
+                    environment.as_ref(),
+                )
+                .await
+        }
+    };
+
+    // Without a selection, several environments leave no runtime baseline.
+    let unselected = plan(None).await.unwrap();
+    assert!(unselected.operation.is_none() && unselected.plan.actions.is_empty());
+
+    let deployed = plan(Some(staging.id.clone())).await.unwrap();
+    assert!(deployed.identical);
+    assert!(deployed.operation.is_some());
+    let resolves_image = |plan: &piqueld_core::api::PlanView| {
+        plan.plan
+            .actions
+            .iter()
+            .any(|action| matches!(action.kind, ActionKind::ResolveImage { .. }))
+    };
+    assert!(resolves_image(&deployed));
+
+    let undeployed = plan(Some(production)).await.unwrap();
+    assert!(!undeployed.identical && undeployed.operation.is_none());
+    assert!(!undeployed.changes.is_empty() && resolves_image(&undeployed));
+
+    // An environment of another application is never used as a baseline.
+    let mut other = manifest();
+    other.metadata.name = "other".into();
+    service
+        .accept(
+            Mutation::save(other.validate().unwrap(), None, false),
+            Some(0),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    let foreign = service.applications(None, None).await.unwrap().items;
+    let foreign = foreign
+        .iter()
+        .find(|application| application.name == "other")
+        .unwrap()
+        .environments[0]
+        .id
+        .clone();
+    assert!(matches!(
+        plan(Some(foreign)).await,
+        Err(ApplicationError::Store(StoreError::NotFound))
+    ));
 }

@@ -27,7 +27,7 @@ pub struct ExecReader(SplitStream<Socket>);
 pub struct ExecWriter(SplitSink<Socket, Message>);
 
 impl Client {
-    /// Starts a command in a running task of one application service.
+    /// Starts a command in a running task of one service of an environment.
     ///
     /// The client timeout bounds only the WebSocket handshake; the returned
     /// stream lasts until the command exits. Errors starting the command, such
@@ -40,7 +40,7 @@ impl Client {
         request: &ExecRequest,
     ) -> Result<(ExecReader, ExecWriter), ClientError> {
         let url = format!(
-            "{}{API_PREFIX}/applications/{}/exec",
+            "{}{API_PREFIX}/environments/{}/exec",
             self.generated.baseurl,
             progenitor_client::encode_path(id)
         );

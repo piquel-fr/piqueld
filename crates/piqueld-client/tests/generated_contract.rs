@@ -61,20 +61,20 @@ impl Drop for Server {
 async fn log_parameters_are_encoded_and_readiness_keeps_its_503_payload() {
     let mut server = Server::start(
         http::StatusCode::BAD_REQUEST,
-        r#"{"code":"invalid_id","message":"invalid application"}"#,
+        r#"{"code":"invalid_id","message":"invalid environment"}"#,
     )
     .await;
     assert!(matches!(
         server
             .client
-            .application_logs("a/b", Some("web & worker"), 20, 90)
+            .environment_logs("a/b", Some("web & worker"), 20, 90)
             .await,
         Err(ClientError::Api { .. })
     ));
     let request = server.requests.recv().await.unwrap();
     assert_eq!(
         request.uri,
-        "/api/v1/applications/a%2Fb/logs?service=web+%26+worker&since_seconds=90&tail=20"
+        "/api/v1/environments/a%2Fb/logs?service=web+%26+worker&since_seconds=90&tail=20"
     );
 
     let readiness = ReadinessStatus {

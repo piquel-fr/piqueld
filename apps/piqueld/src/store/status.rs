@@ -1,15 +1,15 @@
 //! Runtime status writes are guarded by the operation that observed them.
 
-use super::{ApplicationId, ApplicationState, ApplicationStatus, Store, StoreError, now_ms};
+use super::{ApplicationState, EnvironmentId, EnvironmentStatus, Store, StoreError, now_ms};
 use serde::Deserialize;
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 impl Store {
-    /// Reads the application's last observed status.
+    /// Reads the environment's last observed status.
     ///
     /// # Errors
     /// Returns a storage error or `NotFound`.
-    pub async fn status(&self, id: &ApplicationId) -> Result<ApplicationStatus, StoreError> {
+    pub async fn status(&self, id: &EnvironmentId) -> Result<EnvironmentStatus, StoreError> {
         Self::status_on(
             &mut *self.pool.acquire().await.map_err(StoreError::database)?,
             id,
@@ -20,19 +20,19 @@ impl Store {
     /// Reads status on an existing connection or transaction.
     pub(super) async fn status_on(
         connection: &mut SqliteConnection,
-        id: &ApplicationId,
-    ) -> Result<ApplicationStatus, StoreError> {
+        id: &EnvironmentId,
+    ) -> Result<EnvironmentStatus, StoreError> {
         let app_id = id.as_str();
         let row = sqlx::query!(
-            "SELECT state,message,runtime_health,updated_at_ms FROM application_status WHERE application_id=?1",
+            "SELECT state,message,runtime_health,updated_at_ms FROM environment_status WHERE environment_id=?1",
             app_id
         )
         .fetch_optional(connection)
         .await
         .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
-        Ok(ApplicationStatus {
-            application_id: id.clone(),
+        Ok(EnvironmentStatus {
+            environment_id: id.clone(),
             state: ApplicationState::deserialize(serde::de::value::StrDeserializer::<
                 serde::de::value::Error,
             >::new(&row.state))
@@ -43,7 +43,7 @@ impl Store {
         })
     }
 
-    /// Updates status only for the application's latest operation.
+    /// Updates status only for the environment's latest operation.
     /// Records `status_changed` only when the state or message actually changes.
     /// Returns whether `operation_id` is still the latest operation, so callers
     /// can stop superseded work.
@@ -59,18 +59,18 @@ impl Store {
         let now = now_ms();
         let state = state.as_str();
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let changed = sqlx::query!("UPDATE application_status SET state=?1,message=?2,updated_at_ms=?3 WHERE (state!=?1 OR message IS NOT ?2) AND application_id=(SELECT application_id FROM operations WHERE id=?4) AND ?4=(SELECT latest.id FROM operations latest WHERE latest.application_id=application_status.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",state,message,now,operation_id)
+        let changed = sqlx::query!("UPDATE environment_status SET state=?1,message=?2,updated_at_ms=?3 WHERE (state!=?1 OR message IS NOT ?2) AND environment_id=(SELECT environment_id FROM operations WHERE id=?4) AND ?4=(SELECT latest.id FROM operations latest WHERE latest.environment_id=environment_status.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",state,message,now,operation_id)
             .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         if changed == 1 {
             Self::operation_event(&mut tx, operation_id, "status_changed", Some(state), now)
                 .await?;
         }
-        let current=sqlx::query_scalar!("SELECT id FROM operations WHERE application_id=(SELECT application_id FROM operations WHERE id=?1) ORDER BY created_at_ms DESC,id DESC LIMIT 1",operation_id).fetch_optional(&mut *tx).await.map_err(StoreError::database)?.flatten();
+        let current=sqlx::query_scalar!("SELECT id FROM operations WHERE environment_id=(SELECT environment_id FROM operations WHERE id=?1) ORDER BY created_at_ms DESC,id DESC LIMIT 1",operation_id).fetch_optional(&mut *tx).await.map_err(StoreError::database)?.flatten();
         tx.commit().await.map_err(StoreError::database)?;
         Ok(current.as_deref() == Some(operation_id))
     }
 
-    /// Unconditionally upserts an application's status within `tx`; callers
+    /// Unconditionally upserts an environment's status within `tx`; callers
     /// are responsible for operation guards.
     pub(super) async fn write_status(
         tx: &mut Transaction<'_, Sqlite>,
@@ -79,7 +79,7 @@ impl Store {
         message: Option<&str>,
         now: i64,
     ) -> Result<(), StoreError> {
-        sqlx::query!("INSERT INTO application_status(application_id,state,message,updated_at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(application_id) DO UPDATE SET state=excluded.state,message=excluded.message,updated_at_ms=excluded.updated_at_ms",app_id,state,message,now)
+        sqlx::query!("INSERT INTO environment_status(environment_id,state,message,updated_at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(environment_id) DO UPDATE SET state=excluded.state,message=excluded.message,updated_at_ms=excluded.updated_at_ms",app_id,state,message,now)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
         Ok(())
     }
@@ -110,10 +110,10 @@ impl Store {
         };
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_ms();
-        let changed=sqlx::query!("UPDATE application_status SET runtime_health=?1 WHERE runtime_health IS NOT ?1 AND application_id=(SELECT application_id FROM operations WHERE id=?2) AND ?2=(SELECT latest.id FROM operations latest WHERE latest.application_id=application_status.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",health,operation_id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
-        sqlx::query!("UPDATE application_status SET health_observed_at_ms=?1 WHERE application_id=(SELECT application_id FROM operations WHERE id=?2) AND ?2=(SELECT id FROM operations WHERE application_id=application_status.application_id ORDER BY created_at_ms DESC,id DESC LIMIT 1)",now,operation_id).execute(&mut *tx).await.map_err(StoreError::database)?;
+        let changed=sqlx::query!("UPDATE environment_status SET runtime_health=?1 WHERE runtime_health IS NOT ?1 AND environment_id=(SELECT environment_id FROM operations WHERE id=?2) AND ?2=(SELECT latest.id FROM operations latest WHERE latest.environment_id=environment_status.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",health,operation_id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
+        sqlx::query!("UPDATE environment_status SET health_observed_at_ms=?1 WHERE environment_id=(SELECT environment_id FROM operations WHERE id=?2) AND ?2=(SELECT id FROM operations WHERE environment_id=environment_status.environment_id ORDER BY created_at_ms DESC,id DESC LIMIT 1)",now,operation_id).execute(&mut *tx).await.map_err(StoreError::database)?;
         if changed == 1 {
-            sqlx::query!("INSERT INTO events(application_id,operation_id,generation,kind,message,created_at_ms) SELECT application_id,id,generation,'health_changed',?1,?2 FROM operations WHERE id=?3",health,now,operation_id).execute(&mut *tx).await.map_err(StoreError::database)?;
+            sqlx::query!("INSERT INTO events(application_id,environment_id,operation_id,generation,kind,message,created_at_ms) SELECT (SELECT application_id FROM environments WHERE id=operations.environment_id),environment_id,id,generation,'health_changed',?1,?2 FROM operations WHERE id=?3",health,now,operation_id).execute(&mut *tx).await.map_err(StoreError::database)?;
         }
         tx.commit().await.map_err(StoreError::database)
     }

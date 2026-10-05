@@ -154,14 +154,20 @@ pub(super) fn RouteSettings() -> impl IntoView {
     let readiness = context
         .dashboard
         .with_value(|dashboard| dashboard.signals.readiness);
+    // Deployed routes of every environment, with the environment's name.
     let deployed = move || {
-        let id = context.id();
+        let environments = context.saved.with(|saved| saved.environments.clone());
         readiness.get().map(|status| {
             status
                 .ingress
                 .routes
                 .into_iter()
-                .filter(|route| route.application_id == id)
+                .filter_map(|route| {
+                    environments
+                        .iter()
+                        .find(|environment| environment.id.as_str() == route.environment_id)
+                        .map(|environment| (environment.name.to_string(), route))
+                })
                 .collect::<Vec<_>>()
         })
     };
@@ -353,6 +359,7 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                     <thead>
                                         <tr>
                                             <th>"Hostname"</th>
+                                            <th>"Environment"</th>
                                             <th>"Destination"</th>
                                             <th>"State"</th>
                                             <th>"Details"</th>
@@ -361,12 +368,13 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                     <tbody>
                                         {routes
                                             .into_iter()
-                                            .map(|route| {
+                                            .map(|(environment, route)| {
                                                 view! {
                                                     <tr>
                                                         <td>
                                                             <strong>{route.hostname}</strong>
                                                         </td>
+                                                        <td>{environment}</td>
                                                         <td>
                                                             <code>{route.target.to_string()}</code>
                                                         </td>

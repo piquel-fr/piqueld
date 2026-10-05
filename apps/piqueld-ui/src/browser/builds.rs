@@ -1,9 +1,9 @@
 //! Build metadata and bounded output pages, independent of application runtime logs.
 use super::Alive;
-use super::client_error_message;
 use super::format::{bytes, duration, timestamp};
 use super::logs::{LogKind, LogViewer, StreamFilter};
 use super::ui::{Icon, PageHeader, Tone, build_badge, empty, icon, notice, when};
+use super::{client_error_message, dashboard_context, environment_link};
 use crate::log_output::LogLine;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -22,12 +22,16 @@ pub(super) fn BuildsPage() -> impl IntoView {
     }
 }
 
-/// Build list, optionally scoped to one `application`. A 3-second loop refetches
+/// Build list, optionally scoped to one `application`'s environments or to one
+/// `environment`. A 3-second loop refetches
 /// the first page on demand or while any build is running (skipped while the tab
 /// is hidden). Once older pages have been loaded, refreshed builds are merged by
 /// ID instead of replacing the list so the extra pages are kept.
 #[component]
-pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) -> impl IntoView {
+pub(super) fn BuildHistory(
+    #[prop(optional, into)] application: Option<String>,
+    #[prop(optional, into)] environment: Option<String>,
+) -> impl IntoView {
     let records = RwSignal::new(Vec::<BuildRecord>::new());
     let cursor = RwSignal::new(None::<String>);
     let paginated = RwSignal::new(false);
@@ -35,8 +39,8 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
     let loading = RwSignal::new(false);
     let refresh = RwSignal::new(true);
     let alive = Alive::new();
-    let scoped = application.is_some();
-    let app = StoredValue::new(application);
+    let scoped = environment.is_some();
+    let scope = StoredValue::new((application, environment));
     spawn_local(async move {
         while alive.get() {
             let running = records
@@ -47,8 +51,10 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
             {
                 refresh.set(false);
                 loading.set(true);
-                let application = app.get_value();
-                let result = Client::browser().builds(application.as_deref(), None).await;
+                let (application, environment) = scope.get_value();
+                let result = Client::browser()
+                    .builds(application.as_deref(), environment.as_deref(), None)
+                    .await;
                 if !alive.get() {
                     break;
                 }
@@ -82,11 +88,15 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
     });
     let older = move |_| {
         loading.set(true);
-        let application = app.get_value();
+        let (application, environment) = scope.get_value();
         let next = cursor.get_untracked();
         spawn_local(async move {
             match Client::browser()
-                .builds(application.as_deref(), next.as_deref())
+                .builds(
+                    application.as_deref(),
+                    environment.as_deref(),
+                    next.as_deref(),
+                )
                 .await
             {
                 Ok(page) => {
@@ -188,18 +198,21 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
                 {move || {
                     let b = record.get();
                     let duration = build_duration(&b);
-                    let application_id = b.application_id.clone();
+                    let environment = b.environment_id.clone();
+                    let link = environment_link(dashboard_context().signals, &environment);
                     let operation_id = b.operation_id.clone();
                     view! {
                         <dl class="kv">
                             {(!scoped)
                                 .then(|| {
                                     view! {
-                                        <dt>"Application"</dt>
+                                        <dt>"Environment"</dt>
                                         <dd>
-                                            <A href={format!(
-                                                "/dashboard/applications/{application_id}",
-                                            )}>{application_id.clone()}</A>
+                                            {link
+                                                .map_or_else(
+                                                    || view! { <code>{environment.clone()}</code> }.into_any(),
+                                                    |(label, href)| view! { <A href={href}>{label}</A> }.into_any(),
+                                                )}
                                         </dd>
                                     }
                                 })} <dt>"Operation"</dt> <dd>

@@ -4,6 +4,8 @@ import type { Page } from '@playwright/test';
 const title = (page: Page) => page.locator('.detail-title h1');
 const tab = (page: Page, name: string) =>
   page.getByRole('navigation', { name: 'Application sections' }).getByRole('button', { name, exact: true });
+const environmentTab = (page: Page, name: string) =>
+  page.getByRole('navigation', { name: 'Environment sections' }).getByRole('button', { name, exact: true });
 /** Save buttons exist for every settings group; only the edited group's is shown. */
 const visible = (page: Page, name: string) => page.getByRole('button', { name, exact: true }).locator('visible=true');
 
@@ -90,6 +92,19 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await tab(page, 'Routes').click();
   await expect(page.getByLabel('Hostname', { exact: true })).toHaveValue('shop.example.com');
 
+  await tab(page, 'Environments').click();
+  await page.getByRole('button', { name: 'New environment', exact: true }).click();
+  const creator = page.getByRole('dialog', { name: 'Create environment' });
+  await creator.getByLabel('Environment name', { exact: true }).fill('staging');
+  const conflict = page.waitForResponse(response => response.request().method() === 'POST' && /\/environments(?:\?|$)/.test(response.url()));
+  await creator.getByRole('button', { name: 'Create environment', exact: true }).click();
+  const response = await conflict;
+  expect(response.status()).toBe(409);
+  expect(await response.json()).toMatchObject({ code: 'hostname_conflict', details: { hostname: 'shop.example.com', environment: 'production' } });
+  await expect(creator).toContainText('environments currently share application routes');
+  await expect(creator).toContainText('until per-environment configuration is supported');
+  await creator.getByRole('button', { name: 'Close dialog' }).click();
+
   await page.getByRole('button', { name: 'Preview', exact: true }).click();
   const preview = page.getByRole('dialog', { name: 'Deployment preview' });
   await expect(preview).toBeVisible();
@@ -99,8 +114,8 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await page.keyboard.press('Escape');
   await expect(preview).toBeHidden();
 
-  await page.getByRole('button', { name: 'Deploy', exact: true }).click();
-  await expect(tab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
+  await page.locator('.detail-head').getByRole('button', { name: 'Deploy to production', exact: true }).click();
+  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
   const deployment = page.locator('.expander', { hasText: 'Deployment #' });
   await expect(deployment).toBeVisible();
   await deployment.getByRole('button', { name: /Deployment #/ }).click();
@@ -148,7 +163,7 @@ test('adds, reorders, and removes jobs', async ({ page, account }) => {
   await expect(job(0).getByLabel('Name', { exact: true })).toHaveValue('migrate');
   await expect(job(1)).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Deploy', exact: true }).click();
+  await page.getByRole('button', { name: 'Deploy to production', exact: true }).click();
   const deployment = page.locator('.expander', { hasText: 'Deployment #' });
   await deployment.getByRole('button', { name: /Deployment #/ }).click();
   await deployment.getByRole('button', { name: 'Snapshot', exact: true }).click();
@@ -160,13 +175,13 @@ test('unsaved edits block deployment and navigation until discarded', async ({ p
   await createApplication(page);
   await tab(page, 'Volumes').click();
   await page.getByRole('button', { name: 'Add volume', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Deploy', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Deploy to production', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Preview', exact: true })).toBeDisabled();
   page.once('dialog', dialog => dialog.dismiss());
   await page.getByRole('complementary').getByRole('link', { name: 'Applications', exact: true }).click();
   await expect(page).toHaveURL(/\/dashboard\/applications\/[^/]+$/);
   await visible(page, 'Discard').click();
-  await expect(page.getByRole('button', { name: 'Deploy', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Deploy to production', exact: true })).toBeEnabled();
 });
 
 test('reauthenticates after revocation without losing an unsaved editor draft', async ({ page, account }) => {
