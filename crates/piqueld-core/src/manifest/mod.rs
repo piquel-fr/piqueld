@@ -3,7 +3,9 @@
 pub(crate) mod dependencies;
 pub mod domain;
 pub mod input;
+pub mod rollout;
 pub mod routes;
+pub use rollout::{Rollout, RolloutOrder, RolloutOrderSource, RolloutPolicy};
 pub use routes::{
     Hostname, RedirectStatus, RedirectUrl, RouteTarget, ValidatedRedirect, ValidatedRoute,
 };

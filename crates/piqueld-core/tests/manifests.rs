@@ -728,6 +728,60 @@ fn resource_limits_validate_cpu_bounds() {
     );
 }
 
+/// The fixture with `settings` in its service's rollout block.
+fn rollout_manifest(settings: &str) -> String {
+    format!("{TOML}\n[spec.services.rollout]\n{settings}\n")
+}
+
+#[test]
+fn rollout_settings_are_typed_bounded_and_backwards_compatible() {
+    use piqueld_core::manifest::{Rollout, RolloutOrder};
+    let id = ApplicationId::parse("app-notes-01").unwrap();
+
+    // An empty block is the same specification as none.
+    let empty = parse_toml(&rollout_manifest(""))
+        .unwrap()
+        .normalize(id.clone());
+    assert_eq!(empty.spec_hash(), GOLDEN_SPEC_HASH);
+    assert!(!empty.export_toml().unwrap().contains("rollout"));
+
+    let explicit = parse_toml(&rollout_manifest(
+        "order = \"start-first\"\nmonitor_seconds = 3600",
+    ))
+    .unwrap()
+    .normalize(id.clone());
+    assert_eq!(
+        explicit.spec().services[0].rollout,
+        Rollout {
+            order: Some(RolloutOrder::StartFirst),
+            monitor_seconds: Some(3600),
+        }
+    );
+    assert_ne!(explicit.spec_hash(), GOLDEN_SPEC_HASH);
+    let reparsed = parse_toml(&explicit.export_toml().unwrap())
+        .unwrap()
+        .normalize(id);
+    assert_eq!(explicit, reparsed);
+
+    for monitor in [0, Rollout::MAX_MONITOR_SECONDS + 1] {
+        let errors = parse_toml(&rollout_manifest(&format!("monitor_seconds = {monitor}")))
+            .unwrap_err()
+            .0;
+        assert_eq!(
+            errors
+                .iter()
+                .map(|error| (error.code.as_str(), error.path.as_str()))
+                .collect::<Vec<_>>(),
+            [(
+                codes::ROLLOUT_MONITOR_INVALID,
+                "spec.services[0].rollout.monitor_seconds"
+            )]
+        );
+    }
+    let unknown = parse_toml(&rollout_manifest("order = \"rolling\"")).unwrap_err();
+    assert_eq!(unknown.0[0].code, codes::MANIFEST_DECODE_FAILED);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 

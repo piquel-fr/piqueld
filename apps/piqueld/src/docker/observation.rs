@@ -5,7 +5,8 @@ use super::{
     NANOSECONDS_PER_SECOND, NetworkAttachment, ObservedMount, ObservedService, ObservedTask,
     ResourceLimits, ServiceSpec, TaskDiagnostic, TaskSpecContainerSpec, TaskState,
 };
-use bollard::models::HealthStatusEnum;
+use bollard::models::{HealthStatusEnum, ServiceSpecUpdateConfigOrderEnum};
+use piqueld_core::manifest::{RolloutOrder, RolloutPolicy};
 
 impl BollardDocker {
     /// Converts one Docker task into the backend-neutral observation contract.
@@ -160,6 +161,7 @@ impl BollardDocker {
             resources: BollardDocker::observed_resources(spec),
             networks: BollardDocker::observed_networks(spec),
             labels,
+            rollout: BollardDocker::observed_rollout(spec),
             runtime_configuration_matches,
             tasks,
             convergence,
@@ -220,6 +222,25 @@ impl BollardDocker {
                 })
             })
             .collect()
+    }
+
+    /// Converts Docker's update order and monitor back into a rollout policy,
+    /// or `None` for values piqueld never authors.
+    pub(super) fn observed_rollout(spec: &ServiceSpec) -> Option<RolloutPolicy> {
+        let update = spec.update_config.as_ref()?;
+        let monitor = update.monitor?;
+        Some(RolloutPolicy {
+            order: match update.order? {
+                ServiceSpecUpdateConfigOrderEnum::STOP_FIRST => RolloutOrder::StopFirst,
+                ServiceSpecUpdateConfigOrderEnum::START_FIRST => RolloutOrder::StartFirst,
+                ServiceSpecUpdateConfigOrderEnum::EMPTY => return None,
+            },
+            monitor_seconds: if monitor % NANOSECONDS_PER_SECOND == 0 {
+                u32::try_from(monitor / NANOSECONDS_PER_SECOND).ok()?
+            } else {
+                return None;
+            },
+        })
     }
 
     /// Converts Docker resource limits back into millicores and bytes.

@@ -4,7 +4,7 @@ use super::{dirty_group, editor, save_actions};
 use crate::editor::{Section, ServiceForm};
 use leptos::prelude::*;
 use piqueld_client::{
-    ApplicationView, GitRepository, Mount, RepositoryManifest, Service, Source, Volume,
+    ApplicationView, GitRepository, Mount, RepositoryManifest, Rollout, Service, Source, Volume,
     edit::{ApplicationEdit, ServiceEdit, ServiceGeneral, ServiceProcess},
 };
 use std::collections::BTreeMap;
@@ -302,6 +302,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
             Section::Storage => ServiceEdit::Mounts(service.mounts.clone()),
             Section::Health => ServiceEdit::Healthcheck(service.healthcheck.clone()),
             Section::Dependencies => ServiceEdit::DependsOn(service.depends_on.clone()),
+            Section::Rollout => ServiceEdit::Rollout(service.rollout),
             Section::Resources => ServiceEdit::Resources(service.resources.clone()),
         };
         context.save(
@@ -339,6 +340,9 @@ const fn section_hint(section: Section) -> &'static str {
         }
         Section::Dependencies => {
             "Deploy rolls this service out only after the selected services are healthy, or running when they have no health check."
+        }
+        Section::Rollout => {
+            "Stop-first never runs two replicas on the same data but is briefly unavailable; start-first avoids downtime. Derived stops first only when a volume is mounted writable."
         }
         Section::Resources => "Leave a limit blank to use the runtime default.",
     }
@@ -440,6 +444,7 @@ pub(super) fn service_fields(
         Section::Storage => mount_fields(form),
         Section::Health => health_fields(form),
         Section::Dependencies => dependency_fields(service, form),
+        Section::Rollout => rollout_fields(form),
         Section::Resources => view! {
             <div class="form-grid">
                 {text_input("CPU (millicores)", form, |v| v.cpu.clone(), |v, s| v.cpu = s)}
@@ -726,6 +731,41 @@ pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
     .into_any()
 }
 
+/// Rollout order selector and optional monitor window.
+pub(super) fn rollout_fields(form: RwSignal<ServiceForm>) -> AnyView {
+    let option = |value: &'static str, label: &'static str| {
+        view! {
+            <option value={value} selected={move || form.with(|v| v.rollout_order == value)}>
+                {label}
+            </option>
+        }
+    };
+    view! {
+        <div class="form-grid">
+            <label class="field">
+                <span>"Order"</span>
+                <select
+                    prop:value={move || form.with(|v| v.rollout_order.clone())}
+                    on:change={move |event| {
+                        form.update(|v| v.rollout_order = event_target_value(&event))
+                    }}
+                >
+                    {option("derived", "Derived from mounts")}
+                    {option("stop-first", "Stop first")}
+                    {option("start-first", "Start first")}
+                </select>
+            </label>
+            {text_input(
+                "Monitor (seconds, default 30)",
+                form,
+                |v| v.monitor.clone(),
+                |v, s| v.monitor = s,
+            )}
+        </div>
+    }
+    .into_any()
+}
+
 /// "Add service" button and modal that saves a new single-replica image service.
 #[component]
 pub(super) fn NewService() -> impl IntoView {
@@ -748,6 +788,7 @@ pub(super) fn NewService() -> impl IntoView {
             healthcheck: None,
             resources: None,
             depends_on: Vec::new(),
+            rollout: Rollout::default(),
         };
         context.save(
             ApplicationEdit::AddService(Box::new(service)),

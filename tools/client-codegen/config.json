@@ -231,6 +231,21 @@
       "rustType": "piqueld_core::edit::RoutesValue"
     },
     {
+      "schema": "Rollout",
+      "name": "Rollout",
+      "rustType": "piqueld_core::manifest::Rollout"
+    },
+    {
+      "schema": "RolloutOrder",
+      "name": "RolloutOrder",
+      "rustType": "piqueld_core::manifest::RolloutOrder"
+    },
+    {
+      "schema": "RolloutValue",
+      "name": "RolloutValue",
+      "rustType": "piqueld_core::edit::RolloutValue"
+    },
+    {
       "schema": "Job",
       "name": "Job",
       "rustType": "piqueld_core::manifest::Job"

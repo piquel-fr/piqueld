@@ -230,6 +230,7 @@ mod tests {
             resources: None,
             networks: Vec::new(),
             labels: BTreeMap::new(),
+            rollout: None,
             runtime_configuration_matches: true,
             tasks: vec![
                 ObservedTask {
@@ -276,6 +277,7 @@ mod tests {
             resources: None,
             networks: Vec::new(),
             labels: BTreeMap::new(),
+            rollout: None,
             runtime_configuration_matches: false,
             tasks: vec![task],
             convergence: Convergence::Updating,

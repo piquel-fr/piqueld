@@ -1,7 +1,7 @@
 //! Typed changes to saved application configuration. No edit performs runtime work.
 use crate::manifest::{
     ApplicationManifest, Build, GitRepository, HealthCheck, Job, Mount, RepositoryManifest,
-    ResourceLimits, Route, SecretMount, Service, Source, SourceRepository, Volume,
+    ResourceLimits, Rollout, Route, SecretMount, Service, Source, SourceRepository, Volume,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -34,6 +34,7 @@ value_request! {
     SourceValue: Source;
     HealthValue: Option<HealthCheck>;
     ResourcesValue: Option<ResourceLimits>;
+    RolloutValue: Rollout;
     EnvironmentValue: BTreeMap<String, String>;
     MountsValue: Vec<Mount>;
     SecretsValue: Vec<SecretMount>;
@@ -163,6 +164,8 @@ pub enum ServiceEdit {
     Process(ServiceProcess),
     /// Replace the services that must be healthy before this one rolls out.
     DependsOn(Vec<String>),
+    /// Replace the rollout settings; omitted fields use their defaults.
+    Rollout(Rollout),
 }
 
 /// Errors applying a structurally valid edit to the current saved configuration.
@@ -443,6 +446,7 @@ impl ServiceEdit {
                 service.arguments = value.arguments;
             }
             Self::DependsOn(value) => service.depends_on = value,
+            Self::Rollout(value) => service.rollout = value,
         }
         Ok(())
     }
@@ -553,6 +557,7 @@ mod tests {
             healthcheck: None,
             resources: None,
             depends_on: depends_on.iter().map(|&name| name.into()).collect(),
+            rollout: crate::manifest::Rollout::default(),
         };
         let mut manifest = ApplicationManifest {
             api_version: crate::manifest::APPLICATION_API_VERSION.into(),

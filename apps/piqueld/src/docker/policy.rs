@@ -1,7 +1,7 @@
 use super::{
     BTreeSet, BollardDocker, HEALTH_RETRIES, HealthConfig, MountTypeEnum, NANO_CPUS_PER_MILLICORE,
     RESTART_DELAY, SERVICE_LABEL, ServiceSpec, ServiceSpecUpdateConfigFailureActionEnum, TaskSpec,
-    TaskSpecContainerSpec, TaskSpecRestartPolicyConditionEnum, UPDATE_MONITOR,
+    TaskSpecContainerSpec, TaskSpecRestartPolicyConditionEnum,
 };
 
 /// The runtime policy emitted by the desired-service Docker specification builder.
@@ -29,7 +29,7 @@ impl ServiceRuntimePolicy {
             return false;
         };
         Self::restart_policy(task)
-            && Self::update_policy(spec, container)
+            && Self::update_policy(spec)
             && Self::replicated_mode(spec)
             && Self::mounts(container)
             && Self::environment(container)
@@ -150,17 +150,14 @@ impl ServiceRuntimePolicy {
     }
 
     /// Requires the authored one-at-a-time update policy that pauses on
-    /// failure, in the order derived from the observed mounts. Mounts are
-    /// compared against desired state separately, so a matching service is
-    /// never flagged for its order alone.
-    fn update_policy(spec: &ServiceSpec, container: &TaskSpecContainerSpec) -> bool {
+    /// failure. Its order and monitor window are compared against the desired
+    /// rollout separately.
+    fn update_policy(spec: &ServiceSpec) -> bool {
         spec.update_config.as_ref().is_some_and(|update| {
             update.parallelism == Some(1)
                 && update.delay.is_none_or(|value| value == 0)
                 && update.failure_action == Some(ServiceSpecUpdateConfigFailureActionEnum::PAUSE)
-                && update.monitor == Some(UPDATE_MONITOR)
                 && update.max_failure_ratio == Some(0.0)
-                && update.order == Some(BollardDocker::update_order(container))
         })
     }
 
@@ -297,20 +294,21 @@ mod tests {
     use super::super::HealthCheck;
     use super::*;
     use bollard::models::{ServiceSpecRollbackConfig, ServiceSpecUpdateConfigOrderEnum};
-    use piqueld_core::manifest::ResourceLimits;
+    use piqueld_core::manifest::{ResourceLimits, Rollout, RolloutOrder};
     use piqueld_core::resource::{DesiredMount, DesiredService, ResolvedSource};
     use std::collections::BTreeMap;
 
     /// Specification authored for a service attached to its private network.
     fn authored() -> ServiceSpec {
-        authored_with_mounts(Vec::new())
+        BollardDocker::service_spec(&desired(Vec::new()), "local-node")
+            .expect("authored specification")
     }
 
-    /// Specification authored for the same service mounting `mounts`.
-    fn authored_with_mounts(mounts: Vec<DesiredMount>) -> ServiceSpec {
+    /// Desired service attached to its private network and mounting `mounts`.
+    fn desired(mounts: Vec<DesiredMount>) -> DesiredService {
         let image = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
         let application = piqueld_core::ApplicationId::parse("app-policy").unwrap();
-        let desired = DesiredService {
+        DesiredService {
             secrets: Vec::new(),
             logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
             name: piqueld_core::DockerServiceName::parse("app-policy-web").unwrap(),
@@ -341,8 +339,8 @@ mod tests {
             }
             .labels(),
             depends_on: Vec::new(),
-        };
-        BollardDocker::service_spec(&desired, "local-node").expect("authored specification")
+            rollout: Rollout::default(),
+        }
     }
 
     #[test]
@@ -369,32 +367,40 @@ mod tests {
     }
 
     #[test]
-    fn writable_volumes_update_stop_first() {
+    fn authored_rollout_is_observed_back() {
         let mount = |read_only| DesiredMount {
             volume_name: piqueld_core::DockerVolumeName::parse("app-policy-data").unwrap(),
             target: "/data".into(),
             read_only,
         };
-        let order = |spec: &ServiceSpec| spec.update_config.as_ref().unwrap().order;
+        let observed = |desired: &DesiredService| {
+            let spec = BollardDocker::service_spec(desired, "local-node").unwrap();
+            assert!(ServiceRuntimePolicy::matches(&spec, "local-node"));
+            BollardDocker::observed_rollout(&spec)
+        };
 
-        let read_only = authored_with_mounts(vec![mount(true)]);
+        let read_only = desired(vec![mount(true)]);
+        assert_eq!(observed(&read_only), Some(read_only.rollout_policy()));
+        let mut writable = desired(vec![mount(true), mount(false)]);
         assert_eq!(
-            order(&read_only),
-            Some(ServiceSpecUpdateConfigOrderEnum::START_FIRST)
+            observed(&writable).map(|rollout| rollout.order),
+            Some(RolloutOrder::StopFirst)
         );
-        assert!(ServiceRuntimePolicy::matches(&read_only, "local-node"));
+        writable.rollout = Rollout {
+            order: Some(RolloutOrder::StartFirst),
+            monitor_seconds: Some(5),
+        };
+        assert_eq!(observed(&writable), Some(writable.rollout_policy()));
 
-        let mut writable = authored_with_mounts(vec![mount(true), mount(false)]);
-        assert_eq!(
-            order(&writable),
-            Some(ServiceSpecUpdateConfigOrderEnum::STOP_FIRST)
-        );
-        assert!(ServiceRuntimePolicy::matches(&writable, "local-node"));
-
-        // Services deployed before stop-first existed are updated once.
-        writable.update_config.as_mut().unwrap().order =
-            Some(ServiceSpecUpdateConfigOrderEnum::START_FIRST);
-        assert!(!ServiceRuntimePolicy::matches(&writable, "local-node"));
+        // Values piqueld never authors are not mistaken for a rollout policy.
+        let mut spec = BollardDocker::service_spec(&writable, "local-node").unwrap();
+        let update = spec.update_config.as_mut().unwrap();
+        update.monitor = Some(1_500_000_000);
+        assert_eq!(BollardDocker::observed_rollout(&spec), None);
+        let update = spec.update_config.as_mut().unwrap();
+        update.monitor = Some(5_000_000_000);
+        update.order = Some(ServiceSpecUpdateConfigOrderEnum::EMPTY);
+        assert_eq!(BollardDocker::observed_rollout(&spec), None);
     }
 
     #[test]

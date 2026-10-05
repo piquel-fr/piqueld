@@ -76,6 +76,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/services/{service}/mount` | `Mount`; adds/replaces by container target |
 | DELETE | `/services/{service}/mount` | `{ "value": "/container/target" }` |
 | PUT | `/services/{service}/depends-on` | `{ "value": ["db"] }`; replaces the services that must be healthy before this one rolls out |
+| PUT | `/services/{service}/rollout` | `{ "value": { "order": "stop-first", "monitor_seconds": 30 } }`; replaces the rollout block, and omitted fields use their defaults |
 | PUT | `/services/{service}/secrets` | `{ "value": [{ "name": "token", "target": "/run/secrets/token" }] }`; replaces file references without exposing values |
 | PUT | `/services/{service}/healthcheck` | `{ "value": HealthCheck }`; null clears |
 | PUT | `/services/{service}/healthcheck/{port,path,command,interval,timeout}` | Typed `{ "value": ... }` |
@@ -191,8 +192,10 @@ endpoint also returns 404 after cleanup.
 
 Preview returns 200 with a `PlanView`, no durable changes, and no image pulls.
 The response includes the inspected generation (zero for an absent name), an
-`identical` flag, latest operation, redacted manifest field changes, and a runtime
-plan. Manifest differences compare against the last deployment snapshot, not saved
+`identical` flag, latest operation, redacted manifest field changes, a runtime
+plan, and each service's effective rollout order (`derived` or `explicit`) and
+monitor window. A `start-first` order set on a service with a writable volume adds
+a non-blocking `rollout_start_first_writable_volume` warning to the plan. Manifest differences compare against the last deployment snapshot, not saved
 configuration. Image tags report resolution requirements even when unchanged,
 matching Deploy's refresh behavior. Environment,
 command, argument, and health-check values are redacted in previews, including

@@ -9,8 +9,8 @@ use crate::{
 use clap::{Args, Subcommand};
 use piqueld_client::{
     ApplicationView, Build, Client, GitRepository, HealthCheck, Job, JobRun, Mount, Redirect,
-    RedirectStatus, RepositoryManifest, Route, SavedApplication, Service, Source, SourceRepository,
-    Volume,
+    RedirectStatus, RepositoryManifest, Rollout, RolloutOrder, Route, SavedApplication, Service,
+    Source, SourceRepository, Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit},
 };
 
@@ -111,6 +111,8 @@ pub(crate) enum ServiceCommand {
     /// Set services that must be healthy before this one rolls out, after --;
     /// omit services to clear.
     DependsOn(StringsArgs),
+    /// Replace the rollout order and monitor window; omitted flags use their defaults.
+    Rollout(RolloutArgs),
     /// Add, replace, or remove a volume mount by target path.
     Mount {
         #[command(subcommand)]
@@ -142,6 +144,17 @@ pub(crate) enum SourceCommand {
     Dockerfile(TextArgs),
     /// Change the build context path.
     Context(TextArgs),
+}
+#[derive(Debug, Args)]
+pub(crate) struct RolloutArgs {
+    #[command(flatten)]
+    target: Target,
+    /// stop-first or start-first. Omit to stop first only when a volume is mounted writable.
+    #[arg(long)]
+    order: Option<RolloutOrder>,
+    /// Seconds to watch each replacement task for failure. Omit for the 30-second default.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=i64::from(Rollout::MAX_MONITOR_SECONDS)))]
+    monitor_seconds: Option<u32>,
 }
 #[derive(Debug, Args)]
 pub(crate) struct AddServiceArgs {
@@ -457,6 +470,7 @@ impl ServiceCommand {
                     healthcheck: None,
                     resources: None,
                     depends_on: Vec::new(),
+                    rollout: Rollout::default(),
                 };
                 return save(
                     cli,
@@ -486,6 +500,13 @@ impl ServiceCommand {
             Self::Command(args) => (&args.target, ServiceEdit::Command(args.value.clone())),
             Self::Arguments(args) => (&args.target, ServiceEdit::Arguments(args.value.clone())),
             Self::DependsOn(args) => (&args.target, ServiceEdit::DependsOn(args.value.clone())),
+            Self::Rollout(args) => (
+                &args.target,
+                ServiceEdit::Rollout(Rollout {
+                    order: args.order,
+                    monitor_seconds: args.monitor_seconds,
+                }),
+            ),
             Self::Mount { command } => command.edit(),
             Self::Health { command } => command.edit(),
             Self::Cpu(args) => (&args.target, ServiceEdit::Cpu(args.value)),

@@ -38,8 +38,8 @@ pub use client::Client;
 pub use piqueld_core::manifest::{
     ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, Job, JobRun,
     ManifestRepository, ManifestRevision, Metadata, Mount, Redirect, RedirectStatus,
-    RepositoryManifest, ResourceLimits, Route, RouteTarget, SecretMount, Service, Source,
-    SourceRepository, Volume,
+    RepositoryManifest, ResourceLimits, Rollout, RolloutOrder, RolloutOrderSource, Route,
+    RouteTarget, SecretMount, Service, Source, SourceRepository, Volume,
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{

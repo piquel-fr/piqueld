@@ -3,10 +3,11 @@
 The Leptos dashboard manages application configuration through forms. Create an
 empty application in a modal, add services in a modal and declare named volumes, and edit images, replicas,
 environment variables, commands, arguments, mounts, health checks, startup
-dependencies, and resource limits. Each settings group has its own **Save changes** button. Saving updates
+dependencies, rollout order and monitor window, and resource limits. Each settings group has its own **Save changes** button. Saving updates
 the database without changing running containers.
 
-**Preview** opens a dialog with the planned changes and actions. **Deploy** captures the saved configuration
+**Preview** opens a dialog with the planned changes and actions, each service's
+effective rollout order (derived or explicit) and monitor window, and plan warnings. **Deploy** captures the saved configuration
 in a persisted deployment and applies it. Both buttons require all local edits
 to be saved or discarded. Every deployment supersedes pending work and
 refreshes image resolution, including when configuration has not changed.
@@ -37,8 +38,10 @@ services, reconciliation diagnostics, and the delete action. The Events tab has
 an **Errors only** filter. Each service row opens a service page with a
 breadcrumb back to the application and tabs for source and scaling,
 environment, command and arguments, volume mounts, health checks, startup
-dependencies, resource limits, and logs. Startup dependencies list the
-application's other services as checkboxes. Service form drafts are retained when switching tabs.
+dependencies, rollout, resource limits, and logs. Startup dependencies list the
+application's other services as checkboxes. Rollout selects an order (derived
+from mounts, stop first, or start first) and an optional monitor window, blank
+for the 30-second default. Service form drafts are retained when switching tabs.
 Selecting None for a health check hides its remaining fields.
 The pencil beside the application name opens its rename form.
 The Deployments tab lists expandable deployment rows with Details, Snapshot,
