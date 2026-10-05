@@ -199,40 +199,44 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
 }
 
 /// Logs of one service in the application's only environment. With several
-/// environments, links to each environment's logs instead.
+/// environments, links to each environment's logs instead. Remounts when the
+/// target environment changes, so polling never keeps a stale target.
 #[component]
 fn ServiceLogs(name: String) -> impl IntoView {
     let context = editor();
-    if context.environment.get_untracked().is_some() {
-        return view! { <super::logs::ApplicationLogs fixed_service={name} /> }.into_any();
-    }
-    view! {
-        <div class="stack-sm">
-            {notice(Tone::Info, "Logs are read per environment. Choose one to read this service's logs.")}
-            <div class="btn-group">
-                {move || {
-                    context
-                        .saved
-                        .get()
-                        .environments
-                        .into_iter()
-                        .map(|environment| {
-                            view! {
-                                <A
-                                    attr:class="btn"
-                                    href={format!(
-                                        "{}?tab=logs",
-                                        context.environment_href(environment.id.as_str()),
-                                    )}
-                                >
-                                    {environment.name.to_string()}
-                                </A>
-                            }
-                        })
-                        .collect_view()
-                }}
+    move || {
+        if context.environment.get().is_some() {
+            return view! { <super::logs::ApplicationLogs fixed_service={name.clone()} /> }
+                .into_any();
+        }
+        view! {
+            <div class="stack-sm">
+                {notice(Tone::Info, "Logs are read per environment. Choose one to read this service's logs.")}
+                <div class="btn-group">
+                    {move || {
+                        context
+                            .saved
+                            .get()
+                            .environments
+                            .into_iter()
+                            .map(|environment| {
+                                view! {
+                                    <A
+                                        attr:class="btn"
+                                        href={format!(
+                                            "{}?tab=logs",
+                                            context.environment_href(environment.id.as_str()),
+                                        )}
+                                    >
+                                        {environment.name.to_string()}
+                                    </A>
+                                }
+                            })
+                            .collect_view()
+                    }}
+                </div>
             </div>
-        </div>
+        }
+        .into_any()
     }
-    .into_any()
 }

@@ -1,11 +1,14 @@
 //! One-off commands in running service tasks, recorded in environment history.
 use super::{ApplicationError, ApplicationService};
 use crate::docker::{Exec, ExecIo};
-use piqueld_core::{EnvironmentId, ServiceName, exec::ExecRequest};
+use piqueld_core::{ApplicationId, EnvironmentId, ServiceName, exec::ExecRequest};
 
 /// A created command whose start is already recorded in history.
 pub struct ExecSession {
     owner: ApplicationService,
+    /// Resolved when the command starts, so its completion stays in the
+    /// application's history even if the environment is deleted meanwhile.
+    application: ApplicationId,
     environment: EnvironmentId,
     service: ServiceName,
     exec: Exec,
@@ -23,7 +26,12 @@ impl ApplicationService {
         request: &ExecRequest,
         account: &str,
     ) -> Result<ExecSession, ApplicationError> {
-        self.store.get(environment).await?;
+        let application = self
+            .store
+            .get(environment)
+            .await?
+            .environment
+            .application_id;
         let exec = self
             .runtime
             .create_exec(environment, request)
@@ -31,6 +39,7 @@ impl ApplicationService {
             .ok_or(ApplicationError::ServiceNotRunning)?;
         self.store
             .record_environment_event(
+                &application,
                 environment,
                 "command_started",
                 &format!("{account} started a command in task {}", exec.task),
@@ -39,6 +48,7 @@ impl ApplicationService {
             .await?;
         Ok(ExecSession {
             owner: self.clone(),
+            application,
             environment: environment.clone(),
             service: request.service.clone(),
             exec,
@@ -60,6 +70,7 @@ impl ExecSession {
             .owner
             .store
             .record_environment_event(
+                &self.application,
                 &self.environment,
                 "command_finished",
                 &message,

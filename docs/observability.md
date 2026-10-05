@@ -7,8 +7,8 @@ collector management, or external daemon-outage monitoring in this implementatio
 
 ## History and diagnostics
 
-Saved typed edits record their field and resource in the history of each of the
-application's environments without copying configuration values.
+Saved typed edits record their field and resource once, in the application's
+history with no environment, without copying configuration values.
 
 Secret writes and deletions record `secret_saved` and `secret_deleted` events with
 the logical name as their resource; history never contains values. Removing a
@@ -71,8 +71,10 @@ bounded log and may contain text emitted by the build itself.
 
 `scope` determines ownership, independently of a contextual `environment_id`:
 
-- `application`: removed with environment deletion, including diagnostic history,
-  deployment/build history, and associated webhook deliveries.
+- `application`: removed with application deletion, including diagnostic history
+  and associated webhook deliveries. Deleting an environment removes its
+  deployment and build history, while its events stay in the application's
+  history.
 - `daemon`: shared infrastructure or internal failures remain under daemon
   retention, even when they refer to an environment that has since been deleted.
 

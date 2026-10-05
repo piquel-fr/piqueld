@@ -171,3 +171,40 @@ test('a deleted environment page cannot resolve to another environment with that
   await expect(page.getByText('This environment no longer exists.', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: /^Deploy/ })).toHaveCount(0);
 });
+
+test('a service Logs tab offers each environment once the application has several', async ({ page, account }) => {
+  void account;
+  const { app, generation } = await page.evaluate(async () => {
+    const response = await fetch('/api/v1/applications/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        manifest: {
+          api_version: 'piqueld.dev/v1alpha1', kind: 'Application',
+          metadata: { name: 'single' },
+          spec: { services: [{ name: 'web', source: { type: 'image', image: 'nginx:alpine' } }] },
+        },
+        expected_generation: 0,
+      }),
+    });
+    const saved = (await response.json()).data;
+    return { app: saved.application_id as string, generation: saved.generation as number };
+  });
+  await page.clock.install();
+  await page.goto(`/dashboard/applications/${app}/services/web`);
+  await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: 'Logs', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Service logs' })).toBeVisible();
+
+  await page.evaluate(async ({ app, generation }) => {
+    await fetch(`/api/v1/applications/${app}/environments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'staging', expected_generation: generation }),
+    });
+  }, { app, generation });
+  // The next dashboard refresh lists the new environment.
+  await page.clock.runFor(16_000);
+  await expect(page.getByText('Logs are read per environment.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Service logs' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'staging', exact: true })).toBeVisible();
+});

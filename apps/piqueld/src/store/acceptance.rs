@@ -329,7 +329,7 @@ impl Store {
     /// saves it (renames go through `rename_on`), optionally starting a deployment.
     /// Repository-managed applications only accept repository settings; applications
     /// being deleted are `Busy`. Records an `application_edited` event naming the
-    /// edited field and resource in every environment's history.
+    /// edited field and resource once, in the application's history.
     async fn accept_edit(
         tx: &mut Transaction<'_, Sqlite>,
         current: StoredApplication,
@@ -435,7 +435,7 @@ impl Store {
     /// change bumps the generation (and each environment's resolved generation
     /// when it was current), updates the display name of every environment's
     /// resolved and latest targets, and records an `application_renamed` event
-    /// in each environment's history. Never wakes the controller.
+    /// once, in the application's history. Never wakes the controller.
     async fn rename_on(
         tx: &mut Transaction<'_, Sqlite>,
         current: StoredApplication,

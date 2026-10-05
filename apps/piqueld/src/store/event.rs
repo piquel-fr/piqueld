@@ -254,23 +254,28 @@ impl Store {
         Ok(())
     }
 
-    /// Records an informational environment event outside any operation.
+    /// Records an informational environment event outside any operation. The
+    /// event stays in `application`'s history even if the environment has been
+    /// deleted meanwhile, and is skipped once the application itself is gone,
+    /// since its history has been removed.
     /// # Errors
     /// Returns storage errors.
     pub(crate) async fn record_environment_event(
         &self,
+        application: &ApplicationId,
         environment: &EnvironmentId,
         kind: &str,
         message: &str,
         resource: &str,
     ) -> Result<(), StoreError> {
         let _writer = self.writers.lock().await;
-        let id = environment.as_str();
+        let (application, environment) = (application.as_str(), environment.as_str());
         let now = now_ms();
         sqlx::query!(
             "INSERT INTO events(application_id,environment_id,kind,message,resource,created_at_ms)
-            VALUES((SELECT application_id FROM environments WHERE id=?1),?1,?2,?3,?4,?5)",
-            id,
+            SELECT ?1,?2,?3,?4,?5,?6 WHERE EXISTS(SELECT 1 FROM applications WHERE id=?1)",
+            application,
+            environment,
             kind,
             message,
             resource,
@@ -536,6 +541,46 @@ impl EventRow {
 mod tests {
     use super::*;
     use sqlx::{Execute, Row};
+
+    #[tokio::test]
+    async fn environment_events_keep_their_application_until_it_is_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let app = piqueld_core::parse_toml(include_str!(
+            "../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
+        ))
+        .unwrap()
+        .normalize(ApplicationId::parse("app-event-test").unwrap());
+        store.save_application(&app, None, None).await.unwrap();
+        // An environment deleted while a command was running.
+        let deleted = EnvironmentId::parse("env-deleted").unwrap();
+        let gone = ApplicationId::parse("app-deleted").unwrap();
+        for application in [app.id(), &gone] {
+            store
+                .record_environment_event(application, &deleted, "command_finished", "done", "web")
+                .await
+                .unwrap();
+        }
+        let history = store
+            .filtered_events(
+                &EventFilter {
+                    environment_id: Some(deleted.to_string()),
+                    ..EventFilter::default()
+                },
+                None,
+                10,
+            )
+            .await
+            .unwrap()
+            .items;
+        assert_eq!(
+            history
+                .iter()
+                .map(|event| event.application_id.as_ref())
+                .collect::<Vec<_>>(),
+            [Some(app.id())]
+        );
+    }
 
     #[tokio::test]
     async fn history_pages_use_indexes_without_sorting_retained_events() {
