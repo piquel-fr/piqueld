@@ -6,6 +6,7 @@ mod git_fixture;
 #[path = "support/application.rs"]
 mod application_fixture;
 use application_fixture::TestApplications;
+use piqueld::api::Actor::Daemon;
 
 use async_trait::async_trait;
 use piqueld::docker::{
@@ -894,6 +895,7 @@ impl EnvironmentHarness {
         let production = environment(&harness.application);
         let MutationResponse::Environment(staging) = applications
             .accept(
+                Daemon,
                 Mutation::CreateEnvironment {
                     application: harness.application.id().clone(),
                     name: EnvironmentName::parse("staging").unwrap(),
@@ -914,7 +916,10 @@ impl EnvironmentHarness {
             (&production, b"production token".to_vec()),
             (&staging.id, b"staging token".to_vec()),
         ] {
-            store.put_secret(id, "token", 0, value).await.unwrap();
+            store
+                .put_secret(Daemon, id, "token", 0, value)
+                .await
+                .unwrap();
             applications.deploy(id, Some(generation)).await.unwrap();
         }
         harness
@@ -935,6 +940,7 @@ impl EnvironmentHarness {
         use piqueld::api::Mutation;
         self.applications
             .accept(
+                Daemon,
                 Mutation::Delete {
                     id: self.staging.clone(),
                 },
@@ -1911,6 +1917,7 @@ async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resour
     assert!(before.services[0].image.as_str().ends_with(&"b".repeat(64)));
     let renamed = applications
         .accept(
+            Daemon,
             piqueld::api::Mutation::Rename {
                 id: ApplicationId::parse(first.environment_id.as_str()).unwrap(),
                 name: "renamed".into(),
@@ -1986,6 +1993,7 @@ async fn failed_preparation_preserves_active_repair_and_save_does_not_retry() {
     let pulls = harness.pulls().await;
     let response = applications
         .accept(
+            Daemon,
             piqueld::api::Mutation::save(
                 input.validate_template().unwrap(),
                 Some(first.environment_id.to_string()),
@@ -2045,6 +2053,7 @@ async fn convergence_timeout_closes_the_waiting_action_as_failed() {
                 operation_id: Some(created.id.clone()),
                 ..Default::default()
             },
+            &piqueld::store::Visibility::ALL,
             None,
             100,
         )
@@ -2196,7 +2205,7 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
         .unwrap();
     let deploy = || Mutation::deploy(first.environment_id.clone());
     let MutationResponse::Operation(replacement) = applications
-        .accept(deploy(), None, true, None)
+        .accept(Daemon, deploy(), None, true, None)
         .await
         .unwrap()
     else {
@@ -2223,18 +2232,14 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
         matches!(&active.services[0].source, ResolvedSource::Git { commit, .. } if piqueld_core::manifest::valid_git_commit(commit))
     );
     let pulls = harness.pulls().await;
-    let MutationResponse::Operation(accepted) = applications
-        .accept(deploy(), None, true, Some("git-deploy"))
-        .await
-        .unwrap()
-    else {
+    let keyed = || {
+        let actor = Daemon;
+        applications.accept(actor, deploy(), None, true, Some("git-deploy"))
+    };
+    let MutationResponse::Operation(accepted) = keyed().await.unwrap() else {
         panic!("expected operation")
     };
-    let MutationResponse::Operation(replay) = applications
-        .accept(deploy(), None, true, Some("git-deploy"))
-        .await
-        .unwrap()
-    else {
+    let MutationResponse::Operation(replay) = keyed().await.unwrap() else {
         panic!("expected operation")
     };
     assert_eq!(accepted.operation_id, replay.operation_id);
@@ -2428,6 +2433,7 @@ mod repository_deployments {
             let MutationResponse::Operation(accepted) = harness
                 .applications()
                 .accept(
+                    Daemon,
                     Mutation::Deploy {
                         id: id.clone(),
                         revision,
@@ -2481,6 +2487,7 @@ mod repository_deployments {
         let MutationResponse::Environment(environment) = harness
             .applications()
             .accept(
+                Daemon,
                 Mutation::CreateEnvironment {
                     application: application.environment.application_id,
                     name: EnvironmentName::parse(name).unwrap(),
@@ -2614,6 +2621,7 @@ mod repository_deployments {
         harness
             .applications()
             .accept(
+                Daemon,
                 Mutation::SetBranch {
                     id: staging.clone(),
                     branch: TrackedBranch::new("main".into(), None).unwrap(),
@@ -3004,7 +3012,11 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
 
 impl ControllerHarness {
     async fn assert_git_build_history(&self, id: &EnvironmentId) {
-        let builds = self.store.builds(None, Some(id), None, 50).await.unwrap();
+        let builds = self
+            .store
+            .builds(None, Some(id), &piqueld_core::access::Scope::All, None, 50)
+            .await
+            .unwrap();
         assert_eq!(
             builds.items.len(),
             3,
@@ -3122,6 +3134,7 @@ async fn full_scan_records_one_docker_failure_for_overlapping_observers() {
                         error_code: Some("docker_unavailable".into()),
                         ..Default::default()
                     },
+                    &piqueld::store::Visibility::ALL,
                     None,
                     10,
                 )
@@ -3158,9 +3171,9 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
         .await
         .unwrap();
     harness.finish(&first).await;
-    harness
-        .store
-        .put_secret(&first.environment_id, "token", 0, b"version-one".to_vec())
+    let (store, env) = (&harness.store, &first.environment_id);
+    store
+        .put_secret(Daemon, env, "token", 0, b"version-one".to_vec())
         .await
         .unwrap();
     let mut input = manifest();
@@ -3181,9 +3194,8 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
         harness.docker.secret_values.lock().await[&old],
         b"version-one"
     );
-    harness
-        .store
-        .put_secret(&first.environment_id, "token", 1, b"version-two".to_vec())
+    store
+        .put_secret(Daemon, env, "token", 1, b"version-two".to_vec())
         .await
         .unwrap();
     harness
@@ -3232,7 +3244,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
             .runtime(Arc::new(tokio::sync::Notify::new())),
     );
     service
-        .delete_secret(&first.environment_id, "token", 2)
+        .delete_secret(Daemon, &first.environment_id, "token", 2)
         .await
         .unwrap();
     assert!(harness.docker.secret_values.lock().await.is_empty());
@@ -3257,7 +3269,7 @@ async fn application_deletion_journals_secret_cleanup_failures() {
     harness.finish(&first).await;
     harness
         .store
-        .put_secret(&first.environment_id, "token", 0, b"value".to_vec())
+        .put_secret(Daemon, &first.environment_id, "token", 0, b"value".to_vec())
         .await
         .unwrap();
     harness
@@ -3280,6 +3292,7 @@ async fn application_deletion_journals_secret_cleanup_failures() {
                 operation_id: Some(deletion.id.clone()),
                 ..Default::default()
             },
+            &piqueld::store::Visibility::ALL,
             None,
             100,
         )
@@ -3311,7 +3324,7 @@ async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollou
     let id = &initial.environment_id;
     harness
         .store
-        .put_secret(id, "token", 0, b"original".to_vec())
+        .put_secret(Daemon, id, "token", 0, b"original".to_vec())
         .await
         .unwrap();
     let mut input = manifest();
@@ -3330,7 +3343,7 @@ async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollou
     let original = harness.docker.observe(id).await.unwrap();
 
     std::fs::remove_file(harness.database_path.with_file_name("secrets.key")).unwrap();
-    harness.store.recover_secret_key().await.unwrap();
+    harness.store.recover_secret_key(Daemon).await.unwrap();
     let failed = applications.deploy(id, None).await.unwrap();
     harness
         .controller
@@ -3345,7 +3358,7 @@ async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollou
 
     harness
         .store
-        .put_secret(id, "token", 1, b"replacement".to_vec())
+        .put_secret(Daemon, id, "token", 1, b"replacement".to_vec())
         .await
         .unwrap();
     let replacement = applications.deploy(id, None).await.unwrap();
@@ -3373,7 +3386,7 @@ async fn missing_secret_key_fails_rollout_before_docker_mutation() {
     harness.finish(&first).await;
     harness
         .store
-        .put_secret(&first.environment_id, "token", 0, b"value".to_vec())
+        .put_secret(Daemon, &first.environment_id, "token", 0, b"value".to_vec())
         .await
         .unwrap();
     std::fs::remove_file(harness.database_path.with_file_name("secrets.key")).unwrap();
@@ -3406,6 +3419,7 @@ async fn missing_secret_key_fails_rollout_before_docker_mutation() {
                 operation_id: Some(deployment.id.clone()),
                 ..Default::default()
             },
+            &piqueld::store::Visibility::ALL,
             None,
             100,
         )
@@ -3876,7 +3890,13 @@ impl ControllerHarness {
     ) -> (piqueld_core::api::BuildRecord, String) {
         let run = self
             .store
-            .builds(None, Some(application), None, 10)
+            .builds(
+                None,
+                Some(application),
+                &piqueld_core::access::Scope::All,
+                None,
+                10,
+            )
             .await
             .unwrap()
             .items
@@ -4375,7 +4395,13 @@ async fn recorded_success_survives_a_crash_before_cleanup() {
         loop {
             let builds = harness
                 .store
-                .builds(None, Some(&operation.environment_id), None, 10)
+                .builds(
+                    None,
+                    Some(&operation.environment_id),
+                    &piqueld_core::access::Scope::All,
+                    None,
+                    10,
+                )
                 .await
                 .unwrap();
             if builds

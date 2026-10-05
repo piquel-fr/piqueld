@@ -149,6 +149,12 @@ differently after upgrading. Stored environment responses that replay retried
 requests take the migrated source. Deployments gain `warnings_json`, problems found
 while fetching that did not stop the deployment; existing ones have none.
 
+`0015_authorization.sql` adds grants for accounts, credentials, and invitations,
+and lets an invitation target an existing account for passkey enrollment. Every
+existing account receives `admin` on every application, so access is unchanged
+until reduced; see [authorization](authorization.md#upgrading). Grants on an
+application cover each of its environments and are removed with it.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

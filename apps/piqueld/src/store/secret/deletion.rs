@@ -50,9 +50,11 @@ impl Store {
     /// A new deletion is refused (`SecretReferenced`) while the saved
     /// configuration, the latest deployment's manifest or pins, or the active
     /// runtime target still use the secret. Resuming an existing reservation
-    /// skips those checks and reuses its token.
+    /// skips those checks and reuses its token. `actor` needs `secrets:write`
+    /// on the environment's application, checked in the reserving transaction.
     pub(crate) async fn begin_secret_deletion(
         &self,
+        actor: crate::store::Actor<'_>,
         application: &EnvironmentId,
         name: &str,
         expected: i64,
@@ -61,6 +63,9 @@ impl Store {
         let app = self.get(application).await?;
         let id = application.as_str();
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        actor
+            .require_on_environment(&mut tx, Self::SECRETS_WRITE, application)
+            .await?;
         let row = sqlx::query!("SELECT generation,deletion_id FROM environment_secrets WHERE environment_id=?1 AND name=?2",id,name)
             .fetch_optional(&mut *tx).await.map_err(StoreError::database)?.ok_or(StoreError::NotFound)?;
         Self::secret_version_matches(expected, row.generation)?;

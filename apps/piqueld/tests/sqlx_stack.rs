@@ -23,7 +23,7 @@ async fn sqlx_applies_migrations_and_preserves_instance_identity() {
     .fetch_one(&mut connection)
     .await
     .unwrap();
-    assert_eq!(table_count, 34);
+    assert_eq!(table_count, 35);
 
     let schema_version: i64 = sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(&mut connection)
@@ -265,4 +265,56 @@ async fn structured_logs_expire_old_output_without_losing_build_records() {
         .await
         .unwrap();
     assert_eq!(chunks, 0);
+}
+
+/// Upgrading to authorization keeps every existing account unrestricted.
+#[tokio::test]
+async fn authorization_upgrade_makes_existing_accounts_administrators() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("schema-ten.db");
+    let url = format!("sqlite://{}?mode=rwc", path.display());
+    let mut connection = SqliteConnection::connect(&url).await.unwrap();
+    for migration in [
+        include_str!("../../../migrations/0001_control_plane.sql"),
+        include_str!("../../../migrations/0002_deployments.sql"),
+        include_str!("../../../migrations/0003_deployment_inputs.sql"),
+        include_str!("../../../migrations/0004_build_records.sql"),
+        include_str!("../../../migrations/0005_structured_build_logs.sql"),
+        include_str!("../../../migrations/0006_observability.sql"),
+        include_str!("../../../migrations/0007_authentication.sql"),
+        include_str!("../../../migrations/0008_application_secrets.sql"),
+        include_str!("../../../migrations/0009_ingress.sql"),
+        include_str!("../../../migrations/0010_history_pagination.sql"),
+    ] {
+        sqlx::raw_sql(migration)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+    sqlx::raw_sql(
+        "PRAGMA user_version=10;
+         INSERT INTO instance_metadata VALUES(1,'instance-upgrade',10,1);
+         INSERT INTO auth_users VALUES('alice','alice','',1),('bob','bob','',1);
+         INSERT INTO auth_invitations VALUES('invite','alice','hash',9999999999);",
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    connection.close().await.unwrap();
+
+    Store::open(&path).await.unwrap();
+    let mut connection = SqliteConnection::connect(&url).await.unwrap();
+    let grants: Vec<(Option<String>, String, Option<String>)> = sqlx::query_as(
+        "SELECT user_id,permission,application_id FROM auth_grants ORDER BY user_id",
+    )
+    .fetch_all(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(
+        grants,
+        vec![
+            (Some("alice".into()), "admin".into(), None),
+            (Some("bob".into()), "admin".into(), None),
+        ]
+    );
 }

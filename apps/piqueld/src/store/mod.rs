@@ -2,6 +2,7 @@
 //! environment commands; Docker planning and execution belong to the controller.
 
 mod acceptance;
+mod access;
 mod application;
 mod auth;
 mod build;
@@ -13,8 +14,11 @@ mod jobs;
 mod journal;
 mod notifications;
 mod observability;
+pub use access::{Actor, Caller, Visibility};
 pub use auth::Lockout;
-pub(crate) use auth::{CredentialKind, NewCredential, NewPasskey, PasskeyOwner};
+pub(crate) use auth::{
+    CredentialKind, Invitation, NewCredential, NewInvitation, NewPasskey, PasskeyOwner,
+};
 pub(crate) use journal::JournalAction;
 mod operation;
 mod repository;
@@ -182,9 +186,15 @@ pub enum StoreError {
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]
     AlreadyExists,
-    /// The account change would leave nobody able to sign in.
+    /// The account change would leave nobody able to administer the installation.
     #[error(transparent)]
     Lockout(#[from] Lockout),
+    /// The caller may not perform the change.
+    #[error(transparent)]
+    Denied(piqueld_core::access::Denied),
+    /// The caller's credential was revoked or expired during the request.
+    #[error("the credential was revoked")]
+    CredentialRevoked,
     /// Persisted state has inconsistent identity.
     #[error("stored application state is corrupt")]
     Corrupt,

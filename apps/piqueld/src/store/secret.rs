@@ -11,6 +11,10 @@ use std::collections::BTreeMap;
 use zeroize::Zeroizing;
 
 impl Store {
+    /// Permission for storing and deleting secret values.
+    const SECRETS_WRITE: piqueld_core::access::AppPermission =
+        piqueld_core::access::AppPermission::SecretsWrite;
+
     /// Lists metadata without accessing the master key or decrypting values.
     /// # Errors
     /// Returns application absence or database errors.
@@ -36,12 +40,15 @@ impl Store {
     /// `expected` is the current generation (zero to create). The value is
     /// encrypted into a new immutable version with its own Swarm secret name
     /// (`piqueld-secret-<uuid>`), subject to per-environment count and byte quotas.
-    /// Rejected while the environment or the secret is being deleted.
+    /// Rejected while the environment or the secret is being deleted. `actor`
+    /// needs `secrets:write` on the environment's application, checked in the
+    /// transaction.
     ///
     /// # Errors
-    /// Returns invalid input, version conflict, key or database errors.
+    /// Returns invalid input, refusal, version conflict, key or database errors.
     pub async fn put_secret(
         &self,
+        actor: super::Actor<'_>,
         application: &EnvironmentId,
         name: &str,
         expected: i64,
@@ -62,6 +69,9 @@ impl Store {
         }
         let id = application.as_str();
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        actor
+            .require_on_environment(&mut tx, Self::SECRETS_WRITE, application)
+            .await?;
         let existing = sqlx::query!(
             "SELECT generation,deletion_id FROM environment_secrets WHERE environment_id=?1 AND name=?2", id, name
         ).fetch_optional(&mut *tx).await.map_err(StoreError::database)?;
@@ -150,7 +160,13 @@ impl Store {
                 .with_context(|| format!("generate secret {}", secret.name))
                 .map_err(StoreError::SecretSource)?;
             match self
-                .put_secret(id, &secret.name, 0, std::mem::take(&mut *value))
+                .put_secret(
+                    super::Actor::Daemon,
+                    id,
+                    &secret.name,
+                    0,
+                    std::mem::take(&mut *value),
+                )
                 .await
             {
                 // A value set concurrently wins over the generated one.

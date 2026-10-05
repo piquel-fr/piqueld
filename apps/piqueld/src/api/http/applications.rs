@@ -1,6 +1,8 @@
 use super::{ApiError, ApiPath, ApiState, accepted, ok, openapi::ApiErrorResponse, parse_manifest};
 use crate::api::{Mutation, MutationResponse};
+use crate::auth::Identity;
 use axum::{
+    Extension,
     body::Bytes,
     extract::{
         Query, State,
@@ -42,12 +44,19 @@ pub(super) struct ListQuery {
 )]
 pub(super) async fn list(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     query: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let Query(query) =
         query.map_err(|_| ApiError::from(crate::api::ApplicationError::InvalidPagination))?;
     Ok(ok(state
-        .applications(query.cursor.as_deref(), query.limit)
+        .applications(
+            &identity
+                .grants
+                .app_scope(piqueld_core::access::AppPermission::Read),
+            query.cursor.as_deref(),
+            query.limit,
+        )
         .await?))
 }
 
@@ -94,6 +103,7 @@ pub(super) async fn get(
 )]
 pub(super) async fn apply(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     query: Result<Query<ApplyQuery>, axum::extract::rejection::QueryRejection>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
@@ -108,6 +118,7 @@ pub(super) async fn apply(
     let (manifest, expected, expected_id) = parse_manifest(&headers, &request_body(body)?)?;
     accept_mutation(
         &state,
+        &identity,
         Mutation::save(manifest, expected_id, query.deploy),
         expected,
         query.force,
@@ -156,6 +167,7 @@ pub(super) struct DeleteApplicationQuery {
 )]
 pub(super) async fn delete(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
     query: Result<Query<DeleteApplicationQuery>, axum::extract::rejection::QueryRejection>,
@@ -176,6 +188,7 @@ pub(super) async fn delete(
         .collect::<Result<_, _>>()?;
     accept_mutation(
         &state,
+        &identity,
         Mutation::DeleteApplication {
             id: ApplicationId::parse(id)?,
             environments,
@@ -208,6 +221,7 @@ pub(super) async fn delete(
 )]
 pub(super) async fn plan(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     query: Result<Query<PlanQuery>, QueryRejection>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
@@ -222,7 +236,13 @@ pub(super) async fn plan(
     let environment = query.environment.map(EnvironmentId::parse).transpose()?;
     let (manifest, expected, expected_id) = parse_manifest(&headers, &request_body(body)?)?;
     Ok(ok(state
-        .plan(manifest, expected, expected_id, environment.as_ref())
+        .plan(
+            &identity.grants,
+            manifest,
+            expected,
+            expected_id,
+            environment.as_ref(),
+        )
         .await?))
 }
 
@@ -286,6 +306,7 @@ impl GenerationQuery {
 /// also deploys, or a deletion), 200 for a plain save, rename, or environment change.
 pub(super) async fn accept_mutation(
     state: &ApiState,
+    identity: &Identity,
     mutation: Mutation,
     expected: Option<u64>,
     force: bool,
@@ -293,7 +314,13 @@ pub(super) async fn accept_mutation(
 ) -> Result<Response, ApiError> {
     let request_id = super::optional_header(headers, "idempotency-key")?;
     match state
-        .accept(mutation, expected, force, request_id.as_deref())
+        .accept(
+            crate::api::Actor::Account(identity.caller()),
+            mutation,
+            expected,
+            force,
+            request_id.as_deref(),
+        )
         .await?
     {
         MutationResponse::Operation(operation) => Ok(accepted(operation)),
@@ -323,6 +350,7 @@ pub(super) async fn accept_mutation(
     (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn rename(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
@@ -338,6 +366,7 @@ pub(super) async fn rename(
     let request: RenameApplicationRequest = super::decode_json(&request_body(body)?)?;
     accept_mutation(
         &state,
+        &identity,
         Mutation::Rename {
             id: ApplicationId::parse(id)?,
             name: request.name,

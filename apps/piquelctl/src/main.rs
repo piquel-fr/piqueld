@@ -1,5 +1,6 @@
 //! Safe, small operator command-line client for the Plan 06 piqueld API.
 
+mod accounts;
 mod auth;
 mod cli;
 mod commands;

@@ -8,8 +8,11 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const bin = process.env.PIQUELD_PLAYWRIGHT_BIN_DIR ?? resolve(root, process.env.CARGO_TARGET_DIR ?? 'target', 'debug');
 export type User = { id: string; username: string };
+export type Grant = { permission: string; applications?: string[] };
+export type Session = { user: User; grants: Grant[] };
+export type Account = { user: User; grants: Grant[] };
 export type Ceremony = { id: string; options: { publicKey: unknown } };
-export type Directory = { users: User[] };
+export type Directory = { users: Account[] };
 export type Managed = { invitation_url: string; token: string };
 export type Daemon = { origin: string; setup: string; socket: string; directory: string };
 
@@ -107,7 +110,7 @@ export async function register(page: Page, link: string, username: string): Prom
   await page.getByRole('button', { name: 'Create account with a passkey', exact: true }).click();
   await expect(page).toHaveURL(/\/dashboard\/$/);
   await expect(page.getByRole('button', { name: 'Sign out', exact: true })).toBeVisible();
-  return auth<User>(page, 'me');
+  return (await auth<Session>(page, 'me')).user;
 }
 export async function proof(page: Page, ceremony: Ceremony, registration = false) {
   const credential = await page.evaluate(async ({ options, registration }) => {

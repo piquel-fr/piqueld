@@ -1,10 +1,13 @@
 use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
+use crate::auth::Identity;
 use axum::{
+    Extension,
     extract::{Query, State, rejection::QueryRejection},
     response::IntoResponse,
 };
 use piqueld_core::{
     Event,
+    access::{AppPermission, Denied, GlobalPermission},
     api::{Envelope, Page},
     observability::{DaemonStats, DeploymentAnalytics, NotificationDelivery},
 };
@@ -16,9 +19,21 @@ use piqueld_core::{
 #[utoipa::path(get,path="/api/v1/diagnostics/{id}",operation_id="getDiagnostic",params(("id"=String,Path)),responses((status=200,body=Envelope<Event>),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn diagnostic(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(ok(state.diagnostic(&id).await?))
+    let event = state.diagnostic(&id).await?;
+    // Application diagnostics need `events:read` there, like other history of
+    // a readable application. Daemon diagnostics need `system:read`; without
+    // it they do not exist for the caller.
+    match (&event.scope, &event.application_id) {
+        (piqueld_core::observability::EventScope::Application, Some(application)) => identity
+            .grants
+            .require_app(AppPermission::EventsRead, application)?,
+        _ if identity.grants.has_global(GlobalPermission::SystemRead) => {}
+        _ => return Err(Denied::Hidden.into()),
+    }
+    Ok(ok(event))
 }
 /// Gets daemon resource usage.
 ///
@@ -47,6 +62,7 @@ pub(super) struct AnalyticsQuery {
 #[utoipa::path(get,path="/api/v1/analytics/deployments",operation_id="deploymentAnalytics",params(AnalyticsQuery),responses((status=200,body=Envelope<DeploymentAnalytics>),(status=400,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn analytics(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     query: Result<Query<AnalyticsQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let Query(query) = query.map_err(ApiError::query)?;
@@ -54,6 +70,7 @@ pub(super) async fn analytics(
     Ok(ok(state
         .deployment_analytics(
             query.environment_id.as_deref(),
+            &super::access::history(&identity)?,
             query
                 .since_ms
                 .unwrap_or_else(|| until.saturating_sub(30 * 86_400_000)),
@@ -90,9 +107,12 @@ pub(super) async fn deliveries(
 #[utoipa::path(post,path="/api/v1/notifications/deliveries/{id}/retry",operation_id="retryNotificationDelivery",params(("id"=String,Path)),responses((status=200,body=Envelope<bool>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn retry_delivery(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    state.retry_notification(&id).await?;
+    state
+        .retry_notification(crate::api::Actor::Account(identity.caller()), &id)
+        .await?;
     Ok(ok(true))
 }
 

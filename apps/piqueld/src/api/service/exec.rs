@@ -1,7 +1,9 @@
 //! One-off commands in running service tasks, recorded in environment history.
-use super::{ApplicationError, ApplicationService};
+use super::{Actor, ApplicationError, ApplicationService};
 use crate::docker::{Exec, ExecIo};
-use piqueld_core::{ApplicationId, EnvironmentId, ServiceName, exec::ExecRequest};
+use piqueld_core::{
+    ApplicationId, EnvironmentId, ServiceName, access::AppPermission, exec::ExecRequest,
+};
 
 /// A created command whose start is already recorded in history.
 pub struct ExecSession {
@@ -16,16 +18,22 @@ pub struct ExecSession {
 
 impl ApplicationService {
     /// Creates a command in one running task of `request.service` and records
-    /// which account started it. The command itself may contain secrets and is
-    /// never recorded.
+    /// which `account` started it. The command itself may contain secrets and is
+    /// never recorded. `actor` needs `apps:exec` on the environment's
+    /// application now, not only when it connected.
     /// # Errors
-    /// Returns not found, a service without running tasks, runtime or storage errors.
+    /// Returns refusal, not found, a service without running tasks, runtime or
+    /// storage errors.
     pub async fn exec(
         &self,
+        actor: Actor<'_>,
         environment: &EnvironmentId,
         request: &ExecRequest,
         account: &str,
     ) -> Result<ExecSession, ApplicationError> {
+        self.store
+            .require_on_environment(actor, AppPermission::Exec, environment)
+            .await?;
         let application = self
             .store
             .get(environment)

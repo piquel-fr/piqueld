@@ -19,6 +19,10 @@ use utoipa::{OpenApi, ToResponse};
     components(schemas(
         ErrorBody,
         piqueld_core::auth::User,
+        piqueld_core::auth::Session,
+        piqueld_core::auth::Account,
+        piqueld_core::access::Grant,
+        piqueld_core::access::Permission,
         piqueld_core::auth::AuthStatus,
         piqueld_core::auth::SetupLink,
         piqueld_core::auth::RegistrationStart,
@@ -93,8 +97,8 @@ pub fn openapi_document() -> Value {
 /// Serializes Utoipa's `OpenAPI` 3.1 output as the published 3.0.3 contract.
 ///
 /// Besides schema downgrading, it drops the license `identifier` (3.1 only),
-/// declares bearer-token and session-cookie security for every operation,
-/// clears security on public endpoints (see `auth::is_public`), strips
+/// declares bearer-token and session-cookie security as the default (public
+/// endpoints clear it, see `access::Access::declare`), strips
 /// `nullable` from optional parameters, and documents the TCP 403 response.
 pub(super) fn openapi_30_document(document: &utoipa::openapi::OpenApi) -> Value {
     let mut document = serde_json::to_value(document).expect("OpenAPI serialization cannot fail");
@@ -109,17 +113,6 @@ pub(super) fn openapi_30_document(document: &utoipa::openapi::OpenApi) -> Value 
         "browserSession": {"type":"apiKey", "in":"cookie", "name":"piqueld_session"}
     });
     document["security"] = serde_json::json!([{"bearerAuth":[]},{"browserSession":[]}]);
-    if let Some(paths) = document["paths"].as_object_mut() {
-        for (path, item) in paths {
-            if let Some(operations) = item.as_object_mut() {
-                for operation in operations.values_mut() {
-                    if super::auth::is_public(path) {
-                        operation["security"] = serde_json::json!([]);
-                    }
-                }
-            }
-        }
-    }
     remove_nullable_parameters(&mut document);
     complete_http_contract(&mut document);
     document

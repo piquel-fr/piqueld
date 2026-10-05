@@ -452,11 +452,16 @@ pub(super) fn CreateApplication() -> impl IntoView {
             busy.set(false);
         });
     };
+    let allowed = super::access::can(piqueld_client::access::Permission::Global(
+        piqueld_client::access::GlobalPermission::AppsCreate,
+    ));
     view! {
-        <button type="button" class="btn btn-primary" on:click={move |_| opened.set(true)}>
-            {icon(Icon::Plus)}
-            "New application"
-        </button>
+        <Show when={move || allowed.get()}>
+            <button type="button" class="btn btn-primary" on:click={move |_| opened.set(true)}>
+                {icon(Icon::Plus)}
+                "New application"
+            </button>
+        </Show>
         <Modal
             title="Create application"
             opened={opened}

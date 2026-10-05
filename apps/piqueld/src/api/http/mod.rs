@@ -18,10 +18,12 @@ use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
 };
-use utoipa_axum::{router::OpenApiRouter, routes};
+use utoipa_axum::router::OpenApiRouter;
 
 use crate::store::StoreError;
 
+#[macro_use]
+mod access;
 mod applications;
 mod auth;
 pub use auth::Authenticator;
@@ -270,6 +272,8 @@ impl From<StoreError> for ApiError {
             StoreError::Lockout(lockout) => {
                 Self::new(StatusCode::CONFLICT, "account_lockout", lockout.message())
             }
+            StoreError::Denied(denied) => denied.into(),
+            StoreError::CredentialRevoked => crate::auth::AuthError::Unauthorized.into(),
             StoreError::AlreadyExists => Self::new(
                 StatusCode::CONFLICT,
                 "application_name_collision",
@@ -512,7 +516,8 @@ pub fn health_router() -> Router<ApiState> {
 /// Wraps a route set with the layers shared by every transport.
 ///
 /// Layers, innermost first: browser trust policy (TCP only, when
-/// `browser_policy` is set), authentication guard, state and `OpenAPI` 3.0
+/// `browser_policy` is set), route authorization, authentication guard, state
+/// and `OpenAPI` 3.0
 /// document extension, request ID propagation, error request ID binding and
 /// diagnostic recording, request ID generation, body size limit, and tracing.
 fn finish_router(
@@ -524,8 +529,10 @@ fn finish_router(
 ) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     // 405 responses must advertise exactly the methods each matched endpoint
-    // registers, so the values are derived from the OpenAPI document itself.
+    // registers, so the values are derived from the OpenAPI document itself,
+    // as is every route's access requirement.
     let allow_routes = AllowRoutes::build(openapi);
+    let route_access = access::RouteAccess::build(openapi);
     let openapi = openapi::openapi_30_document(openapi);
     let router = router.method_not_allowed_fallback(move |matched: Option<MatchedPath>| {
         let allow_routes = Arc::clone(&allow_routes);
@@ -538,8 +545,13 @@ fn finish_router(
     } else {
         router
     };
-    // Authentication may reject requests without reaching a handler. Keep it
-    // inside the shared request tracing and error/diagnostic response layers.
+    // Authorization runs after authentication, which may reject requests
+    // without reaching a handler. Keep both inside the shared request tracing
+    // and error/diagnostic response layers.
+    let router = router.layer(middleware::from_fn_with_state(
+        (route_access, state.clone()),
+        access::enforce,
+    ));
     auth.guard(router)
         .with_state(state.clone())
         .layer(Extension(Arc::new(openapi)))
@@ -576,61 +588,64 @@ fn finish_router(
         )
 }
 
-// Public endpoints must be registered through `routes!` here so Axum and the
-// generated OpenAPI document receive the same method and path at the same time.
+// Endpoints must be registered here through `public!`, `authenticated!`, or
+// `granted!` (see `access`), so Axum, the generated OpenAPI document, and the
+// access table receive the same method, path, and requirement together.
 fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
         .merge(editing::router())
-        .routes(routes!(auth::status))
-        .routes(routes!(auth::setup_link))
-        .routes(routes!(auth::me))
-        .routes(routes!(auth::register_start))
-        .routes(routes!(auth::register_finish))
-        .routes(routes!(auth::login_start))
-        .routes(routes!(auth::login_finish))
-        .routes(routes!(auth::logout))
-        .routes(routes!(auth::directory))
-        .routes(routes!(auth::manage))
-        .routes(routes!(auth::device_start))
-        .routes(routes!(auth::device_poll))
-        .routes(routes!(auth::device_inspect))
-        .routes(routes!(auth::device_approve))
-        .routes(routes!(system::status))
-        .routes(routes!(system::readiness))
-        .routes(routes!(system::configuration))
-        .routes(routes!(system::refresh_dns))
-        .routes(routes!(openapi::openapi))
-        .routes(routes!(applications::list))
-        .routes(routes!(applications::apply))
-        .routes(routes!(applications::plan))
-        .routes(routes!(applications::get, applications::delete))
-        .routes(routes!(applications::manifest_download))
-        .routes(routes!(applications::rename))
-        .routes(routes!(environments::create))
-        .routes(routes!(environments::get, environments::delete))
-        .routes(routes!(environments::detail))
-        .routes(routes!(environments::status))
-        .routes(routes!(environments::reconcile))
-        .routes(routes!(environments::rename))
-        .routes(routes!(environments::branch))
-        .routes(routes!(deployments::deploy))
-        .routes(routes!(deployments::list))
-        .routes(routes!(deployments::attempts))
-        .routes(routes!(events::list))
-        .routes(routes!(events::stream))
-        .routes(routes!(observability::diagnostic))
-        .routes(routes!(observability::resources))
-        .routes(routes!(observability::analytics))
-        .routes(routes!(observability::deliveries))
-        .routes(routes!(observability::retry_delivery))
-        .routes(routes!(logs::get))
-        .routes(routes!(exec::exec))
-        .routes(routes!(builds::list))
-        .routes(routes!(builds::logs))
-        .routes(routes!(operations::get))
-        .routes(routes!(secrets::recover_key))
-        .routes(routes!(secrets::list))
-        .routes(routes!(secrets::put, secrets::delete))
+        .routes(public!(auth::status))
+        .routes(public!(auth::setup_link))
+        .routes(authenticated!(auth::me))
+        .routes(public!(auth::register_start))
+        .routes(public!(auth::register_finish))
+        .routes(public!(auth::login_start))
+        .routes(public!(auth::login_finish))
+        .routes(authenticated!(auth::logout))
+        .routes(authenticated!(auth::directory))
+        .routes(authenticated!(auth::manage))
+        .routes(public!(auth::device_start))
+        .routes(public!(auth::device_poll))
+        .routes(authenticated!(auth::device_inspect))
+        .routes(authenticated!(auth::device_approve))
+        .routes(authenticated!(system::status))
+        .routes(authenticated!(system::readiness))
+        .routes(granted!(Global(SystemRead) => system::configuration))
+        .routes(granted!(Global(SystemOperate) => system::refresh_dns))
+        .routes(authenticated!(openapi::openapi))
+        .routes(granted!(App(Read) => applications::list))
+        .routes(authenticated!(applications::apply))
+        .routes(authenticated!(applications::plan))
+        .routes(granted!(App(Read) => applications::get))
+        .routes(granted!(App(Delete) => applications::delete))
+        .routes(granted!(App(Read) => applications::manifest_download))
+        .routes(granted!(App(Write) => applications::rename))
+        .routes(granted!(App(Write) => environments::create))
+        .routes(granted!(App(Read) => environments::get))
+        .routes(granted!(App(Delete) => environments::delete))
+        .routes(granted!(App(Read) => environments::detail))
+        .routes(granted!(App(Read) => environments::status))
+        .routes(granted!(App(Deploy) => environments::reconcile))
+        .routes(granted!(App(Write) => environments::rename))
+        .routes(granted!(App(Write) => environments::branch))
+        .routes(granted!(App(Deploy) => deployments::deploy))
+        .routes(granted!(App(Read) => deployments::list))
+        .routes(granted!(App(Read) => deployments::attempts))
+        .routes(authenticated!(events::list))
+        .routes(authenticated!(events::stream))
+        .routes(authenticated!(observability::diagnostic))
+        .routes(granted!(Global(SystemRead) => observability::resources))
+        .routes(granted!(App(EventsRead) => observability::analytics))
+        .routes(granted!(Global(SystemRead) => observability::deliveries))
+        .routes(granted!(Global(SystemOperate) => observability::retry_delivery))
+        .routes(granted!(App(LogsRead) => logs::get))
+        .routes(granted!(App(Exec) => exec::exec))
+        .routes(granted!(App(Read) => builds::list))
+        .routes(granted!(App(LogsRead) => builds::logs))
+        .routes(granted!(App(Read) => operations::get))
+        .routes(granted!(Global(SystemOperate) => secrets::recover_key))
+        .routes(granted!(App(Read) => secrets::list))
+        .routes(granted!(App(SecretsWrite) => secrets::put, secrets::delete))
 }
 
 /// Middleware that runs the request inside a `request_context` span and

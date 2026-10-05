@@ -1,6 +1,8 @@
 use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
-use axum::{extract::State, response::IntoResponse};
+use crate::auth::Identity;
+use axum::{Extension, extract::State, response::IntoResponse};
 use piqueld_core::Operation;
+use piqueld_core::access::{AppPermission, Target};
 use piqueld_core::api::Envelope;
 
 // Returns one durable operation, as identified by a 202 mutation response.
@@ -19,7 +21,16 @@ use piqueld_core::api::Envelope;
 )]
 pub(super) async fn get(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(ok(state.operation(&id).await?))
+    let operation = state.operation(&id).await?;
+    let application = state
+        .environment_application(&operation.environment_id)
+        .await?;
+    identity.grants.require_change(
+        &[AppPermission::Read],
+        application.as_ref().map_or(Target::Unknown, Target::Id),
+    )?;
+    Ok(ok(operation))
 }

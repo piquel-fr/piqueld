@@ -44,6 +44,7 @@ passkeys, invitations, and CLI login.
 The supported manifest and runtime model are documented in:
 
 - [`docs/application-manifest.md`](docs/application-manifest.md)
+- [`docs/authorization.md`](docs/authorization.md)
 - [`docs/ingress.md`](docs/ingress.md)
 - [`docs/api.md`](docs/api.md)
 - [`docs/web-ui.md`](docs/web-ui.md)

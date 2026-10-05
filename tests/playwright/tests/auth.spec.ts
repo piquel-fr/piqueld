@@ -1,5 +1,5 @@
 import { stat } from 'node:fs/promises';
-import { test, expect, api, auth, register, proof, Passkeys, type User, type Directory, type Managed, type Ceremony } from '../fixtures.js';
+import { test, expect, api, auth, register, proof, Passkeys, type Session, type Directory, type Managed, type Ceremony } from '../fixtures.js';
 
 test('setup gates anonymous access, closes permanently, and supports username-less login', async ({ page, daemon, passkeys }) => {
   void passkeys;
@@ -20,7 +20,8 @@ test('setup gates anonymous access, closes permanently, and supports username-le
   expect((await api(page, 'me')).status).toBe(401);
   await page.getByRole('button', { name: 'Sign in with a passkey', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Sign out', exact: true })).toBeVisible();
-  expect((await auth<User>(page, 'me')).id).toBe(user.id);
+  // The first account administers the installation.
+  expect(await auth<Session>(page, 'me')).toEqual({ user: expect.objectContaining({ id: user.id }), grants: [{ permission: 'admin' }] });
 });
 
 test('rejects assertion replay, substituted user handles, and downgraded user verification', async ({ page, account, passkeys }) => {
@@ -39,9 +40,12 @@ test('rejects assertion replay, substituted user handles, and downgraded user ve
   expect((await api(page, 'login/finish', downgraded)).status).toBe(401);
 });
 
-test('invitation signup permits cross-account profile editing and passkey enrollment', async ({ page, account, passkeys }) => {
+test('invitations carry grants and limit what the new account may see and change', async ({ page, account }) => {
   await page.goto('/dashboard/accounts');
   await page.getByRole('button', { name: 'Create invitation', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Create invitation' });
+  await dialog.getByLabel('Preset').selectOption('developer');
+  await dialog.getByRole('button', { name: 'Create link', exact: true }).click();
   const secret = page.locator('.secret-box');
   await expect(secret).toContainText('#invite=');
   const link = (await secret.innerText()).trim();
@@ -50,25 +54,59 @@ test('invitation signup permits cross-account profile editing and passkey enroll
     invitation: link.split('#invite=')[1], user_id: null,
     username: 'late', display_name: '', passkey_name: 'Test',
   })).status).toBe(401);
+  const permissions = (await auth<Session>(page, 'me')).grants.map(grant => grant.permission);
+  expect(permissions).toContain('apps:deploy');
+  expect(permissions).not.toContain('accounts:manage');
+  // Without accounts:manage, Bob sees and changes only his own account.
   await page.goto('/dashboard/accounts');
-  const alice = page.locator('.auth-account').filter({ has: page.getByRole('heading', { name: 'alice', exact: true }) });
-  await alice.getByLabel('Display name', { exact: true }).fill('Edited by Bob');
-  await alice.getByLabel('Username', { exact: true }).fill('alice-edited');
-  const updated = page.locator('.auth-account').filter({ has: page.getByRole('heading', { name: 'alice-edited', exact: true }) });
-  await updated.getByRole('button', { name: 'Save profile', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'alice-edited', exact: true })).toBeVisible();
-  await expect.poll(async () => (await auth<Directory>(page, 'directory')).users.find(user => user.id === account.id)?.username).toBe('alice-edited');
-  // A fresh authenticator can enroll a key for another account without its approval.
-  await passkeys.reset();
-  await updated.getByLabel('New passkey name', { exact: true }).fill('Enrolled by Bob');
-  await updated.getByRole('button', { name: 'Add passkey', exact: true }).click();
-  await expect(page.locator('.notice', { hasText: 'Passkey added.' })).toBeVisible();
-  expect((await auth<User>(page, 'me')).id).toBe(bob.id);
+  await expect(page.locator('.auth-account')).toHaveCount(1);
+  await expect(page.getByRole('heading', { name: 'bob', exact: true })).toBeVisible();
+  const denied = await api<{ code: string }>(page, 'manage', {
+    action: 'update_user', user_id: account.id, username: 'taken-over', display_name: '',
+  });
+  expect(denied.status).toBe(403);
+  expect(denied.body.code).toBe('permission_denied');
+  expect((await auth<Directory>(page, 'directory')).users.map(entry => entry.user.id)).toEqual([bob.id]);
+});
+
+test('enrollment links add a passkey only to their account', async ({ page, account, browser }) => {
+  void account;
+  const invitation = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [] })).invitation_url;
+  const context = await browser.newContext();
+  try {
+    const recipient = await context.newPage();
+    const device = await Passkeys.create(recipient);
+    try {
+      const bob = await register(recipient, invitation, 'bob');
+      // An administrator cannot register a passkey for Bob directly.
+      expect((await api(page, 'register/start', {
+        invitation: null, user_id: bob.id, username: '', display_name: '', passkey_name: 'Takeover',
+      })).status).toBe(400);
+      await page.goto('/dashboard/accounts');
+      const card = page.locator('.auth-account').filter({ has: page.getByRole('heading', { name: 'bob', exact: true }) });
+      await card.getByRole('button', { name: 'Create enrollment link', exact: true }).click();
+      const secret = page.locator('.secret-box');
+      await expect(secret).toContainText('#enroll=');
+      const link = (await secret.innerText()).trim();
+      // Bob signs out and enrolls a fresh authenticator through the link.
+      await recipient.getByRole('button', { name: 'Sign out', exact: true }).click();
+      await expect(recipient.getByRole('button', { name: 'Sign in with a passkey', exact: true })).toBeVisible();
+      await device.reset();
+      await recipient.goto(link);
+      await expect(recipient.getByRole('heading', { name: 'Add a passkey', exact: true })).toBeVisible();
+      await recipient.getByRole('button', { name: 'Register passkey', exact: true }).click();
+      await expect(recipient).toHaveURL(/\/dashboard\/$/);
+      expect((await auth<Session>(recipient, 'me')).user.id).toBe(bob.id);
+      expect((await api(recipient, 'register/start', {
+        invitation: link.split('#enroll=')[1], user_id: null, username: '', display_name: '', passkey_name: 'Again',
+      })).status).toBe(401);
+    } finally { await device.close(); }
+  } finally { await context.close(); }
 });
 
 test('a transferable invitation can be redeemed successfully only once under a race', async ({ page, account, browser, daemon }) => {
   void account;
-  const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation' })).invitation_url;
+  const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [] })).invitation_url;
   const contexts = await Promise.all([browser.newContext(), browser.newContext()]);
   try {
     const recipients = await Promise.all(contexts.map(context => context.newPage()));
@@ -102,11 +140,11 @@ test('CLI device approval, private credentials, API tokens, revocation and expir
     await expect.poll(() => login.child.exitCode).toBe(0);
     const who = await cli.run(['--json', 'whoami']);
     expect(who.code, who.stderr).toBe(0);
-    expect(JSON.parse(who.stdout).id).toBe(account.id);
+    expect(JSON.parse(who.stdout).user.id).toBe(account.id);
     expect((await stat(cli.env.PIQUELD_CREDENTIALS_FILE!)).mode & 0o777).toBe(0o600);
     expect((await cli.run(['logout'])).code).toBe(0);
     expect((await cli.run(['whoami'])).code).not.toBe(0);
-    const { token } = await auth<Managed>(page, 'manage', { action: 'create_token', user_id: account.id, name: 'Test', days: null });
+    const { token } = await auth<Managed>(page, 'manage', { action: 'create_token', name: 'Test', days: null });
     expect((await cli.run(['whoami'], token)).code).toBe(0);
     await page.goto('/dashboard/accounts');
     await auth(page, 'manage', { action: 'revoke_all', user_id: account.id });
@@ -119,17 +157,17 @@ test('CLI device approval, private credentials, API tokens, revocation and expir
   } finally { await login.stop(); }
 });
 
-test('account deletion can be cancelled and the last account is protected', async ({ page, account }) => {
-  const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation' })).invitation_url;
+test('account deletion can be cancelled and the last administrator is protected', async ({ page, account }) => {
+  const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [{ permission: 'admin' }] })).invitation_url;
   const bob = await register(page, link, 'bob');
   await page.goto('/dashboard/accounts');
   const alice = page.locator('.auth-account').filter({ has: page.getByRole('heading', { name: 'alice', exact: true }) });
   page.once('dialog', dialog => dialog.dismiss());
   await alice.getByRole('button', { name: 'Delete account', exact: true }).click();
-  expect((await auth<Directory>(page, 'directory')).users.map(user => user.id)).toContain(account.id);
+  expect((await auth<Directory>(page, 'directory')).users.map(entry => entry.user.id)).toContain(account.id);
   page.once('dialog', dialog => dialog.accept());
   await alice.getByRole('button', { name: 'Delete account', exact: true }).click();
   await expect(alice).toHaveCount(0);
-  expect((await auth<Directory>(page, 'directory')).users.map(user => user.id)).not.toContain(account.id);
+  expect((await auth<Directory>(page, 'directory')).users.map(entry => entry.user.id)).not.toContain(account.id);
   expect((await api(page, 'manage', { action: 'delete_user', user_id: bob.id })).status).toBe(409);
 });

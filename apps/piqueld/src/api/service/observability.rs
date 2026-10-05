@@ -1,5 +1,6 @@
 //! Shared observability operations, independent of HTTP and the browser.
 use super::{ApplicationError, ApplicationService};
+use crate::store::Visibility;
 use piqueld_core::{
     Event,
     api::Page,
@@ -9,16 +10,20 @@ use piqueld_core::{
 };
 
 impl ApplicationService {
-    /// Lists structured events with indexed filters.
+    /// Lists structured events with indexed filters, limited to `visible`.
     /// # Errors
     /// Returns invalid filters, cursors or storage failures.
     pub async fn filtered_events(
         &self,
         filter: &EventFilter,
+        visible: &Visibility,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Event>, ApplicationError> {
-        Ok(self.store.filtered_events(filter, cursor, limit).await?)
+        Ok(self
+            .store
+            .filtered_events(filter, visible, cursor, limit)
+            .await?)
     }
     /// Looks up a diagnostic occurrence and its contextual event.
     /// # Errors
@@ -32,10 +37,14 @@ impl ApplicationService {
     pub async fn stream_events(
         &self,
         filter: &EventFilter,
+        visible: &Visibility,
         after: i64,
         limit: usize,
     ) -> Result<(Vec<Event>, i64), ApplicationError> {
-        Ok(self.store.stream_events(filter, after, limit).await?)
+        Ok(self
+            .store
+            .stream_events(filter, visible, after, limit)
+            .await?)
     }
     /// Records an unexpected boundary failure. A failed write keeps its ID in fallback logs.
     pub(crate) async fn record_diagnostic(
@@ -58,18 +67,20 @@ impl ApplicationService {
     pub async fn daemon_stats(&self) -> Result<DaemonStats, ApplicationError> {
         Ok(self.store.daemon_stats().await?)
     }
-    /// Derives deployment analytics over a bounded time selection.
+    /// Derives deployment analytics over a bounded time selection, from the
+    /// history `visible` allows.
     /// # Errors
     /// Returns invalid selection or storage failures.
     pub async fn deployment_analytics(
         &self,
         application: Option<&str>,
+        visible: &Visibility,
         since: i64,
         until: i64,
     ) -> Result<DeploymentAnalytics, ApplicationError> {
         Ok(self
             .store
-            .deployment_analytics(application, since, until)
+            .deployment_analytics(application, visible, since, until)
             .await?)
     }
     /// Lists retained notification delivery attempts.
@@ -85,8 +96,12 @@ impl ApplicationService {
     /// Requests another delivery attempt under the current configuration.
     /// # Errors
     /// Returns absent, disabled or invalid delivery errors.
-    pub async fn retry_notification(&self, id: &str) -> Result<(), ApplicationError> {
-        Ok(self.store.retry_delivery(id).await?)
+    pub async fn retry_notification(
+        &self,
+        actor: super::Actor<'_>,
+        id: &str,
+    ) -> Result<(), ApplicationError> {
+        Ok(self.store.retry_delivery(actor, id).await?)
     }
     /// Renders the cached daemon statistics for the metrics listener's `GET /metrics`.
     /// Each available measurement becomes a `piqueld_*` sample with Prometheus

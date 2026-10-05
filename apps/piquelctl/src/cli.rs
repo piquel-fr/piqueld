@@ -74,8 +74,13 @@ pub(crate) enum Command {
     Login,
     /// Revoke the current credential and remove its local copy.
     Logout,
-    /// Show the authenticated account.
+    /// Show the authenticated account and what the current credential may do.
     Whoami,
+    /// List accounts, change their grants, and create invitation or enrollment links.
+    Account {
+        #[command(subcommand)]
+        command: crate::accounts::AccountCommand,
+    },
     /// Print the first-account setup link (Unix socket only).
     SetupLink {
         /// Also open the link in the default browser.

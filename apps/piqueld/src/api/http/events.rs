@@ -1,5 +1,7 @@
 use super::{ApiError, ApiState, ok, openapi::ApiErrorResponse};
+use crate::auth::Identity;
 use axum::{
+    Extension,
     extract::{Query, State, rejection::QueryRejection},
     http::{HeaderMap, StatusCode},
     response::{
@@ -85,12 +87,15 @@ impl EventQuery {
 #[utoipa::path(get,path="/api/v1/events",operation_id="listEvents",params(EventQuery),responses((status=200,description="Structured history",body=Envelope<Page<Event>>),(status=400,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn list(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     query: Result<Query<EventQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let query = EventQuery::parse(query)?;
+    let visible = super::access::history(&identity)?;
     Ok(ok(state
         .filtered_events(
             &query.filter(),
+            &visible,
             query.cursor.as_deref(),
             query.limit.unwrap_or(50),
         )
@@ -110,10 +115,12 @@ pub(super) async fn list(
 #[utoipa::path(get,path="/api/v1/events/stream",operation_id="streamEvents",params(EventQuery),responses((status=200,description="Resumable SSE; IDs are v1:<event-id>",body=String,content_type="text/event-stream"),(status=400,response=inline(ApiErrorResponse)),(status=410,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn stream(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     headers: HeaderMap,
     query: Result<Query<EventQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let query = EventQuery::parse(query)?;
+    let visible = super::access::history(&identity)?;
     if query.descending.unwrap_or(false) {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -138,7 +145,9 @@ pub(super) async fn stream(
     let filter = query.filter();
     let batch_size = query.limit.unwrap_or(100);
     // Validate before sending headers; all later errors explicitly terminate the stream.
-    let (initial, checkpoint) = state.stream_events(&filter, after, batch_size).await?;
+    let (initial, checkpoint) = state
+        .stream_events(&filter, &visible, after, batch_size)
+        .await?;
     let stream = futures_util::stream::unfold(
         (
             state,
@@ -147,8 +156,9 @@ pub(super) async fn stream(
             std::collections::VecDeque::from(initial),
             checkpoint,
             false,
+            visible,
         ),
-        move |(state, filter, mut after, mut pending, mut checkpoint, done)| async move {
+        move |(state, filter, mut after, mut pending, mut checkpoint, done, visible)| async move {
             if done {
                 return None;
             }
@@ -166,7 +176,7 @@ pub(super) async fn stream(
                         });
                     return Some((
                         Ok::<_, std::convert::Infallible>(item),
-                        (state, filter, after, pending, checkpoint, false),
+                        (state, filter, after, pending, checkpoint, false, visible),
                     ));
                 }
                 if checkpoint > after {
@@ -175,11 +185,14 @@ pub(super) async fn stream(
                     after = checkpoint;
                     return Some((
                         Ok(ServerEvent::default().id(format!("v1:{after}"))),
-                        (state, filter, after, pending, checkpoint, false),
+                        (state, filter, after, pending, checkpoint, false, visible),
                     ));
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                match state.stream_events(&filter, after, batch_size).await {
+                match state
+                    .stream_events(&filter, &visible, after, batch_size)
+                    .await
+                {
                     Ok((items, next)) => {
                         pending.extend(items);
                         checkpoint = next;
@@ -199,7 +212,7 @@ pub(super) async fn stream(
                             Ok(ServerEvent::default()
                                 .event(kind)
                                 .data("Reload history before reconnecting")),
-                            (state, filter, after, pending, checkpoint, true),
+                            (state, filter, after, pending, checkpoint, true, visible),
                         ));
                     }
                 }

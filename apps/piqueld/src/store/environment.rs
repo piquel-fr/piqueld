@@ -389,6 +389,38 @@ impl Store {
         .ok_or(StoreError::NotFound)
     }
 
+    /// The application owning environment `id`, if it exists.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn environment_application(
+        &self,
+        id: &EnvironmentId,
+    ) -> Result<Option<ApplicationId>, StoreError> {
+        Self::environment_application_on(
+            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
+            id,
+        )
+        .await
+    }
+
+    /// [`Self::environment_application`] on an existing connection or transaction.
+    pub(crate) async fn environment_application_on(
+        connection: &mut SqliteConnection,
+        id: &EnvironmentId,
+    ) -> Result<Option<ApplicationId>, StoreError> {
+        let id = id.as_str();
+        sqlx::query_scalar!(
+            r#"SELECT application_id AS "application_id!" FROM environments WHERE id=?1"#,
+            id
+        )
+        .fetch_optional(connection)
+        .await
+        .map_err(StoreError::database)?
+        .map(|id| ApplicationId::parse(id).map_err(StoreError::corrupt))
+        .transpose()
+    }
+
     /// Reads an environment on an existing connection or transaction.
     pub(super) async fn environment_on(
         connection: &mut SqliteConnection,

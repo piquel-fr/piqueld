@@ -64,6 +64,7 @@ impl TestApplications {
         let MutationResponse::Saved(saved) = self
             .service
             .accept(
+                piqueld::api::Actor::Daemon,
                 Mutation::save(manifest, identity, deploy),
                 expected_generation,
                 expected_generation.is_none(),
@@ -95,6 +96,7 @@ impl TestApplications {
         let MutationResponse::Deleted(deleted) = self
             .service
             .accept(
+                piqueld::api::Actor::Daemon,
                 Mutation::DeleteApplication {
                     id: application,
                     environments: Vec::new(),
@@ -129,6 +131,7 @@ impl TestApplications {
         let MutationResponse::Operation(accepted) = self
             .service
             .accept(
+                piqueld::api::Actor::Daemon,
                 mutation,
                 expected_generation,
                 expected_generation.is_none(),

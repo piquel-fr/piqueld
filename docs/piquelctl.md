@@ -320,7 +320,8 @@ piquelctl app exec piquel-fr auth -it -- /bin/sh
 It runs in the application's only environment; with several, `--env ENV` names
 one. The command runs inside the task, so it shares the task's image, environment,
 secrets, mounts and networks. It works over every transport, uses account
-authentication and needs no SSH access. Output streams to stdout and stderr, and
+authentication and needs no SSH access; the account (or token) needs
+[`apps:exec`](authorization.md) on the application. Output streams to stdout and stderr, and
 `piquelctl` exits with the command's exit code. `-i` forwards standard input.
 `-t` allocates a terminal, implies `-i`, requires a terminal on standard input
 and puts it in raw mode, so Ctrl-C reaches the command. `--timeout` bounds the
@@ -401,7 +402,9 @@ registry management and advanced interactive CLI flows remain future work.
 Use `piquelctl setup-link` on the daemon host to print the first-account setup
 link (`--open` also opens it in the default browser); only the Unix socket serves
 it. Use `piquelctl login` for passkey login through the browser, `whoami` to inspect
-the current account, and `logout` to revoke it. Saved credentials are separate
+the current account and its grants, and `logout` to revoke it. `piquelctl account`
+lists accounts, replaces their grants (`access`), and creates invitation (`invite`)
+and passkey enrollment (`enroll`) links; see [authorization](authorization.md). Saved credentials are separate
 from profiles. `PIQUELD_TOKEN` supplies an automation token; `--account` selects
 a saved account. See [authentication](authentication.md) for details.
 

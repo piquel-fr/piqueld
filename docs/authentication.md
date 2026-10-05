@@ -1,10 +1,9 @@
 # Authentication
 
-piqueld uses passkeys for browser login. Every account has the same capabilities:
-any authenticated user can edit or delete any other account, enroll or remove
-its passkeys, create its API tokens, and revoke its sessions. There are no roles,
-ownership restrictions, or extra authentication prompts for these changes.
-The first account has no special privileges. There is no account recovery flow.
+piqueld uses passkeys for browser login. What each account may do is decided by
+its grants; see [authorization](authorization.md). The first account administers
+the installation, and accounts with `accounts:manage` manage accounts whose access
+they hold themselves. There is no account recovery flow.
 
 ## Upgrading an existing installation
 
@@ -81,25 +80,33 @@ migration is outside this version.
 
 ## Accounts and invitations
 
-The dashboard's **Accounts** page manages all accounts and credentials. Account
-names are unique without regard to case, editable, and contain 1–64 ASCII letters,
-digits, dots, dashes, or underscores. Internal account IDs never change.
+The dashboard's **Accounts** page manages your own account and, with
+`accounts:manage`, the accounts you may manage (see
+[authorization](authorization.md#managing-accounts)). Account names are unique
+without regard to case, editable, and contain 1–64 ASCII letters, digits, dots,
+dashes, or underscores. Internal account IDs never change.
 
-Any user can create an invitation. Copy and share its link; no recipient or email
-address is attached. The first person to complete registration chooses their own
-account details. Links expire after 24 hours and can be revoked by any user.
-Opening a link does not consume it, but the dashboard removes the secret from
-the address bar and browser history; reopen the original link to retry an
-abandoned registration. Deleting its issuer revokes pending links.
+Accounts with `accounts:manage` create invitations, choosing the grants of the
+account each one creates. Copy and share its link; no recipient or email address
+is attached. The first person to complete registration chooses their own account
+details. Links expire after 24 hours and can be revoked by managers. Opening a
+link does not consume it, but the dashboard removes the secret from the address
+bar and browser history; reopen the original link to retry an abandoned
+registration. Deleting its issuer revokes pending links.
+
+Passkeys are only added by their owner. To add one to someone else's account,
+create an enrollment link on their account card (or `piquelctl account enroll`):
+a single-use link, valid for 24 hours, that registers a passkey for that account
+and signs it in.
 
 Removing a passkey prevents future logins with that credential and leaves existing
 sessions/tokens intact. **Revoke all sessions and tokens** is a separate action.
-Deleting an account revokes everything belonging to it. Self-deletion is supported,
-but the final account cannot be deleted. Removing a passkey or deleting an account
-is rejected if it would leave the installation without any passkeys. This protects
-stored credentials, not access to the authenticators themselves: if everybody loses
-their passkeys and all sessions/tokens become unusable, there is no supported
-recovery mechanism.
+Deleting an account revokes everything belonging to it. Self-deletion is supported.
+Removing a passkey, deleting an account, or changing grants is rejected if no
+account would keep `admin` on every application together with a passkey. This
+protects stored credentials, not access to the authenticators themselves: if every
+administrator loses their passkeys and all sessions/tokens become unusable, there
+is no supported recovery mechanism.
 
 ## CLI and automation
 
@@ -147,10 +154,10 @@ and removes its local copy.
 Credential updates use a persistent sibling `.lock` file to serialize concurrent
 CLI processes. Do not delete that lock file while CLI commands are running.
 
-Create named automation tokens on the Accounts page. The raw token appears only
-once; the daemon stores only its hash. Supply it using `PIQUELD_TOKEN`, which takes
-precedence over saved credentials. Tokens have the same capabilities as their
-account. Logging out with `PIQUELD_TOKEN` revokes that token and leaves saved logins
+Create named automation tokens for your own account on the Accounts page. The raw
+token appears only once; the daemon stores only its hash. Supply it using
+`PIQUELD_TOKEN`, which takes precedence over saved credentials. Tokens act with
+their account's current grants. Logging out with `PIQUELD_TOKEN` revokes that token and leaves saved logins
 alone. Do not put token values into connection profiles or Nix configuration.
 
 | Credential | Expiry |
@@ -184,10 +191,11 @@ still works when the server has already invalidated the session.
 ## API and implementation
 
 The generated [OpenAPI contract](openapi-v1.json) documents `/api/v1/auth`:
-status, current account, registration and login ceremonies, logout, the account
-directory, management commands, and device start/poll/inspect/approve operations.
-`POST /auth/manage` accepts a tagged `action`; all authenticated accounts can use
-all actions. Management responses never return existing credential secrets.
+status, current account and its grants, registration and login ceremonies, logout,
+the account directory, management commands, and device start/poll/inspect/approve
+operations. `POST /auth/manage` accepts a tagged `action`; actions on other
+accounts follow the [authorization](authorization.md#managing-accounts) rules.
+Management responses never return existing credential secrets.
 The device protocol uses the device-code interaction pattern; the JSON endpoints
 are piqueld API contracts, not a general-purpose OAuth authorization server.
 

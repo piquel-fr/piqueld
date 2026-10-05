@@ -1,11 +1,14 @@
 use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
+use crate::auth::Identity;
 use axum::{
+    Extension,
     extract::{Query, State, rejection::QueryRejection},
     http::StatusCode,
     response::IntoResponse,
 };
 use piqueld_core::{
     ApplicationId, EnvironmentId,
+    access::AppPermission,
     api::{BuildLogPage, BuildRecord, Envelope, Page},
 };
 use serde::Deserialize;
@@ -34,6 +37,7 @@ pub(super) struct BuildQuery {
     (status=400,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn list(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     query: Result<Query<BuildQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let Query(query) = query.map_err(|_| {
@@ -49,6 +53,7 @@ pub(super) async fn list(
         .builds(
             application.as_ref(),
             environment.as_ref(),
+            &identity.grants.app_scope(AppPermission::Read),
             query.cursor.as_deref(),
             query.limit.unwrap_or(50),
         )
@@ -71,6 +76,7 @@ pub(super) struct OutputQuery {
 #[utoipa::path(get,path="/api/v1/builds/{id}/logs",operation_id="buildLogs",params(("id"=i64,Path),OutputQuery), responses((status=200,description="Bounded build output",body=Envelope<BuildLogPage>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn logs(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<i64>,
     query: Result<Query<OutputQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -81,5 +87,8 @@ pub(super) async fn logs(
             "invalid build log query",
         )
     })?;
+    identity
+        .grants
+        .require_app(AppPermission::LogsRead, &state.build_application(id).await?)?;
     Ok(ok(state.build_logs(id, query.before, query.stream).await?))
 }

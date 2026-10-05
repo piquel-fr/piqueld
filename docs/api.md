@@ -54,9 +54,9 @@ when the complete normalized manifest is needed.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/v1/system/status` | Daemon status |
+| GET | `/api/v1/system/status` | Daemon status; DNS providers and certificates only with `system:read` |
 | GET | `/api/v1/system/configuration` | Effective read-only host settings |
-| POST | `/api/v1/system/dns/refresh` | Check DNS provider credentials and zones now; returns `DnsStatus` |
+| POST | `/api/v1/system/dns/refresh` | Check DNS provider credentials and zones now (`system:operate`); returns `DnsStatus` |
 | GET | `/api/v1/openapi.json` | Generated API schema |
 | GET | `/api/v1/applications` | Paginated application summaries (up to 100 per page) |
 | GET | `/api/v1/applications/{id}` | Full latest accepted application intent and its environments |
@@ -171,7 +171,8 @@ Force overrides both revision and name-based identity preconditions, even if sta
 values were supplied. Forced apply overwrites whichever application currently has
 the manifest name, or creates one if absent. ID-based mutations still target their
 URL's ID. Force never bypasses manifest validation, resource ownership, or rename
-busy/name-collision checks. There is no authorization logic for force yet.
+busy/name-collision checks, and needs the same [permissions](authorization.md)
+as the change without it.
 
 Reconcile acts on the current intent without requiring preconditions;
 it accepts an optional `expected_generation` query for callers that want one.
@@ -301,7 +302,9 @@ while unchanged observations and timer ticks are omitted.
 
 The API requires a session cookie or bearer credential on every transport.
 Only setup/login endpoints and TCP `/health` are public; see
-[authentication](authentication.md). TCP requests also validate Host and browser
+[authentication](authentication.md). What each caller may do is decided by its
+[grants](authorization.md); every operation names its requirement in the
+contract's `x-piqueld-access` extension. TCP requests also validate Host and browser
 Fetch Metadata headers; DNS names need `server.allowed_hosts` (see
 [configuration](configuration.md)). Rejected requests return
 `403 browser_access_denied`. Authentication checks API mutation origins against
@@ -346,7 +349,8 @@ have no available history. No output is stored by piqueld.
 `GET /api/v1/environments/{id}/exec` opens a WebSocket that runs a one-off
 command in a running task of a service (preferring healthy tasks over those
 still starting) owned by this environment and daemon instance. Requests that
-are not WebSocket handshakes return `426 upgrade_required`; cookie-authenticated
+are not WebSocket handshakes return `426 upgrade_required`. The caller needs
+[`apps:exec`](authorization.md) on the environment's application; cookie-authenticated
 handshakes must send the configured `Origin`, like mutations.
 
 The client's first message is a JSON text message such as `{ "service": "auth",

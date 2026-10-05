@@ -1,16 +1,16 @@
-//! Passkey ceremonies and revocable credentials. Account management deliberately
-//! has no ownership checks: every authenticated account has equal capabilities.
+//! Passkey ceremonies, revocable credentials, and account management. What
+//! each account may do is decided by its grants (see `piqueld_core::access`).
 mod ceremonies;
 mod management;
 mod sessions;
 mod throttle;
-pub(crate) use sessions::Identity;
+pub use sessions::Identity;
 #[cfg(test)]
 mod tests;
 
 use crate::store::{CredentialKind, NewCredential, now_secs};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use piqueld_core::auth::{AuthStatus, SetupLink, User};
+use piqueld_core::auth::{AuthStatus, SetupLink};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
@@ -32,6 +32,9 @@ pub enum AuthError {
     /// Invalid input or an unavailable operation.
     #[error("{0}")]
     Invalid(&'static str),
+    /// The caller may not perform the action.
+    #[error(transparent)]
+    Denied(#[from] piqueld_core::access::Denied),
     /// Bounded pending authentication capacity has been reached.
     #[error("too many pending authentication requests; try again shortly")]
     Busy,
@@ -179,14 +182,14 @@ impl Auth {
         }
         let existing = std::fs::read_to_string(path).unwrap_or_default();
         let preserved = match existing.trim().split_once("#invite=") {
-            Some((_, secret)) if self.invitation_valid(secret).await? => Some(secret),
+            Some((_, secret)) if self.invitation(secret).await?.is_some() => Some(secret),
             _ => None,
         };
         let secret = match preserved {
             Some(secret) => secret.to_owned(),
             None => Self::secret()?,
         };
-        let link = format!("{}/dashboard/auth#invite={secret}", self.0.origin);
+        let link = self.link("invite", &secret);
         let mut file = tempfile::NamedTempFile::new_in(
             path.parent()
                 .context("setup file needs a parent directory")?,
@@ -297,14 +300,6 @@ impl Auth {
             public_url: self.0.origin.clone(),
         })
     }
-    /// Loads a user, treating a missing account as unauthorized.
-    async fn user(&self, id: &str) -> Result<User> {
-        self.0
-            .store
-            .auth_user(id)
-            .await?
-            .ok_or(AuthError::Unauthorized)
-    }
     /// Enforces username charset and length limits and the display name byte limit.
     fn validate_profile(username: &str, display_name: &str) -> Result<()> {
         if username.is_empty()
@@ -320,8 +315,8 @@ impl Auth {
         }
         Ok(())
     }
-    /// Checks whether an invitation secret matches a live, unused invitation.
-    async fn invitation_valid(&self, secret: &str) -> Result<bool> {
-        Ok(self.0.store.invitation_valid(&Self::hash(secret)).await?)
+    /// Describes the live, unused setup secret or invitation matching `secret`.
+    async fn invitation(&self, secret: &str) -> Result<Option<crate::store::Invitation>> {
+        Ok(self.0.store.invitation(&Self::hash(secret)).await?)
     }
 }

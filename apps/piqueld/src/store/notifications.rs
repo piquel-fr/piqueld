@@ -73,12 +73,21 @@ impl Store {
     /// Also refuses (as `StoreError::InvalidInput`) failures already followed by a
     /// delivered recovery, recoveries whose incident has reopened, and failures
     /// whose incident has since closed. Resets the delivery to `pending` with a
-    /// fresh retry window.
+    /// fresh retry window. `actor` needs `system:operate`, checked in the same
+    /// transaction.
     ///
     /// # Errors
     /// Returns absence, disabled delivery or storage errors.
-    pub async fn retry_delivery(&self, id: &str) -> Result<(), StoreError> {
+    pub async fn retry_delivery(
+        &self,
+        actor: super::Actor<'_>,
+        id: &str,
+    ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
+        let operate = piqueld_core::access::Permission::Global(
+            piqueld_core::access::GlobalPermission::SystemOperate,
+        );
+        actor.require_on(&mut tx, operate, None).await?;
         let row = sqlx::query!(
             "SELECT destination,category,destination_fingerprint,event_id FROM notification_deliveries WHERE id=?1 AND state='failed'",
             id,

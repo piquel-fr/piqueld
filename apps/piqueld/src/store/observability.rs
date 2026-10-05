@@ -136,19 +136,22 @@ impl Store {
     /// Derives deployment outcomes from retained attempts and detailed durations from events.
     /// Counts each deployment once by its latest attempt finished in the window,
     /// and marks the result `incomplete` when the window reaches before recorded
-    /// or pruned history. Reads run in one transaction for a consistent snapshot.
+    /// or pruned history. Reads run in one transaction for a consistent snapshot,
+    /// and only cover the history `visible` allows.
     ///
     /// # Errors
     /// Returns invalid time intervals or storage errors.
     pub async fn deployment_analytics(
         &self,
         application: Option<&str>,
+        visible: &super::Visibility,
         since: i64,
         until: i64,
     ) -> Result<DeploymentAnalytics, StoreError> {
         if since < 0 || until < since {
             return Err(StoreError::InvalidInput);
         }
+        let applications = super::access::scope_json(&visible.applications);
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let coverage = sqlx::query!(
             "SELECT started_at_ms,pruned_through_ms FROM history_coverage WHERE singleton=1"
@@ -160,10 +163,12 @@ impl Store {
             "SELECT a.deployment_id,a.attempt,a.outcome_json
             FROM deployment_attempts a JOIN deployments d ON d.id=a.deployment_id
             WHERE (?1 IS NULL OR d.environment_id=?1) AND json_extract(a.outcome_json,'$.finished_at_ms') BETWEEN ?2 AND ?3
+            AND (?4 IS NULL OR d.environment_id IN (SELECT e.id FROM environments e JOIN json_each(?4) v ON v.value=e.application_id))
             ORDER BY a.deployment_id,a.attempt",
             application,
             since,
             until,
+            applications,
         )
         .fetch_all(&mut *tx)
         .await
@@ -213,7 +218,8 @@ impl Store {
                 std::time::Duration::from_millis(sum).as_secs_f64() * 1000.0 / f64::from(count),
             );
         }
-        Self::action_analytics(&mut tx, application, &mut result).await?;
+        let visible = (applications.as_deref(), visible.daemon);
+        Self::action_analytics(&mut tx, application, visible, &mut result).await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(result)
     }
@@ -224,6 +230,7 @@ impl Store {
     async fn action_analytics(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         application: Option<&str>,
+        (applications, daemon): (Option<&str>, bool),
         result: &mut DeploymentAnalytics,
     ) -> Result<(), StoreError> {
         let since = result.since_ms;
@@ -231,10 +238,12 @@ impl Store {
         result.action_retries = sqlx::query_scalar!(
             "SELECT COUNT(*)
             FROM events
-            WHERE kind='action_retry' AND (?1 IS NULL OR environment_id=?1) AND created_at_ms BETWEEN ?2 AND ?3",
+            WHERE kind='action_retry' AND (?1 IS NULL OR environment_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 AND ((scope='application' AND (?4 IS NULL OR application_id IN (SELECT value FROM json_each(?4)))) OR (scope='daemon' AND ?5))",
             application,
             since,
             until,
+            applications,
+            daemon,
         )
         .fetch_one(&mut **tx)
         .await
@@ -242,11 +251,13 @@ impl Store {
         result.actions = sqlx::query!(
             "SELECT phase,COUNT(*) AS \"count!: i64\",AVG(duration_ms) AS \"mean?: f64\"
             FROM events
-            WHERE duration_ms IS NOT NULL AND phase IS NOT NULL AND (?1 IS NULL OR environment_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 GROUP BY phase
+            WHERE duration_ms IS NOT NULL AND phase IS NOT NULL AND (?1 IS NULL OR environment_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 AND ((scope='application' AND (?4 IS NULL OR application_id IN (SELECT value FROM json_each(?4)))) OR (scope='daemon' AND ?5)) GROUP BY phase
             ORDER BY phase",
             application,
             since,
             until,
+            applications,
+            daemon,
         )
         .fetch_all(&mut **tx)
         .await
@@ -261,11 +272,13 @@ impl Store {
         result.failures = sqlx::query!(
             "SELECT error_code,COUNT(DISTINCT COALESCE(diagnostic_id,CAST(id AS TEXT))) AS \"count!: i64\"
             FROM events
-            WHERE error_code IS NOT NULL AND (?1 IS NULL OR environment_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 GROUP BY error_code
+            WHERE error_code IS NOT NULL AND (?1 IS NULL OR environment_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 AND ((scope='application' AND (?4 IS NULL OR application_id IN (SELECT value FROM json_each(?4)))) OR (scope='daemon' AND ?5)) GROUP BY error_code
             ORDER BY 2 DESC,error_code LIMIT 20",
             application,
             since,
             until,
+            applications,
+            daemon,
         )
         .fetch_all(&mut **tx)
         .await

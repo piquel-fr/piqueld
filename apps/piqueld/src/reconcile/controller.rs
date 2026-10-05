@@ -552,7 +552,13 @@ mod tests {
         ))
         .unwrap();
         let (MutationResponse::Saved(saved), _) = store
-            .accept(Mutation::save(manifest, None, true), Some(0), false, None)
+            .accept(
+                crate::api::Actor::Daemon,
+                Mutation::save(manifest, None, true),
+                Some(0),
+                false,
+                None,
+            )
             .await
             .unwrap()
         else {
@@ -618,6 +624,7 @@ mod tests {
         }
         store
             .accept(
+                crate::api::Actor::Daemon,
                 Mutation::deploy(operation.environment_id.clone()),
                 None,
                 true,
@@ -691,7 +698,13 @@ mod tests {
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='repair'\n[spec]",
         ).unwrap();
         let (MutationResponse::Saved(saved), _) = store
-            .accept(Mutation::save(manifest, None, true), Some(0), false, None)
+            .accept(
+                crate::api::Actor::Daemon,
+                Mutation::save(manifest, None, true),
+                Some(0),
+                false,
+                None,
+            )
             .await
             .unwrap()
         else {

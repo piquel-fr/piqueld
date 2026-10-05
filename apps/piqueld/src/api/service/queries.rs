@@ -5,6 +5,7 @@ use crate::store::{StoreError, StoredEnvironment};
 use piqueld_core::{
     ApplicationId, EnvironmentId, EnvironmentName, NormalizedApplication, ObservedApplication,
     Plan, PlanRequest, ResolutionSet,
+    access::{AppPermission, Grants, Scope, Target},
     api::{
         ApplicationSummary, ApplicationView, DiagnosticView, EnvironmentDetailView,
         EnvironmentStatusView, EnvironmentView, MAX_APPLICATION_PAGE_SIZE, ManifestChange, Page,
@@ -22,6 +23,7 @@ impl ApplicationService {
     /// Returns invalid pagination or storage errors.
     pub async fn applications(
         &self,
+        visible: &Scope,
         cursor: Option<&str>,
         limit: Option<u16>,
     ) -> Result<Page<ApplicationSummary>, ApplicationError> {
@@ -30,7 +32,7 @@ impl ApplicationService {
             return Err(ApplicationError::InvalidPagination);
         }
         self.store
-            .list_summaries(cursor, usize::from(limit))
+            .list_summaries(visible, cursor, usize::from(limit))
             .await
             .map_err(|error| match error {
                 StoreError::InvalidInput | StoreError::InvalidInputSource(_) => {
@@ -58,6 +60,15 @@ impl ApplicationService {
         id: &EnvironmentId,
     ) -> Result<EnvironmentView, ApplicationError> {
         Ok(self.store.get(id).await?.environment)
+    }
+    /// The application owning an environment, if the environment exists.
+    /// # Errors
+    /// Returns storage errors.
+    pub async fn environment_application(
+        &self,
+        id: &EnvironmentId,
+    ) -> Result<Option<ApplicationId>, ApplicationError> {
+        Ok(self.store.environment_application(id).await?)
     }
     /// Reads persisted deployment progress and runtime health.
     /// # Errors
@@ -112,6 +123,29 @@ impl ApplicationService {
             diagnostics,
         })
     }
+    /// Checks a preview's preconditions: `grants` may save `current` (or
+    /// create it when absent), and the optional `expected` generation and
+    /// `expected_id` match it.
+    fn check_plan(
+        grants: &Grants,
+        current: Option<&crate::store::StoredApplication>,
+        expected: Option<u64>,
+        expected_id: Option<String>,
+    ) -> Result<(), ApplicationError> {
+        let target = current.map_or(Target::New, |current| {
+            Target::Named(current.application.id())
+        });
+        grants
+            .require_change(&[AppPermission::Write], target)
+            .map_err(StoreError::Denied)?;
+        crate::store::Store::check_generation(expected, current.map_or(0, |app| app.generation))?;
+        if let Some(expected_id) = expected_id
+            && current.is_none_or(|app| app.application.id().as_str() != expected_id)
+        {
+            return Err(StoreError::IdentityConflict.into());
+        }
+        Ok(())
+    }
     /// Previews validated intent without pulling images or saving configuration.
     ///
     /// Checks the generation and identity preconditions when supplied (unlike
@@ -131,23 +165,14 @@ impl ApplicationService {
     /// Panics if the built-in preview application ID is invalid.
     pub async fn plan(
         &self,
+        grants: &Grants,
         manifest: ValidatedTemplate,
         expected: Option<u64>,
         expected_id: Option<String>,
         environment: Option<&EnvironmentId>,
     ) -> Result<PlanView, ApplicationError> {
         let current = self.store.find_by_name(manifest.name().as_str()).await?;
-        crate::store::Store::check_generation(
-            expected,
-            current.as_ref().map_or(0, |app| app.generation),
-        )?;
-        if let Some(expected_id) = expected_id
-            && current
-                .as_ref()
-                .is_none_or(|app| app.application.id().as_str() != expected_id)
-        {
-            return Err(StoreError::IdentityConflict.into());
-        }
+        Self::check_plan(grants, current.as_ref(), expected, expected_id)?;
         // New applications are previewed under a placeholder ID.
         let id = current.as_ref().map_or_else(
             || ApplicationId::parse("preview-application").expect("valid preview ID"),

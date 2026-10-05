@@ -21,8 +21,8 @@ Inside the daemon:
 
 | Module | Responsibility |
 | --- | --- |
-| `api` | HTTP decoding, authentication middleware, response composition, and error mapping |
-| `auth` | Passkey ceremonies, account management, invitations, and durable credentials |
+| `api` | HTTP decoding, authentication and per-route authorization middleware, response composition, and error mapping |
+| `auth` | Passkey ceremonies, account management with grant checks, invitations, and durable credentials |
 | `application` | Validate commands and wake reconciliation after acceptance |
 | `store` | Atomic intent comparison, receipts, records, and guarded writes |
 | `reconcile` | One async controller; resolve, observe, plan, execute, and verify |

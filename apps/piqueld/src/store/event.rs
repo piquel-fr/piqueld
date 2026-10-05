@@ -1,4 +1,5 @@
 //! Immutable diagnostic history, independent of operation retention.
+use super::access::{Visibility, scope_json};
 use super::{ApplicationId, EnvironmentId, Store, StoreError, new_id, now_ms, page_limit};
 use piqueld_core::{
     Event,
@@ -77,7 +78,7 @@ impl Store {
         Ok(())
     }
 
-    /// Reads legacy oldest-first event pages.
+    /// Reads legacy oldest-first event pages from every scope.
     /// # Errors
     /// Returns storage or pagination errors.
     pub async fn events(
@@ -91,18 +92,21 @@ impl Store {
                 environment_id: application.map(ToString::to_string),
                 ..EventFilter::default()
             },
+            &Visibility::ALL,
             cursor,
             limit,
         )
         .await
     }
 
-    /// Reads indexed, independently understandable history in either direction.
+    /// Reads indexed, independently understandable history in either
+    /// direction, limited to what `visible` allows.
     /// # Errors
     /// Returns storage, decoding or invalid selection errors.
     pub async fn filtered_events(
         &self,
         filter: &EventFilter,
+        visible: &Visibility,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Event>, StoreError> {
@@ -112,7 +116,7 @@ impl Store {
             .transpose()?
             .unwrap_or(if filter.descending { i64::MAX } else { 0 });
         validate_filter(filter)?;
-        let mut query = EventRow::query(filter, cursor, fetch)?;
+        let mut query = EventRow::query(filter, visible, cursor, fetch)?;
         let mut rows = query
             .build_query_as::<EventRow>()
             .fetch_all(&self.pool)
@@ -137,6 +141,7 @@ impl Store {
     pub async fn stream_events(
         &self,
         filter: &EventFilter,
+        visible: &Visibility,
         after: i64,
         limit: usize,
     ) -> Result<(Vec<Event>, i64), StoreError> {
@@ -154,7 +159,7 @@ impl Store {
         if after > 0 && after < coverage.pruned {
             return Err(StoreError::HistoryExpired);
         }
-        let mut rows = EventRow::query(filter, after, fetch)?
+        let mut rows = EventRow::query(filter, visible, after, fetch)?
             .build_query_as::<EventRow>()
             .fetch_all(&mut *tx)
             .await
@@ -417,14 +422,15 @@ struct EventRow {
 
 impl EventRow {
     /// Builds a keyset-paginated event query after (or, descending, before)
-    /// `cursor`, fetching `fetch` rows.
+    /// `cursor`, fetching `fetch` rows that `visible` allows.
     /// Optional predicates are assembled from fixed column names; every value is bound.
     /// Direct ordering lets `SQLite` stop after one page instead of sorting retained history.
-    fn query(
-        filter: &EventFilter,
+    fn query<'a>(
+        filter: &'a EventFilter,
+        visible: &Visibility,
         cursor: i64,
         fetch: i64,
-    ) -> Result<QueryBuilder<'_, Sqlite>, StoreError> {
+    ) -> Result<QueryBuilder<'a, Sqlite>, StoreError> {
         let mut query = QueryBuilder::new(
             "SELECT id, application_id, environment_id, operation_id, generation, attempt, kind, message, error_code, \
              phase, resource, created_at_ms, scope, action_id, retry, retry_delay_ms, duration_ms, \
@@ -463,6 +469,19 @@ impl EventRow {
         }
         if filter.errors_only {
             query.push(" AND error_code IS NOT NULL");
+        }
+        if let Some(applications) = scope_json(&visible.applications) {
+            query
+                .push(" AND ((scope = 'application' AND application_id IN (SELECT value FROM json_each(")
+                .push_bind(applications)
+                .push(")))")
+                .push(if visible.daemon {
+                    " OR scope = 'daemon')"
+                } else {
+                    ")"
+                });
+        } else if !visible.daemon {
+            query.push(" AND scope = 'application'");
         }
         query
             .push(if filter.descending {
@@ -571,6 +590,7 @@ mod tests {
                     environment_id: Some(deleted.to_string()),
                     ..EventFilter::default()
                 },
+                &Visibility::ALL,
                 None,
                 10,
             )
@@ -626,8 +646,13 @@ mod tests {
                     descending,
                     ..filter
                 };
-                let mut query =
-                    EventRow::query(&filter, if descending { i64::MAX } else { 0 }, 51).unwrap();
+                let mut query = EventRow::query(
+                    &filter,
+                    &Visibility::ALL,
+                    if descending { i64::MAX } else { 0 },
+                    51,
+                )
+                .unwrap();
                 let mut query = query.build();
                 let explain = format!("EXPLAIN QUERY PLAN {}", query.sql());
                 let args = query.take_arguments().unwrap().unwrap();

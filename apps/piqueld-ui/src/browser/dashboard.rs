@@ -19,6 +19,11 @@ use piqueld_client::{
 pub(super) fn Sidebar() -> impl IntoView {
     let signals = dashboard_context().signals;
     let user = super::auth::auth_user();
+    // Pages the caller could not load anything on are hidden; the daemon
+    // enforces every permission regardless.
+    let system = super::access::can(piqueld_client::access::Permission::Global(
+        piqueld_client::access::GlobalPermission::SystemRead,
+    ));
     let display_name = move || {
         user.get().map(|user| {
             if user.display_name.is_empty() {
@@ -52,17 +57,21 @@ pub(super) fn Sidebar() -> impl IntoView {
                     {nav_link("/dashboard/events", Icon::Events, "Events", false)}
                     {nav_link("/dashboard/errors", Icon::Errors, "Errors", false)}
                     {nav_link("/dashboard/analytics", Icon::Analytics, "Analytics", false)}
-                    {nav_link(
-                        "/dashboard/notifications",
-                        Icon::Notifications,
-                        "Notifications",
-                        false,
-                    )}
+                    <Show when={move || system.get()}>
+                        {nav_link(
+                            "/dashboard/notifications",
+                            Icon::Notifications,
+                            "Notifications",
+                            false,
+                        )}
+                    </Show>
                 </div>
                 <div class="nav-group">
                     <span class="nav-group-label">"System"</span>
-                    {nav_link("/dashboard/system", Icon::Daemon, "Daemon status", false)}
-                    {nav_link("/dashboard/settings", Icon::Settings, "Host settings", false)}
+                    <Show when={move || system.get()}>
+                        {nav_link("/dashboard/system", Icon::Daemon, "Daemon status", false)}
+                        {nav_link("/dashboard/settings", Icon::Settings, "Host settings", false)}
+                    </Show>
                     {nav_link("/dashboard/accounts", Icon::Accounts, "Accounts", false)}
                 </div>
             </nav>
@@ -170,12 +179,16 @@ pub(super) fn OverviewPage() -> impl IntoView {
 
 /// Daemon connectivity and dependency readiness cards (database, Docker, Swarm,
 /// ingress), with a button that triggers a manual dashboard refresh and, when
-/// DNS providers are configured, one that checks their credentials now.
+/// DNS providers are configured and the caller holds `system:operate`, one
+/// that checks their credentials now.
 #[component]
 pub(super) fn ReadinessPanel() -> impl IntoView {
     let context = dashboard_context();
     let signals = context.signals;
     let refresh = context.refresh;
+    let operate = super::access::can(piqueld_client::access::Permission::Global(
+        piqueld_client::access::GlobalPermission::SystemOperate,
+    ));
     let checking_dns = RwSignal::new(false);
     let dns_error = RwSignal::new(None::<String>);
     let check_dns = move |_| {
@@ -205,11 +218,12 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                 </div>
                 <div class="btn-group">
                     {move || {
-                        signals
+                        let providers = signals
                             .system
                             .with(|system| {
                                 system.as_ref().is_some_and(|system| !system.dns.providers.is_empty())
-                            })
+                            });
+                        (providers && operate.get())
                             .then(|| {
                                 view! {
                                     <button

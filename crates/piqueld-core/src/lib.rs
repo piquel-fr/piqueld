@@ -57,6 +57,8 @@ pub use images::{ImageReference, ImmutableImage, RepositoryDigest};
 /// Typed saved-configuration editing contracts.
 pub mod edit;
 
+/// Permissions, grants, and authorization decisions.
+pub mod access;
 /// Passkey authentication and account management contracts.
 pub mod auth;
 /// Credential-safe TOML parse diagnostics.

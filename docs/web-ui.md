@@ -102,8 +102,9 @@ The browser bundle uses HTTP DTOs and shared typed lifecycle records and
 fetches same-origin `/api/v1` resources. The daemon serves it only on the
 configured localhost or Tailscale TCP listeners. The Unix socket is API-only,
 and the daemon does not add CORS, telemetry, or a public binding. Passkey login
-establishes an HTTP-only session cookie; the Accounts page manages users,
-invitations, passkeys, and tokens. Log display preferences persist in browser
+establishes an HTTP-only session cookie; the Accounts page manages accounts and
+their grants, invitations, passkey enrollment links, and tokens. Pages and actions
+the signed-in account cannot use are hidden; see [authorization](authorization.md). Log display preferences persist in browser
 local storage. See [authentication](authentication.md).
 
 The **Secrets** tab lists names and versions, creates or replaces write-only text

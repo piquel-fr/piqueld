@@ -61,6 +61,7 @@ fn expected(headers: &HeaderMap) -> Result<i64, ApiError> {
 #[utoipa::path(put,path="/api/v1/environments/{id}/secrets/{name}",operation_id="putEnvironmentSecret",params(("id"=String,Path),("name"=String,Path),("X-Expected-Generation"=i64,Header)),request_body(content=inline(SecretValue),content_type="application/octet-stream"),responses((status=200,description="Updated metadata; no secret value",body=Envelope<SecretMetadata>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn put(
     State(state): State<ApiState>,
+    axum::Extension(identity): axum::Extension<crate::auth::Identity>,
     ApiPath((id, name)): ApiPath<(String, String)>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
@@ -92,7 +93,13 @@ pub(super) async fn put(
         ));
     }
     Ok(ok(state
-        .put_secret(&EnvironmentId::parse(id)?, &name, generation, body.to_vec())
+        .put_secret(
+            crate::api::Actor::Account(identity.caller()),
+            &EnvironmentId::parse(id)?,
+            &name,
+            generation,
+            body.to_vec(),
+        )
         .await?))
 }
 
@@ -103,12 +110,18 @@ pub(super) async fn put(
 #[utoipa::path(delete,path="/api/v1/environments/{id}/secrets/{name}",operation_id="deleteEnvironmentSecret",params(("id"=String,Path),("name"=String,Path),("X-Expected-Generation"=i64,Header)),responses((status=200,description="Secret deleted",body=Envelope<bool>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn delete(
     State(state): State<ApiState>,
+    axum::Extension(identity): axum::Extension<crate::auth::Identity>,
     ApiPath((id, name)): ApiPath<(String, String)>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     let generation = expected(&headers)?;
     state
-        .delete_secret(&EnvironmentId::parse(id)?, &name, generation)
+        .delete_secret(
+            crate::api::Actor::Account(identity.caller()),
+            &EnvironmentId::parse(id)?,
+            &name,
+            generation,
+        )
         .await?;
     Ok(ok(true))
 }
@@ -123,6 +136,9 @@ pub(super) async fn delete(
     (status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn recover_key(
     State(state): State<ApiState>,
+    axum::Extension(identity): axum::Extension<crate::auth::Identity>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(ok(state.recover_secret_key().await?))
+    Ok(ok(state
+        .recover_secret_key(crate::api::Actor::Account(identity.caller()))
+        .await?))
 }

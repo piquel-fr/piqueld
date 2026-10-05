@@ -1,8 +1,14 @@
-use axum::{extract::State, http::StatusCode, response::IntoResponse};
+use crate::auth::Identity;
+use axum::{Extension, extract::State, http::StatusCode, response::IntoResponse};
+use piqueld_core::access::GlobalPermission;
 use piqueld_core::api::{DnsStatus, Envelope, SystemStatus};
 
 use super::{ApiState, ok};
 
+/// Gets daemon status.
+///
+/// DNS providers and certificates are host configuration, naming every
+/// application's routed hostnames, so they are empty without `system:read`.
 #[utoipa::path(
     get,
     path = "/api/v1/system/status",
@@ -12,8 +18,15 @@ use super::{ApiState, ok};
         (status = 200, description = "Success", body = Envelope<SystemStatus>),
     )
 )]
-pub(super) async fn status(State(state): State<ApiState>) -> impl IntoResponse {
-    ok(state.system_status().await)
+pub(super) async fn status(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
+) -> impl IntoResponse {
+    let mut status = state.system_status().await;
+    if !identity.grants.has_global(GlobalPermission::SystemRead) {
+        status.dns = DnsStatus::default();
+    }
+    ok(status)
 }
 
 /// Checks DNS provider credentials now.

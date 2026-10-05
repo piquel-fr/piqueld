@@ -319,6 +319,7 @@ mod tests {
     ) -> Result<piqueld_core::api::SavedApplication, StoreError> {
         let (response, _) = store
             .accept(
+                crate::api::Actor::Daemon,
                 Mutation::Save {
                     application: Box::new(ApplicationTemplate::from(&application)),
                     expected_application_id: None,
@@ -384,7 +385,7 @@ mod tests {
             branch: None,
         };
         assert!(matches!(
-            store.accept(staging, None, true, None).await,
+            store.accept(crate::store::Actor::Daemon, staging, None, true, None).await,
             Err(StoreError::SharedHostnameConflict { hostname, environment })
                 if hostname == "site.example.com" && environment.as_str() == "production"
         ));
@@ -408,7 +409,13 @@ mod tests {
         )
         .unwrap();
         let (MutationResponse::Saved(saved), _) = store
-            .accept(Mutation::save(template, None, false), Some(0), false, None)
+            .accept(
+                crate::api::Actor::Daemon,
+                Mutation::save(template, None, false),
+                Some(0),
+                false,
+                None,
+            )
             .await
             .unwrap()
         else {
@@ -420,8 +427,10 @@ mod tests {
             name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
             branch: None,
         };
-        let (MutationResponse::Environment(staging), _) =
-            store.accept(staging, None, true, None).await.unwrap()
+        let (MutationResponse::Environment(staging), _) = store
+            .accept(crate::api::Actor::Daemon, staging, None, true, None)
+            .await
+            .unwrap()
         else {
             panic!("environment response")
         };
@@ -429,7 +438,13 @@ mod tests {
         let mut deployed = Vec::new();
         for environment in [&production, &staging.id] {
             let (MutationResponse::Operation(operation), _) = store
-                .accept(Mutation::deploy(environment.clone()), None, true, None)
+                .accept(
+                    crate::api::Actor::Daemon,
+                    Mutation::deploy(environment.clone()),
+                    None,
+                    true,
+                    None,
+                )
                 .await
                 .unwrap()
             else {
@@ -460,7 +475,7 @@ mod tests {
             deploy: false,
         };
         assert!(matches!(
-            store.accept(edit, None, true, None).await,
+            store.accept(crate::api::Actor::Daemon, edit, None, true, None).await,
             Err(StoreError::SharedHostnameConflict { hostname, environment })
                 if hostname == "piquel.fr" && environment.as_str() == "production"
         ));
@@ -498,6 +513,7 @@ mod tests {
         let id = EnvironmentId::parse(saved.application_id).unwrap();
         let result = store
             .accept(
+                crate::api::Actor::Daemon,
                 Mutation::Save {
                     application: Box::new(ApplicationTemplate::from(&app(
                         "two",
@@ -533,6 +549,7 @@ mod tests {
         // The rejected request must not consume the replay key.
         store
             .accept(
+                crate::api::Actor::Daemon,
                 Mutation::Save {
                     application: Box::new(ApplicationTemplate::from(&app(
                         "two",

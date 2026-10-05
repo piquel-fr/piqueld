@@ -3,7 +3,9 @@ use super::{
     ApiError, ApiPath, ApiState, applications::accept_mutation, openapi::ApiErrorResponse,
 };
 use crate::api::Mutation;
+use crate::auth::Identity;
 use axum::{
+    Extension,
     body::Bytes,
     extract::{
         Query, State,
@@ -24,7 +26,7 @@ use piqueld_core::{
     },
     manifest::{Mount, Service, Volume},
 };
-use utoipa_axum::{router::OpenApiRouter, routes};
+use utoipa_axum::router::OpenApiRouter;
 
 /// Unwraps the shared `expected_generation`/`force`/`deploy` query options.
 fn options(query: Result<Query<EditOptions>, QueryRejection>) -> Result<EditOptions, ApiError> {
@@ -71,11 +73,11 @@ macro_rules! edit_endpoint {
                 (status = 409, response = inline(ApiErrorResponse)), (status = 413, response = inline(ApiErrorResponse)),
                 (status = 415, response = inline(ApiErrorResponse)), (status = 422, response = inline(ApiErrorResponse)),
                 (status = 500, response = inline(ApiErrorResponse)), (status = 503, response = inline(ApiErrorResponse))))]
-        async fn $name(State(state): State<ApiState>, ApiPath(($($part,)+)): ApiPath<($($part_ty,)+)>, query: Result<Query<EditOptions>, QueryRejection>, headers: HeaderMap, bytes: Result<Bytes, BytesRejection>) -> Result<Response, ApiError> {
+        async fn $name(State(state): State<ApiState>, Extension(identity): Extension<Identity>, ApiPath(($($part,)+)): ApiPath<($($part_ty,)+)>, query: Result<Query<EditOptions>, QueryRejection>, headers: HeaderMap, bytes: Result<Bytes, BytesRejection>) -> Result<Response, ApiError> {
             let options = options(query)?;
             let body: $body = $decode(&headers, bytes)?;
             let edit = ($edit)(($($part.clone()),+), body);
-            accept_mutation(&state, Mutation::Edit { id: ApplicationId::parse(edit_endpoint!(@id $($part),+))?, edit: Box::new(edit), deploy: options.deploy }, options.expected_generation, options.force, &headers).await
+            accept_mutation(&state, &identity, Mutation::Edit { id: ApplicationId::parse(edit_endpoint!(@id $($part),+))?, edit: Box::new(edit), deploy: options.deploy }, options.expected_generation, options.force, &headers).await
         }
     };
     (@id $first:ident $(,$rest:ident)*) => { $first };
@@ -99,6 +101,7 @@ edit_endpoint!(set_manifest_repository, put, "/api/v1/applications/{id}/reposito
         (status = 500, response = inline(ApiErrorResponse)), (status = 503, response = inline(ApiErrorResponse))))]
 async fn disconnect_manifest_repository(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
     query: Result<Query<EditOptions>, QueryRejection>,
     headers: HeaderMap,
@@ -106,6 +109,7 @@ async fn disconnect_manifest_repository(
     let options = options(query)?;
     accept_mutation(
         &state,
+        &identity,
         Mutation::Edit {
             id: ApplicationId::parse(id)?,
             edit: Box::new(ApplicationEdit::Repository(None)),
@@ -133,6 +137,7 @@ edit_endpoint!(add_application_volume, post, "/api/v1/applications/{id}/volumes"
         (status = 500, response = inline(ApiErrorResponse)), (status = 503, response = inline(ApiErrorResponse))))]
 async fn remove_application_service(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     ApiPath((id, service)): ApiPath<(String, String)>,
     query: Result<Query<EditOptions>, QueryRejection>,
     headers: HeaderMap,
@@ -140,6 +145,7 @@ async fn remove_application_service(
     let options = options(query)?;
     accept_mutation(
         &state,
+        &identity,
         Mutation::Edit {
             id: ApplicationId::parse(id)?,
             edit: Box::new(ApplicationEdit::RemoveService(service)),
@@ -163,6 +169,7 @@ async fn remove_application_service(
         (status = 500, response = inline(ApiErrorResponse)), (status = 503, response = inline(ApiErrorResponse))))]
 async fn remove_application_volume(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     ApiPath((id, volume)): ApiPath<(String, String)>,
     query: Result<Query<EditOptions>, QueryRejection>,
     headers: HeaderMap,
@@ -170,6 +177,7 @@ async fn remove_application_volume(
     let options = options(query)?;
     accept_mutation(
         &state,
+        &identity,
         Mutation::Edit {
             id: ApplicationId::parse(id)?,
             edit: Box::new(ApplicationEdit::RemoveVolume(volume)),
@@ -221,6 +229,7 @@ edit_endpoint!(set_service_environment_entry, put, "/api/v1/applications/{id}/se
         (status = 500, response = inline(ApiErrorResponse)), (status = 503, response = inline(ApiErrorResponse))))]
 async fn remove_service_environment_entry(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     ApiPath((id, service, key)): ApiPath<(String, String, String)>,
     query: Result<Query<EditOptions>, QueryRejection>,
     headers: HeaderMap,
@@ -228,6 +237,7 @@ async fn remove_service_environment_entry(
     let options = options(query)?;
     accept_mutation(
         &state,
+        &identity,
         Mutation::Edit {
             id: ApplicationId::parse(id)?,
             edit: Box::new(ApplicationEdit::Service {
@@ -265,6 +275,7 @@ struct CreateQuery {
         (status = 422, response = inline(ApiErrorResponse)), (status = 500, response = inline(ApiErrorResponse)), (status = 503, response = inline(ApiErrorResponse))))]
 async fn create_application(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     query: Result<Query<CreateQuery>, QueryRejection>,
     headers: HeaderMap,
     bytes: Result<Bytes, BytesRejection>,
@@ -286,6 +297,7 @@ async fn create_application(
     .validate_template()?;
     accept_mutation(
         &state,
+        &identity,
         Mutation::save(manifest, None, query.deploy),
         Some(0),
         false,
@@ -294,52 +306,53 @@ async fn create_application(
     .await
 }
 
-/// Registers every typed editing endpoint plus `create_application`.
+/// Registers every typed editing endpoint, which requires `apps:write` on its
+/// application, plus `create_application`.
 pub(super) fn router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::new()
-        .routes(routes!(create_application))
-        .routes(routes!(set_application_volumes))
-        .routes(routes!(set_application_routes))
-        .routes(routes!(set_application_jobs))
-        .routes(routes!(set_application_name))
-        .routes(routes!(set_application_variables))
-        .routes(routes!(set_manifest_repository))
-        .routes(routes!(disconnect_manifest_repository))
-        .routes(routes!(set_manifest_repository_url))
-        .routes(routes!(set_manifest_repository_path))
-        .routes(routes!(add_application_service))
-        .routes(routes!(add_application_volume))
-        .routes(routes!(remove_application_service))
-        .routes(routes!(remove_application_volume))
-        .routes(routes!(set_service_name))
-        .routes(routes!(set_service_source))
-        .routes(routes!(set_service_image))
-        .routes(routes!(set_service_git_url))
-        .routes(routes!(set_service_git_branch))
-        .routes(routes!(set_service_git_commit))
-        .routes(routes!(set_service_dockerfile))
-        .routes(routes!(set_service_context))
-        .routes(routes!(set_service_replicas))
-        .routes(routes!(set_service_environment))
-        .routes(routes!(set_service_command))
-        .routes(routes!(set_service_arguments))
-        .routes(routes!(set_service_mounts))
-        .routes(routes!(set_service_secrets))
-        .routes(routes!(set_service_depends_on))
-        .routes(routes!(set_service_rollout))
-        .routes(routes!(set_service_healthcheck))
-        .routes(routes!(set_service_health_port))
-        .routes(routes!(set_service_health_path))
-        .routes(routes!(set_service_health_command))
-        .routes(routes!(set_service_health_interval))
-        .routes(routes!(set_service_health_timeout))
-        .routes(routes!(set_service_resources))
-        .routes(routes!(set_service_cpu))
-        .routes(routes!(set_service_memory))
-        .routes(routes!(set_service_general))
-        .routes(routes!(set_service_process))
-        .routes(routes!(set_service_environment_entry))
-        .routes(routes!(remove_service_environment_entry))
-        .routes(routes!(set_service_mount))
-        .routes(routes!(remove_service_mount))
+        .routes(granted!(Global(AppsCreate) => create_application))
+        .routes(granted!(App(Write) => set_application_volumes))
+        .routes(granted!(App(Write) => set_application_routes))
+        .routes(granted!(App(Write) => set_application_jobs))
+        .routes(granted!(App(Write) => set_application_name))
+        .routes(granted!(App(Write) => set_application_variables))
+        .routes(granted!(App(Write) => set_manifest_repository))
+        .routes(granted!(App(Write) => disconnect_manifest_repository))
+        .routes(granted!(App(Write) => set_manifest_repository_url))
+        .routes(granted!(App(Write) => set_manifest_repository_path))
+        .routes(granted!(App(Write) => add_application_service))
+        .routes(granted!(App(Write) => add_application_volume))
+        .routes(granted!(App(Write) => remove_application_service))
+        .routes(granted!(App(Write) => remove_application_volume))
+        .routes(granted!(App(Write) => set_service_name))
+        .routes(granted!(App(Write) => set_service_source))
+        .routes(granted!(App(Write) => set_service_image))
+        .routes(granted!(App(Write) => set_service_git_url))
+        .routes(granted!(App(Write) => set_service_git_branch))
+        .routes(granted!(App(Write) => set_service_git_commit))
+        .routes(granted!(App(Write) => set_service_dockerfile))
+        .routes(granted!(App(Write) => set_service_context))
+        .routes(granted!(App(Write) => set_service_replicas))
+        .routes(granted!(App(Write) => set_service_environment))
+        .routes(granted!(App(Write) => set_service_command))
+        .routes(granted!(App(Write) => set_service_arguments))
+        .routes(granted!(App(Write) => set_service_mounts))
+        .routes(granted!(App(Write) => set_service_secrets))
+        .routes(granted!(App(Write) => set_service_depends_on))
+        .routes(granted!(App(Write) => set_service_rollout))
+        .routes(granted!(App(Write) => set_service_healthcheck))
+        .routes(granted!(App(Write) => set_service_health_port))
+        .routes(granted!(App(Write) => set_service_health_path))
+        .routes(granted!(App(Write) => set_service_health_command))
+        .routes(granted!(App(Write) => set_service_health_interval))
+        .routes(granted!(App(Write) => set_service_health_timeout))
+        .routes(granted!(App(Write) => set_service_resources))
+        .routes(granted!(App(Write) => set_service_cpu))
+        .routes(granted!(App(Write) => set_service_memory))
+        .routes(granted!(App(Write) => set_service_general))
+        .routes(granted!(App(Write) => set_service_process))
+        .routes(granted!(App(Write) => set_service_environment_entry))
+        .routes(granted!(App(Write) => remove_service_environment_entry))
+        .routes(granted!(App(Write) => set_service_mount))
+        .routes(granted!(App(Write) => remove_service_mount))
 }

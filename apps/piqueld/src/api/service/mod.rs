@@ -54,6 +54,8 @@ pub enum ApplicationError {
     Runtime(#[from] BoundaryError),
 }
 
+pub use crate::store::Actor;
+
 /// Validated application or environment mutation. Its serialization defines
 /// request replay identity.
 #[derive(Debug, serde::Serialize)]
@@ -153,6 +155,25 @@ pub enum MutationResponse {
 }
 
 impl Mutation {
+    /// Application permissions this mutation needs on its application (the
+    /// environment's, for environment changes): `Write` and optionally
+    /// `Deploy` for saves and edits.
+    #[must_use]
+    pub fn required(&self) -> &'static [piqueld_core::access::AppPermission] {
+        use piqueld_core::access::AppPermission::{Delete, Deploy, Write};
+        match self {
+            Self::Save { deploy: true, .. } | Self::Edit { deploy: true, .. } => &[Write, Deploy],
+            Self::Save { .. }
+            | Self::Edit { .. }
+            | Self::Rename { .. }
+            | Self::CreateEnvironment { .. }
+            | Self::RenameEnvironment { .. }
+            | Self::SetBranch { .. } => &[Write],
+            Self::Deploy { .. } | Self::Reconcile { .. } => &[Deploy],
+            Self::DeleteApplication { .. } | Self::Delete { .. } => &[Delete],
+        }
+    }
+
     /// Deploys saved configuration at its configured manifest revision.
     #[must_use]
     pub fn deploy(id: EnvironmentId) -> Self {
@@ -250,8 +271,9 @@ impl ApplicationService {
     /// Returns an error if the current key still works, or storage errors.
     pub async fn recover_secret_key(
         &self,
+        actor: Actor<'_>,
     ) -> Result<piqueld_core::api::SecretKeyRecovery, ApplicationError> {
-        Ok(self.store.recover_secret_key().await?)
+        Ok(self.store.recover_secret_key(actor).await?)
     }
 
     /// Lists secret metadata without exposing stored values.
@@ -271,6 +293,7 @@ impl ApplicationService {
     /// Returns a validation, generation conflict, or storage error.
     pub async fn put_secret(
         &self,
+        actor: Actor<'_>,
         environment: &EnvironmentId,
         name: &str,
         expected_generation: i64,
@@ -278,7 +301,7 @@ impl ApplicationService {
     ) -> Result<SecretMetadata, ApplicationError> {
         Ok(self
             .store
-            .put_secret(environment, name, expected_generation, value)
+            .put_secret(actor, environment, name, expected_generation, value)
             .await?)
     }
 
@@ -295,13 +318,14 @@ impl ApplicationService {
     /// Returns when the secret is referenced or storage or runtime cleanup fails.
     pub async fn delete_secret(
         &self,
+        actor: Actor<'_>,
         environment: &EnvironmentId,
         name: &str,
         expected_generation: i64,
     ) -> Result<(), ApplicationError> {
         let deletion = self
             .store
-            .begin_secret_deletion(environment, name, expected_generation)
+            .begin_secret_deletion(actor, environment, name, expected_generation)
             .await?;
         let journal = self
             .store
@@ -328,7 +352,8 @@ impl ApplicationService {
         Ok(())
     }
 
-    /// Accepts a mutation and records its receipt in the same transaction.
+    /// Accepts a mutation from `actor` and records its receipt in the same
+    /// transaction.
     /// `expected_generation` is the last inspected intent revision: zero requires
     /// absence. Mutations other than reconcile require a revision; saves
     /// also require the inspected identity when the revision is nonzero. An
@@ -339,6 +364,7 @@ impl ApplicationService {
     /// Returns validation, conflict, or persistence errors.
     pub async fn accept(
         &self,
+        actor: Actor<'_>,
         mutation: Mutation,
         expected_generation: Option<u64>,
         force: bool,
@@ -384,7 +410,7 @@ impl ApplicationService {
         }
         let (response, wake) = self
             .store
-            .accept(mutation, expected_generation, force, request_id)
+            .accept(actor, mutation, expected_generation, force, request_id)
             .await?;
         if wake {
             self.runtime.trigger_reconciliation();

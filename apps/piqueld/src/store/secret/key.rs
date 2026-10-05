@@ -50,10 +50,18 @@ impl Store {
     /// Recovers from a lost or unusable master key by discarding every stored value,
     /// then moving the old key aside; the next value write generates a new key.
     /// Refuses while the current key works. Repeating it after a crash is safe.
+    /// `actor` needs `system:operate`, checked in the recovering transaction.
     /// # Errors
     /// Returns [`StoreError::SecretKeyUsable`] for a working key, or persistence errors.
-    pub async fn recover_secret_key(&self) -> Result<SecretKeyRecovery, StoreError> {
+    pub async fn recover_secret_key(
+        &self,
+        actor: crate::store::Actor<'_>,
+    ) -> Result<SecretKeyRecovery, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
+        let operate = piqueld_core::access::Permission::Global(
+            piqueld_core::access::GlobalPermission::SystemOperate,
+        );
+        actor.require_on(&mut tx, operate, None).await?;
         match self.verified_secret_cipher(&mut tx).await {
             Ok(_) => return Err(StoreError::SecretKeyUsable),
             Err(StoreError::SecretSource(_)) => {}
