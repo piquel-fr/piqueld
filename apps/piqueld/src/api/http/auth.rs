@@ -11,8 +11,8 @@ use axum::{
 };
 use piqueld_core::auth::{
     AuthStatus, Ceremony, CeremonyFinish, DeviceApprove, DevicePoll, DeviceRequest, DeviceStart,
-    DeviceStartRequest, DeviceToken, Directory, Manage, Managed, RegistrationStart, Session,
-    SetupLink, User,
+    DeviceStartRequest, DeviceToken, Directory, Manage, Managed, RecoveryLink, RegistrationStart,
+    Session, SetupLink, User,
 };
 use std::net::SocketAddr;
 
@@ -59,6 +59,11 @@ impl From<AuthError> for ApiError {
                 StatusCode::CONFLICT,
                 "setup_completed",
                 "First-account setup is already completed; run piquelctl login",
+            ),
+            AuthError::SetupPending => Self::new(
+                StatusCode::CONFLICT,
+                "setup_pending",
+                "First-account setup is not completed; run piquelctl setup-link instead",
             ),
             AuthError::Store(StoreError::AlreadyExists) => Self::new(
                 StatusCode::CONFLICT,
@@ -263,6 +268,31 @@ pub(super) async fn setup_link(
         return Err(error);
     }
     Ok(Json(auth.setup_link().await?))
+}
+/// Issues a one-time admin recovery link.
+///
+/// Public, but only over the Unix socket and only to root or the daemon's own
+/// user, identified by the kernel (`SO_PEERCRED`); anyone else gets 404. The
+/// link is valid for 24 hours, replaces any earlier one, and registers a new
+/// account with `admin` on every application. Issuing it raises a `security`
+/// notification.
+#[utoipa::path(post,path="/api/v1/auth/recovery",operation_id="authRecoverAdmin",responses((status=200,body=RecoveryLink),(status=404,response=inline(super::openapi::ApiErrorResponse)),
+    (status=409,response=inline(super::openapi::ApiErrorResponse))))]
+pub(super) async fn recover_admin(
+    Extension(auth): Extension<Auth>,
+    unix: Option<Extension<super::UnixSocket>>,
+    peer: Option<Extension<ConnectInfo<super::UnixPeer>>>,
+) -> Result<Json<RecoveryLink>, ApiError> {
+    let operator = rustix::process::geteuid().as_raw();
+    let uid = peer
+        .and_then(|Extension(ConnectInfo(peer))| peer.uid)
+        .filter(|uid| unix.is_some() && (*uid == 0 || *uid == operator));
+    let Some(uid) = uid else {
+        let mut error = ApiError::endpoint_not_found();
+        error.denied = Some(piqueld_core::access::Denied::Hidden);
+        return Err(error);
+    };
+    Ok(Json(auth.recover_admin(&format!("uid {uid}")).await?))
 }
 /// Gets the signed-in user and what the current credential may do.
 #[utoipa::path(get,path="/api/v1/auth/me",operation_id="authMe",responses((status=200,body=Session)))]

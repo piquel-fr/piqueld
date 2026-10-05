@@ -72,7 +72,8 @@ impl Store {
     /// Retries a failed delivery only while its destination/category remain enabled.
     /// Also refuses (as `StoreError::InvalidInput`) failures already followed by a
     /// delivered recovery, recoveries whose incident has reopened, and failures
-    /// whose incident has since closed. Resets the delivery to `pending` with a
+    /// whose incident has since closed. Security events open no incident, so
+    /// their deliveries stay retryable. Resets the delivery to `pending` with a
     /// fresh retry window. `actor` needs `system:operate`, checked in the same
     /// transaction.
     ///
@@ -96,11 +97,14 @@ impl Store {
         .await
         .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
-        if !self.notifications.category_enabled(
-            NotificationCategory::parse(&row.category).ok_or(StoreError::Corrupt)?,
-        ) || !self.notifications.destinations.iter().any(|d| {
-            d.enabled && d.name == row.destination && d.fingerprint() == row.destination_fingerprint
-        }) {
+        let category = NotificationCategory::parse(&row.category).ok_or(StoreError::Corrupt)?;
+        if !self.notifications.category_enabled(category)
+            || !self.notifications.destinations.iter().any(|d| {
+                d.enabled
+                    && d.name == row.destination
+                    && d.fingerprint() == row.destination_fingerprint
+            })
+        {
             return Err(StoreError::InvalidInput);
         }
         // Never replay an old failure after its destination acknowledged recovery.
@@ -116,31 +120,37 @@ impl Store {
         if recovered > 0 {
             return Err(StoreError::InvalidInput);
         }
-        // A recovery is stale once its incident has opened again.
-        if row.category == NotificationCategory::Recovery.as_str() {
-            let reopened = sqlx::query_scalar!(
-                "SELECT COUNT(*) FROM notification_recovery_sources s
+        match category {
+            // A recovery is stale once its incident has opened again.
+            NotificationCategory::Recovery => {
+                let reopened = sqlx::query_scalar!(
+                    "SELECT COUNT(*) FROM notification_recovery_sources s
                 JOIN notification_conditions c ON c.key=s.condition_key
                 WHERE s.recovery_id=?1",
-                id,
-            )
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(StoreError::database)?;
-            if reopened > 0 {
-                return Err(StoreError::InvalidInput);
+                    id,
+                )
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(StoreError::database)?;
+                if reopened > 0 {
+                    return Err(StoreError::InvalidInput);
+                }
             }
-        } else {
+            // Security events report one occurrence, not an incident that
+            // closes, so they stay retryable.
+            NotificationCategory::Security => {}
             // A closed incident cannot be announced again without a matching recovery.
-            let open = sqlx::query_scalar!(
-                "SELECT COUNT(*) FROM notification_conditions WHERE event_id=?1",
-                row.event_id,
-            )
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(StoreError::database)?;
-            if open == 0 {
-                return Err(StoreError::InvalidInput);
+            _ => {
+                let open = sqlx::query_scalar!(
+                    "SELECT COUNT(*) FROM notification_conditions WHERE event_id=?1",
+                    row.event_id,
+                )
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(StoreError::database)?;
+                if open == 0 {
+                    return Err(StoreError::InvalidInput);
+                }
             }
         }
         let now = now_ms();
@@ -322,6 +332,11 @@ impl Store {
                 )
                 .await?;
             }
+        }
+        // Every security event notifies; none is a condition that recovers.
+        if super::SecurityEvent::parse(&event.kind).is_some() {
+            let security = NotificationCategory::Security;
+            return Self::enqueue(tx, &self.notifications, event.id, security).await;
         }
         let category = match (
             event.kind.as_str(),

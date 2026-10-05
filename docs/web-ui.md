@@ -107,7 +107,8 @@ their grants, invitations, passkey enrollment links, and tokens. Pages and actio
 the signed-in account cannot use are hidden; see [authorization](authorization.md).
 The Audit page shows the [audit trail](observability.md#audit-trail), naming the
 application or environment each request addressed, and each
-session or token links to its own activity. Log display preferences persist in browser
+session or token links to its own activity. With `audit:read`, **Verify
+integrity** checks the trail's [hash chain](observability.md#tamper-evidence). Log display preferences persist in browser
 local storage. See [authentication](authentication.md).
 
 The **Secrets** tab lists names and versions, creates or replaces write-only text

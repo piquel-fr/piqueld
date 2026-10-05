@@ -472,6 +472,27 @@ pub fn router(state: ApiState, auth: impl Authenticator) -> Router {
 #[derive(Clone, Copy)]
 struct UnixSocket;
 
+/// The process on the other end of a Unix socket connection, read with
+/// `SO_PEERCRED`. Serve the Unix socket with
+/// `into_make_service_with_connect_info::<UnixPeer>()` to provide it.
+#[derive(Clone, Copy, Debug)]
+pub struct UnixPeer {
+    /// Effective user ID of the connecting process, if the kernel reported it.
+    pub uid: Option<u32>,
+}
+
+impl
+    axum::extract::connect_info::Connected<
+        axum::serve::IncomingStream<'_, tokio::net::UnixListener>,
+    > for UnixPeer
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, tokio::net::UnixListener>) -> Self {
+        Self {
+            uid: stream.io().peer_cred().ok().map(|peer| peer.uid()),
+        }
+    }
+}
+
 /// Builds the API-only router used by the Unix-socket client transport.
 pub fn api_router(state: ApiState, auth: impl Authenticator) -> Router {
     let (router, openapi) = documented_router().split_for_parts();
@@ -608,6 +629,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .merge(editing::router())
         .routes(public!(auth::status))
         .routes(public!(auth::setup_link))
+        .routes(public!(auth::recover_admin))
         .routes(authenticated!(auth::me))
         .routes(public!(auth::register_start))
         .routes(public!(auth::register_finish))
@@ -651,6 +673,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(granted!(Global(SystemRead) => observability::deliveries))
         .routes(granted!(Global(SystemOperate) => observability::retry_delivery))
         .routes(authenticated!(observability::audit))
+        .routes(granted!(Global(AuditRead) => observability::verify_audit))
         .routes(granted!(App(LogsRead) => logs::get))
         .routes(granted!(App(Exec) => exec::exec))
         .routes(authenticated!(builds::list))

@@ -88,8 +88,8 @@ impl Store {
             "Recovered the secret master key; discarded {} values across {} applications",
             usage.versions, usage.applications
         );
-        sqlx::query!("INSERT INTO events(scope,kind,message,created_at_ms,actor_user_id,actor_credential_id) VALUES('daemon','secret_key_recovered',?1,?2,?3,?4)",message,now,by.user_id,by.credential_id)
-            .execute(&mut *tx).await.map_err(StoreError::database)?;
+        let recovered = crate::store::SecurityEvent::SecretKeyRecovered;
+        Self::security_event_on(&mut tx, recovered, &message, by).await?;
         tx.commit().await.map_err(StoreError::database)?;
         SecretCipher::retire(&self.secret_key_path, now).map_err(StoreError::SecretSource)?;
         Ok(SecretKeyRecovery {

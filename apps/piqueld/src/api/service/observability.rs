@@ -8,6 +8,9 @@ use piqueld_core::{
         DaemonStats, DeploymentAnalytics, Diagnostic, EventFilter, NotificationDelivery,
     },
 };
+use std::collections::HashSet;
+use std::net::IpAddr;
+use std::sync::PoisonError;
 
 impl ApplicationService {
     /// Lists structured events with indexed filters, limited to `visible`.
@@ -100,17 +103,68 @@ impl ApplicationService {
             };
             Some(slot)
         };
-        let Ok(slot) = self.audit_backlog.clone().try_acquire_owned() else {
-            tracing::error!(action = %event.action, "audit backlog is full; record dropped");
-            return;
-        };
         let store = std::sync::Arc::clone(&self.store);
-        tokio::spawn(async move {
-            if let Err(error) = store.record_audit(&event).await {
-                tracing::error!(?error, action = %event.action, "audit event could not be recorded");
-            }
-            drop((slot, anonymous));
+        let action = event.action.clone();
+        self.in_background(&action, anonymous, async move {
+            store.record_audit(&event).await
         });
+    }
+    /// Notes that `credential_id`, owned by `user_id`, was used from
+    /// `address`, raising a security event the first time a credential
+    /// already used elsewhere appears on a new network. IPv6 addresses count
+    /// by /64, the smallest prefix normally assigned to one client. Written in
+    /// the background like audit records, once per pair per run.
+    pub(crate) fn observe_address(
+        &self,
+        credential_id: &str,
+        user_id: &str,
+        address: std::net::IpAddr,
+    ) {
+        let pair = (credential_id.to_owned(), crate::auth::network(address));
+        if !self.known_addresses.insert(&pair) {
+            return;
+        }
+        let store = std::sync::Arc::clone(&self.store);
+        let known = std::sync::Arc::clone(&self.known_addresses);
+        let user_id = user_id.to_owned();
+        let noted = pair.clone();
+        let admitted = self.in_background("credential address", None, async move {
+            let (credential_id, network) = &noted;
+            let address = network.to_string();
+            let result = store
+                .note_credential_address(credential_id, &user_id, &address)
+                .await;
+            if result.is_err() {
+                known.forget(&noted);
+            }
+            result
+        });
+        if !admitted {
+            self.known_addresses.forget(&pair);
+        }
+    }
+    /// Runs `write` in the background under the audit backlog, or drops it
+    /// with a log when the backlog is full, returning whether it was
+    /// accepted. `what` names it in logs; `held`, like an anonymous backlog
+    /// slot, is released once `write` finishes.
+    fn in_background(
+        &self,
+        what: &str,
+        held: Option<tokio::sync::OwnedSemaphorePermit>,
+        write: impl Future<Output = Result<(), crate::store::StoreError>> + Send + 'static,
+    ) -> bool {
+        let Ok(slot) = self.audit_backlog.clone().try_acquire_owned() else {
+            tracing::error!(what, "audit backlog is full; record dropped");
+            return false;
+        };
+        let what = what.to_owned();
+        tokio::spawn(async move {
+            if let Err(error) = write.await {
+                tracing::error!(?error, what, "audit record could not be written");
+            }
+            drop((slot, held));
+        });
+        true
     }
     /// Waits up to `deadline` for background audit records to be written, so a
     /// shutdown keeps the requests it just served. Called once the API
@@ -127,6 +181,14 @@ impl ApplicationService {
     pub(crate) fn count_denial(&self) {
         self.denials
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// Verifies the audit trail's hash chain.
+    /// # Errors
+    /// Returns storage errors.
+    pub async fn verify_audit(
+        &self,
+    ) -> Result<piqueld_core::audit::AuditVerification, ApplicationError> {
+        Ok(self.store.verify_audit().await?)
     }
     /// Lists audited requests, newest first.
     /// # Errors
@@ -269,5 +331,91 @@ impl ApplicationService {
             }
         }
         Ok(output)
+    }
+}
+
+/// Credential and network pairs already noted, or being noted, since start,
+/// so each is written at most once per run. Pairs whose write fails are
+/// forgotten so the next use retries.
+#[derive(Default)]
+pub(crate) struct KnownAddresses(std::sync::Mutex<HashSet<(String, IpAddr)>>);
+
+impl KnownAddresses {
+    /// Remembers `pair`, returning whether it was new.
+    fn insert(&self, pair: &(String, IpAddr)) -> bool {
+        let mut known = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        // Bounded: forgetting pairs only repeats an idempotent write.
+        if known.len() >= 10_000 {
+            known.clear();
+        }
+        known.insert(pair.clone())
+    }
+
+    /// Forgets `pair`, so its next use is noted again.
+    fn forget(&self, pair: &(String, IpAddr)) {
+        let mut known = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        known.remove(pair);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{CredentialKind, NewCredential, Store};
+    use sqlx::Connection as _;
+    use std::sync::Arc;
+
+    /// A credential address whose write fails is forgotten, so the next use
+    /// of that address notes it instead of being skipped for the whole run.
+    #[tokio::test]
+    async fn failed_address_notes_are_retried() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("db");
+        let store = Arc::new(Store::open(&database).await.unwrap());
+        let user = piqueld_core::auth::User {
+            id: "alice".into(),
+            username: "alice".into(),
+            display_name: String::new(),
+        };
+        store
+            .seed_auth_user(&user, &piqueld_core::access::Grants::admin())
+            .await;
+        let credential = NewCredential {
+            id: "laptop".into(),
+            secret_hash: "hash".into(),
+            kind: CredentialKind::Cli,
+            name: "piquelctl",
+            expires_at: None,
+            grants: None,
+        };
+        store
+            .insert_credential(&user.id, &credential)
+            .await
+            .unwrap();
+        // Only the Docker socket's existence is checked; no request is made.
+        let socket = temp.path().join("docker.sock");
+        let _listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let docker = Arc::new(crate::docker::BollardDocker::connect(&socket).unwrap());
+        let runtime = crate::reconcile::Controller::new(docker, store.clone())
+            .runtime(Arc::new(tokio::sync::Notify::new()));
+        let service = ApplicationService::new(store, runtime);
+        let url = format!("sqlite:{}", database.display());
+        let mut db = sqlx::SqliteConnection::connect(&url).await.unwrap();
+        let address = IpAddr::from([192, 0, 2, 1]);
+        let drained = std::time::Duration::from_secs(5);
+        for rename in [
+            "auth_credential_addresses RENAME TO hidden",
+            "hidden RENAME TO auth_credential_addresses",
+        ] {
+            let rename = format!("ALTER TABLE {rename}");
+            sqlx::query(&rename).execute(&mut db).await.unwrap();
+            service.observe_address("laptop", "alice", address);
+            service.drain_audit(drained).await;
+        }
+        let noted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auth_credential_addresses")
+            .fetch_one(&mut db)
+            .await
+            .unwrap();
+        assert_eq!(noted, 1);
     }
 }

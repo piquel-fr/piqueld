@@ -149,6 +149,11 @@ notification_values! {
         DaemonFailures => "daemon_failures",
         /// Recovery of a condition reported to this destination.
         Recovery => "recovery",
+        /// Changes and activity that affect who can access the daemon: new
+        /// administrators, long-lived or administrator tokens, admin
+        /// recovery, refused-request bursts, and credentials used from new
+        /// addresses.
+        Security => "security",
     }
 }
 notification_values! {
@@ -270,6 +275,7 @@ mod tests {
                     NotificationCategory::ServiceDegradation,
                     NotificationCategory::DaemonFailures,
                     NotificationCategory::Recovery,
+                    NotificationCategory::Security,
                 ])
                 .unwrap(),
             ),

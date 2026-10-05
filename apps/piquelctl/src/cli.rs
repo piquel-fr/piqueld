@@ -93,6 +93,11 @@ pub(crate) enum Command {
     /// Read the audit trail of API requests, newest first: your own, or any
     /// account's with audit:read.
     Audit(crate::accounts::AuditArgs),
+    /// Print a one-time link that creates a new administrator account, to
+    /// regain access when no administrator can sign in. Run it with sudo on
+    /// the daemon host: only root or the daemon's user may use it (Unix
+    /// socket only).
+    RecoverAdmin,
     /// Print the first-account setup link (Unix socket only).
     SetupLink {
         /// Also open the link in the default browser.

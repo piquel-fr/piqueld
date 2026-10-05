@@ -20,9 +20,11 @@ pub(crate) use audit::NewAuditEvent;
 pub use auth::{CredentialKind, Lockout};
 pub(crate) use auth::{Invitation, NewCredential, NewInvitation, NewPasskey, PasskeyOwner};
 pub(crate) use journal::JournalAction;
+pub(crate) use security::SecurityEvent;
 mod operation;
 mod repository;
 mod secret;
+mod security;
 mod status;
 
 use piqueld_core::{

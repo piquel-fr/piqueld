@@ -6,7 +6,7 @@
 //! Changes to an account take the [`Caller`], whose authority over the account
 //! is checked against both sides' current grants inside the same transaction.
 use super::access::{Authority, Caller, Holder};
-use super::{Store, StoreError, now_secs};
+use super::{Attribution, Store, StoreError, now_secs};
 use piqueld_core::access::{GlobalPermission, Grants, Permission};
 use piqueld_core::auth::{Account, CredentialView, Directory, InvitationView, PasskeyView, User};
 use sqlx::{Sqlite, SqliteConnection, query::Query, sqlite::SqliteArguments};
@@ -225,13 +225,40 @@ impl Store {
         Ok(())
     }
 
-    /// Describes the open setup secret or live invitation matching a hash, or
-    /// `None` when there is none.
+    /// Replaces the admin recovery link with one for `hash`, valid until
+    /// `expires_at`, and records who asked for it as a security event.
+    pub(crate) async fn create_recovery(
+        &self,
+        hash: &str,
+        expires_at: i64,
+        requester: &str,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        sqlx::query!(
+            "INSERT INTO auth_recovery(singleton,secret_hash,expires_at) VALUES(1,?1,?2)
+            ON CONFLICT(singleton) DO UPDATE SET secret_hash=excluded.secret_hash,expires_at=excluded.expires_at",
+            hash,
+            expires_at
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let message =
+            format!("An admin recovery link was issued over the Unix socket to {requester}");
+        let issued = super::SecurityEvent::RecoveryIssued;
+        Self::security_event_on(&mut tx, issued, &message, Attribution::default()).await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Describes the open setup secret, admin recovery link, or live
+    /// invitation matching a hash, or `None` when there is none.
     pub(crate) async fn invitation(&self, hash: &str) -> Result<Option<Invitation>, StoreError> {
         let now = now_secs();
         let setup = sqlx::query_scalar!(
-            r#"SELECT EXISTS(SELECT 1 FROM auth_setup WHERE initialized=0 AND secret_hash=?1) AS "open!: bool""#,
-            hash
+            r#"SELECT EXISTS(SELECT 1 FROM auth_setup WHERE initialized=0 AND secret_hash=?1)
+            OR EXISTS(SELECT 1 FROM auth_recovery WHERE secret_hash=?1 AND expires_at>?2) AS "open!: bool""#,
+            hash,
+            now
         )
         .fetch_one(&self.pool)
         .await
@@ -323,10 +350,11 @@ impl Store {
         Ok(true)
     }
 
-    /// Consumes the setup secret or a live invitation for `user`:
+    /// Consumes the setup secret, the admin recovery link, or a live
+    /// invitation for `user`:
     ///
     /// 1. The setup secret closes initial setup and creates `user` with `admin`
-    ///    on every application.
+    ///    on every application; so does the admin recovery link.
     /// 2. An account invitation creates `user` with the invitation's grants.
     /// 3. An enrollment invitation must target `user`, which already exists.
     ///
@@ -348,9 +376,24 @@ impl Store {
         .await
         .map_err(StoreError::database)?
         .rows_affected();
-        if setup == 1 {
+        let recovery = sqlx::query!(
+            "DELETE FROM auth_recovery WHERE secret_hash=?1 AND expires_at>?2",
+            invitation_hash,
+            now
+        )
+        .execute(&mut *db)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        if setup == 1 || recovery == 1 {
             Self::insert_user_on(db, user, now).await?;
-            Holder::User(&user.id).replace(db, &Grants::admin()).await?;
+            let daemon = Attribution::default();
+            let how = if setup == 1 {
+                "by first-account setup"
+            } else {
+                "by an admin recovery link"
+            };
+            Self::replace_user_grants_on(db, &user.id, &Grants::admin(), daemon, how).await?;
             return Ok(true);
         }
         let Some(invitation) = sqlx::query!(
@@ -377,7 +420,12 @@ impl Store {
                 return Ok(false);
             }
             Self::insert_user_on(db, user, now).await?;
-            Holder::User(&user.id).replace(db, &grants).await?;
+            let issuer = Attribution {
+                user_id: Some(&invitation.issuer_id),
+                credential_id: None,
+            };
+            let how = "by invitation";
+            Self::replace_user_grants_on(db, &user.id, &grants, issuer, how).await?;
         }
         sqlx::query!("DELETE FROM auth_invitations WHERE id=?1", invitation.id)
             .execute(&mut *db)
@@ -854,6 +902,11 @@ impl Store {
                 .map_err(StoreError::Denied)?;
         }
         credential.insert(&mut tx, &authority.user_id).await?;
+        let actor = Attribution {
+            user_id: Some(&authority.user_id),
+            credential_id: Some(caller.credential_id),
+        };
+        Self::check_token_on(&mut tx, credential, actor).await?;
         tx.commit().await.map_err(StoreError::database)
     }
 }

@@ -877,6 +877,7 @@ pub(super) fn AuditPage() -> impl IntoView {
     let query = use_query_map();
     let cursor = RwSignal::new(None::<String>);
     let outcome = RwSignal::new(None::<AuditOutcome>);
+    let verified = RwSignal::new(None::<(Tone, String)>);
     let data = LocalResource::new(move || {
         let filter = AuditFilter {
             credential_id: query.with(|query| query.get("credential")),
@@ -896,6 +897,7 @@ pub(super) fn AuditPage() -> impl IntoView {
             title="Audit"
             description="Refused requests, changes, and reads of logs, configuration, and accounts. Without audit:read, only your own account's requests are shown."
         >
+            <AuditVerify result={verified} />
             <label class="field">
                 <span>"Outcome"</span>
                 <select on:change={move |event| {
@@ -910,6 +912,7 @@ pub(super) fn AuditPage() -> impl IntoView {
             </label>
         </PageHeader>
         <div class="stack">
+            {move || verified.get().map(|(tone, message)| notice(tone, message))}
             {move || match data.get() {
                 None => empty("Loading audit trail…"),
                 Some(Err(e)) => notice(Tone::Bad, e),
@@ -1004,5 +1007,55 @@ pub(super) fn AuditPage() -> impl IntoView {
                 }
             }}
         </div>
+    }
+}
+
+/// "Verify integrity" for `audit:read` holders: checks the audit trail's hash
+/// chain and sets `result` to whether any record was altered, with the newest
+/// link to keep elsewhere.
+#[component]
+fn AuditVerify(result: RwSignal<Option<(Tone, String)>>) -> impl IntoView {
+    use piqueld_client::access::{GlobalPermission, Permission};
+    let allowed = super::access::can(Permission::Global(GlobalPermission::AuditRead));
+    let busy = RwSignal::new(false);
+    let verify = move |_| {
+        busy.set(true);
+        spawn_local(async move {
+            result.set(Some(match Client::browser().verify_audit().await {
+                Ok(check) => match check.broken_at {
+                    Some(id) => (
+                        Tone::Bad,
+                        format!("Altered: record {id} or one before it was edited, inserted, or removed."),
+                    ),
+                    None => {
+                        let unlinked = (check.unlinked > 0).then(|| {
+                            format!(
+                                " {} older records predate the chain and cannot be verified.",
+                                check.unlinked
+                            )
+                        });
+                        (
+                            Tone::Ok,
+                            format!(
+                                "Intact: {} linked records.{} Newest link: {}",
+                                check.checked,
+                                unlinked.unwrap_or_default(),
+                                check.head.as_deref().unwrap_or("none"),
+                            ),
+                        )
+                    }
+                },
+                Err(problem) => (Tone::Bad, client_error_message(&problem)),
+            }));
+            busy.set(false);
+        });
+    };
+    view! {
+        <Show when={move || allowed.get()}>
+            <button type="button" class="btn" disabled={move || busy.get()} on:click={verify}>
+                {icon(Icon::Refresh)}
+                "Verify integrity"
+            </button>
+        </Show>
     }
 }

@@ -68,6 +68,16 @@ impl Client {
         .await
         .map(|r| r.data)
     }
+    /// Verifies the audit trail's hash chain; requires `audit:read`.
+    /// # Errors
+    /// Returns transport, decoding or API errors.
+    pub async fn verify_audit(
+        &self,
+    ) -> Result<piqueld_core::audit::AuditVerification, ClientError> {
+        generated_result(self.generated.verify_audit().await)
+            .await
+            .map(|r| r.data)
+    }
     /// Finds the contextual event for a diagnostic occurrence.
     /// # Errors
     /// Returns transport, decoding, absence or API errors.

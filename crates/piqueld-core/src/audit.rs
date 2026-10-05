@@ -103,3 +103,21 @@ pub struct AuditFilter {
     /// Only requests with this outcome.
     pub outcome: Option<AuditOutcome>,
 }
+
+/// Result of checking the audit trail's hash chain.
+///
+/// Each record stores a SHA-256 link over its predecessor's link and its own
+/// fields, so editing, inserting, or removing a record breaks every later
+/// link. Removing the newest records leaves a valid but shorter chain:
+/// compare `head` with a value kept elsewhere to detect that.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AuditVerification {
+    /// Records whose links were checked.
+    pub checked: u64,
+    /// Records written before the chain existed, which carry no link.
+    pub unlinked: u64,
+    /// Link of the newest record, if any record is linked.
+    pub head: Option<String>,
+    /// First record whose link does not match, if the chain is broken.
+    pub broken_at: Option<i64>,
+}

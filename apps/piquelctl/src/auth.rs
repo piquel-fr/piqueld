@@ -4,10 +4,7 @@ use crate::{
     error::{CliError, ErrorKind, Result},
     output::{Console, HumanWriter, Report},
 };
-use piqueld_client::{
-    Client,
-    auth::{SetupLink, User},
-};
+use piqueld_client::{Client, auth::User};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -232,33 +229,46 @@ impl Report for AccountReport {
         out.line(format_args!("{} ({})", self.0.username, self.0.id))
     }
 }
-/// First-account setup link; human output is the bare URL so it can be piped.
-pub(crate) struct SetupLinkReport(pub SetupLink);
-impl Report for SetupLinkReport {
-    type Json = SetupLink;
-    fn json(&self) -> &SetupLink {
-        &self.0
+/// A link served only over the Unix socket, such as the first-account setup
+/// link; human output is the bare URL so it can be piped.
+pub(crate) struct LinkReport<T> {
+    url: String,
+    link: T,
+}
+impl<T: serde::Serialize> Report for LinkReport<T> {
+    type Json = T;
+    fn json(&self) -> &T {
+        &self.link
     }
     fn render_human(&self, out: &mut HumanWriter<'_>) -> std::io::Result<()> {
-        out.line(&self.0.url)
+        out.line(&self.url)
     }
 }
+/// Refuses `command` locally unless it will reach the daemon's Unix socket,
+/// the only transport serving it.
+fn require_socket(cli: &Cli, command: &str) -> Result<()> {
+    if cli.url.is_some() {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            format!("{command} is only served over the daemon's Unix socket; use --socket"),
+        ));
+    }
+    Ok(())
+}
 /// Prints the first-account setup link and optionally opens it in a browser.
-/// The daemon serves it only over its Unix socket, so TCP endpoints are refused locally.
 pub(crate) async fn setup_link(
     cli: &Cli,
     client: &Client,
     console: &mut Console,
     open: bool,
 ) -> Result<()> {
-    if cli.url.is_some() {
-        return Err(CliError::new(
-            ErrorKind::Input,
-            "setup-link is only served over the daemon's Unix socket; use --socket",
-        ));
-    }
-    let report = SetupLinkReport(client.auth_setup_link().await?);
-    console.emit(&report)?;
+    require_socket(cli, "setup-link")?;
+    let link = client.auth_setup_link().await?;
+    let url = link.url.clone();
+    console.emit(&LinkReport {
+        url: url.clone(),
+        link,
+    })?;
     if open {
         let opener = if cfg!(target_os = "macos") {
             "open"
@@ -266,7 +276,7 @@ pub(crate) async fn setup_link(
             "xdg-open"
         };
         std::process::Command::new(opener)
-            .arg(&report.0.url)
+            .arg(&url)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -279,6 +289,21 @@ pub(crate) async fn setup_link(
             })?;
     }
     Ok(())
+}
+/// Prints a one-time admin recovery link. The daemon serves it only over its
+/// Unix socket to root or its own user, so run this with `sudo` on the
+/// daemon host.
+pub(crate) async fn recover_admin(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
+    require_socket(cli, "recover-admin")?;
+    let link = client.auth_recover_admin().await?;
+    console.warning(
+        "this link creates a new administrator account and works once within 24 hours; \
+         open it in a browser and register a passkey. Administrators were notified.",
+    )?;
+    console.emit(&LinkReport {
+        url: link.url.clone(),
+        link,
+    })
 }
 /// Runs the browser device-code login:
 /// 1. Refuses when the daemon has no first account yet (that needs the setup link).

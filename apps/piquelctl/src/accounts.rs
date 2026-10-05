@@ -14,7 +14,7 @@ use clap::{Args, Subcommand};
 use piqueld_client::{
     ApplicationId, Client, Page,
     access::{Grant, Grants, Permission, Preset, Scope},
-    audit::{AuditEvent, AuditFilter, AuditOutcome},
+    audit::{AuditEvent, AuditFilter, AuditOutcome, AuditVerification},
     auth::{Account, CredentialView, Directory, Manage, Session},
 };
 use serde::Serialize;
@@ -391,9 +391,12 @@ impl Report for AccountsReport<'_> {
     }
 }
 
-/// `audit` options: whose requests to show, newest first.
+/// `audit` options: whose requests to show, newest first, or `audit verify`.
 #[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
 pub(crate) struct AuditArgs {
+    #[command(subcommand)]
+    command: Option<AuditCommand>,
     /// Only this account's requests, by username or ID (including deleted
     /// accounts'); requires audit:read for other accounts. Defaults to
     /// every visible account. Distinct from the global `--account`, which
@@ -418,9 +421,30 @@ fn parse_outcome(value: &str) -> std::result::Result<AuditOutcome, String> {
     AuditOutcome::parse(value).ok_or_else(|| "expected allowed, denied, or failed".into())
 }
 
+/// `audit` subcommands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum AuditCommand {
+    /// Check the audit trail's hash chain (requires audit:read). Fails when a
+    /// record was edited, inserted, or removed; prints the newest link, which
+    /// you can keep elsewhere to also detect removal of the newest records.
+    Verify,
+}
+
 impl AuditArgs {
-    /// Prints one page of the audit trail.
+    /// Prints one page of the audit trail, or verifies its chain.
     pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        if let Some(AuditCommand::Verify) = self.command {
+            let verification = client.verify_audit().await?;
+            let broken = verification.broken_at;
+            console.emit(&VerificationReport(verification))?;
+            return match broken {
+                Some(id) => Err(CliError::new(
+                    ErrorKind::Conflict,
+                    format!("the audit trail was altered at or before record {id}"),
+                )),
+                None => Ok(()),
+            };
+        }
         // Deleted accounts keep their trail but leave the directory, and
         // auditors without accounts:manage only see themselves there, so an
         // account it lacks is matched by ID when the value is one (IDs are
@@ -443,6 +467,32 @@ impl AuditArgs {
             .audit_events(&filter, self.cursor.as_deref(), self.limit)
             .await?;
         console.emit(&AuditReport(page))
+    }
+}
+
+/// Result of `audit verify`.
+struct VerificationReport(AuditVerification);
+impl Report for VerificationReport {
+    type Json = AuditVerification;
+    fn json(&self) -> &AuditVerification {
+        &self.0
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        let result = &self.0;
+        let state = if result.broken_at.is_some() {
+            "broken"
+        } else {
+            "intact"
+        };
+        out.label("Chain", state)?;
+        out.label("Linked records checked", result.checked)?;
+        if result.unlinked > 0 {
+            out.label("Records from before the chain", result.unlinked)?;
+        }
+        if let Some(id) = result.broken_at {
+            out.label("First altered record", id)?;
+        }
+        out.label("Newest link", result.head.as_deref().unwrap_or("none"))
     }
 }
 

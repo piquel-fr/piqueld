@@ -5,6 +5,7 @@ mod management;
 mod sessions;
 mod throttle;
 pub use sessions::Identity;
+pub(crate) use throttle::bucket as network;
 #[cfg(test)]
 mod tests;
 
@@ -52,6 +53,9 @@ pub enum AuthError {
     /// First-account setup is closed, so no setup link exists.
     #[error("first-account setup is already completed")]
     SetupCompleted,
+    /// First-account setup is still open, so there is no access to recover.
+    #[error("first-account setup is not completed")]
+    SetupPending,
     /// Operating-system entropy was unavailable.
     #[error("could not generate an authentication secret: {0}")]
     Random(String),
