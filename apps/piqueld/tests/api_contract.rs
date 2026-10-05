@@ -2632,7 +2632,7 @@ async fn routed_statuses_and_media_types_are_documented_in_openapi() {
         (Method::GET, "/operations/{id}", 404),
         (Method::POST, "/applications/apply", 400),
         (Method::POST, "/applications/plan", 400),
-        (Method::POST, "/applications/{id}/exec", 426),
+        (Method::GET, "/applications/{id}/exec", 426),
     ];
     for (method, suffix, status) in cases {
         let path = format!("/api/v1{suffix}");
@@ -2770,15 +2770,15 @@ async fn exec_streams_over_both_transports_and_records_history_without_the_comma
         assert!(matches!(output.next().await, Ok(Some(ExecOutput::Exit(5)))));
         assert!(matches!(output.next().await, Ok(None)));
 
-        let error = client
+        // Start failures arrive after the handshake, with their HTTP status.
+        let (mut output, _input) = client
             .exec(&app.application_id, &request("worker"))
             .await
-            .err()
             .unwrap();
         assert!(matches!(
-            error,
-            piqueld_client::ClientError::Api { status, error }
-                if status.as_u16() == 409 && error.code == "service_not_running"
+            output.next().await,
+            Ok(Some(ExecOutput::Failed { status: 409, error }))
+                if error.code == "service_not_running" && !error.request_id.is_empty()
         ));
     }
     // Completion is recorded before the final frame is sent.

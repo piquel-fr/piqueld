@@ -7681,7 +7681,8 @@
       }
     },
     "/api/v1/applications/{id}/exec": {
-      "post": {
+      "get": {
+        "description": "Opens a WebSocket whose first message is a JSON ExecRequest; see piqueld_core::exec.",
         "operationId": "execApplicationCommand",
         "parameters": [
           {
@@ -7693,19 +7694,9 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ExecRequest"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "101": {
-            "description": "Switched to the piqueld-exec.v1 frame protocol; see piqueld_core::exec"
+            "description": "Switched to a WebSocket streaming the command"
           },
           "400": {
             "content": {
@@ -7727,47 +7718,7 @@
             },
             "description": "TCP authority or browser origin is not trusted"
           },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
           "426": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "502": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
             "content": {
               "application/json": {
                 "schema": {

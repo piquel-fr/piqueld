@@ -183,8 +183,9 @@ impl Generator {
             .get_mut("paths")
             .and_then(Value::as_object_mut)
             .context("OpenAPI document has no paths object")?;
-        // Progenitor only upgrades Dropshot WebSocket operations, so the exec
-        // upgrade is implemented by hand in `piqueld_client::exec`.
+        // Generated WebSocket methods return `reqwest::Upgraded`, which WASM
+        // builds lack, so the exec WebSocket is written by hand in
+        // `piqueld_client::exec` for native targets.
         ensure!(
             paths.remove("/api/v1/applications/{id}/exec").is_some(),
             "missing exec operation"

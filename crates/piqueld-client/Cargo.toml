@@ -26,8 +26,8 @@ workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest = { workspace = true, features = ["rustls-tls"] }
-# Splits and frames upgraded exec connections; reqwest already depends on tokio.
-tokio = { workspace = true, features = ["io-util"] }
+# Exec WebSockets over connections upgraded by reqwest.
+tokio-tungstenite.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 axum.workspace = true

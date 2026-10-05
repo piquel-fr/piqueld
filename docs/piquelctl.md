@@ -240,7 +240,7 @@ authentication and needs no SSH access. Output streams to stdout and stderr, and
 `piquelctl` exits with the command's exit code. `-i` forwards standard input.
 `-t` allocates a terminal, implies `-i`, requires a terminal on standard input
 and puts it in raw mode, so Ctrl-C reaches the command. `--timeout` bounds the
-connection requests, not the session.
+WebSocket handshake, not the session.
 
 The service needs a running task; otherwise the command fails with
 `service_not_running`. Application history records `command_started` and

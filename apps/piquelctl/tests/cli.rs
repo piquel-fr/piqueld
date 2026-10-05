@@ -72,7 +72,7 @@ impl Reply {
         }
     }
 
-    /// Switches to the exec protocol; see [`echo_exec`].
+    /// Accepts an exec WebSocket; see [`echo_exec`].
     fn upgrade() -> Self {
         Self {
             status: "101 Switching Protocols",
@@ -215,6 +215,7 @@ fn serve_stream<S>(
     let Some(request) = read_request(&mut stream) else {
         return;
     };
+    let websocket_key = request.headers.get("sec-websocket-key").cloned();
     records
         .lock()
         .expect("request records")
@@ -224,10 +225,15 @@ fn serve_stream<S>(
         return;
     }
     if reply.status == Reply::upgrade().status {
-        stream
-            .write_all(b"HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: piqueld-exec.v1\r\n\r\n")
-            .expect("upgrade response");
-        echo_exec(&mut stream);
+        let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(
+            websocket_key.expect("WebSocket key").as_bytes(),
+        );
+        write!(
+            stream,
+            "HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: websocket\r\nsec-websocket-accept: {accept}\r\n\r\n"
+        )
+        .expect("upgrade response");
+        echo_exec(stream);
         return;
     }
     let header = format!(
@@ -251,24 +257,30 @@ fn serve_stream<S>(
     }
 }
 
-/// Echoes standard input until it closes, then reports stderr and exit code 3.
-/// A client that disconnects first gets nothing.
-fn echo_exec<S: Read + Write>(stream: &mut S) {
+/// Checks the exec request for `cat -`, echoes standard input until it
+/// closes, then reports stderr and exit code 3. A client that disconnects
+/// first gets nothing.
+fn echo_exec<S: Read + Write>(stream: S) {
     use piqueld_client::exec::{ExecFrame, ExecInput, ExecOutput};
-    let (mut buffer, mut stdin) = (Vec::new(), Vec::new());
+    use tokio_tungstenite::tungstenite::{Message, WebSocket, protocol::Role};
+    let mut socket = WebSocket::from_raw_socket(stream, Role::Server, None);
+    let Ok(Message::Text(request)) = socket.read() else {
+        panic!("exec request")
+    };
+    assert_eq!(
+        serde_json::from_str::<Value>(request.as_str()).expect("exec request"),
+        json!({"service": "web", "command": ["cat", "-"], "stdin": true, "tty": null})
+    );
+    let mut stdin = Vec::new();
     loop {
-        match ExecInput::decode(&mut buffer).expect("valid exec input") {
-            Some(ExecInput::Stdin(data)) => stdin.extend(data),
-            Some(ExecInput::CloseStdin) => break,
-            Some(frame) => panic!("unexpected exec input {frame:?}"),
-            None => {
-                let mut chunk = [0_u8; 4096];
-                let read = stream.read(&mut chunk).expect("exec input");
-                if read == 0 {
-                    return;
-                }
-                buffer.extend_from_slice(&chunk[..read]);
-            }
+        match socket.read() {
+            Ok(Message::Binary(data)) => match ExecInput::decode(&data).expect("exec input") {
+                ExecInput::Stdin(data) => stdin.extend(data),
+                ExecInput::CloseStdin => break,
+                frame @ ExecInput::Resize(_) => panic!("unexpected exec input {frame:?}"),
+            },
+            Ok(message) => panic!("unexpected exec message {message:?}"),
+            Err(_) => return,
         }
     }
     for frame in [
@@ -276,8 +288,11 @@ fn echo_exec<S: Read + Write>(stream: &mut S) {
         ExecOutput::Stderr(b"closed".to_vec()),
         ExecOutput::Exit(3),
     ] {
-        stream.write_all(&frame.encoded()).expect("exec output");
+        socket
+            .send(Message::binary(frame.encode()))
+            .expect("exec output");
     }
+    let _ = socket.close(None);
 }
 
 fn read_request<S: Read>(stream: &mut S) -> Option<Request> {
@@ -564,12 +579,8 @@ fn exec_cat(stdin: Stdio, input: &[u8]) -> (TestServer, Output) {
     let server = start_server(false, 2, |request| match request.path.as_str() {
         "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
         "/api/v1/applications/app-notes-01/exec" => {
-            assert_eq!(request.headers["upgrade"], "piqueld-exec.v1");
-            let body: Value = serde_json::from_slice(&request.body).expect("exec request");
-            assert_eq!(
-                body,
-                json!({"service": "web", "command": ["cat", "-"], "stdin": true, "tty": null})
-            );
+            assert_eq!(request.method, "GET");
+            assert_eq!(request.headers["upgrade"], "websocket");
             Reply::upgrade()
         }
         path => panic!("unexpected path {path}"),

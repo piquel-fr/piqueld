@@ -1,26 +1,19 @@
 //! One-off command execution in a running service task.
 //!
-//! A client posts an [`ExecRequest`] with `Connection: Upgrade` and
-//! `Upgrade: piqueld-exec.v1`. After `101 Switching Protocols`, the client
-//! sends [`ExecInput`] frames and the daemon sends [`ExecOutput`] frames until
-//! a final [`ExecOutput::Exit`] or [`ExecOutput::Failed`]. Clients end input
-//! with [`ExecInput::CloseStdin`]; closing the connection stops the session.
+//! A client opens a WebSocket at `GET /api/v1/applications/{id}/exec` and
+//! sends an [`ExecRequest`] as its first message, in JSON text. The client then
+//! sends [`ExecInput`] messages and the daemon sends [`ExecOutput`] messages
+//! until a final [`ExecOutput::Exit`] or [`ExecOutput::Failed`]. Clients end
+//! input with [`ExecInput::CloseStdin`]; closing the connection stops the session.
 //!
-//! Each frame is a one-byte tag, a big-endian `u32` payload length, then the
-//! payload. Decoding is transport-independent: callers append received bytes to
-//! a buffer and remove complete frames with [`ExecFrame::decode`].
+//! Every message after the request is binary: a one-byte tag, then the payload.
 
 use crate::{ServiceName, api::ErrorBody};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// `Upgrade` header value naming this frame protocol.
-pub const EXEC_PROTOCOL: &str = "piqueld-exec.v1";
-
-/// Largest accepted frame payload.
-pub const MAX_FRAME_PAYLOAD: usize = 1024 * 1024;
-
-const HEADER_BYTES: usize = 5;
+/// Largest message the daemon accepts.
+pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
 /// Program and arguments to execute. The program must be non-empty.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -95,39 +88,28 @@ pub struct ExecRequest {
     pub tty: Option<TerminalSize>,
 }
 
-/// Malformed exec stream data.
+/// Malformed exec message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ExecFrameError {
-    /// The frame tag is not defined for this direction.
-    #[error("unknown exec frame tag {0}")]
+    /// The tag is not defined for this direction.
+    #[error("unknown exec message tag {0}")]
     UnknownTag(u8),
-    /// The payload exceeds [`MAX_FRAME_PAYLOAD`].
-    #[error("exec frame exceeds {MAX_FRAME_PAYLOAD} bytes")]
-    TooLarge,
-    /// The payload does not match its tag.
-    #[error("exec frame payload is malformed")]
+    /// The message is empty, or its payload does not match its tag.
+    #[error("exec message is malformed")]
     Malformed,
 }
 
-/// A frame of the exec stream protocol in one direction.
+/// A binary message of the exec protocol in one direction.
 pub trait ExecFrame: Sized {
-    /// Appends this frame's encoding to `out`.
-    fn encode(&self, out: &mut Vec<u8>);
+    /// Returns this message's binary encoding.
+    #[must_use]
+    fn encode(&self) -> Vec<u8>;
 
-    /// Removes and returns the first complete frame of `buffer`, or `None`
-    /// until more bytes arrive.
+    /// Decodes one binary message.
     ///
     /// # Errors
-    /// Returns [`ExecFrameError`] for oversized or malformed frames.
-    fn decode(buffer: &mut Vec<u8>) -> Result<Option<Self>, ExecFrameError>;
-
-    /// Returns this frame's encoding.
-    #[must_use]
-    fn encoded(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        self.encode(&mut out);
-        out
-    }
+    /// Returns [`ExecFrameError`] for malformed messages.
+    fn decode(message: &[u8]) -> Result<Self, ExecFrameError>;
 }
 
 /// Client-to-daemon frames.
@@ -151,94 +133,85 @@ pub enum ExecOutput {
     Stderr(Vec<u8>),
     /// Final frame: the command exited with this code.
     Exit(i64),
-    /// Final frame: the session failed before reporting an exit code.
-    Failed(ErrorBody),
+    /// Final frame: the session failed before reporting an exit code, with
+    /// the HTTP status an equivalent request would have returned.
+    Failed {
+        /// HTTP status code, e.g. 409 for `service_not_running`.
+        status: u16,
+        /// Public error body.
+        error: ErrorBody,
+    },
 }
 
-fn write_frame(out: &mut Vec<u8>, tag: u8, payload: &[u8]) {
-    let length = u32::try_from(payload.len()).expect("frame payloads are bounded by callers");
-    out.push(tag);
-    out.extend_from_slice(&length.to_be_bytes());
-    out.extend_from_slice(payload);
-}
-
-/// Removes the first complete `(tag, payload)` pair from `buffer`.
-fn take_frame(buffer: &mut Vec<u8>) -> Result<Option<(u8, Vec<u8>)>, ExecFrameError> {
-    let Some(header) = buffer.first_chunk::<HEADER_BYTES>() else {
-        return Ok(None);
-    };
-    let tag = header[0];
-    let length = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
-    if length > MAX_FRAME_PAYLOAD {
-        return Err(ExecFrameError::TooLarge);
-    }
-    if buffer.len() < HEADER_BYTES + length {
-        return Ok(None);
-    }
-    let payload = buffer[HEADER_BYTES..HEADER_BYTES + length].to_vec();
-    buffer.drain(..HEADER_BYTES + length);
-    Ok(Some((tag, payload)))
+/// Prefixes `payload` with its tag.
+fn frame(tag: u8, payload: &[u8]) -> Vec<u8> {
+    [&[tag], payload].concat()
 }
 
 impl ExecFrame for ExecInput {
-    fn encode(&self, out: &mut Vec<u8>) {
+    fn encode(&self) -> Vec<u8> {
         match self {
-            Self::Stdin(data) => write_frame(out, 1, data),
-            Self::CloseStdin => write_frame(out, 2, &[]),
+            Self::Stdin(data) => frame(1, data),
+            Self::CloseStdin => frame(2, &[]),
             Self::Resize(size) => {
                 let [w1, w2] = size.width.to_be_bytes();
                 let [h1, h2] = size.height.to_be_bytes();
-                write_frame(out, 3, &[w1, w2, h1, h2]);
+                frame(3, &[w1, w2, h1, h2])
             }
         }
     }
 
-    fn decode(buffer: &mut Vec<u8>) -> Result<Option<Self>, ExecFrameError> {
-        let Some((tag, payload)) = take_frame(buffer)? else {
-            return Ok(None);
-        };
-        Ok(Some(match (tag, payload.as_slice()) {
-            (1, _) => Self::Stdin(payload),
+    fn decode(message: &[u8]) -> Result<Self, ExecFrameError> {
+        let (&tag, payload) = message.split_first().ok_or(ExecFrameError::Malformed)?;
+        Ok(match (tag, payload) {
+            (1, data) => Self::Stdin(data.to_vec()),
             (2, []) => Self::CloseStdin,
             (3, &[w1, w2, h1, h2]) => Self::Resize(TerminalSize {
                 width: u16::from_be_bytes([w1, w2]),
                 height: u16::from_be_bytes([h1, h2]),
             }),
-            (1..=3, _) => return Err(ExecFrameError::Malformed),
+            (2 | 3, _) => return Err(ExecFrameError::Malformed),
             (tag, _) => return Err(ExecFrameError::UnknownTag(tag)),
-        }))
+        })
     }
 }
 
 impl ExecFrame for ExecOutput {
-    fn encode(&self, out: &mut Vec<u8>) {
+    fn encode(&self) -> Vec<u8> {
         match self {
-            Self::Stdout(data) => write_frame(out, 1, data),
-            Self::Stderr(data) => write_frame(out, 2, data),
-            Self::Exit(code) => write_frame(out, 3, &code.to_be_bytes()),
-            Self::Failed(error) => write_frame(
-                out,
+            Self::Stdout(data) => frame(1, data),
+            Self::Stderr(data) => frame(2, data),
+            Self::Exit(code) => frame(3, &code.to_be_bytes()),
+            Self::Failed { status, error } => frame(
                 4,
-                &serde_json::to_vec(error).expect("error bodies always serialize"),
+                &[
+                    &status.to_be_bytes()[..],
+                    &serde_json::to_vec(error).expect("error bodies always serialize"),
+                ]
+                .concat(),
             ),
         }
     }
 
-    fn decode(buffer: &mut Vec<u8>) -> Result<Option<Self>, ExecFrameError> {
-        let Some((tag, payload)) = take_frame(buffer)? else {
-            return Ok(None);
-        };
-        Ok(Some(match tag {
-            1 => Self::Stdout(payload),
-            2 => Self::Stderr(payload),
+    fn decode(message: &[u8]) -> Result<Self, ExecFrameError> {
+        let (&tag, payload) = message.split_first().ok_or(ExecFrameError::Malformed)?;
+        Ok(match tag {
+            1 => Self::Stdout(payload.to_vec()),
+            2 => Self::Stderr(payload.to_vec()),
             3 => Self::Exit(i64::from_be_bytes(
                 payload.try_into().map_err(|_| ExecFrameError::Malformed)?,
             )),
-            4 => Self::Failed(
-                serde_json::from_slice(&payload).map_err(|_| ExecFrameError::Malformed)?,
-            ),
+            4 => {
+                let (status, error) = payload
+                    .split_first_chunk()
+                    .ok_or(ExecFrameError::Malformed)?;
+                Self::Failed {
+                    status: u16::from_be_bytes(*status),
+                    error: serde_json::from_slice(error).map_err(|_| ExecFrameError::Malformed)?,
+                }
+            }
             tag => return Err(ExecFrameError::UnknownTag(tag)),
-        }))
+        })
     }
 }
 
@@ -247,57 +220,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frames_round_trip_across_partial_reads() {
-        let frames = [
+    fn messages_round_trip() {
+        for message in [
             ExecInput::Stdin(b"hello".to_vec()),
             ExecInput::Resize(TerminalSize {
                 width: 120,
                 height: 40,
             }),
             ExecInput::CloseStdin,
-        ];
-        let bytes = frames
-            .iter()
-            .flat_map(ExecFrame::encoded)
-            .collect::<Vec<_>>();
-        let mut buffer = Vec::new();
-        let mut decoded = Vec::new();
-        for byte in bytes {
-            buffer.push(byte);
-            while let Some(frame) = ExecInput::decode(&mut buffer).unwrap() {
-                decoded.push(frame);
-            }
+        ] {
+            assert_eq!(ExecInput::decode(&message.encode()), Ok(message));
         }
-        assert_eq!(decoded, frames);
-        assert_eq!(buffer, b"");
-
-        let mut buffer = ExecOutput::Exit(-3).encoded();
         assert!(matches!(
-            ExecOutput::decode(&mut buffer),
-            Ok(Some(ExecOutput::Exit(-3)))
+            ExecOutput::decode(&ExecOutput::Exit(-3).encode()),
+            Ok(ExecOutput::Exit(-3))
         ));
     }
 
     #[test]
-    fn malformed_and_oversized_frames_are_rejected() {
-        let mut oversized = vec![1];
-        oversized.extend_from_slice(&(u32::try_from(MAX_FRAME_PAYLOAD).unwrap() + 1).to_be_bytes());
+    fn malformed_messages_are_rejected() {
+        assert_eq!(ExecInput::decode(&[]), Err(ExecFrameError::Malformed));
         assert_eq!(
-            ExecInput::decode(&mut oversized),
-            Err(ExecFrameError::TooLarge)
-        );
-        let mut resize = Vec::new();
-        write_frame(&mut resize, 3, &[0, 1]);
-        assert_eq!(
-            ExecInput::decode(&mut resize),
+            ExecInput::decode(&[3, 0, 1]),
             Err(ExecFrameError::Malformed)
         );
-        let mut unknown = Vec::new();
-        write_frame(&mut unknown, 9, &[]);
-        assert_eq!(
-            ExecInput::decode(&mut unknown),
-            Err(ExecFrameError::UnknownTag(9))
-        );
+        assert_eq!(ExecInput::decode(&[9]), Err(ExecFrameError::UnknownTag(9)));
     }
 
     #[test]

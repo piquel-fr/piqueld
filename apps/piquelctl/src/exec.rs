@@ -5,8 +5,9 @@
 
 use crate::error::{CliError, ErrorKind, Result};
 use clap::Args;
+use http::StatusCode;
 use piqueld_client::{
-    Client, ServiceName,
+    Client, ClientError, ServiceName,
     exec::{ExecCommand, ExecInput, ExecOutput, ExecReader, ExecRequest, ExecWriter, TerminalSize},
 };
 use rustix::termios::{OptionalActions, Termios, tcgetattr, tcgetwinsize, tcsetattr};
@@ -84,12 +85,9 @@ async fn receive(mut output: ExecReader) -> Result<i64> {
             Some(ExecOutput::Stdout(data)) => write(&mut stdout, &data).await?,
             Some(ExecOutput::Stderr(data)) => write(&mut stderr, &data).await?,
             Some(ExecOutput::Exit(code)) => return Ok(code),
-            Some(ExecOutput::Failed(error)) => {
-                return Err(CliError::new(
-                    ErrorKind::Unavailable,
-                    format!("{} ({})", error.message, error.code),
-                )
-                .api(error.code, error.request_id, error.details));
+            Some(ExecOutput::Failed { status, error }) => {
+                let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+                return Err(ClientError::Api { status, error }.into());
             }
             None => {
                 return Err(CliError::new(

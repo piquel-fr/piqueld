@@ -464,6 +464,20 @@ async fn middleware_protects_api_and_enforces_cookie_csrf_without_ownership_chec
         let expected_cache_control = path.starts_with("/api/").then_some("no-store");
         assert_eq!(cache_control, expected_cache_control, "{method} {path}");
     }
+    // Browsers send cookies on cross-site WebSocket handshakes, which use GET.
+    for (origin, expected) in [
+        ("https://evil.example", StatusCode::FORBIDDEN),
+        ("http://localhost:7845", StatusCode::OK),
+    ] {
+        let request = Request::get("/api/v1/private")
+            .header("cookie", format!("piqueld_session={token}"))
+            .header("origin", origin)
+            .header("upgrade", "websocket")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), expected, "{origin}");
+    }
 }
 
 #[test]
