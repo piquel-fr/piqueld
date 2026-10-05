@@ -25,6 +25,7 @@ Inside the daemon:
 | `auth` | Passkey ceremonies, account management, invitations, and durable credentials |
 | `application` | Validate commands and wake reconciliation after acceptance |
 | `store` | Atomic intent comparison, receipts, records, and guarded writes |
+| `backup` | Archive format, restore staging, and rotation; database access goes through `store` |
 | `reconcile` | One async controller; resolve, observe, plan, execute, and verify |
 | `docker` | Docker requests, runtime specifications, ownership, and observation |
 | `config` | Local configuration and private state-directory preparation |

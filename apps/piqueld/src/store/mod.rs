@@ -5,7 +5,7 @@ mod acceptance;
 mod application;
 mod auth;
 mod backup;
-pub use backup::{BackupError, BackupManifest, Backups};
+pub(crate) use backup::DatabaseFile;
 mod build;
 mod deployment;
 mod environment;
@@ -124,9 +124,6 @@ pub enum StoreError {
     /// Schema metadata could not be read or decoded.
     #[error("database schema is incompatible")]
     SchemaMismatchSource(#[source] Box<dyn StdError + Send + Sync>),
-    /// The automatic backup taken before applying migrations failed.
-    #[error("pre-migration backup failed; no migration was applied")]
-    PreMigrationBackup(#[source] BackupError),
     /// The configured database path could not be prepared safely.
     #[error("database path could not be prepared")]
     PathSource(#[source] std::io::Error),
@@ -414,21 +411,6 @@ impl Store {
             if u64::try_from(recorded).map_err(StoreError::schema_mismatch)? != version {
                 return Err(StoreError::SchemaMismatch);
             }
-        }
-
-        // Migrations are forward-only, so keep a rollback point for the old binary.
-        if version > 0 && version < SCHEMA_VERSION {
-            let mut connection = pool.acquire().await.map_err(StoreError::database)?;
-            let archive = Backups::new(backup::parent_of(path))
-                .before_migration(&mut connection)
-                .await
-                .map_err(StoreError::PreMigrationBackup)?;
-            tracing::info!(
-                path = %archive.display(),
-                from = version,
-                to = SCHEMA_VERSION,
-                "wrote pre-migration backup"
-            );
         }
 
         let migration_start = usize::try_from(version).map_err(StoreError::schema_mismatch)?;
