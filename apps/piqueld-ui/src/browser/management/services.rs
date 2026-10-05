@@ -69,8 +69,9 @@ pub(super) fn ServiceList() -> impl IntoView {
                             <A
                                 attr:class="list-row"
                                 href={format!(
-                                    "/dashboard/applications/{id}/services/{}",
+                                    "/dashboard/applications/{id}/services/{}{}",
                                     service.name,
+                                    context.environment_query(),
                                 )}
                             >
                                 <span class="app-icon" aria-hidden="true">
@@ -109,7 +110,14 @@ pub(super) fn ServiceList() -> impl IntoView {
 #[component]
 pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     let context = editor();
-    let app_href = format!("/dashboard/applications/{}?tab=services", context.id());
+    let app_href = move || {
+        let query = context.environment_query();
+        let separator = if query.is_empty() { '?' } else { '&' };
+        format!(
+            "/dashboard/applications/{}{query}{separator}tab=services",
+            context.id()
+        )
+    };
     if !context
         .manifest()
         .spec
@@ -134,11 +142,11 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     }
     let navigate = use_navigate();
     let remove_name = name.clone();
-    let return_href = app_href.clone();
+    let return_href = app_href;
     let remove = move |_| {
         if !window().confirm_with_message("Remove this service and its routes from saved configuration? Its running containers remain until Deploy.").unwrap_or(false) {return;}
         let navigate = navigate.clone();
-        let href = return_href.clone();
+        let href = return_href();
         context.save(
             ApplicationEdit::RemoveService(remove_name.clone()),
             Callback::new(move |_| navigate(&href, NavigateOptions::default())),

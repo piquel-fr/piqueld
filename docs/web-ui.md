@@ -27,7 +27,9 @@ An application's page has an **Environment** selector next to its actions. The
 selected environment's runtime overview, deployments, logs, secrets, builds, and
 events are shown, and **Preview** and **Deploy** target it; configuration tabs
 edit the application's shared manifest. `?environment=<id>` in the address selects
-an environment, and links from deployments, builds, and events use it. A selected
+an environment by ID. The selector updates this address, and service navigation
+preserves it, so reloading keeps the same selection. Links from deployments, builds,
+and events also use it. A selected
 environment that no longer exists is reported rather than replaced by another. Creating,
 renaming, and deleting environments is available through `piquelctl env` and the
 API; the full environment UI comes later.

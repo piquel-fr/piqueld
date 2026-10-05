@@ -53,7 +53,7 @@ test('adds a service and edits it on the service page', async ({ page, account }
   const row = page.locator('a.list-row', { hasText: 'web' });
   await expect(row).toContainText('1 replicas');
   await row.click();
-  await expect(page).toHaveURL(/\/services\/web$/);
+  await expect(page).toHaveURL(/\/services\/web\?environment=[^&]+$/);
   await expect(title(page)).toHaveText('web');
   await expect(visible(page, 'Save changes')).toHaveCount(0);
   await page.getByLabel('Replicas', { exact: true }).fill('3');

@@ -17,7 +17,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::NavigateOptions;
 use leptos_router::components::A;
-use leptos_router::hooks::use_navigate;
+use leptos_router::hooks::{query_signal_with_options, use_navigate};
+use leptos_router::params::ParamsMap;
 use logs::ApplicationLogs;
 pub(super) use navigation::HistoryGuard;
 use navigation::guard_navigation;
@@ -71,6 +72,14 @@ impl EditorContext {
     /// The shown environment's ID, read once by components keyed on it.
     fn environment_id(self) -> String {
         self.environment.get_untracked().unwrap_or_default()
+    }
+    /// Keeps service navigation scoped to the selected environment.
+    fn environment_query(self) -> String {
+        let mut query = ParamsMap::new();
+        if let Some(id) = self.environment.get() {
+            query.insert("environment", id);
+        }
+        query.to_query_string()
     }
     fn name(self) -> String {
         self.saved
@@ -516,13 +525,14 @@ fn EnvironmentSelector() -> impl IntoView {
             })
             .unwrap_or_else(|| context.saved.with(|saved| saved.environments.clone()))
     };
-    let select = move |event| {
-        signals
-            .selected_environment
-            .set(Some(event_target_value(&event)));
-        signals.detail.set(None);
-        super::load_detail(dashboard.client.clone(), signals, context.id());
-    };
+    let (_, set_environment) = query_signal_with_options::<String>(
+        "environment",
+        NavigateOptions {
+            scroll: false,
+            ..Default::default()
+        },
+    );
+    let select = move |event| set_environment.set(Some(event_target_value(&event)));
     view! {
         <label class="field" style="max-width:200px">
             <span>"Environment"</span>

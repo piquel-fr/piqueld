@@ -272,8 +272,7 @@ fn ApplicationDetailPage() -> impl IntoView {
         let environment = query.with(|query| query.get("environment"));
         if signals.selected_id.get_untracked().as_deref() == Some(id.as_str())
             && signals.detail.get_untracked().is_some()
-            && (environment.is_none()
-                || environment == signals.selected_environment.get_untracked())
+            && environment == signals.selected_environment.get_untracked()
         {
             return;
         }
@@ -482,8 +481,8 @@ fn load_detail(client: Client, signals: DashboardSignals, id: String) {
     });
 }
 
-/// Loads the application, then the detail of the environment identified or
-/// named by `selected`, or of its first environment when none is selected.
+/// Loads the application, then the environment with the selected ID, or its
+/// first environment when none is selected.
 async fn environment_detail(
     client: &Client,
     id: &str,
@@ -496,9 +495,13 @@ async fn environment_detail(
     // A selection that no longer exists is reported instead of silently
     // replaced, so later actions never target another environment.
     let environment = match selected {
-        Some(selected) => application.environment(selected).ok_or_else(|| {
-            "The selected environment no longer exists. Select another environment.".to_owned()
-        })?,
+        Some(selected) => application
+            .environments
+            .iter()
+            .find(|environment| environment.id.as_str() == selected)
+            .ok_or_else(|| {
+                "The selected environment no longer exists. Select another environment.".to_owned()
+            })?,
         None => application.environments.first().ok_or_else(|| {
             "This application has no environments. Create one with `piquelctl env create`."
                 .to_owned()
