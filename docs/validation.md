@@ -1,6 +1,6 @@
 # Automated validation
 
-CI runs independent checks on Blacksmith runners in parallel on every pull request.
+CI runs independent checks on GitHub-hosted runners in parallel on every pull request.
 Rust build caches are scoped to jobs and dashboard tools are cached by version.
 Failed checks do not cancel unrelated jobs.
 
