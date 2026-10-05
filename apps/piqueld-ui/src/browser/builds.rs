@@ -8,7 +8,9 @@ use crate::log_output::LogLine;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
-use piqueld_client::{Build, BuildRecord, BuildState, Client, Source};
+use piqueld_client::{
+    BuildRecord, BuildState, Client, ValidatedBuild as Build, ValidatedSource as Source,
+};
 
 /// `/builds` page: build history across all applications.
 #[component]
@@ -501,11 +503,11 @@ fn source_details(source: Source) -> AnyView {
 
 /// Renders Docker build arguments as space-separated `KEY="VALUE"` pairs.
 /// Values are quoted and escaped so spaces cannot read as extra arguments.
-pub(in crate::browser) fn build_arguments(
-    args: &std::collections::BTreeMap<String, String>,
+pub(in crate::browser) fn build_arguments<V: std::fmt::Display>(
+    args: &std::collections::BTreeMap<String, V>,
 ) -> String {
     args.iter()
-        .map(|(key, value)| format!("{key}={value:?}"))
+        .map(|(key, value)| format!("{key}={:?}", value.to_string()))
         .collect::<Vec<_>>()
         .join(" ")
 }

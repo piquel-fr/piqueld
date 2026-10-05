@@ -6,7 +6,7 @@ mod git_fixture;
 use git_fixture::GitBuildFixture;
 use piqueld::application::RuntimeBoundary;
 use piqueld::docker::{BollardDocker, DockerApi, DockerError, JobRuns, JobStatus};
-use piqueld_core::manifest::HealthCheck;
+use piqueld_core::manifest::ValidatedHealthCheck;
 use piqueld_core::resource::{DesiredNetwork, DesiredService, DesiredVolume, ResolvedSource};
 use piqueld_core::{ApplicationId, EnvironmentId, InstanceId, ResourceKind, docker_resource_name};
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
@@ -136,7 +136,7 @@ impl SwarmScenario {
                 "test $(cat /run/secrets/token) = mounted-value || exit 1; until getent hosts web >/dev/null; do sleep 1; done; echo log-stdout; echo log-stderr >&2; while true; do sleep 5; done".into(),
             ],
             mounts: vec![],
-            healthcheck: Some(HealthCheck::Command {
+            healthcheck: Some(ValidatedHealthCheck::Command {
                 command: vec!["true".into()],
                 interval_seconds: 1,
                 timeout_seconds: 1,
@@ -145,7 +145,7 @@ impl SwarmScenario {
             networks: vec![network.name.clone()],
             labels: service_labels,
             depends_on: Vec::new(),
-            rollout: piqueld_core::manifest::Rollout::default(),
+            rollout: piqueld_core::manifest::ValidatedRollout::default(),
         };
         engine.ensure_service_eventually(&service).await;
         assert!(
@@ -377,7 +377,7 @@ impl SwarmScenario {
             "-c".into(),
             "mkdir -p /www && printf healthy >/www/health && httpd -f -p 8080 -h /www".into(),
         ];
-        http_service.healthcheck = Some(HealthCheck::Http {
+        http_service.healthcheck = Some(ValidatedHealthCheck::Http {
             port: 8080,
             path: "/health".into(),
             interval_seconds: 1,

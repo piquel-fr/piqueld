@@ -1,7 +1,8 @@
 //! Public manifest input and export shapes, before semantic validation.
 
+use super::variables::{Template, Typed};
 use super::{APPLICATION_API_VERSION, APPLICATION_KIND};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use utoipa::{PartialSchema, ToSchema};
@@ -89,6 +90,106 @@ pub struct ApplicationSpec {
     /// One-shot jobs, run in declared order at their deployment point.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<Job>,
+    /// Variables referenced as `${{ vars.<name> }}`, with their default values.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub variables: BTreeMap<String, Variable>,
+    /// Configuration for each environment, selected by environment name.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub environments: BTreeMap<String, EnvironmentConfig>,
+}
+
+impl ApplicationSpec {
+    /// Names of the application secrets that at least one service mounts.
+    #[must_use]
+    pub fn mounted_secret_names(&self) -> std::collections::BTreeSet<&str> {
+        self.services
+            .iter()
+            .flat_map(|service| service.secrets.iter().map(|secret| secret.name.as_str()))
+            .collect()
+    }
+}
+
+/// Configuration of one environment, `[spec.environments.<name>]`.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct EnvironmentConfig {
+    /// Values overriding `[spec.variables]` in this environment.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub variables: BTreeMap<String, Variable>,
+}
+
+/// A declared variable value: a string, integer, or boolean. Strings may
+/// reference system variables, but not other variables.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum Variable {
+    /// A boolean.
+    Boolean(bool),
+    /// A signed 64-bit integer.
+    Integer(i64),
+    /// Text, which may reference system variables.
+    String(Template),
+}
+
+impl<'de> Deserialize<'de> for Variable {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match Value::deserialize(deserializer)? {
+            Value::Bool(value) => Ok(Self::Boolean(value)),
+            Value::String(value) => Ok(Self::String(value.into())),
+            Value::Number(number) if number.is_i64() => {
+                Ok(Self::Integer(number.as_i64().unwrap_or_default()))
+            }
+            _ => Err(serde::de::Error::custom(
+                "variables must be strings, integers, or booleans",
+            )),
+        }
+    }
+}
+
+impl Variable {
+    /// Parses a value typed into a form or command line: `true`, `false`, and
+    /// integers keep their type, text in double quotes is that text, and
+    /// anything else is text.
+    ///
+    /// ```text
+    /// "3" -> Integer(3)    "\"3\"" -> String("3")    "piquel.fr" -> String("piquel.fr")
+    /// ```
+    #[must_use]
+    pub fn from_text(text: &str) -> Self {
+        if let Some(quoted) = text
+            .strip_prefix('"')
+            .and_then(|text| text.strip_suffix('"'))
+        {
+            return Self::String(quoted.into());
+        }
+        match (text.parse(), text.parse()) {
+            (Ok(value), _) => Self::Boolean(value),
+            (_, Ok(value)) => Self::Integer(value),
+            _ => Self::String(text.into()),
+        }
+    }
+
+    /// The text [`Self::from_text`] parses back into this value, quoting text
+    /// that would otherwise read as a boolean, an integer, or quoted text.
+    #[must_use]
+    pub fn to_text(&self) -> String {
+        match self {
+            Self::String(text) if Self::from_text(text.as_str()) != *self => {
+                format!("\"{text}\"")
+            }
+            value => value.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for Variable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Boolean(value) => value.fmt(formatter),
+            Self::Integer(value) => value.fmt(formatter),
+            Self::String(value) => value.fmt(formatter),
+        }
+    }
 }
 
 /// Independently selects the manifest used by a manual deployment.
@@ -111,17 +212,16 @@ pub struct Service {
     pub source: Source,
     /// Desired replica count.
     #[serde(default = "default_replicas")]
-    #[schema(maximum = 65_535)]
-    pub replicas: u16,
+    pub replicas: Typed<u16>,
     /// Environment variables keyed by name.
     #[serde(default)]
-    pub environment: BTreeMap<String, String>,
+    pub environment: BTreeMap<String, Template>,
     /// Container entrypoint command.
     #[serde(default)]
-    pub command: Vec<String>,
+    pub command: Vec<Template>,
     /// Arguments passed to the command.
     #[serde(default)]
-    pub arguments: Vec<String>,
+    pub arguments: Vec<Template>,
     /// Persistent volume mounts.
     #[serde(default)]
     pub mounts: Vec<Mount>,
@@ -141,8 +241,8 @@ pub struct Service {
 }
 
 /// Serde default for `Service::replicas`.
-fn default_replicas() -> u16 {
-    1
+fn default_replicas() -> Typed<u16> {
+    Typed::Literal(1)
 }
 
 /// A container that runs to completion at a defined point in each deployment.
@@ -154,7 +254,7 @@ pub struct Job {
     /// Service whose prepared image, environment, secrets, and mounts the job reuses.
     pub service: String,
     /// Command replacing the service's command and arguments.
-    pub command: Vec<String>,
+    pub command: Vec<Template>,
     /// Deployment point at which the job runs.
     pub run: JobRun,
     /// Seconds the job may run before the deployment fails.
@@ -191,7 +291,7 @@ pub enum Source {
     /// Pull a prebuilt image from a registry.
     Image {
         /// Image reference.
-        image: String,
+        image: Template,
     },
     /// Build a checked-out Git revision.
     Git {
@@ -200,17 +300,6 @@ pub enum Source {
         /// Explicit build instructions.
         build: Build,
     },
-}
-
-impl Source {
-    /// Replaces a `"self"` repository with `manifest`, the repository it refers to.
-    pub(crate) fn resolve_manifest_repository(&mut self, manifest: &GitRepository) {
-        if let Self::Git { repository, .. } = self
-            && let SourceRepository::Manifest(_) = repository
-        {
-            *repository = SourceRepository::Git(manifest.clone());
-        }
-    }
 }
 
 /// The repository a Git build source checks out.
@@ -235,6 +324,15 @@ impl std::fmt::Display for SourceRepository {
                 repository.url,
                 repository.commit.as_ref().unwrap_or(&repository.branch)
             ),
+        }
+    }
+}
+
+impl SourceRepository {
+    /// Replaces `"self"` with `manifest`, the repository it refers to.
+    pub fn resolve_manifest(&mut self, manifest: &GitRepository) {
+        if let Self::Manifest(_) = self {
+            *self = Self::Git(manifest.clone());
         }
     }
 }
@@ -296,22 +394,22 @@ pub enum Build {
     /// Build a local container image using Docker.
     Docker {
         /// Dockerfile path relative to the repository root.
-        dockerfile: String,
+        dockerfile: Template,
         /// Build context relative to the repository root.
         #[serde(default = "default_build_context")]
-        context: String,
+        context: Template,
         /// Values passed as `--build-arg`. They are recorded in image
         /// metadata, so sensitive values belong in secrets instead.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        args: BTreeMap<String, String>,
+        args: BTreeMap<String, Template>,
         /// Multi-stage build target; the final stage when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        target: Option<String>,
+        target: Option<Template>,
     },
 }
 
 /// Serde default for the Docker build context: the repository root.
-fn default_build_context() -> String {
+fn default_build_context() -> Template {
     ".".into()
 }
 
@@ -343,93 +441,43 @@ pub enum HealthCheck {
     /// HTTP health endpoint check.
     Http {
         /// Container port to probe.
-        #[schema(maximum = 65_535)]
-        port: u16,
+        port: Typed<u16>,
         /// HTTP path to probe.
         #[serde(default = "default_health_path")]
-        path: String,
+        path: Template,
         /// Probe interval in seconds.
         #[serde(default = "default_interval")]
-        interval_seconds: u32,
+        interval_seconds: Typed<u32>,
         /// Probe timeout in seconds.
         #[serde(default = "default_timeout")]
-        timeout_seconds: u32,
+        timeout_seconds: Typed<u32>,
     },
     /// Executable command health check.
     Command {
         /// Command and arguments to execute.
-        command: Vec<String>,
+        command: Vec<Template>,
         /// Probe interval in seconds.
         #[serde(default = "default_interval")]
-        interval_seconds: u32,
+        interval_seconds: Typed<u32>,
         /// Probe timeout in seconds.
         #[serde(default = "default_timeout")]
-        timeout_seconds: u32,
+        timeout_seconds: Typed<u32>,
     },
 }
 
-/// What the container runtime executes for a health check. Two checks with the
-/// same execution behave identically, whichever variant declared them.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HealthExecution {
-    /// Executable and arguments, run directly without a shell.
-    pub command: Vec<String>,
-    /// Probe interval in seconds.
-    pub interval_seconds: u32,
-    /// Probe timeout in seconds.
-    pub timeout_seconds: u32,
-}
-
-impl HealthCheck {
-    /// Returns the direct command and timing Docker runs for this check.
-    /// HTTP checks become the equivalent `wget` probe.
-    #[must_use]
-    pub fn execution(&self) -> HealthExecution {
-        match self {
-            Self::Command {
-                command,
-                interval_seconds,
-                timeout_seconds,
-            } => HealthExecution {
-                command: command.clone(),
-                interval_seconds: *interval_seconds,
-                timeout_seconds: *timeout_seconds,
-            },
-            Self::Http {
-                port,
-                path,
-                interval_seconds,
-                timeout_seconds,
-            } => HealthExecution {
-                command: vec![
-                    "wget".into(),
-                    "-q".into(),
-                    "-T".into(),
-                    timeout_seconds.to_string(),
-                    "-O".into(),
-                    "/dev/null".into(),
-                    format!("http://127.0.0.1:{port}{path}"),
-                ],
-                interval_seconds: *interval_seconds,
-                timeout_seconds: *timeout_seconds,
-            },
-        }
-    }
-}
-
 /// Serde default for the HTTP health-check path.
-fn default_health_path() -> String {
+fn default_health_path() -> Template {
     "/health".into()
 }
 
 /// Serde default health-check interval, in seconds.
-fn default_interval() -> u32 {
-    10
+fn default_interval() -> Typed<u32> {
+    Typed::Literal(super::ValidatedHealthCheck::DEFAULT_INTERVAL_SECONDS)
 }
 
 /// Serde default health-check timeout, in seconds.
-fn default_timeout() -> u32 {
-    3
+fn default_timeout() -> Typed<u32> {
+    Typed::Literal(super::ValidatedHealthCheck::DEFAULT_TIMEOUT_SECONDS)
 }
 
 /// Optional CPU and memory limits for a service.
@@ -437,10 +485,9 @@ fn default_timeout() -> u32 {
 #[serde(deny_unknown_fields)]
 pub struct ResourceLimits {
     /// CPU limit in millicores.
-    pub cpu_millis: Option<u32>,
+    pub cpu_millis: Option<Typed<u32>>,
     /// Memory limit in bytes.
-    #[schema(minimum = 1, maximum = 9_223_372_036_854_775_807_u64)]
-    pub memory_bytes: Option<u64>,
+    pub memory_bytes: Option<Typed<u64>>,
 }
 
 /// A logical application secret exposed only as a container file.
@@ -498,11 +545,11 @@ pub enum SecretEncoding {
 
 /// Public HTTP route input, validated independently of ingress enablement.
 /// A route sets either `service` and `port`, or `redirect`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
     /// Exact public DNS hostname.
-    pub hostname: String,
+    pub hostname: Template,
     /// Logical service in this application.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
@@ -520,7 +567,7 @@ impl Route {
     #[must_use]
     pub fn service(hostname: String, service: String, port: u16) -> Self {
         Self {
-            hostname,
+            hostname: hostname.into(),
             service: Some(service),
             port: Some(port),
             redirect: None,
@@ -531,7 +578,7 @@ impl Route {
     #[must_use]
     pub fn redirect(hostname: String, redirect: Redirect) -> Self {
         Self {
-            hostname,
+            hostname: hostname.into(),
             service: None,
             port: None,
             redirect: Some(redirect),
@@ -540,11 +587,11 @@ impl Route {
 }
 
 /// Redirect route input.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Redirect {
     /// Absolute `http` or `https` destination URL.
-    pub to: String,
+    pub to: Template,
     /// 301, 302, 303, 307, or 308.
     #[serde(default = "default_redirect_status")]
     #[schema(minimum = 301, maximum = 308)]

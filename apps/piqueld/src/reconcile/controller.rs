@@ -459,8 +459,7 @@ impl<D: DockerApi> Controller<D> {
             self.prepare_timeout,
         )
         .with_progress(Arc::clone(&self.store), operation.id.clone());
-        let snapshot = self.store.deployment_manifest(&operation.id).await?;
-        let manifest = self.deployment_manifest(operation, &snapshot).await?;
+        let manifest = self.deployment_manifest(operation, application).await?;
         // A rename changes display metadata without rewriting deployment history.
         let manifest = manifest.with_name(application.manifest().metadata().name.clone());
         let mut reusable = if operation.kind == OperationKind::Refresh {
@@ -544,7 +543,7 @@ mod tests {
 
     /// Accepts a routed environment and starts executing its operation.
     async fn running_operation(store: &Store) -> Operation {
-        let manifest = piqueld_core::parse_toml(&format!(
+        let manifest = piqueld_core::manifest::parse_template_toml(&format!(
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='routed'\n\
              [[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='{}'\n\
              [[spec.routes]]\nhostname='routed.example.com'\nservice='web'\nport=80",
@@ -577,10 +576,12 @@ mod tests {
         let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
         let operation = running_operation(&store).await;
         let routes = store
-            .get(&operation.environment_id)
+            .deployment_snapshot(&operation.id)
             .await
             .unwrap()
-            .manifest()
+            .rendering
+            .unwrap()
+            .application
             .spec()
             .routes
             .clone();
@@ -685,7 +686,7 @@ mod tests {
     async fn execution_cleanup_waits_for_live_repair_to_commit() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
-        let manifest = piqueld_core::parse_toml(
+        let manifest = piqueld_core::manifest::parse_template_toml(
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='repair'\n[spec]",
         ).unwrap();
         let (MutationResponse::Saved(saved), _) = store

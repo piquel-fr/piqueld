@@ -1,9 +1,10 @@
 //! Applications: the saved manifest their environments share, and atomic
 //! revision checks.
 use super::{
-    ApplicationId, ApplicationRow, EnvironmentRow, NormalizedApplication, Operation, OperationKind,
-    ResolvedApplication, Store, StoreError, StoredApplication, now_ms, page_limit,
+    ApplicationId, ApplicationRow, EnvironmentRow, Operation, OperationKind, ResolvedApplication,
+    Store, StoreError, StoredApplication, now_ms, page_limit,
 };
+use piqueld_core::manifest::ApplicationTemplate;
 use piqueld_core::{
     EnvironmentId, EnvironmentName,
     api::{ApplicationSummary, EnvironmentView, Page},
@@ -67,7 +68,7 @@ impl Store {
     /// pending-deletion errors.
     pub async fn save_application(
         &self,
-        app: &NormalizedApplication,
+        app: &ApplicationTemplate,
         resolved: Option<&ResolvedApplication>,
         expected: Option<u64>,
     ) -> Result<Operation, StoreError> {

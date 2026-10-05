@@ -1,9 +1,10 @@
 //! Typed values owned by validated applications, exposed through immutable accessors.
 
-use super::input::{self, HealthCheck, JobRun, RepositoryManifest, ResourceLimits, Source};
-use super::{Rollout, RolloutPolicy, ValidationError, ValidationErrors};
-use crate::{ApplicationName, JobName, ServiceName, VolumeName};
-use serde::Serialize;
+use super::input::{self, GitRepository, JobRun, RepositoryManifest, SourceRepository};
+use super::variables::{Template, Typed};
+use super::{RolloutPolicy, ValidatedRollout, ValidationError, ValidationErrors};
+use crate::{ApplicationName, JobName, ServiceName, VolumeName, codes};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
 
@@ -50,13 +51,151 @@ pub struct ValidatedJob {
     pub timeout_seconds: u32,
 }
 
+/// Validated service source.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+pub enum ValidatedSource {
+    /// Pull a prebuilt image from a registry.
+    Image {
+        /// Image reference.
+        image: String,
+    },
+    /// Build a checked-out Git revision.
+    Git {
+        /// Repository and revision to resolve.
+        repository: SourceRepository,
+        /// Explicit build instructions.
+        build: ValidatedBuild,
+    },
+}
+
+impl ValidatedSource {
+    /// Replaces a `"self"` repository with `manifest`, the repository it refers to.
+    pub(crate) fn resolve_manifest_repository(&mut self, manifest: &GitRepository) {
+        if let Self::Git { repository, .. } = self {
+            repository.resolve_manifest(manifest);
+        }
+    }
+}
+
+/// Validated build instructions.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+pub enum ValidatedBuild {
+    /// Build a local container image using Docker.
+    Docker {
+        /// Dockerfile path relative to the repository root.
+        dockerfile: String,
+        /// Build context relative to the repository root.
+        context: String,
+        /// Values passed as `--build-arg`.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        args: BTreeMap<String, String>,
+        /// Multi-stage build target; the final stage when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+    },
+}
+
+/// Validated container health check.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+pub enum ValidatedHealthCheck {
+    /// HTTP health endpoint check.
+    Http {
+        /// Container port to probe.
+        #[schema(maximum = 65_535)]
+        port: u16,
+        /// HTTP path to probe.
+        path: String,
+        /// Probe interval in seconds.
+        interval_seconds: u32,
+        /// Probe timeout in seconds.
+        timeout_seconds: u32,
+    },
+    /// Executable command health check.
+    Command {
+        /// Command and arguments to execute.
+        command: Vec<String>,
+        /// Probe interval in seconds.
+        interval_seconds: u32,
+        /// Probe timeout in seconds.
+        timeout_seconds: u32,
+    },
+}
+
+/// What the container runtime executes for a health check. Two checks with the
+/// same execution behave identically, whichever variant declared them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthExecution {
+    /// Executable and arguments, run directly without a shell.
+    pub command: Vec<String>,
+    /// Probe interval in seconds.
+    pub interval_seconds: u32,
+    /// Probe timeout in seconds.
+    pub timeout_seconds: u32,
+}
+
+impl ValidatedHealthCheck {
+    /// Probe interval applied when a check declares none.
+    pub const DEFAULT_INTERVAL_SECONDS: u32 = 10;
+    /// Probe timeout applied when a check declares none.
+    pub const DEFAULT_TIMEOUT_SECONDS: u32 = 3;
+
+    /// Returns the direct command and timing Docker runs for this check.
+    /// HTTP checks become the equivalent `wget` probe.
+    #[must_use]
+    pub fn execution(&self) -> HealthExecution {
+        match self {
+            Self::Command {
+                command,
+                interval_seconds,
+                timeout_seconds,
+            } => HealthExecution {
+                command: command.clone(),
+                interval_seconds: *interval_seconds,
+                timeout_seconds: *timeout_seconds,
+            },
+            Self::Http {
+                port,
+                path,
+                interval_seconds,
+                timeout_seconds,
+            } => HealthExecution {
+                command: vec![
+                    "wget".into(),
+                    "-q".into(),
+                    "-T".into(),
+                    timeout_seconds.to_string(),
+                    "-O".into(),
+                    "/dev/null".into(),
+                    format!("http://127.0.0.1:{port}{path}"),
+                ],
+                interval_seconds: *interval_seconds,
+                timeout_seconds: *timeout_seconds,
+            },
+        }
+    }
+}
+
+/// Validated CPU and memory limits.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ValidatedResourceLimits {
+    /// CPU limit in millicores.
+    pub cpu_millis: Option<u32>,
+    /// Memory limit in bytes.
+    #[schema(minimum = 1, maximum = 9_223_372_036_854_775_807_u64)]
+    pub memory_bytes: Option<u64>,
+}
+
 /// Validated application service.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
 pub struct ValidatedService {
     /// Logical service name.
     pub name: ServiceName,
     /// Explicit image or build source.
-    pub source: Source,
+    pub source: ValidatedSource,
     /// Desired replica count.
     pub replicas: u16,
     /// Environment variables keyed by name.
@@ -71,16 +210,16 @@ pub struct ValidatedService {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<input::SecretMount>,
     /// Optional container health check.
-    pub healthcheck: Option<HealthCheck>,
+    pub healthcheck: Option<ValidatedHealthCheck>,
     /// Optional CPU and memory limits.
-    pub resources: Option<ResourceLimits>,
+    pub resources: Option<ValidatedResourceLimits>,
     /// Services in this application that must be healthy before this one rolls out.
     /// Omitted when empty so existing specification hashes stay stable.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<ServiceName>,
     /// Rollout settings. Omitted when default so existing specification hashes stay stable.
-    #[serde(skip_serializing_if = "Rollout::is_default")]
-    pub rollout: Rollout,
+    #[serde(skip_serializing_if = "ValidatedRollout::is_default")]
+    pub rollout: ValidatedRollout,
 }
 
 /// Validated named volume.
@@ -105,10 +244,214 @@ impl ValidationErrors {
     /// Wraps a typed name parse failure as a single `NAME_INVALID` error at `path`.
     pub(super) fn invalid_name(path: impl Into<String>, source: impl std::fmt::Display) -> Self {
         Self(vec![ValidationError {
-            code: crate::codes::NAME_INVALID.into(),
+            code: codes::NAME_INVALID.into(),
             path: path.into(),
             message: source.to_string(),
         }])
+    }
+
+    /// A value at `path` that still references variables.
+    fn unresolved(path: impl Into<String>) -> Self {
+        Self(vec![ValidationError {
+            code: codes::VARIABLE_UNRESOLVED.into(),
+            path: path.into(),
+            message: "references must be rendered for an environment first".into(),
+        }])
+    }
+}
+
+impl Template {
+    /// The literal text, or an unresolved-reference error at `path`.
+    fn into_text(self, path: impl FnOnce() -> String) -> Result<String, ValidationErrors> {
+        self.as_literal()
+            .ok_or_else(|| ValidationErrors::unresolved(path()))
+    }
+
+    /// Converts each element; `base` locates error paths.
+    fn into_texts(values: Vec<Self>, base: &str) -> Result<Vec<String>, ValidationErrors> {
+        values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| value.into_text(|| format!("{base}[{index}]")))
+            .collect()
+    }
+}
+
+impl<T> Typed<T> {
+    /// The literal value, or an unresolved-reference error at `path`.
+    fn into_value(self, path: impl FnOnce() -> String) -> Result<T, ValidationErrors> {
+        match self {
+            Self::Literal(value) => Ok(value),
+            Self::Template(_) => Err(ValidationErrors::unresolved(path())),
+        }
+    }
+}
+
+impl ValidatedSource {
+    /// Requires literal source settings; `base` locates error paths.
+    fn from_input(value: input::Source, base: &str) -> Result<Self, ValidationErrors> {
+        Ok(match value {
+            input::Source::Image { image } => Self::Image {
+                image: image.into_text(|| format!("{base}.image"))?,
+            },
+            input::Source::Git {
+                repository,
+                build:
+                    input::Build::Docker {
+                        dockerfile,
+                        context,
+                        args,
+                        target,
+                    },
+            } => Self::Git {
+                repository,
+                build: ValidatedBuild::Docker {
+                    dockerfile: dockerfile.into_text(|| format!("{base}.build.dockerfile"))?,
+                    context: context.into_text(|| format!("{base}.build.context"))?,
+                    args: args
+                        .into_iter()
+                        .map(|(key, value)| {
+                            let text = value.into_text(|| format!("{base}.build.args.{key}"))?;
+                            Ok((key, text))
+                        })
+                        .collect::<Result<_, ValidationErrors>>()?,
+                    target: target
+                        .map(|target| target.into_text(|| format!("{base}.build.target")))
+                        .transpose()?,
+                },
+            },
+        })
+    }
+
+    /// Converts back to the editable input shape used for export.
+    #[must_use]
+    pub fn to_input(&self) -> input::Source {
+        match self {
+            Self::Image { image } => input::Source::Image {
+                image: Template::literal(image),
+            },
+            Self::Git {
+                repository,
+                build:
+                    ValidatedBuild::Docker {
+                        dockerfile,
+                        context,
+                        args,
+                        target,
+                    },
+            } => input::Source::Git {
+                repository: repository.clone(),
+                build: input::Build::Docker {
+                    dockerfile: Template::literal(dockerfile),
+                    context: Template::literal(context),
+                    args: args
+                        .iter()
+                        .map(|(key, value)| (key.clone(), Template::literal(value)))
+                        .collect(),
+                    target: target.as_deref().map(Template::literal),
+                },
+            },
+        }
+    }
+}
+
+impl ValidatedHealthCheck {
+    /// Requires literal settings; `base` locates error paths.
+    fn from_input(value: input::HealthCheck, base: &str) -> Result<Self, ValidationErrors> {
+        let path = |field: &'static str| move || format!("{base}.{field}");
+        Ok(match value {
+            input::HealthCheck::Http {
+                port,
+                path: request_path,
+                interval_seconds,
+                timeout_seconds,
+            } => Self::Http {
+                port: port.into_value(path("port"))?,
+                path: request_path.into_text(path("path"))?,
+                interval_seconds: interval_seconds.into_value(path("interval_seconds"))?,
+                timeout_seconds: timeout_seconds.into_value(path("timeout_seconds"))?,
+            },
+            input::HealthCheck::Command {
+                command,
+                interval_seconds,
+                timeout_seconds,
+            } => Self::Command {
+                command: Template::into_texts(command, &format!("{base}.command"))?,
+                interval_seconds: interval_seconds.into_value(path("interval_seconds"))?,
+                timeout_seconds: timeout_seconds.into_value(path("timeout_seconds"))?,
+            },
+        })
+    }
+
+    /// Converts back to the editable input shape used for export.
+    #[must_use]
+    pub fn to_input(&self) -> input::HealthCheck {
+        match self {
+            Self::Http {
+                port,
+                path,
+                interval_seconds,
+                timeout_seconds,
+            } => input::HealthCheck::Http {
+                port: (*port).into(),
+                path: Template::literal(path),
+                interval_seconds: (*interval_seconds).into(),
+                timeout_seconds: (*timeout_seconds).into(),
+            },
+            Self::Command {
+                command,
+                interval_seconds,
+                timeout_seconds,
+            } => input::HealthCheck::Command {
+                command: command
+                    .iter()
+                    .map(|value| Template::literal(value))
+                    .collect(),
+                interval_seconds: (*interval_seconds).into(),
+                timeout_seconds: (*timeout_seconds).into(),
+            },
+        }
+    }
+}
+
+impl ValidatedResourceLimits {
+    /// Requires literal limits; `base` locates error paths.
+    fn from_input(value: input::ResourceLimits, base: &str) -> Result<Self, ValidationErrors> {
+        Ok(Self {
+            cpu_millis: value
+                .cpu_millis
+                .map(|cpu| cpu.into_value(|| format!("{base}.cpu_millis")))
+                .transpose()?,
+            memory_bytes: value
+                .memory_bytes
+                .map(|memory| memory.into_value(|| format!("{base}.memory_bytes")))
+                .transpose()?,
+        })
+    }
+
+    /// Converts back to the editable input shape used for export.
+    #[must_use]
+    pub fn to_input(&self) -> input::ResourceLimits {
+        input::ResourceLimits {
+            cpu_millis: self.cpu_millis.map(Typed::Literal),
+            memory_bytes: self.memory_bytes.map(Typed::Literal),
+        }
+    }
+}
+
+impl ValidatedRollout {
+    /// Requires literal settings; `base` locates error paths.
+    fn from_input(value: super::Rollout, base: &str) -> Result<Self, ValidationErrors> {
+        Ok(Self {
+            order: value
+                .order
+                .map(|order| order.into_value(|| format!("{base}.order")))
+                .transpose()?,
+            monitor_seconds: value
+                .monitor_seconds
+                .map(|seconds| seconds.into_value(|| format!("{base}.monitor_seconds")))
+                .transpose()?,
+        })
     }
 }
 
@@ -182,8 +525,8 @@ impl ValidatedSpec {
         self.services.iter().any(|service| {
             matches!(
                 &service.source,
-                Source::Git {
-                    repository: input::SourceRepository::Manifest(_),
+                ValidatedSource::Git {
+                    repository: SourceRepository::Manifest(_),
                     ..
                 }
             )
@@ -201,6 +544,8 @@ impl ValidatedSpec {
             jobs: self.jobs.iter().map(ValidatedJob::to_input).collect(),
             manifest: self.manifest.clone(),
             secrets: self.secrets.clone(),
+            variables: std::collections::BTreeMap::new(),
+            environments: std::collections::BTreeMap::new(),
             services: self
                 .services
                 .iter()
@@ -227,7 +572,7 @@ impl ValidatedJob {
             service: ServiceName::parse(value.service).map_err(|source| {
                 ValidationErrors::invalid_name(format!("{path}.service"), source)
             })?,
-            command: value.command,
+            command: Template::into_texts(value.command, &format!("{path}.command"))?,
             run: value.run,
             timeout_seconds: value.timeout_seconds,
         })
@@ -238,7 +583,11 @@ impl ValidatedJob {
         input::Job {
             name: self.name.to_string(),
             service: self.service.to_string(),
-            command: self.command.clone(),
+            command: self
+                .command
+                .iter()
+                .map(|value| Template::literal(value))
+                .collect(),
             run: self.run,
             timeout_seconds: self.timeout_seconds,
         }
@@ -248,15 +597,22 @@ impl ValidatedJob {
 impl ValidatedService {
     /// Parses the service and mount volume names; `index` locates error paths.
     fn from_input(value: input::Service, index: usize) -> Result<Self, ValidationErrors> {
+        let base = format!("spec.services[{index}]");
         Ok(Self {
-            name: ServiceName::parse(value.name).map_err(|source| {
-                ValidationErrors::invalid_name(format!("spec.services[{index}].name"), source)
-            })?,
-            source: value.source,
-            replicas: value.replicas,
-            environment: value.environment,
-            command: value.command,
-            arguments: value.arguments,
+            name: ServiceName::parse(value.name)
+                .map_err(|source| ValidationErrors::invalid_name(format!("{base}.name"), source))?,
+            source: ValidatedSource::from_input(value.source, &format!("{base}.source"))?,
+            replicas: value.replicas.into_value(|| format!("{base}.replicas"))?,
+            environment: value
+                .environment
+                .into_iter()
+                .map(|(key, value)| {
+                    let text = value.into_text(|| format!("{base}.environment.{key}"))?;
+                    Ok((key, text))
+                })
+                .collect::<Result<_, ValidationErrors>>()?,
+            command: Template::into_texts(value.command, &format!("{base}.command"))?,
+            arguments: Template::into_texts(value.arguments, &format!("{base}.arguments"))?,
             secrets: value.secrets,
             mounts: value
                 .mounts
@@ -275,8 +631,18 @@ impl ValidatedService {
                     })
                 })
                 .collect::<Result<_, ValidationErrors>>()?,
-            healthcheck: value.healthcheck,
-            resources: value.resources,
+            healthcheck: value
+                .healthcheck
+                .map(|check| {
+                    ValidatedHealthCheck::from_input(check, &format!("{base}.healthcheck"))
+                })
+                .transpose()?,
+            resources: value
+                .resources
+                .map(|limits| {
+                    ValidatedResourceLimits::from_input(limits, &format!("{base}.resources"))
+                })
+                .transpose()?,
             depends_on: value
                 .depends_on
                 .into_iter()
@@ -290,11 +656,11 @@ impl ValidatedService {
                     })
                 })
                 .collect::<Result<_, ValidationErrors>>()?,
-            rollout: value.rollout,
+            rollout: ValidatedRollout::from_input(value.rollout, &format!("{base}.rollout"))?,
         })
     }
 
-    /// The effective rollout policy; see [`Rollout::policy`].
+    /// The effective rollout policy; see [`ValidatedRollout::policy`].
     #[must_use]
     pub fn rollout_policy(&self) -> RolloutPolicy {
         self.rollout.policy(self.read_only_mounts())
@@ -316,11 +682,23 @@ impl ValidatedService {
     fn to_input(&self) -> input::Service {
         input::Service {
             name: self.name.to_string(),
-            source: self.source.clone(),
-            replicas: self.replicas,
-            environment: self.environment.clone(),
-            command: self.command.clone(),
-            arguments: self.arguments.clone(),
+            source: self.source.to_input(),
+            replicas: self.replicas.into(),
+            environment: self
+                .environment
+                .iter()
+                .map(|(key, value)| (key.clone(), Template::literal(value)))
+                .collect(),
+            command: self
+                .command
+                .iter()
+                .map(|value| Template::literal(value))
+                .collect(),
+            arguments: self
+                .arguments
+                .iter()
+                .map(|value| Template::literal(value))
+                .collect(),
             secrets: self.secrets.clone(),
             mounts: self
                 .mounts
@@ -331,10 +709,16 @@ impl ValidatedService {
                     read_only: mount.read_only,
                 })
                 .collect(),
-            healthcheck: self.healthcheck.clone(),
-            resources: self.resources.clone(),
+            healthcheck: self
+                .healthcheck
+                .as_ref()
+                .map(ValidatedHealthCheck::to_input),
+            resources: self
+                .resources
+                .as_ref()
+                .map(ValidatedResourceLimits::to_input),
             depends_on: self.depends_on.iter().map(ToString::to_string).collect(),
-            rollout: self.rollout,
+            rollout: self.rollout.into(),
         }
     }
 }

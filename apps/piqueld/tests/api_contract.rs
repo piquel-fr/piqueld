@@ -11,7 +11,7 @@ use piqueld::store::{Store, StoredEnvironment};
 use piqueld_client::{AcceptedOperation, ApplyApplicationRequest, Client};
 use piqueld_core::{
     InstanceId, NormalizedApplication, ObservedApplication, ResolutionSet, compile_application,
-    manifest::{ApplicationManifest, Source},
+    manifest::{ApplicationManifest, ApplicationTemplate, Source, ValidatedSource},
     planner::ActionKind,
     resource::{ResolvedSource, image_repository},
 };
@@ -136,7 +136,7 @@ impl RuntimeBoundary for FakeRuntime {
             .services
             .iter()
             .map(|service| {
-                let Source::Image { image } = &service.source else {
+                let ValidatedSource::Image { image } = &service.source else {
                     panic!("expected image fixture")
                 };
                 let repository =
@@ -199,7 +199,7 @@ async fn fake_runtime_accepts_digest_pinned_requested_images() {
     let Source::Image { image } = &mut input.spec.services[0].source else {
         panic!("expected image fixture")
     };
-    *image = format!("ghcr.io/example/notes@sha256:{}", "b".repeat(64));
+    *image = format!("ghcr.io/example/notes@sha256:{}", "b".repeat(64)).into();
     let application = input
         .validate()
         .unwrap()
@@ -828,7 +828,7 @@ async fn replace_and_plan(
     created: &AcceptedOperation,
     mut manifest: ApplicationManifest,
 ) -> AcceptedOperation {
-    manifest.spec.services[0].replicas = 2;
+    manifest.spec.services[0].replicas = 2.into();
     let request = ApplyApplicationRequest {
         expected_generation: Some(created.generation),
         expected_application_id: Some(created.environment_id.clone()),
@@ -1549,7 +1549,7 @@ async fn typed_edits_enforce_the_tcp_browser_policy() {
     assert_eq!(edit.status, StatusCode::OK);
     let edited = client.application(&saved.application_id).await.unwrap();
     assert_eq!(edited.generation, saved.generation + 1);
-    assert_eq!(edited.application.spec().services[0].replicas, 3);
+    assert_eq!(edited.application.spec().services[0].replicas, 3.into());
 }
 
 #[tokio::test]
@@ -1597,7 +1597,7 @@ async fn served_openapi_document_matches_the_generated_snapshot_and_resolves_ref
         ),
         (
             "/components/schemas/DesiredService/properties/healthcheck",
-            "#/components/schemas/HealthCheck",
+            "#/components/schemas/ValidatedHealthCheck",
         ),
     ] {
         assert_nullable_reference(
@@ -1707,7 +1707,7 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
     );
     request.expected_generation = Some(1);
     request.expected_application_id = Some(first.environment_id.clone());
-    request.manifest.spec.services[0].replicas = 2;
+    request.manifest.spec.services[0].replicas = 2.into();
     let changed = client.apply_and_deploy(&request).await.unwrap();
     assert_eq!(changed.generation, 2);
     // A one-time manifest revision needs a repository-backed manifest.
@@ -1829,7 +1829,7 @@ async fn acceptance_receipts_survive_restart_and_supersession() {
     let mut replacement = request.clone();
     replacement.expected_generation = Some(1);
     replacement.expected_application_id = Some(accepted.environment_id.clone());
-    replacement.manifest.spec.services[0].replicas = 2;
+    replacement.manifest.spec.services[0].replicas = 2.into();
     api.client.apply_and_deploy(&replacement).await.unwrap();
     drop(api);
     let api = AcceptanceApi::start(&temp).await;
@@ -1943,7 +1943,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     let mut stale = AcceptanceApi::request();
     stale.expected_generation = Some(1);
     stale.expected_application_id = Some(accepted.environment_id);
-    stale.manifest.spec.services[0].replicas = 3;
+    stale.manifest.spec.services[0].replicas = 3.into();
     let error = api.client.apply_and_deploy(&stale).await.unwrap_err();
     assert!(
         matches!(error,piqueld_client::ClientError::Api {error,..} if error.code=="identity_conflict")
@@ -1957,7 +1957,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
             .spec()
             .services[0]
             .replicas,
-        1
+        1.into()
     );
 }
 
@@ -2024,12 +2024,16 @@ async fn preview_resolves_images_again_and_redacts_manifest_and_runtime_configur
         .await
         .unwrap();
     api.store
-        .save_application(&normalized, Some(&target), Some(0))
+        .save_application(
+            &ApplicationTemplate::from(&normalized),
+            Some(&target),
+            Some(0),
+        )
         .await
         .unwrap();
     request.expected_generation = Some(1);
     request.expected_application_id = Some(normalized.id().to_string());
-    request.manifest.spec.services[0].replicas = 3;
+    request.manifest.spec.services[0].replicas = 3.into();
     request.manifest.spec.services[0]
         .environment
         .insert("TOKEN".into(), "new-private-value".into());
@@ -2095,6 +2099,19 @@ impl AcceptanceApi {
             .unwrap();
     }
 
+    /// The rendered configuration deployment `operation` of `environment` captured.
+    async fn deployed(&self, environment: &str, operation: &str) -> NormalizedApplication {
+        self.client
+            .deployments(environment, None)
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|deployment| deployment.operation.id == operation)
+            .and_then(|deployment| deployment.application)
+            .expect("deployment captured a rendered manifest")
+    }
+
     async fn finish_deletion(&self, deletion: &piqueld_core::api::DeletedApplication) {
         for accepted in &deletion.operations {
             self.store
@@ -2133,9 +2150,9 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
         "precondition_required",
     );
     request.expected_application_id = Some(accepted.environment_id.clone());
-    request.manifest.spec.services[0].replicas = 2;
+    request.manifest.spec.services[0].replicas = 2.into();
     let mut competing = request.clone();
-    competing.manifest.spec.services[0].replicas = 3;
+    competing.manifest.spec.services[0].replicas = 3.into();
     let (first, second) = tokio::join!(
         api.client.apply_and_deploy(&request),
         api.client.apply_and_deploy(&competing)
@@ -2207,7 +2224,7 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
     assert_ne!(replacement.environment_id, original.environment_id);
     request.expected_generation = Some(1);
     request.expected_application_id = Some(original.environment_id);
-    request.manifest.spec.services[0].replicas = 4;
+    request.manifest.spec.services[0].replicas = 4.into();
     AcceptanceApi::assert_error(
         api.client.apply_and_deploy(&request).await.unwrap_err(),
         "identity_conflict",
@@ -2228,9 +2245,9 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
             .spec()
             .services[0]
             .replicas,
-        4
+        4.into()
     );
-    request.manifest.spec.services[0].replicas = 0;
+    request.manifest.spec.services[0].replicas = 0.into();
     assert!(
         api.client
             .apply_and_deploy_with_force(&request, true)
@@ -2259,7 +2276,7 @@ async fn forced_receipts_replay_after_restart_without_overwriting_newer_intent()
         .await
         .unwrap();
     let mut changed = request.clone();
-    changed.manifest.spec.services[0].replicas = 3;
+    changed.manifest.spec.services[0].replicas = 3.into();
     let newer = api
         .client
         .apply_and_deploy_with_force(&changed, true)
@@ -2288,7 +2305,7 @@ async fn forced_receipts_replay_after_restart_without_overwriting_newer_intent()
         .await
         .unwrap();
     assert_eq!(current.generation, newer.generation);
-    assert_eq!(current.application.spec().services[0].replicas, 3);
+    assert_eq!(current.application.spec().services[0].replicas, 3.into());
     AcceptanceApi::assert_error(
         keyed.apply_and_deploy(&request).await.unwrap_err(),
         "request_id_conflict",
@@ -2368,7 +2385,7 @@ async fn docker_outage_allows_acceptance_and_preserves_receipt_replay() {
     let mut changed = request.clone();
     changed.expected_generation = Some(accepted.generation);
     changed.expected_application_id = Some(accepted.environment_id.clone());
-    changed.manifest.spec.services[0].replicas = 2;
+    changed.manifest.spec.services[0].replicas = 2.into();
     assert!(
         matches!(api.client.plan_application(&changed, None).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status==StatusCode::SERVICE_UNAVAILABLE)
     );
@@ -2469,10 +2486,8 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
         });
     let saved = api.client.apply_application(&request).await.unwrap();
     assert_eq!(
-        api.store
-            .deployment_manifest(&second.operation_id)
+        api.deployed(&saved.application_id, &second.operation_id)
             .await
-            .unwrap()
             .spec()
             .volumes
             .len(),
@@ -2515,7 +2530,7 @@ async fn deploy_after_rename_captures_saved_name_and_spec() {
         .unwrap();
     let mut edited = AcceptanceApi::request();
     edited.manifest.metadata.name = "renamed".into();
-    edited.manifest.spec.services[0].replicas = 2;
+    edited.manifest.spec.services[0].replicas = 2.into();
     edited.expected_generation = Some(2);
     edited.expected_application_id = Some(accepted.environment_id.clone());
     api.client.apply_application(&edited).await.unwrap();
@@ -2525,17 +2540,13 @@ async fn deploy_after_rename_captures_saved_name_and_spec() {
         .await
         .unwrap();
     let snapshot = api
-        .store
-        .deployment_manifest(&refreshed.operation_id)
-        .await
-        .unwrap();
+        .deployed(&accepted.environment_id, &refreshed.operation_id)
+        .await;
     assert_eq!(snapshot.metadata().name.as_str(), "renamed");
     assert_eq!(snapshot.spec().services[0].replicas, 2);
     assert_eq!(
-        api.store
-            .deployment_manifest(&accepted.operation_id)
+        api.deployed(&accepted.environment_id, &accepted.operation_id)
             .await
-            .unwrap()
             .metadata()
             .name
             .as_str(),
@@ -2556,7 +2567,13 @@ async fn unavailable_observation_does_not_claim_services_are_missing() {
     let app = api.store.get(&id).await.unwrap();
     let target = api
         .runtime
-        .prepare(&id, app.manifest(), &ResolutionSet::default())
+        .prepare(
+            &id,
+            &app.render(app.manifest(), &accepted.operation_id)
+                .unwrap()
+                .application,
+            &ResolutionSet::default(),
+        )
         .await
         .unwrap();
     api.store
@@ -2912,7 +2929,11 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     let request = AcceptanceApi::request();
     let MutationResponse::Saved(saved) = service
         .accept(
-            Mutation::save(request.manifest.clone().validate().unwrap(), None, true),
+            Mutation::save(
+                request.manifest.clone().validate_template().unwrap(),
+                None,
+                true,
+            ),
             Some(0),
             false,
             Some("shared-command"),
@@ -2951,7 +2972,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     let mut changed = request.clone();
     changed.expected_generation = Some(saved.generation);
     changed.expected_application_id = Some(saved.application_id);
-    changed.manifest.spec.services[0].replicas = 2;
+    changed.manifest.spec.services[0].replicas = 2.into();
     let saved = api
         .client
         .clone()
@@ -2962,7 +2983,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     let MutationResponse::Saved(replay) = service
         .accept(
             Mutation::save(
-                changed.manifest.validate().unwrap(),
+                changed.manifest.validate_template().unwrap(),
                 changed.expected_application_id,
                 false,
             ),
@@ -2991,7 +3012,7 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
     use piqueld::api::{ApplicationError, Mutation, MutationResponse};
     let temp = tempfile::tempdir().unwrap();
     let service = state(&temp).await;
-    let manifest = manifest().validate().unwrap();
+    let manifest = manifest().validate_template().unwrap();
     let id = piqueld_core::ApplicationId::parse("absent-application").unwrap();
     let environment = piqueld_core::EnvironmentId::parse("absent-application").unwrap();
     for mutation in [
@@ -3094,7 +3115,7 @@ async fn direct_service_validates_log_bounds_and_deployment_ownership() {
     ));
     let MutationResponse::Saved(saved) = service
         .accept(
-            Mutation::save(manifest().validate().unwrap(), None, true),
+            Mutation::save(manifest().validate_template().unwrap(), None, true),
             Some(0),
             false,
             None,
@@ -3279,7 +3300,7 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
     let id = &saved.application_id;
     let edit = ApplicationEdit::Service {
         name: "web".into(),
-        edit: ServiceEdit::Replicas(3),
+        edit: ServiceEdit::Replicas(3.into()),
     };
     let options = EditOptions {
         expected_generation: Some(saved.generation),
@@ -3298,7 +3319,10 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
             .is_empty()
     );
     let app = api.client.application(id).await.unwrap();
-    assert_eq!(app.application.to_manifest().spec.services[0].replicas, 3);
+    assert_eq!(
+        app.application.to_manifest().spec.services[0].replicas,
+        3.into()
+    );
     assert_eq!(
         app.application.to_manifest().spec.services[0].source,
         manifest().spec.services[0].source
@@ -3330,7 +3354,7 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
     let operation = deployed.operation_id.unwrap();
     let pending = ApplicationEdit::Service {
         name: "web".into(),
-        edit: ServiceEdit::Replicas(5),
+        edit: ServiceEdit::Replicas(5.into()),
     };
     let options = EditOptions {
         expected_generation: Some(3),
@@ -3340,10 +3364,10 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
         .edit_application(id, &pending, &options)
         .await
         .unwrap();
-    let snapshot = api.store.deployment_manifest(&operation).await.unwrap();
-    assert_eq!(snapshot.to_manifest().spec.services[0].replicas, 3);
+    let snapshot = api.deployed(id, &operation).await;
+    assert_eq!(snapshot.spec().services[0].replicas, 3);
     assert_eq!(
-        snapshot.to_manifest().spec.services[0].environment["MESSAGE"],
+        snapshot.spec().services[0].environment["MESSAGE"],
         "hello = world"
     );
     assert_eq!(
@@ -3356,7 +3380,7 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
             .spec
             .services[0]
             .replicas,
-        5
+        5.into()
     );
 }
 
@@ -3380,7 +3404,7 @@ async fn field_edits_validate_atomically_and_preserve_git_ownership() {
     };
     let invalid = ApplicationEdit::Service {
         name: "web".into(),
-        edit: ServiceEdit::Replicas(0),
+        edit: ServiceEdit::Replicas(0.into()),
     };
     let error = api
         .client
@@ -3410,7 +3434,7 @@ async fn field_edits_validate_atomically_and_preserve_git_ownership() {
     };
     let blocked = ApplicationEdit::Service {
         name: "web".into(),
-        edit: ServiceEdit::Replicas(2),
+        edit: ServiceEdit::Replicas(2.into()),
     };
     let error = api
         .client
@@ -3466,7 +3490,7 @@ async fn concurrent_field_edits_reject_stale_revisions_without_losing_updates() 
         .unwrap();
     let replicas = ApplicationEdit::Service {
         name: "web".into(),
-        edit: ServiceEdit::Replicas(4),
+        edit: ServiceEdit::Replicas(4.into()),
     };
     let env = ApplicationEdit::Service {
         name: "web".into(),
@@ -3506,7 +3530,7 @@ async fn concurrent_field_edits_reject_stale_revisions_without_losing_updates() 
         .unwrap()
         .application
         .to_manifest();
-    assert_eq!(manifest.spec.services[0].replicas, 4);
+    assert_eq!(manifest.spec.services[0].replicas, 4.into());
     assert_eq!(manifest.spec.services[0].environment["X"], "y");
 }
 
@@ -3663,37 +3687,37 @@ async fn field_edit_health_process_and_resource_endpoints_clear_optional_values(
     api.edit_service_field(
         id,
         ServiceEdit::Healthcheck(Some(HealthCheck::Http {
-            port: 8080,
+            port: 8080.into(),
             path: "/health".into(),
-            interval_seconds: 10,
-            timeout_seconds: 3,
+            interval_seconds: 10.into(),
+            timeout_seconds: 3.into(),
         })),
     )
     .await;
-    api.edit_service_field(id, ServiceEdit::HealthPort(9090))
+    api.edit_service_field(id, ServiceEdit::HealthPort(9090.into()))
         .await;
     api.edit_service_field(id, ServiceEdit::HealthPath("/live".into()))
         .await;
-    api.edit_service_field(id, ServiceEdit::HealthInterval(20))
+    api.edit_service_field(id, ServiceEdit::HealthInterval(20.into()))
         .await;
     let health = api
-        .edit_service_field(id, ServiceEdit::HealthTimeout(5))
+        .edit_service_field(id, ServiceEdit::HealthTimeout(5.into()))
         .await;
     assert_eq!(
         health.healthcheck,
         Some(HealthCheck::Http {
-            port: 9090,
+            port: 9090.into(),
             path: "/live".into(),
-            interval_seconds: 20,
-            timeout_seconds: 5
+            interval_seconds: 20.into(),
+            timeout_seconds: 5.into()
         })
     );
     api.edit_service_field(
         id,
         ServiceEdit::Healthcheck(Some(HealthCheck::Command {
             command: vec!["true".into()],
-            interval_seconds: 10,
-            timeout_seconds: 3,
+            interval_seconds: 10.into(),
+            timeout_seconds: 3.into(),
         })),
     )
     .await;
@@ -3722,9 +3746,9 @@ async fn field_edit_health_process_and_resource_endpoints_clear_optional_values(
         .await;
     assert_eq!(process.command, ["entrypoint"]);
     assert_eq!(process.arguments, ["arg with spaces", "--flag"]);
-    api.edit_service_field(id, ServiceEdit::Cpu(Some(500)))
+    api.edit_service_field(id, ServiceEdit::Cpu(Some(500.into())))
         .await;
-    api.edit_service_field(id, ServiceEdit::Memory(Some(1024)))
+    api.edit_service_field(id, ServiceEdit::Memory(Some(1024.into())))
         .await;
     let resources = api
         .edit_service_field(id, ServiceEdit::Cpu(None))
@@ -3732,7 +3756,7 @@ async fn field_edit_health_process_and_resource_endpoints_clear_optional_values(
         .resources
         .unwrap();
     assert_eq!(resources.cpu_millis, None);
-    assert_eq!(resources.memory_bytes, Some(1024));
+    assert_eq!(resources.memory_bytes, Some(1024.into()));
     assert!(
         api.edit_service_field(id, ServiceEdit::Memory(None))
             .await
@@ -3845,7 +3869,7 @@ async fn field_edit_receipts_survive_restart_and_reject_key_reuse() {
         .unwrap();
     let edit = ApplicationEdit::Service {
         name: "web".into(),
-        edit: ServiceEdit::Replicas(3),
+        edit: ServiceEdit::Replicas(3.into()),
     };
     let options = EditOptions {
         expected_generation: Some(1),
@@ -3868,7 +3892,7 @@ async fn field_edit_receipts_survive_restart_and_reject_key_reuse() {
     assert_eq!(replay.generation, receipt.generation);
     let changed = ApplicationEdit::Service {
         name: "web".into(),
-        edit: ServiceEdit::Replicas(5),
+        edit: ServiceEdit::Replicas(5.into()),
     };
     let error = keyed
         .edit_application(&saved.application_id, &changed, &options)
@@ -3885,7 +3909,7 @@ async fn field_edit_requires_an_explicit_value_and_revision() {
     let state = state(&temp).await;
     let saved = state
         .accept(
-            piqueld::api::Mutation::save(manifest().validate().unwrap(), None, false),
+            piqueld::api::Mutation::save(manifest().validate_template().unwrap(), None, false),
             Some(0),
             false,
             None,
@@ -4512,7 +4536,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
     let temp = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
     let app = manifest()
-        .validate()
+        .validate_template()
         .unwrap()
         .normalize(piqueld_core::ApplicationId::parse("app-cleanup").unwrap());
     let environment = piqueld_core::EnvironmentId::default_for(app.id());
@@ -4610,7 +4634,7 @@ async fn secret_key_recovery_api_discards_values_only_for_an_unusable_key() {
     let temp = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
     let application = manifest()
-        .validate()
+        .validate_template()
         .unwrap()
         .normalize(piqueld_core::ApplicationId::parse("app-key-api").unwrap());
     store
@@ -4702,7 +4726,8 @@ async fn invalid_path_parameters_return_correlated_json_errors() {
     }
 }
 
-/// Saves the fixture application and adds a `staging` environment.
+/// Saves the fixture application and adds a `staging` environment. The
+/// returned generation includes the bump from creating `staging`.
 async fn two_environments(
     service: &ApiState,
 ) -> (
@@ -4711,9 +4736,9 @@ async fn two_environments(
 ) {
     use piqueld::api::{ApplicationError, Mutation, MutationResponse};
     use piqueld::store::StoreError;
-    let MutationResponse::Saved(saved) = service
+    let MutationResponse::Saved(mut saved) = service
         .accept(
-            Mutation::save(manifest().validate().unwrap(), None, false),
+            Mutation::save(manifest().validate_template().unwrap(), None, false),
             Some(0),
             false,
             None,
@@ -4736,6 +4761,7 @@ async fn two_environments(
         panic!("environment")
     };
     assert_ne!(staging.id.as_str(), application.as_str());
+    saved.generation += 1;
     assert!(matches!(
         service
             .accept(create("staging"), Some(saved.generation), false, None)
@@ -4765,7 +4791,7 @@ async fn environments_deploy_independently_and_runtime_commands_never_pick_one()
         service
             .accept(
                 Mutation::save(
-                    manifest().validate().unwrap(),
+                    manifest().validate_template().unwrap(),
                     Some(saved.application_id.clone()),
                     true,
                 ),
@@ -4935,7 +4961,7 @@ async fn previews_compare_with_the_selected_environment() {
         async move {
             service
                 .plan(
-                    manifest().validate().unwrap(),
+                    manifest().validate_template().unwrap(),
                     None,
                     None,
                     environment.as_ref(),
@@ -4968,7 +4994,7 @@ async fn previews_compare_with_the_selected_environment() {
     other.metadata.name = "other".into();
     service
         .accept(
-            Mutation::save(other.validate().unwrap(), None, false),
+            Mutation::save(other.validate_template().unwrap(), None, false),
             Some(0),
             false,
             None,
@@ -4987,4 +5013,71 @@ async fn previews_compare_with_the_selected_environment() {
         plan(Some(foreign)).await,
         Err(ApplicationError::Store(StoreError::NotFound))
     ));
+}
+
+#[tokio::test]
+async fn previews_render_variables_for_the_selected_environment() {
+    use piqueld::api::ApplicationError;
+    use piqueld::store::StoreError;
+    use piqueld_core::manifest::{EnvironmentConfig, Variable, VariableValue};
+    let temp = tempfile::tempdir().unwrap();
+    let service = state(&temp).await;
+    let (saved, staging) = two_environments(&service).await;
+    let production = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
+    let level = |value: &str| EnvironmentConfig {
+        variables: [("level".into(), Variable::String(value.into()))].into(),
+    };
+    let mut manifest = manifest();
+    manifest.spec.services[0]
+        .environment
+        .insert("LEVEL".into(), "${{ vars.level }}".into());
+    manifest.spec.environments.extend([
+        ("staging".into(), level("debug")),
+        ("preview".into(), level("trace")),
+    ]);
+    let plan = |environment: piqueld_core::EnvironmentId| {
+        let (service, manifest) = (service.clone(), manifest.clone());
+        async move {
+            service
+                .plan(
+                    manifest.validate_template().unwrap(),
+                    None,
+                    None,
+                    Some(&environment),
+                )
+                .await
+        }
+    };
+
+    let rendered = plan(staging.id.clone()).await.unwrap();
+    assert_eq!(
+        rendered.variables["vars.level"],
+        VariableValue::String("debug".into())
+    );
+    assert_eq!(
+        rendered.variables["env.name"],
+        VariableValue::String("staging".into())
+    );
+    // A block for an environment that does not exist yet is only a warning.
+    let unknown = rendered
+        .plan
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == piqueld_core::codes::ENVIRONMENT_BLOCK_UNKNOWN)
+        .unwrap();
+    assert_eq!(unknown.resource, "spec.environments.preview");
+    assert!(!rendered.plan.is_blocked());
+
+    // Production has no value for `level`.
+    let Err(ApplicationError::Store(StoreError::Validation(errors))) = plan(production).await
+    else {
+        panic!("missing value expected")
+    };
+    assert_eq!(
+        (errors.0[0].code.as_str(), errors.0[0].path.as_str()),
+        (
+            piqueld_core::codes::VARIABLE_VALUE_MISSING,
+            "spec.services[0].environment.LEVEL"
+        )
+    );
 }

@@ -1,7 +1,8 @@
 //! Typed changes to saved application configuration. No edit performs runtime work.
 use crate::manifest::{
-    ApplicationManifest, Build, GitRepository, HealthCheck, Job, Mount, RepositoryManifest,
-    ResourceLimits, Rollout, Route, SecretMount, Service, Source, SourceRepository, Volume,
+    ApplicationManifest, Build, EnvironmentConfig, GitRepository, HealthCheck, Job, Mount,
+    RepositoryManifest, ResourceLimits, Rollout, Route, SecretMount, Service, Source,
+    SourceRepository, Template, Typed, Variable, Volume,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -26,16 +27,19 @@ macro_rules! value_request {
 value_request! {
     StringValue: String;
     OptionalStringValue: Option<String>;
-    ReplicasValue: u16;
-    SecondsValue: u32;
-    CpuValue: Option<u32>;
-    MemoryValue: Option<u64>;
+    TemplateValue: Template;
+    TemplatesValue: Vec<Template>;
+    ReplicasValue: Typed<u16>;
+    SecondsValue: Typed<u32>;
+    CpuValue: Option<Typed<u32>>;
+    MemoryValue: Option<Typed<u64>>;
     StringsValue: Vec<String>;
+    VariablesValue: Variables;
     SourceValue: Source;
     HealthValue: Option<HealthCheck>;
     ResourcesValue: Option<ResourceLimits>;
     RolloutValue: Rollout;
-    EnvironmentValue: BTreeMap<String, String>;
+    EnvironmentValue: BTreeMap<String, Template>;
     MountsValue: Vec<Mount>;
     SecretsValue: Vec<SecretMount>;
     VolumesValue: Vec<Volume>;
@@ -51,16 +55,16 @@ pub struct ServiceGeneral {
     /// Explicit source variant.
     pub source: Source,
     /// Desired replicas.
-    pub replicas: u16,
+    pub replicas: Typed<u16>,
 }
 /// Container entrypoint and arguments saved together.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceProcess {
     /// Entrypoint elements.
-    pub command: Vec<String>,
+    pub command: Vec<Template>,
     /// Argument elements.
-    pub arguments: Vec<String>,
+    pub arguments: Vec<Template>,
 }
 
 /// An edit to an existing application, addressed by its stable identity.
@@ -100,6 +104,52 @@ pub enum ApplicationEdit {
     Jobs(Vec<Job>),
     /// Remove a volume declaration; validation rejects remaining mounts.
     RemoveVolume(String),
+    /// Replace every variable value.
+    Variables(Variables),
+}
+
+/// Every variable value of an application, replaced together.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Variables {
+    /// Defaults, `[spec.variables]`.
+    pub defaults: BTreeMap<String, Variable>,
+    /// Values per environment name, `[spec.environments.<name>.variables]`.
+    pub environments: BTreeMap<String, BTreeMap<String, Variable>>,
+}
+
+impl Variables {
+    /// Replaces the variable values of `spec`, keeping other environment
+    /// configuration and dropping blocks left empty.
+    fn apply(self, spec: &mut crate::manifest::ApplicationSpec) {
+        let Self {
+            defaults,
+            mut environments,
+        } = self;
+        spec.variables = defaults;
+        for (name, config) in &mut spec.environments {
+            config.variables = environments.remove(name).unwrap_or_default();
+        }
+        for (name, variables) in environments {
+            spec.environments.entry(name).or_default().variables = variables;
+        }
+        spec.environments
+            .retain(|_, config| *config != EnvironmentConfig::default());
+    }
+
+    /// The variable values of `manifest`.
+    #[must_use]
+    pub fn of(manifest: &ApplicationManifest) -> Self {
+        Self {
+            defaults: manifest.spec.variables.clone(),
+            environments: manifest
+                .spec
+                .environments
+                .iter()
+                .map(|(name, config)| (name.clone(), config.variables.clone()))
+                .collect(),
+        }
+    }
 }
 
 /// A change to one service. Nested edits require the corresponding source/check variant.
@@ -111,7 +161,7 @@ pub enum ServiceEdit {
     /// Switch source variant.
     Source(Source),
     /// Set an image source.
-    Image(String),
+    Image(Template),
     /// Git repository URL.
     GitUrl(String),
     /// Git branch.
@@ -119,19 +169,19 @@ pub enum ServiceEdit {
     /// Pinned Git commit, or none.
     GitCommit(Option<String>),
     /// Dockerfile path.
-    Dockerfile(String),
+    Dockerfile(Template),
     /// Docker build context.
-    Context(String),
+    Context(Template),
     /// Desired replicas.
-    Replicas(u16),
+    Replicas(Typed<u16>),
     /// Replace environment entries.
-    Environment(BTreeMap<String, String>),
+    Environment(BTreeMap<String, Template>),
     /// Set or remove one environment variable.
-    EnvironmentEntry((String, Option<String>)),
+    EnvironmentEntry((String, Option<Template>)),
     /// Entrypoint elements.
-    Command(Vec<String>),
+    Command(Vec<Template>),
     /// Argument elements.
-    Arguments(Vec<String>),
+    Arguments(Vec<Template>),
     /// Replace mount declarations.
     Mounts(Vec<Mount>),
     /// Replace secret file references.
@@ -143,21 +193,21 @@ pub enum ServiceEdit {
     /// Switch or clear health check.
     Healthcheck(Option<HealthCheck>),
     /// HTTP health port.
-    HealthPort(u16),
+    HealthPort(Typed<u16>),
     /// HTTP health path.
-    HealthPath(String),
+    HealthPath(Template),
     /// Health command elements.
-    HealthCommand(Vec<String>),
+    HealthCommand(Vec<Template>),
     /// Health interval seconds.
-    HealthInterval(u32),
+    HealthInterval(Typed<u32>),
     /// Health timeout seconds.
-    HealthTimeout(u32),
+    HealthTimeout(Typed<u32>),
     /// Replace resource limits.
     Resources(Option<ResourceLimits>),
     /// Set or clear CPU millicores.
-    Cpu(Option<u32>),
+    Cpu(Option<Typed<u32>>),
     /// Set or clear memory bytes.
-    Memory(Option<u64>),
+    Memory(Option<Typed<u64>>),
     /// Source and replicas saved together.
     General(ServiceGeneral),
     /// Entrypoint and arguments saved together.
@@ -223,9 +273,9 @@ impl ApplicationEdit {
                     && let Some(previous) = &manifest.spec.manifest
                 {
                     for service in &mut manifest.spec.services {
-                        service
-                            .source
-                            .resolve_manifest_repository(&previous.repository);
+                        if let Source::Git { repository, .. } = &mut service.source {
+                            repository.resolve_manifest(&previous.repository);
+                        }
                     }
                 }
                 manifest.spec.manifest = value;
@@ -304,6 +354,7 @@ impl ApplicationEdit {
                     })?;
                 manifest.spec.volumes.remove(index);
             }
+            Self::Variables(variables) => variables.apply(&mut manifest.spec),
         }
         Ok(())
     }
@@ -549,7 +600,7 @@ mod tests {
             source: Source::Image {
                 image: "nginx:alpine".into(),
             },
-            replicas: 1,
+            replicas: 1.into(),
             environment: std::collections::BTreeMap::default(),
             command: vec![],
             arguments: vec![],

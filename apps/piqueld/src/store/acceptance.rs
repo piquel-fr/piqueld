@@ -227,7 +227,16 @@ impl Store {
                     {
                         operation
                     }
-                    _ => Self::request_delete_on(tx, &id).await?,
+                    _ => {
+                        let operation = Self::request_delete_on(tx, &id).await?;
+                        Self::bump_generation_on(
+                            tx,
+                            current.manifest().id(),
+                            current.application.generation,
+                        )
+                        .await?;
+                        operation
+                    }
                 };
                 Ok(Self::operation_accepted(&operation))
             }
@@ -273,6 +282,39 @@ impl Store {
                 .map_or(0, |environment| environment.application.generation),
         )?;
         current.ok_or(StoreError::NotFound)
+    }
+
+    /// Advances the application revision past `current` after an environment
+    /// is created, renamed, or deleted, so a caller that inspected the
+    /// application before the change fails its precondition. Environments
+    /// whose resolved target was current stay current: their configuration
+    /// did not change.
+    pub(super) async fn bump_generation_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        application: &ApplicationId,
+        current: u64,
+    ) -> Result<(), StoreError> {
+        let previous = i64::try_from(current).map_err(StoreError::invalid_input)?;
+        let generation = previous.checked_add(1).ok_or(StoreError::InvalidInput)?;
+        let id = application.as_str();
+        sqlx::query!(
+            "UPDATE applications SET generation=?1 WHERE id=?2",
+            generation,
+            id
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        sqlx::query!(
+            "UPDATE environments SET resolved_generation=?1 WHERE application_id=?2 AND resolved_generation=?3",
+            generation,
+            id,
+            previous
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        Ok(())
     }
 
     /// Responds with an accepted environment operation.
@@ -347,7 +389,7 @@ impl Store {
         let id = current.application.id().clone();
         let mut manifest = current.application.to_manifest();
         edit.clone().apply(&mut manifest)?;
-        let application = manifest.validate()?.normalize(id.clone());
+        let application = manifest.validate_template()?.normalize(id.clone());
         let field = match &edit {
             ApplicationEdit::Name(_) => "name",
             ApplicationEdit::Repository(_)
@@ -362,6 +404,7 @@ impl Store {
             | ApplicationEdit::RemoveVolume(_) => "volumes",
             ApplicationEdit::Routes(_) => "routes",
             ApplicationEdit::Jobs(_) => "jobs",
+            ApplicationEdit::Variables(_) => "variables",
         };
         let resource = match &edit {
             ApplicationEdit::Service { name, .. } | ApplicationEdit::RemoveService(name) => {
@@ -398,7 +441,7 @@ impl Store {
     async fn deploy_saved(
         tx: &mut Transaction<'_, Sqlite>,
         id: &ApplicationId,
-        application: &piqueld_core::NormalizedApplication,
+        application: &piqueld_core::manifest::ApplicationTemplate,
         saved: &mut piqueld_core::api::SavedApplication,
         deploy: bool,
     ) -> Result<(), StoreError> {
@@ -604,6 +647,93 @@ mod tests {
                 .await,
             Err(StoreError::ReplayConflict)
         ));
+    }
+
+    /// Saves a manifest configuring `staging` and `preview`, then creates the
+    /// environments `staging` and `qa`.
+    async fn configured_environments(store: &Store) -> (EnvironmentId, EnvironmentId) {
+        let template = piqueld_core::manifest::parse_template_toml(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec.environments.staging.variables]\nlevel='debug'\n[spec.environments.preview.variables]\nlevel='trace'",
+        )
+        .unwrap();
+        let (MutationResponse::Saved(saved), _) = store
+            .accept(Mutation::save(template, None, false), Some(0), false, None)
+            .await
+            .unwrap()
+        else {
+            panic!("saved response")
+        };
+        let application = ApplicationId::parse(saved.application_id).unwrap();
+        let mut ids = Vec::new();
+        for name in ["staging", "qa"] {
+            let create = Mutation::CreateEnvironment {
+                application: application.clone(),
+                name: EnvironmentName::parse(name).unwrap(),
+            };
+            let (MutationResponse::Environment(environment), _) =
+                store.accept(create, None, true, None).await.unwrap()
+            else {
+                panic!("environment response")
+            };
+            ids.push(environment.id);
+        }
+        let [staging, qa] = ids.try_into().unwrap();
+        (staging, qa)
+    }
+
+    fn rename(id: &EnvironmentId, name: &str) -> Mutation {
+        Mutation::RenameEnvironment {
+            id: id.clone(),
+            name: EnvironmentName::parse(name).unwrap(),
+        }
+    }
+
+    /// Names select `[spec.environments.<name>]`, so a rename that would change
+    /// the applied block is refused.
+    #[tokio::test]
+    async fn renames_never_switch_the_configuration_an_environment_deploys() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (staging, qa) = configured_environments(&store).await;
+        for (id, name, configured) in [
+            (&staging, "testing", "staging"),
+            (&qa, "preview", "preview"),
+        ] {
+            assert!(matches!(
+                store.accept(rename(id, name), None, true, None).await,
+                Err(StoreError::EnvironmentConfigured { environment })
+                    if environment.as_str() == configured
+            ));
+        }
+        store
+            .accept(rename(&qa, "testing"), None, true, None)
+            .await
+            .unwrap();
+    }
+
+    /// Lifecycle changes advance the application revision, so a second change
+    /// based on the same inspection fails instead of acting on a renamed environment.
+    #[tokio::test]
+    async fn environment_changes_from_a_stale_inspection_conflict() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_, qa) = configured_environments(&store).await;
+        let inspected = store.get(&qa).await.unwrap().application.generation;
+        store
+            .accept(rename(&qa, "testing"), Some(inspected), false, None)
+            .await
+            .unwrap();
+        for stale in [rename(&qa, "review"), Mutation::Delete { id: qa.clone() }] {
+            assert!(matches!(
+                store.accept(stale, Some(inspected), false, None).await,
+                Err(StoreError::GenerationConflict { expected, actual })
+                    if expected == inspected && actual == inspected + 1
+            ));
+        }
+        assert_eq!(
+            store.get(&qa).await.unwrap().environment.name.as_str(),
+            "testing"
+        );
     }
 
     /// Receipts recorded before deploy overrides existed must still replay.

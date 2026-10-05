@@ -409,7 +409,7 @@ impl Store {
         sqlx::query!("INSERT INTO operations(id,environment_id,generation,kind,state,created_at_ms,updated_at_ms) SELECT ?1,e.id,a.generation,?3,'requested',?4,?4 FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?2",id,app_id,kind,now)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
         if kind != "delete" {
-            Self::capture_deployment(tx, &id).await?;
+            Self::capture_deployment(tx, &id, app).await?;
         }
         let event = match kind {
             "apply" => "application_applied",

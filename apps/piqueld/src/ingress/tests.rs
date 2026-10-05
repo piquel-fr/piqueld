@@ -8,7 +8,8 @@ use crate::{
 };
 use hyper::Method;
 use piqueld_core::{
-    EnvironmentId, NormalizedApplication, OperationState, observability::EventScope,
+    EnvironmentId, NormalizedApplication, OperationState, manifest::ApplicationTemplate,
+    observability::EventScope,
 };
 use serde_json::json;
 
@@ -20,7 +21,7 @@ async fn request_deployment(store: &Store, app: NormalizedApplication) -> (Envir
     let (MutationResponse::Saved(saved), _) = store
         .accept(
             Mutation::Save {
-                application: Box::new(app),
+                application: Box::new(ApplicationTemplate::from(&app)),
                 expected_application_id: None,
                 deploy: true,
             },
@@ -547,7 +548,7 @@ impl Scenario {
             .store
             .accept(
                 Mutation::Save {
-                    application: Box::new(app.clone()),
+                    application: Box::new(ApplicationTemplate::from(&app)),
                     expected_application_id: None,
                     deploy: false,
                 },
@@ -777,13 +778,13 @@ impl Scenario {
             "replacement backend",
         ]
         .into_iter()
-        .map(String::from)
+        .map(Into::into)
         .collect();
         next.healthcheck = Some(piqueld_core::manifest::HealthCheck::Command {
             // Keep the replacement unhealthy until the test explicitly releases it.
             command: vec!["test".into(), "-f".into(), "/tmp/ready".into()],
-            interval_seconds: 3,
-            timeout_seconds: 1,
+            interval_seconds: 3.into(),
+            timeout_seconds: 1.into(),
         });
         changed.spec.services.push(next);
         changed.spec.routes[0].service = Some("next".into());

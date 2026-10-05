@@ -101,8 +101,8 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   const response = await conflict;
   expect(response.status()).toBe(409);
   expect(await response.json()).toMatchObject({ code: 'hostname_conflict', details: { hostname: 'shop.example.com', environment: 'production' } });
-  await expect(creator).toContainText('environments currently share application routes');
-  await expect(creator).toContainText('until per-environment configuration is supported');
+  await expect(creator).toContainText('is reserved by environment production of this application');
+  await expect(creator).toContainText('give each environment its own hostname');
   await creator.getByRole('button', { name: 'Close dialog' }).click();
 
   await page.getByRole('button', { name: 'Preview', exact: true }).click();

@@ -9,7 +9,9 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::NavigateOptions;
 use leptos_router::hooks::use_navigate;
-use piqueld_client::{ApplyApplicationRequest, Client, DeploymentView, Page, Rollout, Source};
+use piqueld_client::{
+    ApplyApplicationRequest, Client, DeploymentView, Page, Source, ValidatedRollout,
+};
 
 /// "Preview" and "Deploy" buttons for the saved configuration and the editor's
 /// target environment. Preview asks the daemon for a plan (cleared whenever the
@@ -168,6 +170,30 @@ fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> imp
                                         .into_any()
                                 }}
                             </section>
+                            {(!plan.variables.is_empty())
+                                .then(|| {
+                                    view! {
+                                        <section>
+                                            <div class="section-header">
+                                                <h3>"Variables"</h3>
+                                            </div>
+                                            <dl class="kv">
+                                                {plan
+                                                    .variables
+                                                    .iter()
+                                                    .map(|(reference, value)| {
+                                                        view! {
+                                                            <dt>
+                                                                <code>{reference.clone()}</code>
+                                                            </dt>
+                                                            <dd>{value.to_string()}</dd>
+                                                        }
+                                                    })
+                                                    .collect_view()}
+                                            </dl>
+                                        </section>
+                                    }
+                                })}
                             <section>
                                 <div class="section-header">
                                     <h3>"Planned actions"</h3>
@@ -495,14 +521,48 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
     }
 }
 
-/// The services, volumes, and jobs captured in a deployment's configuration snapshot.
+/// The variable values, services, volumes, and jobs captured in a
+/// deployment's configuration snapshot: the rendered configuration, or the
+/// captured manifest until a repository-backed manifest is fetched.
 #[component]
 fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
     view! {
-        <p class="hint">"Configuration captured when this deployment was accepted."</p>
         {move || {
-            let spec = deployment.get().application.to_manifest().spec;
+            let deployment = deployment.get();
+            let (hint, spec) = match &deployment.application {
+                Some(application) => (
+                    "Configuration captured when this deployment was accepted, rendered for its environment.",
+                    application.to_manifest().spec,
+                ),
+                None => (
+                    "The repository manifest has not been fetched yet; showing the captured configuration with references unresolved.",
+                    deployment.template.to_manifest().spec,
+                ),
+            };
             view! {
+                <p class="hint">{hint}</p>
+                {(!deployment.variables.is_empty())
+                    .then(|| {
+                        view! {
+                            <div class="snapshot-service">
+                                <h4>"Variables"</h4>
+                                <dl class="kv">
+                                    {deployment
+                                        .variables
+                                        .iter()
+                                        .map(|(reference, value)| {
+                                            view! {
+                                                <dt>
+                                                    <code>{reference.clone()}</code>
+                                                </dt>
+                                                <dd>{value.to_string()}</dd>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </dl>
+                            </div>
+                        }
+                    })}
                 {spec
                     .services
                     .into_iter()
@@ -533,7 +593,7 @@ fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
                                             <li>
                                                 <strong>{job.name}</strong>
                                                 {format!(" on {}, up to {}s: ", job.service, job.timeout_seconds)}
-                                                <code>{job.command.join(" ")}</code>
+                                                <code>{join(&job.command, " ")}</code>
                                             </li>
                                         }
                                     })
@@ -684,7 +744,7 @@ fn AttemptRow(attempt: piqueld_client::Operation) -> impl IntoView {
 #[component]
 fn SnapshotService(service: piqueld_client::Service) -> impl IntoView {
     let source = match service.source.clone() {
-        Source::Image { image } => image,
+        Source::Image { image } => image.to_string(),
         Source::Git {
             repository,
             build:
@@ -727,15 +787,15 @@ fn SnapshotService(service: piqueld_client::Service) -> impl IntoView {
                     <code>{source}</code>
                 </dd>
                 <dt>"Replicas"</dt>
-                <dd>{service.replicas}</dd>
+                <dd>{service.replicas.to_string()}</dd>
                 <dt>"Environment"</dt>
                 <dd>
                     {list(service.environment.iter().map(|(k, v)| format!("{k}={v}")).collect())}
                 </dd>
                 <dt>"Command"</dt>
-                <dd>{list(service.command.clone())}</dd>
+                <dd>{list(service.command.iter().map(ToString::to_string).collect())}</dd>
                 <dt>"Arguments"</dt>
-                <dd>{list(service.arguments.clone())}</dd>
+                <dd>{list(service.arguments.iter().map(ToString::to_string).collect())}</dd>
                 <dt>"Mounts"</dt>
                 <dd>
                     {list(
@@ -769,8 +829,19 @@ fn SnapshotService(service: piqueld_client::Service) -> impl IntoView {
                 <dd>
                     {format!(
                         "{} · monitor {}s",
-                        service.rollout.order.map_or("derived from mounts", |order| order.as_str()),
-                        service.rollout.monitor_seconds.unwrap_or(Rollout::DEFAULT_MONITOR_SECONDS),
+                        service
+                            .rollout
+                            .order
+                            .as_ref()
+                            .map_or_else(|| "derived from mounts".into(), ToString::to_string),
+                        service
+                            .rollout
+                            .monitor_seconds
+                            .as_ref()
+                            .map_or_else(
+                                || ValidatedRollout::DEFAULT_MONITOR_SECONDS.to_string(),
+                                ToString::to_string,
+                            ),
                     )}
                 </dd>
                 <SnapshotRuntime service={service} />
@@ -807,7 +878,7 @@ fn SnapshotRuntime(service: piqueld_client::Service) -> impl IntoView {
                         } => {
                             format!(
                                 "{} · every {interval_seconds}s · timeout {timeout_seconds}s",
-                                command.join(" "),
+                                join(&command, " "),
                             )
                         }
                     },
@@ -833,6 +904,15 @@ fn SnapshotRuntime(service: piqueld_client::Service) -> impl IntoView {
                 )}
         </dd>
     }
+}
+
+/// Joins template elements as written.
+fn join(values: &[piqueld_client::Template], separator: &str) -> String {
+    values
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(separator)
 }
 
 impl super::EditorContext {

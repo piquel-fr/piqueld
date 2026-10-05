@@ -5,7 +5,8 @@ use piqueld_core::{
         ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, HealthValue, JobsValue,
         MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositoryValue,
         ResourcesValue, RolloutValue, RoutesValue, SecondsValue, SecretsValue, ServiceEdit,
-        ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue, VolumesValue,
+        ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue, TemplateValue,
+        TemplatesValue, VariablesValue, VolumesValue,
     },
     manifest::{Mount, Service, Volume},
 };
@@ -30,6 +31,7 @@ edit_method!(set_application_volumes, (id), request: VolumesValue);
 edit_method!(set_application_routes, (id), request: RoutesValue);
 edit_method!(set_application_jobs, (id), request: JobsValue);
 edit_method!(set_application_name, (id), request: StringValue);
+edit_method!(set_application_variables, (id), request: VariablesValue);
 edit_method!(set_manifest_repository, (id), request: RepositoryValue);
 edit_method!(disconnect_manifest_repository, (id));
 edit_method!(set_manifest_repository_url, (id), request: StringValue);
@@ -42,24 +44,24 @@ edit_method!(remove_application_service, (id, service));
 edit_method!(remove_application_volume, (id, volume));
 edit_method!(set_service_name, (id, service), request: StringValue);
 edit_method!(set_service_source, (id, service), request: SourceValue);
-edit_method!(set_service_image, (id, service), request: StringValue);
+edit_method!(set_service_image, (id, service), request: TemplateValue);
 edit_method!(set_service_git_url, (id, service), request: StringValue);
 edit_method!(set_service_git_branch, (id, service), request: StringValue);
 edit_method!(set_service_git_commit, (id, service), request: OptionalStringValue);
-edit_method!(set_service_dockerfile, (id, service), request: StringValue);
-edit_method!(set_service_context, (id, service), request: StringValue);
+edit_method!(set_service_dockerfile, (id, service), request: TemplateValue);
+edit_method!(set_service_context, (id, service), request: TemplateValue);
 edit_method!(set_service_replicas, (id, service), request: ReplicasValue);
 edit_method!(set_service_environment, (id, service), request: EnvironmentValue);
-edit_method!(set_service_command, (id, service), request: StringsValue);
-edit_method!(set_service_arguments, (id, service), request: StringsValue);
+edit_method!(set_service_command, (id, service), request: TemplatesValue);
+edit_method!(set_service_arguments, (id, service), request: TemplatesValue);
 edit_method!(set_service_mounts, (id, service), request: MountsValue);
 edit_method!(set_service_secrets, (id, service), request: SecretsValue);
 edit_method!(set_service_depends_on, (id, service), request: StringsValue);
 edit_method!(set_service_rollout, (id, service), request: RolloutValue);
 edit_method!(set_service_healthcheck, (id, service), request: HealthValue);
 edit_method!(set_service_health_port, (id, service), request: ReplicasValue);
-edit_method!(set_service_health_path, (id, service), request: StringValue);
-edit_method!(set_service_health_command, (id, service), request: StringsValue);
+edit_method!(set_service_health_path, (id, service), request: TemplateValue);
+edit_method!(set_service_health_command, (id, service), request: TemplatesValue);
 edit_method!(set_service_health_interval, (id, service), request: SecondsValue);
 edit_method!(set_service_health_timeout, (id, service), request: SecondsValue);
 edit_method!(set_service_resources, (id, service), request: ResourcesValue);
@@ -67,7 +69,7 @@ edit_method!(set_service_cpu, (id, service), request: CpuValue);
 edit_method!(set_service_memory, (id, service), request: MemoryValue);
 edit_method!(set_service_general, (id, service), request: ServiceGeneral);
 edit_method!(set_service_process, (id, service), request: ServiceProcess);
-edit_method!(set_service_environment_entry, (id, service, key), request: StringValue);
+edit_method!(set_service_environment_entry, (id, service, key), request: TemplateValue);
 edit_method!(remove_service_environment_entry, (id, service, key));
 edit_method!(set_service_mount, (id, service), request: Mount);
 edit_method!(remove_service_mount, (id, service), request: StringValue);
@@ -151,6 +153,9 @@ impl Client {
             ApplicationEdit::Service { name, edit } => {
                 self.edit_service(id, name, edit, options).await
             }
+            ApplicationEdit::Variables(value) => {
+                send!(set_application_variables, VariablesValue, value.clone())
+            }
         }
     }
     /// Routes a `ServiceEdit` to the field endpoint of the named service. Environment
@@ -171,7 +176,7 @@ impl Client {
         match edit {
             ServiceEdit::Name(value) => send!(set_service_name, StringValue, value.clone()),
             ServiceEdit::Source(value) => send!(set_service_source, SourceValue, value.clone()),
-            ServiceEdit::Image(value) => send!(set_service_image, StringValue, value.clone()),
+            ServiceEdit::Image(value) => send!(set_service_image, TemplateValue, value.clone()),
             ServiceEdit::GitUrl(value) => send!(set_service_git_url, StringValue, value.clone()),
             ServiceEdit::GitBranch(value) => {
                 send!(set_service_git_branch, StringValue, value.clone())
@@ -180,44 +185,50 @@ impl Client {
                 send!(set_service_git_commit, OptionalStringValue, value.clone())
             }
             ServiceEdit::Dockerfile(value) => {
-                send!(set_service_dockerfile, StringValue, value.clone())
+                send!(set_service_dockerfile, TemplateValue, value.clone())
             }
-            ServiceEdit::Context(value) => send!(set_service_context, StringValue, value.clone()),
-            ServiceEdit::Replicas(value) => send!(set_service_replicas, ReplicasValue, *value),
+            ServiceEdit::Context(value) => send!(set_service_context, TemplateValue, value.clone()),
+            ServiceEdit::Replicas(value) => {
+                send!(set_service_replicas, ReplicasValue, value.clone())
+            }
             ServiceEdit::Environment(value) => {
                 send!(set_service_environment, EnvironmentValue, value.clone())
             }
-            ServiceEdit::Command(value) => send!(set_service_command, StringsValue, value.clone()),
+            ServiceEdit::Command(value) => {
+                send!(set_service_command, TemplatesValue, value.clone())
+            }
             ServiceEdit::Arguments(value) => {
-                send!(set_service_arguments, StringsValue, value.clone())
+                send!(set_service_arguments, TemplatesValue, value.clone())
             }
             ServiceEdit::Mounts(value) => send!(set_service_mounts, MountsValue, value.clone()),
             ServiceEdit::Secrets(value) => send!(set_service_secrets, SecretsValue, value.clone()),
             ServiceEdit::DependsOn(value) => {
                 send!(set_service_depends_on, StringsValue, value.clone())
             }
-            ServiceEdit::Rollout(value) => send!(set_service_rollout, RolloutValue, *value),
+            ServiceEdit::Rollout(value) => send!(set_service_rollout, RolloutValue, value.clone()),
             ServiceEdit::Healthcheck(value) => {
                 send!(set_service_healthcheck, HealthValue, value.clone())
             }
-            ServiceEdit::HealthPort(value) => send!(set_service_health_port, ReplicasValue, *value),
+            ServiceEdit::HealthPort(value) => {
+                send!(set_service_health_port, ReplicasValue, value.clone())
+            }
             ServiceEdit::HealthPath(value) => {
-                send!(set_service_health_path, StringValue, value.clone())
+                send!(set_service_health_path, TemplateValue, value.clone())
             }
             ServiceEdit::HealthCommand(value) => {
-                send!(set_service_health_command, StringsValue, value.clone())
+                send!(set_service_health_command, TemplatesValue, value.clone())
             }
             ServiceEdit::HealthInterval(value) => {
-                send!(set_service_health_interval, SecondsValue, *value)
+                send!(set_service_health_interval, SecondsValue, value.clone())
             }
             ServiceEdit::HealthTimeout(value) => {
-                send!(set_service_health_timeout, SecondsValue, *value)
+                send!(set_service_health_timeout, SecondsValue, value.clone())
             }
             ServiceEdit::Resources(value) => {
                 send!(set_service_resources, ResourcesValue, value.clone())
             }
-            ServiceEdit::Cpu(value) => send!(set_service_cpu, CpuValue, *value),
-            ServiceEdit::Memory(value) => send!(set_service_memory, MemoryValue, *value),
+            ServiceEdit::Cpu(value) => send!(set_service_cpu, CpuValue, value.clone()),
+            ServiceEdit::Memory(value) => send!(set_service_memory, MemoryValue, value.clone()),
             ServiceEdit::General(value) => {
                 self.set_service_general(id, service, value, options).await
             }
@@ -229,7 +240,7 @@ impl Client {
                     id,
                     service,
                     key,
-                    &StringValue {
+                    &TemplateValue {
                         value: value.clone(),
                     },
                     options,

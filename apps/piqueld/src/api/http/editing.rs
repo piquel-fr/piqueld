@@ -19,7 +19,8 @@ use piqueld_core::{
         ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, HealthValue, JobsValue,
         MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositoryValue,
         ResourcesValue, RolloutValue, RoutesValue, SecondsValue, SecretsValue, ServiceEdit,
-        ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue, VolumesValue,
+        ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue, TemplateValue,
+        TemplatesValue, VariablesValue, VolumesValue,
     },
     manifest::{Mount, Service, Volume},
 };
@@ -83,6 +84,7 @@ edit_endpoint!(set_application_volumes, put, "/api/v1/applications/{id}/volumes"
 edit_endpoint!(set_application_routes, put, "/api/v1/applications/{id}/routes", (id: String = "id"), RoutesValue, body::<RoutesValue>, |_, body: RoutesValue| ApplicationEdit::Routes(body.value));
 edit_endpoint!(set_application_jobs, put, "/api/v1/applications/{id}/jobs", (id: String = "id"), JobsValue, body::<JobsValue>, |_, body: JobsValue| ApplicationEdit::Jobs(body.value));
 edit_endpoint!(set_application_name, put, "/api/v1/applications/{id}/name", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::Name(body.value));
+edit_endpoint!(set_application_variables, put, "/api/v1/applications/{id}/variables", (id: String = "id"), VariablesValue, body::<VariablesValue>, |_, body: VariablesValue| ApplicationEdit::Variables(body.value));
 edit_endpoint!(set_manifest_repository, put, "/api/v1/applications/{id}/repository", (id: String = "id"), RepositoryValue, body::<RepositoryValue>, |_, body: RepositoryValue| ApplicationEdit::Repository(body.value));
 /// Disconnects the manifest repository.
 ///
@@ -183,24 +185,24 @@ async fn remove_application_volume(
 }
 edit_endpoint!(set_service_name, put, "/api/v1/applications/{id}/services/{service}/name", (id: String = "id", service: String = "service"), StringValue, body::<StringValue>, |(_, service), body: StringValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Name(body.value) });
 edit_endpoint!(set_service_source, put, "/api/v1/applications/{id}/services/{service}/source", (id: String = "id", service: String = "service"), SourceValue, body::<SourceValue>, |(_, service), body: SourceValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Source(body.value) });
-edit_endpoint!(set_service_image, put, "/api/v1/applications/{id}/services/{service}/source/image", (id: String = "id", service: String = "service"), StringValue, body::<StringValue>, |(_, service), body: StringValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Image(body.value) });
+edit_endpoint!(set_service_image, put, "/api/v1/applications/{id}/services/{service}/source/image", (id: String = "id", service: String = "service"), TemplateValue, body::<TemplateValue>, |(_, service), body: TemplateValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Image(body.value) });
 edit_endpoint!(set_service_git_url, put, "/api/v1/applications/{id}/services/{service}/source/git/url", (id: String = "id", service: String = "service"), StringValue, body::<StringValue>, |(_, service), body: StringValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::GitUrl(body.value) });
 edit_endpoint!(set_service_git_branch, put, "/api/v1/applications/{id}/services/{service}/source/git/branch", (id: String = "id", service: String = "service"), StringValue, body::<StringValue>, |(_, service), body: StringValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::GitBranch(body.value) });
 edit_endpoint!(set_service_git_commit, put, "/api/v1/applications/{id}/services/{service}/source/git/commit", (id: String = "id", service: String = "service"), OptionalStringValue, body::<OptionalStringValue>, |(_, service), body: OptionalStringValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::GitCommit(body.value) });
-edit_endpoint!(set_service_dockerfile, put, "/api/v1/applications/{id}/services/{service}/source/git/dockerfile", (id: String = "id", service: String = "service"), StringValue, body::<StringValue>, |(_, service), body: StringValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Dockerfile(body.value) });
-edit_endpoint!(set_service_context, put, "/api/v1/applications/{id}/services/{service}/source/git/context", (id: String = "id", service: String = "service"), StringValue, body::<StringValue>, |(_, service), body: StringValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Context(body.value) });
+edit_endpoint!(set_service_dockerfile, put, "/api/v1/applications/{id}/services/{service}/source/git/dockerfile", (id: String = "id", service: String = "service"), TemplateValue, body::<TemplateValue>, |(_, service), body: TemplateValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Dockerfile(body.value) });
+edit_endpoint!(set_service_context, put, "/api/v1/applications/{id}/services/{service}/source/git/context", (id: String = "id", service: String = "service"), TemplateValue, body::<TemplateValue>, |(_, service), body: TemplateValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Context(body.value) });
 edit_endpoint!(set_service_replicas, put, "/api/v1/applications/{id}/services/{service}/replicas", (id: String = "id", service: String = "service"), ReplicasValue, body::<ReplicasValue>, |(_, service), body: ReplicasValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Replicas(body.value) });
 edit_endpoint!(set_service_environment, put, "/api/v1/applications/{id}/services/{service}/environment", (id: String = "id", service: String = "service"), EnvironmentValue, body::<EnvironmentValue>, |(_, service), body: EnvironmentValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Environment(body.value) });
-edit_endpoint!(set_service_command, put, "/api/v1/applications/{id}/services/{service}/command", (id: String = "id", service: String = "service"), StringsValue, body::<StringsValue>, |(_, service), body: StringsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Command(body.value) });
-edit_endpoint!(set_service_arguments, put, "/api/v1/applications/{id}/services/{service}/arguments", (id: String = "id", service: String = "service"), StringsValue, body::<StringsValue>, |(_, service), body: StringsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Arguments(body.value) });
+edit_endpoint!(set_service_command, put, "/api/v1/applications/{id}/services/{service}/command", (id: String = "id", service: String = "service"), TemplatesValue, body::<TemplatesValue>, |(_, service), body: TemplatesValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Command(body.value) });
+edit_endpoint!(set_service_arguments, put, "/api/v1/applications/{id}/services/{service}/arguments", (id: String = "id", service: String = "service"), TemplatesValue, body::<TemplatesValue>, |(_, service), body: TemplatesValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Arguments(body.value) });
 edit_endpoint!(set_service_mounts, put, "/api/v1/applications/{id}/services/{service}/mounts", (id: String = "id", service: String = "service"), MountsValue, body::<MountsValue>, |(_, service), body: MountsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Mounts(body.value) });
 edit_endpoint!(set_service_depends_on, put, "/api/v1/applications/{id}/services/{service}/depends-on", (id: String = "id", service: String = "service"), StringsValue, body::<StringsValue>, |(_, service), body: StringsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::DependsOn(body.value) });
 edit_endpoint!(set_service_secrets, put, "/api/v1/applications/{id}/services/{service}/secrets", (id: String = "id", service: String = "service"), SecretsValue, body::<SecretsValue>, |(_, service), body: SecretsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Secrets(body.value) });
 edit_endpoint!(set_service_rollout, put, "/api/v1/applications/{id}/services/{service}/rollout", (id: String = "id", service: String = "service"), RolloutValue, body::<RolloutValue>, |(_, service), body: RolloutValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Rollout(body.value) });
 edit_endpoint!(set_service_healthcheck, put, "/api/v1/applications/{id}/services/{service}/healthcheck", (id: String = "id", service: String = "service"), HealthValue, body::<HealthValue>, |(_, service), body: HealthValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Healthcheck(body.value) });
 edit_endpoint!(set_service_health_port, put, "/api/v1/applications/{id}/services/{service}/healthcheck/port", (id: String = "id", service: String = "service"), ReplicasValue, body::<ReplicasValue>, |(_, service), body: ReplicasValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthPort(body.value) });
-edit_endpoint!(set_service_health_path, put, "/api/v1/applications/{id}/services/{service}/healthcheck/path", (id: String = "id", service: String = "service"), StringValue, body::<StringValue>, |(_, service), body: StringValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthPath(body.value) });
-edit_endpoint!(set_service_health_command, put, "/api/v1/applications/{id}/services/{service}/healthcheck/command", (id: String = "id", service: String = "service"), StringsValue, body::<StringsValue>, |(_, service), body: StringsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthCommand(body.value) });
+edit_endpoint!(set_service_health_path, put, "/api/v1/applications/{id}/services/{service}/healthcheck/path", (id: String = "id", service: String = "service"), TemplateValue, body::<TemplateValue>, |(_, service), body: TemplateValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthPath(body.value) });
+edit_endpoint!(set_service_health_command, put, "/api/v1/applications/{id}/services/{service}/healthcheck/command", (id: String = "id", service: String = "service"), TemplatesValue, body::<TemplatesValue>, |(_, service), body: TemplatesValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthCommand(body.value) });
 edit_endpoint!(set_service_health_interval, put, "/api/v1/applications/{id}/services/{service}/healthcheck/interval", (id: String = "id", service: String = "service"), SecondsValue, body::<SecondsValue>, |(_, service), body: SecondsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthInterval(body.value) });
 edit_endpoint!(set_service_health_timeout, put, "/api/v1/applications/{id}/services/{service}/healthcheck/timeout", (id: String = "id", service: String = "service"), SecondsValue, body::<SecondsValue>, |(_, service), body: SecondsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthTimeout(body.value) });
 edit_endpoint!(set_service_resources, put, "/api/v1/applications/{id}/services/{service}/resources", (id: String = "id", service: String = "service"), ResourcesValue, body::<ResourcesValue>, |(_, service), body: ResourcesValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Resources(body.value) });
@@ -208,7 +210,7 @@ edit_endpoint!(set_service_cpu, put, "/api/v1/applications/{id}/services/{servic
 edit_endpoint!(set_service_memory, put, "/api/v1/applications/{id}/services/{service}/resources/memory", (id: String = "id", service: String = "service"), MemoryValue, body::<MemoryValue>, |(_, service), body: MemoryValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Memory(body.value) });
 edit_endpoint!(set_service_general, put, "/api/v1/applications/{id}/services/{service}/general", (id: String = "id", service: String = "service"), ServiceGeneral, body::<ServiceGeneral>, |(_, service), body: ServiceGeneral| ApplicationEdit::Service { name: service, edit: ServiceEdit::General(body) });
 edit_endpoint!(set_service_process, put, "/api/v1/applications/{id}/services/{service}/process", (id: String = "id", service: String = "service"), ServiceProcess, body::<ServiceProcess>, |(_, service), body: ServiceProcess| ApplicationEdit::Service { name: service, edit: ServiceEdit::Process(body) });
-edit_endpoint!(set_service_environment_entry, put, "/api/v1/applications/{id}/services/{service}/environment/{key}", (id: String = "id", service: String = "service", key: String = "key"), StringValue, body::<StringValue>, |(_, service, key), body: StringValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::EnvironmentEntry((key, Some(body.value))) });
+edit_endpoint!(set_service_environment_entry, put, "/api/v1/applications/{id}/services/{service}/environment/{key}", (id: String = "id", service: String = "service", key: String = "key"), TemplateValue, body::<TemplateValue>, |(_, service, key), body: TemplateValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::EnvironmentEntry((key, Some(body.value))) });
 /// Removes an environment variable from a service.
 ///
 /// Pass `deploy=true` to also deploy the result (202 instead of 200).
@@ -283,7 +285,7 @@ async fn create_application(
         metadata: piqueld_core::manifest::Metadata { name: name.value },
         spec: piqueld_core::manifest::ApplicationSpec::default(),
     }
-    .validate()?;
+    .validate_template()?;
     accept_mutation(
         &state,
         Mutation::save(manifest, None, query.deploy),
@@ -302,6 +304,7 @@ pub(super) fn router() -> OpenApiRouter<ApiState> {
         .routes(routes!(set_application_routes))
         .routes(routes!(set_application_jobs))
         .routes(routes!(set_application_name))
+        .routes(routes!(set_application_variables))
         .routes(routes!(set_manifest_repository))
         .routes(routes!(disconnect_manifest_repository))
         .routes(routes!(set_manifest_repository_url))

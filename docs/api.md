@@ -91,8 +91,9 @@ immutable deployment snapshot commit in the same transaction.
 | DELETE | `/volumes/{volume}` | None; mounted volumes are rejected |
 | PUT | `/routes` | `{ "value": [{ "hostname": "notes.example.com", "service": "web", "port": 3000 }] }`; replaces this application's routes |
 | PUT | `/jobs` | `{ "value": [{ "name": "migrate", "service": "web", "command": ["notes", "migrate"], "run": "before-rollout", "timeout_seconds": 300 }] }`; replaces the jobs, in execution order |
+| PUT | `/variables` | `{ "value": { "defaults": { "domain": "piquel.fr" }, "environments": { "staging": { "domain": "staging.piquel.fr" } } } }`; replaces every variable value |
 | PUT | `/services/{service}/name` | `{ "value": "worker" }` |
-| PUT | `/services/{service}/replicas` | `{ "value": 3 }` |
+| PUT | `/services/{service}/replicas` | `{ "value": 3 }`, or a reference such as `"${{ vars.web_replicas }}"`; typed fields accept references |
 | PUT | `/services/{service}/source` | `{ "value": Source }` |
 | PUT | `/services/{service}/source/image` | `{ "value": "nginx:stable" }` |
 | PUT | `/services/{service}/source/git/{url,branch,commit,dockerfile,context}` | `{ "value": "..." }`; commit may be null |
@@ -168,16 +169,22 @@ Reconcile can continue an already-requested deletion. Preview preconditions are
 also optional. The CLI supplies apply/delete/rename preconditions automatically;
 `--yes` skips confirmation and `--force` requests the override independently.
 
-Configuration generation starts at 1 and advances on saves, changed names, and
-application deletion intent. Environment creation, renames and deletions and
-deployments leave it unchanged; each environment records the revision it last
-resolved as `resolved_generation`. Apply replaces the full configuration without merging. It returns
+Configuration generation starts at 1 and advances on saves, changed names,
+application deletion intent, and environment creation, renames and deletions,
+since environment names select `[spec.environments.<name>]` configuration.
+Deployments leave it unchanged; each environment records the revision it last
+resolved as `resolved_generation`, which environment changes keep current. Apply replaces the full configuration without merging. It returns
 200 with `SavedApplication` (`application_id`, `generation`, and null `operation_id`).
 With `?deploy=true`, apply atomically saves and deploys, returning 202 with a populated
 `operation_id`. Saving during deletion is rejected.
 
 Deploy captures exactly the inspected saved revision, returning 202 with
-`AcceptedOperation`. Every explicit Deploy creates a new snapshot and supersedes
+`AcceptedOperation`. The saved manifest is rendered for the environment when
+captured (repository manifests once fetched): a reference without a value
+fails the request with 422 and `variable_value_missing` in `details.errors`.
+Deployment snapshots record the captured manifest as `template`, the rendered
+values as `variables`, and the rendered manifest as `application` (null until a
+repository manifest is fetched). Every explicit Deploy creates a new snapshot and supersedes
 pending work, even for unchanged configuration. It resolves image tags again;
 matching healthy containers need no restart. Empty applications are valid: an
 empty deployment removes services and networks while retaining volume data.
@@ -212,9 +219,12 @@ subsequent name-based apply.
 Environment creation and rename return 200 with `EnvironmentView`. Names follow
 the logical-name rules and are unique within the application (409
 `application_name_collision`). A new environment starts `not_deployed`; renaming
-never touches the runtime. Every environment reserves the saved manifest's
-hostnames, so environments of one application cannot share routes yet: creating a
-second environment of an application with routes fails with 409 `hostname_conflict`.
+never touches the runtime. Every environment reserves the hostnames the saved
+manifest renders for it, so environments of one application may use different
+hostnames through variables; two that render the same hostname fail with 409
+`hostname_conflict`. Renaming an environment returns 409 `environment_configured`
+while the saved manifest has a `[spec.environments.<name>]` block for the old or
+new name.
 
 Deleting an application requests deletion of each environment and returns 202
 with `DeletedApplication` (`application_id`, `generation`, and one
@@ -241,14 +251,18 @@ absence; its operation endpoint also returns 404 after cleanup.
 Preview returns 200 with a `PlanView`, no durable changes, and no image pulls.
 The response includes the inspected generation (zero for an absent name), an
 `identical` flag, latest operation, redacted manifest field changes, a runtime
-plan, and each service's effective rollout order (`derived` or `explicit`) and
-monitor window. A `start-first` order set on a service with a writable volume adds
+plan, each service's effective rollout order (`derived` or `explicit`) and
+monitor window, and `variables`: the value of every reference in scope for the
+selected environment. The manifest is rendered for that environment; a missing
+value fails with 422. A `[spec.environments.<name>]` block naming no
+environment adds a non-blocking `environment_block_unknown` warning. A `start-first` order set on a service with a writable volume adds
 a non-blocking `rollout_start_first_writable_volume` warning to the plan. Manifest
 differences and the runtime plan compare with the environment selected by
 `environment=ID` (by default the application's only environment): its last
 deployment snapshot, not saved configuration, and its observed runtime. Without a
-selection and with several environments (or none), they compare against saved
-configuration and the runtime plan is empty. An environment of another
+selection and with several environments, they compare the saved manifests as
+written and the runtime plan is empty. A new application renders for
+`production`. An environment of another
 application returns 404. Image tags report resolution requirements even when unchanged,
 matching Deploy's refresh behavior. Environment,
 command, argument, and health-check values are redacted in previews, including

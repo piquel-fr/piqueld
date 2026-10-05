@@ -441,6 +441,14 @@
         "additionalProperties": false,
         "description": "User-provided application resource lists.",
         "properties": {
+          "environments": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/EnvironmentConfig"
+            },
+            "default": {},
+            "description": "Configuration for each environment, selected by environment name.",
+            "type": "object"
+          },
           "jobs": {
             "default": [],
             "description": "One-shot jobs, run in declared order at their deployment point.",
@@ -492,6 +500,14 @@
               "$ref": "#/components/schemas/Service"
             },
             "type": "array"
+          },
+          "variables": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Variable"
+            },
+            "default": {},
+            "description": "Variables referenced as `${{ vars.<name> }}`, with their default values.",
+            "type": "object"
           },
           "volumes": {
             "default": [],
@@ -567,12 +583,45 @@
         ],
         "type": "object"
       },
+      "ApplicationTemplate": {
+        "description": "A saved manifest in canonical order, with its persistence-assigned\nidentity. Its values may reference variables: [`Self::render`] produces the\n[`NormalizedApplication`] one environment deploys.",
+        "properties": {
+          "api_version": {
+            "description": "API version string.",
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/ApplicationId",
+            "description": "Stable application identity."
+          },
+          "kind": {
+            "description": "Resource kind string.",
+            "type": "string"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/ValidatedMetadata",
+            "description": "Canonical metadata."
+          },
+          "spec": {
+            "$ref": "#/components/schemas/ApplicationSpec",
+            "description": "Resource specification, with references unresolved."
+          }
+        },
+        "required": [
+          "id",
+          "api_version",
+          "kind",
+          "metadata",
+          "spec"
+        ],
+        "type": "object"
+      },
       "ApplicationView": {
         "description": "Public application state returned by the API.",
         "properties": {
           "application": {
-            "$ref": "#/components/schemas/NormalizedApplication",
-            "description": "Normalized application manifest, shared by every environment."
+            "$ref": "#/components/schemas/ApplicationTemplate",
+            "description": "Saved manifest, shared by every environment, with references unresolved."
           },
           "created_at_ms": {
             "description": "Creation timestamp in Unix milliseconds.",
@@ -669,23 +718,37 @@
             "properties": {
               "args": {
                 "additionalProperties": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/Template"
                 },
                 "description": "Values passed as `--build-arg`. They are recorded in image\nmetadata, so sensitive values belong in secrets instead.",
                 "type": "object"
               },
               "context": {
-                "description": "Build context relative to the repository root.",
-                "type": "string"
+                "$ref": "#/components/schemas/Template",
+                "description": "Build context relative to the repository root."
               },
               "dockerfile": {
-                "description": "Dockerfile path relative to the repository root.",
-                "type": "string"
+                "$ref": "#/components/schemas/Template",
+                "description": "Dockerfile path relative to the repository root."
               },
               "target": {
-                "description": "Multi-stage build target; the final stage when absent.",
-                "nullable": true,
-                "type": "string"
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Template"
+                      }
+                    ],
+                    "description": "Multi-stage build target; the final stage when absent."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
               },
               "type": {
                 "enum": [
@@ -825,7 +888,7 @@
             "type": "string"
           },
           "source": {
-            "$ref": "#/components/schemas/Source",
+            "$ref": "#/components/schemas/ValidatedSource",
             "description": "Requested build source."
           },
           "started_at_ms": {
@@ -910,11 +973,23 @@
         "additionalProperties": false,
         "properties": {
           "value": {
-            "description": "New value; null explicitly clears an optional setting.",
-            "format": "int32",
-            "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Typed_u32"
+                  }
+                ],
+                "description": "New value; null explicitly clears an optional setting."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           }
         },
         "required": [
@@ -1242,8 +1317,23 @@
         "description": "Durable deployment snapshot and execution summary.",
         "properties": {
           "application": {
-            "$ref": "#/components/schemas/NormalizedApplication",
-            "description": "Configuration captured when deployment was accepted."
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/NormalizedApplication"
+                  }
+                ],
+                "description": "Rendered configuration; absent until a repository-backed manifest is fetched."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           },
           "current_target": {
             "description": "Whether this is the currently promoted runtime target.",
@@ -1262,11 +1352,23 @@
             "format": "int64",
             "nullable": true,
             "type": "integer"
+          },
+          "template": {
+            "$ref": "#/components/schemas/ApplicationTemplate",
+            "description": "Manifest captured for this deployment, with references unresolved."
+          },
+          "variables": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VariableValue"
+            },
+            "description": "Values its references rendered to, keyed by reference.",
+            "type": "object"
           }
         },
         "required": [
           "operation",
-          "application",
+          "template",
+          "variables",
           "current_target",
           "last_successful"
         ],
@@ -1355,7 +1457,7 @@
               {
                 "allOf": [
                   {
-                    "$ref": "#/components/schemas/HealthCheck"
+                    "$ref": "#/components/schemas/ValidatedHealthCheck"
                   }
                 ],
                 "description": "Optional health check."
@@ -1413,7 +1515,7 @@
               {
                 "allOf": [
                   {
-                    "$ref": "#/components/schemas/ResourceLimits"
+                    "$ref": "#/components/schemas/ValidatedResourceLimits"
                   }
                 ],
                 "description": "Optional CPU and memory limits."
@@ -1428,7 +1530,7 @@
             ]
           },
           "rollout": {
-            "$ref": "#/components/schemas/Rollout",
+            "$ref": "#/components/schemas/ValidatedRollout",
             "description": "Rollout settings, resolved by [`Self::rollout_policy`]. Omitted when\ndefault, so targets prepared before the setting existed still decode."
           },
           "secrets": {
@@ -1818,8 +1920,8 @@
             "description": "Public application state returned by the API.",
             "properties": {
               "application": {
-                "$ref": "#/components/schemas/NormalizedApplication",
-                "description": "Normalized application manifest, shared by every environment."
+                "$ref": "#/components/schemas/ApplicationTemplate",
+                "description": "Saved manifest, shared by every environment, with references unresolved."
               },
               "created_at_ms": {
                 "description": "Creation timestamp in Unix milliseconds.",
@@ -2772,7 +2874,7 @@
                       "type": "string"
                     },
                     "source": {
-                      "$ref": "#/components/schemas/Source",
+                      "$ref": "#/components/schemas/ValidatedSource",
                       "description": "Requested build source."
                     },
                     "started_at_ms": {
@@ -2830,8 +2932,23 @@
                   "description": "Durable deployment snapshot and execution summary.",
                   "properties": {
                     "application": {
-                      "$ref": "#/components/schemas/NormalizedApplication",
-                      "description": "Configuration captured when deployment was accepted."
+                      "oneOf": [
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/components/schemas/NormalizedApplication"
+                            }
+                          ],
+                          "description": "Rendered configuration; absent until a repository-backed manifest is fetched."
+                        },
+                        {
+                          "enum": [
+                            null
+                          ],
+                          "nullable": true,
+                          "type": "string"
+                        }
+                      ]
                     },
                     "current_target": {
                       "description": "Whether this is the currently promoted runtime target.",
@@ -2850,11 +2967,23 @@
                       "format": "int64",
                       "nullable": true,
                       "type": "integer"
+                    },
+                    "template": {
+                      "$ref": "#/components/schemas/ApplicationTemplate",
+                      "description": "Manifest captured for this deployment, with references unresolved."
+                    },
+                    "variables": {
+                      "additionalProperties": {
+                        "$ref": "#/components/schemas/VariableValue"
+                      },
+                      "description": "Values its references rendered to, keyed by reference.",
+                      "type": "object"
                     }
                   },
                   "required": [
                     "operation",
-                    "application",
+                    "template",
+                    "variables",
                     "current_target",
                     "last_successful"
                   ],
@@ -3327,6 +3456,13 @@
                   "$ref": "#/components/schemas/ServiceRolloutView"
                 },
                 "type": "array"
+              },
+              "variables": {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/VariableValue"
+                },
+                "description": "The value of every variable in scope for the selected environment,\nkeyed by reference, e.g. `vars.domain`. Empty when none is selected.",
+                "type": "object"
               }
             },
             "required": [
@@ -3629,6 +3765,21 @@
         ],
         "type": "object"
       },
+      "EnvironmentConfig": {
+        "additionalProperties": false,
+        "description": "Configuration of one environment, `[spec.environments.<name>]`.",
+        "properties": {
+          "variables": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Variable"
+            },
+            "default": {},
+            "description": "Values overriding `[spec.variables]` in this environment.",
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
       "EnvironmentDetailView": {
         "description": "Read-only environment detail composed at the API boundary.",
         "properties": {
@@ -3760,7 +3911,7 @@
         "properties": {
           "value": {
             "additionalProperties": {
-              "type": "string"
+              "$ref": "#/components/schemas/Template"
             },
             "description": "New value; null explicitly clears an optional setting.",
             "type": "object"
@@ -4109,27 +4260,20 @@
             "description": "HTTP health endpoint check.",
             "properties": {
               "interval_seconds": {
-                "description": "Probe interval in seconds.",
-                "format": "int32",
-                "minimum": 0,
-                "type": "integer"
+                "$ref": "#/components/schemas/Typed_u32",
+                "description": "Probe interval in seconds."
               },
               "path": {
-                "description": "HTTP path to probe.",
-                "type": "string"
+                "$ref": "#/components/schemas/Template",
+                "description": "HTTP path to probe."
               },
               "port": {
-                "description": "Container port to probe.",
-                "format": "int32",
-                "maximum": 65535,
-                "minimum": 0,
-                "type": "integer"
+                "$ref": "#/components/schemas/Typed_u16",
+                "description": "Container port to probe."
               },
               "timeout_seconds": {
-                "description": "Probe timeout in seconds.",
-                "format": "int32",
-                "minimum": 0,
-                "type": "integer"
+                "$ref": "#/components/schemas/Typed_u32",
+                "description": "Probe timeout in seconds."
               },
               "type": {
                 "enum": [
@@ -4150,21 +4294,17 @@
               "command": {
                 "description": "Command and arguments to execute.",
                 "items": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/Template"
                 },
                 "type": "array"
               },
               "interval_seconds": {
-                "description": "Probe interval in seconds.",
-                "format": "int32",
-                "minimum": 0,
-                "type": "integer"
+                "$ref": "#/components/schemas/Typed_u32",
+                "description": "Probe interval in seconds."
               },
               "timeout_seconds": {
-                "description": "Probe timeout in seconds.",
-                "format": "int32",
-                "minimum": 0,
-                "type": "integer"
+                "$ref": "#/components/schemas/Typed_u32",
+                "description": "Probe timeout in seconds."
               },
               "type": {
                 "enum": [
@@ -4304,7 +4444,7 @@
           "command": {
             "description": "Command replacing the service's command and arguments.",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/Template"
             },
             "type": "array"
           },
@@ -4660,11 +4800,23 @@
         "additionalProperties": false,
         "properties": {
           "value": {
-            "description": "New value; null explicitly clears an optional setting.",
-            "format": "int64",
-            "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Typed_u64"
+                  }
+                ],
+                "description": "New value; null explicitly clears an optional setting."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           }
         },
         "required": [
@@ -5195,6 +5347,13 @@
               "$ref": "#/components/schemas/ServiceRolloutView"
             },
             "type": "array"
+          },
+          "variables": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VariableValue"
+            },
+            "description": "The value of every variable in scope for the selected environment,\nkeyed by reference, e.g. `vars.domain`. Empty when none is selected.",
+            "type": "object"
           }
         },
         "required": [
@@ -5255,8 +5414,8 @@
             "type": "integer"
           },
           "to": {
-            "description": "Absolute `http` or `https` destination URL.",
-            "type": "string"
+            "$ref": "#/components/schemas/Template",
+            "description": "Absolute `http` or `https` destination URL."
           }
         },
         "required": [
@@ -5351,10 +5510,8 @@
         "additionalProperties": false,
         "properties": {
           "value": {
-            "description": "New value; null explicitly clears an optional setting.",
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
+            "$ref": "#/components/schemas/Typed_u16",
+            "description": "New value; null explicitly clears an optional setting."
           }
         },
         "required": [
@@ -5454,7 +5611,7 @@
                 "description": "Docker's content-addressed local image ID."
               },
               "requested": {
-                "$ref": "#/components/schemas/Source",
+                "$ref": "#/components/schemas/ValidatedSource",
                 "description": "Exact source and build inputs requested."
               },
               "type": {
@@ -5479,19 +5636,42 @@
         "description": "Optional CPU and memory limits for a service.",
         "properties": {
           "cpu_millis": {
-            "description": "CPU limit in millicores.",
-            "format": "int32",
-            "minimum": 0,
-            "nullable": true,
-            "type": "integer"
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Typed_u32"
+                  }
+                ],
+                "description": "CPU limit in millicores."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           },
           "memory_bytes": {
-            "description": "Memory limit in bytes.",
-            "format": "int64",
-            "maximum": 9223372036854775807,
-            "minimum": 1,
-            "nullable": true,
-            "type": "integer"
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Typed_u64"
+                  }
+                ],
+                "description": "Memory limit in bytes."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           }
         },
         "type": "object"
@@ -5530,12 +5710,23 @@
         "properties": {
           "monitor_seconds": {
             "default": null,
-            "description": "Seconds Docker watches each replacement task for failure; 30 when omitted.",
-            "format": "int32",
-            "maximum": 3600,
-            "minimum": 1,
-            "nullable": true,
-            "type": "integer"
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Typed_u32"
+                  }
+                ],
+                "description": "Seconds Docker watches each replacement task for failure; 30 when omitted."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           },
           "order": {
             "default": null,
@@ -5543,7 +5734,7 @@
               {
                 "allOf": [
                   {
-                    "$ref": "#/components/schemas/RolloutOrder"
+                    "$ref": "#/components/schemas/Typed_RolloutOrder"
                   }
                 ],
                 "description": "Update order; derived from the service's mounts when omitted."
@@ -5594,8 +5785,8 @@
         "description": "Public HTTP route input, validated independently of ingress enablement.\nA route sets either `service` and `port`, or `redirect`.",
         "properties": {
           "hostname": {
-            "description": "Exact public DNS hostname.",
-            "type": "string"
+            "$ref": "#/components/schemas/Template",
+            "description": "Exact public DNS hostname."
           },
           "port": {
             "description": "Internal HTTP backend port.",
@@ -5754,10 +5945,8 @@
         "additionalProperties": false,
         "properties": {
           "value": {
-            "description": "New value; null explicitly clears an optional setting.",
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
+            "$ref": "#/components/schemas/Typed_u32",
+            "description": "New value; null explicitly clears an optional setting."
           }
         },
         "required": [
@@ -5965,14 +6154,14 @@
           "arguments": {
             "description": "Arguments passed to the command.",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/Template"
             },
             "type": "array"
           },
           "command": {
             "description": "Container entrypoint command.",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/Template"
             },
             "type": "array"
           },
@@ -5985,7 +6174,7 @@
           },
           "environment": {
             "additionalProperties": {
-              "type": "string"
+              "$ref": "#/components/schemas/Template"
             },
             "description": "Environment variables keyed by name.",
             "type": "object"
@@ -6021,11 +6210,8 @@
             "type": "string"
           },
           "replicas": {
-            "description": "Desired replica count.",
-            "format": "int32",
-            "maximum": 65535,
-            "minimum": 0,
-            "type": "integer"
+            "$ref": "#/components/schemas/Typed_u16",
+            "description": "Desired replica count."
           },
           "resources": {
             "oneOf": [
@@ -6073,10 +6259,8 @@
         "description": "Source and scaling settings saved together by the dashboard form.",
         "properties": {
           "replicas": {
-            "description": "Desired replicas.",
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
+            "$ref": "#/components/schemas/Typed_u16",
+            "description": "Desired replicas."
           },
           "source": {
             "$ref": "#/components/schemas/Source",
@@ -6100,14 +6284,14 @@
           "arguments": {
             "description": "Argument elements.",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/Template"
             },
             "type": "array"
           },
           "command": {
             "description": "Entrypoint elements.",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/Template"
             },
             "type": "array"
           }
@@ -6172,8 +6356,8 @@
             "description": "Pull a prebuilt image from a registry.",
             "properties": {
               "image": {
-                "description": "Image reference.",
-                "type": "string"
+                "$ref": "#/components/schemas/Template",
+                "description": "Image reference."
               },
               "type": {
                 "enum": [
@@ -6346,6 +6530,39 @@
         ],
         "type": "object"
       },
+      "Template": {
+        "description": "Text that may contain `${{ namespace.name }}` references, with optional\nwhitespace inside the braces. `$${{` writes a literal `${{`; `${VAR}` and\n`$VAR` are ordinary text, left for shells and applications to expand.\n\n```text\n\"${{ vars.domain }}\"       -> the value of `domain`\n\"api.${{vars.domain}}\"     -> \"api.\" followed by the value of `domain`\n\"$${{ vars.domain }}\"      -> \"${{ vars.domain }}\", literally\n```",
+        "type": "string"
+      },
+      "TemplateValue": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/Template",
+            "description": "New value; null explicitly clears an optional setting."
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
+      "TemplatesValue": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "description": "New value; null explicitly clears an optional setting.",
+            "items": {
+              "$ref": "#/components/schemas/Template"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
       "TerminalSize": {
         "description": "Terminal dimensions in character cells.",
         "properties": {
@@ -6367,6 +6584,70 @@
           "height"
         ],
         "type": "object"
+      },
+      "TypedTemplate": {
+        "description": "Schema of a template in a typed field: text containing `${{`.",
+        "pattern": "\\$\\{\\{",
+        "type": "string"
+      },
+      "Typed_RolloutOrder": {
+        "description": "A typed value: a literal, or a template rendered for each environment.\n\nA template that is exactly one reference yields the variable's own value;\nany other template yields text. The result must then decode as `T`, so\nstrings are never parsed into numbers.",
+        "oneOf": [
+          {
+            "description": "Whether Docker stops a task before or after starting its replacement.",
+            "enum": [
+              "stop-first",
+              "start-first"
+            ],
+            "type": "string"
+          },
+          {
+            "$ref": "#/components/schemas/TypedTemplate",
+            "description": "A value rendered from variables."
+          }
+        ]
+      },
+      "Typed_u16": {
+        "description": "A typed value: a literal, or a template rendered for each environment.\n\nA template that is exactly one reference yields the variable's own value;\nany other template yields text. The result must then decode as `T`, so\nstrings are never parsed into numbers.",
+        "oneOf": [
+          {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "$ref": "#/components/schemas/TypedTemplate",
+            "description": "A value rendered from variables."
+          }
+        ]
+      },
+      "Typed_u32": {
+        "description": "A typed value: a literal, or a template rendered for each environment.\n\nA template that is exactly one reference yields the variable's own value;\nany other template yields text. The result must then decode as `T`, so\nstrings are never parsed into numbers.",
+        "oneOf": [
+          {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "$ref": "#/components/schemas/TypedTemplate",
+            "description": "A value rendered from variables."
+          }
+        ]
+      },
+      "Typed_u64": {
+        "description": "A typed value: a literal, or a template rendered for each environment.\n\nA template that is exactly one reference yields the variable's own value;\nany other template yields text. The result must then decode as `T`, so\nstrings are never parsed into numbers.",
+        "oneOf": [
+          {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "$ref": "#/components/schemas/TypedTemplate",
+            "description": "A value rendered from variables."
+          }
+        ]
       },
       "User": {
         "description": "Public account information; accounts have identical capabilities.",
@@ -6390,6 +6671,132 @@
           "display_name"
         ],
         "type": "object"
+      },
+      "ValidatedBuild": {
+        "description": "Validated build instructions.",
+        "oneOf": [
+          {
+            "description": "Build a local container image using Docker.",
+            "properties": {
+              "args": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Values passed as `--build-arg`.",
+                "type": "object"
+              },
+              "context": {
+                "description": "Build context relative to the repository root.",
+                "type": "string"
+              },
+              "dockerfile": {
+                "description": "Dockerfile path relative to the repository root.",
+                "type": "string"
+              },
+              "target": {
+                "description": "Multi-stage build target; the final stage when absent.",
+                "nullable": true,
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "docker"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "dockerfile",
+              "context",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ValidatedHealthCheck": {
+        "description": "Validated container health check.",
+        "oneOf": [
+          {
+            "description": "HTTP health endpoint check.",
+            "properties": {
+              "interval_seconds": {
+                "description": "Probe interval in seconds.",
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "description": "HTTP path to probe.",
+                "type": "string"
+              },
+              "port": {
+                "description": "Container port to probe.",
+                "format": "int32",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "timeout_seconds": {
+                "description": "Probe timeout in seconds.",
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "http"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "port",
+              "path",
+              "interval_seconds",
+              "timeout_seconds",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Executable command health check.",
+            "properties": {
+              "command": {
+                "description": "Command and arguments to execute.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "interval_seconds": {
+                "description": "Probe interval in seconds.",
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "timeout_seconds": {
+                "description": "Probe timeout in seconds.",
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "command"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "command",
+              "interval_seconds",
+              "timeout_seconds",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "ValidatedJob": {
         "description": "Validated one-shot job.",
@@ -6492,6 +6899,64 @@
         ],
         "type": "object"
       },
+      "ValidatedResourceLimits": {
+        "additionalProperties": false,
+        "description": "Validated CPU and memory limits.",
+        "properties": {
+          "cpu_millis": {
+            "description": "CPU limit in millicores.",
+            "format": "int32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "memory_bytes": {
+            "description": "Memory limit in bytes.",
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": 1,
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ValidatedRollout": {
+        "additionalProperties": false,
+        "description": "Validated rollout settings of a service.",
+        "properties": {
+          "monitor_seconds": {
+            "default": null,
+            "description": "Seconds Docker watches each replacement task for failure; 30 when omitted.",
+            "format": "int32",
+            "maximum": 3600,
+            "minimum": 1,
+            "nullable": true,
+            "type": "integer"
+          },
+          "order": {
+            "default": null,
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/RolloutOrder"
+                  }
+                ],
+                "description": "Update order; derived from the service's mounts when omitted."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
       "ValidatedRoute": {
         "allOf": [
           {
@@ -6549,7 +7014,7 @@
               {
                 "allOf": [
                   {
-                    "$ref": "#/components/schemas/HealthCheck"
+                    "$ref": "#/components/schemas/ValidatedHealthCheck"
                   }
                 ],
                 "description": "Optional container health check."
@@ -6585,7 +7050,7 @@
               {
                 "allOf": [
                   {
-                    "$ref": "#/components/schemas/ResourceLimits"
+                    "$ref": "#/components/schemas/ValidatedResourceLimits"
                   }
                 ],
                 "description": "Optional CPU and memory limits."
@@ -6600,7 +7065,7 @@
             ]
           },
           "rollout": {
-            "$ref": "#/components/schemas/Rollout",
+            "$ref": "#/components/schemas/ValidatedRollout",
             "description": "Rollout settings. Omitted when default so existing specification hashes stay stable."
           },
           "secrets": {
@@ -6611,7 +7076,7 @@
             "type": "array"
           },
           "source": {
-            "$ref": "#/components/schemas/Source",
+            "$ref": "#/components/schemas/ValidatedSource",
             "description": "Explicit image or build source."
           }
         },
@@ -6625,6 +7090,56 @@
           "mounts"
         ],
         "type": "object"
+      },
+      "ValidatedSource": {
+        "description": "Validated service source.",
+        "oneOf": [
+          {
+            "description": "Pull a prebuilt image from a registry.",
+            "properties": {
+              "image": {
+                "description": "Image reference.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "image"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "image",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Build a checked-out Git revision.",
+            "properties": {
+              "build": {
+                "$ref": "#/components/schemas/ValidatedBuild",
+                "description": "Explicit build instructions."
+              },
+              "repository": {
+                "$ref": "#/components/schemas/SourceRepository",
+                "description": "Repository and revision to resolve."
+              },
+              "type": {
+                "enum": [
+                  "git"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository",
+              "build",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "ValidatedSpec": {
         "description": "Validated application resource lists.",
@@ -6700,6 +7215,81 @@
         },
         "required": [
           "name"
+        ],
+        "type": "object"
+      },
+      "Variable": {
+        "description": "A declared variable value: a string, integer, or boolean. Strings may\nreference system variables, but not other variables.",
+        "oneOf": [
+          {
+            "description": "A boolean.",
+            "type": "boolean"
+          },
+          {
+            "description": "A signed 64-bit integer.",
+            "format": "int64",
+            "type": "integer"
+          },
+          {
+            "$ref": "#/components/schemas/Template",
+            "description": "Text, which may reference system variables."
+          }
+        ]
+      },
+      "VariableValue": {
+        "description": "A variable's value for one environment.",
+        "oneOf": [
+          {
+            "description": "A boolean.",
+            "type": "boolean"
+          },
+          {
+            "description": "A signed 64-bit integer.",
+            "format": "int64",
+            "type": "integer"
+          },
+          {
+            "description": "Text.",
+            "type": "string"
+          }
+        ]
+      },
+      "Variables": {
+        "additionalProperties": false,
+        "description": "Every variable value of an application, replaced together.",
+        "properties": {
+          "defaults": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Variable"
+            },
+            "default": {},
+            "description": "Defaults, `[spec.variables]`.",
+            "type": "object"
+          },
+          "environments": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/Variable"
+              },
+              "type": "object"
+            },
+            "default": {},
+            "description": "Values per environment name, `[spec.environments.<name>.variables]`.",
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "VariablesValue": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/Variables",
+            "description": "New value; null explicitly clears an optional setting."
+          }
+        },
+        "required": [
+          "value"
         ],
         "type": "object"
       },
@@ -9868,7 +10458,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StringsValue"
+                "$ref": "#/components/schemas/TemplatesValue"
               }
             }
           },
@@ -10050,7 +10640,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StringsValue"
+                "$ref": "#/components/schemas/TemplatesValue"
               }
             }
           },
@@ -10764,7 +11354,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StringValue"
+                "$ref": "#/components/schemas/TemplateValue"
               }
             }
           },
@@ -11310,7 +11900,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StringsValue"
+                "$ref": "#/components/schemas/TemplatesValue"
               }
             }
           },
@@ -11674,7 +12264,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StringValue"
+                "$ref": "#/components/schemas/TemplateValue"
               }
             }
           },
@@ -14766,7 +15356,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StringValue"
+                "$ref": "#/components/schemas/TemplateValue"
               }
             }
           },
@@ -14948,7 +15538,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StringValue"
+                "$ref": "#/components/schemas/TemplateValue"
               }
             }
           },
@@ -15312,7 +15902,181 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StringValue"
+                "$ref": "#/components/schemas/TemplateValue"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved and deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
+    "/api/v1/applications/{id}/variables": {
+      "put": {
+        "operationId": "set_application_variables",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required inspected generation unless force is set.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass the revision check.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "in": "query",
+            "name": "deploy",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VariablesValue"
               }
             }
           },

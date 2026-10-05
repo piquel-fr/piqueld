@@ -47,7 +47,7 @@ impl RouteDraft {
             Ok(Route::redirect(
                 self.hostname,
                 Redirect {
-                    to: self.to,
+                    to: self.to.into(),
                     status,
                     preserve_path: self.preserve_path,
                 },
@@ -65,7 +65,7 @@ impl RouteDraft {
 impl From<Route> for RouteDraft {
     fn from(route: Route) -> Self {
         let mut draft = Self {
-            hostname: route.hostname,
+            hostname: route.hostname.to_string(),
             service: route.service.unwrap_or_default(),
             ..Self::default()
         };
@@ -74,7 +74,7 @@ impl From<Route> for RouteDraft {
         }
         if let Some(redirect) = route.redirect {
             draft.redirect = true;
-            draft.to = redirect.to;
+            draft.to = redirect.to.to_string();
             draft.status = redirect.status.to_string();
             draft.preserve_path = redirect.preserve_path;
         }

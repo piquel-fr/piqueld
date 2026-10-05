@@ -35,7 +35,11 @@ impl JobDraft {
         Ok(Job {
             name: self.name,
             service: self.service,
-            command: self.command,
+            command: self
+                .command
+                .iter()
+                .map(|value| value.as_str().into())
+                .collect(),
             run: JobRun::BeforeRollout,
             timeout_seconds: self
                 .timeout
@@ -50,7 +54,7 @@ impl From<Job> for JobDraft {
         Self {
             name: job.name,
             service: job.service,
-            command: job.command,
+            command: job.command.iter().map(ToString::to_string).collect(),
             timeout: job.timeout_seconds.to_string(),
         }
     }

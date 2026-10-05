@@ -83,6 +83,11 @@ impl EditorContext {
             match result {
                 Ok(environment) => {
                     self.saved.update(|saved| {
+                        // Environment lifecycle changes advance the application
+                        // revision, so later edits stay guarded by it.
+                        if !matches!(change, EnvironmentChange::RetryDeletion(_)) {
+                            saved.generation += 1;
+                        }
                         if let Some(environment) = &environment {
                             saved.environments.retain(|env| env.id != environment.id);
                             saved.environments.push(environment.clone());

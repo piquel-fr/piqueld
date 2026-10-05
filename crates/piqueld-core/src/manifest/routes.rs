@@ -1,6 +1,6 @@
 //! Exact public hostnames and validated HTTP route destinations.
 
-use super::{ValidationErrors, input};
+use super::{ValidationErrors, input, variables::Template};
 use crate::{ServiceName, names::validated_string};
 use serde::{Deserialize, Serialize};
 use std::{fmt, num::NonZeroU16};
@@ -227,6 +227,11 @@ impl ValidatedRoute {
     pub(super) fn from_input(route: input::Route, index: usize) -> Result<Self, ValidationErrors> {
         let path = format!("spec.routes[{index}]");
         let invalid = |error: &dyn fmt::Display| ValidationErrors::invalid_name(&path, error);
+        let literal = |template: Template| {
+            template
+                .as_literal()
+                .ok_or_else(|| invalid(&"references must be rendered for an environment first"))
+        };
         let fields = RouteTargetFields {
             service: route
                 .service
@@ -241,7 +246,7 @@ impl ValidatedRoute {
                 .redirect
                 .map(|redirect| {
                     Ok::<_, ValidationErrors>(ValidatedRedirect {
-                        to: RedirectUrl::parse(redirect.to).map_err(|e| invalid(&e))?,
+                        to: RedirectUrl::parse(literal(redirect.to)?).map_err(|e| invalid(&e))?,
                         status: redirect.status.try_into().map_err(|e| invalid(&e))?,
                         preserve_path: redirect.preserve_path,
                     })
@@ -249,7 +254,7 @@ impl ValidatedRoute {
                 .transpose()?,
         };
         Ok(Self {
-            hostname: Hostname::parse(route.hostname).map_err(|e| invalid(&e))?,
+            hostname: Hostname::parse(literal(route.hostname)?).map_err(|e| invalid(&e))?,
             target: fields.try_into().map_err(|e| invalid(&e))?,
         })
     }
@@ -264,14 +269,14 @@ impl ValidatedRoute {
                 None,
                 None,
                 Some(input::Redirect {
-                    to: redirect.to.to_string(),
+                    to: Template::literal(redirect.to.as_str()),
                     status: redirect.status.into(),
                     preserve_path: redirect.preserve_path,
                 }),
             ),
         };
         input::Route {
-            hostname: self.hostname.to_string(),
+            hostname: Template::literal(self.hostname.as_str()),
             service,
             port,
             redirect,

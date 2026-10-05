@@ -61,7 +61,7 @@ impl ApplicationService {
         if operation.environment_id != *id {
             return Err(StoreError::NotFound.into());
         }
-        self.store.deployment_manifest(deployment).await?;
+        self.store.deployment_snapshot(deployment).await?;
         Ok(self
             .store
             .deployment_attempts(deployment, cursor, 100)

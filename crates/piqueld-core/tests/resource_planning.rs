@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use piqueld_core::manifest::{Rollout, RolloutOrder};
+use piqueld_core::manifest::{RolloutOrder, ValidatedRollout as Rollout};
 use piqueld_core::planner::{ActionKind, PlanRequest};
 use piqueld_core::resource::{
     Convergence, NetworkAttachment, ObservedApplication, ObservedNetwork, ObservedService,
@@ -400,7 +400,7 @@ fn desired_identity_matrices_reject_non_canonical_resources() {
         healthcheck: None,
         resources: None,
         depends_on: Vec::new(),
-        rollout: piqueld_core::manifest::Rollout::default(),
+        rollout: Rollout::default(),
         networks: vec![
             piqueld_core::DockerNetworkName::parse(piqueld_core::docker_resource_name(
                 &id,
@@ -943,7 +943,7 @@ fn desired_names_are_checked_while_engine_observations_remain_permissive() {
 fn command_and_http_health_checks_have_the_same_runtime_meaning() {
     let mut desired =
         compile_application(&application(), &environment(), instance(), &resolutions()).unwrap();
-    let http = piqueld_core::HealthCheck::Http {
+    let http = piqueld_core::manifest::ValidatedHealthCheck::Http {
         port: 8080,
         path: "/health".into(),
         interval_seconds: 10,
@@ -956,7 +956,7 @@ fn command_and_http_health_checks_have_the_same_runtime_meaning() {
         interval_seconds,
         timeout_seconds,
     } = http.execution();
-    desired.services[0].healthcheck = Some(piqueld_core::HealthCheck::Command {
+    desired.services[0].healthcheck = Some(piqueld_core::manifest::ValidatedHealthCheck::Command {
         command,
         interval_seconds,
         timeout_seconds,
@@ -969,7 +969,7 @@ fn command_and_http_health_checks_have_the_same_runtime_meaning() {
         Plan::from_request(&request, &snapshot).actions,
         [] as [piqueld_core::PlanAction; 0]
     );
-    snapshot.services[0].healthcheck = Some(piqueld_core::HealthCheck::Http {
+    snapshot.services[0].healthcheck = Some(piqueld_core::manifest::ValidatedHealthCheck::Http {
         port: 8081,
         path: "/health".into(),
         interval_seconds,

@@ -44,13 +44,17 @@ several, **Deploy…** opens the Environments tab to choose one. Deployment acti
 are disabled for deleting environments. A service's Logs tab reads the only
 environment's logs, or links to each environment's logs.
 
-Environments currently share routes. A second environment cannot reserve the same
-hostnames; the error names the environment already reserving them and explains
-that per-environment configuration is needed. Environment-specific hostnames are
-planned with manifest variables.
+Values that differ between environments come from manifest variables. The
+Variables tab edits them: one row per variable, with its default and one column
+per environment, including environments the manifest configures before they
+exist; an empty cell has no value. Fields that accept variables, such as replicas
+or health check settings, take `${{ vars.<name> }}` in place of a literal. An
+environment's Overview lists the value of each variable there, marking variables
+without one. Environments that render the same hostname conflict; the error
+names the environment already reserving it.
 
 Applications have one main tab row: Overview (the default), Environments,
-Services, Source, Routes, Volumes, Jobs, Secrets, Builds, and Events. The Jobs
+Services, Source, Variables, Routes, Volumes, Jobs, Secrets, Builds, and Events. The Jobs
 tab adds, edits, reorders, and removes the one-shot jobs that run before each
 rollout, with one row per command element; saving replaces only the job list.
 Jobs inherit the referenced service's startup dependencies, which start or

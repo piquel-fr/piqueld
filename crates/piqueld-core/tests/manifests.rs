@@ -353,10 +353,10 @@ fn registry_host_case_is_canonicalized_and_ipv6_is_rejected() {
             .expect("uppercase registry hosts are accepted")
             .normalize(ApplicationId::parse("app-notes-01").unwrap());
         match &app.spec().services[0].source {
-            piqueld_core::manifest::Source::Image { image } => {
+            piqueld_core::manifest::ValidatedSource::Image { image } => {
                 assert_eq!(image, canonical);
             }
-            piqueld_core::Source::Git { .. } => panic!("expected image source"),
+            piqueld_core::manifest::ValidatedSource::Git { .. } => panic!("expected image source"),
         }
     }
 
@@ -735,7 +735,7 @@ fn rollout_manifest(settings: &str) -> String {
 
 #[test]
 fn rollout_settings_are_typed_bounded_and_backwards_compatible() {
-    use piqueld_core::manifest::{Rollout, RolloutOrder};
+    use piqueld_core::manifest::{RolloutOrder, ValidatedRollout as Rollout};
     let id = ApplicationId::parse("app-notes-01").unwrap();
 
     // An empty block is the same specification as none.

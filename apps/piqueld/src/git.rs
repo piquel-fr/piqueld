@@ -131,7 +131,7 @@ impl Checkout {
     /// Pin a checkout and resolve its paths before building its local image.
     pub(crate) async fn prepare(
         repository: &GitRepository,
-        build: &piqueld_core::manifest::Build,
+        build: &piqueld_core::manifest::ValidatedBuild,
         docker: &impl crate::docker::DockerApi,
     ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
         Self::prepare_recorded(repository, build, docker, None).await
@@ -141,7 +141,7 @@ impl Checkout {
     /// built image ID; the checkout is removed once the build finishes.
     pub(crate) async fn prepare_recorded(
         repository: &GitRepository,
-        build: &piqueld_core::manifest::Build,
+        build: &piqueld_core::manifest::ValidatedBuild,
         docker: &impl crate::docker::DockerApi,
         log: Option<&crate::build::BuildLog>,
     ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
@@ -149,7 +149,7 @@ impl Checkout {
         if let Some(log) = log {
             log.commit(&checkout.commit).await?;
         }
-        let piqueld_core::manifest::Build::Docker {
+        let piqueld_core::manifest::ValidatedBuild::Docker {
             dockerfile,
             context,
             args,

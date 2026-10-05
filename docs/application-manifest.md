@@ -9,12 +9,11 @@ mistyped value, e.g.
 the API returns them, like validation errors, as `details.errors` entries with a
 path and message; JSON request bodies report only `json_malformed`.
 
-All manifest settings are shared by the application's environments, including
-services, replica counts, limits, volumes, routes, jobs, repository settings and
-secret file references. Each environment has its own secret values and deployed
-snapshot. Per-environment manifest settings are not supported yet. Because routes
-are shared and hostnames are exclusive, an application with hostname routes cannot
-create a second environment until environment-specific configuration is supported.
+The manifest is shared by the application's environments, including services,
+replica counts, limits, volumes, routes, jobs, repository settings and secret
+file references. Each environment has its own secret values and deployed
+snapshot. Values that differ between environments, such as hostnames or replica
+counts, come from [variables](#variables).
 
 ```toml
 api_version = "piqueld.dev/v1alpha1"
@@ -116,13 +115,101 @@ revision and prepares every source again. Reconciliation and retries reuse the
 captured deployment and its prepared target, so later saved edits cannot enter
 an existing deployment. Deploy resolves and builds the saved configuration's sources again.
 Resolved runtime state remains separate from portable manifests. Generations
-advance on saves, changed names, and deletion intent.
+advance on saves, changed names, deletion intent, and environment creation,
+renames and deletion, since environment names select configuration.
+
+## Variables
+
+Declare variables in `[spec.variables]`, give environments their own values in
+`[spec.environments.<name>.variables]`, and reference them as `${{ vars.<name> }}`:
+
+```toml
+[spec.variables]
+domain = "piquel.fr"
+web_replicas = 1
+
+[spec.environments.staging.variables]
+domain = "staging.piquel.fr"
+
+[spec.environments.production.variables]
+web_replicas = 3
+
+[[spec.routes]]
+hostname = "${{ vars.domain }}"
+service = "web"
+port = 3000
+
+[[spec.services]]
+name = "web"
+replicas = "${{ vars.web_replicas }}"
+```
+
+An environment uses its own value, else the default. A variable may be declared
+only for some environments; deploying or planning an environment without a value
+fails with `variable_value_missing`, naming the environment, the field and the
+variable. Environments of one application can therefore serve different
+hostnames; two environments that render the same hostname still conflict.
+
+Syntax:
+
+- `${{ namespace.name }}`, with optional whitespace inside the braces.
+  `$${{` writes a literal `${{`. `${VAR}` and `$VAR` are ordinary text, so
+  shell and application expansion keep working.
+- References are lookups only: no functions, operators or conditionals.
+  Substituted text is never evaluated again.
+
+Variables are strings, integers or booleans. A string value may reference system
+variables, but not other variables. System variables:
+
+| Reference | Value |
+| --- | --- |
+| `app.name` | Application name. |
+| `env.name` | Environment name. |
+| `env.slug` | DNS-safe environment identifier; the environment name. |
+| `git.branch`, `git.sha` | Branch and commit the manifest was read from; only with `spec.manifest`. |
+| `deployment.id` | ID of the deployment being captured. |
+
+`secrets.*` is reserved for secret references.
+
+References are allowed in values: service `environment` values, `command` and
+`arguments`, health check settings, `replicas`, resource limits, rollout `order`
+and `monitor_seconds`, route `hostname` and redirect `to`, job `command`, and the
+build inputs `image`, `dockerfile`, `context`, build argument values and
+`target`. They are rejected elsewhere, including names, table keys, `type`
+fields, mount and secret targets, Git repository settings and `spec.manifest`.
+
+A field that is exactly one reference, like `replicas = "${{ vars.web_replicas }}"`,
+takes the variable's own value, which must have the field's type: strings are
+never parsed into numbers. Any other text containing a reference renders to a
+string. Rendered values then pass the field's usual validation.
+
+Validation (saving, `app validate`) rejects references to a variable declared
+nowhere, unknown namespaces and system variables, and malformed references, with
+the field path. Values that contain references are validated once rendered, when
+an environment is planned or deployed. A `[spec.environments.<name>]` block
+naming no environment of the application is allowed, so a manifest can be saved
+before its environment exists; `app plan` warns about it with
+`environment_block_unknown`.
+
+A deployment renders the manifest for its environment when it is captured, or,
+when repository-backed, once the manifest is fetched and its commit is known. The
+deployment records the manifest as captured, the value of every variable in
+scope, and the rendered manifest; retries reuse them and never read variables
+again. Plans render with `deployment.id` set to `preview` and, for repository
+manifests, the configured branch and pinned commit (or 40 zeros), since nothing
+is fetched. `deployment.id` changes with every deployment, so services that use
+it are replaced on every deployment.
+
+Renaming an environment would change which `[spec.environments.<name>]` block
+applies, so piqueld refuses to rename an environment while the saved manifest
+has a block for its current or its new name (`environment_configured`). Remove
+the block, rename the environment, then add the block back under the new name.
 
 ## Validation and editor support
 
 `piquelctl app validate --file application.toml` applies the same parser and
 validation as the daemon, without contacting one, and lists every error with
-its field path. Validation runs against the CLI's version of `piqueld-core`;
+its field path, including references to undeclared variables. Validation runs against the CLI's version of `piqueld-core`;
 `app plan` checks the manifest against the connected daemon's version.
 
 [`application-manifest.schema.json`](application-manifest.schema.json) is a

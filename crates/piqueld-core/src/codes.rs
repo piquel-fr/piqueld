@@ -102,6 +102,35 @@ pub const JOB_DEPENDENCY_ORDER_INVALID: &str = "job_dependency_order_invalid";
 /// Job timeout is outside its supported range.
 pub const JOB_TIMEOUT_INVALID: &str = "job_timeout_invalid";
 
+/// Template text has a `${{` without a well-formed `namespace.name` reference.
+pub const TEMPLATE_INVALID: &str = "template_invalid";
+/// Reference names a namespace that is reserved for a later feature.
+pub const VARIABLE_RESERVED: &str = "variable_reserved";
+/// Reference names an unknown namespace.
+pub const VARIABLE_NAMESPACE_UNKNOWN: &str = "variable_namespace_unknown";
+/// Reference names an unknown system variable.
+pub const VARIABLE_UNKNOWN: &str = "variable_unknown";
+/// Reference names a variable declared nowhere in the manifest.
+pub const VARIABLE_UNDECLARED: &str = "variable_undeclared";
+/// Reference appears where values cannot reference variables.
+pub const VARIABLE_NOT_ALLOWED: &str = "variable_not_allowed";
+/// Reference names a system variable this deployment does not have.
+pub const VARIABLE_UNAVAILABLE: &str = "variable_unavailable";
+/// Declared variable has no value for the environment being rendered.
+pub const VARIABLE_VALUE_MISSING: &str = "variable_value_missing";
+/// Rendered value does not have the field's type.
+pub const VARIABLE_TYPE_INVALID: &str = "variable_type_invalid";
+/// Variable name violates its alphabet rule.
+pub const VARIABLE_NAME_INVALID: &str = "variable_name_invalid";
+/// Manifest declares more variables or environment blocks than allowed.
+pub const VARIABLE_COUNT_EXCESSIVE: &str = "variable_count_excessive";
+/// Variable value exceeds its byte budget.
+pub const VARIABLE_VALUE_EXCESSIVE: &str = "variable_value_excessive";
+/// `[spec.environments.<name>]` names no environment of the application.
+pub const ENVIRONMENT_BLOCK_UNKNOWN: &str = "environment_block_unknown";
+/// Manifest that must be literal still references variables.
+pub const VARIABLE_UNRESOLVED: &str = "variable_unresolved";
+
 /// Service source has no immutable resolution yet.
 pub const SOURCE_UNRESOLVED: &str = "source_unresolved";
 /// Resolved source does not immutably match the requested service source.

@@ -5,7 +5,7 @@ use crate::{
     error::{CliError, ErrorKind, Result},
     output::Console,
 };
-use piqueld_client::{ApplicationView, ClientError, ValidationErrors};
+use piqueld_client::{ClientError, ValidationErrors};
 use serde_json::json;
 use std::{
     future::Future,
@@ -238,17 +238,6 @@ pub(crate) fn transport_description(cli: &Cli) -> String {
         );
         format!("Unix socket {socket}")
     }
-}
-
-/// Total desired replicas across all services.
-pub(crate) fn desired_replicas(application: &ApplicationView) -> u32 {
-    application
-        .application
-        .spec()
-        .services
-        .iter()
-        .map(|service| u32::from(service.replicas))
-        .sum()
 }
 
 /// Whether `value` parses as an application ID (names may also match this shape).

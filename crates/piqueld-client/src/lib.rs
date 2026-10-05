@@ -45,10 +45,12 @@ pub use environments::{
     EnvironmentStatusView, EnvironmentView,
 };
 pub use piqueld_core::manifest::{
-    ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, Job, JobRun,
-    ManifestRepository, ManifestRevision, Metadata, Mount, Redirect, RedirectStatus,
-    RepositoryManifest, ResourceLimits, Rollout, RolloutOrder, RolloutOrderSource, Route,
-    RouteTarget, SecretMount, Service, Source, SourceRepository, Volume,
+    ApplicationManifest, ApplicationSpec, ApplicationTemplate, Build, EnvironmentConfig,
+    GitRepository, HealthCheck, Job, JobRun, ManifestRepository, ManifestRevision, Metadata, Mount,
+    Redirect, RedirectStatus, RepositoryManifest, ResourceLimits, Rollout, RolloutOrder,
+    RolloutOrderSource, Route, RouteTarget, SecretMount, Service, Source, SourceRepository,
+    Template, Typed, ValidatedBuild, ValidatedRollout, ValidatedSource, Variable, VariableValue,
+    Volume,
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{
@@ -77,7 +79,8 @@ pub use piqueld_core::api::{
 /// Returns field-level validation errors when the manifest is malformed or
 /// outside the supported application schema.
 pub fn application_name_from_toml(input: &str) -> Result<String, ValidationErrors> {
-    piqueld_core::parse_toml(input).map(|application| application.name().to_string())
+    piqueld_core::manifest::parse_template_toml(input)
+        .map(|application| application.name().to_string())
 }
 
 /// The observed transport failure, without inferring daemon state.

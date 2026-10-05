@@ -43,8 +43,8 @@ impl Store {
         Ok(())
     }
 
-    /// Creates an environment of a live application under a freshly generated ID.
-    /// Applications being deleted are `Busy`.
+    /// Creates an environment of a live application under a freshly generated
+    /// ID, advancing the application revision. Applications being deleted are `Busy`.
     pub(super) async fn create_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &super::StoredApplication,
@@ -56,10 +56,15 @@ impl Store {
         }
         let id = EnvironmentId::parse(super::new_id("env")).map_err(StoreError::corrupt)?;
         Self::insert_environment_on(tx, application.application.id(), &id, name, now).await?;
+        Self::bump_generation_on(tx, application.application.id(), application.generation).await?;
         Ok(id)
     }
 
-    /// Renames an environment that is not being deleted. Its runtime is unaffected.
+    /// Renames an environment that is not being deleted, advancing the
+    /// application revision. Its runtime is unaffected. Names select
+    /// `[spec.environments.<name>]`, so a rename is refused while the saved
+    /// manifest configures the old or the new name, rather than silently
+    /// switching the configuration the environment deploys.
     pub(super) async fn rename_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
@@ -72,6 +77,14 @@ impl Store {
         let old = &environment.environment.name;
         if old == name {
             return Ok(());
+        }
+        if let Some(configured) = [old, name]
+            .into_iter()
+            .find(|name| environment.manifest().configures(name))
+        {
+            return Err(StoreError::EnvironmentConfigured {
+                environment: configured.clone(),
+            });
         }
         let (id, name) = (environment.id().as_str(), name.as_str());
         sqlx::query!(
@@ -93,7 +106,12 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        Ok(())
+        Self::bump_generation_on(
+            tx,
+            environment.manifest().id(),
+            environment.application.generation,
+        )
+        .await
     }
 
     /// Persists an environment's deletion intent and requests its delete operation.

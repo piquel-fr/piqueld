@@ -4,7 +4,8 @@ use super::{dirty_group, editor, save_actions};
 use crate::editor::{Section, ServiceForm};
 use leptos::prelude::*;
 use piqueld_client::{
-    ApplicationView, GitRepository, Mount, RepositoryManifest, Rollout, Service, Source, Volume,
+    ApplicationView, GitRepository, Mount, RepositoryManifest, Rollout, Service, Source, Typed,
+    Volume,
     edit::{ApplicationEdit, ServiceEdit, ServiceGeneral, ServiceProcess},
 };
 use std::collections::BTreeMap;
@@ -292,7 +293,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
         let edit = match section {
             Section::General => ServiceEdit::General(ServiceGeneral {
                 source: service.source.clone(),
-                replicas: service.replicas,
+                replicas: service.replicas.clone(),
             }),
             Section::Environment => ServiceEdit::Environment(service.environment.clone()),
             Section::Process => ServiceEdit::Process(ServiceProcess {
@@ -302,7 +303,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
             Section::Storage => ServiceEdit::Mounts(service.mounts.clone()),
             Section::Health => ServiceEdit::Healthcheck(service.healthcheck.clone()),
             Section::Dependencies => ServiceEdit::DependsOn(service.depends_on.clone()),
-            Section::Rollout => ServiceEdit::Rollout(service.rollout),
+            Section::Rollout => ServiceEdit::Rollout(service.rollout.clone()),
             Section::Resources => ServiceEdit::Resources(service.resources.clone()),
         };
         context.save(
@@ -800,8 +801,10 @@ pub(super) fn NewService() -> impl IntoView {
         let service = Service {
             secrets: Vec::new(),
             name,
-            source: Source::Image { image },
-            replicas: 1,
+            source: Source::Image {
+                image: image.into(),
+            },
+            replicas: Typed::Literal(1),
             environment: BTreeMap::new(),
             command: Vec::new(),
             arguments: Vec::new(),

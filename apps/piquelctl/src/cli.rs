@@ -147,6 +147,11 @@ pub(crate) enum AppCommand {
         #[command(subcommand)]
         command: crate::editing::JobCommand,
     },
+    /// Set or remove manifest variables and their values per environment.
+    Variable {
+        #[command(subcommand)]
+        command: crate::editing::VariableCommand,
+    },
     /// Connect, edit, or disconnect the manifest repository.
     Repository {
         #[command(subcommand)]

@@ -1,6 +1,9 @@
 //! Git manifest validation and immutable resolution contracts.
 use piqueld_core::edit::ApplicationEdit;
-use piqueld_core::manifest::{Build, GitRepository, ManifestRevision, Source, SourceRepository};
+use piqueld_core::manifest::{
+    GitRepository, ManifestRevision, SourceRepository, ValidatedBuild as Build,
+    ValidatedSource as Source,
+};
 use piqueld_core::resource::{ResolvedSource, Sha256Digest};
 use piqueld_core::{
     ApplicationId, EnvironmentId, InstanceId, ResolutionSet, codes, compile_application, parse_json,
@@ -80,7 +83,7 @@ fn git_resolution_retains_commit_and_local_image_and_rejects_mismatched_inputs()
     assert_eq!(resolved.services[0].image.as_str(), image_id.as_str());
     assert_eq!(resolved.reusable_resolutions(&app), resolutions);
     let mut changed = app.to_manifest();
-    let Source::Git {
+    let piqueld_core::manifest::Source::Git {
         repository: SourceRepository::Git(repository),
         ..
     } = &mut changed.spec.services[0].source

@@ -1,6 +1,7 @@
 //! Upgrade coverage for environment identity, captured targets and encrypted secrets.
 use super::*;
 use crate::api;
+use piqueld_core::manifest::ApplicationTemplate;
 
 struct LegacyApplication {
     id: ApplicationId,
@@ -128,12 +129,11 @@ impl LegacyApplication {
             store.prepared_target(&operation.id).await.unwrap().unwrap(),
             resolved
         );
-        assert_eq!(
-            store.deployment_manifest(&operation.id).await.unwrap(),
-            manifest
-        );
+        let snapshot = store.deployment_snapshot(&operation.id).await.unwrap();
+        assert_eq!(snapshot.template, ApplicationTemplate::from(&manifest));
+        assert_eq!(snapshot.rendering.unwrap().application, manifest);
         let deployments = store.deployments(environment, None, 10).await.unwrap();
-        assert_eq!(deployments.items[0].application, manifest);
+        assert_eq!(deployments.items[0].application.as_ref(), Some(&manifest));
         assert_eq!(
             store.applied_routes(environment).await.unwrap(),
             manifest.spec().routes
@@ -187,7 +187,8 @@ async fn existing_applications_become_one_production_environment_with_the_same_i
         .connect_with(options)
         .await
         .unwrap();
-    let before = MIGRATIONS.len() - 1;
+    // Legacy rows predate environments, the second-to-last migration.
+    let before = MIGRATIONS.len() - 2;
     for (index, migration) in MIGRATIONS.iter().take(before).enumerate() {
         Store::apply_migration(&pool, index + 1, migration)
             .await
@@ -200,7 +201,10 @@ async fn existing_applications_become_one_production_environment_with_the_same_i
 
     let store = Store::open(&path).await.unwrap();
     let application = store.application(&id).await.unwrap();
-    assert_eq!(application.application, manifest);
+    assert_eq!(
+        application.application,
+        ApplicationTemplate::from(&manifest)
+    );
     assert_eq!(application.generation, 3);
     let environments = store.environments(&id).await.unwrap();
     assert_eq!(environments.len(), 1);

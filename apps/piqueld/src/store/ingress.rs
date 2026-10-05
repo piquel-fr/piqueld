@@ -5,7 +5,7 @@ use piqueld_core::{
     manifest::{Hostname, ValidatedRoute},
 };
 use sqlx::{Sqlite, SqliteConnection, SqliteExecutor, Transaction};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Routes the gateway serves, keyed by owning environment in a stable order.
 pub(crate) type RoutingTable = BTreeMap<EnvironmentId, Vec<ValidatedRoute>>;
@@ -109,29 +109,41 @@ impl Store {
     }
 
     /// Recomputes reservations inside the transaction changing their source.
-    /// Captured deployment inputs also reserve names while a newer save is pending.
+    /// Captured deployments also reserve names while a newer save is pending.
     ///
     /// Collects every hostname the environment could still serve (its
-    /// application's saved spec, resolved spec, latest operation target and
-    /// captured input, desired and applied gateway routes), rejects any within
-    /// an installation hostname, then replaces the environment's
-    /// `hostname_reservations` rows. A unique violation means another
-    /// environment owns the name. Sibling conflicts identify that environment
-    /// and explain the current shared-route limitation.
+    /// application's saved routes rendered for this environment, its resolved
+    /// spec, its latest operation's target and rendered deployment manifest,
+    /// desired and applied gateway routes), rejects any within an installation
+    /// hostname, then replaces the environment's `hostname_reservations` rows.
+    /// A unique violation means another environment owns the name. Sibling
+    /// conflicts identify that environment of the same application.
     async fn reserve_hostnames_on(
         connection: &mut SqliteConnection,
         environment_id: &str,
     ) -> Result<(), StoreError> {
-        let names = sqlx::query_scalar!(r#"
+        let mut names = sqlx::query_scalar!(r#"
             SELECT DISTINCT json_extract(r.value, '$.hostname') AS "hostname!: String" FROM (
-                SELECT json_extract(a.desired_json,'$.spec.routes') AS routes FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?1
-                UNION ALL SELECT json_extract(resolved_json,'$.routes') FROM environments WHERE id=?1
+                SELECT json_extract(resolved_json,'$.routes') AS routes FROM environments WHERE id=?1
                 UNION ALL SELECT json_extract(target_json,'$.routes') FROM operations WHERE id=(SELECT id FROM operations WHERE environment_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1)
-                UNION ALL SELECT json_extract(application_json,'$.spec.routes') FROM deployment_inputs WHERE operation_id=(SELECT id FROM operations WHERE environment_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1)
+                UNION ALL SELECT json_extract(manifest_json,'$.spec.routes') FROM deployments WHERE id=(SELECT id FROM operations WHERE environment_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1)
                 UNION ALL SELECT desired_json FROM environment_routes WHERE environment_id=?1
                 UNION ALL SELECT applied_json FROM environment_routes WHERE environment_id=?1
             ) AS sources, json_each(sources.routes) AS r
-        "#, environment_id).fetch_all(&mut *connection).await.map_err(StoreError::database)?;
+        "#, environment_id).fetch_all(&mut *connection).await.map_err(StoreError::database)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        // Saved routes render per environment, so environments of one
+        // application can serve different hostnames.
+        if let Some(environment) = Self::environment_on(&mut *connection, environment_id).await? {
+            names.extend(
+                environment
+                    .manifest()
+                    .hostnames(&environment.environment.name)
+                    .into_iter()
+                    .map(String::from),
+            );
+        }
         let installation = Self::installation_hostnames(&mut *connection).await?;
         for hostname in &names {
             let parsed = Hostname::parse(hostname.as_str()).map_err(StoreError::corrupt)?;
@@ -278,6 +290,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::api::{Mutation, MutationResponse};
+    use piqueld_core::manifest::{ApplicationTemplate, Variable};
     use piqueld_core::{NormalizedApplication, OperationState};
     use std::fmt::Write as _;
 
@@ -305,7 +318,7 @@ mod tests {
         let (response, _) = store
             .accept(
                 Mutation::Save {
-                    application: Box::new(application),
+                    application: Box::new(ApplicationTemplate::from(&application)),
                     expected_application_id: None,
                     deploy,
                 },
@@ -384,6 +397,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn environments_render_their_own_hostnames_from_variables() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let template = piqueld_core::manifest::parse_template_toml(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec.variables]\ndomain='piquel.fr'\n[spec.environments.staging.variables]\ndomain='staging.piquel.fr'\n[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='nginx:alpine'\n[[spec.routes]]\nhostname='${{ vars.domain }}'\nservice='web'\nport=80",
+        )
+        .unwrap();
+        let (MutationResponse::Saved(saved), _) = store
+            .accept(Mutation::save(template, None, false), Some(0), false, None)
+            .await
+            .unwrap()
+        else {
+            panic!("saved response")
+        };
+        let application = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
+        let staging = Mutation::CreateEnvironment {
+            application: application.clone(),
+            name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
+        };
+        let (MutationResponse::Environment(staging), _) =
+            store.accept(staging, None, true, None).await.unwrap()
+        else {
+            panic!("environment response")
+        };
+        let production = EnvironmentId::default_for(&application);
+        let mut deployed = Vec::new();
+        for environment in [&production, &staging.id] {
+            let (MutationResponse::Operation(operation), _) = store
+                .accept(Mutation::deploy(environment.clone()), None, true, None)
+                .await
+                .unwrap()
+            else {
+                panic!("operation response")
+            };
+            let rendering = store
+                .deployment_snapshot(&operation.operation_id)
+                .await
+                .unwrap()
+                .rendering
+                .unwrap();
+            deployed.push(rendering.application.spec().routes[0].hostname.to_string());
+        }
+        assert_eq!(deployed, ["piquel.fr", "staging.piquel.fr"]);
+        assert!(matches!(
+            save(&store, app("other", Some("staging.piquel.fr")), false).await,
+            Err(StoreError::HostnameConflict { .. })
+        ));
+
+        // Environments that render the same hostname still conflict.
+        let same = piqueld_core::edit::Variables {
+            defaults: [("domain".into(), Variable::String("piquel.fr".into()))].into(),
+            environments: std::collections::BTreeMap::new(),
+        };
+        let edit = Mutation::Edit {
+            id: application,
+            edit: Box::new(piqueld_core::edit::ApplicationEdit::Variables(same)),
+            deploy: false,
+        };
+        assert!(matches!(
+            store.accept(edit, None, true, None).await,
+            Err(StoreError::SharedHostnameConflict { hostname, environment })
+                if hostname == "piquel.fr" && environment.as_str() == "production"
+        ));
+    }
+
+    #[tokio::test]
     async fn replacing_pending_deployment_releases_only_superseded_hostnames() {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path().join("db")).await.unwrap();
@@ -416,7 +495,10 @@ mod tests {
         let result = store
             .accept(
                 Mutation::Save {
-                    application: Box::new(app("two", Some("taken.example.com"))),
+                    application: Box::new(ApplicationTemplate::from(&app(
+                        "two",
+                        Some("taken.example.com"),
+                    ))),
                     expected_application_id: None,
                     deploy: true,
                 },
@@ -428,7 +510,7 @@ mod tests {
         assert!(matches!(result, Err(StoreError::HostnameConflict { .. })));
         assert_eq!(
             store.get(&id).await.unwrap().manifest().spec().routes,
-            [] as [piqueld_core::manifest::ValidatedRoute; 0]
+            [] as [piqueld_core::manifest::Route; 0]
         );
         assert!(
             store
@@ -441,7 +523,10 @@ mod tests {
         store
             .accept(
                 Mutation::Save {
-                    application: Box::new(app("two", Some("free.example.com"))),
+                    application: Box::new(ApplicationTemplate::from(&app(
+                        "two",
+                        Some("free.example.com"),
+                    ))),
                     expected_application_id: None,
                     deploy: true,
                 },
@@ -535,18 +620,13 @@ mod tests {
             )
             .await
             .unwrap();
-        let fetched = app("one", Some("taken.example.com")).with_id(
-            store
-                .get(&operation.environment_id)
-                .await
-                .unwrap()
-                .manifest()
-                .id()
-                .clone(),
-        );
+        let environment = store.get(&operation.environment_id).await.unwrap();
+        let fetched = ApplicationTemplate::from(&app("one", Some("taken.example.com")))
+            .with_id(environment.manifest().id().clone());
+        let rendering = environment.render(&fetched, &operation.id).unwrap();
         assert!(matches!(
             store
-                .save_deployment_input(&operation, &fetched, None)
+                .save_deployment_input(&operation, &fetched, &rendering, None)
                 .await,
             Err(StoreError::HostnameConflict { .. })
         ));

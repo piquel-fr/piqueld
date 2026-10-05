@@ -294,7 +294,9 @@ mod tests {
     use super::super::HealthCheck;
     use super::*;
     use bollard::models::{ServiceSpecRollbackConfig, ServiceSpecUpdateConfigOrderEnum};
-    use piqueld_core::manifest::{ResourceLimits, Rollout, RolloutOrder};
+    use piqueld_core::manifest::{
+        RolloutOrder, ValidatedResourceLimits as ResourceLimits, ValidatedRollout as Rollout,
+    };
     use piqueld_core::resource::{DesiredMount, DesiredService, ResolvedSource};
     use std::collections::BTreeMap;
 
