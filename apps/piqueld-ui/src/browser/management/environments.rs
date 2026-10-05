@@ -1,5 +1,5 @@
 //! Environment lifecycle controls; configuration continues to belong to the application.
-use super::super::ui::{Modal, Tone, notice, text_input};
+use super::super::ui::{Icon, Modal, Tone, icon, notice, text_input};
 use super::{EditorContext, editor, mutation_client, transport_failure};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -148,8 +148,15 @@ pub(super) fn EnvironmentManager() -> impl IntoView {
         );
     };
     view! {
-        <button type="button" class="btn" disabled={move || context.action_blocked()} on:click={move |_| opened.set(true)}>
-            "Manage environments"
+        <button
+            type="button"
+            class="btn btn-ghost btn-icon"
+            aria-label="Manage environments"
+            title="Manage environments"
+            disabled={move || context.action_blocked()}
+            on:click={move |_| opened.set(true)}
+        >
+            {icon(Icon::Settings)}
         </button>
         <Modal title="Manage environments" opened={opened} busy={context.busy} on_close={Callback::new(move |()| {
             editing.set(None);

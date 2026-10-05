@@ -23,7 +23,7 @@ across applications; each row opens that deployment in its application history.
 Applications also has a clickable directory with each application's health (its
 least healthy environment) and last deployment time.
 
-An application's page has an **Environment** selector next to its actions. The
+An application's page has an **Environment** selector in its breadcrumb. The
 selected environment's runtime overview, deployments, logs, secrets, builds, and
 events are shown, and **Preview** and **Deploy to <environment>** target it;
 configuration forms are labelled **Shared across all environments** and edit
@@ -34,7 +34,7 @@ an environment by ID. The selector updates this address, and service navigation
 preserves it, so reloading keeps the same selection. Links from deployments, builds,
 and events also use it. A selected
 environment that no longer exists is reported rather than replaced by another.
-**Manage environments** beside the selector creates, renames, and deletes environments,
+**Manage environments** (the settings button beside the selector) creates, renames, and deletes environments,
 including creating one for an application with no environments. Deletion confirms
 the environment name, retains its Docker volumes, and leaves the application and
 other environments intact. Deployment actions are disabled for missing or deleting

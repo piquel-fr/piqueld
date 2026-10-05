@@ -494,6 +494,9 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
             <A href="/dashboard/applications">"Applications"</A>
             {icon(Icon::ChevronRight)}
             <span>{move || context.name()}</span>
+            {icon(Icon::ChevronRight)}
+            <EnvironmentSelector />
+            <environments::EnvironmentManager />
         </nav>
         <header class="detail-head">
             <div class="detail-title">
@@ -501,8 +504,6 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
                 {move || health().map(health_badge)}
             </div>
             <div class="page-actions">
-                <EnvironmentSelector />
-                <environments::EnvironmentManager />
                 <a
                     class="btn btn-ghost"
                     href={format!("/api/v1/applications/{id}/manifest")}
@@ -568,28 +569,27 @@ fn EnvironmentSelector() -> impl IntoView {
     );
     let select = move |event| set_environment.set(Some(event_target_value(&event)));
     view! {
-        <label class="field" style="max-width:200px">
-            <span>"Environment"</span>
-            <select
-                prop:value={move || context.environment.get().unwrap_or_default()}
-                disabled={move || context.blocked() || context.dirty.with(|dirty| !dirty.is_empty())}
-                on:change={select}
-            >
-                {move || {
-                    environments()
-                        .into_iter()
-                        .map(|environment| {
-                            let id = environment.id.to_string();
-                            view! {
-                                <option value={id.clone()} prop:selected={move || context.environment.get().as_deref() == Some(id.as_str())}>
-                                    {environment.name.to_string()}
-                                </option>
-                            }
-                        })
-                        .collect_view()
-                }}
-            </select>
-        </label>
+        <select
+            class="select-compact"
+            aria-label="Environment"
+            prop:value={move || context.environment.get().unwrap_or_default()}
+            disabled={move || context.blocked() || context.dirty.with(|dirty| !dirty.is_empty())}
+            on:change={select}
+        >
+            {move || {
+                environments()
+                    .into_iter()
+                    .map(|environment| {
+                        let id = environment.id.to_string();
+                        view! {
+                            <option value={id.clone()} prop:selected={move || context.environment.get().as_deref() == Some(id.as_str())}>
+                                {environment.name.to_string()}
+                            </option>
+                        }
+                    })
+                    .collect_view()
+            }}
+        </select>
     }
 }
 
