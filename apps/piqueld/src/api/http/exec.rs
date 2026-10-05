@@ -18,8 +18,12 @@ use piqueld_core::{
     ApplicationId,
     exec::{ExecFrame, ExecInput, ExecOutput, ExecRequest, MAX_MESSAGE_BYTES},
 };
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tower_http::request_id::RequestId;
+
+/// How long the daemon waits to deliver the final message and close.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A WebSocket upgrade whose rejections use the API's JSON errors.
 pub(super) struct ExecUpgrade(WebSocketUpgrade);
@@ -70,12 +74,11 @@ pub(super) async fn exec(
                 Ok(relay(session, reader, &mut writer).await)
             }
             .await;
-            let Some(result) = result.unwrap_or_else(|error| Some(Err(error))) else {
-                return;
-            };
-            let last = match result {
-                Ok(code) => ExecOutput::Exit(code),
-                Err(error) => {
+            // `None` means the client left, so there is nothing to report.
+            let last = match result.unwrap_or_else(|error| Some(Err(error))) {
+                None => None,
+                Some(Ok(code)) => Some(ExecOutput::Exit(code)),
+                Some(Err(error)) => {
                     let mut body = error.body();
                     if let Some(request_id) = request_id {
                         body.request_id = request_id;
@@ -84,19 +87,21 @@ pub(super) async fn exec(
                     state
                         .record_failure(error.status, &mut body, diagnostic, Some(&id))
                         .await;
-                    ExecOutput::Failed {
+                    Some(ExecOutput::Failed {
                         status: error.status.as_u16(),
                         error: body,
-                    }
+                    })
                 }
             };
-            if writer
-                .send(Message::Binary(last.encode().into()))
-                .await
-                .is_ok()
-            {
+            // Closing also sends the reply to a client's Close. It is bounded
+            // so a client that stopped reading cannot hold the connection.
+            let finish = async {
+                if let Some(last) = last {
+                    let _ = writer.send(Message::Binary(last.encode().into())).await;
+                }
                 let _ = writer.close().await;
-            }
+            };
+            let _ = tokio::time::timeout(CLOSE_TIMEOUT, finish).await;
         }))
 }
 

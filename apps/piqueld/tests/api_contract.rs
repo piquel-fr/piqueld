@@ -2729,7 +2729,9 @@ async fn application_log_snapshot_validates_bounds_and_preserves_task_identity()
 
 #[tokio::test]
 async fn exec_streams_over_both_transports_and_records_history_without_the_command() {
+    use futures_util::{SinkExt, StreamExt};
     use piqueld_client::exec::{ExecCommand, ExecInput, ExecOutput, ExecRequest};
+    use tokio_tungstenite::tungstenite::Message;
     let temp = tempfile::tempdir().unwrap();
     let state = state(&temp).await;
     let socket_dir = tempfile::tempdir().unwrap();
@@ -2798,6 +2800,25 @@ async fn exec_streams_over_both_transports_and_records_history_without_the_comma
     assert_eq!(
         commands[1].message.as_deref(),
         Some("Command in task task-1 exited with code 5")
+    );
+
+    // A client detaching from a quiet session gets a clean Close reply.
+    let (mut socket, _) = tokio_tungstenite::client_async(
+        format!(
+            "ws://{address}/api/v1/applications/{}/exec",
+            app.application_id
+        ),
+        tokio::net::TcpStream::connect(address).await.unwrap(),
+    )
+    .await
+    .unwrap();
+    let start = serde_json::to_string(&request("web")).unwrap();
+    socket.send(Message::text(start)).await.unwrap();
+    socket.close(None).await.unwrap();
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next()).await;
+    assert!(
+        matches!(reply, Ok(Some(Ok(Message::Close(_))))),
+        "{reply:?}"
     );
     for server in servers {
         server.abort();
