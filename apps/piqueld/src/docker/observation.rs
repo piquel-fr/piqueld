@@ -1,9 +1,9 @@
 use super::policy::ServiceRuntimePolicy;
 use super::{
     BTreeMap, BollardDocker, Convergence, DockerError, HealthCheck, HealthConfig,
-    InspectContainerOptionsBuilder, MountTypeEnum, NANO_CPUS_PER_MILLICORE, NANOSECONDS_PER_SECOND,
-    NetworkAttachment, ObservedMount, ObservedService, ObservedTask, ResourceLimits, ServiceSpec,
-    TaskDiagnostic, TaskSpecContainerSpec, TaskState,
+    INGRESS_PROXIES_ENV, InspectContainerOptionsBuilder, MountTypeEnum, NANO_CPUS_PER_MILLICORE,
+    NANOSECONDS_PER_SECOND, NetworkAttachment, ObservedMount, ObservedService, ObservedTask,
+    ResourceLimits, ServiceSpec, TaskDiagnostic, TaskSpecContainerSpec, TaskState,
 };
 use bollard::models::HealthStatusEnum;
 
@@ -164,6 +164,26 @@ impl BollardDocker {
             tasks,
             convergence,
         })
+    }
+
+    /// Moves the injected ingress range out of the observed environment, so it
+    /// never appears as user configuration. A value other than `expected`, the
+    /// attached ingress network's current range, is runtime drift.
+    pub(super) fn observe_ingress_proxies(service: &mut ObservedService, expected: Option<&str>) {
+        let proxies = service.environment.remove(INGRESS_PROXIES_ENV);
+        service.runtime_configuration_matches &= proxies.as_deref() == expected;
+    }
+
+    /// Returns the ingress range injected into an authored specification.
+    pub(super) fn spec_ingress_proxies(spec: &ServiceSpec) -> Option<&str> {
+        spec.task_template
+            .as_ref()?
+            .container_spec
+            .as_ref()?
+            .env
+            .iter()
+            .flatten()
+            .find_map(|entry| entry.strip_prefix(INGRESS_PROXIES_ENV)?.strip_prefix('='))
     }
 
     /// Parses `KEY=value` environment entries, dropping entries without `=`.
@@ -397,6 +417,32 @@ mod tests {
             desired_running: true,
             diagnostic: None,
         }
+    }
+
+    #[test]
+    fn stale_ingress_proxies_are_drift() {
+        let spec = ServiceSpec {
+            name: Some("app-web".into()),
+            task_template: Some(bollard::models::TaskSpec {
+                container_spec: Some(TaskSpecContainerSpec {
+                    env: Some(vec![format!("{INGRESS_PROXIES_ENV}=10.0.1.0/24")]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let observe = |expected| {
+            let mut service = BollardDocker::observe_service(&spec, "node", Vec::new(), None)
+                .expect("observed service");
+            service.runtime_configuration_matches = true;
+            BollardDocker::observe_ingress_proxies(&mut service, expected);
+            assert!(service.environment.is_empty());
+            service.runtime_configuration_matches
+        };
+        assert!(observe(BollardDocker::spec_ingress_proxies(&spec)));
+        assert!(!observe(Some("10.0.2.0/24")));
+        assert!(!observe(None));
     }
 
     #[test]

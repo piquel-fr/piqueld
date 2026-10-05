@@ -1,11 +1,11 @@
 use super::{
     ApplicationId, BTreeMap, BTreeSet, BollardDocker, DesiredNetwork, DesiredService,
-    DesiredVolume, DockerApi, DockerError, DockerTimeout, HashMap, InspectNetworkOptions,
-    InspectServiceOptions, Ipam, ListNetworksOptionsBuilder, ListServicesOptionsBuilder,
-    ListTasksOptionsBuilder, ListVolumesOptionsBuilder, NetworkCreateRequest,
-    OBSERVATION_INSPECT_CONCURRENCY, ObservedApplication, ObservedNetwork, ObservedService,
-    ObservedVolume, ResourceKind, StreamExt, SwarmInitRequest, SwarmState, TryStreamExt,
-    VolumeCreateOptions, async_trait, resolve_image_digest, stream,
+    DesiredVolume, DockerApi, DockerError, DockerNetworkName, DockerTimeout, HashMap,
+    InspectNetworkOptions, InspectServiceOptions, Ipam, ListNetworksOptionsBuilder,
+    ListServicesOptionsBuilder, ListTasksOptionsBuilder, ListVolumesOptionsBuilder,
+    NetworkCreateRequest, OBSERVATION_INSPECT_CONCURRENCY, ObservedApplication, ObservedNetwork,
+    ObservedService, ObservedVolume, ResourceKind, StreamExt, SwarmInitRequest, SwarmState,
+    TryStreamExt, VolumeCreateOptions, async_trait, resolve_image_digest, stream,
 };
 
 /// Inspections attempted before an incomplete network response is an error.
@@ -13,17 +13,27 @@ const NETWORK_INSPECT_ATTEMPTS: usize = 10;
 /// Pause between incomplete network inspections.
 const NETWORK_INSPECT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// An application's observed networks, with what service observation needs.
+struct NetworkSnapshot {
+    observed: Vec<ObservedNetwork>,
+    /// Network names keyed by the Docker IDs that service specs reference.
+    names: HashMap<String, String>,
+    /// Address range of the application's ingress network, when it exists.
+    ingress_proxies: Option<String>,
+}
+
 impl BollardDocker {
-    /// Inspects networks and retains their ID-to-name mapping for services.
+    /// Inspects networks and retains their ID-to-name mapping and the ingress
+    /// network's address range for services.
     ///
     /// Networks are listed by ownership label and by readable name prefix,
     /// deduplicated, then fully inspected concurrently. Networks that vanish
-    /// mid-observation are skipped. The returned map covers every inspected
+    /// mid-observation are skipped. The name map covers every inspected
     /// network, while the observations keep only those `relevant` to the app.
     async fn snapshot_networks(
         &self,
         application: &ApplicationId,
-    ) -> Result<(Vec<ObservedNetwork>, HashMap<String, String>), DockerError> {
+    ) -> Result<NetworkSnapshot, DockerError> {
         let mut raw_networks = Self::map_request(
             "list networks",
             self.docker
@@ -77,7 +87,12 @@ impl BollardDocker {
             .iter()
             .filter_map(|network| Some((network.id.clone()?, network.name.clone()?)))
             .collect::<HashMap<_, _>>();
-        let networks = raw_networks
+        let ingress = DockerNetworkName::for_ingress(application);
+        let ingress_proxies = raw_networks
+            .iter()
+            .find(|network| network.name.as_deref() == Some(ingress.as_str()))
+            .and_then(Self::ingress_proxies);
+        let observed = raw_networks
             .into_iter()
             .filter_map(|network| {
                 let runtime_configuration_matches = Self::network_configuration_matches(&network);
@@ -90,7 +105,11 @@ impl BollardDocker {
             })
             .filter(|r| Self::relevant(&r.name, &r.labels, application))
             .collect();
-        Ok((networks, network_names))
+        Ok(NetworkSnapshot {
+            observed,
+            names: network_names,
+            ingress_proxies,
+        })
     }
 
     /// Lists volumes by ownership label and by readable name prefix,
@@ -230,11 +249,12 @@ impl BollardDocker {
     /// 2. Read container health for running, health-checked tasks.
     /// 3. Keep `relevant` services and convert each with its own tasks, checking
     ///    placement against the local `node_id`.
-    /// 4. Replace network IDs in each service with names from `network_names`.
+    /// 4. Replace network IDs in each service with names from `networks`, and
+    ///    check routed services' injected ingress range against the network.
     async fn snapshot_services(
         &self,
         application: &ApplicationId,
-        network_names: &HashMap<String, String>,
+        networks: &NetworkSnapshot,
         node_id: &str,
     ) -> Result<Vec<piqueld_core::ObservedService>, DockerError> {
         let (raw_services, service_names) = self.inspect_application_services(application).await?;
@@ -295,8 +315,17 @@ impl BollardDocker {
                 ))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let ingress = DockerNetworkName::for_ingress(application);
         for service in &mut services {
-            Self::name_networks(service, network_names);
+            Self::name_networks(service, &networks.names);
+            let attached = service
+                .networks
+                .iter()
+                .any(|attachment| attachment.network == ingress.as_str());
+            Self::observe_ingress_proxies(
+                service,
+                networks.ingress_proxies.as_deref().filter(|_| attached),
+            );
         }
         Ok(services)
     }
@@ -351,12 +380,22 @@ impl BollardDocker {
 
     /// List responses can omit immutable network fields, so reconciliation
     /// decisions must use a complete inspection of the selected resource.
-    ///
-    /// Retries while the inspection lacks a driver or `attachable` flag, up to
-    /// `NETWORK_INSPECT_ATTEMPTS`. Returns `None` when the network is gone.
     async fn inspect_network_complete(
         &self,
         identifier: &str,
+    ) -> Result<Option<bollard::models::Network>, DockerError> {
+        self.inspect_network_until(identifier, |_| true).await
+    }
+
+    /// Inspects a network until it is complete and `ready`.
+    ///
+    /// Retries while the inspection lacks a driver or `attachable` flag, or is
+    /// not `ready`, up to `NETWORK_INSPECT_ATTEMPTS`. Returns `None` when the
+    /// network is gone.
+    pub(super) async fn inspect_network_until(
+        &self,
+        identifier: &str,
+        ready: impl Fn(&bollard::models::Network) -> bool,
     ) -> Result<Option<bollard::models::Network>, DockerError> {
         let mut attempt = 1;
         loop {
@@ -370,7 +409,8 @@ impl BollardDocker {
                         .driver
                         .as_deref()
                         .is_some_and(|driver| !driver.is_empty())
-                        && network.attachable.is_some() =>
+                        && network.attachable.is_some()
+                        && ready(&network) =>
                 {
                     return Ok(Some(network));
                 }
@@ -548,13 +588,13 @@ impl DockerApi for BollardDocker {
         DockerTimeout::Request
             .run("observe application", async {
                 let node_id = self.local_node_id().await?;
-                let (networks, network_names) = self.snapshot_networks(application).await?;
+                let networks = self.snapshot_networks(application).await?;
                 let volumes = self.snapshot_volumes(application).await?;
                 let services = self
-                    .snapshot_services(application, &network_names, &node_id)
+                    .snapshot_services(application, &networks, &node_id)
                     .await?;
                 Ok(ObservedApplication {
-                    networks,
+                    networks: networks.observed,
                     volumes,
                     services,
                 })
@@ -719,7 +759,7 @@ impl DockerApi for BollardDocker {
                             .await,
                     )?;
                     let node_id = self.local_node_id().await?;
-                    let spec = self.service_spec_with_secrets(desired, &node_id).await?;
+                    let spec = self.runtime_service_spec(desired, &node_id).await?;
                     match matches.into_iter().find(|s| {
                         s.spec.as_ref().and_then(|s| s.name.as_deref())
                             == Some(desired.name.as_str())
@@ -773,6 +813,10 @@ impl DockerApi for BollardDocker {
                                 .filter_map(|network| Some((network.id?, network.name?)))
                                 .collect::<HashMap<_, _>>();
                             Self::name_networks(&mut observed, &network_names);
+                            Self::observe_ingress_proxies(
+                                &mut observed,
+                                Self::spec_ingress_proxies(&spec),
+                            );
                             if observed.matches(desired) {
                                 return Ok(());
                             }
