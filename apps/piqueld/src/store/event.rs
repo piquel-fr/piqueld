@@ -219,7 +219,8 @@ impl Store {
         .ok_or(StoreError::NotFound)?;
         self.event(row.id).await
     }
-    /// Records an unexpected failure independently of any operation.
+    /// Records an unexpected failure independently of any operation, caused
+    /// by `actor`'s request if any.
     /// # Errors
     /// Returns the underlying journal failure; callers must retain structured fallback logs.
     pub async fn record_diagnostic(
@@ -227,6 +228,7 @@ impl Store {
         diagnostic: &Diagnostic,
         request_id: Option<&str>,
         application: Option<&EnvironmentId>,
+        actor: super::Attribution<'_>,
     ) -> Result<(), StoreError> {
         let _writer = self.writers.lock().await;
         let mut diagnostic = diagnostic.clone();
@@ -239,8 +241,8 @@ impl Store {
         let now = now_ms();
         sqlx::query!(
             "INSERT INTO events(scope,application_id,environment_id,kind,message,error_code,diagnostic_id,
-            diagnostic_json,request_id,created_at_ms)
-            SELECT ?1,(SELECT application_id FROM environments WHERE id=?2),?2,'diagnostic',?3,?4,?5,?6,?7,?8
+            diagnostic_json,request_id,created_at_ms,actor_user_id,actor_credential_id)
+            SELECT ?1,(SELECT application_id FROM environments WHERE id=?2),?2,'diagnostic',?3,?4,?5,?6,?7,?8,?9,?10
             WHERE ?1='daemon' OR EXISTS(SELECT 1
             FROM environments
             WHERE id=?2)",
@@ -252,6 +254,8 @@ impl Store {
             json,
             request_id,
             now,
+            actor.user_id,
+            actor.credential_id,
         )
         .execute(&self.pool)
         .await
@@ -259,14 +263,15 @@ impl Store {
         Ok(())
     }
 
-    /// Records an informational environment event outside any operation. The
-    /// event stays in `application`'s history even if the environment has been
-    /// deleted meanwhile, and is skipped once the application itself is gone,
-    /// since its history has been removed.
+    /// Records an informational environment event outside any operation,
+    /// caused by `actor`. The event stays in `application`'s history even if
+    /// the environment has been deleted meanwhile, and is skipped once the
+    /// application itself is gone, since its history has been removed.
     /// # Errors
     /// Returns storage errors.
     pub(crate) async fn record_environment_event(
         &self,
+        actor: super::Attribution<'_>,
         application: &ApplicationId,
         environment: &EnvironmentId,
         kind: &str,
@@ -277,14 +282,17 @@ impl Store {
         let (application, environment) = (application.as_str(), environment.as_str());
         let now = now_ms();
         sqlx::query!(
-            "INSERT INTO events(application_id,environment_id,kind,message,resource,created_at_ms)
-            SELECT ?1,?2,?3,?4,?5,?6 WHERE EXISTS(SELECT 1 FROM applications WHERE id=?1)",
+            "INSERT INTO events(application_id,environment_id,kind,message,resource,created_at_ms,
+            actor_user_id,actor_credential_id)
+            SELECT ?1,?2,?3,?4,?5,?6,?7,?8 WHERE EXISTS(SELECT 1 FROM applications WHERE id=?1)",
             application,
             environment,
             kind,
             message,
             resource,
             now,
+            actor.user_id,
+            actor.credential_id,
         )
         .execute(&self.pool)
         .await
@@ -300,7 +308,11 @@ impl Store {
         application: Option<&EnvironmentId>,
     ) {
         tracing::error!(diagnostic_id=%diagnostic.id, code=%diagnostic.code, summary=%diagnostic.summary, "control-plane failure");
-        if let Err(error) = self.record_diagnostic(diagnostic, None, application).await {
+        let daemon = super::Attribution::default();
+        if let Err(error) = self
+            .record_diagnostic(diagnostic, None, application, daemon)
+            .await
+        {
             tracing::error!(diagnostic_id=%diagnostic.id,error=?error,"diagnostic journal unavailable; occurrence retained in daemon logs");
         }
     }
@@ -418,6 +430,8 @@ struct EventRow {
     duration_ms: Option<i64>,
     request_id: Option<String>,
     diagnostic_json: Option<String>,
+    actor_user_id: Option<String>,
+    actor_credential_id: Option<String>,
 }
 
 impl EventRow {
@@ -434,7 +448,7 @@ impl EventRow {
         let mut query = QueryBuilder::new(
             "SELECT id, application_id, environment_id, operation_id, generation, attempt, kind, message, error_code, \
              phase, resource, created_at_ms, scope, action_id, retry, retry_delay_ms, duration_ms, \
-             request_id, diagnostic_json FROM events WHERE id",
+             request_id, diagnostic_json, actor_user_id, actor_credential_id FROM events WHERE id",
         );
         query
             .push(if filter.descending { " < " } else { " > " })
@@ -547,6 +561,8 @@ impl EventRow {
                 .transpose()
                 .map_err(StoreError::corrupt)?,
             request_id: self.request_id,
+            actor_user_id: self.actor_user_id,
+            actor_credential_id: self.actor_credential_id,
             diagnostic: self
                 .diagnostic_json
                 .map(|json| serde_json::from_str(&json))
@@ -580,7 +596,14 @@ mod tests {
         let gone = ApplicationId::parse("app-deleted").unwrap();
         for application in [app.id(), &gone] {
             store
-                .record_environment_event(application, &deleted, "command_finished", "done", "web")
+                .record_environment_event(
+                    crate::store::Attribution::default(),
+                    application,
+                    &deleted,
+                    "command_finished",
+                    "done",
+                    "web",
+                )
                 .await
                 .unwrap();
         }

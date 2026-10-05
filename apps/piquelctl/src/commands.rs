@@ -41,6 +41,7 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
         }),
         Command::Account { command } => command.run(cli, client, console).await,
         Command::Token { command } => command.run(client, console).await,
+        Command::Audit(args) => args.run(client, console).await,
         Command::SetupLink { open } => crate::auth::setup_link(cli, client, console, *open).await,
         Command::Profiles => unreachable!("profiles are listed before connecting"),
         Command::Secrets { action } => action.run(cli, client, console).await,

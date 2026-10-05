@@ -28,6 +28,8 @@ pub mod auth;
 pub mod exec;
 /// Permissions and grants.
 pub use piqueld_core::access;
+/// Audit trail contracts.
+pub use piqueld_core::audit;
 
 mod generated;
 

@@ -73,6 +73,7 @@ pub(super) fn Sidebar() -> impl IntoView {
                         {nav_link("/dashboard/settings", Icon::Settings, "Host settings", false)}
                     </Show>
                     {nav_link("/dashboard/accounts", Icon::Accounts, "Accounts", false)}
+                    {nav_link("/dashboard/audit", Icon::Events, "Audit", false)}
                 </div>
             </nav>
             <div class="sidebar-footer">

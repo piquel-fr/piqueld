@@ -162,6 +162,10 @@ answers 409 `request_id_conflict`.
 API tokens become scoped with `admin` on every application, so they keep their
 account's full access, but they can no longer create credentials.
 
+`0017_audit.sql` adds the audit trail, kept independently of application
+history, and records the account and credential behind operations and their
+events. A trigger copies an operation's actor onto every event about it.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

@@ -1,5 +1,5 @@
-//! Account access: `whoami`, `account list|access|invite|enroll`, and
-//! `token create|list|revoke`.
+//! Account access: `whoami`, `account list|access|invite|enroll`,
+//! `token create|list|revoke`, and the `audit` trail.
 //!
 //! Grants are given with `--preset` and `--permission`, limited to the
 //! applications named with `--app` (every application when omitted). Grants
@@ -12,8 +12,9 @@ use crate::{
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
-    ApplicationId, Client,
+    ApplicationId, Client, Page,
     access::{Grant, Grants, Permission, Preset, Scope},
+    audit::{AuditEvent, AuditFilter, AuditOutcome},
     auth::{Account, CredentialView, Directory, Manage, Session},
 };
 use serde::Serialize;
@@ -390,6 +391,100 @@ impl Report for AccountsReport<'_> {
     }
 }
 
+/// `audit` options: whose requests to show, newest first.
+#[derive(Debug, Args)]
+pub(crate) struct AuditArgs {
+    /// Only this account's requests, by username or ID (including deleted
+    /// accounts' IDs); requires audit:read for other accounts. Defaults to
+    /// every visible account. Distinct from the global `--account`, which
+    /// selects the saved login to read with.
+    #[arg(long)]
+    user: Option<String>,
+    /// Only requests made with this credential ID (see `token list`).
+    #[arg(long)]
+    credential: Option<String>,
+    /// Only requests with this outcome: allowed, denied, or failed.
+    #[arg(long, value_parser = parse_outcome)]
+    outcome: Option<AuditOutcome>,
+    /// Continue after a cursor returned by the previous page.
+    #[arg(long)]
+    cursor: Option<String>,
+    /// Maximum number of requests in the page.
+    #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u16).range(1..=100))]
+    limit: u16,
+}
+
+fn parse_outcome(value: &str) -> std::result::Result<AuditOutcome, String> {
+    AuditOutcome::parse(value).ok_or_else(|| "expected allowed, denied, or failed".into())
+}
+
+impl AuditArgs {
+    /// Prints one page of the audit trail.
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        // Deleted accounts keep their trail but leave the directory, so an
+        // unknown value is taken as an account ID.
+        let user_id = match &self.user {
+            Some(account) => Some(
+                find(&client.auth_directory().await?, account)
+                    .map_or_else(|_| account.clone(), |found| found.user.id),
+            ),
+            None => None,
+        };
+        let filter = AuditFilter {
+            user_id,
+            credential_id: self.credential.clone(),
+            outcome: self.outcome,
+        };
+        let page = client
+            .audit_events(&filter, self.cursor.as_deref(), self.limit)
+            .await?;
+        console.emit(&AuditReport(page))
+    }
+}
+
+/// A page of audited requests, one line each.
+struct AuditReport(Page<AuditEvent>);
+impl Report for AuditReport {
+    type Json = Page<AuditEvent>;
+    fn json(&self) -> &Page<AuditEvent> {
+        &self.0
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        for event in &self.0.items {
+            let who = event
+                .username
+                .as_deref()
+                .or(event.user_id.as_deref())
+                .unwrap_or("anonymous");
+            let credential = event
+                .credential_kind
+                .as_deref()
+                .map_or_else(String::new, |kind| format!(" via {kind}"));
+            let missing = event
+                .permission
+                .as_deref()
+                .map_or_else(String::new, |permission| {
+                    format!(" (requires {permission})")
+                });
+            let target = event
+                .target()
+                .map_or_else(String::new, |target| format!(" on {target}"));
+            out.line(format_args!(
+                "{}  {}  {} {}{target}  {who}{credential}  {}{missing}",
+                event.created_at_ms,
+                event.outcome.as_str(),
+                event.status,
+                event.action,
+                event.peer.as_deref().unwrap_or("unix socket"),
+            ))?;
+        }
+        if let Some(cursor) = &self.0.next_cursor {
+            out.label("Next cursor", cursor)?;
+        }
+        Ok(())
+    }
+}
+
 /// A newly created token; human output is the bare secret so it can be piped.
 #[derive(Serialize)]
 struct TokenReport {
@@ -493,5 +588,26 @@ mod tests {
         };
         assert!(!args.is_empty());
         assert!(args.grants_by_id().is_err());
+    }
+
+    /// The audit filter and the saved login it reads with are chosen
+    /// independently, so an auditor can read an account it has no login for.
+    #[test]
+    fn audit_filter_is_separate_from_the_login_account() {
+        use clap::Parser as _;
+        let arguments = [
+            "piquelctl",
+            "--account",
+            "auditor",
+            "audit",
+            "--user",
+            "bob",
+        ];
+        let cli = crate::cli::Cli::try_parse_from(arguments).unwrap();
+        let crate::cli::Command::Audit(audit) = cli.command else {
+            panic!("audit command");
+        };
+        assert_eq!(cli.auth.account.as_deref(), Some("auditor"));
+        assert_eq!(audit.user.as_deref(), Some("bob"));
     }
 }

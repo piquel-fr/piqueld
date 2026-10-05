@@ -114,15 +114,23 @@ async fn authenticate(
 }
 /// Authenticates one API request before running the handler:
 ///
-/// 1. Throttles ceremony start endpoints per peer IP (429 with `Retry-After`).
-/// 2. Takes the credential from `Authorization: Bearer`, else the session cookie.
+/// 1. Takes the credential from `Authorization: Bearer`, else the session cookie.
+/// 2. Throttles ceremony start endpoints per peer IP (429 with `Retry-After`).
 /// 3. Blocks cross-site mutations and upgrades: any mismatched `Origin` is
 ///    rejected, and cookie-authenticated or bearer-less ceremony mutations must
 ///    send the configured origin.
-/// 4. Inserts the resolved `Identity` as an extension. Missing or invalid
+/// 4. Inserts the resolved `Identity` as an extension, on the request for
+///    handlers and on the response for outer layers. Missing or invalid
 ///    credentials leave it out; the route's access requirement then decides
 ///    whether the request needs one (see `access::enforce`).
 async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
+    let bearer = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    let session = cookie(request.headers(), &auth.cookie_name("piqueld_session"));
+    let secret = bearer.or(session);
     if request.method() == Method::POST
         && matches!(
             request.uri().path(),
@@ -140,15 +148,9 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
             response
                 .headers_mut()
                 .insert(header::RETRY_AFTER, header::HeaderValue::from_static("60"));
-            return response;
+            return refused(auth, secret, response).await;
         }
     }
-    let bearer = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let session = cookie(request.headers(), &auth.cookie_name("piqueld_session"));
     let uses_cookie = bearer.is_none() && session.is_some();
     let origin = request
         .headers()
@@ -166,28 +168,49 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
         && ((origin.is_some() && origin != Some(auth.origin()))
             || ((uses_cookie || (ceremony && bearer.is_none())) && origin != Some(auth.origin())))
     {
-        return ApiError::new(
+        let response = ApiError::new(
             StatusCode::FORBIDDEN,
             "origin_mismatch",
             "Request origin does not match the configured website",
         )
         .into_response();
+        return refused(auth, secret, response).await;
     }
-    if let Some(secret) = bearer.or(session) {
+    let mut identity = None;
+    if let Some(secret) = secret {
         match auth.authenticate(secret).await {
-            Ok(identity) => {
-                request.extensions_mut().insert(identity);
-            }
+            Ok(resolved) => identity = Some(resolved),
             Err(AuthError::Unauthorized) => {}
             Err(error) => return ApiError::from(error).into_response(),
         }
     }
-    next.run(request).await
+    if let Some(identity) = &identity {
+        request.extensions_mut().insert(identity.clone());
+    }
+    let mut response = next.run(request).await;
+    // Outer layers, like the audit trail, see who made the request.
+    if let Some(identity) = identity {
+        response.extensions_mut().insert(identity);
+    }
+    response
+}
+/// Attaches a valid caller's identity to a refusal made before
+/// authentication, so the audit trail names it, without refreshing its
+/// credential: a refused request must not keep a session alive.
+async fn refused(auth: &Auth, secret: Option<&str>, mut response: Response) -> Response {
+    if let Some(secret) = secret
+        && let Ok((identity, _)) = auth.identify(secret).await
+    {
+        response.extensions_mut().insert(identity);
+    }
+    response
 }
 /// Returns the user as JSON, setting a seven-day session cookie when a new
-/// session `token` was issued.
+/// session `token` was issued. The audit trail records who signed in.
 fn session_response(auth: &Auth, user: User, token: Option<String>) -> Response {
+    let signed_in = super::access::SignedIn(user.clone());
     let mut response = Json(user).into_response();
+    response.extensions_mut().insert(signed_in);
     if let Some(token) = token {
         response.headers_mut().append(
             header::SET_COOKIE,
@@ -233,7 +256,10 @@ pub(super) async fn setup_link(
     unix: Option<Extension<super::UnixSocket>>,
 ) -> Result<Json<SetupLink>, ApiError> {
     if unix.is_none() {
-        return Err(ApiError::endpoint_not_found());
+        // Looks absent over TCP, but the audit trail records the refusal.
+        let mut error = ApiError::endpoint_not_found();
+        error.denied = Some(piqueld_core::access::Denied::Hidden);
+        return Err(error);
     }
     Ok(Json(auth.setup_link().await?))
 }
@@ -408,8 +434,14 @@ pub(super) fn device_start_route<S: Clone + Send + Sync + 'static>(
 pub(super) async fn device_poll(
     Extension(auth): Extension<Auth>,
     Json(input): Json<DevicePoll>,
-) -> Result<Json<DeviceToken>, ApiError> {
-    Ok(Json(auth.device_poll(&input.device_code).await?))
+) -> Result<Response, ApiError> {
+    let token = auth.device_poll(&input.device_code).await?;
+    let signed_in = token.user.clone().map(super::access::SignedIn);
+    let mut response = Json(token).into_response();
+    if let Some(signed_in) = signed_in {
+        response.extensions_mut().insert(signed_in);
+    }
+    Ok(response)
 }
 /// Inspects a pending device sign-in.
 ///

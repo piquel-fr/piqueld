@@ -36,6 +36,7 @@ added later: requests about an environment are checked on its application.
 | `system:read` | installation | Daemon configuration, resources, daemon history, notification deliveries, and DNS providers and certificates |
 | `system:operate` | installation | Secret key recovery, notification retries, and DNS provider checks |
 | `accounts:manage` | installation | Other accounts and invitations, within the limits below |
+| `audit:read` | installation | Every account's [audit trail](observability.md#audit-trail); everyone reads their own |
 
 Every application permission also allows reading that application, so a
 deploy-only token can follow its own deployment. The daemon status, readiness,

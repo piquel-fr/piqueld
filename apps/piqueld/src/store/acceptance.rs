@@ -43,7 +43,8 @@ impl Store {
     ///    refusing manifest changes to repository-managed applications, and
     ///    gives an account that created an application through an unscoped
     ///    credential its matching grants there.
-    /// 5. Stores the replay receipt for 24 hours and commits through hostname
+    /// 5. Attributes the operations and events it wrote to the caller.
+    /// 6. Stores the replay receipt for 24 hours and commits through hostname
     ///    reservation checks of every affected environment.
     ///
     /// The returned flag asks the controller to wake up; replays never wake it.
@@ -60,6 +61,11 @@ impl Store {
         let fingerprint = Self::mutation_fingerprint(&mutation, expected_generation, force)?;
         let legacy = Self::legacy_fingerprint(&mutation, expected_generation, force)?;
         let caller = actor.load(&mut tx).await?;
+        let first_event =
+            sqlx::query_scalar!(r#"SELECT COALESCE(MAX(id),0)+1 AS "id!: i64" FROM events"#)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(StoreError::database)?;
         let owner = caller.as_ref().map(|authority| authority.user_id.as_str());
         let replay = Self::replay_on(
             &mut tx,
@@ -107,6 +113,15 @@ impl Store {
                     .await?;
             }
         }
+        if let (Some(authority), Actor::Account(caller)) = (&caller, actor) {
+            Self::attribute_on(
+                &mut tx,
+                &authority.user_id,
+                caller.credential_id,
+                first_event,
+            )
+            .await?;
+        }
         if let Some(request_id) = request_id {
             let response_json =
                 serde_json::to_string(&accepted.response).map_err(StoreError::corrupt)?;
@@ -120,6 +135,40 @@ impl Store {
         )
         .await?;
         Ok((accepted.response, accepted.wake))
+    }
+
+    /// Records the account and credential behind a mutation on the events it
+    /// wrote, those since `first_event` in this transaction, and on the
+    /// operations it created or restarted, whose later events inherit them.
+    /// Those are left `requested` with new events; operations it superseded
+    /// or returned unchanged, e.g. by repeating a request, keep their actor.
+    async fn attribute_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        user_id: &str,
+        credential_id: &str,
+        first_event: i64,
+    ) -> Result<(), StoreError> {
+        sqlx::query!(
+            "UPDATE operations SET actor_user_id=?1,actor_credential_id=?2
+             WHERE state='requested'
+             AND id IN (SELECT operation_id FROM events WHERE id>=?3 AND operation_id IS NOT NULL)",
+            user_id,
+            credential_id,
+            first_event
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        sqlx::query!(
+            "UPDATE events SET actor_user_id=?1,actor_credential_id=?2 WHERE id>=?3",
+            user_id,
+            credential_id,
+            first_event
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        Ok(())
     }
 
     /// Checks that a caller holding `grants` may submit `mutation` against the

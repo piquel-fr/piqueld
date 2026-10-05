@@ -710,6 +710,102 @@
         ],
         "type": "object"
       },
+      "AuditEvent": {
+        "description": "One audited API request. Accounts and credentials are copied when\nrecorded, so records outlive them. Request and response bodies are never\nrecorded.",
+        "properties": {
+          "action": {
+            "description": "Method and route template, e.g. `POST /api/v1/applications/{id}/deploy`.",
+            "type": "string"
+          },
+          "application_id": {
+            "description": "Application the request addressed: by ID, or as the owner of the\nenvironment it addressed when that environment existed.",
+            "nullable": true,
+            "type": "string"
+          },
+          "created_at_ms": {
+            "description": "Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "credential_id": {
+            "description": "Credential that authenticated the request.",
+            "nullable": true,
+            "type": "string"
+          },
+          "credential_kind": {
+            "description": "`browser`, `cli`, or `token`.",
+            "nullable": true,
+            "type": "string"
+          },
+          "environment_id": {
+            "description": "Environment the request addressed by ID.",
+            "nullable": true,
+            "type": "string"
+          },
+          "id": {
+            "description": "Ordering cursor.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/AuditOutcome",
+            "description": "Whether the request was allowed."
+          },
+          "peer": {
+            "description": "Network address the daemon saw; absent over the Unix socket.",
+            "nullable": true,
+            "type": "string"
+          },
+          "permission": {
+            "description": "Permission a refused request lacked.",
+            "nullable": true,
+            "type": "string"
+          },
+          "request_id": {
+            "description": "Request ID, matching `x-request-id` and daemon logs.",
+            "nullable": true,
+            "type": "string"
+          },
+          "scoped": {
+            "description": "Whether that credential was limited to its own grants.",
+            "nullable": true,
+            "type": "boolean"
+          },
+          "status": {
+            "description": "HTTP response status.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user_id": {
+            "description": "Account that made the request, or signed in by it.",
+            "nullable": true,
+            "type": "string"
+          },
+          "username": {
+            "description": "That account's name when recorded.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at_ms",
+          "action",
+          "outcome",
+          "status"
+        ],
+        "type": "object"
+      },
+      "AuditOutcome": {
+        "description": "Whether an audited request was allowed.",
+        "enum": [
+          "allowed",
+          "denied",
+          "failed"
+        ],
+        "type": "string"
+      },
       "AuthStatus": {
         "description": "Public initialization state and canonical browser origin.",
         "properties": {
@@ -2722,6 +2818,16 @@
                 "nullable": true,
                 "type": "string"
               },
+              "actor_credential_id": {
+                "description": "Credential that authenticated that request.",
+                "nullable": true,
+                "type": "string"
+              },
+              "actor_user_id": {
+                "description": "Account whose API request caused this event, including runtime actions\nof the operation it requested.",
+                "nullable": true,
+                "type": "string"
+              },
               "application_id": {
                 "oneOf": [
                   {
@@ -3082,6 +3188,120 @@
         ],
         "type": "object"
       },
+      "Envelope_Page_AuditEvent": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Cursor-paginated API response.",
+            "properties": {
+              "items": {
+                "description": "Items in this page.",
+                "items": {
+                  "description": "One audited API request. Accounts and credentials are copied when\nrecorded, so records outlive them. Request and response bodies are never\nrecorded.",
+                  "properties": {
+                    "action": {
+                      "description": "Method and route template, e.g. `POST /api/v1/applications/{id}/deploy`.",
+                      "type": "string"
+                    },
+                    "application_id": {
+                      "description": "Application the request addressed: by ID, or as the owner of the\nenvironment it addressed when that environment existed.",
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "created_at_ms": {
+                      "description": "Unix milliseconds.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "credential_id": {
+                      "description": "Credential that authenticated the request.",
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "credential_kind": {
+                      "description": "`browser`, `cli`, or `token`.",
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "environment_id": {
+                      "description": "Environment the request addressed by ID.",
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "id": {
+                      "description": "Ordering cursor.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "outcome": {
+                      "$ref": "#/components/schemas/AuditOutcome",
+                      "description": "Whether the request was allowed."
+                    },
+                    "peer": {
+                      "description": "Network address the daemon saw; absent over the Unix socket.",
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "permission": {
+                      "description": "Permission a refused request lacked.",
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "description": "Request ID, matching `x-request-id` and daemon logs.",
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "scoped": {
+                      "description": "Whether that credential was limited to its own grants.",
+                      "nullable": true,
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "description": "HTTP response status.",
+                      "format": "int32",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "user_id": {
+                      "description": "Account that made the request, or signed in by it.",
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "username": {
+                      "description": "That account's name when recorded.",
+                      "nullable": true,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "created_at_ms",
+                    "action",
+                    "outcome",
+                    "status"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "next_cursor": {
+                "description": "Cursor for the next page, when more items are available.",
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "items"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_Page_BuildRecord": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -3305,6 +3525,16 @@
                   "properties": {
                     "action_id": {
                       "description": "Action execution identity.",
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "actor_credential_id": {
+                      "description": "Credential that authenticated that request.",
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "actor_user_id": {
+                      "description": "Account whose API request caused this event, including runtime actions\nof the operation it requested.",
                       "nullable": true,
                       "type": "string"
                     },
@@ -4373,6 +4603,16 @@
         "properties": {
           "action_id": {
             "description": "Action execution identity.",
+            "nullable": true,
+            "type": "string"
+          },
+          "actor_credential_id": {
+            "description": "Credential that authenticated that request.",
+            "nullable": true,
+            "type": "string"
+          },
+          "actor_user_id": {
+            "description": "Account whose API request caused this event, including runtime actions\nof the operation it requested.",
             "nullable": true,
             "type": "string"
           },
@@ -5686,7 +5926,8 @@
           "apps:create",
           "system:read",
           "system:operate",
-          "accounts:manage"
+          "accounts:manage",
+          "audit:read"
         ],
         "type": "string"
       },
@@ -16929,6 +17170,105 @@
         },
         "summary": "Removes a named volume from the saved configuration.",
         "x-piqueld-access": "apps:write"
+      }
+    },
+    "/api/v1/audit": {
+      "get": {
+        "description": "Refused requests, writes, and sensitive reads are recorded with their\naccount, credential, address, and outcome. With `audit:read`, every\naccount's trail is visible; otherwise only the caller's own. Follow\n`next_cursor` to load older requests.",
+        "operationId": "listAudit",
+        "parameters": [
+          {
+            "description": "Only this account's requests; callers without `audit:read` may only\nname their own account, which is also the default for them.",
+            "in": "query",
+            "name": "user_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only requests made with this credential.",
+            "in": "query",
+            "name": "credential_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only requests with this outcome.",
+            "in": "query",
+            "name": "outcome",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AuditOutcome"
+            }
+          },
+          {
+            "description": "`next_cursor` from a previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size; defaults to 50.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Page_AuditEvent"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Lists audited API requests, newest first.",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/auth/device/approve": {

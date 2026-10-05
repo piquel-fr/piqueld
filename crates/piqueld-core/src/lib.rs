@@ -59,6 +59,8 @@ pub mod edit;
 
 /// Permissions, grants, and authorization decisions.
 pub mod access;
+/// Audit trail contracts.
+pub mod audit;
 /// Passkey authentication and account management contracts.
 pub mod auth;
 /// Credential-safe TOML parse diagnostics.

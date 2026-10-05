@@ -414,7 +414,12 @@ impl<D: DockerApi> Controller<D> {
             return Ok(());
         }
         self.store
-            .record_diagnostic(diagnostic, None, Some(application))
+            .record_diagnostic(
+                diagnostic,
+                None,
+                Some(application),
+                crate::store::Attribution::default(),
+            )
             .await?;
         recorded.insert(key);
         Ok(())
@@ -511,10 +516,12 @@ impl<D: DockerApi> Controller<D> {
         result
     }
 
-    /// Prunes daemon events, receipts, and build logs, plus finished operations and
-    /// events older than their retention windows. A zero-day window disables pruning.
+    /// Prunes daemon events, the audit trail, receipts, and build logs, plus
+    /// finished operations and events older than their retention windows. A
+    /// zero-day window disables pruning.
     async fn prune_history(&self, operation_days: u64, event_days: u64) -> Result<(), StoreError> {
         self.store.prune_daemon_events().await?;
+        self.store.prune_audit().await?;
         self.store.prune_receipts().await?;
         self.store.prune_build_logs().await?;
         let now = std::time::SystemTime::now()

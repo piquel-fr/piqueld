@@ -1253,6 +1253,15 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
                                                         .map_or_else(|| "Never".into_any(), |t| when(t * 1000))}
                                                 </td>
                                                 <td class="actions">
+                                                    <a
+                                                        class="btn btn-ghost btn-sm"
+                                                        href={format!(
+                                                            "/dashboard/audit?credential={}",
+                                                            credential.id,
+                                                        )}
+                                                    >
+                                                        "Activity"
+                                                    </a>
                                                     <button
                                                         type="button"
                                                         class="btn btn-ghost btn-sm"

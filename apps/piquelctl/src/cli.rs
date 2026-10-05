@@ -90,6 +90,9 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: crate::accounts::TokenCommand,
     },
+    /// Read the audit trail of API requests, newest first: your own, or any
+    /// account's with audit:read.
+    Audit(crate::accounts::AuditArgs),
     /// Print the first-account setup link (Unix socket only).
     SetupLink {
         /// Also open the link in the default browser.

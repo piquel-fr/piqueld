@@ -199,6 +199,7 @@ fn App() -> impl IntoView {
                     <Route path={path!("system")} view={observability::SystemPage} />
                     <Route path={path!("analytics")} view={observability::AnalyticsPage} />
                     <Route path={path!("notifications")} view={observability::NotificationsPage} />
+                    <Route path={path!("audit")} view={observability::AuditPage} />
                     <Route path={path!("applications/:id")} view={ApplicationDetailPage} />
                     <Route
                         path={path!("applications/:id/services/:service")}

@@ -47,6 +47,13 @@ pub struct Event {
     /// Correlated API request identity.
     #[serde(default)]
     pub request_id: Option<String>,
+    /// Account whose API request caused this event, including runtime actions
+    /// of the operation it requested.
+    #[serde(default)]
+    pub actor_user_id: Option<String>,
+    /// Credential that authenticated that request.
+    #[serde(default)]
+    pub actor_credential_id: Option<String>,
     /// Safe, independently readable failure details.
     #[serde(default)]
     pub diagnostic: Option<crate::observability::Diagnostic>,

@@ -40,6 +40,33 @@ impl Client {
         .await
         .map(|r| r.data)
     }
+    /// Reads a page of audited API requests, newest first. Callers without
+    /// `audit:read` see only their own account's requests.
+    /// # Errors
+    /// Returns invalid page size, transport, decoding or API errors.
+    pub async fn audit_events(
+        &self,
+        filter: &piqueld_core::audit::AuditFilter,
+        cursor: Option<&str>,
+        limit: u16,
+    ) -> Result<Page<piqueld_core::audit::AuditEvent>, ClientError> {
+        if !(1..=100).contains(&limit) {
+            return Err(invalid_request("audit limit must be between 1 and 100"));
+        }
+        generated_result(
+            self.generated
+                .list_audit(
+                    filter.credential_id.as_deref(),
+                    cursor,
+                    Some(i64::from(limit)),
+                    filter.outcome.as_ref(),
+                    filter.user_id.as_deref(),
+                )
+                .await,
+        )
+        .await
+        .map(|r| r.data)
+    }
     /// Finds the contextual event for a diagnostic occurrence.
     /// # Errors
     /// Returns transport, decoding, absence or API errors.

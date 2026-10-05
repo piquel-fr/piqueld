@@ -86,6 +86,8 @@ permissions! {
         SystemOperate => "system:operate", "Recover the secret key and retry notifications",
         /// Manage other accounts with equal or less access, and invitations.
         AccountsManage => "accounts:manage", "Manage accounts with equal or less access, and invitations",
+        /// Read every account's audit trail; everyone reads their own.
+        AuditRead => "audit:read", "Read every account's audit trail",
     }
 }
 

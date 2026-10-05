@@ -14,6 +14,10 @@ pub struct ExecSession {
     environment: EnvironmentId,
     service: ServiceName,
     exec: Exec,
+    /// Account and credential that started the command, which its completion
+    /// is attributed to as well.
+    actor_user_id: Option<String>,
+    actor_credential_id: Option<String>,
 }
 
 impl ApplicationService {
@@ -45,8 +49,10 @@ impl ApplicationService {
             .create_exec(environment, request)
             .await?
             .ok_or(ApplicationError::ServiceNotRunning)?;
+        let attribution = actor.attribution();
         self.store
             .record_environment_event(
+                attribution,
                 &application,
                 environment,
                 "command_started",
@@ -60,6 +66,8 @@ impl ApplicationService {
             environment: environment.clone(),
             service: request.service.clone(),
             exec,
+            actor_user_id: attribution.user_id.map(str::to_owned),
+            actor_credential_id: attribution.credential_id.map(str::to_owned),
         })
     }
 }
@@ -78,6 +86,10 @@ impl ExecSession {
             .owner
             .store
             .record_environment_event(
+                crate::store::Attribution {
+                    user_id: self.actor_user_id.as_deref(),
+                    credential_id: self.actor_credential_id.as_deref(),
+                },
                 &self.application,
                 &self.environment,
                 "command_finished",

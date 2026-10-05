@@ -4,6 +4,7 @@
 mod acceptance;
 mod access;
 mod application;
+mod audit;
 mod auth;
 mod build;
 mod deployment;
@@ -14,11 +15,10 @@ mod jobs;
 mod journal;
 mod notifications;
 mod observability;
-pub use access::{Actor, Caller, Visibility};
-pub use auth::Lockout;
-pub(crate) use auth::{
-    CredentialKind, Invitation, NewCredential, NewInvitation, NewPasskey, PasskeyOwner,
-};
+pub use access::{Actor, Attribution, Caller, Visibility};
+pub(crate) use audit::NewAuditEvent;
+pub use auth::{CredentialKind, Lockout};
+pub(crate) use auth::{Invitation, NewCredential, NewInvitation, NewPasskey, PasskeyOwner};
 pub(crate) use journal::JournalAction;
 mod operation;
 mod repository;
@@ -422,6 +422,8 @@ pub struct Store {
     pub(crate) notifications: crate::config::NotificationConfig,
     /// Daemon-scoped event retention in days; zero keeps history forever.
     daemon_event_days: u64,
+    /// Audit trail retention in days; zero keeps it forever.
+    audit_days: u64,
 }
 
 impl Store {
@@ -517,6 +519,7 @@ impl Store {
             stats_cache: std::sync::Arc::default(),
             notifications: crate::config::NotificationConfig::default(),
             daemon_event_days: 0,
+            audit_days: 0,
         })
     }
 

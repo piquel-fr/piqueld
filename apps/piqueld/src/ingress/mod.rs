@@ -53,6 +53,10 @@ pub struct Ingress {
     store: Arc<Store>,
     /// Gateway writer lock serializing configuration and lifecycle changes.
     update: Mutex<()>,
+    /// Operation whose deployment the current gateway pass serves, set under
+    /// `update`; the pass's actions record its actor. `None` for the
+    /// periodic repair pass, which the daemon makes on its own.
+    requester: Mutex<Option<String>>,
     health: RwLock<IngressStatus>,
     /// Unix timestamp (seconds) up to which Caddy logs were already relayed.
     logs_since: Mutex<u64>,
@@ -104,6 +108,7 @@ impl Ingress {
                 .build()?,
             store,
             update: Mutex::new(()),
+            requester: Mutex::new(None),
             health: RwLock::new(IngressStatus {
                 enabled,
                 healthy: false,
@@ -154,6 +159,7 @@ impl Ingress {
         ready: bool,
     ) -> Result<()> {
         let _guard = self.update.lock().await;
+        *self.requester.lock().await = Some(operation.id.clone());
         let id = &operation.environment_id;
         let previous = self.store.applied_routes(id).await?;
         self.store
@@ -223,6 +229,7 @@ impl Ingress {
                 ()=async {
                     let result = {
                         let _guard = self.update.lock().await;
+                        *self.requester.lock().await = None;
                         self.synchronize().await
                     };
                     if let Err(error) = result { tracing::warn!(error=?error,"ingress reconciliation failed; will retry"); }

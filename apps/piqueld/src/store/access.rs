@@ -29,6 +29,30 @@ pub enum Actor<'a> {
     Account(Caller<'a>),
 }
 
+/// Who caused a record: an account and the credential it used, both absent
+/// for the daemon itself.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Attribution<'a> {
+    /// Account that acted.
+    pub user_id: Option<&'a str>,
+    /// Credential it acted with.
+    pub credential_id: Option<&'a str>,
+}
+
+impl<'a> Actor<'a> {
+    /// Who this actor records as.
+    #[must_use]
+    pub fn attribution(self) -> Attribution<'a> {
+        match self {
+            Self::Daemon => Attribution::default(),
+            Self::Account(caller) => Attribution {
+                user_id: Some(caller.user_id),
+                credential_id: Some(caller.credential_id),
+            },
+        }
+    }
+}
+
 impl Actor<'_> {
     /// Re-reads an account caller's ID and grants; `None` for the daemon.
     pub(crate) async fn load(
@@ -115,6 +139,9 @@ pub(crate) fn scope_json(scope: &Scope) -> Option<String> {
 pub struct Caller<'a> {
     /// Credential that authenticated the request.
     pub credential_id: &'a str,
+    /// Account the credential belonged to when the request was
+    /// authenticated. Only records who acted; authorization re-reads it.
+    pub user_id: &'a str,
 }
 
 impl Caller<'_> {
@@ -427,7 +454,10 @@ mod tests {
                 "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[spec]"
             ))
             .unwrap();
-            let actor = Actor::Account(Caller { credential_id });
+            let actor = Actor::Account(Caller {
+                credential_id,
+                user_id: "alice",
+            });
             let store = &store;
             async move {
                 let mutation = Mutation::save(manifest, None, false);
@@ -456,6 +486,241 @@ mod tests {
         assert!(!readable(&store).await.contains(&by_token));
         let by_session = create("session", "from-session").await;
         assert!(readable(&store).await.contains(&by_session));
+    }
+
+    /// Mutations record their caller on the operation and its events,
+    /// including events written later about that operation and daemon actions
+    /// it requests. A runtime action keeps the actor it started under even if
+    /// the operation is restarted.
+    #[tokio::test]
+    async fn operations_and_their_events_record_the_caller() {
+        use crate::store::Visibility;
+        use piqueld_core::observability::EventFilter;
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let blog = application(&store, "blog").await;
+        let user = piqueld_core::auth::User {
+            id: "alice".into(),
+            username: "alice".into(),
+            display_name: String::new(),
+        };
+        store.seed_auth_user(&user, &Grants::admin()).await;
+        let credential = NewCredential {
+            id: "session".into(),
+            secret_hash: "session".into(),
+            kind: CredentialKind::Cli,
+            name: "session",
+            expires_at: None,
+            grants: None,
+        };
+        store
+            .insert_credential(&user.id, &credential)
+            .await
+            .unwrap();
+        let actor = Actor::Account(Caller {
+            credential_id: "session",
+            user_id: "alice",
+        });
+        let deploy = Mutation::deploy(EnvironmentId::default_for(&blog));
+        let (MutationResponse::Operation(operation), _) =
+            store.accept(actor, deploy, None, true, None).await.unwrap()
+        else {
+            panic!("deployment");
+        };
+        let filter = EventFilter {
+            operation_id: Some(operation.operation_id.clone()),
+            ..EventFilter::default()
+        };
+        let accepted = store
+            .filtered_events(&filter, &Visibility::ALL, None, 100)
+            .await
+            .unwrap()
+            .items
+            .len();
+        store
+            .transition_operation(
+                &operation.operation_id,
+                OperationState::Requested,
+                OperationState::Running,
+                None,
+            )
+            .await
+            .unwrap();
+        let id = &operation.operation_id;
+        let action = store.begin_action(Some(id), "deploy", None).await;
+        let action = action.unwrap();
+        // Shared gateway work a deployment needs stays daemon-scoped.
+        let shared = store.begin_daemon_action(Some(id), "ingress", None).await;
+        let shared = shared.unwrap();
+        store.finish_action(&shared, None).await.unwrap();
+        let only_shared = EventFilter {
+            action_id: Some(shared.id.clone()),
+            ..EventFilter::default()
+        };
+        let shared = store
+            .filtered_events(&only_shared, &Visibility::ALL, None, 100)
+            .await
+            .unwrap()
+            .items;
+        assert_eq!(shared.len(), 2, "started and succeeded");
+        assert!(shared.iter().all(|event| event.application_id.is_none()
+            && event.actor_user_id.as_deref() == Some("alice")));
+        let restart = "UPDATE operations SET actor_user_id='bob' WHERE id=?1";
+        sqlx::query(restart)
+            .bind(id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        store.finish_action(&action, None).await.unwrap();
+        let events = store
+            .filtered_events(&filter, &Visibility::ALL, None, 100)
+            .await
+            .unwrap()
+            .items;
+        // The transition wrote at least one event after acceptance.
+        assert!(events.len() > accepted, "{events:?}");
+        for event in events {
+            assert_eq!(
+                event.actor_user_id.as_deref(),
+                Some("alice"),
+                "{}",
+                event.kind
+            );
+            assert_eq!(event.actor_credential_id.as_deref(), Some("session"));
+        }
+    }
+
+    /// Environment changes record their caller too, including every
+    /// operation one mutation requests, like deleting each environment of an
+    /// application.
+    #[tokio::test]
+    async fn environment_mutations_record_the_caller() {
+        use crate::store::Visibility;
+        use piqueld_core::{EnvironmentName, observability::EventFilter};
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let blog = application(&store, "blog").await;
+        let user = piqueld_core::auth::User {
+            id: "alice".into(),
+            username: "alice".into(),
+            display_name: String::new(),
+        };
+        store.seed_auth_user(&user, &Grants::admin()).await;
+        let credential = NewCredential {
+            id: "session".into(),
+            secret_hash: "session".into(),
+            kind: CredentialKind::Cli,
+            name: "session",
+            expires_at: None,
+            grants: None,
+        };
+        store
+            .insert_credential(&user.id, &credential)
+            .await
+            .unwrap();
+        let actor = Actor::Account(Caller {
+            credential_id: "session",
+            user_id: "alice",
+        });
+        let filter = EventFilter {
+            application_id: Some(blog.to_string()),
+            ..EventFilter::default()
+        };
+        let history = |store: &Store| {
+            let (store, filter) = (store.clone(), filter.clone());
+            async move {
+                let page = store.filtered_events(&filter, &Visibility::ALL, None, 100);
+                page.await.unwrap().items
+            }
+        };
+        let before = history(&store).await.len();
+        let names = ["production", "staging"].map(|name| EnvironmentName::parse(name).unwrap());
+        let create = Mutation::CreateEnvironment {
+            application: blog.clone(),
+            name: names[1].clone(),
+            branch: None,
+        };
+        store.accept(actor, create, None, true, None).await.unwrap();
+        let delete = Mutation::DeleteApplication {
+            id: blog.clone(),
+            environments: names.to_vec(),
+        };
+        let (MutationResponse::Deleted(deleted), _) =
+            store.accept(actor, delete, None, true, None).await.unwrap()
+        else {
+            panic!("deletion");
+        };
+        assert_eq!(deleted.operations.len(), 2);
+        for operation in &deleted.operations {
+            let actor: Option<String> =
+                sqlx::query_scalar("SELECT actor_user_id FROM operations WHERE id=?1")
+                    .bind(&operation.operation_id)
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(actor.as_deref(), Some("alice"));
+        }
+        let events = history(&store).await.split_off(before);
+        assert!(
+            events
+                .iter()
+                .any(|event| event.environment_id.is_some() && event.operation_id.is_none())
+        );
+        for event in events {
+            assert_eq!(
+                event.actor_user_id.as_deref(),
+                Some("alice"),
+                "{}",
+                event.kind
+            );
+        }
+    }
+
+    /// Superseding someone else's operation records the new request's caller
+    /// on its own operation only; the superseded one keeps its requester.
+    #[tokio::test]
+    async fn superseded_operations_keep_their_caller() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let blog = application(&store, "blog").await;
+        let mut operations = Vec::new();
+        for name in ["alice", "bob"] {
+            let user = piqueld_core::auth::User {
+                id: name.into(),
+                username: name.into(),
+                display_name: String::new(),
+            };
+            store.seed_auth_user(&user, &Grants::admin()).await;
+            let credential = NewCredential {
+                id: name.into(),
+                secret_hash: name.into(),
+                kind: CredentialKind::Cli,
+                name,
+                expires_at: None,
+                grants: None,
+            };
+            store.insert_credential(name, &credential).await.unwrap();
+            let actor = Actor::Account(Caller {
+                credential_id: name,
+                user_id: name,
+            });
+            let deploy = Mutation::deploy(EnvironmentId::default_for(&blog));
+            let (MutationResponse::Operation(operation), _) =
+                store.accept(actor, deploy, None, true, None).await.unwrap()
+            else {
+                panic!("deployment");
+            };
+            operations.push(operation.operation_id);
+        }
+        for (operation, name) in operations.iter().zip(["alice", "bob"]) {
+            let actor: Option<String> =
+                sqlx::query_scalar("SELECT actor_user_id FROM operations WHERE id=?1")
+                    .bind(operation)
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(actor.as_deref(), Some(name));
+        }
     }
 
     /// Deleting an application removes grants on it, and revokes scoped
