@@ -845,6 +845,213 @@ impl ControllerHarness {
     }
 }
 
+/// Two independently deployed environments exercising the shared Docker backend.
+struct EnvironmentHarness {
+    harness: ControllerHarness,
+    applications: TestApplications,
+    production: EnvironmentId,
+    staging: EnvironmentId,
+    generation: u64,
+}
+
+impl EnvironmentHarness {
+    async fn new() -> Self {
+        use piqueld::api::{Mutation, MutationResponse};
+        use piqueld_core::EnvironmentName;
+        let mut harness = ControllerHarness::new().await;
+        let mut manifest = harness.application.to_manifest();
+        manifest.spec.services[0]
+            .secrets
+            .push(piqueld_core::manifest::SecretMount {
+                name: "token".into(),
+                target: "/run/secrets/token".into(),
+            });
+        harness.application = manifest
+            .validate()
+            .unwrap()
+            .normalize(harness.application.id().clone());
+        harness.docker = Arc::new(FakeDocker {
+            isolate_observations: true,
+            ..FakeDocker::default()
+        });
+        harness.controller =
+            Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
+        let store = &harness.store;
+        let applications = TestApplications::new(
+            Arc::clone(store),
+            harness
+                .controller
+                .runtime(Arc::new(tokio::sync::Notify::new())),
+        );
+        let saved = store
+            .save_application(&harness.application, None, None)
+            .await
+            .unwrap();
+        let production = environment(&harness.application);
+        let MutationResponse::Environment(staging) = applications
+            .accept(
+                Mutation::CreateEnvironment {
+                    application: harness.application.id().clone(),
+                    name: EnvironmentName::parse("staging").unwrap(),
+                },
+                Some(saved.generation),
+                false,
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("created staging")
+        };
+        for (id, value) in [
+            (&production, b"production token".to_vec()),
+            (&staging.id, b"staging token".to_vec()),
+        ] {
+            store.put_secret(id, "token", 0, value).await.unwrap();
+            applications
+                .deploy(id, Some(saved.generation))
+                .await
+                .unwrap();
+        }
+        harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+        Self {
+            harness,
+            applications,
+            production,
+            staging: staging.id,
+            generation: saved.generation,
+        }
+    }
+
+    async fn delete_staging(&self) {
+        use piqueld::api::Mutation;
+        self.applications
+            .accept(
+                Mutation::Delete {
+                    id: self.staging.clone(),
+                },
+                Some(self.generation),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        self.harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
+    let fixture = EnvironmentHarness::new().await;
+    let harness = &fixture.harness;
+    let store = &harness.store;
+    let production = &fixture.production;
+    let staging = &fixture.staging;
+    let production_runtime = harness.docker.observe(production).await.unwrap();
+    let staging_runtime = harness.docker.observe(staging).await.unwrap();
+    assert_eq!(production_runtime.services.len(), 1);
+    assert_eq!(staging_runtime.services.len(), 1);
+    assert_ne!(
+        production_runtime.services[0].name,
+        staging_runtime.services[0].name
+    );
+    assert_ne!(
+        production_runtime.volumes[0].name,
+        staging_runtime.volumes[0].name
+    );
+    let production_history = store.deployments(production, None, 10).await.unwrap();
+    let production_events = store.events(Some(production), None, 100).await.unwrap();
+    assert!(!production_history.items.is_empty());
+    assert_eq!(
+        store
+            .deployments(staging, None, 10)
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
+    assert_eq!(harness.docker.secret_values.lock().await.len(), 2);
+
+    fixture.delete_staging().await;
+
+    assert!(matches!(
+        store.get(staging).await,
+        Err(piqueld::store::StoreError::NotFound)
+    ));
+    let remaining = harness.docker.observe(staging).await.unwrap();
+    assert_eq!(remaining.services, [] as [ObservedService; 0]);
+    assert_eq!(remaining.networks, [] as [ObservedNetwork; 0]);
+    assert_eq!(
+        remaining.volumes, staging_runtime.volumes,
+        "staging volume data is retained"
+    );
+    assert_eq!(
+        harness.docker.observe(production).await.unwrap(),
+        production_runtime
+    );
+    assert_eq!(
+        store.status(production).await.unwrap().state,
+        piqueld::store::ApplicationState::Ready
+    );
+    let history = store.deployments(production, None, 10).await.unwrap();
+    assert_eq!(
+        history
+            .items
+            .iter()
+            .map(|item| (&item.operation.id, &item.application))
+            .collect::<Vec<_>>(),
+        production_history
+            .items
+            .iter()
+            .map(|item| (&item.operation.id, &item.application))
+            .collect::<Vec<_>>()
+    );
+    let events = store.events(Some(production), None, 100).await.unwrap();
+    assert!(
+        production_events
+            .items
+            .iter()
+            .all(|old| events.items.iter().any(|event| event.id == old.id))
+    );
+    assert!(
+        store
+            .events(Some(staging), None, 100)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert_eq!(store.secrets(production).await.unwrap()[0].generation, 1);
+    let values = harness.docker.secret_values.lock().await;
+    assert_eq!(values.len(), 1);
+    assert_eq!(values.values().next().unwrap(), b"production token");
+    assert_eq!(
+        store
+            .environments(harness.application.id())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .application(harness.application.id())
+            .await
+            .unwrap()
+            .generation,
+        fixture.generation
+    );
+}
+
 #[tokio::test]
 async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
     let harness = ControllerHarness::new().await;

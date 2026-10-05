@@ -25,14 +25,25 @@ least healthy environment) and last deployment time.
 
 An application's page has an **Environment** selector next to its actions. The
 selected environment's runtime overview, deployments, logs, secrets, builds, and
-events are shown, and **Preview** and **Deploy** target it; configuration tabs
-edit the application's shared manifest. `?environment=<id>` in the address selects
+events are shown, and **Preview** and **Deploy to <environment>** target it;
+configuration forms are labelled **Shared across all environments** and edit
+the application's shared manifest. Saving changes future deployments; running
+deployments keep their captured configuration. Secret values belong to the selected
+environment, while secret file references remain shared. `?environment=<id>` in the address selects
 an environment by ID. The selector updates this address, and service navigation
 preserves it, so reloading keeps the same selection. Links from deployments, builds,
 and events also use it. A selected
-environment that no longer exists is reported rather than replaced by another. Creating,
-renaming, and deleting environments is available through `piquelctl env` and the
-API; the full environment UI comes later.
+environment that no longer exists is reported rather than replaced by another.
+**Manage environments** beside the selector creates, renames, and deletes environments,
+including creating one for an application with no environments. Deletion confirms
+the environment name, retains its Docker volumes, and leaves the application and
+other environments intact. Deployment actions are disabled for missing or deleting
+environments; **Retry deletion** resumes cleanup when needed.
+
+Environments currently share routes. A second environment cannot reserve the same
+hostnames; the error names the environment already reserving them and explains
+that per-environment configuration is needed. Environment-specific hostnames are
+planned with manifest variables.
 
 Applications have one main tab row: Overview (the default), Services, Source,
 Routes, Volumes, Jobs, Secrets, Deployments, Builds, Logs, and Events. The Jobs

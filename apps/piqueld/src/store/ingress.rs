@@ -116,8 +116,8 @@ impl Store {
     /// captured input, desired and applied gateway routes), rejects any within
     /// an installation hostname, then replaces the environment's
     /// `hostname_reservations` rows. A unique violation means another
-    /// environment, possibly of the same application, owns the name and maps to
-    /// `StoreError::HostnameConflict`.
+    /// environment owns the name. Sibling conflicts identify that environment
+    /// and explain the current shared-route limitation.
     async fn reserve_hostnames_on(
         connection: &mut SqliteConnection,
         environment_id: &str,
@@ -149,23 +149,34 @@ impl Store {
         .await
         .map_err(StoreError::database)?;
         for hostname in names {
-            sqlx::query!(
+            let result = sqlx::query!(
                 "INSERT INTO hostname_reservations(hostname,environment_id) VALUES(?1,?2)",
                 hostname,
                 environment_id
             )
             .execute(&mut *connection)
-            .await
-            .map_err(|error| {
-                if error
+            .await;
+            if let Err(error) = result {
+                if !error
                     .as_database_error()
                     .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
                 {
-                    StoreError::HostnameConflict { hostname }
-                } else {
-                    StoreError::database(error)
+                    return Err(StoreError::database(error));
                 }
-            })?;
+                let sibling = sqlx::query_scalar!(
+                    r#"SELECT owner.name AS "name!" FROM hostname_reservations r JOIN environments owner ON owner.id=r.environment_id JOIN environments contender ON contender.id=?2 WHERE r.hostname=?1 AND owner.application_id=contender.application_id"#,
+                    hostname,
+                    environment_id
+                ).fetch_optional(&mut *connection).await.map_err(StoreError::database)?;
+                return Err(match sibling {
+                    Some(name) => StoreError::SharedHostnameConflict {
+                        hostname,
+                        environment: piqueld_core::EnvironmentName::parse(name)
+                            .map_err(StoreError::corrupt)?,
+                    },
+                    None => StoreError::HostnameConflict { hostname },
+                });
+            }
         }
         Ok(())
     }
@@ -353,13 +364,23 @@ mod tests {
             .await
             .unwrap();
         let staging = Mutation::CreateEnvironment {
-            application: piqueld_core::ApplicationId::parse(saved.application_id).unwrap(),
+            application: piqueld_core::ApplicationId::parse(&saved.application_id).unwrap(),
             name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
         };
         assert!(matches!(
             store.accept(staging, None, true, None).await,
-            Err(StoreError::HostnameConflict { .. })
+            Err(StoreError::SharedHostnameConflict { hostname, environment })
+                if hostname == "site.example.com" && environment.as_str() == "production"
         ));
+        assert_eq!(
+            store
+                .environments(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "failed creation rolls back the environment"
+        );
     }
 
     #[tokio::test]

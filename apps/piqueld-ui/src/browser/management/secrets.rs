@@ -84,8 +84,9 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                         items.push(secret);
                         items.sort_by(|a, b| a.name.cmp(&b.name));
                     });
-                    notice_text
-                        .set("Secret saved. Deploy the application to use its new version.".into());
+                    notice_text.set(
+                        "Secret saved. Deploy this environment to use its new version.".into(),
+                    );
                 }
                 Err(e) => {
                     ready.set(false);
@@ -198,7 +199,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                     <div>
                         <h3>"Secrets"</h3>
                         <p>
-                            "Values are write-only and never read back. Replace a value, then deploy to adopt the new version; running deployments keep theirs."
+                            "Values belong to the selected environment and are write-only. Replace a value, then deploy this environment to adopt the new version; running deployments keep theirs."
                         </p>
                     </div>
                     <button
@@ -252,7 +253,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                                 if loading.get() {
                                     empty("Loading secrets…")
                                 } else if ready.get() {
-                                    empty("No secrets stored for this application.")
+                                    empty("No secrets stored for this environment.")
                                 } else {
                                     ().into_any()
                                 }
@@ -323,6 +324,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                     })
             }}
             <fieldset class="stack" disabled={move || context.blocked() || context.managed()}>
+                <super::SharedConfigurationNotice />
                 <For
                     each={move || {
                         context

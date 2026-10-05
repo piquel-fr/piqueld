@@ -71,6 +71,11 @@ environments, `app delete` requires `--environments a,b` naming every one.
 Environment creation, renames and deletions are conditioned on the inspected
 application revision like other mutations (`--expected-generation`, `--force`).
 
+Manifest settings remain shared, including routes. Creating another environment
+for an application with hostname routes fails with `hostname_conflict`, naming
+the sibling environment that reserves the hostname and explaining the shared-route
+limitation. Environment-specific hostnames are planned with manifest variables.
+
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit
 HTTP or HTTPS origin such as `http://127.0.0.1:7845/`; the two transport options are
 mutually exclusive. The default socket is

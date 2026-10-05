@@ -9,6 +9,13 @@ mistyped value, e.g.
 the API returns them, like validation errors, as `details.errors` entries with a
 path and message; JSON request bodies report only `json_malformed`.
 
+All manifest settings are shared by the application's environments, including
+services, replica counts, limits, volumes, routes, jobs, repository settings and
+secret file references. Each environment has its own secret values and deployed
+snapshot. Per-environment manifest settings are not supported yet. Because routes
+are shared and hostnames are exclusive, an application with hostname routes cannot
+create a second environment until environment-specific configuration is supported.
+
 ```toml
 api_version = "piqueld.dev/v1alpha1"
 kind = "Application"

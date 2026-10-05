@@ -100,6 +100,16 @@ pub enum StoreError {
         /// Conflicting canonical public hostname.
         hostname: String,
     },
+    /// Sibling environments currently inherit the same application routes.
+    #[error(
+        "hostname {hostname} is reserved by environment {environment}; environments currently share application routes, so they cannot use different hostnames until per-environment configuration is supported"
+    )]
+    SharedHostnameConflict {
+        /// Conflicting canonical public hostname.
+        hostname: String,
+        /// Sibling environment holding the reservation.
+        environment: EnvironmentName,
+    },
     /// A storage operation failed without a lower-level source.
     #[error("database operation failed")]
     Database,
@@ -705,112 +715,11 @@ impl StoredEnvironmentRow {
 mod observability_tests;
 
 #[cfg(test)]
+mod environment_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api;
-
-    #[tokio::test]
-    async fn existing_applications_become_one_production_environment_with_the_same_id() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("upgrade.db");
-        let options = SqliteConnectOptions::new()
-            .filename(&path)
-            .create_if_missing(true)
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .unwrap();
-        let before = MIGRATIONS.len() - 1;
-        for (index, migration) in MIGRATIONS.iter().take(before).enumerate() {
-            Store::apply_migration(&pool, index + 1, migration)
-                .await
-                .unwrap();
-        }
-        let id = ApplicationId::parse("app-legacy-01").unwrap();
-        let manifest = piqueld_core::parse_toml(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec]",
-        )
-        .unwrap()
-        .normalize(id.clone());
-        let desired = serde_json::to_string(&manifest).unwrap();
-        sqlx::raw_sql(&format!(
-            "INSERT INTO applications(id,name,desired_json,generation,created_at_ms,updated_at_ms) VALUES('{id}','notes','{desired}',3,1,2);
-             INSERT INTO application_status(application_id,state,updated_at_ms) VALUES('{id}','ready',2);
-             INSERT INTO operations(id,application_id,kind,state,generation,created_at_ms,updated_at_ms,finished_at_ms) VALUES('operation-1','{id}','refresh','succeeded',3,1,2,2);
-             INSERT INTO events(application_id,operation_id,kind,created_at_ms) VALUES('{id}','operation-1','operation_succeeded',2);
-             INSERT INTO request_receipts VALUES('legacy-deploy','fingerprint','{{\"Operation\":{{\"operation_id\":\"operation-1\",\"application_id\":\"{id}\",\"generation\":3}}}}',9000000000000000);"
-        ))
-        .execute(&pool)
-        .await
-        .unwrap();
-        pool.close().await;
-
-        let store = Store::open(&path).await.unwrap();
-        let application = store.application(&id).await.unwrap();
-        assert_eq!(application.application, manifest);
-        assert_eq!(application.generation, 3);
-        let environments = store.environments(&id).await.unwrap();
-        assert_eq!(environments.len(), 1);
-        let environment = &environments[0];
-        assert_eq!(environment.id, EnvironmentId::default_for(&id));
-        assert_eq!(environment.name.as_str(), "production");
-        assert_eq!(environment.source, EnvironmentSource::Saved);
-        assert_eq!(
-            store.status(&environment.id).await.unwrap().state,
-            ApplicationState::Ready
-        );
-        let operation = store
-            .latest_operation_for_environment(&environment.id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(operation.id, "operation-1");
-        assert_eq!(operation.generation, 3);
-        let events = store.events(Some(&environment.id), None, 10).await.unwrap();
-        assert_eq!(events.items.len(), 1);
-
-        // Deletion also removes receipts accepted before environments existed.
-        let (api::MutationResponse::Deleted(deleted), _) = store
-            .accept(
-                api::Mutation::DeleteApplication {
-                    id: id.clone(),
-                    environments: Vec::new(),
-                },
-                Some(3),
-                false,
-                None,
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("deleted")
-        };
-        let deletion = &deleted.operations[0].operation_id;
-        store
-            .transition_operation(
-                deletion,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
-        store
-            .finish_delete_operation(&store.operation(deletion).await.unwrap())
-            .await
-            .unwrap();
-        assert!(matches!(
-            store.application(&id).await,
-            Err(StoreError::NotFound)
-        ));
-        let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_receipts")
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
-        assert_eq!(receipts, 0);
-    }
 
     #[tokio::test]
     async fn every_committed_migration_reopens_after_a_later_migration_fails() {

@@ -4,9 +4,9 @@ use piqueld_core::observability::DiagnosticCode;
 /// Sanitized failure returned while executing a durable operation.
 #[derive(Debug, thiserror::Error)]
 pub enum OperationError {
-    /// A saved or captured route belongs to another application or the installation.
-    #[error("hostname {0} is reserved by another application or this installation")]
-    HostnameConflict(String),
+    /// A saved or captured route belongs to another environment or the installation.
+    #[error("{0}")]
+    HostnameConflict(#[source] crate::store::StoreError),
     /// Managed gateway could not apply the required routing transition.
     #[error("ingress configuration could not be applied; see ingress health and daemon logs")]
     Ingress(#[source] anyhow::Error),
@@ -225,8 +225,9 @@ impl From<crate::store::StoreError> for OperationError {
             crate::store::StoreError::SecretUnavailable { names } => {
                 Self::SecretUnavailable { names }
             }
-            crate::store::StoreError::HostnameConflict { hostname } => {
-                Self::HostnameConflict(hostname)
+            error @ (crate::store::StoreError::HostnameConflict { .. }
+            | crate::store::StoreError::SharedHostnameConflict { .. }) => {
+                Self::HostnameConflict(error)
             }
             other => Self::Journal(other),
         }

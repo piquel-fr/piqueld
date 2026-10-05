@@ -503,8 +503,7 @@ async fn environment_detail(
                 "The selected environment no longer exists. Select another environment.".to_owned()
             })?,
         None => application.environments.first().ok_or_else(|| {
-            "This application has no environments. Create one with `piquelctl env create`."
-                .to_owned()
+            "This application has no environments. Create one with Manage environments.".to_owned()
         })?,
     };
     client

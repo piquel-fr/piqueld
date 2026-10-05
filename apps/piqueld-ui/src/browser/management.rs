@@ -1,5 +1,6 @@
 //! Application editor state and page composition. Polling never replaces local edits.
 mod deployments;
+mod environments;
 mod jobs;
 mod logs;
 mod navigation;
@@ -72,6 +73,31 @@ impl EditorContext {
     /// The shown environment's ID, read once by components keyed on it.
     fn environment_id(self) -> String {
         self.environment.get_untracked().unwrap_or_default()
+    }
+    fn selected_environment(self) -> Option<piqueld_client::EnvironmentView> {
+        let id = self.environment.get()?;
+        self.saved.with(|saved| {
+            saved
+                .environments
+                .iter()
+                .find(|env| env.id.as_str() == id)
+                .cloned()
+        })
+    }
+    /// Runtime actions require a loaded, live environment, including after deletion.
+    fn environment_action_blocked(self) -> bool {
+        let signals = self.dashboard.with_value(|d| d.signals);
+        self.action_blocked()
+            || self
+                .selected_environment()
+                .is_none_or(|env| env.delete_intent)
+            || signals.detail_loading.get()
+            || signals.detail_error.get().is_some()
+            || signals.detail.with(|detail| {
+                detail.as_ref().is_none_or(|detail| {
+                    Some(detail.environment.id.to_string()) != self.environment.get()
+                })
+            })
     }
     /// Keeps service navigation scoped to the selected environment.
     fn environment_query(self) -> String {
@@ -431,11 +457,29 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         }),
     };
     provide_context(context);
+    let signals = context.dashboard.with_value(|d| d.signals);
+    // Refresh environment metadata without replacing shared configuration drafts.
+    Effect::new(move |_| {
+        if let Some(application) = signals.applications.with(|rows| {
+            rows.iter()
+                .find(|row| row.application.id.as_str() == context.id())
+                .map(|row| row.application.clone())
+        }) {
+            if context.saved.with_untracked(|saved| {
+                saved.environments != application.environments
+                    || saved.delete_intent != application.delete_intent
+            }) {
+                context.saved.update(|saved| {
+                    saved.environments = application.environments;
+                    saved.delete_intent = application.delete_intent;
+                });
+            }
+        }
+    });
     guard_navigation(context.dirty);
     if let Some(name) = service {
         return view! { <services::ServiceEditor name={name} /> }.into_any();
     }
-    let signals = context.dashboard.with_value(|d| d.signals);
     let id = context.id();
     let health = move || {
         let id = context.id();
@@ -458,6 +502,7 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
             </div>
             <div class="page-actions">
                 <EnvironmentSelector />
+                <environments::EnvironmentManager />
                 <a
                     class="btn btn-ghost"
                     href={format!("/api/v1/applications/{id}/manifest")}
@@ -509,22 +554,11 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
 }
 
 /// Selects the environment whose runtime, history, logs, and secrets are shown.
-/// Lists the environments of the latest detail, falling back to the saved view.
+/// Lists the application's environments, refreshed without replacing local edits.
 #[component]
 fn EnvironmentSelector() -> impl IntoView {
     let context = editor();
-    let dashboard = context.dashboard.get_value();
-    let signals = dashboard.signals;
-    let environments = move || {
-        signals
-            .detail
-            .with(|detail| {
-                detail
-                    .as_ref()
-                    .map(|detail| detail.application.environments.clone())
-            })
-            .unwrap_or_else(|| context.saved.with(|saved| saved.environments.clone()))
-    };
+    let environments = move || context.saved.with(|saved| saved.environments.clone());
     let (_, set_environment) = query_signal_with_options::<String>(
         "environment",
         NavigateOptions {
@@ -538,15 +572,16 @@ fn EnvironmentSelector() -> impl IntoView {
             <span>"Environment"</span>
             <select
                 prop:value={move || context.environment.get().unwrap_or_default()}
-                disabled={move || context.dirty.with(|dirty| !dirty.is_empty())}
+                disabled={move || context.blocked() || context.dirty.with(|dirty| !dirty.is_empty())}
                 on:change={select}
             >
                 {move || {
                     environments()
                         .into_iter()
                         .map(|environment| {
+                            let id = environment.id.to_string();
                             view! {
-                                <option value={environment.id.to_string()}>
+                                <option value={id.clone()} prop:selected={move || context.environment.get().as_deref() == Some(id.as_str())}>
                                     {environment.name.to_string()}
                                 </option>
                             }
@@ -771,6 +806,7 @@ fn ApplicationSettings() -> impl IntoView {
             !matches!(context.tab.get(), "Source" | "Services" | "Routes" | "Volumes" | "Jobs")
         }}>
             <div class="stack">
+                <SharedConfigurationNotice />
                 {move || {
                     context
                         .managed()
@@ -808,4 +844,13 @@ fn ApplicationSettings() -> impl IntoView {
             </div>
         </div>
     }
+}
+
+/// Appears beside shared application forms, including individual service settings.
+#[component]
+fn SharedConfigurationNotice() -> impl IntoView {
+    notice(
+        Tone::Info,
+        "Shared across all environments. Saving changes the configuration each environment will use on its next deployment; running deployments keep their current settings.",
+    )
 }

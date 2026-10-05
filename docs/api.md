@@ -33,6 +33,13 @@ environment sharing the application ID, and further environments get their own I
 An environment's `source` is `saved` or `repository`; in this release it follows
 the application's manifest connection.
 
+All manifest settings remain shared. Hostnames are reserved per environment, so
+environments of one application cannot currently inherit the same hostname routes.
+A sibling conflict returns `hostname_conflict` with the shared-route limitation
+in its message and the hostname and reserving environment name in
+`details.hostname` and `details.environment`. Per-environment configuration will
+allow different hostnames later.
+
 Application list items contain `id`, `name`, generation metadata, deletion
 intent, timestamps, and their environments. Read `/api/v1/applications/{id}`
 when the complete normalized manifest is needed.

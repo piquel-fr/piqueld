@@ -74,13 +74,14 @@ pub(super) fn DeploymentActions() -> impl IntoView {
     };
     Effect::new(move |_| {
         context.saved.track();
+        context.environment.track();
         preview.set(None);
     });
     view! {
         <button
             type="button"
             class="btn"
-            disabled={move || context.action_blocked()}
+            disabled={move || context.environment_action_blocked()}
             on:click={inspect}
             title="Show what deploying the saved configuration would change"
         >
@@ -90,11 +91,11 @@ pub(super) fn DeploymentActions() -> impl IntoView {
         <button
             type="button"
             class="btn btn-primary"
-            disabled={move || context.action_blocked()}
+            disabled={move || context.environment_action_blocked()}
             on:click={deploy}
         >
             {icon(Icon::Rocket)}
-            "Deploy"
+            {move || context.selected_environment().map_or_else(|| "Deploy".into(), |env| format!("Deploy to {}", env.name))}
         </button>
         <DeploymentPreview preview={preview} />
     }

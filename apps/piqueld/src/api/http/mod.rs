@@ -66,7 +66,7 @@ struct ApiError {
     /// Stable machine-readable error code, e.g. `generation_conflict`.
     code: &'static str,
     /// Sanitized, user-facing explanation.
-    message: &'static str,
+    message: String,
     /// Extra structured context; `null` when there is none.
     details: Value,
     /// `Allow` header value, only set for 405 responses.
@@ -78,11 +78,11 @@ struct ApiError {
 
 impl ApiError {
     /// Creates an error without details, `Allow` header, or diagnostic.
-    fn new(status: StatusCode, code: &'static str, message: &'static str) -> Self {
+    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status,
             code,
-            message,
+            message: message.into(),
             details: Value::Null,
             allow: None,
             diagnostic: None,
@@ -217,6 +217,11 @@ impl From<StoreError> for ApiError {
                 "Hostname is reserved by another environment or this installation",
             )
             .details(json!({"hostname": hostname})),
+            ref error @ StoreError::SharedHostnameConflict {
+                ref hostname,
+                ref environment,
+            } => Self::new(StatusCode::CONFLICT, "hostname_conflict", error.to_string())
+                .details(json!({"hostname": hostname, "environment": environment})),
             error @ (StoreError::EnvironmentRequired { .. }
             | StoreError::ConfirmationRequired { .. }) => Self::from_environment_error(error),
             StoreError::GenerationConflict { expected, actual } => Self::new(
@@ -410,7 +415,7 @@ impl ApiError {
     fn body(&self) -> ErrorBody {
         ErrorBody {
             code: self.code.into(),
-            message: self.message.into(),
+            message: self.message.clone(),
             details: self.details.clone(),
             request_id: uuid::Uuid::now_v7().simple().to_string(),
         }

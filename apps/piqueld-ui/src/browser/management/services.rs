@@ -190,6 +190,9 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
         <EditorFeedback />
         <Tabs label="Service sections" options={&SERVICE_TABS} selected={selected} />
         <div class="stack">
+            <Show when={move || selected.get() != "Logs"}>
+                <super::SharedConfigurationNotice />
+            </Show>
             {move || {
                 (context.managed() && selected.get() != "Logs")
                     .then(|| {
