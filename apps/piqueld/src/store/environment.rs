@@ -140,12 +140,31 @@ impl Store {
         Ok(operation)
     }
 
-    /// Deletes an environment without a precondition. See `request_delete_on`.
+    /// Requests deletion of one environment and advances its application
+    /// revision, since environment names select configuration.
+    pub(super) async fn delete_environment_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        environment: &StoredEnvironment,
+    ) -> Result<Operation, StoreError> {
+        let operation = Self::request_delete_on(tx, environment.id()).await?;
+        Self::bump_generation_on(
+            tx,
+            environment.manifest().id(),
+            environment.application.generation,
+        )
+        .await?;
+        Ok(operation)
+    }
+
+    /// Deletes an environment without a precondition. See `delete_environment_on`.
     /// # Errors
-    /// Returns storage or illegal transition errors.
+    /// Returns storage, absence, or illegal transition errors.
     pub async fn request_delete(&self, id: &EnvironmentId) -> Result<Operation, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let result = Self::request_delete_on(&mut tx, id).await?;
+        let environment = Self::environment_on(&mut tx, id.as_str())
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        let result = Self::delete_environment_on(&mut tx, &environment).await?;
         Self::commit_environment_changes(tx, [id.as_str()]).await?;
         Ok(result)
     }

@@ -227,16 +227,7 @@ impl Store {
                     {
                         operation
                     }
-                    _ => {
-                        let operation = Self::request_delete_on(tx, &id).await?;
-                        Self::bump_generation_on(
-                            tx,
-                            current.manifest().id(),
-                            current.application.generation,
-                        )
-                        .await?;
-                        operation
-                    }
+                    _ => Self::delete_environment_on(tx, &current).await?,
                 };
                 Ok(Self::operation_accepted(&operation))
             }
