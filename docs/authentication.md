@@ -68,7 +68,8 @@ already completed. Startup also writes the link to a private
 Open the link, choose a username and optional display name, and register a
 passkey. The account, passkey, and permanent closure of initial setup commit
 together. The link becomes invalid immediately; the file is removed on the next
-startup. A restart before registration preserves the valid link. Initial setup
+startup. A restart before registration preserves the valid link, updated to
+the current `auth.public_url`. Initial setup
 never reopens automatically.
 
 Passkeys use discoverable credentials, so subsequent login starts directly with

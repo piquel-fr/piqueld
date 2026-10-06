@@ -320,6 +320,15 @@ async fn setup_link_is_private_stable_and_never_reopens() {
     f.auth.prepare_setup(&path).await.unwrap();
     assert_eq!(link, std::fs::read_to_string(&path).unwrap());
     assert_eq!(f.auth.setup_link().await.unwrap().url, link.trim());
+    // A link from a previous public_url keeps its secret under the current one.
+    let (_, secret) = link.split_once("#invite=").unwrap();
+    std::fs::write(
+        &path,
+        format!("https://old.example/dashboard/auth#invite={secret}"),
+    )
+    .unwrap();
+    f.auth.prepare_setup(&path).await.unwrap();
+    assert_eq!(link, std::fs::read_to_string(&path).unwrap());
     f.account("alice", CredentialKind::Token, None).await;
     assert!(matches!(
         f.auth.setup_link().await,
