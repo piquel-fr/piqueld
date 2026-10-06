@@ -358,3 +358,36 @@ fn rendering_stops_at_its_size_budget() {
         )]
     );
 }
+
+/// Oversized keys and repeated bad references cannot multiply diagnostics.
+#[test]
+fn diagnostics_stay_bounded_for_oversized_names_and_repeated_references() {
+    let name = "n".repeat(10_000);
+    let references = "${{ vars.missing }}".repeat(1_000);
+    let text = manifest(&format!(
+        "[spec.variables]\nweb_replicas = 1\ntag = \"stable\"\n{name} = \"{references}\"\n"
+    ))
+    .replace("hello ${{ env.name }}", &references);
+    let errors = parse_template_toml(&text).unwrap_err();
+    assert_eq!(errors.0.len(), 3, "{:?}", codes_and_paths(&errors));
+    assert!(errors.0.iter().all(|error| error.path.len() < 300));
+}
+
+#[test]
+fn variable_text_round_trips_blank_and_numeric_looking_strings() {
+    use piqueld_core::manifest::Variable;
+    for value in [
+        Variable::String("".into()),
+        Variable::String("  ".into()),
+        Variable::String("3".into()),
+        Variable::String("true".into()),
+        Variable::String("\"quoted\"".into()),
+        Variable::String("piquel.fr".into()),
+        Variable::Integer(3),
+        Variable::Boolean(false),
+    ] {
+        let text = value.to_text();
+        assert!(!text.trim().is_empty(), "{value:?} would read as no value");
+        assert_eq!(Variable::from_text(&text), value, "{text}");
+    }
+}

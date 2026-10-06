@@ -170,11 +170,14 @@ impl Variable {
     }
 
     /// The text [`Self::from_text`] parses back into this value, quoting text
-    /// that would otherwise read as a boolean, an integer, or quoted text.
+    /// that would otherwise read as a boolean, an integer, quoted text, or,
+    /// when blank, no value.
     #[must_use]
     pub fn to_text(&self) -> String {
         match self {
-            Self::String(text) if Self::from_text(text.as_str()) != *self => {
+            Self::String(text)
+                if text.as_str().trim().is_empty() || Self::from_text(text.as_str()) != *self =>
+            {
                 format!("\"{text}\"")
             }
             value => value.to_string(),

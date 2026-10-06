@@ -788,7 +788,12 @@ impl RouteCommand {
             )),
             Self::Remove(_) => {
                 let count = routes.len();
-                let hostname = target.hostname.trim_end_matches('.').to_ascii_lowercase();
+                // Literal hostnames are saved canonically; references as written.
+                let hostname = if Template::mentions_reference(&target.hostname) {
+                    target.hostname.clone()
+                } else {
+                    target.hostname.trim_end_matches('.').to_ascii_lowercase()
+                };
                 routes.retain(|route| route.hostname.as_str() != hostname);
                 if routes.len() == count {
                     return Err(CliError::new(

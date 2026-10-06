@@ -230,19 +230,16 @@ impl Reference {
 }
 
 impl Reference {
-    /// Reports `git.*` at `path` unless the manifest is repository-backed.
-    fn check_available(&self, repository: bool, path: &str, errors: &mut Vec<ValidationError>) {
-        if let Self::System(variable) = self
-            && variable.needs_repository()
-            && !repository
-        {
-            error(
-                errors,
-                codes::VARIABLE_UNAVAILABLE,
-                path,
-                &format!("{self} is only set when spec.manifest is configured"),
-            );
-        }
+    /// The error for `git.*` unless the manifest is repository-backed.
+    fn unavailable(&self, repository: bool) -> Option<(&'static str, String)> {
+        matches!(self, Self::System(variable) if variable.needs_repository() && !repository).then(
+            || {
+                (
+                    codes::VARIABLE_UNAVAILABLE,
+                    format!("{self} is only set when spec.manifest is configured"),
+                )
+            },
+        )
     }
 }
 
@@ -272,6 +269,16 @@ pub fn valid_identifier(value: &str) -> bool {
 /// Quotes user text in messages, truncated to 64 characters.
 fn echo(text: &str) -> String {
     text.chars().take(64).collect()
+}
+
+/// A user-supplied map key as a path component, truncated to the 255-byte
+/// identifier bound so diagnostics stay small for oversized keys.
+fn path_key(key: &str) -> &str {
+    let mut end = key.len().min(255);
+    while !key.is_char_boundary(end) {
+        end -= 1;
+    }
+    &key[..end]
 }
 
 /// A malformed or unsupported reference.
@@ -597,7 +604,10 @@ impl ApplicationSpec {
                     visit(&format!("{build}.dockerfile"), Slot::Text(dockerfile));
                     visit(&format!("{build}.context"), Slot::Text(context));
                     for (key, value) in args {
-                        visit(&format!("{build}.args.{key}"), Slot::Text(value));
+                        visit(
+                            &format!("{build}.args.{}", path_key(key)),
+                            Slot::Text(value),
+                        );
                     }
                     if let Some(target) = target {
                         visit(&format!("{build}.target"), Slot::Text(target));
@@ -609,7 +619,10 @@ impl ApplicationSpec {
                 Slot::Typed(&mut service.replicas),
             );
             for (key, value) in &mut service.environment {
-                visit(&format!("{base}.environment.{key}"), Slot::Text(value));
+                visit(
+                    &format!("{base}.environment.{}", path_key(key)),
+                    Slot::Text(value),
+                );
             }
             texts(&format!("{base}.command"), &mut service.command, visit);
             texts(&format!("{base}.arguments"), &mut service.arguments, visit);
@@ -663,11 +676,18 @@ impl ApplicationSpec {
     fn declarations(&self) -> impl Iterator<Item = (String, &str, &Variable)> {
         self.variables
             .iter()
-            .map(|(name, value)| (format!("spec.variables.{name}"), name.as_str(), value))
+            .map(|(name, value)| {
+                let path = format!("spec.variables.{}", path_key(name));
+                (path, name.as_str(), value)
+            })
             .chain(self.environments.iter().flat_map(|(environment, config)| {
                 config.variables.iter().map(move |(name, value)| {
                     (
-                        format!("spec.environments.{environment}.variables.{name}"),
+                        format!(
+                            "spec.environments.{}.variables.{}",
+                            path_key(environment),
+                            path_key(name)
+                        ),
                         name.as_str(),
                         value,
                     )
@@ -737,22 +757,20 @@ impl ApplicationSpec {
             }
             match template.segments() {
                 Err(source) => error(errors, source.code(), &path, &source.to_string()),
+                // The first problem of each value is reported, bounding errors.
                 Ok(segments) => {
-                    for segment in segments {
-                        match segment {
-                            Segment::Reference(reference @ Reference::Variable(_)) => error(
-                                errors,
-                                codes::VARIABLE_NOT_ALLOWED,
-                                &path,
-                                &format!(
-                                    "variables may reference system variables, but not {reference}"
-                                ),
+                    let problem = segments.into_iter().find_map(|segment| match segment {
+                        Segment::Reference(reference @ Reference::Variable(_)) => Some((
+                            codes::VARIABLE_NOT_ALLOWED,
+                            format!(
+                                "variables may reference system variables, but not {reference}"
                             ),
-                            Segment::Reference(reference) => {
-                                reference.check_available(repository, &path, errors);
-                            }
-                            Segment::Text(_) => {}
-                        }
+                        )),
+                        Segment::Reference(reference) => reference.unavailable(repository),
+                        Segment::Text(_) => None,
+                    });
+                    if let Some((code, message)) = problem {
+                        error(errors, code, &path, &message);
                     }
                 }
             }
@@ -774,24 +792,24 @@ impl ApplicationSpec {
             };
             match template.segments() {
                 Err(source) => error(errors, source.code(), path, &source.to_string()),
+                // The first problem of each value is reported, bounding errors.
                 Ok(segments) => {
-                    for segment in segments {
-                        let Segment::Reference(reference) = segment else {
-                            continue;
-                        };
-                        if let Reference::Variable(name) = &reference
-                            && !declared.contains(name)
+                    let problem = segments.into_iter().find_map(|segment| match segment {
+                        Segment::Reference(Reference::Variable(name))
+                            if !declared.contains(&name) =>
                         {
-                            error(
-                                errors,
+                            Some((
                                 codes::VARIABLE_UNDECLARED,
-                                path,
-                                &format!(
-                                    "{reference} is not declared in [spec.variables] or any [spec.environments.<name>.variables]"
+                                format!(
+                                    "vars.{name} is not declared in [spec.variables] or any [spec.environments.<name>.variables]"
                                 ),
-                            );
+                            ))
                         }
-                        reference.check_available(repository, path, errors);
+                        Segment::Reference(reference) => reference.unavailable(repository),
+                        Segment::Text(_) => None,
+                    });
+                    if let Some((code, message)) = problem {
+                        error(errors, code, path, &message);
                     }
                 }
             }
@@ -962,17 +980,11 @@ impl<'a> Scope<'a> {
             .map_err(|source| error(errors, source.code(), path, &source.to_string()))
             .ok()?;
         let mut text = String::new();
-        let mut complete = true;
         for segment in segments {
             let part = match segment {
                 Segment::Text(part) => part,
-                Segment::Reference(reference) => {
-                    let Some(value) = self.lookup(&reference, path, errors) else {
-                        complete = false;
-                        continue;
-                    };
-                    value.to_string()
-                }
+                // The first missing value is reported, bounding errors.
+                Segment::Reference(reference) => self.lookup(&reference, path, errors)?.to_string(),
             };
             let rendered = self.rendered.get();
             if rendered > MAX_RENDERED_BYTES {
@@ -992,7 +1004,7 @@ impl<'a> Scope<'a> {
             }
             text.push_str(&part);
         }
-        complete.then_some(text)
+        Some(text)
     }
 
     /// Renders one visited value in place.

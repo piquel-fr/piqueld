@@ -753,29 +753,26 @@ pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
     .into_any()
 }
 
-/// Rollout order selector and optional monitor window.
+/// Rollout order and optional monitor window. The order is free text with
+/// suggestions, so it can also hold a `${{ }}` reference.
 pub(super) fn rollout_fields(form: RwSignal<ServiceForm>) -> AnyView {
-    let option = |value: &'static str, label: &'static str| {
-        view! {
-            <option value={value} selected={move || form.with(|v| v.rollout_order == value)}>
-                {label}
-            </option>
-        }
-    };
     view! {
         <div class="form-grid">
             <label class="field">
-                <span>"Order"</span>
-                <select
+                <span>"Order (derived, stop-first, start-first, or ${{ }})"</span>
+                <input
+                    type="text"
+                    list="rollout-orders"
                     prop:value={move || form.with(|v| v.rollout_order.clone())}
-                    on:change={move |event| {
+                    on:input={move |event| {
                         form.update(|v| v.rollout_order = event_target_value(&event))
                     }}
-                >
-                    {option("derived", "Derived from mounts")}
-                    {option("stop-first", "Stop first")}
-                    {option("start-first", "Start first")}
-                </select>
+                />
+                <datalist id="rollout-orders">
+                    <option value="derived">"Derived from mounts"</option>
+                    <option value="stop-first">"Stop first"</option>
+                    <option value="start-first">"Start first"</option>
+                </datalist>
             </label>
             {text_input(
                 "Monitor (seconds, default 30)",
