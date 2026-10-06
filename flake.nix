@@ -55,6 +55,8 @@
               ./apps
               ./crates
               ./migrations
+              # A workspace member, so Cargo needs it to build anything.
+              ./tools/xtask
               ./examples
             ];
           };
@@ -204,11 +206,9 @@
               ]
               ++ lib.optionals stdenv.isLinux [
                 cargo-deny
-                cargo-watch
                 docker-client
                 cmake
                 lld
-                procps
                 util-linux
                 # Only for `just test-wasm`'s browser test runner; the daemon
                 # build script binds the dashboard without the CLI.

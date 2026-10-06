@@ -63,7 +63,7 @@ openapi-check:
     @cargo run --package piqueld --features openapi-codegen --bin generate_openapi -- --check
 
 boundary:
-    @./scripts/check-dependency-boundaries.sh
+    @cargo xtask boundary
 
 # UI checks and embedded builds need only the wasm32 target from
 # rust-toolchain.toml: the daemon build script compiles and binds the dashboard
@@ -84,19 +84,19 @@ daemon-embedded *ARGS:
 # Isolated development instance for this worktree (docs/development.md).
 [positional-arguments]
 dev *ARGS:
-    @bash ./scripts/dev.sh "$@"
+    @cargo xtask dev "$@"
 
 # piquelctl from this worktree, connected to its development instance.
 [positional-arguments]
 ctl *ARGS:
-    @bash ./scripts/dev.sh ctl "$@"
+    @cargo xtask dev ctl "$@"
 
 # Generate the OpenAPI document, client, and manifest JSON Schema together.
 generate:
     @cargo run --package piqueld --features openapi-codegen --bin generate_openapi
 
 docker-test:
-    @bash ./scripts/run-docker-integration-test.sh
+    @cargo xtask docker-test
 # Explicit development-only setup: pinned JS packages and a containerized browser.
 setup-playwright:
     @pnpm --dir tests/playwright install --frozen-lockfile --ignore-scripts
@@ -107,4 +107,4 @@ test-playwright *ARGS:
     @cargo build --locked --package piquelctl
     @cargo build --locked --package piqueld --features embedded-ui --example browser_fixture
     @pnpm --dir tests/playwright check
-    @bash scripts/test-playwright.sh {{ARGS}}
+    @cargo xtask playwright {{ARGS}}

@@ -11,8 +11,8 @@ Docker Engine or another instance's state.
 just dev
 ```
 
-This watches the daemon, dashboard, and crate sources, rebuilds the daemon with
-the embedded dashboard, and restarts it on every save. Stopping it gives the
+This watches the daemon, dashboard, and crate sources (hidden files aside),
+rebuilds the daemon with the embedded dashboard, and restarts it on every save. Stopping it gives the
 daemon its graceful shutdown period before terminating any remaining processes.
 `just dev start` does the same in the background and returns once the instance
 is ready, printing its dashboard URL.
@@ -30,8 +30,8 @@ does), and `just dev config --force` regenerates it:
 | `docker.socket` | the instance's own engine (below) |
 
 The instance is named after the worktree directory, or `main` for the main
-checkout. Edit the file freely: the scripts read the directories, port, public
-URL, and Docker socket from it.
+checkout. Edit the file freely: `just dev` reads the directories, port, and
+Docker socket from it.
 
 ## Browser
 
@@ -86,3 +86,10 @@ The runtime directory keeps:
 - `dev.log`: the terminal output of an instance started with `just dev start`.
 
 The terminal keeps the daemon's usual human-readable output.
+
+## Implementation
+
+`just dev`, `just docker-test`, `just test-playwright`, and `just boundary` run
+Rust tasks from `tools/xtask`: `cargo xtask --help` lists them. They talk to
+Docker through its API, so they need no Docker CLI beyond resolving the current
+context.

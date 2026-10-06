@@ -37,6 +37,6 @@ The controller checks the latest operation before continuing runtime work and
 computes each plan from a fresh observation. Shared records avoid conversion
 between separate store, API, and client operation models.
 
-`scripts/check-dependency-boundaries.sh` checks crate dependency boundaries.
+`just boundary` (`cargo xtask boundary`) checks crate dependency boundaries.
 Older plans under `.agents` are historical design material, not the current
 architecture contract.

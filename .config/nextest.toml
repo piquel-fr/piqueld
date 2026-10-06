@@ -2,7 +2,8 @@
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 5 }
 
-# Real image builds and Swarm convergence are bounded by scripts/run-docker-integration-test.sh.
+# Real image builds and Swarm convergence are bounded by `just docker-test`
+# (tools/xtask/src/docker_test.rs).
 [[profile.default.overrides]]
 filter = "binary(docker_integration)"
 slow-timeout = { period = "60s" }

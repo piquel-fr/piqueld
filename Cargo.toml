@@ -6,6 +6,7 @@ members = [
   "apps/piqueld-ui",
   "crates/piqueld-client",
   "crates/piqueld-core",
+  "tools/xtask",
 ]
 
 [workspace.package]
