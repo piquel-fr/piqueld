@@ -331,3 +331,30 @@ fn literal_templates_serialize_like_normalized_applications() {
         template
     );
 }
+
+/// Repeating a large variable cannot expand a small manifest without bound.
+#[test]
+fn rendering_stops_at_its_size_budget() {
+    let large = "x".repeat(60_000);
+    let references = "${{ vars.large }}".repeat(100);
+    let template = template(&format!(
+        "[spec.variables]\nweb_replicas = 1\ntag = \"stable\"\nlarge = \"{large}\"\n"
+    ))
+    .to_manifest();
+    let mut manifest = template;
+    manifest.spec.services[0]
+        .environment
+        .insert("LARGE".into(), references.as_str().into());
+    let template = manifest
+        .validate_template()
+        .unwrap()
+        .normalize(ApplicationId::parse("app-notes-01").unwrap());
+    let errors = render(&template, "production").unwrap_err();
+    assert_eq!(
+        codes_and_paths(&errors),
+        [(
+            codes::VARIABLE_VALUE_EXCESSIVE,
+            "spec.services[0].environment.LARGE"
+        )]
+    );
+}

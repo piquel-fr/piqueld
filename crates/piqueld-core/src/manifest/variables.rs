@@ -16,6 +16,10 @@ use utoipa::ToSchema;
 const OPEN: &str = "${{";
 const ESCAPED_OPEN: &str = "$${{";
 const CLOSE: &str = "}}";
+/// Most text one rendering may produce, twice the largest manifest request.
+/// A value can repeat a large variable many times, so expansion is bounded
+/// as it happens rather than by validating the result.
+const MAX_RENDERED_BYTES: usize = 4 * 1024 * 1024;
 
 /// Text that may contain `${{ namespace.name }}` references, with optional
 /// whitespace inside the braces. `$${{` writes a literal `${{`; `${VAR}` and
@@ -854,6 +858,8 @@ impl ApplicationSpec {
 struct Scope<'a> {
     context: &'a RenderContext,
     values: BTreeMap<Reference, VariableValue>,
+    /// Bytes rendered so far, bounded by [`MAX_RENDERED_BYTES`].
+    rendered: std::cell::Cell<usize>,
 }
 
 impl<'a> Scope<'a> {
@@ -884,7 +890,11 @@ impl<'a> Scope<'a> {
         if let Some(deployment) = &context.deployment {
             system(SystemVariable::DeploymentId, deployment);
         }
-        let mut scope = Self { context, values };
+        let mut scope = Self {
+            context,
+            values,
+            rendered: std::cell::Cell::new(0),
+        };
         let overrides = spec.environments.get(environment);
         for (name, value) in spec.variables_for(environment) {
             let Some(value) = value else { continue };
@@ -939,7 +949,8 @@ impl<'a> Scope<'a> {
         value
     }
 
-    /// Renders `template` as text.
+    /// Renders `template` as text. Fails once everything rendered exceeds
+    /// [`MAX_RENDERED_BYTES`], reporting it at the first field past the budget.
     fn text(
         &self,
         template: &Template,
@@ -953,13 +964,33 @@ impl<'a> Scope<'a> {
         let mut text = String::new();
         let mut complete = true;
         for segment in segments {
-            match segment {
-                Segment::Text(part) => text.push_str(&part),
-                Segment::Reference(reference) => match self.lookup(&reference, path, errors) {
-                    Some(value) => text.push_str(&value.to_string()),
-                    None => complete = false,
-                },
+            let part = match segment {
+                Segment::Text(part) => part,
+                Segment::Reference(reference) => {
+                    let Some(value) = self.lookup(&reference, path, errors) else {
+                        complete = false;
+                        continue;
+                    };
+                    value.to_string()
+                }
+            };
+            let rendered = self.rendered.get();
+            if rendered > MAX_RENDERED_BYTES {
+                return None;
             }
+            self.rendered.set(rendered + part.len());
+            if rendered + part.len() > MAX_RENDERED_BYTES {
+                error(
+                    errors,
+                    codes::VARIABLE_VALUE_EXCESSIVE,
+                    path,
+                    &format!(
+                        "the manifest renders to more than {MAX_RENDERED_BYTES} bytes of text"
+                    ),
+                );
+                return None;
+            }
+            text.push_str(&part);
         }
         complete.then_some(text)
     }

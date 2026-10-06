@@ -114,9 +114,9 @@ impl Store {
         .await
     }
 
-    /// Persists an environment's deletion intent and requests its delete operation.
-    /// Its application's revision is unchanged. Returns `IllegalTransition` when
-    /// deletion is already pending.
+    /// Persists an environment's deletion intent and requests its delete
+    /// operation. Callers advance the application revision. Returns
+    /// `IllegalTransition` when deletion is already pending.
     pub(crate) async fn request_delete_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &EnvironmentId,

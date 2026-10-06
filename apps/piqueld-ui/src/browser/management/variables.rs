@@ -58,13 +58,13 @@ impl VariableDraft {
             if !names.insert(name) {
                 return Err(format!("Variable {name:?} appears more than once."));
             }
-            if !row.default.is_empty() {
+            if !row.default.trim().is_empty() {
                 variables
                     .defaults
                     .insert(name.into(), Variable::from_text(&row.default));
             }
             for (environment, value) in &row.environments {
-                if !value.is_empty() {
+                if !value.trim().is_empty() {
                     variables
                         .environments
                         .entry(environment.clone())
