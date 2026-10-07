@@ -6,6 +6,9 @@ pub mod input;
 pub mod rollout;
 pub mod routes;
 pub mod template;
+/// Shared tests for manifest variables and templates.
+#[cfg(test)]
+mod template_tests;
 pub mod variables;
 pub use domain::{
     HealthExecution, ValidatedBuild, ValidatedHealthCheck, ValidatedResourceLimits, ValidatedSource,
