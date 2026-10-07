@@ -572,23 +572,13 @@ async fn fetch_snapshot(client: &Client) -> Result<DashboardSnapshot, LoadFailur
     let mut cursor = None;
     let mut applications = Vec::new();
     loop {
-        let page: Page<ApplicationSummary> = match client
+        let page: Page<ApplicationSummary> = client
             .applications_with(&ListApplicationsOptions {
                 cursor: cursor.clone(),
                 limit: Some(PAGE_LIMIT),
             })
             .await
-        {
-            Ok(page) => page,
-            // Accounts without application access see an empty directory.
-            Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 403 => {
-                Page {
-                    items: Vec::new(),
-                    next_cursor: None,
-                }
-            }
-            Err(error) => return Err(load_failure(&error)),
-        };
+            .map_err(|error| load_failure(&error))?;
         let next_cursor = page.next_cursor.clone();
         // Status reads are independent, so a bounded pool keeps one slow
         // application from serializing the whole refresh.

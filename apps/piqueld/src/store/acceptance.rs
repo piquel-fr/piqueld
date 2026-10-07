@@ -34,7 +34,8 @@ impl Store {
     /// the server-generated operation ID (renames do not create an operation).
     ///
     /// 1. Checks that `actor` may submit the mutation against the current
-    ///    application, before any replay.
+    ///    application, before any replay. Replaying a save may also pass the
+    ///    check a creation passes, since it may have created that application.
     /// 2. Returns the stored response when `request_id` replays an identical
     ///    request from the same account.
     /// 3. With `force`, drops the generation and identity preconditions.
@@ -58,20 +59,23 @@ impl Store {
         let fingerprint = Self::mutation_fingerprint(&mutation, expected_generation, force)?;
         let legacy = Self::legacy_fingerprint(&mutation, expected_generation, force)?;
         let caller = actor.load(&mut tx).await?;
-        let creating = match &caller {
-            Some((_, grants)) => Self::authorize_mutation_on(&mut tx, grants, &mutation).await?,
-            None => false,
-        };
         let owner = caller.as_ref().map(|(user_id, _)| user_id.as_str());
-        if let Some(response) = Self::replay_on(
+        let replay = Self::replay_on(
             &mut tx,
             request_id,
             owner,
             [Some(&fingerprint), legacy.as_ref()],
             now,
         )
-        .await?
-        {
+        .await;
+        let replaying = matches!(replay, Ok(Some(_)));
+        let creating = match &caller {
+            Some((_, grants)) => {
+                Self::authorize_mutation_on(&mut tx, grants, &mutation, replaying).await?
+            }
+            None => false,
+        };
+        if let Some(response) = replay? {
             return Ok((response, false));
         }
         // Replay the original acceptance before applying an override to current intent.
@@ -116,10 +120,13 @@ impl Store {
     /// current application (see `Grants::require_change`), and returns whether
     /// it creates one. Changes to an environment are checked on its application;
     /// an unknown environment is hidden unless the caller could act on any.
+    /// When `replaying`, a save naming an existing application also passes with
+    /// the permissions that would create it, as that may be what it did.
     async fn authorize_mutation_on(
         tx: &mut Transaction<'_, Sqlite>,
         grants: &Grants,
         mutation: &Mutation,
+        replaying: bool,
     ) -> Result<bool, StoreError> {
         let application = match mutation {
             Mutation::Save { application, .. } => {
@@ -143,9 +150,14 @@ impl Store {
             (Some(id), _) => Target::Id(id),
             (None, _) => Target::Unknown,
         };
-        grants
-            .require_change(mutation.required(), target)
-            .map_err(StoreError::Denied)?;
+        let required = mutation.required();
+        match grants.require_change(required, target) {
+            Err(_) if replaying && matches!(target, Target::Named(_)) => {
+                grants.require_change(required, Target::New)
+            }
+            checked => checked,
+        }
+        .map_err(StoreError::Denied)?;
         Ok(matches!(target, Target::New))
     }
 

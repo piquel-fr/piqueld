@@ -7938,7 +7938,7 @@
           }
         },
         "summary": "List applications",
-        "x-piqueld-access": "apps:read"
+        "x-piqueld-access": "authenticated"
       },
       "post": {
         "description": "The body holds only the name, which must not already be in use (409\notherwise). Pass `deploy=true` to also deploy it (202 instead of 200).",
@@ -17443,7 +17443,7 @@
           }
         },
         "summary": "Lists Git source builds, newest first.",
-        "x-piqueld-access": "apps:read"
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/builds/{id}/logs": {

@@ -2858,6 +2858,7 @@ async fn exec_rechecks_grants_when_the_command_starts() {
 
 /// A request key replays only for the account that used it, so another caller
 /// reusing it cannot learn the outcome, e.g. of an application since renamed.
+/// A creator replays its creation even without `apps:write` on the application.
 #[tokio::test]
 async fn receipts_replay_only_for_their_account() {
     use piqueld::api::{Actor, ApplicationError, Mutation};
@@ -2865,8 +2866,8 @@ async fn receipts_replay_only_for_their_account() {
     let temp = tempfile::tempdir().unwrap();
     let state = state(&temp).await;
     let database = temp.path().join("state.db");
+    seed_account(&database, "author", &[("apps:create", None)]).await;
     let grants = [("apps:create", None), ("apps:write", None)];
-    seed_account(&database, "author", &grants).await;
     seed_account(&database, "other", &grants).await;
     let save = || Mutation::save(manifest().validate_template().unwrap(), None, false);
     let author = Actor::Account(Caller {
@@ -4398,8 +4399,9 @@ async fn seed_account(
 }
 
 /// Two applications, `blog` and `shop`, served by the real authenticator, with
-/// a `deployer` holding `apps:deploy` on `blog` and a `creator` holding
-/// `apps:create` plus `apps:write` on `blog`.
+/// a `deployer` holding `apps:deploy` on `blog`, a `creator` holding
+/// `apps:create` plus `apps:write` on `blog`, and a `lead` holding only
+/// `accounts:manage`.
 struct GrantFixture {
     _temp: TempDir,
     router: axum::Router,
@@ -4407,6 +4409,7 @@ struct GrantFixture {
     shop: String,
     deployer: String,
     creator: String,
+    lead: String,
 }
 
 impl GrantFixture {
@@ -4431,6 +4434,7 @@ impl GrantFixture {
         let deployer = seed_account(&database, "deployer", &[("apps:deploy", blog)]).await;
         let creator = [("apps:create", None), ("apps:write", blog)];
         let creator = seed_account(&database, "creator", &creator).await;
+        let lead = seed_account(&database, "lead", &[("accounts:manage", None)]).await;
         let store = Store::open(&database).await.unwrap();
         let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
         let [blog, shop] = <[String; 2]>::try_from(ids).unwrap();
@@ -4441,6 +4445,7 @@ impl GrantFixture {
             shop,
             deployer,
             creator,
+            lead,
         }
     }
 
@@ -4468,10 +4473,16 @@ impl GrantFixture {
 
 /// Hidden applications and their environments look absent; visible ones name
 /// the missing permission. Environments are checked on their application.
+/// Accounts without application grants list nothing rather than being refused.
 #[tokio::test]
 async fn grants_hide_applications_and_name_missing_permissions() {
     let f = GrantFixture::new().await;
     let none = serde_json::Value::Null;
+    for uri in ["/api/v1/applications", "/api/v1/builds"] {
+        let (status, body) = f.call(&f.lead, "GET", uri, none.clone()).await;
+        assert_eq!(status, 200, "{uri}");
+        assert_eq!(body["data"]["items"], serde_json::json!([]), "{uri}");
+    }
     let (status, body) = f
         .call(&f.deployer, "GET", "/api/v1/applications", none.clone())
         .await;
