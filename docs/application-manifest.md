@@ -372,7 +372,8 @@ connection: the application page and `app show` display it, and environments
 deploy it after disconnecting.
 
 A fetched file's own `spec.manifest` is ignored: files on different branches
-often differ, and one branch must not redirect every environment. When it names
+often differ, and one branch must not redirect every environment. It may be
+omitted; when present it must still decode like any manifest's. When it names
 another repository URL or manifest path than the application's connection, the
 deployment records a `manifest_connection_ignored` warning, shown by
 `app deploy`/`env deploy` and on the dashboard's deployment snapshot. Change the

@@ -581,9 +581,11 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
                 });
             }
             // Fetches replace a repository-backed application's saved manifest
-            // without advancing its revision; reload it unless it is being edited.
+            // without advancing its revision; reload it unless it is being
+            // edited. Newer revisions show the conflict notice instead.
             let fetched = context.saved.with_untracked(|saved| {
                 saved.application.spec().manifest.is_some()
+                    && application.generation == saved.generation
                     && application.updated_at_ms > saved.updated_at_ms
             });
             let editing = !context.dirty.get_untracked().is_empty()
@@ -1015,6 +1017,18 @@ fn EditorFeedback() -> impl IntoView {
 #[component]
 fn ApplicationSettings() -> impl IntoView {
     let context = editor();
+    // Forms keep drafts of the saved manifest they were built from. While
+    // managed they are read-only, so rebuild them when a fetch changes it.
+    let fetched = Memo::new(move |_| {
+        context.saved.with(|saved| {
+            saved
+                .application
+                .spec()
+                .manifest
+                .is_some()
+                .then(|| saved.spec_hash.clone())
+        })
+    });
     view! {
         <div hidden={move || {
             !matches!(
@@ -1035,33 +1049,38 @@ fn ApplicationSettings() -> impl IntoView {
                 }} <div hidden={move || context.tab.get() != "Source"}>
                     <RepositorySettings />
                 </div> <fieldset disabled={move || context.managed()}>
-                    <div hidden={move || context.tab.get() != "Services"}>
-                        <div class="section-header">
-                            <div>
-                                <h2>"Services"</h2>
-                                <p>
-                                    "Each service runs one image as a replicated Swarm service on the application network."
-                                </p>
+                    {move || {
+                        fetched.track();
+                        view! {
+                            <div hidden={move || context.tab.get() != "Services"}>
+                                <div class="section-header">
+                                    <div>
+                                        <h2>"Services"</h2>
+                                        <p>
+                                            "Each service runs one image as a replicated Swarm service on the application network."
+                                        </p>
+                                    </div>
+                                    <NewService />
+                                </div>
+                                <services::ServiceList />
                             </div>
-                            <NewService />
-                        </div>
-                        <services::ServiceList />
-                    </div>
-                    <div hidden={move || context.tab.get() != "Variables"}>
-                        <variables::VariableSettings />
-                    </div>
-                    <div hidden={move || context.tab.get() != "Routes"}>
-                        <routes::RouteSettings />
-                    </div>
-                    <div hidden={move || context.tab.get() != "Volumes"}>
-                        <VolumeSettings />
-                    </div>
-                    <div hidden={move || context.tab.get() != "Jobs"}>
-                        <jobs::JobSettings />
-                    </div>
-                    <div hidden={move || context.tab.get() != "Secrets"}>
-                        <SecretFileSettings />
-                    </div>
+                            <div hidden={move || context.tab.get() != "Variables"}>
+                                <variables::VariableSettings />
+                            </div>
+                            <div hidden={move || context.tab.get() != "Routes"}>
+                                <routes::RouteSettings />
+                            </div>
+                            <div hidden={move || context.tab.get() != "Volumes"}>
+                                <VolumeSettings />
+                            </div>
+                            <div hidden={move || context.tab.get() != "Jobs"}>
+                                <jobs::JobSettings />
+                            </div>
+                            <div hidden={move || context.tab.get() != "Secrets"}>
+                                <SecretFileSettings />
+                            </div>
+                        }
+                    }}
                 </fieldset>
             </div>
         </div>

@@ -395,15 +395,12 @@ fn EnvironmentBranch() -> impl IntoView {
             .selected_environment()
             .and_then(|environment| environment.source.branch().cloned())
     };
-    let draft = move || {
-        current().map_or_else(Default::default, |branch| {
-            (
-                branch.branch().to_owned(),
-                branch.commit().unwrap_or_default().to_owned(),
-            )
-        })
-    };
-    let branch = RwSignal::new(draft());
+    let branch = RwSignal::new(current().map_or_else(Default::default, |branch| {
+        (
+            branch.branch().to_owned(),
+            branch.commit().unwrap_or_default().to_owned(),
+        )
+    }));
     let deleting = move || {
         context
             .selected_environment()
@@ -457,7 +454,9 @@ fn EnvironmentBranch() -> impl IntoView {
                             type="submit"
                             class="btn"
                             disabled={move || {
-                                context.action_blocked() || deleting() || branch.get() == draft()
+                                context.action_blocked()
+                                    || deleting()
+                                    || tracked_branch(branch.get()).ok() == current()
                             }}
                         >
                             "Change branch"

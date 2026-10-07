@@ -17,11 +17,11 @@ impl<D: DockerApi> Controller<D> {
     /// and the manifest file (at most 2 MiB; `.json` parsed as JSON, anything
     /// else as TOML) is validated, required to keep the application name,
     /// rendered for `environment` at the fetched commit, and persisted with it.
-    /// Its own `spec.manifest` is ignored, even when absent or invalid: the
-    /// repository it was fetched from replaces it before validation, with a
-    /// `manifest_connection_ignored` warning when it names another repository
-    /// URL or manifest path. Inputs without repository backing are marked
-    /// fetched as-is.
+    /// Its own `spec.manifest` must decode but is ignored, even when absent or
+    /// invalid: the repository it was fetched from replaces it before
+    /// validation, with a `manifest_connection_ignored` warning when it names
+    /// another repository URL or manifest path. Inputs without repository
+    /// backing are marked fetched as-is.
     pub(super) async fn deployment_manifest(
         &self,
         operation: &Operation,
