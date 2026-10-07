@@ -169,8 +169,8 @@ impl Authority {
     }
 
     /// Requires a credential with the account's full access: scoped
-    /// credentials cannot create credentials, so they cannot outlive or
-    /// exceed their own limits.
+    /// credentials cannot create credentials or change their own account, so
+    /// they cannot outlive or exceed their own limits.
     pub(crate) fn require_unscoped(&self) -> Result<(), StoreError> {
         if self.scoped {
             Err(StoreError::Denied(piqueld_core::access::Denied::Scoped))
@@ -290,11 +290,10 @@ impl Store {
             .await
     }
 
-    /// Replaces an account's grants, if `caller` may change that account and
-    /// holds every new grant. Access handed to another account outlives the
-    /// credential handing it out, so scoped callers may only change their own
-    /// account, which can only reduce it. Refuses to leave no administrator
-    /// able to sign in.
+    /// Replaces an account's grants, if `caller` may change that account, holds
+    /// every new grant, and is not scoped: access handed to another account
+    /// outlives the credential handing it out. Refuses to leave no
+    /// administrator able to sign in.
     pub(crate) async fn set_user_grants(
         &self,
         caller: Caller<'_>,
@@ -303,9 +302,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let caller = Self::check_account_on(&mut tx, caller, user_id).await?;
-        if caller.user_id != user_id {
-            caller.require_unscoped()?;
-        }
+        caller.require_unscoped()?;
         caller
             .grants
             .may_grant(grants)
@@ -316,15 +313,20 @@ impl Store {
     }
 
     /// Checks that `caller` may change the account `user_id`, against both
-    /// sides' current grants, and returns the caller's authority. Unknown accounts
-    /// are checked as holding nothing, then reported `NotFound`, so only
-    /// callers allowed to manage accounts learn whether one exists.
+    /// sides' current grants, and returns the caller's authority. Scoped
+    /// callers cannot change their own account, which needs no permission and
+    /// would exceed their grants. Unknown accounts are checked as holding
+    /// nothing, then reported `NotFound`, so only callers allowed to manage
+    /// accounts learn whether one exists.
     pub(crate) async fn check_account_on(
         db: &mut SqliteConnection,
         caller: Caller<'_>,
         user_id: &str,
     ) -> Result<Authority, StoreError> {
         let caller = caller.load(&mut *db).await?;
+        if caller.user_id == user_id {
+            caller.require_unscoped()?;
+        }
         let exists = sqlx::query_scalar!(
             r#"SELECT EXISTS(SELECT 1 FROM auth_users WHERE id=?1) AS "exists!: bool""#,
             user_id

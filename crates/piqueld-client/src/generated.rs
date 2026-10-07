@@ -5160,8 +5160,9 @@ impl Client {
 
     Public. Returns a device code to poll with and a user code to approve in a
     signed-in browser. A JSON body, which may be omitted, limits the issued session to
-    `grants`, which the approver must hold. Rate limited per client address
-    (429 with `Retry-After`).
+    `grants`, which the approver must hold, and is echoed back so clients can
+    tell the limit applies. Pending logins are kept in memory, so bodies over
+    16 KiB answer 413. Rate limited per client address (429 with `Retry-After`).
 
     Sends a `POST` request to `/api/v1/auth/device/start`
 
@@ -5198,6 +5199,9 @@ impl Client {
         match response.status().as_u16() {
             200u16 => crate::client::decode_response(response).await,
             403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             _ => Err(Error::UnexpectedResponse(response)),

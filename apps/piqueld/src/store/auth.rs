@@ -528,7 +528,7 @@ impl Store {
     }
 
     /// Deletes one credential if `caller` may change its owner; unknown IDs are
-    /// ignored.
+    /// ignored. A credential may always revoke itself, even a scoped one.
     pub(crate) async fn revoke_credential(
         &self,
         caller: Caller<'_>,
@@ -540,7 +540,9 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         if let Some(owner) = owner {
-            Self::check_account_on(&mut tx, caller, &owner).await?;
+            if id != caller.credential_id {
+                Self::check_account_on(&mut tx, caller, &owner).await?;
+            }
             sqlx::query!("DELETE FROM auth_credentials WHERE id=?1", id)
                 .execute(&mut *tx)
                 .await

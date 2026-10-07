@@ -250,6 +250,10 @@ pub struct DeviceStart {
     /// Network address the daemon observed for this request, shown again on
     /// the approval page. Absent for requests made over the Unix socket.
     pub requester: Option<String>,
+    /// Grants the session will be limited to, as requested. Daemons older
+    /// than limited logins omit it, so clients can tell they ignored a limit.
+    #[serde(default)]
+    pub grants: Option<Grants>,
 }
 /// CLI polling request.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

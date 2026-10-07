@@ -320,8 +320,9 @@ pub enum Denied {
     #[error("the account or grants include access you do not hold")]
     Exceeds,
     /// Credentials with limited access, like API tokens, cannot create
-    /// credentials: tokens, passkeys, enrollment links, or CLI logins.
-    #[error("credentials with limited access cannot create credentials")]
+    /// credentials (tokens, passkeys, enrollment links, or CLI logins), hand
+    /// out access, or change their own account.
+    #[error("credentials with limited access cannot create credentials or change their account")]
     Scoped,
 }
 
@@ -376,13 +377,8 @@ impl Grants {
     /// # Errors
     /// Returns [`GrantError::Unscopable`] for a scoped global permission.
     pub fn grant(&mut self, permission: Permission, scope: &Scope) -> Result<(), GrantError> {
-        if scope.is_empty() {
-            return Ok(());
-        }
-        if !permission.scopable() && *scope != Scope::All {
-            return Err(GrantError::Unscopable(permission));
-        }
-        self.grant_within(permission, scope);
+        self.insert(permission, scope)?;
+        self.normalize();
         Ok(())
     }
 
@@ -390,6 +386,25 @@ impl Grants {
     /// and everywhere otherwise, e.g. for `--app blog --permission
     /// accounts:manage`. An empty scope adds no application permission.
     pub fn grant_within(&mut self, permission: Permission, scope: &Scope) {
+        self.insert_within(permission, scope);
+        self.normalize();
+    }
+
+    /// [`Grants::grant`] without restoring the canonical form, so a list of
+    /// grants is normalized once rather than after every entry.
+    fn insert(&mut self, permission: Permission, scope: &Scope) -> Result<(), GrantError> {
+        if scope.is_empty() {
+            return Ok(());
+        }
+        if !permission.scopable() && *scope != Scope::All {
+            return Err(GrantError::Unscopable(permission));
+        }
+        self.insert_within(permission, scope);
+        Ok(())
+    }
+
+    /// [`Grants::grant_within`] without restoring the canonical form.
+    fn insert_within(&mut self, permission: Permission, scope: &Scope) {
         match permission {
             Permission::Global(permission) => {
                 self.global.insert(permission);
@@ -403,7 +418,6 @@ impl Grants {
                     .extend(scope);
             }
         }
-        self.normalize();
     }
 
     /// Restores the canonical form described on [`Grants`].
@@ -689,8 +703,9 @@ impl TryFrom<Vec<Grant>> for Grants {
                 }
                 Some(ids) => Scope::Only(ids),
             };
-            grants.grant(grant.permission, &scope)?;
+            grants.insert(grant.permission, &scope)?;
         }
+        grants.normalize();
         Ok(grants)
     }
 }

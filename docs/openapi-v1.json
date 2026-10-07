@@ -1784,6 +1784,25 @@
             "minimum": 0,
             "type": "integer"
           },
+          "grants": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Grants"
+                  }
+                ],
+                "description": "Grants the session will be limited to, as requested. Daemons older\nthan limited logins omit it, so clients can tell they ignored a limit."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "interval": {
             "description": "Minimum polling interval, in seconds.",
             "format": "int32",
@@ -17035,7 +17054,7 @@
     },
     "/api/v1/auth/device/start": {
       "post": {
-        "description": "Public. Returns a device code to poll with and a user code to approve in a\nsigned-in browser. A JSON body, which may be omitted, limits the issued session to\n`grants`, which the approver must hold. Rate limited per client address\n(429 with `Retry-After`).",
+        "description": "Public. Returns a device code to poll with and a user code to approve in a\nsigned-in browser. A JSON body, which may be omitted, limits the issued session to\n`grants`, which the approver must hold, and is echoed back so clients can\ntell the limit applies. Pending logins are kept in memory, so bodies over\n16 KiB answer 413. Rate limited per client address (429 with `Retry-After`).",
         "operationId": "authDeviceStart",
         "requestBody": {
           "content": {
@@ -17067,6 +17086,16 @@
               }
             },
             "description": "TCP authority or browser origin is not trusted"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
           }
         },
         "security": [],

@@ -5486,3 +5486,32 @@ async fn previews_render_variables_for_the_selected_environment() {
         )
     );
 }
+
+/// Login starts echo the grants they will be limited to, so clients can tell
+/// the limit applies, and are kept in memory, so large bodies are refused.
+#[tokio::test]
+async fn device_starts_echo_their_limits_and_refuse_large_bodies() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp).await;
+    let store = Store::open(temp.path().join("state.db")).await.unwrap();
+    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let router = api_router(state, auth);
+    let start = |body: String| {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/device/start")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        router.clone().oneshot(request)
+    };
+    let limited = serde_json::json!({"grants": [{"permission": "apps:read"}]});
+    let response = start(limited.to_string()).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let started: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(started["grants"], limited["grants"]);
+    let large = format!(r#"{{"grants":[],"padding":"{}"}}"#, "x".repeat(16 * 1024));
+    let response = start(large).await.unwrap();
+    assert_eq!(response.status(), 413);
+}

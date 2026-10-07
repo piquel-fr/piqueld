@@ -628,7 +628,7 @@ fn DeviceApproval(who: String) -> impl IntoView {
                 <strong>
                     "Only approve a code shown in a terminal you started yourself in the last ten minutes."
                 </strong>
-                "Approval gives that terminal full access as your account. Never enter a code someone else sent you."
+                "Approval lets that terminal act as your account with the access shown below. Never enter a code someone else sent you."
             },
         )}
         {feedback.view()}

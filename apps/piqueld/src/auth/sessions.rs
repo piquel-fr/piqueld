@@ -124,7 +124,7 @@ impl Auth {
                 expires: now + 600,
                 next_poll: 0,
                 approved_by: None,
-                grants,
+                grants: grants.clone(),
             },
         );
         Ok(DeviceStart {
@@ -134,6 +134,7 @@ impl Auth {
             expires_in: 600,
             interval: 5,
             requester: requester.map(|address| address.to_string()),
+            grants,
         })
     }
     /// Finds a live, unapproved request by the code the user typed.

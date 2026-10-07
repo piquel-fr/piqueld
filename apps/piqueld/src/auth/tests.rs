@@ -595,7 +595,8 @@ async fn links_are_revalidated_when_redeemed_and_revoked() {
 }
 
 /// Tokens act with their grants within the owner's current access, carry the
-/// `pqd_` prefix, and cannot create credentials of any kind.
+/// `pqd_` prefix, and cannot create credentials of any kind or change their
+/// own account.
 #[tokio::test]
 async fn tokens_act_within_their_grants_and_cannot_create_credentials() {
     let f = Fixture::new().await;
@@ -666,6 +667,26 @@ async fn tokens_act_within_their_grants_and_cannot_create_credentials() {
         f.auth.device_approve(&start.user_code, &ci).await,
         Err(AuthError::Denied(Denied::Scoped))
     ));
+    // Nor can it change its own account, which needs no permission, but it
+    // can revoke itself.
+    let own = || alice.user.id.clone();
+    for command in [
+        Manage::UpdateUser {
+            user_id: own(),
+            username: "mallory".into(),
+            display_name: String::new(),
+        },
+        Manage::SetGrants {
+            user_id: own(),
+            grants: Grants::default(),
+        },
+        Manage::RevokeAll { user_id: own() },
+        Manage::DeleteUser { user_id: own() },
+    ] {
+        assert_eq!(denied(f.auth.manage(&ci, command).await), Denied::Scoped);
+    }
+    f.auth.logout(&ci).await.unwrap();
+    assert!(f.auth.authenticate(&secret).await.is_err());
 }
 
 /// A token keeps no access its owner lost after it authenticated: writes

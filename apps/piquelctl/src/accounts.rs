@@ -165,6 +165,19 @@ impl TokenCommand {
                 days,
                 no_expiry,
             } => {
+                // Daemons older than scoped tokens would ignore `grants` and
+                // issue full access. Their sessions lack `scoped`, so this
+                // fails to decode before anything is created.
+                match client.auth_me().await {
+                    Ok(_) => {}
+                    Err(piqueld_client::ClientError::Decode { .. }) => {
+                        return Err(CliError::new(
+                            ErrorKind::General,
+                            "the daemon predates limited tokens, so none was created",
+                        ));
+                    }
+                    Err(error) => return Err(error.into()),
+                }
                 let grants = grants.grants(client).await?;
                 let managed = client
                     .auth_manage(&Manage::CreateToken {

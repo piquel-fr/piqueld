@@ -129,7 +129,9 @@ with `pqd_`, so secret scanners can find leaked ones.
 Credentials with limited access (API tokens and CLI logins that asked for less
 access) cannot create credentials or hand out access: no tokens, passkeys,
 invitations, enrollment links, CLI login approvals, or grants for other
-accounts. A leaked token can therefore never outlive or exceed its own limits.
+accounts. They also cannot change their own account, which needs no
+permission, though they can revoke themselves. A leaked token can therefore
+never outlive or exceed its own limits.
 
 ```console
 piquelctl token create ci --preset deploy --app blog --days 30
@@ -145,11 +147,16 @@ application removes grants on it; tokens left without any grant are revoked.
 A CLI login can ask for less than your access with the same options;
 `--app` takes application IDs there, since names cannot be looked up before
 signing in. The approval page shows the requested access, and the approver
-must hold it:
+must hold it. The request is limited to 16 KiB, which fits a preset on a few
+dozen applications; beyond that, ask for every application instead of listing them:
 
 ```console
 piquelctl login --preset read-only
 ```
+
+Daemons older than these limits would ignore them and issue full access, so
+`piquelctl` checks that the daemon supports them before asking for a limited
+token or login.
 
 ## Upgrading
 

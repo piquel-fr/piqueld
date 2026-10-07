@@ -357,14 +357,23 @@ pub(super) async fn manage(
 ///
 /// Public. Returns a device code to poll with and a user code to approve in a
 /// signed-in browser. A JSON body, which may be omitted, limits the issued session to
-/// `grants`, which the approver must hold. Rate limited per client address
-/// (429 with `Retry-After`).
-#[utoipa::path(post,path="/api/v1/auth/device/start",operation_id="authDeviceStart",request_body=DeviceStartRequest,responses((status=200,body=DeviceStart)))]
+/// `grants`, which the approver must hold, and is echoed back so clients can
+/// tell the limit applies. Pending logins are kept in memory, so bodies over
+/// 16 KiB answer 413. Rate limited per client address (429 with `Retry-After`).
+#[utoipa::path(post,path="/api/v1/auth/device/start",operation_id="authDeviceStart",request_body=DeviceStartRequest,responses((status=200,body=DeviceStart),(status=413,response=inline(super::openapi::ApiErrorResponse))))]
 pub(super) async fn device_start(
     Extension(auth): Extension<Auth>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     body: axum::body::Bytes,
 ) -> Result<Json<DeviceStart>, ApiError> {
+    const LIMIT_BYTES: usize = 16 * 1024;
+    if body.len() > LIMIT_BYTES {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request_body_too_large",
+            "device login requests are limited to 16 KiB",
+        ));
+    }
     let requester = peer.map(|Extension(ConnectInfo(peer))| peer.ip());
     let request = if body.is_empty() {
         DeviceStartRequest::default()

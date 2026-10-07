@@ -335,7 +335,7 @@ impl From<Denied> for ApiError {
             Denied::Scoped => Self::new(
                 StatusCode::FORBIDDEN,
                 "credential_scoped",
-                "Credentials with limited access, like API tokens, cannot create credentials",
+                "Credentials with limited access, like API tokens, cannot create credentials or change their account",
             ),
         }
     }

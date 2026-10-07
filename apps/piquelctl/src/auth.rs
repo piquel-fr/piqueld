@@ -286,6 +286,9 @@ pub(crate) async fn setup_link(
 /// 3. Polls at the daemon's interval (backing off on `slow_down`) until complete.
 /// 4. Saves the token as the endpoint's selected account and emits it.
 ///
+/// A limited login stops before anyone can approve it unless the daemon echoes
+/// the requested grants: older daemons ignore them and would issue full access.
+///
 /// Bounded by the daemon's `expires_in` (capped at `MAX_DEVICE_LOGIN_SECS`) and Ctrl-C
 /// rather than the whole-command `--timeout`, since approval waits on the operator.
 /// Each individual request still uses `--timeout`.
@@ -301,7 +304,13 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
         crate::cli::Command::Login { limit } if !limit.is_empty() => Some(limit.grants_by_id()?),
         _ => None,
     };
-    let start = client.auth_device_start(limit).await?;
+    let start = client.auth_device_start(limit.clone()).await?;
+    if start.grants != limit {
+        return Err(CliError::new(
+            ErrorKind::General,
+            "the daemon ignored the requested access; it predates limited logins",
+        ));
+    }
     console.prompt_lines(&[
         format!("Open {}", start.verification_uri),
         format!("Enter code: {}", start.user_code),
