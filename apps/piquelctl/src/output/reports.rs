@@ -3,9 +3,9 @@ use super::{HumanWriter, Report};
 use crate::profiles::ProfileSummary;
 use piqueld_client::{
     AcceptedOperation, ActionReason, ActionRisk, ApplicationLogs, ApplicationSummary,
-    ApplicationView, BuildLogPage, BuildRecord, DeletedApplication, EnvironmentSource,
-    EnvironmentStatusView, EnvironmentView, Event, Operation, OperationState, Page, PlanView,
-    SavedApplication, SecretMetadata, Source, SystemStatus,
+    ApplicationView, BuildLogPage, BuildRecord, DeletedApplication, EnvironmentDetailView,
+    EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event, Operation, OperationState,
+    Page, PlanView, SavedApplication, SecretMetadata, Source, SystemStatus,
 };
 use serde::Serialize;
 use std::io;
@@ -94,11 +94,12 @@ impl EnvironmentRow {
     }
 }
 
-/// Lowercase name of where an environment deploys from.
-fn source(source: EnvironmentSource) -> &'static str {
+/// Where an environment deploys from: `saved`, or the branch it follows,
+/// e.g. `main` or `main@<commit>`.
+fn source(source: &EnvironmentSource) -> String {
     match source {
-        EnvironmentSource::Saved => "saved",
-        EnvironmentSource::Repository => "repository",
+        EnvironmentSource::Saved => "saved".into(),
+        EnvironmentSource::Branch(branch) => branch.to_string(),
     }
 }
 
@@ -118,7 +119,7 @@ impl Report for Vec<EnvironmentRow> {
                 "{}  {}  {}  {}  {}",
                 environment.name,
                 row.state(),
-                source(environment.source),
+                source(&environment.source),
                 environment
                     .resolved_generation
                     .map_or_else(|| "none".to_owned(), |v| v.to_string()),
@@ -185,7 +186,7 @@ report!(ShowReport<'_>, self, out, {
                 row.environment.name,
                 row.environment.id,
                 row.state(),
-                source(row.environment.source)
+                source(&row.environment.source)
             ),
         )?;
     }
@@ -234,36 +235,46 @@ report!(ShowReport<'_>, self, out, {
     Ok(())
 });
 
-/// `env show` result: an environment's intent and runtime state.
+/// `env show` result: an environment's intent, the manifest it deploys, and
+/// its runtime state.
 #[derive(Serialize)]
-pub(crate) struct EnvironmentShowReport<'a> {
-    pub(crate) application: &'a ApplicationView,
-    pub(crate) environment: &'a EnvironmentView,
-    pub(crate) status: &'a EnvironmentStatusView,
-}
+#[serde(transparent)]
+pub(crate) struct EnvironmentShowReport<'a>(pub(crate) &'a EnvironmentDetailView);
 report!(EnvironmentShowReport<'_>, self, out, {
-    let environment = self.environment;
+    let EnvironmentDetailView {
+        environment,
+        application,
+        manifest,
+        status,
+        ..
+    } = self.0;
     out.line(format_args!(
         "{} of {} ({})",
         environment.name,
-        self.application.application.metadata().name,
+        application.application.metadata().name,
         environment.id
     ))?;
     out.blank()?;
-    out.label("Intent", self.status.state)?;
+    out.label("Intent", status.state)?;
     out.label(
         "Runtime",
-        self.status.runtime_health.as_deref().unwrap_or("unknown"),
+        status.runtime_health.as_deref().unwrap_or("unknown"),
     )?;
-    out.label("Source", source(environment.source))?;
-    out.label("Configuration revision", self.application.generation)?;
+    out.label("Source", source(&environment.source))?;
+    if let (EnvironmentSource::Branch(_), None) = (&environment.source, manifest) {
+        out.label("Manifest", "not fetched yet; deploy to fetch it")?;
+    }
+    out.label("Configuration revision", application.generation)?;
     out.label(
         "Resolved revision",
         environment
             .resolved_generation
             .map_or_else(|| "none".to_owned(), |v| v.to_string()),
     )?;
-    for (name, value) in self.application.application.values(&environment.name) {
+    let values = manifest
+        .iter()
+        .flat_map(|manifest| manifest.values(&environment.name));
+    for (name, value) in values {
         match value {
             Some(value) => out.label("Variable", format_args!("{name} = {value}"))?,
             None => out.label("Variable", format_args!("{name} has no value"))?,
@@ -275,9 +286,7 @@ report!(EnvironmentShowReport<'_>, self, out, {
 report!(EnvironmentView, self, out, {
     out.line(format_args!(
         "Environment {} ({}), deploys from {}.",
-        self.name,
-        self.id,
-        source(self.source)
+        self.name, self.id, self.source
     ))
 });
 

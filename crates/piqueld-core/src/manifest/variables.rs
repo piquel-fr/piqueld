@@ -7,7 +7,7 @@
 //! domain model, so unresolved references never reach a
 //! [`super::NormalizedApplication`].
 
-use super::{ApplicationSpec, ValidationError, input::Variable};
+use super::{ApplicationSpec, RepositoryManifest, ValidationError, input::Variable};
 use crate::{EnvironmentName, codes};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use std::{collections::BTreeMap, fmt, str::FromStr};
@@ -458,13 +458,13 @@ impl RenderContext {
     }
 
     /// Renders a preview of `environment` before anything is deployed:
-    /// `deployment.id` is [`PREVIEW_DEPLOYMENT_ID`], and a repository-backed
-    /// manifest uses its configured branch and pinned commit, or 40 zeros.
+    /// `deployment.id` is [`PREVIEW_DEPLOYMENT_ID`], and a manifest fetched
+    /// from `repository` uses its branch and pinned commit, or 40 zeros.
     #[must_use]
-    pub fn preview(environment: EnvironmentName, spec: &ApplicationSpec) -> Self {
+    pub fn preview(environment: EnvironmentName, repository: Option<&RepositoryManifest>) -> Self {
         Self {
             environment,
-            git: spec.manifest.as_ref().map(|manifest| GitRevision {
+            git: repository.map(|manifest| GitRevision {
                 branch: manifest.repository.branch.clone(),
                 sha: manifest
                     .repository

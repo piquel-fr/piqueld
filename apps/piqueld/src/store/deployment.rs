@@ -1,7 +1,7 @@
 //! Saved configuration and immutable deployment inputs. Saving never creates work.
 use super::{EnvironmentId, NormalizedApplication, Operation, Store, StoreError, now_ms};
 use piqueld_core::{
-    api::{DeploymentView, Page, SavedApplication},
+    api::{DeploymentView, DiagnosticView, Page, SavedApplication},
     manifest::{ApplicationTemplate, Rendering, VariableValue},
 };
 use sqlx::{Sqlite, Transaction};
@@ -13,6 +13,7 @@ struct DeploymentRow {
     manifest_json: String,
     template_json: String,
     variables_json: String,
+    warnings_json: String,
     succeeded_at_ms: Option<i64>,
 }
 
@@ -23,6 +24,8 @@ pub(crate) struct Snapshot {
     /// The rendered manifest and its values; absent until a
     /// repository-backed manifest is fetched.
     pub(crate) rendering: Option<Rendering>,
+    /// Problems found while fetching the manifest that did not stop the deployment.
+    pub(crate) warnings: Vec<DiagnosticView>,
 }
 
 impl DeploymentRow {
@@ -38,6 +41,7 @@ impl DeploymentRow {
                 application,
                 values,
             }),
+            warnings: serde_json::from_str(&self.warnings_json).map_err(StoreError::corrupt)?,
         })
     }
 }
@@ -71,8 +75,9 @@ impl Store {
             return Err(StoreError::IllegalTransition);
         }
         if previous == 0 {
-            Self::create_default_environment_on(tx, app.id(), now).await?;
+            Self::create_default_environment_on(tx, app, now).await?;
         }
+        Self::follow_connection_on(tx, app).await?;
         Ok(SavedApplication {
             application_id: id.into(),
             generation: u64::try_from(generation).map_err(StoreError::corrupt)?,
@@ -80,10 +85,11 @@ impl Store {
         })
     }
 
-    /// Snapshots the saved manifest of `environment` as operation `id`'s
-    /// deployment record, rendered for that environment, together with the
-    /// values its references resolved to, so retries never read variables
-    /// again. A reference without a value fails the request. Repository-backed
+    /// Snapshots the manifest `environment` deploys next (see
+    /// [`super::StoredEnvironment::candidate`]) as operation `id`'s deployment
+    /// record, rendered for that environment, together with the values its
+    /// references resolved to, so retries never read variables again. A
+    /// reference without a value fails the request. Repository-backed
     /// manifests are rendered once fetched, when their revision is known.
     /// The deployment row shares the operation's ID.
     pub(super) async fn capture_deployment(
@@ -94,11 +100,11 @@ impl Store {
         let environment = Self::environment_on(tx, environment.as_str())
             .await?
             .ok_or(StoreError::NotFound)?;
-        let template = environment.manifest();
+        let template = environment.candidate(None)?;
         let rendering = if template.spec().manifest.is_some() {
             None
         } else {
-            Some(environment.render(template, id)?)
+            Some(environment.render(&template, id)?)
         };
         let (manifest, variables) = Self::snapshot_json(rendering.as_ref())?;
         let template = template.canonical_json().map_err(StoreError::corrupt)?;
@@ -130,7 +136,7 @@ impl Store {
     pub(crate) async fn deployment_snapshot(&self, id: &str) -> Result<Snapshot, StoreError> {
         sqlx::query_as!(
             DeploymentRow,
-            r#"SELECT id AS "id!",manifest_json,template_json,variables_json,succeeded_at_ms FROM deployments WHERE id=?1"#,
+            r#"SELECT id AS "id!",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms FROM deployments WHERE id=?1"#,
             id
         )
         .fetch_optional(&self.pool)
@@ -192,7 +198,7 @@ impl Store {
         let mut rows = if let Some(before) = before {
             sqlx::query_as!(
                 DeploymentRow,
-                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,succeeded_at_ms FROM deployments
+                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms FROM deployments
                  WHERE environment_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
                 app_id,
                 before,
@@ -203,7 +209,7 @@ impl Store {
         } else {
             sqlx::query_as!(
                 DeploymentRow,
-                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,succeeded_at_ms FROM deployments
+                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms FROM deployments
                  WHERE environment_id=?1 ORDER BY id DESC LIMIT ?2",
                 app_id,
                 limit_sql
@@ -231,6 +237,7 @@ impl Store {
                 template: snapshot.template,
                 variables,
                 application,
+                warnings: snapshot.warnings,
                 succeeded_at_ms: row.succeeded_at_ms,
                 current_target: current.as_ref() == Some(&row.id),
                 last_successful: successful.as_ref() == Some(&row.id),

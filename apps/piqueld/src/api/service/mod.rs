@@ -16,7 +16,7 @@ use crate::{
 pub use exec::ExecSession;
 pub use history::ManifestExport;
 use piqueld_core::{
-    ApplicationId, EnvironmentId, EnvironmentName,
+    ApplicationId, EnvironmentId, EnvironmentName, TrackedBranch,
     api::SecretMetadata,
     manifest::{ApplicationTemplate, ValidatedTemplate},
 };
@@ -98,6 +98,16 @@ pub enum Mutation {
         application: ApplicationId,
         /// Name, unique within the application.
         name: EnvironmentName,
+        /// Branch to follow instead of the one `spec.manifest` names.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        branch: Option<TrackedBranch>,
+    },
+    /// Point an environment of a repository-backed application at another branch.
+    SetBranch {
+        /// Stable environment ID.
+        id: EnvironmentId,
+        /// Branch to follow, optionally pinned to a commit.
+        branch: TrackedBranch,
     },
     /// Change only an environment's name.
     RenameEnvironment {
@@ -106,11 +116,12 @@ pub enum Mutation {
         /// New name, unique within the application.
         name: EnvironmentName,
     },
-    /// Deploy the application's latest saved configuration to an environment.
+    /// Deploy an environment from its source: the application's saved
+    /// configuration, or the manifest on its branch.
     Deploy {
         /// Stable environment identity.
         id: EnvironmentId,
-        /// Fetch the manifest from this revision instead, without saving it.
+        /// Fetch the manifest from this revision instead, for this deployment only.
         #[serde(skip_serializing_if = "Option::is_none")]
         revision: Option<piqueld_core::manifest::ManifestRevision>,
     },
@@ -347,6 +358,7 @@ impl ApplicationService {
                 | Mutation::DeleteApplication { .. }
                 | Mutation::CreateEnvironment { .. }
                 | Mutation::RenameEnvironment { .. }
+                | Mutation::SetBranch { .. }
                 | Mutation::Deploy { .. }
                 | Mutation::Delete { .. } => expected_generation.is_none(),
                 Mutation::Reconcile { .. } => false,

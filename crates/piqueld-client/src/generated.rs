@@ -627,9 +627,12 @@ impl Client {
     }
     /*Adds an environment to an application
 
-    The environment deploys the application's shared manifest and starts
-    `not_deployed`. The inspected application `expected_generation` goes in the
-    JSON body.
+    The environment starts `not_deployed`. It deploys the application's saved
+    manifest or, when the application is repository-backed, the manifest on
+    `branch` (by default the branch `spec.manifest` names), optionally pinned
+    to `commit`. A branch for an application without a repository fails with
+    `manifest_repository_required`. The inspected application
+    `expected_generation` goes in the JSON body.
 
     Sends a `POST` request to `/api/v1/applications/{id}/environments`
 
@@ -644,7 +647,7 @@ impl Client {
         id: &'a str,
         force: Option<bool>,
         idempotency_key: Option<&'a str>,
-        body: &'a piqueld_core::api::EnvironmentRequest,
+        body: &'a piqueld_core::api::CreateEnvironmentRequest,
     ) -> Result<
         ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::EnvironmentView>>,
         Error<piqueld_core::api::ErrorBody>,
@@ -696,6 +699,9 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             500u16 => Err(Error::ErrorResponse(
@@ -1190,192 +1196,6 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             409u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            422u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            500u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            503u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            _ => Err(Error::UnexpectedResponse(response)),
-        }
-    }
-    /*Sends a `PUT` request to `/api/v1/applications/{id}/repository/branch`
-
-    Arguments:
-    - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
-    - `expected_generation`: Required inspected generation unless force is set.
-    - `force`: Explicitly bypass the revision check.
-    - `idempotency_key`
-    - `body`
-    */
-    pub async fn set_manifest_repository_branch<'a>(
-        &'a self,
-        id: &'a str,
-        deploy: Option<bool>,
-        expected_generation: Option<u64>,
-        force: Option<bool>,
-        idempotency_key: Option<&'a str>,
-        body: &'a piqueld_core::edit::StringValue,
-    ) -> Result<
-        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
-        Error<piqueld_core::api::ErrorBody>,
-    > {
-        let url = format!(
-            "{}/api/v1/applications/{}/repository/branch",
-            self.baseurl,
-            encode_path(&id.to_string()),
-        );
-        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
-        header_map.append(
-            ::reqwest::header::HeaderName::from_static("api-version"),
-            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
-        );
-        if let Some(value) = idempotency_key {
-            header_map.append("Idempotency-Key", value.to_string().try_into()?);
-        }
-        #[allow(unused_mut)]
-        let mut request = self
-            .client
-            .put(url)
-            .header(
-                ::reqwest::header::ACCEPT,
-                ::reqwest::header::HeaderValue::from_static("application/json"),
-            )
-            .json(&body)
-            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
-            .query(&progenitor_client::QueryParam::new(
-                "expected_generation",
-                &expected_generation,
-            ))
-            .query(&progenitor_client::QueryParam::new("force", &force))
-            .headers(header_map)
-            .build()?;
-        let info = OperationInfo {
-            operation_id: "set_manifest_repository_branch",
-        };
-        self.pre(&mut request, &info).await?;
-        let result = self.exec(request, &info).await;
-        self.post(&result, &info).await?;
-        let response = result?;
-        match response.status().as_u16() {
-            200u16 => crate::client::decode_response(response).await,
-            202u16 => crate::client::decode_response(response).await,
-            400u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            403u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            404u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            409u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            413u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            415u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            422u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            500u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            503u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            _ => Err(Error::UnexpectedResponse(response)),
-        }
-    }
-    /*Sends a `PUT` request to `/api/v1/applications/{id}/repository/commit`
-
-    Arguments:
-    - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
-    - `expected_generation`: Required inspected generation unless force is set.
-    - `force`: Explicitly bypass the revision check.
-    - `idempotency_key`
-    - `body`
-    */
-    pub async fn set_manifest_repository_commit<'a>(
-        &'a self,
-        id: &'a str,
-        deploy: Option<bool>,
-        expected_generation: Option<u64>,
-        force: Option<bool>,
-        idempotency_key: Option<&'a str>,
-        body: &'a piqueld_core::edit::OptionalStringValue,
-    ) -> Result<
-        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
-        Error<piqueld_core::api::ErrorBody>,
-    > {
-        let url = format!(
-            "{}/api/v1/applications/{}/repository/commit",
-            self.baseurl,
-            encode_path(&id.to_string()),
-        );
-        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
-        header_map.append(
-            ::reqwest::header::HeaderName::from_static("api-version"),
-            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
-        );
-        if let Some(value) = idempotency_key {
-            header_map.append("Idempotency-Key", value.to_string().try_into()?);
-        }
-        #[allow(unused_mut)]
-        let mut request = self
-            .client
-            .put(url)
-            .header(
-                ::reqwest::header::ACCEPT,
-                ::reqwest::header::HeaderValue::from_static("application/json"),
-            )
-            .json(&body)
-            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
-            .query(&progenitor_client::QueryParam::new(
-                "expected_generation",
-                &expected_generation,
-            ))
-            .query(&progenitor_client::QueryParam::new("force", &force))
-            .headers(header_map)
-            .build()?;
-        let info = OperationInfo {
-            operation_id: "set_manifest_repository_commit",
-        };
-        self.pre(&mut request, &info).await?;
-        let result = self.exec(request, &info).await;
-        self.post(&result, &info).await?;
-        let response = result?;
-        match response.status().as_u16() {
-            200u16 => crate::client::decode_response(response).await,
-            202u16 => crate::client::decode_response(response).await,
-            400u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            403u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            404u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            409u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            413u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            415u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             422u16 => Err(Error::ErrorResponse(
@@ -6132,6 +5952,93 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Changes the branch an environment follows
+
+    Points an environment of a repository-backed application at another branch
+    of its manifest repository, or pins or unpins a commit. Nothing is fetched
+    or redeployed: the next deployment fetches the new branch. Environments
+    deploying the saved manifest fail with `manifest_repository_required`. The
+    inspected application `expected_generation` goes in the JSON body.
+
+    Sends a `PUT` request to `/api/v1/environments/{id}/branch`
+
+    Arguments:
+    - `id`
+    - `force`: Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_environment_branch<'a>(
+        &'a self,
+        id: &'a str,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::api::EnvironmentBranchRequest,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::EnvironmentView>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/branch",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_environment_branch",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             500u16 => Err(Error::ErrorResponse(

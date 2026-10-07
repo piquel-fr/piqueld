@@ -997,6 +997,37 @@
         ],
         "type": "object"
       },
+      "CreateEnvironmentRequest": {
+        "additionalProperties": false,
+        "description": "Creates an environment, conditioned on the inspected application revision.",
+        "properties": {
+          "branch": {
+            "description": "Branch of the application's manifest repository to follow. Defaults to\nthe branch `spec.manifest` names; only for repository-backed applications.",
+            "nullable": true,
+            "type": "string"
+          },
+          "commit": {
+            "description": "Full commit to pin instead of following `branch`'s head; requires `branch`.",
+            "nullable": true,
+            "type": "string"
+          },
+          "expected_generation": {
+            "description": "Current application revision, required unless explicitly forced.",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Environment name, unique within the application.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "CredentialView": {
         "description": "Revocable browser session, CLI session, or automation token metadata.",
         "properties": {
@@ -1363,6 +1394,13 @@
             },
             "description": "Values its references rendered to, keyed by reference.",
             "type": "object"
+          },
+          "warnings": {
+            "description": "Problems found while fetching the manifest that did not stop the\ndeployment, e.g. `manifest_connection_ignored`.",
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticView"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -2306,6 +2344,25 @@
                   }
                 ]
               },
+              "manifest": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/ApplicationTemplate"
+                      }
+                    ],
+                    "description": "The manifest this environment deploys, with references unresolved: the\nlast one fetched from its branch, or the application's saved manifest.\nAbsent until a repository-backed environment's first fetch."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
               "observed": {
                 "$ref": "#/components/schemas/ObservedApplicationView",
                 "description": "Sanitized runtime observation."
@@ -2978,6 +3035,13 @@
                       },
                       "description": "Values its references rendered to, keyed by reference.",
                       "type": "object"
+                    },
+                    "warnings": {
+                      "description": "Problems found while fetching the manifest that did not stop the\ndeployment, e.g. `manifest_connection_ignored`.",
+                      "items": {
+                        "$ref": "#/components/schemas/DiagnosticView"
+                      },
+                      "type": "array"
                     }
                   },
                   "required": [
@@ -3765,6 +3829,32 @@
         ],
         "type": "object"
       },
+      "EnvironmentBranchRequest": {
+        "additionalProperties": false,
+        "description": "Points an environment of a repository-backed application at another\nbranch, or pins or unpins its commit, conditioned on the inspected\napplication revision.",
+        "properties": {
+          "branch": {
+            "description": "Branch of the application's manifest repository to follow.",
+            "type": "string"
+          },
+          "commit": {
+            "description": "Full commit to pin instead of following the branch head.",
+            "nullable": true,
+            "type": "string"
+          },
+          "expected_generation": {
+            "description": "Current application revision, required unless explicitly forced.",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "branch"
+        ],
+        "type": "object"
+      },
       "EnvironmentConfig": {
         "additionalProperties": false,
         "description": "Configuration of one environment, `[spec.environments.<name>]`.",
@@ -3817,6 +3907,25 @@
               }
             ]
           },
+          "manifest": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ApplicationTemplate"
+                  }
+                ],
+                "description": "The manifest this environment deploys, with references unresolved: the\nlast one fetched from its branch, or the application's saved manifest.\nAbsent until a repository-backed environment's first fetch."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "observed": {
             "$ref": "#/components/schemas/ObservedApplicationView",
             "description": "Sanitized runtime observation."
@@ -3845,7 +3954,7 @@
       },
       "EnvironmentRequest": {
         "additionalProperties": false,
-        "description": "Creates or renames an environment, conditioned on the inspected application revision.",
+        "description": "Renames an environment, conditioned on the inspected application revision.",
         "properties": {
           "expected_generation": {
             "description": "Current application revision, required unless explicitly forced.",
@@ -3865,12 +3974,47 @@
         "type": "object"
       },
       "EnvironmentSource": {
-        "description": "Where an environment's deployments come from.\n\nEvery environment currently follows its application's manifest connection:\nper-environment branches and promotion add their own sources later.",
-        "enum": [
-          "saved",
-          "repository"
-        ],
-        "type": "string"
+        "description": "Where an environment's deployments come from.\n\nEnvironments of an application without a manifest repository deploy its\nsaved manifest. Environments of a repository-backed application each\nfollow a branch of that repository: its URL and manifest path belong to\nthe application, the branch to the environment.",
+        "oneOf": [
+          {
+            "description": "The application's saved manifest.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "saved"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TrackedBranch",
+                "description": "The manifest file on a branch of the application's manifest repository."
+              },
+              {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "branch"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "The manifest file on a branch of the application's manifest repository."
+          }
+        ]
       },
       "EnvironmentStatusView": {
         "description": "Current environment reconciliation status.",
@@ -6585,6 +6729,24 @@
         ],
         "type": "object"
       },
+      "TrackedBranch": {
+        "description": "A branch of the application's manifest repository that an environment\nfollows, optionally pinned to one commit. Always a valid Git branch name\nand, when pinned, a full commit hash.",
+        "properties": {
+          "branch": {
+            "description": "Branch whose head is fetched; also `git.branch`.",
+            "type": "string"
+          },
+          "commit": {
+            "description": "Full commit fetched instead of the branch head, when pinned.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch"
+        ],
+        "type": "object"
+      },
       "TypedTemplate": {
         "description": "Schema of a template in a typed field: text containing `${{`.",
         "pattern": "\\$\\{\\{",
@@ -8199,7 +8361,7 @@
     },
     "/api/v1/applications/{id}/environments": {
       "post": {
-        "description": "The environment deploys the application's shared manifest and starts\n`not_deployed`. The inspected application `expected_generation` goes in the\nJSON body.",
+        "description": "The environment starts `not_deployed`. It deploys the application's saved\nmanifest or, when the application is repository-backed, the manifest on\n`branch` (by default the branch `spec.manifest` names), optionally pinned\nto `commit`. A branch for an application without a repository fails with\n`manifest_repository_required`. The inspected application\n`expected_generation` goes in the JSON body.",
         "operationId": "createEnvironment",
         "parameters": [
           {
@@ -8232,7 +8394,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/EnvironmentRequest"
+                "$ref": "#/components/schemas/CreateEnvironmentRequest"
               }
             }
           },
@@ -8290,6 +8452,16 @@
             "description": "Structured, sanitized error"
           },
           "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
             "content": {
               "application/json": {
                 "schema": {
@@ -9079,354 +9251,6 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/RepositoryValue"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_SavedApplication"
-                }
-              }
-            },
-            "description": "Configuration saved"
-          },
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_SavedApplication"
-                }
-              }
-            },
-            "description": "Configuration saved and deployment accepted"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "TCP authority or browser origin is not trusted"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "415": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        }
-      }
-    },
-    "/api/v1/applications/{id}/repository/branch": {
-      "put": {
-        "operationId": "set_manifest_repository_branch",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Required inspected generation unless force is set.",
-            "in": "query",
-            "name": "expected_generation",
-            "required": false,
-            "schema": {
-              "format": "int64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Explicitly bypass the revision check.",
-            "in": "query",
-            "name": "force",
-            "required": false,
-            "schema": {
-              "type": "boolean"
-            }
-          },
-          {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
-            "in": "query",
-            "name": "deploy",
-            "required": false,
-            "schema": {
-              "type": "boolean"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StringValue"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_SavedApplication"
-                }
-              }
-            },
-            "description": "Configuration saved"
-          },
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_SavedApplication"
-                }
-              }
-            },
-            "description": "Configuration saved and deployment accepted"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "TCP authority or browser origin is not trusted"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "415": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        }
-      }
-    },
-    "/api/v1/applications/{id}/repository/commit": {
-      "put": {
-        "operationId": "set_manifest_repository_commit",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Required inspected generation unless force is set.",
-            "in": "query",
-            "name": "expected_generation",
-            "required": false,
-            "schema": {
-              "format": "int64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Explicitly bypass the revision check.",
-            "in": "query",
-            "name": "force",
-            "required": false,
-            "schema": {
-              "type": "boolean"
-            }
-          },
-          {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
-            "in": "query",
-            "name": "deploy",
-            "required": false,
-            "schema": {
-              "type": "boolean"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OptionalStringValue"
               }
             }
           },
@@ -17628,6 +17452,142 @@
           }
         },
         "summary": "Get an environment"
+      }
+    },
+    "/api/v1/environments/{id}/branch": {
+      "put": {
+        "description": "Points an environment of a repository-backed application at another branch\nof its manifest repository, or pins or unpins a commit. Nothing is fetched\nor redeployed: the next deployment fetches the new branch. Environments\ndeploying the saved manifest fail with `manifest_repository_required`. The\ninspected application `expected_generation` goes in the JSON body.",
+        "operationId": "setEnvironmentBranch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentBranchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_EnvironmentView"
+                }
+              }
+            },
+            "description": "Environment follows the branch from its next deployment"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Changes the branch an environment follows."
       }
     },
     "/api/v1/environments/{id}/deploy": {

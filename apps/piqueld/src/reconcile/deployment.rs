@@ -3,7 +3,8 @@ use super::{Controller, DockerApi, Operation, OperationError, StoredEnvironment}
 use crate::store::StoreError;
 use piqueld_core::{
     NormalizedApplication,
-    manifest::{GitRevision, RenderContext},
+    api::DiagnosticView,
+    manifest::{ApplicationManifest, GitRevision, RenderContext, RepositoryManifest},
 };
 
 impl<D: DockerApi> Controller<D> {
@@ -16,7 +17,11 @@ impl<D: DockerApi> Controller<D> {
     /// and the manifest file (at most 2 MiB; `.json` parsed as JSON, anything
     /// else as TOML) is validated, required to keep the application name,
     /// rendered for `environment` at the fetched commit, and persisted with it.
-    /// Inputs without repository backing are marked fetched as-is.
+    /// Its own `spec.manifest` must decode but is ignored, even when absent or
+    /// invalid: the repository it was fetched from replaces it before
+    /// validation, with a `manifest_connection_ignored` warning when it names
+    /// another repository URL or manifest path. Inputs without repository
+    /// backing are marked fetched as-is.
     pub(super) async fn deployment_manifest(
         &self,
         operation: &Operation,
@@ -36,7 +41,7 @@ impl<D: DockerApi> Controller<D> {
         let Some(backing) = &input.template.spec().manifest else {
             let rendering = snapshot.rendering.ok_or(StoreError::Corrupt)?;
             self.store
-                .save_deployment_input(operation, &input.template, &rendering, None)
+                .save_deployment_input(operation, &input.template, &rendering, None, &[])
                 .await?;
             return Ok(rendering.application);
         };
@@ -49,8 +54,17 @@ impl<D: DockerApi> Controller<D> {
                 tracing::error!(?error, "manifest repository fetch failed");
                 OperationError::ManifestFetchFailed(error)
             })?;
-        let parsed = Self::read_manifest(&checkout, &backing.path).await?;
-        let template = parsed.normalize(input.template.id().clone());
+        let mut manifest = Self::read_manifest(&checkout, &backing.path).await?;
+        // Replaced before validation: `self` sources and `git.*` references
+        // need a connection, and the file's own may be absent or invalid.
+        let declared = manifest.spec.manifest.replace(backing.clone());
+        let warnings = Self::ignored_connection(declared.as_ref(), backing)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let template = manifest
+            .validate_template()
+            .map_err(Self::invalid_manifest)?
+            .normalize(input.template.id().clone());
         if template.metadata().name != input.template.metadata().name {
             return Err(OperationError::ManifestInvalid);
         }
@@ -64,35 +78,26 @@ impl<D: DockerApi> Controller<D> {
                 deployment: Some(operation.id.clone()),
             })
             .map_err(Self::invalid_manifest)?;
-        let application = &rendering.application;
-        // Retries pin "self" from the stored manifest and commit alone, so the
-        // manifest must name the repository that commit was fetched from.
-        let declared = application.spec().manifest.as_ref();
-        if application.spec().builds_from_manifest()
-            && declared.map(|manifest| &manifest.repository.url) != Some(&backing.repository.url)
-        {
-            tracing::error!("manifest with \"self\" sources names another repository");
-            return Err(OperationError::ManifestInput {
-                not_found: false,
-                source: anyhow::anyhow!(
-                    "\"self\" sources require spec.manifest.repository.url to be {}",
-                    backing.repository.url
-                ),
-            });
-        }
         self.check_current(operation).await?;
         self.store
-            .save_deployment_input(operation, &template, &rendering, Some(&checkout.commit))
+            .save_deployment_input(
+                operation,
+                &template,
+                &rendering,
+                Some(&checkout.commit),
+                &warnings,
+            )
             .await?;
         Ok(rendering.application.pin_manifest_sources(&checkout.commit))
     }
 
-    /// Reads and validates the manifest file at `relative` in `checkout`: at
-    /// most 2 MiB, `.json` parsed as JSON and anything else as TOML.
+    /// Reads and decodes, without validating, the manifest file at `relative`
+    /// in `checkout`: at most 2 MiB, `.json` parsed as JSON and anything else
+    /// as TOML.
     async fn read_manifest(
         checkout: &crate::git::Checkout,
         relative: &str,
-    ) -> Result<piqueld_core::manifest::ValidatedTemplate, OperationError> {
+    ) -> Result<ApplicationManifest, OperationError> {
         let path = checkout.path(relative).await.map_err(|error| {
             tracing::error!(?error, "manifest file lookup failed");
             let not_found = error
@@ -127,11 +132,32 @@ impl<D: DockerApi> Controller<D> {
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
         {
-            piqueld_core::manifest::parse_template_json(&contents)
+            ApplicationManifest::decode_json(&contents)
         } else {
-            piqueld_core::manifest::parse_template_toml(&contents)
+            ApplicationManifest::decode_toml(&contents)
         }
         .map_err(Self::invalid_manifest)
+    }
+
+    /// Warns that a fetched file's `spec.manifest` is ignored when it names
+    /// another repository URL or manifest path than `fetched` from. Branches
+    /// and commits differ between environments, so they are not compared.
+    fn ignored_connection(
+        declared: Option<&RepositoryManifest>,
+        fetched: &RepositoryManifest,
+    ) -> Option<DiagnosticView> {
+        let declared = declared?;
+        if declared.repository.url == fetched.repository.url && declared.path == fetched.path {
+            return None;
+        }
+        tracing::warn!("fetched manifest names another repository connection");
+        Some(DiagnosticView {
+            code: "manifest_connection_ignored".into(),
+            message: format!(
+                "The fetched manifest's spec.manifest names {} in {}, which is ignored: this application reads {} from {}. Change the connection with `piquelctl app repository`.",
+                declared.path, declared.repository.url, fetched.path, fetched.repository.url
+            ),
+        })
     }
 
     /// Reports an invalid repository manifest.

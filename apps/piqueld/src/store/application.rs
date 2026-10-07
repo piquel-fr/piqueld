@@ -6,7 +6,7 @@ use super::{
 };
 use piqueld_core::manifest::ApplicationTemplate;
 use piqueld_core::{
-    EnvironmentId, EnvironmentName,
+    EnvironmentId, EnvironmentName, EnvironmentSource,
     api::{ApplicationSummary, EnvironmentView, Page},
 };
 use sqlx::{Sqlite, SqliteConnection, Transaction};
@@ -175,7 +175,7 @@ impl Store {
         id: &str,
     ) -> Result<Vec<EnvironmentView>, StoreError> {
         sqlx::query_as!(EnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",json_extract(a.desired_json,'$.spec.manifest') IS NOT NULL AS "repository!: bool",e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.application_id=?1 ORDER BY e.name"#,id)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.branch,e.pinned_commit,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!" FROM environments e WHERE e.application_id=?1 ORDER BY e.name"#,id)
             .fetch_all(connection).await.map_err(StoreError::database)?
             .into_iter().map(EnvironmentRow::decode).collect()
     }
@@ -201,16 +201,52 @@ impl Store {
     }
 
     /// Creates the application's first environment, named `production`, which
-    /// shares the application's ID.
+    /// shares the application's ID and follows the branch `spec.manifest` names.
     pub(super) async fn create_default_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
-        application: &ApplicationId,
+        application: &ApplicationTemplate,
         now: i64,
     ) -> Result<EnvironmentId, StoreError> {
-        let id = EnvironmentId::default_for(application);
-        Self::insert_environment_on(tx, application, &id, &EnvironmentName::default_name(), now)
-            .await?;
+        let id = EnvironmentId::default_for(application.id());
+        let source = EnvironmentSource::select(application.spec().manifest.as_ref(), None)?;
+        let name = EnvironmentName::default_name();
+        Self::insert_environment_on(tx, application.id(), &id, &name, &source, now).await?;
         Ok(id)
+    }
+
+    /// Keeps environment sources in step with the application's repository
+    /// connection: connecting points every environment without a branch at the
+    /// branch `spec.manifest` names, and disconnecting returns every environment
+    /// to the saved manifest, forgetting what was fetched.
+    pub(super) async fn follow_connection_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        application: &ApplicationTemplate,
+    ) -> Result<(), StoreError> {
+        let id = application.id().as_str();
+        let source = EnvironmentSource::select(application.spec().manifest.as_ref(), None)?;
+        match source.branch() {
+            Some(branch) => {
+                let (name, commit) = (branch.branch(), branch.commit());
+                sqlx::query!(
+                    "UPDATE environments SET branch=?1,pinned_commit=?2 WHERE application_id=?3 AND branch IS NULL",
+                    name,
+                    commit,
+                    id
+                )
+                .execute(&mut **tx)
+                .await
+            }
+            None => {
+                sqlx::query!(
+                    "UPDATE environments SET branch=NULL,pinned_commit=NULL,manifest_json=NULL WHERE application_id=?1",
+                    id
+                )
+                .execute(&mut **tx)
+                .await
+            }
+        }
+        .map_err(StoreError::database)?;
+        Ok(())
     }
 
     /// Lists live application metadata and environments by ID without reading

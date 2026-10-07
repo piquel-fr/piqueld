@@ -211,7 +211,7 @@ impl<D: DockerApi> Controller<D> {
         operation: &Operation,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
-        let request = self.operation_request(operation, cancellation).await?;
+        let request = Box::pin(self.operation_request(operation, cancellation)).await?;
         let ownership = self.ownership_labels(&operation.environment_id);
         if operation.kind != OperationKind::Delete
             && !self
@@ -461,7 +461,8 @@ impl<D: DockerApi> Controller<D> {
         .with_progress(Arc::clone(&self.store), operation.id.clone());
         let manifest = self.deployment_manifest(operation, application).await?;
         // A rename changes display metadata without rewriting deployment history.
-        let manifest = manifest.with_name(application.manifest().metadata().name.clone());
+        let manifest =
+            manifest.with_name(application.application.application.metadata().name.clone());
         let mut reusable = if operation.kind == OperationKind::Refresh {
             piqueld_core::ResolutionSet::default()
         } else {

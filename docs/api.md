@@ -30,15 +30,23 @@ Environment IDs are the IDs Docker names, ownership labels, and history derive
 from. Applications that existed before environments have one environment named
 `production` that kept their ID; new applications get a `production`
 environment sharing the application ID, and further environments get their own IDs.
-An environment's `source` is `saved` or `repository`; in this release it follows
-the application's manifest connection.
+An environment's `source` is `{ "type": "saved" }` for applications without a
+manifest repository, or `{ "type": "branch", "branch": "main" }` for
+repository-backed ones: each such environment follows its own branch of the
+application's repository, optionally pinned to a commit (`"commit"`). The repository URL and
+manifest path stay on the application (`spec.manifest`). Connecting a repository
+points every environment at the branch `spec.manifest` names; disconnecting
+returns them to the saved manifest.
 
-All manifest settings remain shared. Hostnames are reserved per environment, so
-environments of one application cannot currently inherit the same hostname routes.
-A sibling conflict returns `hostname_conflict` with the shared-route limitation
-in its message and the hostname and reserving environment name in
-`details.hostname` and `details.environment`. Per-environment configuration will
-allow different hostnames later.
+A repository-backed environment deploys the manifest last fetched from its
+branch, which `EnvironmentDetailView.manifest` returns (null before its first
+fetch). Hostname reservations, the `environment_configured` rename check, and
+`plan` with `environment=ID` read that manifest, so a fetch for one environment
+never changes another. The application's saved manifest is the one last
+fetched by any environment, with the application's own connection; it is what
+application views show and what environments deploy after disconnecting.
+A sibling hostname conflict returns `hostname_conflict` with the hostname and
+reserving environment name in `details.hostname` and `details.environment`.
 
 Application list items contain `id`, `name`, generation metadata, deletion
 intent, timestamps, and their environments. Read `/api/v1/applications/{id}`
@@ -55,11 +63,12 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/applications/apply` | Save configuration by name; `?deploy=true` also deploys its only environment |
 | DELETE | `/api/v1/applications/{id}` | Request deletion of every environment; no body. `environments=a,b` must name every environment when there are several |
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment |
-| POST | `/api/v1/applications/{id}/environments` | Add an environment: `{ "name": "staging", "expected_generation": 3 }` |
+| POST | `/api/v1/applications/{id}/environments` | Add an environment: `{ "name": "staging", "branch": "main", "commit": null, "expected_generation": 3 }`; `branch` defaults to the one `spec.manifest` names and requires a repository-backed application |
+| PUT | `/api/v1/environments/{id}/branch` | Follow another branch, or pin or unpin a commit, without redeploying: `{ "branch": "release", "commit": null, "expected_generation": 3 }` |
 | GET | `/api/v1/environments/{id}` | Environment metadata |
 | GET | `/api/v1/environments/{id}/detail` | Environment, application intent, resolved generation, observed runtime, operation, diagnostics |
 | GET | `/api/v1/environments/{id}/status` | Intent progress and separate runtime health |
-| POST | `/api/v1/environments/{id}/deploy` | Deploy the inspected saved revision with fresh source resolution; supersede pending work. `branch=NAME` or `commit=SHA` fetches a repository-backed manifest from that revision once, without saving it |
+| POST | `/api/v1/environments/{id}/deploy` | Deploy the environment from its source with fresh source resolution; supersede pending work. `branch=NAME` or `commit=SHA` fetches a repository-backed manifest from that revision instead of the environment's branch, for this deployment only |
 | GET | `/api/v1/environments/{id}/deployments` | Deployment snapshots, newest first, three per page |
 | GET | `/api/v1/environments/{id}/deployments/{deployment}/attempts` | Retained outcomes, newest first, 100 per page |
 | POST | `/api/v1/environments/{id}/rename` | Rename an environment without redeployment: `{ "name": "...", "expected_generation": 3 }` |
@@ -108,7 +117,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/services/{service}/healthcheck/{port,path,command,interval,timeout}` | Typed `{ "value": ... }` |
 | PUT | `/services/{service}/resources/{cpu,memory}` | `{ "value": 500 }`; null clears the selected limit |
 | PUT / DELETE | `/repository` | PUT: `{ "value": RepositoryManifest }`; DELETE: disconnect |
-| PUT | `/repository/{url,branch,commit,path}` | `{ "value": "..." }`; commit may be null |
+| PUT | `/repository/{url,path}` | `{ "value": "..." }`; every environment fetches from them. Branches belong to environments: see `/api/v1/environments/{id}/branch` |
 
 The braces listing multiple names denote separate documented endpoints. Nested
 source/check settings require the appropriate variant; switch variants through
@@ -186,7 +195,11 @@ captured (repository manifests once fetched): a reference without a value
 fails the request with 422 and `variable_value_missing` in `details.errors`.
 Deployment snapshots record the captured manifest as `template`, the rendered
 values as `variables`, and the rendered manifest as `application` (null until a
-repository manifest is fetched). Every explicit Deploy creates a new snapshot and supersedes
+repository manifest is fetched). A fetched file's own `spec.manifest` is ignored:
+the snapshot's `template.spec.manifest` is the repository, path, and revision it
+was actually fetched from. When the file names another repository URL or path,
+the snapshot's `warnings` lists `manifest_connection_ignored`; branches are not
+compared, since they differ between environments. Every explicit Deploy creates a new snapshot and supersedes
 pending work, even for unchanged configuration. It resolves image tags again;
 matching healthy containers need no restart. Empty applications are valid: an
 empty deployment removes services and networks while retaining volume data.
@@ -221,12 +234,16 @@ subsequent name-based apply.
 Environment creation and rename return 200 with `EnvironmentView`. Names follow
 the logical-name rules and are unique within the application (409
 `application_name_collision`). A new environment starts `not_deployed`; renaming
-never touches the runtime. Every environment reserves the hostnames the saved
-manifest renders for it, so environments of one application may use different
+never touches the runtime. Every environment reserves the hostnames the manifest
+it deploys renders for it, so environments of one application may use different
 hostnames through variables; two that render the same hostname fail with 409
 `hostname_conflict`. Renaming an environment returns 409 `environment_configured`
-while the saved manifest has a `[spec.environments.<name>]` block for the old or
-new name.
+while that manifest has a `[spec.environments.<name>]` block for the old or new
+name. Creating an environment with a `branch`, or changing the branch of one,
+for an application without a manifest repository fails with 422
+`manifest_repository_required`; an invalid branch or commit fails with
+`git_branch_invalid` or `git_commit_invalid`. Changing a branch advances the
+application revision and leaves that environment unresolved until it deploys.
 
 Deleting an application requests deletion of each environment and returns 202
 with `DeletedApplication` (`application_id`, `generation`, and one
@@ -301,12 +318,13 @@ returns the original acceptance. Use `piquelctl env deploy NAME [ENV] --yes` (or
 `app deploy NAME --yes` for an application with one environment) to request and
 wait for deployment.
 
-When `spec.manifest` is configured (environment `source: repository`), Deploy
-first fetches the selected manifest; a changed manifest becomes the application's
-saved configuration for every environment.
-Its `refresh` operation records `fetching_manifest` progress and a `manifest_fetched`
-event with the commit hash. Generation changes only when a changed candidate
-passes preparation; initial acceptance returns the currently stored generation.
+When `spec.manifest` is configured, each environment has `source: branch` and
+Deploy first fetches the manifest from that environment's branch (or the
+one-off `branch`/`commit`). Once the deployment is prepared, it becomes that
+environment's last fetched manifest and the application's saved configuration;
+other environments keep their own. Its `refresh` operation records
+`fetching_manifest` progress and a `manifest_fetched` event with the commit
+hash. Fetches never change the generation.
 Failures use `manifest_not_found`, `manifest_fetch_failed`, or `manifest_invalid`.
 Direct apply may repair manifest connection settings but rejects changes to
 repository-managed runtime fields with `409 repository_managed`.

@@ -35,7 +35,7 @@ pub use input::{
 pub(crate) use validation::valid_image_reference;
 pub use validation::{
     ValidationError, ValidationErrors, parse_json, parse_template_json, parse_template_toml,
-    parse_toml, safe_decode_path, valid_git_commit, valid_repository_path,
+    parse_toml, safe_decode_path, valid_git_branch, valid_git_commit, valid_repository_path,
 };
 
 use crate::{ApplicationId, ApplicationName};

@@ -23,8 +23,11 @@ mod status;
 
 use piqueld_core::{
     ApplicationId, EnvironmentId, EnvironmentName, EnvironmentSource, NormalizedApplication,
+    TrackedBranch,
     api::EnvironmentView,
-    manifest::{ApplicationTemplate, RenderContext, Rendering},
+    manifest::{
+        ApplicationTemplate, ManifestRevision, RenderContext, Rendering, RepositoryManifest,
+    },
     resource::ResolvedApplication,
 };
 pub use piqueld_core::{ApplicationState, Operation, OperationKind, OperationState};
@@ -278,6 +281,8 @@ pub struct StoredEnvironment {
     pub environment: EnvironmentView,
     /// Owning application and its saved configuration.
     pub application: StoredApplication,
+    /// The manifest last fetched from the environment's branch.
+    pub fetched: Option<ApplicationTemplate>,
     /// Resolved Docker target, including immutable image digests.
     pub resolved: Option<ResolvedApplication>,
 }
@@ -295,10 +300,45 @@ impl StoredEnvironment {
         self.environment.delete_intent
     }
 
-    /// The application's saved manifest this environment deploys.
+    /// The manifest this environment deploys, which its hostname
+    /// reservations, rename checks, and plans read: the last one fetched from
+    /// its branch (`None` before the first fetch), or the application's saved
+    /// manifest.
     #[must_use]
-    pub fn manifest(&self) -> &ApplicationTemplate {
-        &self.application.application
+    pub fn manifest(&self) -> Option<&ApplicationTemplate> {
+        match self.environment.source {
+            EnvironmentSource::Saved => Some(&self.application.application),
+            EnvironmentSource::Branch(_) => self.fetched.as_ref(),
+        }
+    }
+
+    /// The application's manifest repository at this environment's branch,
+    /// which its deployments fetch.
+    #[must_use]
+    pub fn repository(&self) -> Option<RepositoryManifest> {
+        let connection = self.application.application.spec().manifest.as_ref()?;
+        Some(self.environment.source.branch()?.in_repository(connection))
+    }
+
+    /// The manifest a new deployment captures: the application's saved one,
+    /// fetched instead from [`Self::repository`], at `revision` when given.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a revision for an environment without a branch.
+    pub fn candidate(
+        &self,
+        revision: Option<&ManifestRevision>,
+    ) -> Result<ApplicationTemplate, StoreError> {
+        let template = self
+            .application
+            .application
+            .clone()
+            .with_manifest(self.repository());
+        Ok(match revision {
+            Some(revision) => template.with_manifest_revision(revision)?,
+            None => template,
+        })
     }
 
     /// Renders `template` for a deployment of this environment.
@@ -644,13 +684,14 @@ impl ApplicationRow {
     }
 }
 
-/// Raw `environments` row, with whether its application has a manifest repository.
+/// Raw `environments` row.
 #[derive(Debug)]
 struct EnvironmentRow {
     id: String,
     application_id: String,
     name: String,
-    repository: bool,
+    branch: Option<String>,
+    pinned_commit: Option<String>,
     resolved_generation: Option<i64>,
     delete_intent: i64,
     created_at_ms: i64,
@@ -666,10 +707,11 @@ impl EnvironmentRow {
             application_id: ApplicationId::parse(self.application_id)
                 .map_err(StoreError::corrupt)?,
             name: EnvironmentName::parse(self.name).map_err(StoreError::corrupt)?,
-            source: if self.repository {
-                EnvironmentSource::Repository
-            } else {
-                EnvironmentSource::Saved
+            source: match self.branch {
+                Some(branch) => EnvironmentSource::Branch(
+                    TrackedBranch::new(branch, self.pinned_commit).map_err(StoreError::corrupt)?,
+                ),
+                None => EnvironmentSource::Saved,
             },
             resolved_generation: self
                 .resolved_generation
@@ -689,6 +731,9 @@ struct StoredEnvironmentRow {
     id: String,
     application_id: String,
     name: String,
+    branch: Option<String>,
+    pinned_commit: Option<String>,
+    manifest_json: Option<String>,
     resolved_json: Option<String>,
     resolved_generation: Option<i64>,
     delete_intent: i64,
@@ -717,16 +762,26 @@ impl StoredEnvironmentRow {
             id: self.id,
             application_id: self.application_id,
             name: self.name,
-            repository: application.application.spec().manifest.is_some(),
+            branch: self.branch,
+            pinned_commit: self.pinned_commit,
             resolved_generation: self.resolved_generation,
             delete_intent: self.delete_intent,
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,
         }
         .decode()?;
+        // Renames change display identity without rewriting fetched manifests.
+        let fetched = self
+            .manifest_json
+            .as_deref()
+            .map(serde_json::from_str::<ApplicationTemplate>)
+            .transpose()
+            .map_err(StoreError::corrupt)?
+            .map(|fetched| fetched.with_name(application.application.metadata().name.clone()));
         Ok(StoredEnvironment {
             environment,
             application,
+            fetched,
             resolved: self
                 .resolved_json
                 .as_deref()

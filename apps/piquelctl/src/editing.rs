@@ -437,7 +437,9 @@ pub(crate) struct RepositoryText {
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum RepositoryCommand {
-    /// Enable repository ownership of services and volumes.
+    /// Enable repository ownership of services and volumes. Every environment
+    /// follows `--branch`, as do environments created later without one; change
+    /// an environment's branch with `env branch`.
     Connect {
         #[command(flatten)]
         target: RepositoryTarget,
@@ -445,7 +447,7 @@ pub(crate) enum RepositoryCommand {
         url: String,
         /// Manifest file path relative to the repository root.
         path: String,
-        /// Branch to fetch when no commit is pinned.
+        /// Branch environments follow unless created with their own.
         #[arg(long, default_value = "main")]
         branch: String,
         /// Pin a full commit hash instead of following the branch.
@@ -454,22 +456,9 @@ pub(crate) enum RepositoryCommand {
     },
     /// Stop fetching from Git and retain saved configuration for local editing.
     Disconnect(RepositoryTarget),
-    /// Change the repository URL.
+    /// Change the repository URL every environment fetches from.
     Url(RepositoryText),
-    /// Change the branch.
-    Branch(RepositoryText),
-    /// Pin a commit, or --clear to follow the branch.
-    Commit {
-        #[command(flatten)]
-        target: RepositoryTarget,
-        /// Full commit hash, or use --clear to follow the branch.
-        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
-        value: Option<String>,
-        /// Follow the branch instead of a pinned commit.
-        #[arg(long)]
-        clear: bool,
-    },
-    /// Change the manifest file path.
+    /// Change the manifest file path every environment reads.
     Path(RepositoryText),
 }
 
@@ -906,13 +895,6 @@ impl RepositoryCommand {
                 &args.target,
                 ApplicationEdit::RepositoryUrl(args.value.clone()),
             ),
-            Self::Branch(args) => (
-                &args.target,
-                ApplicationEdit::RepositoryBranch(args.value.clone()),
-            ),
-            Self::Commit { target, value, .. } => {
-                (target, ApplicationEdit::RepositoryCommit(value.clone()))
-            }
             Self::Path(args) => (
                 &args.target,
                 ApplicationEdit::RepositoryPath(args.value.clone()),

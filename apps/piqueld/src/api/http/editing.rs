@@ -118,8 +118,6 @@ async fn disconnect_manifest_repository(
     .await
 }
 edit_endpoint!(set_manifest_repository_url, put, "/api/v1/applications/{id}/repository/url", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::RepositoryUrl(body.value));
-edit_endpoint!(set_manifest_repository_branch, put, "/api/v1/applications/{id}/repository/branch", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::RepositoryBranch(body.value));
-edit_endpoint!(set_manifest_repository_commit, put, "/api/v1/applications/{id}/repository/commit", (id: String = "id"), OptionalStringValue, body::<OptionalStringValue>, |_, body: OptionalStringValue| ApplicationEdit::RepositoryCommit(body.value));
 edit_endpoint!(set_manifest_repository_path, put, "/api/v1/applications/{id}/repository/path", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::RepositoryPath(body.value));
 edit_endpoint!(add_application_service, post, "/api/v1/applications/{id}/services", (id: String = "id"), Service, body::<Service>, |_, body: Service| ApplicationEdit::AddService(Box::new(body)));
 edit_endpoint!(add_application_volume, post, "/api/v1/applications/{id}/volumes", (id: String = "id"), Volume, body::<Volume>, |_, body: Volume| ApplicationEdit::AddVolume(body));
@@ -308,8 +306,6 @@ pub(super) fn router() -> OpenApiRouter<ApiState> {
         .routes(routes!(set_manifest_repository))
         .routes(routes!(disconnect_manifest_repository))
         .routes(routes!(set_manifest_repository_url))
-        .routes(routes!(set_manifest_repository_branch))
-        .routes(routes!(set_manifest_repository_commit))
         .routes(routes!(set_manifest_repository_path))
         .routes(routes!(add_application_service))
         .routes(routes!(add_application_volume))

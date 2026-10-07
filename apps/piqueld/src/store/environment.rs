@@ -5,25 +5,34 @@ use super::{
     ResolvedApplication, Store, StoreError, StoredEnvironment, StoredEnvironmentRow, now_ms,
     page_limit,
 };
-use piqueld_core::EnvironmentName;
+use piqueld_core::{EnvironmentName, EnvironmentSource, TrackedBranch};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 impl Store {
-    /// Inserts an environment, initially `not_deployed`, and records its creation.
-    /// Returns `AlreadyExists` when the application already has one with `name`.
+    /// Inserts an environment deploying from `source`, initially
+    /// `not_deployed`, and records its creation. Returns `AlreadyExists` when
+    /// the application already has one with `name`.
     pub(super) async fn insert_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &ApplicationId,
         id: &EnvironmentId,
         name: &EnvironmentName,
+        source: &EnvironmentSource,
         now: i64,
     ) -> Result<(), StoreError> {
         let (application, id, name) = (application.as_str(), id.as_str(), name.as_str());
+        let branch = source.branch();
+        let (commit, branch) = (
+            branch.and_then(TrackedBranch::commit),
+            branch.map(TrackedBranch::branch),
+        );
         sqlx::query!(
-            "INSERT INTO environments(id,application_id,name,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?4)",
+            "INSERT INTO environments(id,application_id,name,branch,pinned_commit,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?6)",
             id,
             application,
             name,
+            branch,
+            commit,
             now
         )
         .execute(&mut **tx)
@@ -44,18 +53,23 @@ impl Store {
     }
 
     /// Creates an environment of a live application under a freshly generated
-    /// ID, advancing the application revision. Applications being deleted are `Busy`.
+    /// ID, advancing the application revision. It follows `branch`, by default
+    /// the one `spec.manifest` names, when the application is
+    /// repository-backed. Applications being deleted are `Busy`.
     pub(super) async fn create_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &super::StoredApplication,
         name: &EnvironmentName,
+        branch: Option<TrackedBranch>,
         now: i64,
     ) -> Result<EnvironmentId, StoreError> {
         if application.delete_intent {
             return Err(StoreError::Busy);
         }
+        let template = &application.application;
+        let source = EnvironmentSource::select(template.spec().manifest.as_ref(), branch)?;
         let id = EnvironmentId::parse(super::new_id("env")).map_err(StoreError::corrupt)?;
-        Self::insert_environment_on(tx, application.application.id(), &id, name, now).await?;
+        Self::insert_environment_on(tx, template.id(), &id, name, &source, now).await?;
         Self::bump_generation_on(
             tx,
             application.application.id(),
@@ -85,16 +99,20 @@ impl Store {
         if old == name {
             return Ok(());
         }
+        // A branch environment's configuration is its last fetched manifest;
+        // before the first fetch there is none to switch.
+        let manifest = environment.manifest();
         if let Some(configured) = [old, name]
             .into_iter()
-            .find(|name| environment.manifest().configures(name))
+            .find(|name| manifest.is_some_and(|manifest| manifest.configures(name)))
         {
             return Err(StoreError::EnvironmentConfigured {
                 environment: configured.clone(),
             });
         }
-        let manifest = environment.manifest();
-        let stale = (!manifest.renders_like(old, manifest, name)).then(|| environment.id());
+        let stale = manifest
+            .is_some_and(|manifest| !manifest.renders_like(old, manifest, name))
+            .then(|| environment.id());
         let (id, name) = (environment.id().as_str(), name.as_str());
         sqlx::query!(
             "UPDATE environments SET name=?1,updated_at_ms=?2 WHERE id=?3",
@@ -115,7 +133,69 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        Self::bump_generation_on(tx, manifest.id(), environment.application.generation, stale).await
+        Self::bump_generation_on(
+            tx,
+            &environment.environment.application_id,
+            environment.application.generation,
+            stale,
+        )
+        .await
+    }
+
+    /// Points an environment of a repository-backed application at `branch`,
+    /// advancing the application revision. Nothing is fetched or deployed: the
+    /// environment no longer reports its configuration as resolved until its
+    /// next deployment. Environments being deleted are `Busy`.
+    pub(super) async fn set_branch_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        environment: &StoredEnvironment,
+        branch: TrackedBranch,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        if environment.delete_intent() {
+            return Err(StoreError::Busy);
+        }
+        let connection = environment.application.application.spec().manifest.as_ref();
+        let source = EnvironmentSource::select(connection, Some(branch))?;
+        let previous = &environment.environment.source;
+        if source == *previous {
+            return Ok(());
+        }
+        let id = environment.id().as_str();
+        let (name, commit) = (
+            source.branch().map(TrackedBranch::branch),
+            source.branch().and_then(TrackedBranch::commit),
+        );
+        sqlx::query!(
+            "UPDATE environments SET branch=?1,pinned_commit=?2,updated_at_ms=?3 WHERE id=?4",
+            name,
+            commit,
+            now,
+            id
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        let message = format!(
+            "environment {} deploys from {source} instead of {previous}",
+            environment.environment.name
+        );
+        sqlx::query!(
+            "INSERT INTO events(application_id,environment_id,kind,message,created_at_ms) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'environment_branch_changed',?2,?3)",
+            id,
+            message,
+            now
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        Self::bump_generation_on(
+            tx,
+            &environment.environment.application_id,
+            environment.application.generation,
+            Some(environment.id()),
+        )
+        .await
     }
 
     /// Persists an environment's deletion intent and requests its delete
@@ -153,7 +233,7 @@ impl Store {
         let operation = Self::request_delete_on(tx, environment.id()).await?;
         Self::bump_generation_on(
             tx,
-            environment.manifest().id(),
+            &environment.environment.application_id,
             environment.application.generation,
             None,
         )
@@ -248,8 +328,8 @@ impl Store {
     }
 
     /// Publishes a completely resolved target only while its operation is current.
-    /// Stores the target on the running, latest operation, applies any fetched
-    /// repository manifest to the application, and records `target_resolved`.
+    /// Stores the target on the running, latest operation, records any fetched
+    /// repository manifest as the environment's own, and records `target_resolved`.
     /// # Errors
     /// Returns storage errors or `IllegalTransition` for obsolete preparation.
     pub async fn save_prepared(
@@ -263,18 +343,9 @@ impl Store {
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
-        let applied = Self::accept_deployment_on(&mut tx, operation).await?;
+        Self::accept_deployment_on(&mut tx, operation).await?;
         Self::operation_event(&mut tx, &operation.id, "target_resolved", None, now_ms()).await?;
-        let mut changed = vec![operation.environment_id.clone()];
-        // A fetched manifest is saved configuration for every environment.
-        if let Some(application) = applied {
-            changed = Self::environments_on(&mut tx, application.as_str())
-                .await?
-                .into_iter()
-                .map(|environment| environment.id)
-                .collect();
-        }
-        Self::commit_environment_changes(tx, changed.iter().map(EnvironmentId::as_str)).await
+        Self::commit_environment_changes(tx, [operation.environment_id.as_str()]).await
     }
 
     /// Publishes the prepared target after ownership and configuration checks pass.
@@ -324,7 +395,7 @@ impl Store {
         id: &str,
     ) -> Result<Option<StoredEnvironment>, StoreError> {
         sqlx::query_as!(StoredEnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?1"#,id)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.branch,e.pinned_commit,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?1"#,id)
             .fetch_optional(connection).await.map_err(StoreError::database)?
             .map(StoredEnvironmentRow::decode).transpose()
     }
@@ -361,7 +432,7 @@ impl Store {
             .transpose()?
             .unwrap_or("");
         let mut rows = sqlx::query_as!(StoredEnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id>?1 ORDER BY e.id LIMIT ?2"#,after,fetch_limit)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.branch,e.pinned_commit,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id>?1 ORDER BY e.id LIMIT ?2"#,after,fetch_limit)
             .fetch_all(&self.pool).await.map_err(StoreError::database)?;
         let has_more = rows.len() > limit;
         rows.truncate(limit);

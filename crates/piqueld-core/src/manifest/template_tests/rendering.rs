@@ -292,12 +292,13 @@ fn contexts_supply_exact_system_values_and_explain_unavailable_ones() {
         branch: "release".into(),
         sha: pinned_sha.clone(),
     });
-    let preview = RenderContext::preview(environment("production"), spec);
+    let preview = RenderContext::preview(environment("production"), spec.manifest.as_ref());
     let mut pinned = spec.clone();
     pinned.manifest.as_mut().unwrap().repository.commit = Some(pinned_sha.clone());
-    let pinned_preview = RenderContext::preview(environment("production"), &pinned);
+    let pinned_preview =
+        RenderContext::preview(environment("production"), pinned.manifest.as_ref());
     assert_eq!(
-        RenderContext::preview(environment("production"), &base().spec).git,
+        RenderContext::preview(environment("production"), None).git,
         None
     );
     for (context, git, deployment_id) in [

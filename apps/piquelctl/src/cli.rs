@@ -403,10 +403,12 @@ pub(crate) struct DeployArgs {
 // One-time manifest revision overrides for deployments.
 #[derive(Debug, Args)]
 pub(crate) struct RevisionArgs {
-    /// Fetch the repository manifest from this branch, without saving it.
+    /// Fetch the repository manifest from this branch instead of the
+    /// environment's, for this deployment only.
     #[arg(long, conflicts_with = "commit")]
     pub(crate) branch: Option<String>,
-    /// Fetch the repository manifest from this full commit, without saving it.
+    /// Fetch the repository manifest from this full commit instead, for this
+    /// deployment only.
     #[arg(long)]
     pub(crate) commit: Option<String>,
 }

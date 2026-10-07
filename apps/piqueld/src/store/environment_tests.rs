@@ -187,8 +187,8 @@ async fn existing_applications_become_one_production_environment_with_the_same_i
         .connect_with(options)
         .await
         .unwrap();
-    // Legacy rows predate environments, the second-to-last migration.
-    let before = MIGRATIONS.len() - 2;
+    // Legacy rows predate environments, migration 12.
+    let before = 11;
     for (index, migration) in MIGRATIONS.iter().take(before).enumerate() {
         Store::apply_migration(&pool, index + 1, migration)
             .await
@@ -272,4 +272,113 @@ async fn existing_applications_become_one_production_environment_with_the_same_i
         .await
         .unwrap();
     assert_eq!(receipts, 0);
+}
+
+/// Opens a database migrated to `version`, before the migrations after it.
+async fn database_at(path: &Path, version: usize) -> SqlitePool {
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    for (index, migration) in MIGRATIONS.iter().take(version).enumerate() {
+        Store::apply_migration(&pool, index + 1, migration)
+            .await
+            .unwrap();
+    }
+    pool
+}
+
+/// Environments of repository-backed applications follow the branch and
+/// pinned commit `spec.manifest` named, keeping the manifest last fetched for
+/// the application; other environments keep deploying the saved manifest.
+/// Stored environment responses take the migrated source too.
+#[tokio::test]
+async fn repository_backed_environments_take_their_branch_from_the_connection() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("upgrade.db");
+    let pool = database_at(&path, 13).await;
+    let commit = "c".repeat(40);
+    let backed = piqueld_core::manifest::parse_template_toml(&format!(
+        "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='release'\ncommit='{commit}'"
+    ))
+    .unwrap()
+    .normalize(ApplicationId::parse("app-backed-01").unwrap());
+    let saved = piqueld_core::manifest::parse_template_toml(
+        "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='journal'\n[spec]",
+    )
+    .unwrap()
+    .normalize(ApplicationId::parse("app-saved-01").unwrap());
+    for (application, environments) in [
+        (&backed, ["app-backed-01", "env-backed-staging"]),
+        (&saved, ["app-saved-01", "env-saved-staging"]),
+    ] {
+        let id = application.id().as_str();
+        let name = application.metadata().name.as_str();
+        sqlx::query("INSERT INTO applications(id,name,desired_json,generation,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,1,1,1)")
+            .bind(id).bind(name).bind(application.canonical_json().unwrap())
+            .execute(&pool).await.unwrap();
+        for (environment, name) in environments.into_iter().zip(["production", "staging"]) {
+            sqlx::query("INSERT INTO environments(id,application_id,name,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,1,1)")
+                .bind(environment).bind(id).bind(name)
+                .execute(&pool).await.unwrap();
+        }
+    }
+    // Receipts of environments created before the migration.
+    for (environment, application, source) in [
+        ("env-backed-staging", "app-backed-01", "repository"),
+        ("env-saved-staging", "app-saved-01", "saved"),
+    ] {
+        let response = serde_json::json!({"Environment": {
+            "id": environment, "application_id": application, "name": "staging",
+            "source": source, "resolved_generation": null, "delete_intent": false,
+            "created_at_ms": 1, "updated_at_ms": 1,
+        }});
+        sqlx::query("INSERT INTO request_receipts(request_id,fingerprint,response_json,expires_at_ms) VALUES(?1,'f',?2,?3)")
+            .bind(environment).bind(response.to_string()).bind(i64::MAX)
+            .execute(&pool).await.unwrap();
+    }
+    pool.close().await;
+
+    let store = Store::open(&path).await.unwrap();
+    let release = TrackedBranch::new("release".into(), Some(commit)).unwrap();
+    let replayed = async |request: &str| {
+        let response: String = sqlx::query_scalar(
+            "SELECT json_extract(response_json,'$.Environment') FROM request_receipts WHERE request_id=?1",
+        )
+        .bind(request)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        serde_json::from_str::<piqueld_core::api::EnvironmentView>(&response)
+            .unwrap()
+            .source
+    };
+    assert_eq!(
+        replayed("env-backed-staging").await,
+        EnvironmentSource::Branch(release.clone())
+    );
+    assert_eq!(
+        replayed("env-saved-staging").await,
+        EnvironmentSource::Saved
+    );
+    for id in ["app-backed-01", "env-backed-staging"] {
+        let environment = store.get(&EnvironmentId::parse(id).unwrap()).await.unwrap();
+        assert_eq!(
+            environment.environment.source,
+            EnvironmentSource::Branch(release.clone())
+        );
+        assert_eq!(environment.manifest(), Some(&backed));
+        assert_eq!(environment.application.application, backed);
+    }
+    for id in ["app-saved-01", "env-saved-staging"] {
+        let environment = store.get(&EnvironmentId::parse(id).unwrap()).await.unwrap();
+        assert_eq!(environment.environment.source, EnvironmentSource::Saved);
+        assert_eq!(environment.fetched, None);
+        assert_eq!(environment.manifest(), Some(&saved));
+    }
 }

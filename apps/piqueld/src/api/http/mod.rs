@@ -611,6 +611,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(environments::status))
         .routes(routes!(environments::reconcile))
         .routes(routes!(environments::rename))
+        .routes(routes!(environments::branch))
         .routes(routes!(deployments::deploy))
         .routes(routes!(deployments::list))
         .routes(routes!(deployments::attempts))

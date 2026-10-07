@@ -27,7 +27,8 @@ use logs::ApplicationLogs;
 pub(super) use navigation::HistoryGuard;
 use navigation::guard_navigation;
 use piqueld_client::{
-    ApplicationManifest, ApplicationSpec, ApplicationView, Client, ClientError, Metadata,
+    ApplicationManifest, ApplicationSpec, ApplicationTemplate, ApplicationView, Client,
+    ClientError, Metadata,
     edit::{ApplicationEdit, EditOptions},
 };
 use secrets::{EnvironmentSecrets, SecretFileSettings};
@@ -105,6 +106,22 @@ impl EditorContext {
     /// The saved manifest, tracked so lists re-render after every save.
     fn manifest(self) -> ApplicationManifest {
         self.saved.with(|saved| saved.application.to_manifest())
+    }
+    /// The manifest the shown environment deploys: the saved one, or when it
+    /// follows a branch, the one last fetched from it, read from its loaded
+    /// detail. `None` before a branch's first fetch or while the detail loads.
+    fn environment_manifest(self) -> Option<ApplicationTemplate> {
+        let environment = self.selected_environment()?;
+        if environment.source.branch().is_none() {
+            return Some(self.saved.with(|saved| saved.application.clone()));
+        }
+        let signals = self.dashboard.with_value(|d| d.signals);
+        signals.detail.with(|detail| {
+            let detail = detail
+                .as_ref()
+                .filter(|detail| detail.environment.id == environment.id)?;
+            detail.manifest.clone()
+        })
     }
     fn id(self) -> String {
         self.saved
@@ -559,8 +576,29 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
                     || saved.delete_intent != application.delete_intent
             }) {
                 context.saved.update(|saved| {
-                    saved.environments = application.environments;
+                    saved.environments.clone_from(&application.environments);
                     saved.delete_intent = application.delete_intent;
+                });
+            }
+            // Fetches replace a repository-backed application's saved manifest
+            // without advancing its revision; reload it unless it is being
+            // edited. Newer revisions show the conflict notice instead.
+            let fetched = context.saved.with_untracked(|saved| {
+                saved.application.spec().manifest.is_some()
+                    && application.generation == saved.generation
+                    && application.updated_at_ms > saved.updated_at_ms
+            });
+            let editing = !context.dirty.get_untracked().is_empty()
+                || context.busy.get_untracked()
+                || context.uncertain.get_untracked();
+            if fetched && !editing {
+                let id = application.id.to_string();
+                spawn_local(async move {
+                    if let Ok(view) = Client::browser().application(&id).await
+                        && context.dirty.get_untracked().is_empty()
+                    {
+                        context.saved.set(view);
+                    }
                 });
             }
         }
@@ -979,6 +1017,18 @@ fn EditorFeedback() -> impl IntoView {
 #[component]
 fn ApplicationSettings() -> impl IntoView {
     let context = editor();
+    // Forms keep drafts of the saved manifest they were built from. While
+    // managed they are read-only, so rebuild them when a fetch changes it.
+    let fetched = Memo::new(move |_| {
+        context.saved.with(|saved| {
+            saved
+                .application
+                .spec()
+                .manifest
+                .is_some()
+                .then(|| saved.spec_hash.clone())
+        })
+    });
     view! {
         <div hidden={move || {
             !matches!(
@@ -993,39 +1043,46 @@ fn ApplicationSettings() -> impl IntoView {
                         .then(|| {
                             notice(
                                 Tone::Info,
-                                "Runtime configuration is managed in Git. Disconnect the repository in Source to edit services, variables, routes, volumes, jobs, and secret files here.",
+                                "Runtime configuration is managed in Git. This page shows the manifest last fetched by any environment; each environment's page shows what it deploys from its own branch. Disconnect the repository in Source to edit services, variables, routes, volumes, jobs, and secret files here.",
                             )
                         })
                 }} <div hidden={move || context.tab.get() != "Source"}>
                     <RepositorySettings />
                 </div> <fieldset disabled={move || context.managed()}>
-                    <div hidden={move || context.tab.get() != "Services"}>
-                        <div class="section-header">
-                            <div>
-                                <h2>"Services"</h2>
-                                <p>
-                                    "Each service runs one image as a replicated Swarm service on the application network."
-                                </p>
+                    {move || {
+                        // Read, not only tracked: memos are lazy, and one never
+                        // read never subscribes to `saved`.
+                        fetched.with(|_| ());
+                        view! {
+                            <div hidden={move || context.tab.get() != "Services"}>
+                                <div class="section-header">
+                                    <div>
+                                        <h2>"Services"</h2>
+                                        <p>
+                                            "Each service runs one image as a replicated Swarm service on the application network."
+                                        </p>
+                                    </div>
+                                    <NewService />
+                                </div>
+                                <services::ServiceList />
                             </div>
-                            <NewService />
-                        </div>
-                        <services::ServiceList />
-                    </div>
-                    <div hidden={move || context.tab.get() != "Variables"}>
-                        <variables::VariableSettings />
-                    </div>
-                    <div hidden={move || context.tab.get() != "Routes"}>
-                        <routes::RouteSettings />
-                    </div>
-                    <div hidden={move || context.tab.get() != "Volumes"}>
-                        <VolumeSettings />
-                    </div>
-                    <div hidden={move || context.tab.get() != "Jobs"}>
-                        <jobs::JobSettings />
-                    </div>
-                    <div hidden={move || context.tab.get() != "Secrets"}>
-                        <SecretFileSettings />
-                    </div>
+                            <div hidden={move || context.tab.get() != "Variables"}>
+                                <variables::VariableSettings />
+                            </div>
+                            <div hidden={move || context.tab.get() != "Routes"}>
+                                <routes::RouteSettings />
+                            </div>
+                            <div hidden={move || context.tab.get() != "Volumes"}>
+                                <VolumeSettings />
+                            </div>
+                            <div hidden={move || context.tab.get() != "Jobs"}>
+                                <jobs::JobSettings />
+                            </div>
+                            <div hidden={move || context.tab.get() != "Secrets"}>
+                                <SecretFileSettings />
+                            </div>
+                        }
+                    }}
                 </fieldset>
             </div>
         </div>

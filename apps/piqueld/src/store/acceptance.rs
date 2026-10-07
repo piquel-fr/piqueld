@@ -174,7 +174,7 @@ impl Store {
                     expected_application_id.as_deref(),
                 )?);
                 let mut saved = Self::save_configuration_on(tx, &application, expected).await?;
-                Self::deploy_saved(tx, application.id(), &application, &mut saved, deploy).await?;
+                Self::deploy_saved(tx, application.id(), &mut saved, deploy).await?;
                 Ok(Accepted {
                     environments: Self::environment_ids_on(tx, application.id()).await?,
                     response: MutationResponse::Saved(saved),
@@ -198,9 +198,13 @@ impl Store {
                 let current = Self::checked_application_on(tx, &id, expected).await?;
                 Self::delete_application_on(tx, current, environments, now).await
             }
-            Mutation::CreateEnvironment { application, name } => {
+            Mutation::CreateEnvironment {
+                application,
+                name,
+                branch,
+            } => {
                 let current = Self::checked_application_on(tx, &application, expected).await?;
-                let id = Self::create_environment_on(tx, &current, &name, now).await?;
+                let id = Self::create_environment_on(tx, &current, &name, branch, now).await?;
                 Self::environment_accepted(tx, id).await
             }
             Mutation::RenameEnvironment { id, name } => {
@@ -208,13 +212,15 @@ impl Store {
                 Self::rename_environment_on(tx, &current, &name, now).await?;
                 Self::environment_accepted(tx, id).await
             }
+            Mutation::SetBranch { id, branch } => {
+                let current = Self::checked_environment_on(tx, &id, expected).await?;
+                Self::set_branch_on(tx, &current, branch, now).await?;
+                Self::environment_accepted(tx, id).await
+            }
             Mutation::Deploy { id, revision } => {
                 let current = Self::checked_environment_on(tx, &id, expected).await?;
-                let mut application = current.application.application.clone();
                 // Only the captured snapshot changes; the fetched manifest replaces it.
-                if let Some(revision) = &revision {
-                    application = application.with_manifest_revision(revision)?;
-                }
+                let application = current.candidate(revision.as_ref())?;
                 let operation = Self::request_deploy_on(tx, &current).await?;
                 Self::insert_deployment_on(tx, &operation, &application).await?;
                 Ok(Self::operation_accepted(&operation))
@@ -388,8 +394,6 @@ impl Store {
             ApplicationEdit::Name(_) => "name",
             ApplicationEdit::Repository(_)
             | ApplicationEdit::RepositoryUrl(_)
-            | ApplicationEdit::RepositoryBranch(_)
-            | ApplicationEdit::RepositoryCommit(_)
             | ApplicationEdit::RepositoryPath(_) => "repository",
             ApplicationEdit::AddService(_) | ApplicationEdit::RemoveService(_) => "services",
             ApplicationEdit::Service { .. } => "service",
@@ -422,7 +426,7 @@ impl Store {
             sqlx::query!("INSERT INTO events(application_id,generation,kind,message,phase,resource,created_at_ms) VALUES(?1,?2,'application_edited','Saved application configuration',?3,?4,?5)",app_id,generation,field,resource,now).execute(&mut **tx).await.map_err(StoreError::database)?;
             saved
         };
-        Self::deploy_saved(tx, &id, &application, &mut saved, deploy).await?;
+        Self::deploy_saved(tx, &id, &mut saved, deploy).await?;
         Ok(Accepted {
             environments: Self::environment_ids_on(tx, &id).await?,
             response: MutationResponse::Saved(saved),
@@ -431,11 +435,11 @@ impl Store {
     }
 
     /// When `deploy` is set, starts a deployment of the just-saved configuration
-    /// to the application's only environment and records its operation ID on `saved`.
+    /// to the application's only environment, from its branch when
+    /// repository-backed, and records its operation ID on `saved`.
     async fn deploy_saved(
         tx: &mut Transaction<'_, Sqlite>,
         id: &ApplicationId,
-        application: &piqueld_core::manifest::ApplicationTemplate,
         saved: &mut piqueld_core::api::SavedApplication,
         deploy: bool,
     ) -> Result<(), StoreError> {
@@ -445,7 +449,7 @@ impl Store {
                 .await?
                 .ok_or(StoreError::NotFound)?;
             let operation = Self::request_deploy_on(tx, &environment).await?;
-            Self::insert_deployment_on(tx, &operation, application).await?;
+            Self::insert_deployment_on(tx, &operation, &environment.candidate(None)?).await?;
             saved.operation_id = Some(operation.id);
         }
         Ok(())
@@ -687,6 +691,7 @@ mod tests {
             let create = Mutation::CreateEnvironment {
                 application: application.clone(),
                 name: EnvironmentName::parse(name).unwrap(),
+                branch: None,
             };
             let (MutationResponse::Environment(environment), _) =
                 store.accept(create, None, true, None).await.unwrap()

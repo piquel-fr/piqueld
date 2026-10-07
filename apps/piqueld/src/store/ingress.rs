@@ -111,8 +111,8 @@ impl Store {
     /// Recomputes reservations inside the transaction changing their source.
     /// Captured deployments also reserve names while a newer save is pending.
     ///
-    /// Collects every hostname the environment could still serve (its
-    /// application's saved routes rendered for this environment, its resolved
+    /// Collects every hostname the environment could still serve (the routes
+    /// of the manifest it deploys, rendered for this environment, its resolved
     /// spec, its latest operation's target and rendered deployment manifest,
     /// desired and applied gateway routes), rejects any within an installation
     /// hostname, then replaces the environment's `hostname_reservations` rows.
@@ -133,12 +133,14 @@ impl Store {
         "#, environment_id).fetch_all(&mut *connection).await.map_err(StoreError::database)?
             .into_iter()
             .collect::<BTreeSet<_>>();
-        // Saved routes render per environment, so environments of one
-        // application can serve different hostnames.
-        if let Some(environment) = Self::environment_on(&mut *connection, environment_id).await? {
+        // Each environment's own manifest renders its routes, so environments
+        // of one application can serve different hostnames, and environments
+        // following different branches never reserve each other's.
+        if let Some(environment) = Self::environment_on(&mut *connection, environment_id).await?
+            && let Some(manifest) = environment.manifest()
+        {
             names.extend(
-                environment
-                    .manifest()
+                manifest
                     .hostnames(&environment.environment.name)
                     .into_iter()
                     .map(String::from),
@@ -379,6 +381,7 @@ mod tests {
         let staging = Mutation::CreateEnvironment {
             application: piqueld_core::ApplicationId::parse(&saved.application_id).unwrap(),
             name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
+            branch: None,
         };
         assert!(matches!(
             store.accept(staging, None, true, None).await,
@@ -415,6 +418,7 @@ mod tests {
         let staging = Mutation::CreateEnvironment {
             application: application.clone(),
             name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
+            branch: None,
         };
         let (MutationResponse::Environment(staging), _) =
             store.accept(staging, None, true, None).await.unwrap()
@@ -509,7 +513,14 @@ mod tests {
             .await;
         assert!(matches!(result, Err(StoreError::HostnameConflict { .. })));
         assert_eq!(
-            store.get(&id).await.unwrap().manifest().spec().routes,
+            store
+                .get(&id)
+                .await
+                .unwrap()
+                .manifest()
+                .unwrap()
+                .spec()
+                .routes,
             [] as [piqueld_core::manifest::Route; 0]
         );
         assert!(
@@ -622,11 +633,11 @@ mod tests {
             .unwrap();
         let environment = store.get(&operation.environment_id).await.unwrap();
         let fetched = ApplicationTemplate::from(&app("one", Some("taken.example.com")))
-            .with_id(environment.manifest().id().clone());
+            .with_id(environment.application.application.id().clone());
         let rendering = environment.render(&fetched, &operation.id).unwrap();
         assert!(matches!(
             store
-                .save_deployment_input(&operation, &fetched, &rendering, None)
+                .save_deployment_input(&operation, &fetched, &rendering, None, &[])
                 .await,
             Err(StoreError::HostnameConflict { .. })
         ));

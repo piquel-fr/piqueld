@@ -12,8 +12,9 @@ use piqueld_client::Client;
 
 /// Runtime log card for the editor's application: the latest 200 lines from the
 /// last hour, refetched every 30 seconds while visible or when the service or
-/// stream filter changes. `fixed_service` scopes it to one service and hides the
-/// service selector. Responses for an outdated filter are discarded and refetched.
+/// stream filter changes. The service selector lists the services of the
+/// manifest the shown environment deploys; `fixed_service` scopes it to one
+/// service and hides the selector. Responses for an outdated filter are discarded and refetched.
 #[component]
 pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -> impl IntoView {
     let context = use_context::<EditorContext>().expect("application editor");
@@ -103,7 +104,8 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
                             <option value="">"All services"</option>
                             {move || {
                                 context
-                                    .manifest()
+                                    .environment_manifest()
+                                    .map_or_else(|| context.manifest(), |manifest| manifest.to_manifest())
                                     .spec
                                     .services
                                     .into_iter()

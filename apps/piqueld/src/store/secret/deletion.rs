@@ -87,7 +87,9 @@ impl Store {
                 .resolved
                 .as_ref()
                 .is_some_and(|r| r.secret_names.values().any(|n| versions.contains(n)));
-            if app.manifest().spec().mounted_secret_names().contains(name)
+            if app
+                .manifest()
+                .is_some_and(|manifest| manifest.spec().mounted_secret_names().contains(name))
                 || captured
                     .as_ref()
                     .is_some_and(|a| a.spec().mounted_secret_names().contains(name))

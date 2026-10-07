@@ -1,8 +1,9 @@
 //! Environment lifecycle, deployments, status, history, and logs.
 pub use piqueld_core::api::{
-    EnvironmentDetailView, EnvironmentRequest, EnvironmentStatusView, EnvironmentView,
+    CreateEnvironmentRequest, EnvironmentBranchRequest, EnvironmentDetailView, EnvironmentRequest,
+    EnvironmentStatusView, EnvironmentView,
 };
-pub use piqueld_core::{EnvironmentName, EnvironmentSource};
+pub use piqueld_core::{EnvironmentName, EnvironmentSource, TrackedBranch};
 
 use crate::{
     AcceptedOperation, Client, ClientError, DeploymentView, ManifestRevision, Page,
@@ -43,11 +44,11 @@ impl Client {
     /// Adds an environment to an application, conditioned on the inspected
     /// application revision unless forced.
     /// # Errors
-    /// Returns transport, API, decoding, name, or generation errors.
+    /// Returns transport, API, decoding, name, branch, or generation errors.
     pub async fn create_environment(
         &self,
         application: &str,
-        request: &EnvironmentRequest,
+        request: &CreateEnvironmentRequest,
         force: bool,
     ) -> Result<EnvironmentView, ClientError> {
         generated_result(
@@ -71,6 +72,25 @@ impl Client {
         generated_result(
             self.generated
                 .rename_environment(id, force.then_some(true), None, request)
+                .await,
+        )
+        .await
+        .map(|response| response.data)
+    }
+
+    /// Points an environment of a repository-backed application at another
+    /// branch, or pins or unpins its commit, without redeploying it.
+    /// # Errors
+    /// Returns transport, API, decoding, branch, or generation errors.
+    pub async fn set_environment_branch(
+        &self,
+        id: &str,
+        request: &EnvironmentBranchRequest,
+        force: bool,
+    ) -> Result<EnvironmentView, ClientError> {
+        generated_result(
+            self.generated
+                .set_environment_branch(id, force.then_some(true), None, request)
                 .await,
         )
         .await
@@ -114,9 +134,9 @@ impl Client {
         .map(|response| response.data)
     }
 
-    /// Deploys exactly the inspected saved configuration revision to an
-    /// environment. `revision` fetches a repository manifest from another
-    /// branch or commit, once.
+    /// Deploys an environment from its source, conditioned on the inspected
+    /// revision. `revision` fetches a repository manifest from another branch
+    /// or commit than the environment's, once.
     /// # Errors
     /// Returns transport, API, or revision conflict errors.
     pub async fn deploy_environment(

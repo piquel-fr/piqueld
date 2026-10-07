@@ -1,4 +1,5 @@
-//! Environment lifecycle controls; configuration continues to belong to the application.
+//! Environment lifecycle controls and the branch an environment follows;
+//! configuration continues to belong to the application or its repository.
 use super::super::environment_row;
 use super::super::ui::{
     Icon, Modal, Tone, badge, empty, health_badge, icon, notice, operation_badge, text_input, when,
@@ -9,11 +10,24 @@ use leptos::task::spawn_local;
 use leptos_router::NavigateOptions;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
-use piqueld_client::{Client, ClientError, EnvironmentName, EnvironmentRequest, EnvironmentView};
+use piqueld_client::{
+    Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest, EnvironmentName,
+    EnvironmentRequest, EnvironmentView, TrackedBranch,
+};
 
 enum EnvironmentChange {
-    Create(String),
-    Rename { id: String, name: String },
+    Create {
+        name: String,
+        branch: Option<TrackedBranch>,
+    },
+    Rename {
+        id: String,
+        name: String,
+    },
+    Branch {
+        id: String,
+        branch: TrackedBranch,
+    },
     Delete(String),
     RetryDeletion(String),
 }
@@ -25,21 +39,42 @@ impl EnvironmentChange {
         application: &str,
         generation: u64,
     ) -> Result<Option<EnvironmentView>, ClientError> {
+        let expected_generation = Some(generation);
         match self {
-            Self::Create(name) | Self::Rename { name, .. } => {
+            Self::Create { name, branch } => {
+                let request = CreateEnvironmentRequest {
+                    name: name.clone(),
+                    branch: branch.as_ref().map(|branch| branch.branch().to_owned()),
+                    commit: branch
+                        .as_ref()
+                        .and_then(|branch| branch.commit().map(str::to_owned)),
+                    expected_generation,
+                };
+                client
+                    .create_environment(application, &request, false)
+                    .await
+                    .map(Some)
+            }
+            Self::Rename { id, name } => {
                 let request = EnvironmentRequest {
                     name: name.clone(),
-                    expected_generation: Some(generation),
+                    expected_generation,
                 };
-                match self {
-                    Self::Rename { id, .. } => client.rename_environment(id, &request, false).await,
-                    _ => {
-                        client
-                            .create_environment(application, &request, false)
-                            .await
-                    }
-                }
-                .map(Some)
+                client
+                    .rename_environment(id, &request, false)
+                    .await
+                    .map(Some)
+            }
+            Self::Branch { id, branch } => {
+                let request = EnvironmentBranchRequest {
+                    branch: branch.branch().to_owned(),
+                    commit: branch.commit().map(str::to_owned),
+                    expected_generation,
+                };
+                client
+                    .set_environment_branch(id, &request, false)
+                    .await
+                    .map(Some)
             }
             Self::Delete(id) => client
                 .delete_environment(id, Some(generation), false)
@@ -162,6 +197,7 @@ pub(super) fn EnvironmentList() -> impl IntoView {
                                 let navigate = navigate.clone();
                                 let deleting = environment.delete_intent;
                                 let name = environment.name.to_string();
+                                let source = environment.source.to_string();
                                 let label = format!("Deploy to {name}");
                                 let health = environment_row(signals, &id).map(|row| row.health());
                                 let latest = latest(&id);
@@ -169,7 +205,7 @@ pub(super) fn EnvironmentList() -> impl IntoView {
                                     <li class="list-row list-row-link">
                                         <span class="title">
                                             <A href={href}>{name}</A>
-                                            <small>{id.clone()}</small>
+                                            <small>{format!("{id} · {source}")}</small>
                                         </span>
                                         <span class="meta">
                                             {latest
@@ -224,12 +260,37 @@ pub(super) fn EnvironmentList() -> impl IntoView {
     }
 }
 
-/// "New environment" button and dialog; opens the created environment.
+/// Validates a branch and optional commit typed into a form; a blank commit
+/// follows the branch head.
+fn tracked_branch((branch, commit): (String, String)) -> Result<TrackedBranch, String> {
+    let commit = (!commit.trim().is_empty()).then(|| commit.trim().to_owned());
+    TrackedBranch::new(branch.trim().to_owned(), commit).map_err(|error| error.to_string())
+}
+
+/// The branch and commit a repository-backed application's new environments
+/// follow by default, from its `spec.manifest`.
+fn default_branch(context: super::EditorContext) -> (String, String) {
+    context
+        .manifest()
+        .spec
+        .manifest
+        .map(|manifest| {
+            (
+                manifest.repository.branch,
+                manifest.repository.commit.unwrap_or_default(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// "New environment" button and dialog; opens the created environment. For a
+/// repository-backed application it also chooses the branch to follow.
 #[component]
 fn NewEnvironment() -> impl IntoView {
     let context = editor();
     let opened = RwSignal::new(false);
     let name = RwSignal::new(String::new());
+    let branch = RwSignal::new(default_branch(context));
     let navigate = use_navigate();
     let submit = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
@@ -238,10 +299,26 @@ fn NewEnvironment() -> impl IntoView {
             context.set_error(Some(error.to_string()));
             return;
         }
+        let tracked = if context.managed() {
+            match tracked_branch(branch.get_untracked()) {
+                Ok(tracked) => Some(tracked),
+                Err(error) => {
+                    context.set_error(Some(error));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let navigate = navigate.clone();
-        context.change_environment(EnvironmentChange::Create(value), move |environment| {
+        let change = EnvironmentChange::Create {
+            name: value,
+            branch: tracked,
+        };
+        context.change_environment(change, move |environment| {
             opened.set(false);
             name.set(String::new());
+            branch.set(default_branch(context));
             if let Some(environment) = environment {
                 navigate(
                     &context.environment_href(environment.id.as_str()),
@@ -255,7 +332,10 @@ fn NewEnvironment() -> impl IntoView {
             type="button"
             class="btn btn-primary"
             disabled={move || context.action_blocked()}
-            on:click={move |_| opened.set(true)}
+            on:click={move |_| {
+                branch.set(default_branch(context));
+                opened.set(true);
+            }}
         >
             {icon(Icon::Plus)}
             "New environment"
@@ -269,9 +349,24 @@ fn NewEnvironment() -> impl IntoView {
             <form class="stack-sm" on:submit={submit}>
                 <fieldset class="stack-sm" disabled={move || context.action_blocked()}>
                     <p class="hint">
-                        "The environment starts empty and deploys the application's configuration with its own secrets, volumes, and history."
+                        {move || {
+                            if context.managed() {
+                                "The environment starts empty and deploys the manifest on its own branch of the application's repository, with its own secrets, volumes, and history."
+                            } else {
+                                "The environment starts empty and deploys the application's configuration with its own secrets, volumes, and history."
+                            }
+                        }}
                     </p>
                     {text_input("Environment name", name, String::clone, |value, input| *value = input)}
+                    <Show when={move || context.managed()}>
+                        {text_input("Branch", branch, |v| v.0.clone(), |v, input| v.0 = input)}
+                        {text_input(
+                            "Commit (optional)",
+                            branch,
+                            |v| v.1.clone(),
+                            |v, input| v.1 = input,
+                        )}
+                    </Show>
                 </fieldset>
                 {move || context.error.get().map(|error| notice(Tone::Bad, error))}
                 <div class="form-actions">
@@ -288,8 +383,93 @@ fn NewEnvironment() -> impl IntoView {
     }
 }
 
-/// Rename and deletion of the environment page's environment. Deletion returns
-/// to the application's environments once accepted.
+/// The branch the environment page's environment follows, with a form to point
+/// it at another branch or pin a commit. Environments deploying the saved
+/// manifest only say so.
+#[component]
+fn EnvironmentBranch() -> impl IntoView {
+    let context = editor();
+    let id = StoredValue::new(context.environment_id());
+    let current = move || {
+        context
+            .selected_environment()
+            .and_then(|environment| environment.source.branch().cloned())
+    };
+    let branch = RwSignal::new(current().map_or_else(Default::default, |branch| {
+        (
+            branch.branch().to_owned(),
+            branch.commit().unwrap_or_default().to_owned(),
+        )
+    }));
+    let deleting = move || {
+        context
+            .selected_environment()
+            .is_some_and(|environment| environment.delete_intent)
+    };
+    let save = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        match tracked_branch(branch.get_untracked()) {
+            Ok(tracked) => context.change_environment(
+                EnvironmentChange::Branch {
+                    id: id.get_value(),
+                    branch: tracked,
+                },
+                |_| {},
+            ),
+            Err(error) => context.set_error(Some(error)),
+        }
+    };
+    view! {
+        <section class="card">
+            <header>
+                <div>
+                    <h3>"Source"</h3>
+                    <p>
+                        {move || {
+                            if current().is_some() {
+                                "Deploys the manifest on this branch of the application's repository. Changing it redeploys nothing; the next deployment fetches the new branch."
+                            } else {
+                                "Deploys the application's saved manifest."
+                            }
+                        }}
+                    </p>
+                </div>
+            </header>
+            <Show when={move || current().is_some()}>
+                <form class="stack-sm" on:submit={save}>
+                    <fieldset
+                        class="form-grid"
+                        disabled={move || context.action_blocked() || deleting()}
+                    >
+                        {text_input("Branch", branch, |v| v.0.clone(), |v, input| v.0 = input)}
+                        {text_input(
+                            "Commit (optional)",
+                            branch,
+                            |v| v.1.clone(),
+                            |v, input| v.1 = input,
+                        )}
+                    </fieldset>
+                    <div class="form-actions">
+                        <button
+                            type="submit"
+                            class="btn"
+                            disabled={move || {
+                                context.action_blocked()
+                                    || deleting()
+                                    || tracked_branch(branch.get()).ok() == current()
+                            }}
+                        >
+                            "Change branch"
+                        </button>
+                    </div>
+                </form>
+            </Show>
+        </section>
+    }
+}
+
+/// Source, rename and deletion of the environment page's environment.
+/// Deletion returns to the application's environments once accepted.
 #[component]
 pub(super) fn EnvironmentSettings() -> impl IntoView {
     let context = editor();
@@ -341,6 +521,7 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
         });
     };
     view! {
+        <EnvironmentBranch />
         <section class="card">
             <header>
                 <div>
