@@ -59,6 +59,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::store::OperationState;
+    use piqueld_core::manifest::ApplicationTemplate;
 
     #[tokio::test]
     async fn terminal_job_failure_keeps_cleanup_atomic_and_retained() {
@@ -71,7 +72,7 @@ mod tests {
         .unwrap()
         .normalize(piqueld_core::ApplicationId::parse("app-jobs").unwrap());
         let operation = store
-            .save_application(&application, None, None)
+            .save_application(&ApplicationTemplate::from(&application), None, None)
             .await
             .unwrap();
         store
@@ -127,7 +128,11 @@ mod tests {
             std::slice::from_ref(&operation.id)
         );
         store
-            .save_application(&application, None, Some(operation.generation))
+            .save_application(
+                &ApplicationTemplate::from(&application),
+                None,
+                Some(operation.generation),
+            )
             .await
             .unwrap();
         // Model expiry of the old deployment snapshot; operation retention

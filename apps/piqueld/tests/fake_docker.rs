@@ -15,6 +15,7 @@ use piqueld::docker::{
 use piqueld::reconcile::Controller;
 use piqueld::store::Store;
 use piqueld_core::Sha256Digest;
+use piqueld_core::manifest::ApplicationTemplate;
 use piqueld_core::planner::PlanRequest;
 use piqueld_core::resource::{
     APPLICATION_LABEL, Convergence, DesiredService, INSTANCE_LABEL, MANAGED_LABEL,
@@ -731,7 +732,11 @@ impl ControllerHarness {
 
     async fn create(&self) -> Operation {
         self.store
-            .save_application(&self.application, Some(&self.resolved), None)
+            .save_application(
+                &ApplicationTemplate::from(&self.application),
+                Some(&self.resolved),
+                None,
+            )
             .await
             .expect("application saved")
     }
@@ -776,7 +781,7 @@ impl ControllerHarness {
 
     async fn replace(&self) -> (Operation, ResolvedApplication) {
         let mut replacement = self.application.to_manifest();
-        replacement.spec.services[0].replicas = 2;
+        replacement.spec.services[0].replicas = 2.into();
         let replacement = replacement
             .validate()
             .unwrap()
@@ -790,7 +795,11 @@ impl ControllerHarness {
         .expect("replacement resolves");
         let replaced = self
             .store
-            .save_application(&replacement, Some(&replacement_resolved), None)
+            .save_application(
+                &ApplicationTemplate::from(&replacement),
+                Some(&replacement_resolved),
+                None,
+            )
             .await
             .expect("application replacement is durable");
         (replaced, replacement_resolved)
@@ -879,7 +888,7 @@ impl EnvironmentHarness {
                 .runtime(Arc::new(tokio::sync::Notify::new())),
         );
         let saved = store
-            .save_application(&harness.application, None, None)
+            .save_application(&ApplicationTemplate::from(&harness.application), None, None)
             .await
             .unwrap();
         let production = environment(&harness.application);
@@ -898,15 +907,14 @@ impl EnvironmentHarness {
         else {
             panic!("created staging")
         };
+        // Creating an environment bumps the application generation.
+        let generation = saved.generation + 1;
         for (id, value) in [
             (&production, b"production token".to_vec()),
             (&staging.id, b"staging token".to_vec()),
         ] {
             store.put_secret(id, "token", 0, value).await.unwrap();
-            applications
-                .deploy(id, Some(saved.generation))
-                .await
-                .unwrap();
+            applications.deploy(id, Some(generation)).await.unwrap();
         }
         harness
             .controller
@@ -918,7 +926,7 @@ impl EnvironmentHarness {
             applications,
             production,
             staging: staging.id,
-            generation: saved.generation,
+            generation,
         }
     }
 
@@ -1043,7 +1051,8 @@ async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
             .await
             .unwrap()
             .generation,
-        fixture.generation
+        fixture.generation + 1,
+        "deleting staging bumps the generation once"
     );
 }
 
@@ -1147,7 +1156,11 @@ async fn controller_executes_actions_introduced_by_fresh_planning() {
     assert_eq!(plan.actions, [] as [piqueld_core::PlanAction; 0]);
     harness
         .store
-        .save_application(&harness.application, Some(&harness.resolved), None)
+        .save_application(
+            &ApplicationTemplate::from(&harness.application),
+            Some(&harness.resolved),
+            None,
+        )
         .await
         .expect("matching application is journaled");
 
@@ -1194,7 +1207,11 @@ async fn superseded_operations_do_not_plan_stale_runtime_state() {
     assert_eq!(plan.actions, [] as [piqueld_core::PlanAction; 0]);
     let stale = harness
         .store
-        .save_application(&harness.application, Some(&harness.resolved), None)
+        .save_application(
+            &ApplicationTemplate::from(&harness.application),
+            Some(&harness.resolved),
+            None,
+        )
         .await
         .expect("matching application is journaled");
 
@@ -1231,7 +1248,11 @@ async fn controller_refuses_a_foreign_same_name_service() {
         ..observed_service(&resolved.services[0])
     };
     let created = store
-        .save_application(&application, Some(&resolved), None)
+        .save_application(
+            &ApplicationTemplate::from(&application),
+            Some(&resolved),
+            None,
+        )
         .await
         .expect("application is created");
     let docker = Arc::new(FakeDocker::with_observed(ObservedApplication {
@@ -1273,7 +1294,11 @@ async fn assert_foreign_fixture_refuses_reconciliation(
     resolved: &ResolvedApplication,
 ) -> Operation {
     let created = store
-        .save_application(application, Some(resolved), None)
+        .save_application(
+            &ApplicationTemplate::from(application),
+            Some(resolved),
+            None,
+        )
         .await
         .expect("application is created");
     let controller = Controller::new(Arc::clone(docker), Arc::clone(store));
@@ -1476,7 +1501,7 @@ async fn save_and_deploy_are_durable_before_resolution_and_reconcile_reuses_imag
     let applications = harness.applications();
     let manifest = manifest();
     let accepted = applications
-        .apply(manifest.clone().validate().unwrap(), Some(0))
+        .apply(manifest.clone().validate_template().unwrap(), Some(0))
         .await
         .unwrap();
     assert_eq!(harness.pulls().await, 0);
@@ -1486,7 +1511,7 @@ async fn save_and_deploy_are_durable_before_resolution_and_reconcile_reuses_imag
     harness.finish(&accepted).await;
     let pulls = harness.pulls().await;
     let repeated = applications
-        .save(manifest.clone().validate().unwrap(), Some(1))
+        .save(manifest.clone().validate_template().unwrap(), Some(1))
         .await
         .unwrap();
     assert!(repeated.operation_id.is_none());
@@ -1539,20 +1564,20 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
     let applications = harness.applications();
     let mut manifest = manifest();
     let first = applications
-        .apply(manifest.clone().validate().unwrap(), Some(0))
+        .apply(manifest.clone().validate_template().unwrap(), Some(0))
         .await
         .unwrap();
     manifest.spec.services[0]
         .environment
         .insert("CHANGED".into(), "yes".into());
     let second = applications
-        .apply(manifest.clone().validate().unwrap(), Some(1))
+        .apply(manifest.clone().validate_template().unwrap(), Some(1))
         .await
         .unwrap();
     assert_eq!(second.generation, 2);
     assert!(matches!(
         applications
-            .apply(manifest.clone().validate().unwrap(), Some(1))
+            .apply(manifest.clone().validate_template().unwrap(), Some(1))
             .await,
         Err(piqueld::api::ApplicationError::Store(
             piqueld::store::StoreError::GenerationConflict {
@@ -1569,7 +1594,7 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
     );
     manifest.spec.services[0].environment.clear();
     let third = applications
-        .apply(manifest.clone().validate().unwrap(), Some(2))
+        .apply(manifest.clone().validate_template().unwrap(), Some(2))
         .await
         .unwrap();
     assert!(
@@ -1606,7 +1631,7 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
     );
     assert!(matches!(
         applications
-            .apply(manifest.validate().unwrap(), Some(4))
+            .apply(manifest.validate_template().unwrap(), Some(4))
             .await,
         Err(piqueld::api::ApplicationError::Store(
             piqueld::store::StoreError::IllegalTransition
@@ -1703,7 +1728,7 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
     let mut slow = manifest();
     slow.metadata.name = "slow".into();
     let original = applications
-        .apply(slow.clone().validate().unwrap(), None)
+        .apply(slow.clone().validate_template().unwrap(), None)
         .await
         .unwrap();
     controller.scan(&CancellationToken::new()).await.unwrap();
@@ -1717,7 +1742,7 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
         image: "ghcr.io/example/slow:1".into(),
     };
     let accepted = applications
-        .apply(slow.validate().unwrap(), None)
+        .apply(slow.validate_template().unwrap(), None)
         .await
         .unwrap();
     let cancellation = CancellationToken::new();
@@ -1734,7 +1759,7 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
     let mut fast = manifest();
     fast.metadata.name = "fast".into();
     let fast = applications
-        .apply(fast.validate().unwrap(), None)
+        .apply(fast.validate_template().unwrap(), None)
         .await
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -1803,7 +1828,7 @@ async fn controller_enforces_global_io_bounds_on_a_single_thread() {
         let mut manifest = manifest();
         manifest.metadata.name = format!("app-{index}");
         applications
-            .apply(manifest.validate().unwrap(), None)
+            .apply(manifest.validate_template().unwrap(), None)
             .await
             .unwrap();
     }
@@ -1837,7 +1862,7 @@ async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resour
     let applications = harness.applications();
     let mut input = manifest();
     let first = applications
-        .apply(input.clone().validate().unwrap(), Some(0))
+        .apply(input.clone().validate_template().unwrap(), Some(0))
         .await
         .unwrap();
     harness.finish(&first).await;
@@ -1851,13 +1876,13 @@ async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resour
         .lock()
         .await
         .digests
-        .insert(image.clone(), "b".repeat(64));
-    input.spec.services[0].replicas = 2;
+        .insert(image.to_string(), "b".repeat(64));
+    input.spec.services[0].replicas = 2.into();
     input.spec.services[0]
         .environment
         .insert("TOKEN".into(), "private-value".into());
     let changed = applications
-        .save(input.clone().validate().unwrap(), Some(1))
+        .save(input.clone().validate_template().unwrap(), Some(1))
         .await
         .unwrap();
     assert!(changed.operation_id.is_none());
@@ -1935,7 +1960,7 @@ async fn failed_preparation_preserves_active_repair_and_save_does_not_retry() {
     let applications = harness.applications();
     let mut input = manifest();
     let first = applications
-        .apply(input.clone().validate().unwrap(), None)
+        .apply(input.clone().validate_template().unwrap(), None)
         .await
         .unwrap();
     harness.finish(&first).await;
@@ -1944,7 +1969,7 @@ async fn failed_preparation_preserves_active_repair_and_save_does_not_retry() {
     };
     harness.docker.arm_tag_flips(100).await;
     let failed = applications
-        .apply(input.clone().validate().unwrap(), None)
+        .apply(input.clone().validate_template().unwrap(), None)
         .await
         .unwrap();
     harness
@@ -1960,7 +1985,7 @@ async fn failed_preparation_preserves_active_repair_and_save_does_not_retry() {
     let response = applications
         .accept(
             piqueld::api::Mutation::save(
-                input.validate().unwrap(),
+                input.validate_template().unwrap(),
                 Some(first.environment_id.to_string()),
                 false,
             ),
@@ -2098,7 +2123,11 @@ async fn deploy_dependents(
         },
     );
     let created = store
-        .save_application(&application, Some(&resolved), None)
+        .save_application(
+            &ApplicationTemplate::from(&application),
+            Some(&resolved),
+            None,
+        )
         .await
         .unwrap();
     controller.scan(&CancellationToken::new()).await.unwrap();
@@ -2160,7 +2189,7 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
     let fixture = git_fixture::GitBuildFixture::new();
     input.spec.services[0].source = fixture.source.clone();
     let first = applications
-        .apply(input.clone().validate().unwrap(), Some(0))
+        .apply(input.clone().validate_template().unwrap(), Some(0))
         .await
         .unwrap();
     let deploy = || Mutation::deploy(first.environment_id.clone());
@@ -2220,7 +2249,7 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
     let piqueld_core::manifest::Build::Docker { dockerfile, .. } = build;
     *dockerfile = "Failfile".into();
     let failed = applications
-        .apply(input.validate().unwrap(), Some(1))
+        .apply(input.validate_template().unwrap(), Some(1))
         .await
         .unwrap();
     harness
@@ -2272,7 +2301,7 @@ async fn mixed_sources_report_the_failing_source() {
         input.spec.services.push(git_service);
         let operation = harness
             .applications()
-            .apply(input.validate().unwrap(), Some(0))
+            .apply(input.validate_template().unwrap(), Some(0))
             .await
             .unwrap();
         harness
@@ -2431,13 +2460,13 @@ mod repository_deployments {
         repository.commit();
         let first = harness
             .applications()
-            .apply(initial.clone().validate().unwrap(), Some(0))
+            .apply(initial.clone().validate_template().unwrap(), Some(0))
             .await
             .unwrap();
         harness.finish(&first).await;
         let before = harness.pulls().await;
         let mut next = repository.manifest("next.json");
-        next.spec.services[0].replicas = 2;
+        next.spec.services[0].replicas = 2.into();
         repository.write("app.json", &next);
         repository.write("next.json", &next);
         std::fs::write(
@@ -2502,7 +2531,7 @@ mod repository_deployments {
         repository.commit();
         let first = harness
             .applications()
-            .apply(initial.clone().validate().unwrap(), Some(0))
+            .apply(initial.clone().validate_template().unwrap(), Some(0))
             .await
             .unwrap();
         harness.finish(&first).await;
@@ -2531,11 +2560,11 @@ mod repository_deployments {
         assert_eq!(before.resolved, after.resolved);
         assert_eq!(harness.store.list(None, 50).await.unwrap().items.len(), 1);
         let mut manual = initial;
-        manual.spec.services[0].replicas = 4;
+        manual.spec.services[0].replicas = 4.into();
         assert!(matches!(
             harness
                 .applications()
-                .apply(manual.validate().unwrap(), Some(1))
+                .apply(manual.validate_template().unwrap(), Some(1))
                 .await,
             Err(ApplicationError::Store(StoreError::RepositoryManaged))
         ));
@@ -2550,7 +2579,7 @@ mod repository_deployments {
         repository.commit();
         let first = harness
             .applications()
-            .apply(initial.clone().validate().unwrap(), Some(0))
+            .apply(initial.clone().validate_template().unwrap(), Some(0))
             .await
             .unwrap();
         harness.finish(&first).await;
@@ -2612,7 +2641,7 @@ mod repository_deployments {
         bootstrap.spec.services.clear();
         let saved = harness
             .applications()
-            .save(bootstrap.validate().unwrap(), Some(0))
+            .save(bootstrap.validate_template().unwrap(), Some(0))
             .await
             .unwrap();
         let application_id = EnvironmentId::parse(saved.application_id).unwrap();
@@ -2669,7 +2698,7 @@ mod repository_deployments {
         bootstrap.spec.services.clear();
         let saved = harness
             .applications()
-            .save(bootstrap.validate().unwrap(), Some(0))
+            .save(bootstrap.validate_template().unwrap(), Some(0))
             .await
             .unwrap();
         let application_id = EnvironmentId::parse(saved.application_id).unwrap();
@@ -2742,7 +2771,7 @@ mod repository_deployments {
         repository.commit();
         let saved = harness
             .applications()
-            .save(bootstrap.validate().unwrap(), Some(0))
+            .save(bootstrap.validate_template().unwrap(), Some(0))
             .await
             .unwrap();
         let application_id = EnvironmentId::parse(saved.application_id).unwrap();
@@ -2992,7 +3021,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let first = applications
-        .apply(manifest().validate().unwrap(), Some(0))
+        .apply(manifest().validate_template().unwrap(), Some(0))
         .await
         .unwrap();
     harness.finish(&first).await;
@@ -3009,7 +3038,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
             target: "/run/secrets/token".into(),
         });
     let deployment = applications
-        .apply(input.validate().unwrap(), Some(1))
+        .apply(input.validate_template().unwrap(), Some(1))
         .await
         .unwrap();
     harness.finish(&deployment).await;
@@ -3059,7 +3088,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
 
     // Historical completed deployments must not block deletion forever.
     let clean = applications
-        .apply(manifest().validate().unwrap(), Some(2))
+        .apply(manifest().validate_template().unwrap(), Some(2))
         .await
         .unwrap();
     harness.finish(&clean).await;
@@ -3089,7 +3118,7 @@ async fn application_deletion_journals_secret_cleanup_failures() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let first = applications
-        .apply(manifest().validate().unwrap(), Some(0))
+        .apply(manifest().validate_template().unwrap(), Some(0))
         .await
         .unwrap();
     harness.finish(&first).await;
@@ -3142,7 +3171,7 @@ async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollou
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let initial = applications
-        .apply(manifest().validate().unwrap(), Some(0))
+        .apply(manifest().validate_template().unwrap(), Some(0))
         .await
         .unwrap();
     harness.finish(&initial).await;
@@ -3160,7 +3189,7 @@ async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollou
             target: "/run/secrets/token".into(),
         });
     let deployed = applications
-        .apply(input.validate().unwrap(), Some(1))
+        .apply(input.validate_template().unwrap(), Some(1))
         .await
         .unwrap();
     harness.finish(&deployed).await;
@@ -3205,7 +3234,7 @@ async fn missing_secret_key_fails_rollout_before_docker_mutation() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let first = applications
-        .apply(manifest().validate().unwrap(), Some(0))
+        .apply(manifest().validate_template().unwrap(), Some(0))
         .await
         .unwrap();
     harness.finish(&first).await;
@@ -3223,7 +3252,7 @@ async fn missing_secret_key_fails_rollout_before_docker_mutation() {
             target: "/run/secrets/token".into(),
         });
     let deployment = applications
-        .apply(input.validate().unwrap(), Some(1))
+        .apply(input.validate_template().unwrap(), Some(1))
         .await
         .unwrap();
     harness
@@ -3286,7 +3315,7 @@ async fn preparation_timeout_is_retried_after_backoff() {
     };
     let operation = harness
         .applications()
-        .apply(manifest.validate().unwrap(), None)
+        .apply(manifest.validate_template().unwrap(), None)
         .await
         .unwrap();
     harness
@@ -3336,7 +3365,7 @@ async fn changed_swarm_topology_blocks_preparation_and_recovers_after_backoff() 
         .store(true, Ordering::SeqCst);
     let operation = harness
         .applications()
-        .apply(manifest().validate().unwrap(), None)
+        .apply(manifest().validate_template().unwrap(), None)
         .await
         .unwrap();
     harness
@@ -3393,7 +3422,7 @@ async fn topology_change_during_preparation_blocks_promotion_and_mutation() {
     };
     let operation = harness
         .applications()
-        .apply(manifest.validate().unwrap(), None)
+        .apply(manifest.validate_template().unwrap(), None)
         .await
         .unwrap();
     let cancellation = CancellationToken::new();
@@ -3489,8 +3518,8 @@ fn manifest_with_job_dependencies() -> piqueld_core::manifest::ApplicationManife
         service.mounts.clear();
         service.healthcheck = Some(piqueld_core::manifest::HealthCheck::Command {
             command: vec!["ready".into()],
-            interval_seconds: 1,
-            timeout_seconds: 1,
+            interval_seconds: 1.into(),
+            timeout_seconds: 1.into(),
         });
         input.spec.services.push(service);
     }
@@ -3522,7 +3551,7 @@ async fn job_dependencies_converge_before_migration_and_other_services() {
     input.spec.jobs.insert(0, storage_job);
     let operation = harness
         .applications()
-        .apply(input.validate().unwrap(), None)
+        .apply(input.validate_template().unwrap(), None)
         .await
         .unwrap();
     harness.finish(&operation).await;
@@ -3580,7 +3609,12 @@ async fn failed_or_timed_out_job_dependencies_prevent_jobs_and_other_services() 
             .store(failed, Ordering::SeqCst);
         let operation = harness
             .applications()
-            .apply(manifest_with_job_dependencies().validate().unwrap(), None)
+            .apply(
+                manifest_with_job_dependencies()
+                    .validate_template()
+                    .unwrap(),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -3626,20 +3660,20 @@ async fn failed_migration_keeps_prerequisites_and_repairs_other_active_services(
         }
         let first = harness
             .applications()
-            .apply(initial.validate().unwrap(), None)
+            .apply(initial.validate_template().unwrap(), None)
             .await
             .unwrap();
         harness.finish(&first).await;
         let mut replacement = manifest_with_job_dependencies();
         for service in &mut replacement.spec.services {
             if matches!(service.name.as_str(), "web" | "db") {
-                service.replicas = 2;
+                service.replicas = 2.into();
             }
         }
         harness.docker.job_exit.store(3, Ordering::SeqCst);
         let operation = harness
             .applications()
-            .apply(replacement.validate().unwrap(), None)
+            .apply(replacement.validate_template().unwrap(), None)
             .await
             .unwrap();
         assert_eq!(
@@ -3761,7 +3795,7 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
         .await
         .insert("leftover".into(), ("earlier-operation".into(), 0));
     let first = applications
-        .apply(input.clone().validate().unwrap(), None)
+        .apply(input.clone().validate_template().unwrap(), None)
         .await
         .unwrap();
     harness.finish(&first).await;
@@ -3795,9 +3829,9 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
         .docker
         .truncate_job_output
         .store(true, Ordering::SeqCst);
-    input.spec.services[0].replicas = 2;
+    input.spec.services[0].replicas = 2.into();
     let failed = applications
-        .apply(input.validate().unwrap(), None)
+        .apply(input.validate_template().unwrap(), None)
         .await
         .unwrap();
     assert_eq!(
@@ -3832,7 +3866,9 @@ async fn failed_job_keeps_an_unchanged_application_degraded() {
     let applications = harness.applications();
     let first = applications
         .apply(
-            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            manifest_with_jobs(&["migrate"], 300)
+                .validate_template()
+                .unwrap(),
             None,
         )
         .await
@@ -3862,7 +3898,7 @@ async fn retried_operation_skips_jobs_that_already_succeeded() {
         .applications()
         .apply(
             manifest_with_jobs(&["migrate", "seed"], 300)
-                .validate()
+                .validate_template()
                 .unwrap(),
             None,
         )
@@ -3886,7 +3922,9 @@ async fn job_run_accepted_before_a_lost_response_is_not_started_again() {
     let operation = harness
         .applications()
         .apply(
-            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            manifest_with_jobs(&["migrate"], 300)
+                .validate_template()
+                .unwrap(),
             None,
         )
         .await
@@ -3902,7 +3940,9 @@ async fn restarted_daemon_resumes_a_running_job() {
     let operation = harness
         .applications()
         .apply(
-            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            manifest_with_jobs(&["migrate"], 300)
+                .validate_template()
+                .unwrap(),
             None,
         )
         .await
@@ -3933,7 +3973,9 @@ async fn superseded_job_run_is_stopped() {
     harness.docker.hold_jobs.store(true, Ordering::SeqCst);
     let first = applications
         .apply(
-            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            manifest_with_jobs(&["migrate"], 300)
+                .validate_template()
+                .unwrap(),
             None,
         )
         .await
@@ -3942,7 +3984,7 @@ async fn superseded_job_run_is_stopped() {
     let (scanned, second) = tokio::join!(harness.controller.scan(&cancellation), async {
         harness.wait_for_job_starts(1).await;
         applications
-            .apply(manifest().validate().unwrap(), None)
+            .apply(manifest().validate_template().unwrap(), None)
             .await
             .unwrap()
     });
@@ -3963,7 +4005,9 @@ async fn job_timeout_keeps_output_and_stops_the_run() {
     let operation = harness
         .applications()
         .apply(
-            manifest_with_jobs(&["migrate"], 1).validate().unwrap(),
+            manifest_with_jobs(&["migrate"], 1)
+                .validate_template()
+                .unwrap(),
             None,
         )
         .await
@@ -3993,7 +4037,9 @@ async fn timed_out_job_cleanup_retries_after_restart_without_rerunning() {
     let operation = harness
         .applications()
         .apply(
-            manifest_with_jobs(&["migrate"], 1).validate().unwrap(),
+            manifest_with_jobs(&["migrate"], 1)
+                .validate_template()
+                .unwrap(),
             None,
         )
         .await
@@ -4062,7 +4108,9 @@ async fn job_cleanup_still_runs_when_outcome_recording_fails() {
         let operation = harness
             .applications()
             .apply(
-                manifest_with_jobs(&["migrate"], 1).validate().unwrap(),
+                manifest_with_jobs(&["migrate"], 1)
+                    .validate_template()
+                    .unwrap(),
                 None,
             )
             .await
@@ -4096,7 +4144,7 @@ async fn pending_cleanup_blocks_the_next_job() {
         .applications()
         .apply(
             manifest_with_jobs(&["migrate", "seed"], 300)
-                .validate()
+                .validate_template()
                 .unwrap(),
             None,
         )
@@ -4143,7 +4191,9 @@ async fn unknown_job_status_keeps_the_run_for_a_retry() {
     let operation = harness
         .applications()
         .apply(
-            manifest_with_jobs(&["migrate"], 1).validate().unwrap(),
+            manifest_with_jobs(&["migrate"], 1)
+                .validate_template()
+                .unwrap(),
             None,
         )
         .await
@@ -4178,7 +4228,9 @@ async fn recorded_success_survives_a_crash_before_cleanup() {
     let operation = harness
         .applications()
         .apply(
-            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            manifest_with_jobs(&["migrate"], 300)
+                .validate_template()
+                .unwrap(),
             None,
         )
         .await
@@ -4232,7 +4284,9 @@ async fn retry_reruns_a_failed_run_left_in_place() {
     let operation = harness
         .applications()
         .apply(
-            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            manifest_with_jobs(&["migrate"], 300)
+                .validate_template()
+                .unwrap(),
             None,
         )
         .await
@@ -4270,7 +4324,9 @@ async fn job_outcome_survives_output_and_cleanup_failures() {
     let operation = harness
         .applications()
         .apply(
-            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            manifest_with_jobs(&["migrate"], 300)
+                .validate_template()
+                .unwrap(),
             None,
         )
         .await
@@ -4303,7 +4359,9 @@ async fn blocked_deployment_runs_no_jobs() {
     let operation = harness
         .applications()
         .apply(
-            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            manifest_with_jobs(&["migrate"], 300)
+                .validate_template()
+                .unwrap(),
             None,
         )
         .await

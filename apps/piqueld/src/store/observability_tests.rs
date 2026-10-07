@@ -7,7 +7,7 @@ use piqueld_core::observability::{
 };
 
 async fn application(store: &Store) -> Operation {
-    let manifest=piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='observable'\n[spec]").unwrap();
+    let manifest=piqueld_core::manifest::parse_template_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='observable'\n[spec]").unwrap();
     let (MutationResponse::Saved(saved), _) = store
         .accept(Mutation::save(manifest, None, true), Some(0), false, None)
         .await

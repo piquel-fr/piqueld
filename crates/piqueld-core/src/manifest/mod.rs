@@ -5,24 +5,37 @@ pub mod domain;
 pub mod input;
 pub mod rollout;
 pub mod routes;
-pub use rollout::{Rollout, RolloutOrder, RolloutOrderSource, RolloutPolicy};
+pub mod template;
+/// Shared tests for manifest variables and templates.
+#[cfg(test)]
+mod template_tests;
+pub mod variables;
+pub use domain::{
+    HealthExecution, ValidatedBuild, ValidatedHealthCheck, ValidatedResourceLimits, ValidatedSource,
+};
+pub use rollout::{Rollout, RolloutOrder, RolloutOrderSource, RolloutPolicy, ValidatedRollout};
 pub use routes::{
     Hostname, RedirectStatus, RedirectUrl, RouteTarget, ValidatedRedirect, ValidatedRoute,
+};
+pub use template::{ApplicationTemplate, Rendering, ValidatedTemplate};
+pub use variables::{
+    GitRevision, PREVIEW_DEPLOYMENT_ID, RenderContext, Template, TemplateError, Typed,
+    VariableValue,
 };
 
 use domain::{ValidatedMetadata, ValidatedSpec};
 pub mod validation;
 
 pub use input::{
-    ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, HealthExecution, Job,
-    JobRun, ManifestRepository, ManifestRevision, Metadata, Mount, Redirect, RepositoryManifest,
-    ResourceLimits, Route, SecretDeclaration, SecretEncoding, SecretGenerator, SecretMount,
-    Service, Source, SourceRepository, Volume,
+    ApplicationManifest, ApplicationSpec, Build, EnvironmentConfig, GitRepository, HealthCheck,
+    Job, JobRun, ManifestRepository, ManifestRevision, Metadata, Mount, Redirect,
+    RepositoryManifest, ResourceLimits, Route, SecretDeclaration, SecretEncoding, SecretGenerator,
+    SecretMount, Service, Source, SourceRepository, Variable, Volume,
 };
 pub(crate) use validation::valid_image_reference;
 pub use validation::{
-    ValidationError, ValidationErrors, parse_json, parse_toml, safe_decode_path, valid_git_commit,
-    valid_repository_path,
+    ValidationError, ValidationErrors, parse_json, parse_template_json, parse_template_toml,
+    parse_toml, safe_decode_path, valid_git_commit, valid_repository_path,
 };
 
 use crate::{ApplicationId, ApplicationName};
@@ -205,20 +218,10 @@ impl NormalizedApplication {
     /// Panics only if the internal normalized manifest cannot be serialized,
     /// which indicates a bug in the domain types.
     pub fn spec_hash(&self) -> String {
-        #[derive(Serialize)]
-        struct HashEnvelope<'a> {
-            hash_version: &'static str,
-            spec: &'a ValidatedSpec,
-        }
         let mut normalized = self.clone().normalize();
         // Manifest location does not change the desired runtime resources.
         normalized.spec.manifest = None;
-        let bytes = serde_json::to_vec(&HashEnvelope {
-            hash_version: SPEC_HASH_VERSION,
-            spec: &normalized.spec,
-        })
-        .expect("domain serialization is infallible");
-        format!("sha256:{:x}", Sha256::digest(bytes))
+        hash_spec(&normalized.spec)
     }
 
     /// Canonical JSON representation used for durable desired state.
@@ -255,10 +258,43 @@ impl NormalizedApplication {
     }
 }
 
+/// Versioned SHA-256 over a specification's canonical JSON.
+///
+/// # Panics
+///
+/// Panics only if the specification cannot be serialized, which indicates a
+/// bug in the manifest types.
+fn hash_spec(spec: &impl Serialize) -> String {
+    #[derive(Serialize)]
+    struct HashEnvelope<'a, S> {
+        hash_version: &'static str,
+        spec: &'a S,
+    }
+    let bytes = serde_json::to_vec(&HashEnvelope {
+        hash_version: SPEC_HASH_VERSION,
+        spec,
+    })
+    .expect("manifest serialization is infallible");
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
 // Deserialization re-runs full manifest validation and normalization, so
 // stored or received JSON can never produce an unvalidated application.
 impl<'de> Deserialize<'de> for NormalizedApplication {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// Escapes `${{` in every string: rendered values are literal text,
+        /// never references.
+        fn escape(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::String(text) if Template::mentions_reference(text) => {
+                    *text = Template::literal(text).as_str().into();
+                }
+                serde_json::Value::Array(values) => values.iter_mut().for_each(escape),
+                serde_json::Value::Object(values) => values.values_mut().for_each(escape),
+                _ => {}
+            }
+        }
+
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Wire {
@@ -266,14 +302,15 @@ impl<'de> Deserialize<'de> for NormalizedApplication {
             api_version: String,
             kind: String,
             metadata: Metadata,
-            spec: ApplicationSpec,
+            spec: serde_json::Value,
         }
-        let wire = Wire::deserialize(deserializer)?;
+        let mut wire = Wire::deserialize(deserializer)?;
+        escape(&mut wire.spec);
         ApplicationManifest {
             api_version: wire.api_version,
             kind: wire.kind,
             metadata: wire.metadata,
-            spec: wire.spec,
+            spec: ApplicationSpec::deserialize(wire.spec).map_err(serde::de::Error::custom)?,
         }
         .validate()
         .map(|validated| validated.normalize(wire.id))

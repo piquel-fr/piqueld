@@ -4,15 +4,18 @@
 //! fetching, it holds the validated manifest and repository commit; `fetched`
 //! tells retries to reuse that snapshot instead of reading a moving branch again.
 //! Deployments without repository backing also become fetched, with no commit.
-//! The candidate is copied to deployment history when fetched, but only becomes
-//! saved application configuration after source preparation succeeds, provided
-//! no newer configuration was saved in the meantime.
-use super::{ApplicationId, NormalizedApplication, Operation, Store, StoreError, now_ms};
+//! The candidate and its rendering are copied to deployment history when
+//! fetched, but the candidate only becomes saved application configuration
+//! after source preparation succeeds, provided no newer configuration was
+//! saved in the meantime.
+use super::{ApplicationId, Operation, Store, StoreError, now_ms};
+use piqueld_core::manifest::{ApplicationTemplate, Rendering};
 use sqlx::{Sqlite, Transaction};
 
 /// A deployment's candidate manifest and whether it is the fetched snapshot.
 pub(crate) struct DeploymentInput {
-    pub(crate) application: NormalizedApplication,
+    /// The candidate manifest, with references unresolved.
+    pub(crate) template: ApplicationTemplate,
     pub(crate) fetched: bool,
     /// Commit the fetched manifest was read from.
     pub(crate) commit: Option<String>,
@@ -23,7 +26,7 @@ impl Store {
     pub(crate) async fn insert_deployment_on(
         tx: &mut Transaction<'_, Sqlite>,
         operation: &Operation,
-        application: &NormalizedApplication,
+        application: &ApplicationTemplate,
     ) -> Result<(), StoreError> {
         let json = application.canonical_json().map_err(StoreError::corrupt)?;
         sqlx::query!(
@@ -51,7 +54,7 @@ impl Store {
         .map_err(StoreError::database)?
         .map(|row| {
             Ok(DeploymentInput {
-                application: serde_json::from_str(&row.application_json)
+                template: serde_json::from_str(&row.application_json)
                     .map_err(StoreError::corrupt)?,
                 fetched: row.fetched != 0,
                 commit: row.repository_commit,
@@ -61,16 +64,20 @@ impl Store {
     }
 
     /// Stores the fetched manifest and commit for the latest running operation,
-    /// copying it into deployment history, pinning its secret versions, and
-    /// re-checking hostname reservations. Fetching happens once: a second save,
-    /// or one for superseded work, fails with `StoreError::IllegalTransition`.
+    /// copying it and its rendering into deployment history, pinning its secret
+    /// versions, and re-checking hostname reservations. Fetching happens once:
+    /// a second save, or one for superseded work, fails with
+    /// `StoreError::IllegalTransition`.
     pub(crate) async fn save_deployment_input(
         &self,
         operation: &Operation,
-        application: &NormalizedApplication,
+        template: &ApplicationTemplate,
+        rendering: &Rendering,
         commit: Option<&str>,
     ) -> Result<(), StoreError> {
-        let json = application.canonical_json().map_err(StoreError::corrupt)?;
+        let json = template.canonical_json().map_err(StoreError::corrupt)?;
+        let (manifest, variables) = Self::snapshot_json(Some(rendering))?;
+        let application = &rendering.application;
         self.generate_secrets(&operation.environment_id, application)
             .await?;
         let (_writer, mut tx) = self.begin_immediate().await?;
@@ -80,8 +87,10 @@ impl Store {
             return Err(StoreError::IllegalTransition);
         }
         sqlx::query!(
-            "UPDATE deployments SET manifest_json=?1 WHERE id=?2",
+            "UPDATE deployments SET manifest_json=?1,template_json=?2,variables_json=?3 WHERE id=?4",
+            manifest,
             json,
+            variables,
             operation.id
         )
         .execute(&mut *tx)
@@ -145,7 +154,7 @@ mod tests {
     async fn fetched_snapshot_preserves_intervening_saved_configuration() {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path().join("db")).await.unwrap();
-        let initial = piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='test'\n[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/app.git'\nbranch='main'").unwrap().normalize(ApplicationId::parse("test-app").unwrap());
+        let initial = piqueld_core::manifest::parse_template_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='test'\n[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/app.git'\nbranch='main'").unwrap().normalize(ApplicationId::parse("test-app").unwrap());
         let (MutationResponse::Saved(saved), _) = store
             .accept(
                 Mutation::Save {
@@ -172,17 +181,25 @@ mod tests {
             )
             .await
             .unwrap();
-        let captured = store.deployment_manifest(&op.id).await.unwrap();
+        let captured = store.deployment_snapshot(&op.id).await.unwrap().template;
         let mut fetched = captured.to_manifest();
         fetched.spec.manifest = None;
-        let fetched = fetched.validate().unwrap().normalize(captured.id().clone());
+        let fetched = fetched
+            .validate_template()
+            .unwrap()
+            .normalize(captured.id().clone());
+        let environment = store.get(&op.environment_id).await.unwrap();
+        let rendering = environment.render(&fetched, &op.id).unwrap();
         store
-            .save_deployment_input(&op, &fetched, Some(&"a".repeat(40)))
+            .save_deployment_input(&op, &fetched, &rendering, Some(&"a".repeat(40)))
             .await
             .unwrap();
         let mut edited = captured.to_manifest();
         edited.spec.manifest.as_mut().unwrap().path = "fixed.toml".into();
-        let edited = edited.validate().unwrap().normalize(captured.id().clone());
+        let edited = edited
+            .validate_template()
+            .unwrap()
+            .normalize(captured.id().clone());
         store
             .accept(
                 Mutation::Save {
@@ -197,33 +214,19 @@ mod tests {
             .await
             .unwrap();
         let target = piqueld_core::compile_application(
-            &fetched,
+            &rendering.application,
             &op.environment_id,
             InstanceId::parse(store.instance_id()).unwrap(),
             &ResolutionSet::default(),
         )
         .unwrap();
         store.save_prepared(&op, &target).await.unwrap();
-        assert_eq!(
-            store
-                .get(&op.environment_id)
-                .await
-                .unwrap()
-                .application
-                .application,
-            edited
-        );
-        assert_eq!(
-            store
-                .get(&op.environment_id)
-                .await
-                .unwrap()
-                .application
-                .generation,
-            2
-        );
+        let saved = store.get(&op.environment_id).await.unwrap().application;
+        assert_eq!((saved.application, saved.generation), (edited.clone(), 2));
         assert_eq!(store.operation(&op.id).await.unwrap().generation, 1);
-        assert_eq!(store.deployment_manifest(&op.id).await.unwrap(), fetched);
+        let snapshot = store.deployment_snapshot(&op.id).await.unwrap();
+        assert_eq!(snapshot.template, fetched);
+        assert_eq!(snapshot.rendering, Some(rendering.clone()));
         assert_eq!(
             store
                 .deployments(&op.environment_id, None, 3)
@@ -231,10 +234,12 @@ mod tests {
                 .unwrap()
                 .items[0]
                 .application,
-            fetched
+            Some(rendering.application.clone())
         );
         assert!(matches!(
-            store.save_deployment_input(&op, &edited, None).await,
+            store
+                .save_deployment_input(&op, &edited, &rendering, None)
+                .await,
             Err(StoreError::IllegalTransition)
         ));
     }

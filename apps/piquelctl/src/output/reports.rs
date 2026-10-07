@@ -1,6 +1,6 @@
 //! Typed command results. Human-only context never leaks into JSON schemas.
 use super::{HumanWriter, Report};
-use crate::{profiles::ProfileSummary, support::desired_replicas};
+use crate::profiles::ProfileSummary;
 use piqueld_client::{
     AcceptedOperation, ActionReason, ActionRisk, ApplicationLogs, ApplicationSummary,
     ApplicationView, BuildLogPage, BuildRecord, DeletedApplication, EnvironmentSource,
@@ -177,7 +177,6 @@ report!(ShowReport<'_>, self, out, {
     ))?;
     out.blank()?;
     out.label("Configuration revision", app.generation)?;
-    out.label("Replicas", desired_replicas(app))?;
     for row in self.environments {
         out.label(
             "Environment",
@@ -196,7 +195,7 @@ report!(ShowReport<'_>, self, out, {
     for service in &app.application.spec().services {
         out.blank()?;
         out.label("Service", &service.name)?;
-        out.label("  Replicas", service.replicas)?;
+        out.label("  Replicas", &service.replicas)?;
         match &service.source {
             Source::Image { image } => out.label("  Source", format_args!("image {image}"))?,
             Source::Git { repository, .. } => {
@@ -216,6 +215,21 @@ report!(ShowReport<'_>, self, out, {
                 .join(", "),
         )?;
         out.line("Named volumes are retained on deletion.")?;
+    }
+    let spec = app.application.spec();
+    if !spec.variables.is_empty() || !spec.environments.is_empty() {
+        out.blank()?;
+        for (name, value) in &spec.variables {
+            out.label("Variable", format_args!("{name} = {value}"))?;
+        }
+        for (environment, config) in &spec.environments {
+            for (name, value) in &config.variables {
+                out.label(
+                    "Variable",
+                    format_args!("{name} = {value} (in {environment})"),
+                )?;
+            }
+        }
     }
     Ok(())
 });
@@ -248,7 +262,14 @@ report!(EnvironmentShowReport<'_>, self, out, {
         environment
             .resolved_generation
             .map_or_else(|| "none".to_owned(), |v| v.to_string()),
-    )
+    )?;
+    for (name, value) in self.application.application.values(&environment.name) {
+        match value {
+            Some(value) => out.label("Variable", format_args!("{name} = {value}"))?,
+            None => out.label("Variable", format_args!("{name} has no value"))?,
+        }
+    }
+    Ok(())
 });
 
 report!(EnvironmentView, self, out, {
@@ -600,6 +621,7 @@ report!(PlanView, self, out, {
         };
         out.line(format_args!("      {risk} · {reason}"))?;
     }
+    Configuration::variables(out, &self.variables)?;
     if !self.rollouts.is_empty() {
         out.blank()?;
         out.heading("Rollout:")?;
@@ -635,6 +657,22 @@ report!(PlanView, self, out, {
 /// Human rendering of plan change values, which the daemon sends as JSON text.
 struct Configuration;
 impl Configuration {
+    /// Lists the rendered value of each reference, when there are any.
+    fn variables(
+        out: &mut HumanWriter<'_>,
+        variables: &std::collections::BTreeMap<String, piqueld_client::VariableValue>,
+    ) -> io::Result<()> {
+        if variables.is_empty() {
+            return Ok(());
+        }
+        out.blank()?;
+        out.heading("Variables:")?;
+        for (reference, value) in variables {
+            out.line(format_args!("  {reference} = {value}"))?;
+        }
+        Ok(())
+    }
+
     /// Renders a change value, falling back to the raw text when it is not JSON.
     fn value(value: &str) -> String {
         serde_json::from_str(value).map_or_else(|_| value.to_owned(), |value| Self::render(&value))

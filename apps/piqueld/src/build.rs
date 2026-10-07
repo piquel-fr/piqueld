@@ -1,6 +1,6 @@
 //! Durable attempt lifecycle and output sink, independent of the executor.
 use crate::store::{Store, StoreError};
-use piqueld_core::{EnvironmentId, api::BuildState, manifest::Source};
+use piqueld_core::{EnvironmentId, api::BuildState, manifest::ValidatedSource as Source};
 use std::sync::Arc;
 
 /// A bounded persistent output sink usable by any build executor.

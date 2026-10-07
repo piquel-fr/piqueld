@@ -8,8 +8,8 @@ use crate::{
     ApplicationName, DockerNetworkName, DockerServiceName, DockerVolumeName, EnvironmentId,
     JobName, ResourceKind, ServiceName, VolumeName, docker_resource_name,
     manifest::{
-        HealthCheck, JobRun, NormalizedApplication, ResourceLimits, Rollout, RolloutPolicy, Source,
-        SourceRepository, valid_image_reference,
+        JobRun, NormalizedApplication, RolloutPolicy, SourceRepository, ValidatedHealthCheck,
+        ValidatedResourceLimits, ValidatedRollout, ValidatedSource, valid_image_reference,
     },
 };
 use crate::{ImageReference, ImmutableImage, RepositoryDigest};
@@ -75,7 +75,7 @@ pub enum ResolvedSource {
     /// A Git revision built into an immutable local image.
     Git {
         /// Exact source and build inputs requested.
-        requested: Source,
+        requested: ValidatedSource,
         /// Resolved full commit hash.
         commit: String,
         /// Docker's content-addressed local image ID.
@@ -122,9 +122,9 @@ impl ResolvedSource {
 
     /// Returns the source the user requested before resolution.
     #[must_use]
-    pub fn requested(&self) -> Source {
+    pub fn requested(&self) -> ValidatedSource {
         match self {
-            Self::Image { requested, .. } => Source::Image {
+            Self::Image { requested, .. } => ValidatedSource::Image {
                 image: requested.to_string(),
             },
             Self::Git { requested, .. } => requested.clone(),
@@ -180,7 +180,7 @@ pub enum ResolutionRequirement {
         /// Logical service requesting a build.
         service: ServiceName,
         /// Explicit Git source configuration.
-        source: Source,
+        source: ValidatedSource,
     },
 }
 
@@ -203,11 +203,11 @@ pub fn preview_resolution(
                 None
             } else {
                 Some(match &service.source {
-                    Source::Image { image } => ResolutionRequirement::ResolveImage {
+                    ValidatedSource::Image { image } => ResolutionRequirement::ResolveImage {
                         service: service.name.clone(),
                         reference: image.clone(),
                     },
-                    Source::Git { .. } => ResolutionRequirement::BuildGit {
+                    ValidatedSource::Git { .. } => ResolutionRequirement::BuildGit {
                         service: service.name.clone(),
                         source: service.source.clone(),
                     },
@@ -383,9 +383,9 @@ pub struct DesiredService {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretFile>,
     /// Optional health check.
-    pub healthcheck: Option<HealthCheck>,
+    pub healthcheck: Option<ValidatedHealthCheck>,
     /// Optional CPU and memory limits.
-    pub resources: Option<ResourceLimits>,
+    pub resources: Option<ValidatedResourceLimits>,
     /// Canonical private network names attached to the service.
     pub networks: Vec<DockerNetworkName>,
     /// Ownership labels.
@@ -396,12 +396,12 @@ pub struct DesiredService {
     pub depends_on: Vec<ServiceName>,
     /// Rollout settings, resolved by [`Self::rollout_policy`]. Omitted when
     /// default, so targets prepared before the setting existed still decode.
-    #[serde(default, skip_serializing_if = "Rollout::is_default")]
-    pub rollout: Rollout,
+    #[serde(default, skip_serializing_if = "ValidatedRollout::is_default")]
+    pub rollout: ValidatedRollout,
 }
 
 impl DesiredService {
-    /// The update policy Docker applies to this service; see [`Rollout::policy`].
+    /// The update policy Docker applies to this service; see [`ValidatedRollout::policy`].
     #[must_use]
     pub fn rollout_policy(&self) -> RolloutPolicy {
         self.rollout
@@ -841,10 +841,10 @@ fn unresolved_errors(
 /// Images must match the requested reference exactly and resolve within the
 /// same repository. Git sources must be identical, resolve to a full commit
 /// hash, and honour a pinned commit when one is set.
-fn resolved_source_matches(source: &Source, resolved: &ResolvedSource) -> bool {
+fn resolved_source_matches(source: &ValidatedSource, resolved: &ResolvedSource) -> bool {
     match (source, resolved) {
         (
-            Source::Image { image },
+            ValidatedSource::Image { image },
             ResolvedSource::Image {
                 requested,
                 digest_reference,
@@ -852,7 +852,7 @@ fn resolved_source_matches(source: &Source, resolved: &ResolvedSource) -> bool {
         ) => image == requested.as_str() && same_image_repository(image, digest_reference.as_str()),
         // Unpinned "self" sources never match; deployments pin them first.
         (
-            Source::Git {
+            ValidatedSource::Git {
                 repository: SourceRepository::Git(repository),
                 ..
             },
@@ -939,7 +939,7 @@ fn compile_job(
     container.arguments.clear();
     container.healthcheck = None;
     container.depends_on.clear();
-    container.rollout = Rollout::default();
+    container.rollout = ValidatedRollout::default();
     container.labels = environment_ownership.labels();
     container
         .labels
@@ -1193,11 +1193,11 @@ pub struct ObservedService {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretFile>,
     /// Observed health check.
-    pub healthcheck: Option<HealthCheck>,
+    pub healthcheck: Option<ValidatedHealthCheck>,
     /// Whether Docker has a health check, including an unsupported one.
     pub healthcheck_configured: bool,
     /// Observed resource limits.
-    pub resources: Option<ResourceLimits>,
+    pub resources: Option<ValidatedResourceLimits>,
     /// Networks attached to the service and their aliases.
     pub networks: Vec<NetworkAttachment>,
     /// Ownership labels observed on the service.
@@ -1242,8 +1242,13 @@ impl ObservedService {
     /// equivalent `wget` command match. An unsupported observed check
     /// (configured but not representable) never matches.
     pub(crate) fn healthcheck_matches(&self, desired: &DesiredService) -> bool {
-        self.healthcheck.as_ref().map(HealthCheck::execution)
-            == desired.healthcheck.as_ref().map(HealthCheck::execution)
+        self.healthcheck
+            .as_ref()
+            .map(ValidatedHealthCheck::execution)
+            == desired
+                .healthcheck
+                .as_ref()
+                .map(ValidatedHealthCheck::execution)
             && self.healthcheck_configured == desired.healthcheck.is_some()
     }
 

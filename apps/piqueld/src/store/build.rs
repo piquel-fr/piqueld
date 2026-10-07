@@ -3,7 +3,7 @@ use super::{Store, StoreError, now_ms, page_limit};
 use piqueld_core::{
     ApplicationId, EnvironmentId,
     api::{BuildLogChunk, BuildLogPage, BuildRecord, BuildState, LogStream, Page},
-    manifest::Source,
+    manifest::ValidatedSource as Source,
 };
 use sqlx::{QueryBuilder, Sqlite};
 
@@ -377,6 +377,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use piqueld_core::manifest::ApplicationTemplate;
     struct Fixture {
         _temp: tempfile::TempDir,
         store: Store,
@@ -399,7 +400,10 @@ mod tests {
             ))
             .unwrap()
             .normalize(piqueld_core::ApplicationId::parse("app-build-test").unwrap());
-            let operation = store.save_application(&app, None, None).await.unwrap();
+            let operation = store
+                .save_application(&ApplicationTemplate::from(&app), None, None)
+                .await
+                .unwrap();
             let id = store
                 .start_build(
                     &EnvironmentId::default_for(app.id()),
@@ -510,7 +514,10 @@ mod tests {
             .validate()
             .unwrap()
             .normalize(piqueld_core::ApplicationId::parse("app-other").unwrap());
-        let other_operation = store.save_application(&other, None, Some(0)).await.unwrap();
+        let other_operation = store
+            .save_application(&ApplicationTemplate::from(&other), None, Some(0))
+            .await
+            .unwrap();
         let latest = store
             .start_build(
                 &EnvironmentId::default_for(app.id()),

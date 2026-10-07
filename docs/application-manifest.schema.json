@@ -6,6 +6,17 @@
       "additionalProperties": false,
       "description": "User-provided application resource lists.",
       "properties": {
+        "environments": {
+          "additionalProperties": {
+            "$ref": "#/definitions/EnvironmentConfig"
+          },
+          "default": {},
+          "description": "Configuration for each environment, selected by environment name.",
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        },
         "jobs": {
           "default": [],
           "description": "One-shot jobs, run in declared order at their deployment point.",
@@ -50,6 +61,17 @@
           },
           "type": "array"
         },
+        "variables": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Variable"
+          },
+          "default": {},
+          "description": "Default values of variables referenced as `${{ vars.<name> }}`, used by\nenvironments that set no value of their own.",
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        },
         "volumes": {
           "default": [],
           "description": "Declared named volumes.",
@@ -69,7 +91,7 @@
           "properties": {
             "args": {
               "additionalProperties": {
-                "type": "string"
+                "$ref": "#/definitions/Template"
               },
               "description": "Values passed as `--build-arg`. They are recorded in image\nmetadata, so sensitive values belong in secrets instead.",
               "propertyNames": {
@@ -78,18 +100,22 @@
               "type": "object"
             },
             "context": {
-              "description": "Build context relative to the repository root.",
-              "type": "string"
+              "$ref": "#/definitions/Template",
+              "description": "Build context relative to the repository root."
             },
             "dockerfile": {
-              "description": "Dockerfile path relative to the repository root.",
-              "type": "string"
+              "$ref": "#/definitions/Template",
+              "description": "Dockerfile path relative to the repository root."
             },
             "target": {
-              "description": "Multi-stage build target; the final stage when absent.",
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/definitions/Template",
+                  "description": "Multi-stage build target; the final stage when absent."
+                }
               ]
             },
             "type": {
@@ -106,6 +132,24 @@
           "type": "object"
         }
       ]
+    },
+    "EnvironmentConfig": {
+      "additionalProperties": false,
+      "description": "Configuration of one environment, `[spec.environments.<name>]`.",
+      "properties": {
+        "variables": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Variable"
+          },
+          "default": {},
+          "description": "This environment's values: each overrides the `[spec.variables]` default\nof the same name, or declares a variable without a default.",
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
     },
     "GitRepository": {
       "additionalProperties": false,
@@ -140,27 +184,20 @@
           "description": "HTTP health endpoint check.",
           "properties": {
             "interval_seconds": {
-              "description": "Probe interval in seconds.",
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
+              "$ref": "#/definitions/Typed_u32",
+              "description": "Probe interval in seconds."
             },
             "path": {
-              "description": "HTTP path to probe.",
-              "type": "string"
+              "$ref": "#/definitions/Template",
+              "description": "HTTP path to probe."
             },
             "port": {
-              "description": "Container port to probe.",
-              "format": "int32",
-              "maximum": 65535,
-              "minimum": 0,
-              "type": "integer"
+              "$ref": "#/definitions/Typed_u16",
+              "description": "Container port to probe."
             },
             "timeout_seconds": {
-              "description": "Probe timeout in seconds.",
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
+              "$ref": "#/definitions/Typed_u32",
+              "description": "Probe timeout in seconds."
             },
             "type": {
               "enum": [
@@ -181,21 +218,17 @@
             "command": {
               "description": "Command and arguments to execute.",
               "items": {
-                "type": "string"
+                "$ref": "#/definitions/Template"
               },
               "type": "array"
             },
             "interval_seconds": {
-              "description": "Probe interval in seconds.",
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
+              "$ref": "#/definitions/Typed_u32",
+              "description": "Probe interval in seconds."
             },
             "timeout_seconds": {
-              "description": "Probe timeout in seconds.",
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
+              "$ref": "#/definitions/Typed_u32",
+              "description": "Probe timeout in seconds."
             },
             "type": {
               "enum": [
@@ -219,7 +252,7 @@
         "command": {
           "description": "Command replacing the service's command and arguments.",
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/Template"
           },
           "type": "array"
         },
@@ -317,8 +350,8 @@
           "type": "integer"
         },
         "to": {
-          "description": "Absolute `http` or `https` destination URL.",
-          "type": "string"
+          "$ref": "#/definitions/Template",
+          "description": "Absolute `http` or `https` destination URL."
         }
       },
       "required": [
@@ -350,22 +383,25 @@
       "description": "Optional CPU and memory limits for a service.",
       "properties": {
         "cpu_millis": {
-          "description": "CPU limit in millicores.",
-          "format": "int32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/definitions/Typed_u32",
+              "description": "CPU limit in millicores."
+            }
           ]
         },
         "memory_bytes": {
-          "description": "Memory limit in bytes.",
-          "format": "int64",
-          "maximum": 9223372036854775807,
-          "minimum": 1,
-          "type": [
-            "integer",
-            "null"
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/definitions/Typed_u64",
+              "description": "Memory limit in bytes."
+            }
           ]
         }
       },
@@ -377,13 +413,14 @@
       "properties": {
         "monitor_seconds": {
           "default": null,
-          "description": "Seconds Docker watches each replacement task for failure; 30 when omitted.",
-          "format": "int32",
-          "maximum": 3600,
-          "minimum": 1,
-          "type": [
-            "integer",
-            "null"
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/definitions/Typed_u32",
+              "description": "Seconds Docker watches each replacement task for failure; 30 when omitted."
+            }
           ]
         },
         "order": {
@@ -393,7 +430,7 @@
               "type": "null"
             },
             {
-              "$ref": "#/definitions/RolloutOrder",
+              "$ref": "#/definitions/Typed_RolloutOrder",
               "description": "Update order; derived from the service's mounts when omitted."
             }
           ]
@@ -401,21 +438,13 @@
       },
       "type": "object"
     },
-    "RolloutOrder": {
-      "description": "Whether Docker stops a task before or after starting its replacement.",
-      "enum": [
-        "stop-first",
-        "start-first"
-      ],
-      "type": "string"
-    },
     "Route": {
       "additionalProperties": false,
       "description": "Public HTTP route input, validated independently of ingress enablement.\nA route sets either `service` and `port`, or `redirect`.",
       "properties": {
         "hostname": {
-          "description": "Exact public DNS hostname.",
-          "type": "string"
+          "$ref": "#/definitions/Template",
+          "description": "Exact public DNS hostname."
         },
         "port": {
           "description": "Internal HTTP backend port.",
@@ -557,14 +586,14 @@
         "arguments": {
           "description": "Arguments passed to the command.",
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/Template"
           },
           "type": "array"
         },
         "command": {
           "description": "Container entrypoint command.",
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/Template"
           },
           "type": "array"
         },
@@ -577,7 +606,7 @@
         },
         "environment": {
           "additionalProperties": {
-            "type": "string"
+            "$ref": "#/definitions/Template"
           },
           "description": "Environment variables keyed by name.",
           "propertyNames": {
@@ -608,11 +637,8 @@
           "type": "string"
         },
         "replicas": {
-          "description": "Desired replica count.",
-          "format": "int32",
-          "maximum": 65535,
-          "minimum": 0,
-          "type": "integer"
+          "$ref": "#/definitions/Typed_u16",
+          "description": "Desired replica count."
         },
         "resources": {
           "oneOf": [
@@ -654,8 +680,8 @@
           "description": "Pull a prebuilt image from a registry.",
           "properties": {
             "image": {
-              "description": "Image reference.",
-              "type": "string"
+              "$ref": "#/definitions/Template",
+              "description": "Image reference."
             },
             "type": {
               "enum": [
@@ -707,6 +733,92 @@
         {
           "$ref": "#/definitions/GitRepository",
           "description": "An independently resolved repository and revision."
+        }
+      ]
+    },
+    "Template": {
+      "description": "Text that may contain `${{ namespace.name }}` references, with optional\nwhitespace inside the braces. `$${{` writes a literal `${{`; `${VAR}` and\n`$VAR` are ordinary text, left for shells and applications to expand.\n\n```text\n\"${{ vars.domain }}\"       -> the value of `domain`\n\"api.${{vars.domain}}\"     -> \"api.\" followed by the value of `domain`\n\"$${{ vars.domain }}\"      -> \"${{ vars.domain }}\", literally\n```",
+      "type": "string"
+    },
+    "TypedTemplate": {
+      "description": "Schema of a template in a typed field: text containing `${{`.",
+      "pattern": "\\$\\{\\{",
+      "type": "string"
+    },
+    "Typed_RolloutOrder": {
+      "description": "A typed value: a literal, or a template rendered for each environment.\n\nA template that is exactly one reference yields the variable's own value;\nany other template yields text. The result must then decode as `T`, so\nstrings are never parsed into numbers.",
+      "oneOf": [
+        {
+          "description": "Whether Docker stops a task before or after starting its replacement.",
+          "enum": [
+            "stop-first",
+            "start-first"
+          ],
+          "type": "string"
+        },
+        {
+          "$ref": "#/definitions/TypedTemplate",
+          "description": "A value rendered from variables."
+        }
+      ]
+    },
+    "Typed_u16": {
+      "description": "A typed value: a literal, or a template rendered for each environment.\n\nA template that is exactly one reference yields the variable's own value;\nany other template yields text. The result must then decode as `T`, so\nstrings are never parsed into numbers.",
+      "oneOf": [
+        {
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "$ref": "#/definitions/TypedTemplate",
+          "description": "A value rendered from variables."
+        }
+      ]
+    },
+    "Typed_u32": {
+      "description": "A typed value: a literal, or a template rendered for each environment.\n\nA template that is exactly one reference yields the variable's own value;\nany other template yields text. The result must then decode as `T`, so\nstrings are never parsed into numbers.",
+      "oneOf": [
+        {
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "$ref": "#/definitions/TypedTemplate",
+          "description": "A value rendered from variables."
+        }
+      ]
+    },
+    "Typed_u64": {
+      "description": "A typed value: a literal, or a template rendered for each environment.\n\nA template that is exactly one reference yields the variable's own value;\nany other template yields text. The result must then decode as `T`, so\nstrings are never parsed into numbers.",
+      "oneOf": [
+        {
+          "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "$ref": "#/definitions/TypedTemplate",
+          "description": "A value rendered from variables."
+        }
+      ]
+    },
+    "Variable": {
+      "description": "A declared variable value: a string, integer, or boolean. Strings may\nreference system variables, but not other variables.",
+      "oneOf": [
+        {
+          "description": "A boolean.",
+          "type": "boolean"
+        },
+        {
+          "description": "A signed 64-bit integer.",
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "$ref": "#/definitions/Template",
+          "description": "Text, which may reference system variables."
         }
       ]
     },

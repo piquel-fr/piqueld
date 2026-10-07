@@ -10,8 +10,8 @@ use clap::{Args, Subcommand};
 use piqueld_client::{
     ApplicationView, Build, Client, GitRepository, HealthCheck, Job, JobRun, Mount, Redirect,
     RedirectStatus, RepositoryManifest, Rollout, RolloutOrder, Route, SavedApplication, Service,
-    Source, SourceRepository, Volume,
-    edit::{ApplicationEdit, EditOptions, ServiceEdit},
+    Source, SourceRepository, Template, Typed, Variable, Volume,
+    edit::{ApplicationEdit, EditOptions, ServiceEdit, Variables},
 };
 
 // Flags shared by every edit: deployment, generation precondition, and confirmation.
@@ -53,10 +53,12 @@ macro_rules! service_value_args {
         }
     )*};
 }
+// Values that accept `${{ }}` references take `Template` or `Typed` types.
 service_value_args! {
     TextArgs: String;
-    ReplicasArgs: u16;
-    SecondsArgs: u32;
+    TemplateArgs: Template;
+    ReplicasArgs: Typed<u16>;
+    SecondsArgs: Typed<u32>;
 }
 #[derive(Debug, Args)]
 pub(crate) struct StringsArgs {
@@ -65,6 +67,14 @@ pub(crate) struct StringsArgs {
     /// Elements after --, preserving spaces. Omit to clear the array.
     #[arg(last = true)]
     value: Vec<String>,
+}
+#[derive(Debug, Args)]
+pub(crate) struct TemplatesArgs {
+    #[command(flatten)]
+    target: Target,
+    /// Elements after --, preserving spaces. Omit to clear the array.
+    #[arg(last = true)]
+    value: Vec<Template>,
 }
 // Declares service-edit argument structs whose value is either given or `--clear`ed.
 macro_rules! optional_args {
@@ -82,7 +92,7 @@ macro_rules! optional_args {
         }
     )*};
 }
-optional_args! { CommitArgs: String; CpuArgs: u32; MemoryArgs: u64; }
+optional_args! { CommitArgs: String; CpuArgs: Typed<u32>; MemoryArgs: Typed<u64>; }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ServiceCommand {
@@ -105,9 +115,9 @@ pub(crate) enum ServiceCommand {
         command: EnvironmentCommand,
     },
     /// Set entrypoint elements after --; omit elements to clear.
-    Command(StringsArgs),
+    Command(TemplatesArgs),
     /// Set argument elements after --; omit elements to clear.
-    Arguments(StringsArgs),
+    Arguments(TemplatesArgs),
     /// Set services that must be healthy before this one rolls out, after --;
     /// omit services to clear.
     DependsOn(StringsArgs),
@@ -131,7 +141,7 @@ pub(crate) enum ServiceCommand {
 #[derive(Debug, Subcommand)]
 pub(crate) enum SourceCommand {
     /// Switch to a prebuilt image.
-    Image(TextArgs),
+    Image(TemplateArgs),
     /// Switch to a Git/Docker build source.
     Git(GitSourceArgs),
     /// Change the Git clone URL.
@@ -141,9 +151,9 @@ pub(crate) enum SourceCommand {
     /// Pin a commit, or --clear to follow the branch.
     Commit(CommitArgs),
     /// Change the Dockerfile path.
-    Dockerfile(TextArgs),
+    Dockerfile(TemplateArgs),
     /// Change the build context path.
-    Context(TextArgs),
+    Context(TemplateArgs),
 }
 #[derive(Debug, Args)]
 pub(crate) struct RolloutArgs {
@@ -151,10 +161,10 @@ pub(crate) struct RolloutArgs {
     target: Target,
     /// stop-first or start-first. Omit to stop first only when a volume is mounted writable.
     #[arg(long)]
-    order: Option<RolloutOrder>,
-    /// Seconds to watch each replacement task for failure. Omit for the 30-second default.
-    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=i64::from(Rollout::MAX_MONITOR_SECONDS)))]
-    monitor_seconds: Option<u32>,
+    order: Option<Typed<RolloutOrder>>,
+    /// Seconds to watch each replacement task for failure, 1-3600. Omit for the 30-second default.
+    #[arg(long)]
+    monitor_seconds: Option<Typed<u32>>,
 }
 #[derive(Debug, Args)]
 pub(crate) struct AddServiceArgs {
@@ -162,7 +172,7 @@ pub(crate) struct AddServiceArgs {
     target: Target,
     /// Container image reference, or select --git instead.
     #[arg(required_unless_present = "git", conflicts_with = "git")]
-    image: Option<String>,
+    image: Option<Template>,
     /// Build this Git repository with Docker.
     #[arg(long)]
     git: Option<String>,
@@ -193,16 +203,16 @@ pub(crate) struct GitBuildArgs {
     commit: Option<String>,
     /// Dockerfile path relative to the repository root.
     #[arg(long, requires = "git", default_value = "Dockerfile")]
-    dockerfile: String,
+    dockerfile: Template,
     /// Build context relative to the repository root.
     #[arg(long, requires = "git", default_value = ".")]
-    context: String,
+    context: Template,
     /// Docker build argument; repeat for several. Values are not secret.
     #[arg(long = "build-arg", value_name = "KEY=VALUE", requires = "git", value_parser = Self::parse_arg)]
     build_args: Vec<(String, String)>,
     /// Multi-stage build target.
     #[arg(long, requires = "git")]
-    target: Option<String>,
+    target: Option<Template>,
 }
 impl GitBuildArgs {
     /// Parses a `--build-arg` value at its first `=`, so values may contain `=`.
@@ -224,7 +234,11 @@ impl GitBuildArgs {
             build: Build::Docker {
                 dockerfile: self.dockerfile.clone(),
                 context: self.context.clone(),
-                args: self.build_args.iter().cloned().collect(),
+                args: self
+                    .build_args
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.as_str().into()))
+                    .collect(),
                 target: self.target.clone(),
             },
         }
@@ -238,8 +252,8 @@ pub(crate) enum EnvironmentCommand {
         target: Target,
         /// Variable name.
         key: String,
-        /// Variable value.
-        value: String,
+        /// Variable value; may reference manifest variables with `${{ vars.<name> }}`.
+        value: Template,
     },
     /// Remove one variable.
     Remove {
@@ -273,39 +287,39 @@ pub(crate) enum HealthCommand {
         #[command(flatten)]
         target: Target,
         /// Container port to probe.
-        port: u16,
+        port: Typed<u16>,
         /// HTTP request path.
         #[arg(long, default_value = "/health")]
-        path: String,
+        path: Template,
         /// Seconds between checks.
-        #[arg(long, default_value_t = 10)]
-        interval: u32,
+        #[arg(long, default_value = "10")]
+        interval: Typed<u32>,
         /// Seconds before a check counts as failed.
-        #[arg(long, default_value_t = 3)]
-        check_timeout: u32,
+        #[arg(long, default_value = "3")]
+        check_timeout: Typed<u32>,
     },
     /// Configure a command health check; command elements follow --.
     Command {
         #[command(flatten)]
         target: Target,
         /// Seconds between checks.
-        #[arg(long, default_value_t = 10)]
-        interval: u32,
+        #[arg(long, default_value = "10")]
+        interval: Typed<u32>,
         /// Seconds before a check counts as failed.
-        #[arg(long, default_value_t = 3)]
-        check_timeout: u32,
+        #[arg(long, default_value = "3")]
+        check_timeout: Typed<u32>,
         /// Command elements after --, preserving spaces.
         #[arg(last = true, required = true)]
-        elements: Vec<String>,
+        elements: Vec<Template>,
     },
     /// Remove the configured health check.
     Clear(Target),
     /// Set the HTTP port.
     Port(ReplicasArgs),
     /// Set the HTTP path.
-    Path(TextArgs),
+    Path(TemplateArgs),
     /// Set command elements for an existing command health check.
-    CommandElements(StringsArgs),
+    CommandElements(TemplatesArgs),
     /// Set the check interval in seconds.
     Interval(SecondsArgs),
     /// Set the check timeout in seconds.
@@ -350,7 +364,7 @@ pub(crate) struct RedirectRouteArgs {
     #[command(flatten)]
     target: RouteTarget,
     /// Absolute http(s) destination URL.
-    to: String,
+    to: Template,
     /// HTTP status: 301, 302, 303, 307, or 308.
     #[arg(long, default_value_t = RedirectStatus::PermanentRedirect.into())]
     status: u16,
@@ -388,7 +402,7 @@ pub(crate) struct SetJobArgs {
     timeout_seconds: Option<u32>,
     /// Command elements after --, replacing the service's command and arguments.
     #[arg(last = true, required = true)]
-    command: Vec<String>,
+    command: Vec<Template>,
 }
 #[derive(Debug, Args)]
 pub(crate) struct MoveJobArgs {
@@ -459,6 +473,84 @@ pub(crate) enum RepositoryCommand {
     Path(RepositoryText),
 }
 
+#[derive(Debug, Args)]
+pub(crate) struct VariableTarget {
+    /// Application name or stable ID.
+    app: String,
+    /// Variable name, referenced as `${{ vars.<name> }}`.
+    name: String,
+    /// Environment name whose value changes; omit to change the default.
+    #[arg(long = "env", value_name = "ENV")]
+    environment: Option<String>,
+    #[command(flatten)]
+    flags: EditFlags,
+}
+#[derive(Debug, Subcommand)]
+pub(crate) enum VariableCommand {
+    /// Set a variable's default, or with --env its value in one environment.
+    Set {
+        #[command(flatten)]
+        target: VariableTarget,
+        /// `true`, `false`, and integers keep their type, and anything else is
+        /// text, which may reference system variables such as `${{ env.name }}`.
+        value: String,
+        /// Keep the value as text even when it looks like a boolean or integer.
+        #[arg(long)]
+        string: bool,
+    },
+    /// Remove a variable's default, or with --env its value in one environment.
+    Unset(VariableTarget),
+}
+
+impl VariableCommand {
+    /// Edits variables client-side and saves them together, like routes.
+    /// Unsetting an unknown variable is an input error.
+    pub(crate) async fn run(
+        &self,
+        cli: &Cli,
+        client: &Client,
+        console: &mut Console,
+    ) -> Result<()> {
+        let (Self::Set { target, .. } | Self::Unset(target)) = self;
+        let current = resolve_application(client, &target.app).await?;
+        let mut variables = Variables::of(&current.application.to_manifest());
+        let values = match &target.environment {
+            Some(environment) => variables
+                .environments
+                .entry(environment.clone())
+                .or_default(),
+            None => &mut variables.defaults,
+        };
+        match self {
+            Self::Set { value, string, .. } => {
+                let value = if *string {
+                    Variable::String(value.as_str().into())
+                } else {
+                    Variable::from_text(value)
+                };
+                values.insert(target.name.clone(), value);
+            }
+            Self::Unset(_) => {
+                if values.remove(&target.name).is_none() {
+                    return Err(CliError::new(
+                        ErrorKind::Input,
+                        format!("variable {:?} was not found", target.name),
+                    ));
+                }
+            }
+        }
+        save_loaded(
+            cli,
+            client,
+            console,
+            current,
+            &target.flags,
+            &ApplicationEdit::Variables(variables),
+        )
+        .await
+    }
+}
+
 impl ServiceCommand {
     /// Saves one service edit. Adding and removing services are whole-application
     /// edits; every other variant becomes a field-level `ServiceEdit` on the target service.
@@ -479,7 +571,7 @@ impl ServiceCommand {
                         },
                         |url| args.build.source(url),
                     ),
-                    replicas: 1,
+                    replicas: Typed::Literal(1),
                     environment: std::collections::BTreeMap::new(),
                     command: Vec::new(),
                     arguments: Vec::new(),
@@ -512,7 +604,7 @@ impl ServiceCommand {
                 .await;
             }
             Self::Rename(args) => (&args.target, ServiceEdit::Name(args.value.clone())),
-            Self::Replicas(args) => (&args.target, ServiceEdit::Replicas(args.value)),
+            Self::Replicas(args) => (&args.target, ServiceEdit::Replicas(args.value.clone())),
             Self::Source { command } => command.edit(),
             Self::Env { command } => command.edit(),
             Self::Command(args) => (&args.target, ServiceEdit::Command(args.value.clone())),
@@ -521,14 +613,14 @@ impl ServiceCommand {
             Self::Rollout(args) => (
                 &args.target,
                 ServiceEdit::Rollout(Rollout {
-                    order: args.order,
-                    monitor_seconds: args.monitor_seconds,
+                    order: args.order.clone(),
+                    monitor_seconds: args.monitor_seconds.clone(),
                 }),
             ),
             Self::Mount { command } => command.edit(),
             Self::Health { command } => command.edit(),
-            Self::Cpu(args) => (&args.target, ServiceEdit::Cpu(args.value)),
-            Self::Memory(args) => (&args.target, ServiceEdit::Memory(args.value)),
+            Self::Cpu(args) => (&args.target, ServiceEdit::Cpu(args.value.clone())),
+            Self::Memory(args) => (&args.target, ServiceEdit::Memory(args.value.clone())),
         };
         save(
             cli,
@@ -610,10 +702,10 @@ impl HealthCommand {
             } => (
                 target,
                 ServiceEdit::Healthcheck(Some(HealthCheck::Http {
-                    port: *port,
+                    port: port.clone(),
                     path: path.clone(),
-                    interval_seconds: *interval,
-                    timeout_seconds: *check_timeout,
+                    interval_seconds: interval.clone(),
+                    timeout_seconds: check_timeout.clone(),
                 })),
             ),
             Self::Command {
@@ -625,18 +717,21 @@ impl HealthCommand {
                 target,
                 ServiceEdit::Healthcheck(Some(HealthCheck::Command {
                     command: elements.clone(),
-                    interval_seconds: *interval,
-                    timeout_seconds: *check_timeout,
+                    interval_seconds: interval.clone(),
+                    timeout_seconds: check_timeout.clone(),
                 })),
             ),
             Self::Clear(target) => (target, ServiceEdit::Healthcheck(None)),
-            Self::Port(args) => (&args.target, ServiceEdit::HealthPort(args.value)),
+            Self::Port(args) => (&args.target, ServiceEdit::HealthPort(args.value.clone())),
             Self::Path(args) => (&args.target, ServiceEdit::HealthPath(args.value.clone())),
             Self::CommandElements(args) => {
                 (&args.target, ServiceEdit::HealthCommand(args.value.clone()))
             }
-            Self::Interval(args) => (&args.target, ServiceEdit::HealthInterval(args.value)),
-            Self::Timeout(args) => (&args.target, ServiceEdit::HealthTimeout(args.value)),
+            Self::Interval(args) => (
+                &args.target,
+                ServiceEdit::HealthInterval(args.value.clone()),
+            ),
+            Self::Timeout(args) => (&args.target, ServiceEdit::HealthTimeout(args.value.clone())),
         }
     }
 }
@@ -693,8 +788,13 @@ impl RouteCommand {
             )),
             Self::Remove(_) => {
                 let count = routes.len();
-                let hostname = target.hostname.trim_end_matches('.').to_ascii_lowercase();
-                routes.retain(|route| route.hostname != hostname);
+                // Literal hostnames are saved canonically; references as written.
+                let hostname = if Template::mentions_reference(&target.hostname) {
+                    target.hostname.clone()
+                } else {
+                    target.hostname.trim_end_matches('.').to_ascii_lowercase()
+                };
+                routes.retain(|route| route.hostname.as_str() != hostname);
                 if routes.len() == count {
                     return Err(CliError::new(
                         ErrorKind::Input,

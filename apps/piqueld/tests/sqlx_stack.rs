@@ -74,10 +74,23 @@ async fn upgrades_legacy_configuration_to_latest_recoverable_deployment() {
 
     let store = Store::open(&database_path).await.unwrap();
     assert_eq!(store.instance_id(), "instance-legacy");
+    let deployments = store
+        .deployments(
+            &piqueld_core::EnvironmentId::parse("app-legacy").unwrap(),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    let [deployment] = deployments.items.as_slice() else {
+        panic!("one recoverable deployment")
+    };
+    assert_eq!(deployment.operation.id, "op-second");
     assert_eq!(
-        store.deployment_manifest("op-second").await.unwrap(),
-        manifest
+        deployment.template,
+        piqueld_core::manifest::ApplicationTemplate::from(&manifest)
     );
+    assert_eq!(deployment.application.as_ref(), Some(&manifest));
     let mut connection = SqliteConnection::connect(&url).await.unwrap();
     let snapshots: Vec<(String, String, i64, Option<i64>)> =
         sqlx::query_as("SELECT id,manifest_json,generation,succeeded_at_ms FROM deployments")

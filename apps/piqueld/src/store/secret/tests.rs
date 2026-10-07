@@ -1,4 +1,5 @@
 use super::*;
+use piqueld_core::manifest::ApplicationTemplate;
 
 fn application() -> NormalizedApplication {
     piqueld_core::parse_toml(include_str!(
@@ -31,7 +32,10 @@ async fn captured_deployment_protects_secrets_before_pinning() {
     let store = Store::open(temp.path().join("db")).await.unwrap();
     let app = application();
     let captured = with_secret(&app);
-    let op = store.save_application(&captured, None, None).await.unwrap();
+    let op = store
+        .save_application(&ApplicationTemplate::from(&captured), None, None)
+        .await
+        .unwrap();
     store
         .put_secret(&environment(&app), "token", 0, b"value".to_vec())
         .await
@@ -39,7 +43,7 @@ async fn captured_deployment_protects_secrets_before_pinning() {
     store
         .accept(
             Mutation::Save {
-                application: Box::new(app.clone()),
+                application: Box::new(ApplicationTemplate::from(&app)),
                 expected_application_id: Some(app.id().to_string()),
                 deploy: false,
             },
@@ -64,7 +68,10 @@ async fn deletion_reservations_survive_restart_and_do_not_block_other_writes() {
     let path = temp.path().join("db");
     let store = Store::open(&path).await.unwrap();
     let app = application();
-    let op = store.save_application(&app, None, None).await.unwrap();
+    let op = store
+        .save_application(&ApplicationTemplate::from(&app), None, None)
+        .await
+        .unwrap();
     store
         .put_secret(&environment(&app), "token", 0, b"value".to_vec())
         .await
@@ -99,7 +106,9 @@ async fn deletion_reservations_survive_restart_and_do_not_block_other_writes() {
         Err(StoreError::SecretDeleting)
     ));
     assert!(matches!(
-        store.save_application(&with_secret(&app), None, None).await,
+        store
+            .save_application(&ApplicationTemplate::from(&with_secret(&app)), None, None)
+            .await,
         Err(StoreError::SecretDeleting)
     ));
     assert!(matches!(
@@ -140,7 +149,10 @@ async fn wrong_master_key_blocks_writes_and_original_key_restores_them() {
     let key = temp.path().join("secrets.key");
     let store = Store::open(&path).await.unwrap();
     let app = application();
-    store.save_application(&app, None, None).await.unwrap();
+    store
+        .save_application(&ApplicationTemplate::from(&app), None, None)
+        .await
+        .unwrap();
     store
         .put_secret(&environment(&app), "token", 0, b"original".to_vec())
         .await
@@ -198,7 +210,10 @@ async fn retained_version_quota_rejects_writes_without_removing_values() {
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path().join("db")).await.unwrap();
     let app = application();
-    store.save_application(&app, None, None).await.unwrap();
+    store
+        .save_application(&ApplicationTemplate::from(&app), None, None)
+        .await
+        .unwrap();
     store
         .put_secret(&environment(&app), "token", 0, b"x".to_vec())
         .await
@@ -247,7 +262,10 @@ async fn rotation_preserves_retry_pins_and_secret_values_never_enter_snapshots()
     let path = directory.path().join("state.db");
     let store = Store::open(&path).await.unwrap();
     let mut app = application();
-    let op = store.save_application(&app, None, None).await.unwrap();
+    let op = store
+        .save_application(&ApplicationTemplate::from(&app), None, None)
+        .await
+        .unwrap();
     store
         .put_secret(&environment(&app), "token", 0, b"first-value".to_vec())
         .await
@@ -301,11 +319,13 @@ async fn rotation_preserves_retry_pins_and_secret_values_never_enter_snapshots()
         pins,
         "retry must use the pre-rotation pin after restart"
     );
-    assert!(
-        !serde_json::to_string(&store.deployment_manifest(&op.id).await.unwrap())
-            .unwrap()
-            .contains("first-value")
-    );
+    let snapshot = store.deployment_snapshot(&op.id).await.unwrap();
+    for json in [
+        serde_json::to_string(&snapshot.template),
+        serde_json::to_string(&snapshot.rendering.unwrap().application),
+    ] {
+        assert!(!json.unwrap().contains("first-value"));
+    }
     let next = store
         .request_deploy(&environment(&app), None)
         .await
@@ -341,7 +361,10 @@ async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
     let key = temp.path().join("secrets.key");
     let store = Store::open(temp.path().join("db")).await.unwrap();
     let app = with_secret(&application());
-    let deployed = store.save_application(&app, None, None).await.unwrap();
+    let deployed = store
+        .save_application(&ApplicationTemplate::from(&app), None, None)
+        .await
+        .unwrap();
     store
         .put_secret(&environment(&app), "token", 0, b"original".to_vec())
         .await
@@ -391,7 +414,10 @@ async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
         .await
         .unwrap();
     assert!(key.exists(), "the first new value generates a key");
-    let redeployed = store.save_application(&app, None, None).await.unwrap();
+    let redeployed = store
+        .save_application(&ApplicationTemplate::from(&app), None, None)
+        .await
+        .unwrap();
     let pins = store.pin_secrets(&redeployed, &app).await.unwrap();
     assert_eq!(
         &*store
@@ -430,7 +456,10 @@ async fn mounted_declared_secrets_are_generated_once_and_never_replace_values() 
         .validate()
         .unwrap()
         .normalize(application().id().clone());
-    let first = store.save_application(&app, None, None).await.unwrap();
+    let first = store
+        .save_application(&ApplicationTemplate::from(&app), None, None)
+        .await
+        .unwrap();
     store
         .put_secret(&environment(&app), "manual", 0, b"chosen".to_vec())
         .await
@@ -442,7 +471,10 @@ async fn mounted_declared_secrets_are_generated_once_and_never_replace_values() 
         .unwrap();
     assert_eq!(value.len(), 32);
 
-    let second = store.save_application(&app, None, Some(1)).await.unwrap();
+    let second = store
+        .save_application(&ApplicationTemplate::from(&app), None, Some(1))
+        .await
+        .unwrap();
     assert_eq!(store.pin_secrets(&second, &app).await.unwrap(), pins);
     let generations = store
         .secrets(&environment(&app))
@@ -461,7 +493,10 @@ async fn sibling_environment_deletions_do_not_block_another_environments_deploym
     let store = Store::open(temp.path().join("db")).await.unwrap();
     let app = application();
     let captured = with_secret(&app);
-    store.save_application(&captured, None, None).await.unwrap();
+    store
+        .save_application(&ApplicationTemplate::from(&captured), None, None)
+        .await
+        .unwrap();
     let production = environment(&app);
     let (MutationResponse::Environment(staging), _) = store
         .accept(
@@ -486,15 +521,15 @@ async fn sibling_environment_deletions_do_not_block_another_environments_deploym
     }
     // Production captures a deployment that mounts the secret, then the shared
     // configuration stops mounting it.
-    let deployment = store.request_deploy(&production, Some(1)).await.unwrap();
+    let deployment = store.request_deploy(&production, Some(2)).await.unwrap();
     store
         .accept(
             Mutation::Save {
-                application: Box::new(app.clone()),
+                application: Box::new(ApplicationTemplate::from(&app)),
                 expected_application_id: Some(app.id().to_string()),
                 deploy: false,
             },
-            Some(1),
+            Some(2),
             false,
             None,
         )
@@ -517,11 +552,11 @@ async fn sibling_environment_deletions_do_not_block_another_environments_deploym
         store
             .accept(
                 Mutation::Save {
-                    application: Box::new(captured.clone()),
+                    application: Box::new(ApplicationTemplate::from(&captured)),
                     expected_application_id: Some(app.id().to_string()),
                     deploy: false,
                 },
-                Some(2),
+                Some(3),
                 false,
                 None,
             )

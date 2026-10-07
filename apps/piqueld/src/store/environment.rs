@@ -43,8 +43,8 @@ impl Store {
         Ok(())
     }
 
-    /// Creates an environment of a live application under a freshly generated ID.
-    /// Applications being deleted are `Busy`.
+    /// Creates an environment of a live application under a freshly generated
+    /// ID, advancing the application revision. Applications being deleted are `Busy`.
     pub(super) async fn create_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &super::StoredApplication,
@@ -56,10 +56,22 @@ impl Store {
         }
         let id = EnvironmentId::parse(super::new_id("env")).map_err(StoreError::corrupt)?;
         Self::insert_environment_on(tx, application.application.id(), &id, name, now).await?;
+        Self::bump_generation_on(
+            tx,
+            application.application.id(),
+            application.generation,
+            None,
+        )
+        .await?;
         Ok(id)
     }
 
-    /// Renames an environment that is not being deleted. Its runtime is unaffected.
+    /// Renames an environment that is not being deleted, advancing the
+    /// application revision. Its runtime is unaffected. Names select
+    /// `[spec.environments.<name>]`, so a rename is refused while the saved
+    /// manifest configures the old or the new name, rather than silently
+    /// switching the configuration the environment deploys. It stays resolved
+    /// unless its configuration renders the name, e.g. `${{ env.name }}`.
     pub(super) async fn rename_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
@@ -73,6 +85,16 @@ impl Store {
         if old == name {
             return Ok(());
         }
+        if let Some(configured) = [old, name]
+            .into_iter()
+            .find(|name| environment.manifest().configures(name))
+        {
+            return Err(StoreError::EnvironmentConfigured {
+                environment: configured.clone(),
+            });
+        }
+        let manifest = environment.manifest();
+        let stale = (!manifest.renders_like(old, manifest, name)).then(|| environment.id());
         let (id, name) = (environment.id().as_str(), name.as_str());
         sqlx::query!(
             "UPDATE environments SET name=?1,updated_at_ms=?2 WHERE id=?3",
@@ -93,12 +115,12 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        Ok(())
+        Self::bump_generation_on(tx, manifest.id(), environment.application.generation, stale).await
     }
 
-    /// Persists an environment's deletion intent and requests its delete operation.
-    /// Its application's revision is unchanged. Returns `IllegalTransition` when
-    /// deletion is already pending.
+    /// Persists an environment's deletion intent and requests its delete
+    /// operation. Callers advance the application revision. Returns
+    /// `IllegalTransition` when deletion is already pending.
     pub(crate) async fn request_delete_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &EnvironmentId,
@@ -122,12 +144,32 @@ impl Store {
         Ok(operation)
     }
 
-    /// Deletes an environment without a precondition. See `request_delete_on`.
+    /// Requests deletion of one environment and advances its application
+    /// revision, since environment names select configuration.
+    pub(super) async fn delete_environment_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        environment: &StoredEnvironment,
+    ) -> Result<Operation, StoreError> {
+        let operation = Self::request_delete_on(tx, environment.id()).await?;
+        Self::bump_generation_on(
+            tx,
+            environment.manifest().id(),
+            environment.application.generation,
+            None,
+        )
+        .await?;
+        Ok(operation)
+    }
+
+    /// Deletes an environment without a precondition. See `delete_environment_on`.
     /// # Errors
-    /// Returns storage or illegal transition errors.
+    /// Returns storage, absence, or illegal transition errors.
     pub async fn request_delete(&self, id: &EnvironmentId) -> Result<Operation, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let result = Self::request_delete_on(&mut tx, id).await?;
+        let environment = Self::environment_on(&mut tx, id.as_str())
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        let result = Self::delete_environment_on(&mut tx, &environment).await?;
         Self::commit_environment_changes(tx, [id.as_str()]).await?;
         Ok(result)
     }

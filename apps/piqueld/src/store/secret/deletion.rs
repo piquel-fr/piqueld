@@ -1,5 +1,7 @@
 //! Reserve cleanup under the writer lock, then release it before Docker I/O.
 use super::{EnvironmentId, NormalizedApplication, Store, StoreError};
+use piqueld_core::ApplicationId;
+use std::collections::BTreeSet;
 
 /// A reserved secret deletion: its token and the Swarm secret names to remove.
 pub(crate) struct SecretDeletion {
@@ -10,24 +12,24 @@ pub(crate) struct SecretDeletion {
 
 /// Environments whose pending secret deletions a manifest must not reference.
 pub(crate) enum SecretScope<'a> {
-    /// Every environment of the manifest's application: saved configuration is
-    /// shared by all of them.
-    Application,
+    /// Every environment of the application: saved configuration is shared by
+    /// all of them.
+    Application(&'a ApplicationId),
     /// The one environment a deployment prepares.
     Environment(&'a EnvironmentId),
 }
 
 impl Store {
-    /// Rejects a manifest that references a secret currently being deleted
-    /// from an environment in `scope`.
+    /// Rejects a manifest mounting `mounted` secrets when one of them is
+    /// currently being deleted from an environment in `scope`.
     pub(crate) async fn check_secret_references(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        app: &NormalizedApplication,
+        mounted: &BTreeSet<&str>,
         scope: SecretScope<'_>,
     ) -> Result<(), StoreError> {
         let deleting = match scope {
-            SecretScope::Application => {
-                let id = app.id().as_str();
+            SecretScope::Application(application) => {
+                let id = application.as_str();
                 sqlx::query_scalar!("SELECT name FROM environment_secrets WHERE environment_id IN (SELECT id FROM environments WHERE application_id=?1) AND deletion_id IS NOT NULL",id)
                     .fetch_all(&mut **tx).await
             }
@@ -38,18 +40,10 @@ impl Store {
             }
         }
         .map_err(StoreError::database)?;
-        if deleting
-            .iter()
-            .any(|name| Self::references_secret(app, name))
-        {
+        if deleting.iter().any(|name| mounted.contains(name.as_str())) {
             return Err(StoreError::SecretDeleting);
         }
         Ok(())
-    }
-
-    /// Whether any service in `app` mounts the named secret.
-    fn references_secret(app: &NormalizedApplication, name: &str) -> bool {
-        app.spec().mounted_secret_names().contains(name)
     }
 
     /// Reserves a secret for deletion and returns the runtime versions to remove.
@@ -83,19 +77,20 @@ impl Store {
             let captured = sqlx::query_scalar!("SELECT d.manifest_json FROM deployments d JOIN operations o ON o.id=d.id WHERE o.environment_id=?1 AND o.state!='superseded' AND o.id=(SELECT id FROM operations WHERE environment_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1)",id)
                 .fetch_optional(&mut *tx).await.map_err(StoreError::database)?;
             let captured = captured
-                .map(|json| serde_json::from_str::<NormalizedApplication>(&json))
+                .map(|json| serde_json::from_str::<Option<NormalizedApplication>>(&json))
                 .transpose()
-                .map_err(StoreError::corrupt)?;
+                .map_err(StoreError::corrupt)?
+                .flatten();
             let pins = sqlx::query_scalar!("SELECT COUNT(*) FROM deployment_secret_pins p JOIN operations o ON o.id=p.operation_id WHERE p.environment_id=?1 AND p.name=?2 AND o.state!='superseded' AND o.id=(SELECT id FROM operations WHERE environment_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1)",id,name)
                 .fetch_one(&mut *tx).await.map_err(StoreError::database)?;
             let active = app
                 .resolved
                 .as_ref()
                 .is_some_and(|r| r.secret_names.values().any(|n| versions.contains(n)));
-            if Self::references_secret(&app.application.application, name)
+            if app.manifest().spec().mounted_secret_names().contains(name)
                 || captured
                     .as_ref()
-                    .is_some_and(|a| Self::references_secret(a, name))
+                    .is_some_and(|a| a.spec().mounted_secret_names().contains(name))
                 || pins > 0
                 || active
             {

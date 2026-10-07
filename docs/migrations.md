@@ -130,6 +130,15 @@ Stored operation records and request receipts that still say `application_id`
 keep decoding. An older daemon rejects the migrated schema; restore the
 pre-upgrade backup to roll back.
 
+`0013_manifest_variables.sql` makes saved manifests templates in which
+`${{ namespace.name }}` references a variable. It escapes any `${{` already in
+saved manifests and pending deployment candidates as `$${{`, so their text keeps
+its meaning. Deployments gain `template_json`, the manifest as captured with
+references unresolved, and `variables_json`, the values they rendered to;
+existing deployments record their literal manifest and no variables.
+`manifest_json` keeps the rendered manifest, which is JSON `null` until a
+repository-backed manifest is fetched.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

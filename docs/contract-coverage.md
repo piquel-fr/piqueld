@@ -7,6 +7,7 @@ when changing behavior.
 | Contract | Existing coverage |
 | --- | --- |
 | Manifest formats, defaults, rejection, canonical hashing | `piqueld-core/tests/manifests.rs` and manifest fixtures |
+| Manifest variables: reference syntax, declarations, rendering per environment | `piqueld-core/tests/variables.rs` |
 | Git source validation and immutable resolution | `piqueld-core/tests/git_sources.rs` |
 | Ownership, drift fields, cleanup gating, volume retention | `piqueld-core/tests/resource_planning.rs` |
 | Operation transitions and failure classification | Core lifecycle tests and `piqueld/tests/fake_docker.rs` |

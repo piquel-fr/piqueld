@@ -3,14 +3,16 @@ use super::views::{application_view, detail_diagnostics, observed_view, status_v
 use super::{ApplicationError, ApplicationService, BoundaryError};
 use crate::store::{StoreError, StoredEnvironment};
 use piqueld_core::{
-    ApplicationId, EnvironmentId, NormalizedApplication, ObservedApplication, Plan, PlanRequest,
-    ResolutionSet, ValidatedApplication,
+    ApplicationId, EnvironmentId, EnvironmentName, NormalizedApplication, ObservedApplication,
+    Plan, PlanRequest, ResolutionSet,
     api::{
         ApplicationSummary, ApplicationView, DiagnosticView, EnvironmentDetailView,
         EnvironmentStatusView, EnvironmentView, MAX_APPLICATION_PAGE_SIZE, ManifestChange, Page,
         PlanView, ServiceRolloutView,
     },
-    compile_application, preview_resolution,
+    compile_application,
+    manifest::{RenderContext, Rendering, ValidatedTemplate},
+    preview_resolution,
 };
 
 impl ApplicationService {
@@ -113,19 +115,22 @@ impl ApplicationService {
     ///
     /// Checks the generation and identity preconditions when supplied (unlike
     /// apply, they are optional). For `environment`, or the application's only
-    /// environment when it is omitted, builds a runtime plan against its current
-    /// observation and diffs the manifest against its latest deployment's
-    /// captured input (no baseline after a delete). Without an environment and
-    /// with several (or none), diffs against the saved configuration without a
-    /// runtime plan, since apply deploys none of them. An `environment` of
-    /// another application is `NotFound`.
+    /// environment when it is omitted, renders the manifest for it (see
+    /// [`RenderContext::preview`]), builds a runtime plan against its current
+    /// observation, and diffs it against its latest deployment's rendered
+    /// manifest (no baseline after a delete). Without an environment and with
+    /// several, diffs the saved manifest without rendering or a runtime plan,
+    /// since apply deploys none of them. A new application renders for its
+    /// first environment. An `environment` of another application is
+    /// `NotFound`. `[spec.environments.<name>]` blocks naming no environment
+    /// are warnings.
     /// # Errors
-    /// Returns precondition, storage, or runtime errors.
+    /// Returns precondition, rendering, storage, or runtime errors.
     /// # Panics
     /// Panics if the built-in preview application ID is invalid.
     pub async fn plan(
         &self,
-        manifest: ValidatedApplication,
+        manifest: ValidatedTemplate,
         expected: Option<u64>,
         expected_id: Option<String>,
         environment: Option<&EnvironmentId>,
@@ -147,57 +152,138 @@ impl ApplicationService {
             || ApplicationId::parse("preview-application").expect("valid preview ID"),
             |app| app.application.id().clone(),
         );
-        let application = manifest.normalize(id.clone());
-        let environment = match (environment, &current) {
-            (Some(environment), Some(_)) => {
+        let template = manifest.normalize(id.clone());
+        let environments = match &current {
+            Some(_) => self.store.environments(&id).await?,
+            None => Vec::new(),
+        };
+        let environment = self
+            .plan_environment(environment, current.is_some(), &id, &environments)
+            .await?;
+        let render = |environment: EnvironmentName| -> Result<Rendering, StoreError> {
+            Ok(template.render(&RenderContext::preview(environment, template.spec()))?)
+        };
+        let (operation, identical, changes, rendering, mut plan) = if let Some(environment) =
+            &environment
+        {
+            let rendering = render(environment.environment.name.clone())?;
+            let (operation, baseline) = self.latest_deployment(environment.id()).await?;
+            let plan = self
+                .preview_plan(&rendering.application, environment.id(), Some(environment))
+                .await?;
+            let proposed = rendering.application.spec();
+            (
+                operation,
+                baseline.as_ref().is_some_and(|app| app.spec() == proposed),
+                ManifestChange::between(
+                    baseline.map(|app| app.spec().to_input()).as_ref(),
+                    &proposed.to_input(),
+                ),
+                Some(rendering),
+                plan,
+            )
+        } else if let Some(current) = &current {
+            let saved = current.application.spec();
+            (
+                None,
+                saved == template.spec(),
+                ManifestChange::between(Some(saved), template.spec()),
+                None,
+                Plan::default(),
+            )
+        } else {
+            let rendering = render(EnvironmentName::default_name())?;
+            let environment = EnvironmentId::default_for(&id);
+            let plan = self
+                .preview_plan(&rendering.application, &environment, None)
+                .await?;
+            let changes = ManifestChange::between(None, &rendering.application.spec().to_input());
+            (None, false, changes, Some(rendering), plan)
+        };
+        let names = match &current {
+            Some(_) => environments
+                .into_iter()
+                .map(|environment| environment.name)
+                .collect(),
+            None => vec![EnvironmentName::default_name()],
+        };
+        plan.warn_environments(&template, &names);
+        let (rollouts, variables) = match rendering {
+            Some(rendering) => {
+                plan.warn_rollouts(&rendering.application);
+                (
+                    ServiceRolloutView::for_application(&rendering.application),
+                    rendering.values,
+                )
+            }
+            None => (Vec::new(), std::collections::BTreeMap::new()),
+        };
+        Ok(PlanView {
+            application_id: id.to_string(),
+            generation: current.as_ref().map_or(0, |app| app.generation),
+            identical,
+            operation,
+            changes,
+            plan,
+            rollouts,
+            variables,
+        })
+    }
+    /// The environment's latest operation and, unless it deletes, the
+    /// manifest it rendered.
+    async fn latest_deployment(
+        &self,
+        environment: &EnvironmentId,
+    ) -> Result<
+        (
+            Option<piqueld_core::Operation>,
+            Option<NormalizedApplication>,
+        ),
+        StoreError,
+    > {
+        let operation = self
+            .store
+            .latest_operation_for_environment(environment)
+            .await?;
+        let baseline = match &operation {
+            Some(op) if op.kind != piqueld_core::OperationKind::Delete => self
+                .store
+                .deployment_snapshot(&op.id)
+                .await?
+                .rendering
+                .map(|rendering| rendering.application),
+            _ => None,
+        };
+        Ok((operation, baseline))
+    }
+
+    /// The environment a plan compares with: `selected`, which must belong to
+    /// application `id`, or its only environment. `None` with several
+    /// environments, or for a new application.
+    async fn plan_environment(
+        &self,
+        selected: Option<&EnvironmentId>,
+        exists: bool,
+        id: &ApplicationId,
+        environments: &[EnvironmentView],
+    ) -> Result<Option<StoredEnvironment>, ApplicationError> {
+        Ok(match (selected, exists) {
+            (Some(environment), true) => {
                 let environment = self.store.get(environment).await?;
-                if environment.environment.application_id != id {
+                if environment.environment.application_id != *id {
                     return Err(StoreError::NotFound.into());
                 }
                 Some(environment)
             }
-            (Some(_), None) => return Err(StoreError::NotFound.into()),
-            (None, Some(_)) => match self.store.environments(&id).await?.as_slice() {
+            (Some(_), false) => return Err(StoreError::NotFound.into()),
+            (None, true) => match environments {
                 [environment] => Some(self.store.get(&environment.id).await?),
                 _ => None,
             },
-            (None, None) => None,
-        };
-        let (operation, baseline, mut plan) = if let Some(environment) = &environment {
-            let operation = self
-                .store
-                .latest_operation_for_environment(environment.id())
-                .await?;
-            let baseline = match &operation {
-                Some(op) if op.kind != piqueld_core::OperationKind::Delete => {
-                    Some(self.store.deployment_manifest(&op.id).await?)
-                }
-                _ => None,
-            };
-            let plan = self
-                .preview_plan(&application, environment.id(), Some(environment))
-                .await?;
-            (operation, baseline, plan)
-        } else if let Some(current) = &current {
-            (None, Some(current.application.clone()), Plan::default())
-        } else {
-            let environment = EnvironmentId::default_for(&id);
-            let plan = self.preview_plan(&application, &environment, None).await?;
-            (None, None, plan)
-        };
-        plan.warn_rollouts(&application);
-        Ok(PlanView {
-            application_id: id.to_string(),
-            generation: current.as_ref().map_or(0, |app| app.generation),
-            identical: baseline
-                .as_ref()
-                .is_some_and(|app| app.spec() == application.spec()),
-            operation,
-            changes: ManifestChange::between(baseline.as_ref(), &application),
-            plan,
-            rollouts: ServiceRolloutView::for_application(&application),
+            (None, false) => None,
         })
     }
+
     /// Plans the runtime changes for `app` in `environment` against the
     /// current observation of `current`, or of nothing for a new environment.
     ///

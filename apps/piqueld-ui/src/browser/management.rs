@@ -8,6 +8,7 @@ mod routes;
 mod secrets;
 mod services;
 mod settings;
+mod variables;
 
 use super::format::timestamp;
 use super::runtime::RuntimeOverview;
@@ -33,11 +34,12 @@ use secrets::{EnvironmentSecrets, SecretFileSettings};
 use settings::{MetadataSettings, NewService, RepositorySettings, VolumeSettings};
 use std::collections::BTreeSet;
 
-const APPLICATION_TABS: [&str; 10] = [
+const APPLICATION_TABS: [&str; 11] = [
     "Overview",
     "Environments",
     "Services",
     "Source",
+    "Variables",
     "Routes",
     "Volumes",
     "Jobs",
@@ -191,7 +193,7 @@ impl EditorContext {
             self.set_error(Some(error.to_string()));
             return;
         }
-        let validated = match manifest.validate() {
+        let validated = match manifest.validate_template() {
             Ok(v) => v,
             Err(error) => {
                 self.set_error(Some(error.to_string()));
@@ -748,6 +750,7 @@ fn EnvironmentPage() -> impl IntoView {
         <div hidden={move || context.tab.get() != "Overview"}>
             <div class="stack">
                 <RuntimeOverview />
+                <variables::EnvironmentVariables />
                 <environments::EnvironmentSettings />
             </div>
         </div>
@@ -980,7 +983,7 @@ fn ApplicationSettings() -> impl IntoView {
         <div hidden={move || {
             !matches!(
                 context.tab.get(),
-                "Source" | "Services" | "Routes" | "Volumes" | "Jobs" | "Secrets"
+                "Source" | "Services" | "Variables" | "Routes" | "Volumes" | "Jobs" | "Secrets"
             )
         }}>
             <div class="stack">
@@ -990,7 +993,7 @@ fn ApplicationSettings() -> impl IntoView {
                         .then(|| {
                             notice(
                                 Tone::Info,
-                                "Runtime configuration is managed in Git. Disconnect the repository in Source to edit services, routes, volumes, jobs, and secret files here.",
+                                "Runtime configuration is managed in Git. Disconnect the repository in Source to edit services, variables, routes, volumes, jobs, and secret files here.",
                             )
                         })
                 }} <div hidden={move || context.tab.get() != "Source"}>
@@ -1007,6 +1010,9 @@ fn ApplicationSettings() -> impl IntoView {
                             <NewService />
                         </div>
                         <services::ServiceList />
+                    </div>
+                    <div hidden={move || context.tab.get() != "Variables"}>
+                        <variables::VariableSettings />
                     </div>
                     <div hidden={move || context.tab.get() != "Routes"}>
                         <routes::RouteSettings />

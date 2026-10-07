@@ -540,6 +540,7 @@ impl EventRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use piqueld_core::manifest::ApplicationTemplate;
     use sqlx::{Execute, Row};
 
     #[tokio::test]
@@ -551,7 +552,10 @@ mod tests {
         ))
         .unwrap()
         .normalize(ApplicationId::parse("app-event-test").unwrap());
-        store.save_application(&app, None, None).await.unwrap();
+        store
+            .save_application(&ApplicationTemplate::from(&app), None, None)
+            .await
+            .unwrap();
         // An environment deleted while a command was running.
         let deleted = EnvironmentId::parse("env-deleted").unwrap();
         let gone = ApplicationId::parse("app-deleted").unwrap();

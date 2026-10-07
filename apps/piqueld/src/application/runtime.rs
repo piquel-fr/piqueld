@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use piqueld_core::{
     EnvironmentId, InstanceId, NormalizedApplication, ResolutionSet, compile_application,
-    manifest::{Source, SourceRepository},
+    manifest::{SourceRepository, ValidatedSource as Source},
     resource::ResolvedSource,
 };
 use std::sync::Arc;
@@ -331,7 +331,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
         service: &str,
         source: &Source,
         repository: &piqueld_core::manifest::GitRepository,
-        build: &piqueld_core::manifest::Build,
+        build: &piqueld_core::manifest::ValidatedBuild,
         docker: &D,
     ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
         let Some((store, operation)) = &self.progress else {

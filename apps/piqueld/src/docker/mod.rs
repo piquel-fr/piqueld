@@ -20,7 +20,9 @@ use bollard::{
     },
 };
 use futures_util::{StreamExt, TryStreamExt, stream};
-use piqueld_core::manifest::{HealthCheck, ResourceLimits};
+use piqueld_core::manifest::{
+    ValidatedHealthCheck as HealthCheck, ValidatedResourceLimits as ResourceLimits,
+};
 use piqueld_core::resource::{
     APPLICATION_LABEL, Convergence, DesiredNetwork, DesiredService, DesiredVolume,
     INGRESS_PROXIES_ENV, INSTANCE_LABEL, MANAGED_LABEL, NetworkAttachment, ObservedMount,

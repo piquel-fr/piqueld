@@ -1,13 +1,34 @@
 //! Per-service rollout settings and the update policy they resolve to.
 
+use super::variables::Typed;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// Optional `rollout` block of a service. Omitted fields keep their defaults,
 /// so an empty block is equivalent to no block.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Rollout {
+    /// Update order; derived from the service's mounts when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<Typed<RolloutOrder>>,
+    /// Seconds Docker watches each replacement task for failure; 30 when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monitor_seconds: Option<Typed<u32>>,
+}
+
+impl Rollout {
+    /// Whether no setting is given; such blocks are omitted on export.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Validated rollout settings of a service.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ValidatedRollout {
     /// Update order; derived from the service's mounts when omitted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub order: Option<RolloutOrder>,
@@ -15,6 +36,15 @@ pub struct Rollout {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(minimum = 1, maximum = 3600)]
     pub monitor_seconds: Option<u32>,
+}
+
+impl From<ValidatedRollout> for Rollout {
+    fn from(value: ValidatedRollout) -> Self {
+        Self {
+            order: value.order.map(Typed::Literal),
+            monitor_seconds: value.monitor_seconds.map(Typed::Literal),
+        }
+    }
 }
 
 /// Whether Docker stops a task before or after starting its replacement.
@@ -47,7 +77,7 @@ pub struct RolloutPolicy {
     pub monitor_seconds: u32,
 }
 
-impl Rollout {
+impl ValidatedRollout {
     /// Monitor window applied when a service declares none.
     pub const DEFAULT_MONITOR_SECONDS: u32 = 30;
     /// Longest monitor window a service may declare.
@@ -144,19 +174,19 @@ mod tests {
 
     #[test]
     fn effective_policy_derives_order_from_mounts_unless_explicit() {
-        let derived = Rollout::default();
+        let derived = ValidatedRollout::default();
         assert_eq!(
             derived.policy([]),
             RolloutPolicy {
                 order: RolloutOrder::StartFirst,
-                monitor_seconds: Rollout::DEFAULT_MONITOR_SECONDS,
+                monitor_seconds: ValidatedRollout::DEFAULT_MONITOR_SECONDS,
             }
         );
         assert_eq!(derived.policy([true]).order, RolloutOrder::StartFirst);
         assert_eq!(derived.policy([true, false]).order, RolloutOrder::StopFirst);
         assert_eq!(derived.order_source(), RolloutOrderSource::Derived);
 
-        let explicit = Rollout {
+        let explicit = ValidatedRollout {
             order: Some(RolloutOrder::StartFirst),
             monitor_seconds: Some(5),
         };
@@ -168,7 +198,7 @@ mod tests {
             }
         );
         assert_eq!(explicit.order_source(), RolloutOrderSource::Explicit);
-        let stop_first = Rollout {
+        let stop_first = ValidatedRollout {
             order: Some(RolloutOrder::StopFirst),
             monitor_seconds: None,
         };
@@ -177,12 +207,12 @@ mod tests {
 
     #[test]
     fn only_explicit_start_first_with_a_writable_volume_overlaps() {
-        let start_first = Rollout {
+        let start_first = ValidatedRollout {
             order: Some(RolloutOrder::StartFirst),
             monitor_seconds: None,
         };
         assert!(start_first.overlaps_writable_volume([true, false]));
         assert!(!start_first.overlaps_writable_volume([true]));
-        assert!(!Rollout::default().overlaps_writable_volume([false]));
+        assert!(!ValidatedRollout::default().overlaps_writable_volume([false]));
     }
 }

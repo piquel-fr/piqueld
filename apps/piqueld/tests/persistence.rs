@@ -1,6 +1,7 @@
 //! Durable desired state and operation history.
 
 use piqueld::store::{Store, StoreError};
+use piqueld_core::manifest::ApplicationTemplate;
 use piqueld_core::resource::{ResolutionSet, ResolvedSource, compile_application};
 use piqueld_core::{ApplicationId, EnvironmentId, InstanceId, OperationState, parse_toml};
 use sqlx::{Connection, SqliteConnection};
@@ -61,7 +62,11 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     let application = application();
     let desired = resolved(&application, store.instance_id());
     let created = store
-        .save_application(&application, Some(&desired), None)
+        .save_application(
+            &ApplicationTemplate::from(&application),
+            Some(&desired),
+            None,
+        )
         .await
         .expect("application saved");
     let stored = store
@@ -151,21 +156,21 @@ async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation
     let application = application();
     let first = store
         .save_application(
-            &application,
+            &ApplicationTemplate::from(&application),
             Some(&resolved(&application, store.instance_id())),
             None,
         )
         .await
         .unwrap();
     let mut replacement = application.to_manifest();
-    replacement.spec.services[0].replicas = 2;
+    replacement.spec.services[0].replicas = 2.into();
     let replacement = replacement
         .validate()
         .unwrap()
         .normalize(application.id().clone());
     let replaced = store
         .save_application(
-            &replacement,
+            &ApplicationTemplate::from(&replacement),
             Some(&resolved(&replacement, store.instance_id())),
             None,
         )
@@ -183,7 +188,7 @@ async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation
             .unwrap()
             .application
             .application,
-        replacement
+        ApplicationTemplate::from(&replacement)
     );
     store
         .transition_operation(
@@ -226,7 +231,7 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
     let healthy = application_named("app-persist-02", "archive");
     store
         .save_application(
-            &corrupt,
+            &ApplicationTemplate::from(&corrupt),
             Some(&resolved(&corrupt, store.instance_id())),
             None,
         )
@@ -234,7 +239,7 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
         .expect("corrupt application is created");
     store
         .save_application(
-            &healthy,
+            &ApplicationTemplate::from(&healthy),
             Some(&resolved(&healthy, store.instance_id())),
             None,
         )
@@ -274,12 +279,20 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
     // applications stay reachable on later pages.
     let third = application_named("app-persist-03", "gallery");
     store
-        .save_application(&third, Some(&resolved(&third, store.instance_id())), None)
+        .save_application(
+            &ApplicationTemplate::from(&third),
+            Some(&resolved(&third, store.instance_id())),
+            None,
+        )
         .await
         .expect("third application is created");
     let fourth = application_named("app-persist-04", "wiki");
     store
-        .save_application(&fourth, Some(&resolved(&fourth, store.instance_id())), None)
+        .save_application(
+            &ApplicationTemplate::from(&fourth),
+            Some(&resolved(&fourth, store.instance_id())),
+            None,
+        )
         .await
         .expect("fourth application is created");
 
@@ -323,7 +336,7 @@ async fn deployment_history_survives_pruning_and_events_have_independent_retenti
     let app = application();
     let desired = resolved(&app, store.instance_id());
     let first = store
-        .save_application(&app, Some(&desired), Some(0))
+        .save_application(&ApplicationTemplate::from(&app), Some(&desired), Some(0))
         .await
         .unwrap();
     let second = store
@@ -366,8 +379,14 @@ async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
     let store = Store::open(&database).await.unwrap();
     let app = application();
     let other = application_named("app-other", "other");
-    let initial = store.save_application(&app, None, Some(0)).await.unwrap();
-    store.save_application(&other, None, Some(0)).await.unwrap();
+    let initial = store
+        .save_application(&ApplicationTemplate::from(&app), None, Some(0))
+        .await
+        .unwrap();
+    store
+        .save_application(&ApplicationTemplate::from(&other), None, Some(0))
+        .await
+        .unwrap();
     let mut expected_deployments = vec![initial.id];
     for _ in 0..3 {
         expected_deployments.push(

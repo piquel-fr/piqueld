@@ -173,8 +173,8 @@ impl ApiError {
         }
     }
 
-    /// Maps environment selection failures selected by `From<StoreError>`,
-    /// listing the application's environments in `details.environments`.
+    /// Maps environment selection and rename failures selected by
+    /// `From<StoreError>`, naming the environments in `details`.
     ///
     /// Panics if given another variant; callers must pre-filter.
     fn from_environment_error(error: StoreError) -> Self {
@@ -191,6 +191,12 @@ impl ApiError {
                 "Deleting this application also deletes all its environments; confirm by naming every one",
             )
             .details(json!({"environments": environments})),
+            ref error @ StoreError::EnvironmentConfigured { ref environment } => Self::new(
+                StatusCode::CONFLICT,
+                "environment_configured",
+                error.to_string(),
+            )
+            .details(json!({"environment": environment})),
             other => unreachable!("non-environment storage error: {other}"),
         }
     }
@@ -223,7 +229,8 @@ impl From<StoreError> for ApiError {
             } => Self::new(StatusCode::CONFLICT, "hostname_conflict", error.to_string())
                 .details(json!({"hostname": hostname, "environment": environment})),
             error @ (StoreError::EnvironmentRequired { .. }
-            | StoreError::ConfirmationRequired { .. }) => Self::from_environment_error(error),
+            | StoreError::ConfirmationRequired { .. }
+            | StoreError::EnvironmentConfigured { .. }) => Self::from_environment_error(error),
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "generation_conflict",
@@ -881,7 +888,7 @@ fn parse_manifest(
     body: &[u8],
 ) -> Result<
     (
-        piqueld_core::ValidatedApplication,
+        piqueld_core::manifest::ValidatedTemplate,
         Option<u64>,
         Option<String>,
     ),
@@ -891,7 +898,7 @@ fn parse_manifest(
         Some(value) if value.eq_ignore_ascii_case(JSON) => {
             let request: ApplyApplicationRequest = decode_json(body)?;
             Ok((
-                request.manifest.validate()?,
+                request.manifest.validate_template()?,
                 request.expected_generation,
                 request.expected_application_id,
             ))
@@ -931,7 +938,7 @@ fn parse_manifest(
                     .transpose()?
             };
             Ok((
-                piqueld_core::parse_toml(text)?,
+                piqueld_core::manifest::parse_template_toml(text)?,
                 expected,
                 optional_header(headers, "x-expected-application-id")?,
             ))

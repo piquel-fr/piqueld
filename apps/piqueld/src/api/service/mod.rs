@@ -16,8 +16,9 @@ use crate::{
 pub use exec::ExecSession;
 pub use history::ManifestExport;
 use piqueld_core::{
-    ApplicationId, EnvironmentId, EnvironmentName, NormalizedApplication, ValidatedApplication,
+    ApplicationId, EnvironmentId, EnvironmentName,
     api::SecretMetadata,
+    manifest::{ApplicationTemplate, ValidatedTemplate},
 };
 use std::sync::Arc;
 
@@ -60,8 +61,8 @@ pub enum ApplicationError {
 pub enum Mutation {
     /// Save configuration, optionally deploying its snapshot atomically.
     Save {
-        /// Normalized configuration.
-        application: Box<NormalizedApplication>,
+        /// Validated configuration, with references unresolved.
+        application: Box<ApplicationTemplate>,
         /// Inspected application identity.
         expected_application_id: Option<String>,
         /// Whether to create a deployment of the only environment after saving.
@@ -152,7 +153,7 @@ impl Mutation {
     /// Panics if the built-in placeholder ID is invalid.
     #[must_use]
     pub fn save(
-        manifest: ValidatedApplication,
+        manifest: ValidatedTemplate,
         expected_application_id: Option<String>,
         deploy: bool,
     ) -> Self {
@@ -165,7 +166,7 @@ impl Mutation {
 
     /// Normalizes under the `pending-application` placeholder ID; the store
     /// replaces it with the real (existing or newly minted) ID on acceptance.
-    fn pending_application(manifest: ValidatedApplication) -> NormalizedApplication {
+    fn pending_application(manifest: ValidatedTemplate) -> ApplicationTemplate {
         manifest
             .normalize(ApplicationId::parse("pending-application").expect("valid placeholder ID"))
     }

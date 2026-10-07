@@ -61,7 +61,7 @@ pub(super) fn ServiceList() -> impl IntoView {
                     .into_iter()
                     .map(|service| {
                         let source = match &service.source {
-                            Source::Image { image } => image.clone(),
+                            Source::Image { image } => image.to_string(),
                             Source::Git { repository, .. } => format!("Git · {repository}"),
                         };
                         let runtime = observed(&service.name);

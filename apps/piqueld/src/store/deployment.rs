@@ -1,13 +1,45 @@
 //! Saved configuration and immutable deployment inputs. Saving never creates work.
 use super::{EnvironmentId, NormalizedApplication, Operation, Store, StoreError, now_ms};
-use piqueld_core::api::{DeploymentView, Page, SavedApplication};
+use piqueld_core::{
+    api::{DeploymentView, Page, SavedApplication},
+    manifest::{ApplicationTemplate, Rendering, VariableValue},
+};
 use sqlx::{Sqlite, Transaction};
+use std::collections::BTreeMap;
 
 /// `deployments` row shared by the first-page and cursor page queries.
 struct DeploymentRow {
     id: String,
     manifest_json: String,
+    template_json: String,
+    variables_json: String,
     succeeded_at_ms: Option<i64>,
+}
+
+/// A deployment's captured inputs.
+pub(crate) struct Snapshot {
+    /// The manifest as captured, with references unresolved.
+    pub(crate) template: ApplicationTemplate,
+    /// The rendered manifest and its values; absent until a
+    /// repository-backed manifest is fetched.
+    pub(crate) rendering: Option<Rendering>,
+}
+
+impl DeploymentRow {
+    /// Decodes the captured columns.
+    fn snapshot(&self) -> Result<Snapshot, StoreError> {
+        let application: Option<NormalizedApplication> =
+            serde_json::from_str(&self.manifest_json).map_err(StoreError::corrupt)?;
+        let values: BTreeMap<String, VariableValue> =
+            serde_json::from_str(&self.variables_json).map_err(StoreError::corrupt)?;
+        Ok(Snapshot {
+            template: serde_json::from_str(&self.template_json).map_err(StoreError::corrupt)?,
+            rendering: application.map(|application| Rendering {
+                application,
+                values,
+            }),
+        })
+    }
 }
 
 impl Store {
@@ -18,10 +50,15 @@ impl Store {
     /// name, and `SecretDeleting` for manifests that reference secrets being deleted.
     pub(super) async fn save_configuration_on(
         tx: &mut Transaction<'_, Sqlite>,
-        app: &NormalizedApplication,
+        app: &ApplicationTemplate,
         expected: Option<u64>,
     ) -> Result<SavedApplication, StoreError> {
-        Self::check_secret_references(tx, app, super::secret::SecretScope::Application).await?;
+        Self::check_secret_references(
+            tx,
+            &app.spec().mounted_secret_names(),
+            super::secret::SecretScope::Application(app.id()),
+        )
+        .await?;
         let id = app.id().as_str();
         let previous = Self::generation_on(tx, id, expected).await?;
         let generation = previous.checked_add(1).ok_or(StoreError::InvalidInput)?;
@@ -43,28 +80,64 @@ impl Store {
         })
     }
 
-    /// Snapshots the application's current manifest as operation `id`'s deployment
-    /// record; repository-backed deploys later replace it with the fetched manifest.
+    /// Snapshots the saved manifest of `environment` as operation `id`'s
+    /// deployment record, rendered for that environment, together with the
+    /// values its references resolved to, so retries never read variables
+    /// again. A reference without a value fails the request. Repository-backed
+    /// manifests are rendered once fetched, when their revision is known.
     /// The deployment row shares the operation's ID.
     pub(super) async fn capture_deployment(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
+        environment: &EnvironmentId,
     ) -> Result<(), StoreError> {
-        sqlx::query!("INSERT INTO deployments(id,environment_id,manifest_json,generation,created_at_ms) SELECT o.id,o.environment_id,a.desired_json,o.generation,o.created_at_ms FROM operations o JOIN environments e ON e.id=o.environment_id JOIN applications a ON a.id=e.application_id WHERE o.id=?1",id)
+        let environment = Self::environment_on(tx, environment.as_str())
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        let template = environment.manifest();
+        let rendering = if template.spec().manifest.is_some() {
+            None
+        } else {
+            Some(environment.render(template, id)?)
+        };
+        let (manifest, variables) = Self::snapshot_json(rendering.as_ref())?;
+        let template = template.canonical_json().map_err(StoreError::corrupt)?;
+        sqlx::query!("INSERT INTO deployments(id,environment_id,manifest_json,template_json,variables_json,generation,created_at_ms) SELECT id,environment_id,?2,?3,?4,generation,created_at_ms FROM operations WHERE id=?1",id,manifest,template,variables)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
         Ok(())
     }
 
-    /// Reads the input captured for an execution, never the editable application.
+    /// The rendered manifest (JSON null when absent) and values columns.
+    pub(super) fn snapshot_json(
+        rendering: Option<&Rendering>,
+    ) -> Result<(String, String), StoreError> {
+        let manifest = rendering
+            .map(|rendering| rendering.application.canonical_json())
+            .transpose()
+            .map_err(StoreError::corrupt)?
+            .unwrap_or_else(|| "null".into());
+        let variables = rendering
+            .map(|rendering| serde_json::to_string(&rendering.values))
+            .transpose()
+            .map_err(StoreError::corrupt)?
+            .unwrap_or_else(|| "{}".into());
+        Ok((manifest, variables))
+    }
+
+    /// Reads the inputs captured for an execution, never the editable application.
     /// # Errors
     /// Returns storage, decoding, or absence errors.
-    pub async fn deployment_manifest(&self, id: &str) -> Result<NormalizedApplication, StoreError> {
-        let json = sqlx::query_scalar!("SELECT manifest_json FROM deployments WHERE id=?1", id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(StoreError::database)?
-            .ok_or(StoreError::NotFound)?;
-        serde_json::from_str(&json).map_err(StoreError::corrupt)
+    pub(crate) async fn deployment_snapshot(&self, id: &str) -> Result<Snapshot, StoreError> {
+        sqlx::query_as!(
+            DeploymentRow,
+            r#"SELECT id AS "id!",manifest_json,template_json,variables_json,succeeded_at_ms FROM deployments WHERE id=?1"#,
+            id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::database)?
+        .ok_or(StoreError::NotFound)?
+        .snapshot()
     }
 
     /// Loads operation `id` and records its current attempt outcome.
@@ -119,7 +192,7 @@ impl Store {
         let mut rows = if let Some(before) = before {
             sqlx::query_as!(
                 DeploymentRow,
-                "SELECT id AS \"id!\",manifest_json,succeeded_at_ms FROM deployments
+                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,succeeded_at_ms FROM deployments
                  WHERE environment_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
                 app_id,
                 before,
@@ -130,7 +203,7 @@ impl Store {
         } else {
             sqlx::query_as!(
                 DeploymentRow,
-                "SELECT id AS \"id!\",manifest_json,succeeded_at_ms FROM deployments
+                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,succeeded_at_ms FROM deployments
                  WHERE environment_id=?1 ORDER BY id DESC LIMIT ?2",
                 app_id,
                 limit_sql
@@ -148,10 +221,16 @@ impl Store {
         let successful = sqlx::query_scalar!("SELECT id FROM deployments WHERE environment_id=?1 AND succeeded_at_ms IS NOT NULL ORDER BY id DESC LIMIT 1",app_id).fetch_optional(&mut *tx).await.map_err(StoreError::database)?.flatten();
         let mut items = Vec::with_capacity(rows.len());
         for row in rows {
+            let snapshot = row.snapshot()?;
+            let (application, variables) = snapshot.rendering.map_or_else(
+                || (None, BTreeMap::new()),
+                |rendering| (Some(rendering.application), rendering.values),
+            );
             items.push(DeploymentView {
                 operation: Self::operation_on(&mut tx, &row.id).await?,
-                application: serde_json::from_str(&row.manifest_json)
-                    .map_err(StoreError::corrupt)?,
+                template: snapshot.template,
+                variables,
+                application,
                 succeeded_at_ms: row.succeeded_at_ms,
                 current_target: current.as_ref() == Some(&row.id),
                 last_successful: successful.as_ref() == Some(&row.id),
@@ -200,8 +279,8 @@ mod tests {
     use crate::api::{Mutation, MutationResponse};
     use piqueld_core::{ApplicationState, OperationState};
 
-    fn empty() -> NormalizedApplication {
-        piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='empty'\n[spec]").unwrap().normalize(piqueld_core::ApplicationId::parse("app-empty-test").unwrap())
+    fn empty() -> ApplicationTemplate {
+        piqueld_core::manifest::parse_template_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='empty'\n[spec]").unwrap().normalize(piqueld_core::ApplicationId::parse("app-empty-test").unwrap())
     }
 
     /// The environment created with a saved application, which shares its ID.
@@ -209,7 +288,7 @@ mod tests {
         EnvironmentId::parse(saved.application_id.as_str()).unwrap()
     }
 
-    async fn save(store: &Store, app: NormalizedApplication, generation: u64) -> SavedApplication {
+    async fn save(store: &Store, app: ApplicationTemplate, generation: u64) -> SavedApplication {
         let (MutationResponse::Saved(saved), wake) = store
             .accept(
                 Mutation::Save {
@@ -256,7 +335,11 @@ mod tests {
         assert!(wake);
         let operation_id = deployed.operation_id.unwrap();
         assert_eq!(
-            store.deployment_manifest(&operation_id).await.unwrap(),
+            store
+                .deployment_snapshot(&operation_id)
+                .await
+                .unwrap()
+                .template,
             application
         );
         let (MutationResponse::Deleted(deletion), _) = store
@@ -343,9 +426,10 @@ mod tests {
         };
         assert!(wake);
         let original = store
-            .deployment_manifest(&deploy.operation_id)
+            .deployment_snapshot(&deploy.operation_id)
             .await
-            .unwrap();
+            .unwrap()
+            .template;
         store
             .transition_operation(
                 &deploy.operation_id,
@@ -359,7 +443,10 @@ mod tests {
         edited.spec.volumes.push(piqueld_core::manifest::Volume {
             name: "later".into(),
         });
-        let edited = edited.validate().unwrap().normalize(original.id().clone());
+        let edited = edited
+            .validate_template()
+            .unwrap()
+            .normalize(original.id().clone());
         let changed = save(&store, edited, 1).await;
         assert_eq!(changed.generation, 2);
         drop(store);
@@ -373,7 +460,10 @@ mod tests {
         assert!(attempts.items[0].finished_at_ms.is_some());
         assert_eq!(store.recover_interrupted().await.unwrap(), 0);
         assert_eq!(op.generation, 1);
-        assert_eq!(store.deployment_manifest(&op.id).await.unwrap(), original);
+        assert_eq!(
+            store.deployment_snapshot(&op.id).await.unwrap().template,
+            original
+        );
         let (MutationResponse::Operation(replay), wake) = store
             .accept(
                 Mutation::deploy(id.clone()),
@@ -415,7 +505,13 @@ mod tests {
         let id = environment(&saved);
         let op = store.request_deploy(&id, Some(1)).await.unwrap();
         let target = piqueld_core::compile_application(
-            &store.deployment_manifest(&op.id).await.unwrap(),
+            &store
+                .deployment_snapshot(&op.id)
+                .await
+                .unwrap()
+                .rendering
+                .unwrap()
+                .application,
             &id,
             piqueld_core::InstanceId::parse(store.instance_id()).unwrap(),
             &piqueld_core::ResolutionSet::default(),

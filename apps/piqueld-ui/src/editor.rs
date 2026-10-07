@@ -1,7 +1,10 @@
 //! Form drafts and section patches. Each save changes only its own settings group.
+//!
+//! Fields that accept `${{ }}` references keep them as text: typed fields
+//! parse either a literal or a reference when saved.
 use piqueld_client::{
     Build, GitRepository, HealthCheck, ManifestRepository, Mount, ResourceLimits, Rollout, Service,
-    Source, SourceRepository,
+    Source, SourceRepository, Template, Typed,
 };
 
 /// Independently saved service settings.
@@ -121,9 +124,13 @@ impl From<&Service> for ServiceForm {
             build_args: Vec::new(),
             target: String::new(),
             replicas: service.replicas.to_string(),
-            environment: service.environment.clone().into_iter().collect(),
-            command: service.command.clone(),
-            arguments: service.arguments.clone(),
+            environment: service
+                .environment
+                .iter()
+                .map(|(k, v)| (k.clone(), v.to_string()))
+                .collect(),
+            command: texts(&service.command),
+            arguments: texts(&service.arguments),
             mounts: service.mounts.clone(),
             health_kind: "none".into(),
             port: "8080".into(),
@@ -135,25 +142,24 @@ impl From<&Service> for ServiceForm {
             rollout_order: service
                 .rollout
                 .order
-                .map_or("derived", |order| order.as_str())
-                .into(),
-            monitor: service
-                .rollout
-                .monitor_seconds
-                .map_or_else(String::new, |v| v.to_string()),
-            cpu: service
-                .resources
                 .as_ref()
-                .and_then(|r| r.cpu_millis)
-                .map_or_else(String::new, |v| v.to_string()),
-            memory: service
-                .resources
-                .as_ref()
-                .and_then(|r| r.memory_bytes)
-                .map_or_else(String::new, |v| v.to_string()),
+                .map_or_else(|| "derived".into(), ToString::to_string),
+            monitor: optional_text(service.rollout.monitor_seconds.as_ref()),
+            cpu: optional_text(
+                service
+                    .resources
+                    .as_ref()
+                    .and_then(|r| r.cpu_millis.as_ref()),
+            ),
+            memory: optional_text(
+                service
+                    .resources
+                    .as_ref()
+                    .and_then(|r| r.memory_bytes.as_ref()),
+            ),
         };
         match &service.source {
-            Source::Image { image } => form.image.clone_from(image),
+            Source::Image { image } => form.image = image.to_string(),
             Source::Git {
                 repository,
                 build:
@@ -171,10 +177,13 @@ impl From<&Service> for ServiceForm {
                     form.branch.clone_from(&repository.branch);
                     form.commit = repository.commit.clone().unwrap_or_default();
                 }
-                form.dockerfile.clone_from(dockerfile);
-                form.context.clone_from(context);
-                form.build_args = args.clone().into_iter().collect();
-                form.target = target.clone().unwrap_or_default();
+                form.dockerfile = dockerfile.to_string();
+                form.context = context.to_string();
+                form.build_args = args
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.to_string()))
+                    .collect();
+                form.target = target.as_ref().map(ToString::to_string).unwrap_or_default();
             }
         }
         match &service.healthcheck {
@@ -187,7 +196,7 @@ impl From<&Service> for ServiceForm {
             }) => {
                 form.health_kind = "http".into();
                 form.port = port.to_string();
-                form.path.clone_from(path);
+                form.path = path.to_string();
                 form.interval = interval_seconds.to_string();
                 form.timeout = timeout_seconds.to_string();
             }
@@ -197,7 +206,7 @@ impl From<&Service> for ServiceForm {
                 timeout_seconds,
             }) => {
                 form.health_kind = "command".into();
-                form.health_command.clone_from(command);
+                form.health_command = texts(command);
                 form.interval = interval_seconds.to_string();
                 form.timeout = timeout_seconds.to_string();
             }
@@ -205,13 +214,38 @@ impl From<&Service> for ServiceForm {
         form
     }
 }
+/// Template text of each element.
+fn texts(values: &[Template]) -> Vec<String> {
+    values.iter().map(ToString::to_string).collect()
+}
+
+/// Text of an optional typed value; empty when unset.
+fn optional_text<T: std::fmt::Display>(value: Option<&Typed<T>>) -> String {
+    value.map_or_else(String::new, ToString::to_string)
+}
+
+/// Templates for each element.
+fn templates(values: &[String]) -> Vec<Template> {
+    values.iter().map(|value| value.as_str().into()).collect()
+}
+
+/// Parses an optional typed field: empty text is `None`, `${{ }}` text a
+/// reference, anything else a literal; `error` explains the expected literal.
+fn optional<T: std::str::FromStr>(value: &str, error: &str) -> Result<Option<Typed<T>>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    value.parse().map(Some).map_err(|_| error.into())
+}
+
 impl ServiceForm {
     /// Builds the edited source.
     fn source(&self) -> Result<Source, String> {
         let repository = match self.source_kind.as_str() {
             "image" => {
                 return Ok(Source::Image {
-                    image: self.image.clone(),
+                    image: self.image.as_str().into(),
                 });
             }
             "git" => SourceRepository::Git(GitRepository {
@@ -225,10 +259,10 @@ impl ServiceForm {
         Ok(Source::Git {
             repository,
             build: Build::Docker {
-                dockerfile: self.dockerfile.clone(),
-                context: self.context.clone(),
+                dockerfile: self.dockerfile.as_str().into(),
+                context: self.context.as_str().into(),
                 args: Self::unique_keys("Build argument", &self.build_args)?,
-                target: (!self.target.is_empty()).then(|| self.target.clone()),
+                target: (!self.target.is_empty()).then(|| self.target.as_str().into()),
             },
         })
     }
@@ -238,10 +272,13 @@ impl ServiceForm {
     fn unique_keys(
         noun: &str,
         rows: &[(String, String)],
-    ) -> Result<std::collections::BTreeMap<String, String>, String> {
+    ) -> Result<std::collections::BTreeMap<String, Template>, String> {
         let mut values = std::collections::BTreeMap::new();
         for (key, value) in rows {
-            if values.insert(key.clone(), value.clone()).is_some() {
+            if values
+                .insert(key.clone(), Template::from(value.as_str()))
+                .is_some()
+            {
                 return Err(format!("{noun} key {key:?} appears more than once."));
             }
         }
@@ -253,26 +290,25 @@ impl ServiceForm {
         let interval_seconds = || {
             self.interval
                 .parse()
-                .map_err(|_| "Health interval must be a positive integer.")
+                .map_err(|_| "Health interval must be a positive integer or a ${{ }} reference.")
         };
         let timeout_seconds = || {
             self.timeout
                 .parse()
-                .map_err(|_| "Health timeout must be a positive integer.")
+                .map_err(|_| "Health timeout must be a positive integer or a ${{ }} reference.")
         };
         Ok(match self.health_kind.as_str() {
             "none" => None,
             "http" => Some(HealthCheck::Http {
-                port: self
-                    .port
-                    .parse()
-                    .map_err(|_| "Health port must be an integer between 1 and 65535.")?,
-                path: self.path.clone(),
+                port: self.port.parse().map_err(
+                    |_| "Health port must be an integer between 1 and 65535 or a ${{ }} reference.",
+                )?,
+                path: self.path.as_str().into(),
                 interval_seconds: interval_seconds()?,
                 timeout_seconds: timeout_seconds()?,
             }),
             "command" => Some(HealthCheck::Command {
-                command: self.health_command.clone(),
+                command: templates(&self.health_command),
                 interval_seconds: interval_seconds()?,
                 timeout_seconds: timeout_seconds()?,
             }),
@@ -287,15 +323,10 @@ impl ServiceForm {
                 "derived" => None,
                 order => Some(order.parse()?),
             },
-            monitor_seconds: if self.monitor.trim().is_empty() {
-                None
-            } else {
-                Some(
-                    self.monitor
-                        .parse()
-                        .map_err(|_| "Monitor window must be a positive integer in seconds.")?,
-                )
-            },
+            monitor_seconds: optional(
+                &self.monitor,
+                "Monitor window must be a positive integer in seconds or a ${{ }} reference.",
+            )?,
         })
     }
 
@@ -307,41 +338,30 @@ impl ServiceForm {
         match section {
             Section::General => {
                 service.source = self.source()?;
-                service.replicas = self
-                    .replicas
-                    .parse()
-                    .map_err(|_| "Replicas must be an integer between 0 and 65535.")?;
+                service.replicas = self.replicas.parse().map_err(
+                    |_| "Replicas must be an integer between 0 and 65535 or a ${{ }} reference.",
+                )?;
             }
             Section::Environment => {
                 service.environment = Self::unique_keys("Environment", &self.environment)?;
             }
             Section::Process => {
-                service.command.clone_from(&self.command);
-                service.arguments.clone_from(&self.arguments);
+                service.command = templates(&self.command);
+                service.arguments = templates(&self.arguments);
             }
             Section::Storage => service.mounts.clone_from(&self.mounts),
             Section::Health => service.healthcheck = self.healthcheck()?,
             Section::Dependencies => service.depends_on.clone_from(&self.depends_on),
             Section::Rollout => service.rollout = self.rollout()?,
             Section::Resources => {
-                let cpu = if self.cpu.trim().is_empty() {
-                    None
-                } else {
-                    Some(
-                        self.cpu
-                            .parse()
-                            .map_err(|_| "CPU must be a positive integer in millicores.")?,
-                    )
-                };
-                let memory = if self.memory.trim().is_empty() {
-                    None
-                } else {
-                    Some(
-                        self.memory
-                            .parse()
-                            .map_err(|_| "Memory must be a positive integer in bytes.")?,
-                    )
-                };
+                let cpu = optional(
+                    &self.cpu,
+                    "CPU must be a positive integer in millicores or a ${{ }} reference.",
+                )?;
+                let memory = optional(
+                    &self.memory,
+                    "Memory must be a positive integer in bytes or a ${{ }} reference.",
+                )?;
                 service.resources = if cpu.is_none() && memory.is_none() {
                     None
                 } else {
@@ -366,7 +386,7 @@ mod tests {
             source: Source::Image {
                 image: "nginx:stable".into(),
             },
-            replicas: 1,
+            replicas: 1.into(),
             environment: std::collections::BTreeMap::new(),
             command: vec!["entrypoint".into()],
             arguments: vec!["argument with spaces".into()],
@@ -396,15 +416,15 @@ mod tests {
     fn health_sections_round_trip() {
         for check in [
             HealthCheck::Http {
-                port: 9000,
+                port: 9000.into(),
                 path: "/live".into(),
-                interval_seconds: 5,
-                timeout_seconds: 2,
+                interval_seconds: 5.into(),
+                timeout_seconds: 2.into(),
             },
             HealthCheck::Command {
                 command: vec!["curl".into(), "-f".into(), "localhost".into()],
-                interval_seconds: 7,
-                timeout_seconds: 4,
+                interval_seconds: 7.into(),
+                timeout_seconds: 4.into(),
             },
         ] {
             let mut saved = service();
@@ -436,7 +456,7 @@ mod tests {
         draft.replicas = "3".into();
         draft.patch(Section::General, &mut saved).unwrap();
         assert_eq!(saved.source, source);
-        assert_eq!(saved.replicas, 3);
+        assert_eq!(saved.replicas, 3.into());
 
         draft.build_args.clear();
         draft.target.clear();

@@ -3,11 +3,14 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::manifest::{ApplicationManifest, RolloutOrder, RolloutOrderSource};
+use crate::manifest::{
+    ApplicationManifest, ApplicationTemplate, RolloutOrder, RolloutOrderSource, VariableValue,
+};
 use crate::{
     ApplicationId, ApplicationState, Convergence, EnvironmentId, EnvironmentName,
     EnvironmentSource, NormalizedApplication, Operation, Plan,
 };
+use std::collections::BTreeMap;
 
 /// Versioned prefix used by all API endpoints.
 pub const API_PREFIX: &str = "/api/v1";
@@ -68,8 +71,8 @@ pub struct ApplicationSummary {
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Public application state returned by the API.
 pub struct ApplicationView {
-    /// Normalized application manifest, shared by every environment.
-    pub application: NormalizedApplication,
+    /// Saved manifest, shared by every environment, with references unresolved.
+    pub application: ApplicationTemplate,
     /// Current manifest or deletion-intent revision.
     pub generation: u64,
     /// Hash of the normalized desired specification.
@@ -196,6 +199,10 @@ pub struct PlanView {
     /// Ordered runtime plan for the selected environment; unresolved images are
     /// explicit actions. Empty when no environment is selected.
     pub plan: Plan,
+    /// The value of every variable in scope for the selected environment,
+    /// keyed by reference, e.g. `vars.domain`. Empty when none is selected.
+    #[serde(default)]
+    pub variables: BTreeMap<String, VariableValue>,
     /// Effective rollout of each service, sorted by service name.
     pub rollouts: Vec<ServiceRolloutView>,
 }
@@ -370,8 +377,12 @@ pub struct SavedApplication {
 pub struct DeploymentView {
     /// Execution ID also identifies this deployment.
     pub operation: Operation,
-    /// Configuration captured when deployment was accepted.
-    pub application: NormalizedApplication,
+    /// Manifest captured for this deployment, with references unresolved.
+    pub template: ApplicationTemplate,
+    /// Values its references rendered to, keyed by reference.
+    pub variables: BTreeMap<String, VariableValue>,
+    /// Rendered configuration; absent until a repository-backed manifest is fetched.
+    pub application: Option<NormalizedApplication>,
     /// First successful convergence, retained during later drift repair.
     pub succeeded_at_ms: Option<i64>,
     /// Whether this is the currently promoted runtime target.
@@ -529,7 +540,7 @@ pub struct BuildRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<String>,
     /// Requested build source.
-    pub source: crate::manifest::Source,
+    pub source: crate::manifest::ValidatedSource,
     /// Current attempt outcome.
     pub state: BuildState,
     /// Start time in Unix milliseconds.
@@ -705,7 +716,7 @@ mod environment_tests {
 
     #[test]
     fn stable_ids_select_before_names_that_look_like_them() {
-        let manifest = crate::parse_toml(
+        let manifest = crate::manifest::parse_template_toml(
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec]",
         )
         .unwrap()

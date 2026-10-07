@@ -186,8 +186,12 @@ impl Store {
         operation: &Operation,
         app: &NormalizedApplication,
     ) -> Result<BTreeMap<String, String>, StoreError> {
-        Self::check_secret_references(tx, app, SecretScope::Environment(&operation.environment_id))
-            .await?;
+        Self::check_secret_references(
+            tx,
+            &app.spec().mounted_secret_names(),
+            SecretScope::Environment(&operation.environment_id),
+        )
+        .await?;
         let (operation, id) = (operation.id.as_str(), operation.environment_id.as_str());
         let prepared = sqlx::query_scalar!(
             "SELECT operation_id FROM deployment_secrets_prepared WHERE operation_id=?1",

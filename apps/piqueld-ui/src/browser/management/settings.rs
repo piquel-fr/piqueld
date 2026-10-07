@@ -4,7 +4,8 @@ use super::{dirty_group, editor, save_actions};
 use crate::editor::{Section, ServiceForm};
 use leptos::prelude::*;
 use piqueld_client::{
-    ApplicationView, GitRepository, Mount, RepositoryManifest, Rollout, Service, Source, Volume,
+    ApplicationView, GitRepository, Mount, RepositoryManifest, Rollout, Service, Source, Typed,
+    Volume,
     edit::{ApplicationEdit, ServiceEdit, ServiceGeneral, ServiceProcess},
 };
 use std::collections::BTreeMap;
@@ -292,7 +293,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
         let edit = match section {
             Section::General => ServiceEdit::General(ServiceGeneral {
                 source: service.source.clone(),
-                replicas: service.replicas,
+                replicas: service.replicas.clone(),
             }),
             Section::Environment => ServiceEdit::Environment(service.environment.clone()),
             Section::Process => ServiceEdit::Process(ServiceProcess {
@@ -302,7 +303,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
             Section::Storage => ServiceEdit::Mounts(service.mounts.clone()),
             Section::Health => ServiceEdit::Healthcheck(service.healthcheck.clone()),
             Section::Dependencies => ServiceEdit::DependsOn(service.depends_on.clone()),
-            Section::Rollout => ServiceEdit::Rollout(service.rollout),
+            Section::Rollout => ServiceEdit::Rollout(service.rollout.clone()),
             Section::Resources => ServiceEdit::Resources(service.resources.clone()),
         };
         context.save(
@@ -752,29 +753,26 @@ pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
     .into_any()
 }
 
-/// Rollout order selector and optional monitor window.
+/// Rollout order and optional monitor window. The order is free text with
+/// suggestions, so it can also hold a `${{ }}` reference.
 pub(super) fn rollout_fields(form: RwSignal<ServiceForm>) -> AnyView {
-    let option = |value: &'static str, label: &'static str| {
-        view! {
-            <option value={value} selected={move || form.with(|v| v.rollout_order == value)}>
-                {label}
-            </option>
-        }
-    };
     view! {
         <div class="form-grid">
             <label class="field">
-                <span>"Order"</span>
-                <select
+                <span>"Order (derived, stop-first, start-first, or ${{ }})"</span>
+                <input
+                    type="text"
+                    list="rollout-orders"
                     prop:value={move || form.with(|v| v.rollout_order.clone())}
-                    on:change={move |event| {
+                    on:input={move |event| {
                         form.update(|v| v.rollout_order = event_target_value(&event))
                     }}
-                >
-                    {option("derived", "Derived from mounts")}
-                    {option("stop-first", "Stop first")}
-                    {option("start-first", "Start first")}
-                </select>
+                />
+                <datalist id="rollout-orders">
+                    <option value="derived">"Derived from mounts"</option>
+                    <option value="stop-first">"Stop first"</option>
+                    <option value="start-first">"Start first"</option>
+                </datalist>
             </label>
             {text_input(
                 "Monitor (seconds, default 30)",
@@ -800,8 +798,10 @@ pub(super) fn NewService() -> impl IntoView {
         let service = Service {
             secrets: Vec::new(),
             name,
-            source: Source::Image { image },
-            replicas: 1,
+            source: Source::Image {
+                image: image.into(),
+            },
+            replicas: Typed::Literal(1),
             environment: BTreeMap::new(),
             command: Vec::new(),
             arguments: Vec::new(),

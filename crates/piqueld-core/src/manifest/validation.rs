@@ -1,10 +1,12 @@
 //! Strict decoding and aggregate semantic validation of manifest inputs.
 
 use super::dependencies::StartupOrder;
+use super::variables::{Template, Typed};
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, Build, GitRepository,
-    HealthCheck, Job, ManifestRevision, Mount, ResourceLimits, Rollout, SecretDeclaration,
-    SecretGenerator, Service, Source, SourceRepository, ValidatedApplication, Volume,
+    HealthCheck, Job, ManifestRevision, Mount, ResourceLimits, SecretDeclaration, SecretGenerator,
+    Service, Source, SourceRepository, ValidatedApplication, ValidatedRollout, ValidatedTemplate,
+    Volume,
 };
 use crate::{codes, resource::valid_logical_name};
 use serde::{Deserialize, Serialize};
@@ -54,7 +56,10 @@ impl Build {
             target,
         } = self;
         for (field, value) in [("dockerfile", dockerfile), ("context", context)] {
-            if !valid_repository_path(value) {
+            if value
+                .as_literal()
+                .is_some_and(|value| !valid_repository_path(&value))
+            {
                 error(
                     errors,
                     "repository_path_invalid",
@@ -64,10 +69,10 @@ impl Build {
             }
         }
         VariableMap::BUILD_ARGS.validate(args, path, errors);
-        // Each argument is passed as `KEY=VALUE`.
+        // Each argument is passed as `KEY=VALUE`; references count once rendered.
         let total: usize = args
             .iter()
-            .map(|(key, value)| key.len() + value.len() + 1)
+            .filter_map(|(key, value)| Some(key.len() + value.as_literal()?.len() + 1))
             .sum();
         if total > MAX_BUILD_ARG_TOTAL_BYTES {
             error(
@@ -78,8 +83,9 @@ impl Build {
             );
         }
         if target
-            .as_deref()
-            .is_some_and(|target| !valid_build_target(target))
+            .as_ref()
+            .and_then(Template::as_literal)
+            .is_some_and(|target| !valid_build_target(&target))
         {
             error(
                 errors,
@@ -102,6 +108,18 @@ impl GitRepository {
     /// that are not full lowercase hashes. Leading `-` is rejected so values
     /// cannot be parsed as Git options.
     pub fn validate(&self, path: &str, errors: &mut Vec<ValidationError>) {
+        if [Some(&self.url), Some(&self.branch), self.commit.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|value| Template::mentions_reference(value))
+        {
+            error(
+                errors,
+                codes::VARIABLE_NOT_ALLOWED,
+                path,
+                "repository URLs, branches, and commits cannot reference variables",
+            );
+        }
         let inline_credentials = self.url.split_once("://").is_some_and(|(scheme, rest)| {
             let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or_default();
             authority.rsplit_once('@').is_some_and(|(userinfo, _)| {
@@ -242,36 +260,57 @@ impl fmt::Display for ValidationErrors {
 
 impl std::error::Error for ValidationErrors {}
 
-/// Parses and validates strict TOML without performing I/O.
+/// Parses and validates a strict TOML manifest whose values may reference
+/// variables, without performing I/O.
 ///
 /// # Errors
 /// Returns validation errors, or one decode error naming the rejected input
 /// and its location.
-pub fn parse_toml(input: &str) -> Result<ValidatedApplication, ValidationErrors> {
-    let manifest =
+pub fn parse_template_toml(input: &str) -> Result<ValidatedTemplate, ValidationErrors> {
+    let manifest: ApplicationManifest =
         serde_path_to_error::deserialize(toml::Deserializer::new(input)).map_err(|error| {
             ValidationErrors::decode(
                 &error.path().to_string(),
                 crate::TomlDiagnostic::new(input, error.inner()).to_string(),
             )
         })?;
-    ApplicationManifest::validate(manifest)
+    manifest.validate_template()
 }
 
-/// Parses and validates strict JSON without performing I/O.
+/// Parses and validates a strict JSON manifest whose values may reference
+/// variables, without performing I/O.
 ///
 /// # Errors
 /// Returns validation errors, or one decode error naming the rejected input
 /// and its location.
-pub fn parse_json(input: &str) -> Result<ValidatedApplication, ValidationErrors> {
+pub fn parse_template_json(input: &str) -> Result<ValidatedTemplate, ValidationErrors> {
     let mut deserializer = serde_json::Deserializer::from_str(input);
-    let manifest = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
-        ValidationErrors::decode(&error.path().to_string(), error.inner().to_string())
-    })?;
+    let manifest: ApplicationManifest = serde_path_to_error::deserialize(&mut deserializer)
+        .map_err(|error| {
+            ValidationErrors::decode(&error.path().to_string(), error.inner().to_string())
+        })?;
     deserializer
         .end()
         .map_err(|error| ValidationErrors::decode("$", error.to_string()))?;
-    ApplicationManifest::validate(manifest)
+    manifest.validate_template()
+}
+
+/// Parses and validates strict TOML that references no variables.
+///
+/// # Errors
+/// Returns validation errors, including `variable_unresolved` for each
+/// reference, or one decode error naming the rejected input and its location.
+pub fn parse_toml(input: &str) -> Result<ValidatedApplication, ValidationErrors> {
+    parse_template_toml(input)?.into_literal()
+}
+
+/// Parses and validates strict JSON that references no variables.
+///
+/// # Errors
+/// Returns validation errors, including `variable_unresolved` for each
+/// reference, or one decode error naming the rejected input and its location.
+pub fn parse_json(input: &str) -> Result<ValidatedApplication, ValidationErrors> {
+    parse_template_json(input)?.into_literal()
 }
 
 impl ValidationErrors {
@@ -349,6 +388,8 @@ pub fn safe_decode_path(path: &str) -> String {
         "rollout",
         "order",
         "monitor_seconds",
+        "variables",
+        "environments",
     ];
     let mut safe = Vec::new();
     for component in path.split('.') {
@@ -393,12 +434,15 @@ pub(super) const ROUTE_TARGET_MESSAGE: &str =
 
 fn validate_redirect(
     redirect: &super::Redirect,
-    hostname: &str,
+    hostname: Option<&str>,
     path: &str,
     errors: &mut Vec<ValidationError>,
 ) {
-    match super::RedirectUrl::parse(&redirect.to) {
-        Ok(to) if to.hostname() == hostname => error(
+    let Some(to) = redirect.to.as_literal() else {
+        return;
+    };
+    match super::RedirectUrl::parse(to) {
+        Ok(to) if hostname.is_some_and(|hostname| to.hostname() == hostname) => error(
             errors,
             "route_redirect_loop",
             &format!("{path}.redirect.to"),
@@ -425,16 +469,24 @@ fn validate_redirect(
 impl ApplicationManifest {
     /// Canonicalizes route hostnames in place (lowercase, trailing dot removed),
     /// then checks hostname syntax, uniqueness, the target service, and the port.
+    /// Hostnames that reference variables are checked once rendered.
     fn validate_routes(&mut self, errors: &mut Vec<ValidationError>) {
         let mut hostnames = BTreeSet::new();
         for (index, route) in self.spec.routes.iter_mut().enumerate() {
-            route.hostname = route
-                .hostname
-                .strip_suffix('.')
-                .unwrap_or(&route.hostname)
-                .to_ascii_lowercase();
+            let hostname = route.hostname.as_literal().map(|hostname| {
+                hostname
+                    .strip_suffix('.')
+                    .unwrap_or(&hostname)
+                    .to_ascii_lowercase()
+            });
+            if let Some(hostname) = &hostname {
+                route.hostname = Template::literal(hostname);
+            }
             let path = format!("spec.routes[{index}]");
-            if super::Hostname::parse(&route.hostname).is_err() {
+            if hostname
+                .as_ref()
+                .is_some_and(|hostname| super::Hostname::parse(hostname).is_err())
+            {
                 error(
                     errors,
                     "route_hostname_invalid",
@@ -442,7 +494,9 @@ impl ApplicationManifest {
                     "an exact public ASCII DNS hostname is required",
                 );
             }
-            if !hostnames.insert(route.hostname.clone()) {
+            if let Some(hostname) = hostname.clone()
+                && !hostnames.insert(hostname)
+            {
                 error(
                     errors,
                     "route_hostname_duplicate",
@@ -470,34 +524,43 @@ impl ApplicationManifest {
                     }
                 }
                 (None, None, Some(redirect)) => {
-                    validate_redirect(redirect, &route.hostname, &path, errors);
+                    validate_redirect(redirect, hostname.as_deref(), &path, errors);
                 }
                 _ => error(errors, "route_target_invalid", &path, ROUTE_TARGET_MESSAGE),
             }
         }
     }
 
-    /// Validates manifest semantics and returns a normalized-input wrapper.
+    /// Validates a manifest whose values may reference variables, as far as
+    /// its literal values allow. Values that reference variables are checked
+    /// again once rendered for an environment.
     ///
     /// Collects every independent error rather than stopping at the first:
     /// 1. Header, metadata, and optional repository manifest source.
     /// 2. Route, service, and volume budgets; exceeding one returns early to
     ///    bound work.
-    /// 3. Routes, duplicate names, services, and volumes.
-    /// 4. On success, canonicalizes image registries and converts to domain types.
+    /// 3. Routes, duplicate names, services, volumes, and variables.
+    /// 4. On success, canonicalizes literal hostnames and image registries.
     ///
     /// Errors are sorted by path then code.
     ///
     /// # Errors
     /// Returns all detected manifest validation errors.
-    pub fn validate(mut self) -> Result<ValidatedApplication, ValidationErrors> {
+    pub fn validate_template(mut self) -> Result<ValidatedTemplate, ValidationErrors> {
         let mut errors = Vec::new();
         validate_header(&self, &mut errors);
         if let Some(manifest) = &self.spec.manifest {
             manifest
                 .repository
                 .validate("spec.manifest.repository", &mut errors);
-            if !valid_repository_path(&manifest.path) {
+            if Template::mentions_reference(&manifest.path) {
+                error(
+                    &mut errors,
+                    codes::VARIABLE_NOT_ALLOWED,
+                    "spec.manifest.path",
+                    "the manifest path cannot reference variables",
+                );
+            } else if !valid_repository_path(&manifest.path) {
                 error(
                     &mut errors,
                     "repository_path_invalid",
@@ -508,9 +571,7 @@ impl ApplicationManifest {
         }
         // Bound work before walking attacker-controlled collections.
         if !validate_budgets(&self, &mut errors) {
-            errors
-                .sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
-            return Err(ValidationErrors(errors));
+            return Err(ValidationErrors::sorted(errors));
         }
         self.validate_routes(&mut errors);
         unique_names(
@@ -535,19 +596,30 @@ impl ApplicationManifest {
         validate_volumes(&self.spec.volumes, &mut errors);
         validate_generated_secrets(&self.spec.secrets, &mut errors);
         validate_jobs(&self.spec.jobs, &self.spec.services, &mut errors);
-        errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
+        self.spec.check_variables(&mut errors);
         if !errors.is_empty() {
-            return Err(ValidationErrors(errors));
+            return Err(ValidationErrors::sorted(errors));
         }
         for service in &mut self.spec.services {
-            if let Source::Image { image } = &mut service.source {
-                *image = canonicalize_image_reference(image);
+            if let Source::Image { image } = &mut service.source
+                && let Some(literal) = image.as_literal()
+            {
+                *image = Template::literal(&canonicalize_image_reference(&literal));
             }
         }
-        Ok(ValidatedApplication {
-            metadata: super::domain::ValidatedMetadata::from_input(self.metadata)?,
-            spec: super::domain::ValidatedSpec::from_input(self.spec)?,
-        })
+        Ok(ValidatedTemplate::new(
+            super::domain::ValidatedMetadata::from_input(self.metadata)?,
+            self.spec,
+        ))
+    }
+
+    /// Validates a manifest that references no variables.
+    ///
+    /// # Errors
+    /// Returns all detected manifest validation errors, including
+    /// `variable_unresolved` for each reference.
+    pub fn validate(self) -> Result<ValidatedApplication, ValidationErrors> {
+        self.validate_template()?.into_literal()
     }
 }
 
@@ -672,7 +744,11 @@ fn validate_services(
     for (index, service) in services.iter().enumerate() {
         let base = format!("spec.services[{index}]");
         validate_name(&service.name, &format!("{base}.name"), errors);
-        if !(1..=100).contains(&service.replicas) {
+        if service
+            .replicas
+            .literal()
+            .is_some_and(|replicas| !(1..=100).contains(replicas))
+        {
             error(
                 errors,
                 codes::REPLICAS_OUT_OF_RANGE,
@@ -681,7 +757,9 @@ fn validate_services(
             );
         }
         if let Source::Image { image } = &service.source
-            && !valid_image_reference(image)
+            && image
+                .as_literal()
+                .is_some_and(|image| !valid_image_reference(&image))
         {
             error(
                 errors,
@@ -734,6 +812,7 @@ fn validate_services(
         if service
             .command
             .first()
+            .and_then(Template::as_literal)
             .is_some_and(|value| value.trim().is_empty())
         {
             error(
@@ -747,21 +826,27 @@ fn validate_services(
             validate_health(healthcheck, &format!("{base}.healthcheck"), errors);
         }
         validate_resources(service.resources.as_ref(), &base, errors);
-        if service
-            .rollout
-            .monitor_seconds
-            .is_some_and(|seconds| !(1..=Rollout::MAX_MONITOR_SECONDS).contains(&seconds))
-        {
-            error(
-                errors,
-                codes::ROLLOUT_MONITOR_INVALID,
-                &format!("{base}.rollout.monitor_seconds"),
-                &format!(
-                    "rollout monitor must be between 1 and {} seconds",
-                    Rollout::MAX_MONITOR_SECONDS
-                ),
-            );
-        }
+        validate_rollout(&service.rollout, &base, errors);
+    }
+}
+
+/// Checks a literal rollout monitor window.
+fn validate_rollout(rollout: &super::Rollout, base: &str, errors: &mut Vec<ValidationError>) {
+    if rollout
+        .monitor_seconds
+        .as_ref()
+        .and_then(Typed::literal)
+        .is_some_and(|seconds| !(1..=ValidatedRollout::MAX_MONITOR_SECONDS).contains(seconds))
+    {
+        error(
+            errors,
+            codes::ROLLOUT_MONITOR_INVALID,
+            &format!("{base}.rollout.monitor_seconds"),
+            &format!(
+                "rollout monitor must be between 1 and {} seconds",
+                ValidatedRollout::MAX_MONITOR_SECONDS
+            ),
+        );
     }
 }
 
@@ -849,10 +934,11 @@ impl VariableMap {
 
     /// Appends errors at `base.field` when `values` has too many entries, a
     /// name is not a POSIX-style identifier or exceeds the identifier bound, or
-    /// a value contains NUL or exceeds its byte budget.
+    /// a literal value contains NUL or exceeds its byte budget. Values that
+    /// reference variables are checked once rendered.
     fn validate(
         &self,
-        values: &BTreeMap<String, String>,
+        values: &BTreeMap<String, Template>,
         base: &str,
         errors: &mut Vec<ValidationError>,
     ) {
@@ -867,7 +953,14 @@ impl VariableMap {
         }
         for (key, value) in values {
             let key_echo = safe_key_echo(key);
-            if !valid_env_name(key) || key.len() > MAX_IDENTIFIER_BYTES {
+            if Template::mentions_reference(key) {
+                error(
+                    errors,
+                    codes::VARIABLE_NOT_ALLOWED,
+                    &format!("{base}.{field}.name"),
+                    &format!("{noun} key {key_echo} cannot reference variables"),
+                );
+            } else if !valid_env_name(key) || key.len() > MAX_IDENTIFIER_BYTES {
                 error(
                     errors,
                     self.name_invalid,
@@ -885,6 +978,9 @@ impl VariableMap {
                     &format!("{noun} key {key_echo} is reserved for piqueld ingress"),
                 );
             }
+            let Some(value) = value.as_literal() else {
+                continue;
+            };
             if value.contains('\0') {
                 error(
                     errors,
@@ -979,7 +1075,9 @@ fn validate_resources(
             "resource limits must configure CPU, memory, or both",
         );
     }
-    if resources.cpu_millis == Some(0) {
+    let cpu_millis = resources.cpu_millis.as_ref().and_then(Typed::literal);
+    let memory_bytes = resources.memory_bytes.as_ref().and_then(Typed::literal);
+    if cpu_millis == Some(&0) {
         error(
             errors,
             codes::CPU_LIMIT_INVALID,
@@ -987,10 +1085,7 @@ fn validate_resources(
             "CPU limit must be greater than zero",
         );
     }
-    if resources
-        .cpu_millis
-        .is_some_and(|value| value > MAX_CPU_MILLIS)
-    {
+    if cpu_millis.is_some_and(|value| *value > MAX_CPU_MILLIS) {
         error(
             errors,
             codes::CPU_LIMIT_EXCESSIVE,
@@ -998,10 +1093,7 @@ fn validate_resources(
             &format!("CPU limit must be at most {MAX_CPU_MILLIS} millicores"),
         );
     }
-    if resources.memory_bytes == Some(0)
-        || resources
-            .memory_bytes
-            .is_some_and(|value| i64::try_from(value).is_err())
+    if memory_bytes == Some(&0) || memory_bytes.is_some_and(|value| i64::try_from(*value).is_err())
     {
         error(
             errors,
@@ -1045,11 +1137,11 @@ fn validate_jobs(jobs: &[Job], services: &[Service], errors: &mut Vec<Validation
                 ),
             );
         }
-        if job
-            .command
-            .first()
-            .is_none_or(|value| value.trim().is_empty())
-        {
+        if job.command.first().is_none_or(|value| {
+            value
+                .as_literal()
+                .is_some_and(|value| value.trim().is_empty())
+        }) {
             error(
                 errors,
                 codes::PROCESS_COMMAND_INVALID,
@@ -1136,7 +1228,7 @@ fn validate_health(value: &HealthCheck, path: &str, errors: &mut Vec<ValidationE
             interval_seconds,
             timeout_seconds,
         } => {
-            if *port == 0 {
+            if port.literal() == Some(&0) {
                 error(
                     errors,
                     codes::PORT_INVALID,
@@ -1144,6 +1236,7 @@ fn validate_health(value: &HealthCheck, path: &str, errors: &mut Vec<ValidationE
                     "health-check port must be between 1 and 65535",
                 );
             }
+            let request_path = request_path.as_literal().unwrap_or_else(|| "/".into());
             let valid_path = request_path == "/"
                 || (request_path.starts_with('/')
                     && !request_path.ends_with('/')
@@ -1165,15 +1258,20 @@ fn validate_health(value: &HealthCheck, path: &str, errors: &mut Vec<ValidationE
                     "HTTP health-check path must start with / and contain no whitespace",
                 );
             }
-            (*interval_seconds, *timeout_seconds)
+            (interval_seconds.literal(), timeout_seconds.literal())
         }
         HealthCheck::Command {
             command,
             interval_seconds,
             timeout_seconds,
         } => {
-            if command.first().is_none_or(|value| value.trim().is_empty())
-                || command.iter().any(|value| value.contains('\0'))
+            if command.first().is_none_or(|value| {
+                value
+                    .as_literal()
+                    .is_some_and(|value| value.trim().is_empty())
+            }) || command
+                .iter()
+                .any(|value| value.as_literal().is_some_and(|value| value.contains('\0')))
             {
                 error(
                     errors,
@@ -1188,8 +1286,11 @@ fn validate_health(value: &HealthCheck, path: &str, errors: &mut Vec<ValidationE
                 codes::PROCESS_COMMAND_EXCESSIVE,
                 errors,
             );
-            (*interval_seconds, *timeout_seconds)
+            (interval_seconds.literal(), timeout_seconds.literal())
         }
+    };
+    let Some(&interval) = interval else {
+        return;
     };
     if interval == 0 {
         error(
@@ -1209,7 +1310,7 @@ fn validate_health(value: &HealthCheck, path: &str, errors: &mut Vec<ValidationE
             ),
         );
     }
-    if interval > 0 && (timeout == 0 || timeout > interval) {
+    if interval > 0 && timeout.is_some_and(|&timeout| timeout == 0 || timeout > interval) {
         error(
             errors,
             codes::HEALTHCHECK_TIMEOUT_INVALID,
@@ -1242,7 +1343,14 @@ fn unique_names<'a>(
 
 /// Reports `NAME_INVALID` unless `value` is a safe logical resource name.
 fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
-    if !valid_logical_name(value) {
+    if Template::mentions_reference(value) {
+        error(
+            errors,
+            codes::VARIABLE_NOT_ALLOWED,
+            path,
+            "names cannot reference variables",
+        );
+    } else if !valid_logical_name(value) {
         error(
             errors,
             codes::NAME_INVALID,
@@ -1443,7 +1551,14 @@ fn valid_image_digest(value: &str) -> bool {
 /// empty components), not `/` itself, and free of backslashes and controls.
 fn validate_absolute_path(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     let components = value.split('/').skip(1);
-    if !value.starts_with('/')
+    if Template::mentions_reference(value) {
+        error(
+            errors,
+            codes::VARIABLE_NOT_ALLOWED,
+            path,
+            "container paths cannot reference variables",
+        );
+    } else if !value.starts_with('/')
         || value == "/"
         || value.ends_with('/')
         || value.len() > 4096
@@ -1487,7 +1602,7 @@ fn valid_env_name(value: &str) -> bool {
 /// Bounds a command or argument list by element count and size, and rejects NUL
 /// bytes. `excessive_code` distinguishes commands from arguments.
 fn validate_process_arguments(
-    values: &[String],
+    values: &[Template],
     path: &str,
     excessive_code: &str,
     errors: &mut Vec<ValidationError>,
@@ -1501,6 +1616,9 @@ fn validate_process_arguments(
         );
     }
     for (index, value) in values.iter().enumerate() {
+        let Some(value) = value.as_literal() else {
+            continue;
+        };
         if value.contains('\0') {
             error(
                 errors,

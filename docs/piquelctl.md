@@ -69,12 +69,18 @@ environments when it has several; they never pick one. With several
 environments, `app delete` requires `--environments a,b` naming every one.
 `env delete` keeps the application and retains the environment's named volumes.
 Environment creation, renames and deletions are conditioned on the inspected
-application revision like other mutations (`--expected-generation`, `--force`).
+application revision like other mutations (`--expected-generation`, `--force`),
+and advance it, so a command based on an earlier inspection fails instead of
+acting on a renamed or deleted environment.
 
-Manifest settings remain shared, including routes. Creating another environment
-for an application with hostname routes fails with `hostname_conflict`, naming
-the sibling environment that reserves the hostname and explaining the shared-route
-limitation. Environment-specific hostnames are planned with manifest variables.
+The manifest is shared; values that differ between environments come from
+[manifest variables](application-manifest.md#variables). Environments that render
+the same route hostname conflict with `hostname_conflict`, naming the sibling
+environment that reserves it. `env rename` fails with `environment_configured`
+while the saved manifest has a `[spec.environments.<name>]` block for the old or
+the new name, since renaming would change which block applies: remove the block,
+rename, then add it back under the new name. `env show` lists each variable's
+value in the environment, or that it has none.
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit
 HTTP or HTTPS origin such as `http://127.0.0.1:7845/`; the two transport options are
@@ -205,6 +211,11 @@ piquelctl app route remove notes notes.example.com --yes
 piquelctl app job set notes migrate web --timeout-seconds 600 --yes -- notes migrate
 piquelctl app job move notes migrate 1 --yes
 piquelctl app job remove notes migrate --yes
+piquelctl app variable set notes domain piquel.fr --yes
+piquelctl app variable set notes domain staging.piquel.fr --env staging --yes
+piquelctl app variable set notes web_replicas 3 --env production --yes
+piquelctl app variable unset notes web_replicas --env production --yes
+piquelctl app service replicas notes web '${{ vars.web_replicas }}' --yes
 piquelctl app service health http notes web 8080 --path /live --check-timeout 3 --yes
 piquelctl app service health interval notes web 20 --yes
 piquelctl app service health clear notes web --yes
@@ -232,11 +243,30 @@ the job runs. Configure dependencies with `app service depends-on`. Other
 services wait for all jobs to succeed; a failed job does not roll back its
 dependencies. Jobs of dependency services must come earlier in the saved order.
 
+`app variable set` sets a variable's default, or with `--env NAME` its value in
+the environment named `NAME`, whether or not that environment exists yet. An
+environment's value overrides the default, and a variable needs no default.
+`true`, `false` and integers keep their type and anything else is text; `--string`
+keeps text such as `3` as text. `app variable unset` removes the default or the
+environment's value. Like routes, variable edits preserve the other variables and
+use the inspected generation. Settings that accept variables, such as replicas,
+limits, health check settings, environment values, commands and images, take a
+`${{ vars.<name> }}` reference in place of a literal; quote it for the shell.
+`app show` lists the defaults and per-environment values.
+
 `app service rollout` replaces the service's rollout block: an omitted `--order`
 derives the order from the mounts, and an omitted `--monitor-seconds` uses 30
 seconds, so running it without flags restores the defaults. `app plan` lists each
 service's effective order and monitor window, and warns when `start-first` is set
 on a service with a writable volume.
+
+`app plan --env NAME` renders the manifest for that environment: its changes
+show rendered values, and it lists the value of every variable in scope, such as
+`vars.domain` and `env.name`. A reference without a value fails the plan with
+`variable_value_missing`. Without `--env`, the application's only environment is
+used; with several, the plan compares the saved manifest as written. Plans warn
+with `environment_block_unknown` about `[spec.environments.<name>]` blocks that
+name no environment.
 
 Command, argument, job command, and `depends-on` arrays preserve individual elements; place
 command options before `--`. An empty array clears the setting. Optional limits and pinned

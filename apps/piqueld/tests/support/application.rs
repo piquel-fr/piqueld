@@ -3,7 +3,8 @@
 use piqueld::api::{ApplicationError, ApplicationService, Mutation, MutationResponse};
 use piqueld::application::RuntimeBoundary;
 use piqueld::store::{Store, StoreError};
-use piqueld_core::{EnvironmentId, Operation, ValidatedApplication};
+use piqueld_core::manifest::ValidatedTemplate;
+use piqueld_core::{EnvironmentId, Operation};
 use std::sync::Arc;
 
 pub struct TestApplications {
@@ -30,7 +31,7 @@ impl TestApplications {
     // Controller scenarios explicitly save and deploy in one acceptance.
     pub async fn apply(
         &self,
-        manifest: ValidatedApplication,
+        manifest: ValidatedTemplate,
         expected_generation: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
         let saved = self
@@ -42,7 +43,7 @@ impl TestApplications {
 
     pub async fn save(
         &self,
-        manifest: ValidatedApplication,
+        manifest: ValidatedTemplate,
         expected_generation: Option<u64>,
     ) -> Result<piqueld_core::api::SavedApplication, ApplicationError> {
         self.save_configuration(manifest, expected_generation, false)
@@ -51,7 +52,7 @@ impl TestApplications {
 
     async fn save_configuration(
         &self,
-        manifest: ValidatedApplication,
+        manifest: ValidatedTemplate,
         expected_generation: Option<u64>,
         deploy: bool,
     ) -> Result<piqueld_core::api::SavedApplication, ApplicationError> {

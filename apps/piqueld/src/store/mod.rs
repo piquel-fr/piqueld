@@ -23,7 +23,9 @@ mod status;
 
 use piqueld_core::{
     ApplicationId, EnvironmentId, EnvironmentName, EnvironmentSource, NormalizedApplication,
-    api::EnvironmentView, resource::ResolvedApplication,
+    api::EnvironmentView,
+    manifest::{ApplicationTemplate, RenderContext, Rendering},
+    resource::ResolvedApplication,
 };
 pub use piqueld_core::{ApplicationState, Operation, OperationKind, OperationState};
 use sqlx::{
@@ -100,9 +102,9 @@ pub enum StoreError {
         /// Conflicting canonical public hostname.
         hostname: String,
     },
-    /// Sibling environments currently inherit the same application routes.
+    /// Another environment of the same application renders the same hostname.
     #[error(
-        "hostname {hostname} is reserved by environment {environment}; environments currently share application routes, so they cannot use different hostnames until per-environment configuration is supported"
+        "hostname {hostname} is reserved by environment {environment} of this application; give each environment its own hostname, e.g. `hostname = \"${{{{ vars.domain }}}}\"` with a different `domain` per environment"
     )]
     SharedHostnameConflict {
         /// Conflicting canonical public hostname.
@@ -166,6 +168,14 @@ pub enum StoreError {
     /// Runtime fields are managed by the repository manifest.
     #[error("application configuration is managed by its repository manifest")]
     RepositoryManaged,
+    /// Renaming would change which `[spec.environments.<name>]` block applies.
+    #[error(
+        "the saved manifest configures [spec.environments.{environment}]; renaming would change which configuration applies, so remove that block from the manifest first and add it back under the new name after renaming"
+    )]
+    EnvironmentConfigured {
+        /// Old or new name that has a block.
+        environment: EnvironmentName,
+    },
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]
     AlreadyExists,
@@ -248,8 +258,8 @@ impl StoreError {
 /// Persisted application: the manifest its environments share and its revision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoredApplication {
-    /// Validated, normalized manifest.
-    pub application: NormalizedApplication,
+    /// Validated saved manifest, with references unresolved.
+    pub application: ApplicationTemplate,
     /// Current configuration revision, shared by every environment.
     pub generation: u64,
     /// Whether the application and all its environments are being deleted.
@@ -287,8 +297,24 @@ impl StoredEnvironment {
 
     /// The application's saved manifest this environment deploys.
     #[must_use]
-    pub fn manifest(&self) -> &NormalizedApplication {
+    pub fn manifest(&self) -> &ApplicationTemplate {
         &self.application.application
+    }
+
+    /// Renders `template` for a deployment of this environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns the references without a value here and invalid rendered values.
+    pub fn render(
+        &self,
+        template: &ApplicationTemplate,
+        deployment: &str,
+    ) -> Result<Rendering, StoreError> {
+        Ok(template.render(&RenderContext::deployment(
+            self.environment.name.clone(),
+            deployment.into(),
+        ))?)
     }
 }
 
@@ -603,7 +629,7 @@ impl ApplicationRow {
     /// Deserializes the stored manifest, rejecting rows whose manifest ID
     /// disagrees with the row ID.
     fn decode(self) -> Result<StoredApplication, StoreError> {
-        let application: NormalizedApplication =
+        let application: ApplicationTemplate =
             serde_json::from_str(&self.desired_json).map_err(StoreError::corrupt)?;
         if application.id().as_str() != self.id {
             return Err(StoreError::Corrupt);
