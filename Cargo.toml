@@ -30,6 +30,10 @@ async-trait = "0.1.88"
 axum = { version = "0.8.4", default-features = false, features = ["json", "query", "tokio", "http1", "tracing", "matched-path"] }
 base64 = "0.22.1"
 getrandom = "0.3.4"
+# DNS-01: authoritative TXT propagation checks without a TLS stack.
+hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
+# ACME on ring, matching reqwest's rustls provider; rcgen generates keys and CSRs.
+instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "rcgen", "ring"] }
 openssl = "0.10.81"
 webauthn-rs-core = "=0.5.5"
 bytes = "1.10.1"

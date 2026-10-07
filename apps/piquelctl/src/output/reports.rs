@@ -57,6 +57,48 @@ impl Report for StatusReport<'_> {
                 out.label("Tailnet problem", &tailnet.message)?;
             }
         }
+        for provider in &s.dns.providers {
+            out.label(
+                "DNS provider",
+                format_args!(
+                    "{} ({}): {}",
+                    provider.kind,
+                    if provider.healthy {
+                        "healthy"
+                    } else {
+                        "unhealthy"
+                    },
+                    if provider.zones.is_empty() {
+                        "no zones".into()
+                    } else {
+                        provider.zones.join(", ")
+                    },
+                ),
+            )?;
+            if !provider.healthy {
+                out.label("DNS problem", &provider.message)?;
+            }
+        }
+        for certificate in &s.dns.certificates {
+            out.label(
+                "Certificate",
+                format_args!(
+                    "{} for {} (expires at Unix ms {})",
+                    certificate.name,
+                    if certificate.hostnames.is_empty() {
+                        "no routes".into()
+                    } else {
+                        certificate.hostnames.join(", ")
+                    },
+                    certificate
+                        .expires_at_ms
+                        .map_or_else(|| "never issued".into(), |at| at.to_string()),
+                ),
+            )?;
+            if let Some(error) = &certificate.error {
+                out.label("Certificate problem", error)?;
+            }
+        }
         Ok(())
     }
 }

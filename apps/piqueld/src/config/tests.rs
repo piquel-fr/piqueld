@@ -201,3 +201,58 @@ fn credential_files_are_read_and_never_shown() {
     let both = format!("{source}\nurl = 'https://hooks.example.com/inline'");
     assert!(DaemonConfig::from_toml(&both).is_err(), "accepted {both}");
 }
+
+#[test]
+fn dns_providers_accept_credentials_only_from_files() {
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["cf", "ak", "as", "ck"] {
+        std::fs::write(directory.path().join(name), format!("{name}-value\n")).unwrap();
+    }
+    let path = |name: &str| directory.path().join(name).display().to_string();
+    let source = format!(
+        "[ingress.acme]\nemail = 'admin@example.com'\n\
+         [[dns.providers]]\nkind = 'cloudflare'\napi_token_file = '{}'\n\
+         [[dns.providers]]\nkind = 'ovh'\nendpoint = 'ovh-eu'\napplication_key_file = '{}'\n\
+         application_secret_file = '{}'\nconsumer_key_file = '{}'",
+        path("cf"),
+        path("ak"),
+        path("as"),
+        path("ck")
+    );
+    let config = DaemonConfig::from_toml(&source).unwrap();
+    assert_eq!(
+        config
+            .dns
+            .providers
+            .iter()
+            .map(crate::dns::DnsProvider::kind)
+            .collect::<Vec<_>>(),
+        ["cloudflare", "ovh"]
+    );
+    let view = config.view();
+    let dns = &view.groups["DNS providers"];
+    assert_eq!(
+        dns["1. cloudflare"],
+        format!("API token from {}", path("cf"))
+    );
+    assert!(
+        dns["2. ovh"].starts_with("ovh-eu, application key from"),
+        "{dns:?}"
+    );
+    assert_eq!(view.groups["Ingress"]["ACME email"], "admin@example.com");
+    let shown = format!("{view:?} {config:?}");
+    assert!(!shown.contains("-value"), "{shown}");
+
+    for invalid in [
+        "[[dns.providers]]\nkind = 'cloudflare'\napi_token = 'inline'",
+        "[[dns.providers]]\nkind = 'route53'",
+        "[[dns.providers]]\nkind = 'ovh'\nendpoint = 'ovh-mars'",
+        "[ingress.acme]\ndirectory = 'http://acme.example.com/directory'",
+        "[ingress.acme]\nemail = 'not an email'",
+    ] {
+        assert!(
+            DaemonConfig::from_toml(invalid).is_err(),
+            "accepted {invalid}"
+        );
+    }
+}

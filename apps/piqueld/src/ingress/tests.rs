@@ -1,4 +1,5 @@
 mod acme;
+mod dns01;
 mod traffic;
 use super::*;
 use crate::{
@@ -1121,6 +1122,22 @@ async fn ingress_caddy_acme_challenges_and_renewal() {
     if result.is_err() {
         scenario.gateway.relay_logs().await.unwrap();
     }
+    scenario.gateway.stop_gateway().await.unwrap();
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the isolated Docker harness with loopback test ports"]
+async fn ingress_caddy_dns01_certificates() {
+    use futures_util::FutureExt;
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let scenario = Scenario::new().await;
+    let result = std::panic::AssertUnwindSafe(scenario.dns01_certificates())
+        .catch_unwind()
+        .await;
+    scenario.stop_pebble().await;
     scenario.gateway.stop_gateway().await.unwrap();
     if let Err(panic) = result {
         std::panic::resume_unwind(panic);

@@ -92,6 +92,8 @@ diagnostic_codes! {
     HostnameConflict => "hostname_conflict",
     /// The managed ingress gateway is unavailable or could not apply a change.
     IngressUnavailable => "ingress_unavailable",
+    /// A DNS-01 certificate could not be issued or renewed.
+    CertificateRenewalFailed => "certificate_renewal_failed",
 }
 
 /// Default guidance for failures that need operator investigation.
@@ -119,6 +121,11 @@ impl DiagnosticCode {
                 Daemon,
                 true,
                 "Check ingress health and daemon logs. Reconciliation reapplies routes from durable intent.",
+            ),
+            Self::CertificateRenewalFailed => (
+                Daemon,
+                true,
+                "Check DNS provider credentials, zones and certificate status. Renewal retries with backoff.",
             ),
             Self::JournalUnavailable | Self::StorageUnavailable => (
                 Daemon,
@@ -242,6 +249,7 @@ mod tests {
             DiagnosticCode::InternalError,
             DiagnosticCode::ApplicationCompilationFailed,
             DiagnosticCode::IngressUnavailable,
+            DiagnosticCode::CertificateRenewalFailed,
         ] {
             let diagnostic = Diagnostic::new("occurrence".into(), code, "failure".into());
             assert_eq!(diagnostic.scope, EventScope::Daemon, "{code:?}");
@@ -260,6 +268,7 @@ mod tests {
             (DiagnosticCode::ConvergenceTimeout, true),
             (DiagnosticCode::PreparationTimeout, true),
             (DiagnosticCode::IngressUnavailable, true),
+            (DiagnosticCode::CertificateRenewalFailed, true),
             (DiagnosticCode::HostnameConflict, false),
             (DiagnosticCode::ImageResolutionRejected, false),
             (DiagnosticCode::OwnershipConflict, false),

@@ -4,8 +4,10 @@
 //!
 //! Known hosts redirect HTTP to HTTPS, then either proxy to their Swarm service's
 //! internal HTTP port or answer with their configured redirect. Caddy
-//! obtains/renews certificates for those hosts automatically; explicit
-//! redirects keep unknown HTTP hosts on the final 404 handler.
+//! obtains/renews certificates for those hosts automatically, except for hosts
+//! served with DNS-01 certificates, which are loaded as PEM and skipped by
+//! automatic HTTPS. Explicit redirects keep unknown HTTP hosts on the final 404
+//! handler.
 
 use super::Ingress;
 use crate::store::ingress::RoutingTable;
@@ -55,7 +57,9 @@ impl Ingress {
         redirects.push(not_found);
         // The Unix admin endpoint is private to the daemon. Strict SNI matching
         // prevents a TLS connection for one hostname from selecting another host.
-        let configuration = json!({
+        let (pems, mut covered) = self.certificates.loaded();
+        covered.extend(Self::dns01_hostnames(table));
+        let mut configuration = json!({
             "admin":{"listen":"unix//control/admin.sock"},
             "apps":{"http":{"servers":{
                 "https":{"protocols":["h1","h2"],"listen":[":443"],"routes":https,"strict_sni_host":true,
@@ -63,12 +67,20 @@ impl Ingress {
                 "http":{"listen":[":80"],"routes":redirects}
             }}}
         });
+        // Caddy never attempts HTTP-01 or TLS-ALPN-01 for DNS-01 hostnames.
+        if !covered.is_empty() {
+            configuration["apps"]["http"]["servers"]["https"]["automatic_https"]["skip"] =
+                json!(covered);
+        }
+        if !pems.is_empty() {
+            configuration["apps"]["tls"]["certificates"]["load_pem"] = pems
+                .into_iter()
+                .map(|(certificate, key)| json!({"certificate":certificate,"key":key}))
+                .collect();
+        }
         #[cfg(test)]
         if let Some(issuer) = &self.issuer {
-            let mut configuration = configuration;
-            configuration["apps"]["tls"] =
-                json!({"automation":{"policies":[{"issuers":[issuer]}]}});
-            return configuration;
+            configuration["apps"]["tls"]["automation"] = json!({"policies":[{"issuers":[issuer]}]});
         }
         configuration
     }

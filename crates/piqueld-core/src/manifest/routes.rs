@@ -32,6 +32,18 @@ impl Hostname {
             .strip_suffix(domain.as_str())
             .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with('.'))
     }
+
+    /// The hostname one label up, when that is still a hostname.
+    ///
+    /// ```text
+    /// "api.example.com" -> "example.com"
+    /// "example.com"     -> none ("com" has no dot)
+    /// ```
+    #[must_use]
+    pub fn parent(&self) -> Option<Self> {
+        let (_, parent) = self.as_str().split_once('.')?;
+        Self::parse(parent).ok()
+    }
 }
 
 validated_string!(

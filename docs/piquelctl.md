@@ -109,7 +109,9 @@ verify tailnet membership or add encryption with this flag. Prefer HTTPS, such a
 a daemon's [tailnet node](configuration.md#tailnet-node) at
 `https://piqueld.<tailnet>.ts.net`; loopback HTTP and Unix sockets need no opt-in.
 When the daemon runs a tailnet node, `status` also reports its login state,
-certificate expiry, and whether `auth.public_url` matches the node.
+certificate expiry, and whether `auth.public_url` matches the node. It also lists
+each [DNS provider](configuration.md#dns-providers) with its zones and health,
+and each DNS-01 certificate with its hostnames, expiry and last error.
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer

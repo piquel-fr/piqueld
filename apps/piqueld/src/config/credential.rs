@@ -76,9 +76,13 @@ impl Credential {
         }
     }
 
-    /// Reads a credential file. Surrounding whitespace, such as a trailing
-    /// newline, is removed.
-    fn read(key: &'static str, file: CredentialFile) -> Result<Self, CredentialError> {
+    /// Reads a credential file, for settings accepted only as `key_file`.
+    /// Surrounding whitespace, such as a trailing newline, is removed.
+    ///
+    /// # Errors
+    ///
+    /// The file must be readable and non-empty.
+    pub(crate) fn read(key: &'static str, file: CredentialFile) -> Result<Self, CredentialError> {
         let value = std::fs::read_to_string(file.path())
             .map_err(|error| CredentialError::Read {
                 key,

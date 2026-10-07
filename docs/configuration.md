@@ -50,6 +50,9 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `docker.socket` | `/var/run/docker.sock` |
 | `docker.auto_initialize_swarm` | `true` |
 | `ingress.enabled` | `false` (restart required) |
+| `ingress.acme.directory` | `https://acme-v02.api.letsencrypt.org/directory` |
+| `ingress.acme.email` | none |
+| `dns.providers` | `[]` |
 | `reconciliation.scan_interval_seconds` | `60` |
 | `reconciliation.prepare_timeout_seconds` | `300` |
 | `reconciliation.convergence_timeout_seconds` | `120` |
@@ -68,7 +71,11 @@ One async controller overlaps pending work. Internal global limits allow two
 image resolutions, eight observations, and one resource mutation request. Timers
 consume no I/O slot. These limits are not configurable.
 
-The data directory is the only persistent daemon state. The daemon holds
+The data directory is the only persistent daemon state. Back up the database,
+`secrets.key` (see below), and `<data_dir>/ingress/acme` and
+`<data_dir>/ingress/certificates`, which hold the ACME account key and the
+DNS-01 certificates with their private keys (all mode 0600). Lost certificates
+are reissued, but each reissue counts against the CA's rate limits. The daemon holds
 exclusive OS locks on both directories for its lifetime. Separate instances
 require separate data and runtime directories. A competing process fails before
 opening the database or replacing a socket. Process exit (including a crash)
@@ -284,3 +291,34 @@ Gateway certificates, accepted configuration, and the private administration soc
 live below `<data_dir>/ingress`. Only dedicated subdirectories are mounted into
 Caddy; it receives neither the Docker socket nor the daemon API socket/database.
 See [ingress](ingress.md) for DNS, networking, lifecycle, and status details.
+
+## DNS providers
+
+`[[dns.providers]]` lists DNS provider accounts. piqueld uses them to obtain
+certificates through ACME DNS-01 for hostnames a public CA cannot reach, such as
+private routes. Credentials are accepted only as `_file` settings; relative
+paths resolve against `$CREDENTIALS_DIRECTORY`. They are read once at startup and
+never enter a container. Settings show only their file paths.
+
+```toml
+[ingress.acme]
+# directory = "https://acme-v02.api.letsencrypt.org/directory"
+email = "admin@example.com" # optional
+
+[[dns.providers]]
+kind = "cloudflare"
+api_token_file = "cloudflare-dns-token"   # Zone:Read and DNS:Edit
+
+[[dns.providers]]
+kind = "ovh"
+endpoint = "ovh-eu"                       # or "ovh-ca", "ovh-us"
+application_key_file = "ovh-application-key"
+application_secret_file = "ovh-application-secret"
+consumer_key_file = "ovh-consumer-key"
+```
+
+The OVH consumer key needs `GET /domain/zone`, `GET /auth/time`, and `POST`,
+`DELETE` on `/domain/zone/*`. Zones are discovered through each provider's API at
+startup and hourly. A hostname belongs to the provider with the longest matching
+zone; a zone claimed by two providers is a conflict and is not used. See
+[ingress](ingress.md#dns-01-certificates) for issuance and renewal.

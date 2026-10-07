@@ -7,6 +7,7 @@ pub mod auth;
 /// Executor-independent durable build recording.
 pub mod build;
 pub mod config;
+pub mod dns;
 pub mod docker;
 pub mod ingress;
 pub mod operations;

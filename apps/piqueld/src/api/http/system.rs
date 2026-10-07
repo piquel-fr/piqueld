@@ -13,7 +13,7 @@ use super::{ApiState, ok};
     )
 )]
 pub(super) async fn status(State(state): State<ApiState>) -> impl IntoResponse {
-    ok(state.system_status())
+    ok(state.system_status().await)
 }
 
 /// Static liveness body: `{"status":"ok"}`.

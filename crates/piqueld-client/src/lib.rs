@@ -60,7 +60,7 @@ pub use piqueld_core::{
 pub use piqueld_core::{
     ApplicationState, Convergence, Event, Operation, OperationKind, OperationState,
 };
-pub use system::SystemStatus;
+pub use system::{CertificateStatus, DnsProviderStatus, DnsStatus, SystemStatus, TailnetStatus};
 
 use http::StatusCode;
 use thiserror::Error;

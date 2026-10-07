@@ -959,6 +959,38 @@
         ],
         "type": "object"
       },
+      "CertificateStatus": {
+        "description": "One certificate issued through DNS-01, which covers a single name.",
+        "properties": {
+          "error": {
+            "description": "Latest issuance or renewal failure, cleared by the next success.",
+            "nullable": true,
+            "type": "string"
+          },
+          "expires_at_ms": {
+            "description": "Expiry of the stored certificate, absent until one is issued.",
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "hostnames": {
+            "description": "Route hostnames served with it; empty once no route needs it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "Covered name: a wildcard such as `*.example.com`, or an exact hostname.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "hostnames"
+        ],
+        "type": "object"
+      },
       "Convergence": {
         "description": "Aggregate health state derived from observed tasks.",
         "enum": [
@@ -1872,6 +1904,61 @@
           "passkeys",
           "credentials",
           "invitations"
+        ],
+        "type": "object"
+      },
+      "DnsProviderStatus": {
+        "description": "Zone discovery state of one configured DNS provider.",
+        "properties": {
+          "healthy": {
+            "description": "The latest discovery succeeded and no zone is claimed by another provider.",
+            "type": "boolean"
+          },
+          "kind": {
+            "description": "Provider kind, such as `cloudflare` or `ovh`.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Safe diagnostic: the discovery error or the conflicting zones.",
+            "type": "string"
+          },
+          "zones": {
+            "description": "Zones discovered through the provider's API, including conflicting ones.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "zones",
+          "healthy",
+          "message"
+        ],
+        "type": "object"
+      },
+      "DnsStatus": {
+        "description": "DNS providers from daemon TOML and the DNS-01 certificates piqueld issues\nthrough them.",
+        "properties": {
+          "certificates": {
+            "description": "Certificates that routes need, or that are kept until they expire.",
+            "items": {
+              "$ref": "#/components/schemas/CertificateStatus"
+            },
+            "type": "array"
+          },
+          "providers": {
+            "description": "Configured providers, in configuration order.",
+            "items": {
+              "$ref": "#/components/schemas/DnsProviderStatus"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "providers",
+          "certificates"
         ],
         "type": "object"
       },
@@ -3744,6 +3831,10 @@
               "daemon_version": {
                 "description": "Version of the running daemon binary.",
                 "type": "string"
+              },
+              "dns": {
+                "$ref": "#/components/schemas/DnsStatus",
+                "description": "DNS providers and the certificates issued through them with DNS-01."
               },
               "instance_id": {
                 "description": "Control-plane instance identifier.",
@@ -6608,6 +6699,10 @@
           "daemon_version": {
             "description": "Version of the running daemon binary.",
             "type": "string"
+          },
+          "dns": {
+            "$ref": "#/components/schemas/DnsStatus",
+            "description": "DNS providers and the certificates issued through them with DNS-01."
           },
           "instance_id": {
             "description": "Control-plane instance identifier.",

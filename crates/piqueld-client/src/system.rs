@@ -1,4 +1,7 @@
-pub use piqueld_core::api::{DependencyStatus, ReadinessStatus, SystemStatus};
+pub use piqueld_core::api::{
+    CertificateStatus, DependencyStatus, DnsProviderStatus, DnsStatus, ReadinessStatus,
+    SystemStatus, TailnetStatus,
+};
 
 use crate::{
     Client, ClientError,

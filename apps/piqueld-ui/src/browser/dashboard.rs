@@ -6,7 +6,7 @@ use super::{ApplicationRow, connection_label, dashboard_context, management, row
 use crate::state::{ApplicationHealth, ConnectionState, DataState};
 use leptos::prelude::*;
 use leptos_router::components::A;
-use piqueld_client::system::DependencyStatus;
+use piqueld_client::system::{CertificateStatus, DependencyStatus, DnsProviderStatus};
 
 #[component]
 pub(super) fn Sidebar() -> impl IntoView {
@@ -207,6 +207,17 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                         })
                     }}
                     {move || {
+                        signals.system.get().map(|system| {
+                            system
+                                .dns
+                                .providers
+                                .iter()
+                                .map(dns_provider_card)
+                                .chain(system.dns.certificates.iter().map(certificate_card))
+                                .collect_view()
+                        })
+                    }}
+                    {move || {
                         signals
                             .readiness
                             .get()
@@ -231,6 +242,56 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
             </div>
         </section>
     }
+}
+
+/// Card for one DNS provider: its kind, discovered zones and health.
+fn dns_provider_card(provider: &DnsProviderStatus) -> AnyView {
+    let (tone, label) = if provider.healthy {
+        (Tone::Ok, "Ready")
+    } else {
+        (Tone::Bad, "Unhealthy")
+    };
+    let zones = if provider.zones.is_empty() {
+        "no zones".to_owned()
+    } else {
+        provider.zones.join(", ")
+    };
+    status_card(
+        "DNS provider",
+        tone,
+        label,
+        &format!("{}: {zones}. {}", provider.kind, provider.message),
+    )
+}
+
+/// Card for one DNS-01 certificate: its name, hostnames, expiry and last error.
+fn certificate_card(certificate: &CertificateStatus) -> AnyView {
+    let (tone, label) = match (&certificate.error, certificate.expires_at_ms) {
+        (Some(_), None) => (Tone::Bad, "Failed"),
+        (Some(_), Some(_)) => (Tone::Warn, "Renewal failing"),
+        (None, Some(_)) => (Tone::Ok, "Issued"),
+        (None, None) => (Tone::Pending, "Pending"),
+    };
+    let hostnames = if certificate.hostnames.is_empty() {
+        "no routes".to_owned()
+    } else {
+        certificate.hostnames.join(", ")
+    };
+    let expiry = certificate.expires_at_ms.map_or_else(
+        || "not issued yet".to_owned(),
+        |at| format!("expires {}", super::format::timestamp(at)),
+    );
+    let error = certificate
+        .error
+        .as_ref()
+        .map(|error| format!(" Last error: {error}"))
+        .unwrap_or_default();
+    status_card(
+        "Certificate",
+        tone,
+        label,
+        &format!("{} for {hostnames}, {expiry}.{error}", certificate.name),
+    )
 }
 
 /// Readiness card for the browser's connection to the daemon itself.
