@@ -107,16 +107,19 @@ impl EditorContext {
     fn manifest(self) -> ApplicationManifest {
         self.saved.with(|saved| saved.application.to_manifest())
     }
-    /// The manifest the shown environment deploys, from its loaded detail:
-    /// its last fetched one when it follows a branch, else the saved one.
-    /// `None` before a branch's first fetch or while the detail loads.
+    /// The manifest the shown environment deploys: the saved one, or when it
+    /// follows a branch, the one last fetched from it, read from its loaded
+    /// detail. `None` before a branch's first fetch or while the detail loads.
     fn environment_manifest(self) -> Option<ApplicationTemplate> {
-        let id = self.environment.get()?;
+        let environment = self.selected_environment()?;
+        if environment.source.branch().is_none() {
+            return Some(self.saved.with(|saved| saved.application.clone()));
+        }
         let signals = self.dashboard.with_value(|d| d.signals);
         signals.detail.with(|detail| {
             let detail = detail
                 .as_ref()
-                .filter(|detail| detail.environment.id.as_str() == id)?;
+                .filter(|detail| detail.environment.id == environment.id)?;
             detail.manifest.clone()
         })
     }
@@ -573,8 +576,27 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
                     || saved.delete_intent != application.delete_intent
             }) {
                 context.saved.update(|saved| {
-                    saved.environments = application.environments;
+                    saved.environments.clone_from(&application.environments);
                     saved.delete_intent = application.delete_intent;
+                });
+            }
+            // Fetches replace a repository-backed application's saved manifest
+            // without advancing its revision; reload it unless it is being edited.
+            let fetched = context.saved.with_untracked(|saved| {
+                saved.application.spec().manifest.is_some()
+                    && application.updated_at_ms > saved.updated_at_ms
+            });
+            let editing = !context.dirty.get_untracked().is_empty()
+                || context.busy.get_untracked()
+                || context.uncertain.get_untracked();
+            if fetched && !editing {
+                let id = application.id.to_string();
+                spawn_local(async move {
+                    if let Ok(view) = Client::browser().application(&id).await
+                        && context.dirty.get_untracked().is_empty()
+                    {
+                        context.saved.set(view);
+                    }
                 });
             }
         }

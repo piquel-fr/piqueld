@@ -770,15 +770,18 @@ impl StoredEnvironmentRow {
             updated_at_ms: self.updated_at_ms,
         }
         .decode()?;
+        // Renames change display identity without rewriting fetched manifests.
+        let fetched = self
+            .manifest_json
+            .as_deref()
+            .map(serde_json::from_str::<ApplicationTemplate>)
+            .transpose()
+            .map_err(StoreError::corrupt)?
+            .map(|fetched| fetched.with_name(application.application.metadata().name.clone()));
         Ok(StoredEnvironment {
             environment,
             application,
-            fetched: self
-                .manifest_json
-                .as_deref()
-                .map(serde_json::from_str)
-                .transpose()
-                .map_err(StoreError::corrupt)?,
+            fetched,
             resolved: self
                 .resolved_json
                 .as_deref()

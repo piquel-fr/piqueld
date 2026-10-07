@@ -106,9 +106,9 @@ impl Store {
         Self::commit_environment_changes(tx, [app_id]).await
     }
 
-    /// Records a fetched repository manifest as its environment's last
-    /// fetched one, while the environment still follows a branch. Other
-    /// environments keep their own.
+    /// Records a fetched repository manifest, under the application's current
+    /// name, as its environment's last fetched one, while the environment
+    /// still follows a branch. Other environments keep their own.
     ///
     /// While the application is still repository-backed, the manifest, with the
     /// application's own connection, also becomes its saved manifest: what
@@ -131,11 +131,20 @@ impl Store {
         let Some(row) = row else {
             return Ok(());
         };
+        let fetched: ApplicationTemplate =
+            serde_json::from_str(&row.application_json).map_err(StoreError::corrupt)?;
+        let application = Self::application_on(tx, fetched.id().as_str())
+            .await?
+            .ok_or(StoreError::NotFound)?
+            .application;
+        // A retry may accept a manifest fetched before a rename.
+        let fetched = fetched.with_name(application.metadata().name.clone());
+        let manifest = fetched.canonical_json().map_err(StoreError::corrupt)?;
         let now = now_ms();
         let environment = operation.environment_id.as_str();
         let mut changed = sqlx::query!(
             "UPDATE environments SET manifest_json=?1,updated_at_ms=?2 WHERE id=?3 AND branch IS NOT NULL AND manifest_json IS NOT ?1",
-            row.application_json,
+            manifest,
             now,
             environment
         )
@@ -143,12 +152,6 @@ impl Store {
         .await
         .map_err(StoreError::database)?
         .rows_affected();
-        let fetched: ApplicationTemplate =
-            serde_json::from_str(&row.application_json).map_err(StoreError::corrupt)?;
-        let application = Self::application_on(tx, fetched.id().as_str())
-            .await?
-            .ok_or(StoreError::NotFound)?
-            .application;
         // Even when this environment's own manifest is unchanged, another
         // environment may have fetched since.
         if let Some(connection) = application.spec().manifest.clone() {
@@ -284,6 +287,17 @@ mod tests {
     /// Deploys `environment` from a fetched manifest with `spec`, as the
     /// controller does, through preparation.
     async fn fetch(store: &Store, environment: &EnvironmentId, spec: &str) {
+        let (op, target) = fetched(store, environment, spec).await;
+        store.save_prepared(&op, &target).await.unwrap();
+    }
+
+    /// Starts a deployment of `environment` and fetches a manifest with
+    /// `spec`, returning the operation and the target it prepares.
+    async fn fetched(
+        store: &Store,
+        environment: &EnvironmentId,
+        spec: &str,
+    ) -> (Operation, piqueld_core::ResolvedApplication) {
         let (MutationResponse::Operation(accepted), _) = store
             .accept(Mutation::deploy(environment.clone()), None, true, None)
             .await
@@ -332,7 +346,80 @@ mod tests {
             &resolutions,
         )
         .unwrap();
+        (op, target)
+    }
+
+    /// A manifest fetched before a rename is accepted under the new name, as
+    /// when a deployment is retried.
+    #[tokio::test]
+    async fn fetched_manifests_keep_the_current_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (MutationResponse::Saved(saved), _) = store
+            .accept(
+                Mutation::Save {
+                    application: Box::new(connection()),
+                    expected_application_id: None,
+                    deploy: false,
+                },
+                Some(0),
+                false,
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("saved")
+        };
+        let application = ApplicationId::parse(&saved.application_id).unwrap();
+        let production = EnvironmentId::default_for(&application);
+        let service = "[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'";
+        let (op, target) = fetched(&store, &production, service).await;
+        store
+            .transition_operation(
+                &op.id,
+                OperationState::Running,
+                OperationState::Failed,
+                Some(("build_failed", "build failed")),
+            )
+            .await
+            .unwrap();
+        // Repository-backed applications are renamed while disconnected.
+        let repository = |repository| Mutation::Edit {
+            id: application.clone(),
+            edit: Box::new(piqueld_core::edit::ApplicationEdit::Repository(repository)),
+            deploy: false,
+        };
+        for mutation in [
+            repository(None),
+            Mutation::Rename {
+                id: application.clone(),
+                name: "journal".into(),
+            },
+            repository(connection().spec().manifest.clone()),
+        ] {
+            store.accept(mutation, None, true, None).await.unwrap();
+        }
+        let op = store.retry_operation(&op).await.unwrap();
+        store
+            .transition_operation(
+                &op.id,
+                OperationState::Requested,
+                OperationState::Running,
+                None,
+            )
+            .await
+            .unwrap();
         store.save_prepared(&op, &target).await.unwrap();
+        let current = store.get(&production).await.unwrap();
+        assert_eq!(
+            current.application.application.metadata().name.as_str(),
+            "journal"
+        );
+        assert_eq!(
+            current.manifest().unwrap().metadata().name.as_str(),
+            "journal"
+        );
     }
 
     /// Each environment's hostname reservations and rename checks read its

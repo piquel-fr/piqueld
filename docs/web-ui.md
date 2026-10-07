@@ -225,15 +225,16 @@ shared by every environment, and, when connecting, the branch and optional commi
 every environment starts following. Deploy fetches that file from the
 environment's branch before preparing service sources. While backing is enabled,
 edit runtime configuration in Git; the repository and path remain editable here.
-The application page shows the manifest last fetched by any environment.
+The application page shows the manifest last fetched by any environment, and
+reloads it after a fetch unless repository settings are being edited.
 
 Each environment of a repository-backed application follows its own branch.
 **New environment** asks for the branch (by default the one `spec.manifest`
 names) and an optional commit, the Environments list shows each environment's
 branch, and the **Source** card on an environment's Overview changes it; nothing
-is redeployed until its next deployment. The environment's Variables card reads
-the manifest last fetched from its branch, and says when it has fetched nothing
-yet. A deployment's Snapshot shows the manifest path and revision it was fetched
+is redeployed until its next deployment. The environment's Variables card, Preview, and
+Logs service filter read the manifest last fetched from its branch; the
+Variables card says when it has fetched nothing yet. A deployment's Snapshot shows the manifest path and revision it was fetched
 from, and a warning when the fetched file's own `spec.manifest` names another
 repository or path (`manifest_connection_ignored`); that section is ignored.
 
