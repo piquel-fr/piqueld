@@ -278,12 +278,13 @@ impl Store {
     /// Advances the application revision past `current` after an environment
     /// is created, renamed, or deleted, so a caller that inspected the
     /// application before the change fails its precondition. Environments
-    /// whose resolved target was current stay current: their configuration
-    /// did not change.
+    /// whose resolved target was current stay current, except `stale`: a
+    /// renamed environment whose configuration renders differently.
     pub(super) async fn bump_generation_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &ApplicationId,
         current: u64,
+        stale: Option<&EnvironmentId>,
     ) -> Result<(), StoreError> {
         let previous = i64::try_from(current).map_err(StoreError::invalid_input)?;
         let generation = previous.checked_add(1).ok_or(StoreError::InvalidInput)?;
@@ -296,11 +297,13 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
+        let stale = stale.map(EnvironmentId::as_str);
         sqlx::query!(
-            "UPDATE environments SET resolved_generation=?1 WHERE application_id=?2 AND resolved_generation=?3",
+            "UPDATE environments SET resolved_generation=?1 WHERE application_id=?2 AND resolved_generation=?3 AND id IS NOT ?4",
             generation,
             id,
-            previous
+            previous,
+            stale
         )
         .execute(&mut **tx)
         .await
@@ -467,7 +470,8 @@ impl Store {
 
     /// Renames an idle application that is not repository-managed. A real name
     /// change bumps the generation (and each environment's resolved generation
-    /// when it was current), updates the display name of every environment's
+    /// when it was current and its configuration does not render the name,
+    /// e.g. `${{ app.name }}`), updates the display name of every environment's
     /// resolved and latest targets, and records an `application_renamed` event
     /// once, in the application's history. Never wakes the controller.
     async fn rename_on(
@@ -496,7 +500,7 @@ impl Store {
         };
         let previous = i64::try_from(current.generation).map_err(StoreError::invalid_input)?;
         let revision = i64::try_from(generation).map_err(StoreError::invalid_input)?;
-        let application = current.application.with_name(
+        let application = current.application.clone().with_name(
             piqueld_core::ApplicationName::parse(name.clone())
                 .map_err(StoreError::invalid_input)?,
         );
@@ -504,8 +508,16 @@ impl Store {
         sqlx::query!("UPDATE applications SET name=?1,desired_json=?2,generation=?3,updated_at_ms=?4 WHERE id=?5",name,desired,revision,now,id)
             .execute(&mut **tx).await.map_err(StoreError::constraint)?;
         // Resolved and latest targets may be retried after a rename. Only their display metadata changes.
-        sqlx::query!("UPDATE environments SET resolved_json=CASE WHEN resolved_json IS NULL THEN NULL ELSE json_set(resolved_json,'$.name',?1) END,resolved_generation=CASE WHEN resolved_generation=?2 THEN ?3 ELSE resolved_generation END WHERE application_id=?4",name,previous,revision,id)
+        sqlx::query!("UPDATE environments SET resolved_json=CASE WHEN resolved_json IS NULL THEN NULL ELSE json_set(resolved_json,'$.name',?1) END WHERE application_id=?2",name,id)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
+        for environment in Self::environments_on(tx, &id).await? {
+            let name = &environment.name;
+            if current.application.renders_like(name, &application, name) {
+                let environment = environment.id.as_str();
+                sqlx::query!("UPDATE environments SET resolved_generation=?1 WHERE id=?2 AND resolved_generation=?3",revision,environment,previous)
+                    .execute(&mut **tx).await.map_err(StoreError::database)?;
+            }
+        }
         sqlx::query!("UPDATE operations SET target_json=json_set(target_json,'$.name',?1) WHERE target_json IS NOT NULL AND id IN (SELECT (SELECT o.id FROM operations o WHERE o.environment_id=e.id ORDER BY o.created_at_ms DESC,o.id DESC LIMIT 1) FROM environments e WHERE e.application_id=?2)",name,id)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
         if old_name.as_str() != name {
@@ -643,9 +655,24 @@ mod tests {
     /// Saves a manifest configuring `staging` and `preview`, then creates the
     /// environments `staging` and `qa`.
     async fn configured_environments(store: &Store) -> (EnvironmentId, EnvironmentId) {
-        let template = piqueld_core::manifest::parse_template_toml(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec.environments.staging.variables]\nlevel='debug'\n[spec.environments.preview.variables]\nlevel='trace'",
+        let (_, [staging, qa]) = environments(
+            store,
+            "[spec.environments.staging.variables]\nlevel='debug'\n[spec.environments.preview.variables]\nlevel='trace'",
+            ["staging", "qa"],
         )
+        .await;
+        (staging, qa)
+    }
+
+    /// Saves the application `notes` with `spec`, then creates the environments `names`.
+    async fn environments<const N: usize>(
+        store: &Store,
+        spec: &str,
+        names: [&str; N],
+    ) -> (ApplicationId, [EnvironmentId; N]) {
+        let template = piqueld_core::manifest::parse_template_toml(&format!(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{spec}"
+        ))
         .unwrap();
         let (MutationResponse::Saved(saved), _) = store
             .accept(Mutation::save(template, None, false), Some(0), false, None)
@@ -656,7 +683,7 @@ mod tests {
         };
         let application = ApplicationId::parse(saved.application_id).unwrap();
         let mut ids = Vec::new();
-        for name in ["staging", "qa"] {
+        for name in names {
             let create = Mutation::CreateEnvironment {
                 application: application.clone(),
                 name: EnvironmentName::parse(name).unwrap(),
@@ -668,8 +695,7 @@ mod tests {
             };
             ids.push(environment.id);
         }
-        let [staging, qa] = ids.try_into().unwrap();
-        (staging, qa)
+        (application, ids.try_into().unwrap())
     }
 
     fn rename(id: &EnvironmentId, name: &str) -> Mutation {
@@ -700,6 +726,49 @@ mod tests {
             .accept(rename(&qa, "testing"), None, true, None)
             .await
             .unwrap();
+    }
+
+    /// Renames keep a resolved environment resolved unless its configuration
+    /// renders the changed name, so it reports the redeploy it needs.
+    #[tokio::test]
+    async fn renames_unresolve_environments_that_render_the_name() {
+        for (value, keeps_environment_rename, keeps_application_rename) in [
+            ("${{ vars.level }}", true, true),
+            ("${{ env.name }}", false, true),
+            ("${{ app.name }}", true, false),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Store::open(directory.path().join("db")).await.unwrap();
+            let (application, [id]) = environments(
+                &store,
+                &format!("[spec.variables]\nlevel='info'\n[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'\n[spec.services.environment]\nVALUE='{value}'"),
+                ["staging"],
+            )
+            .await;
+            let resolved_after = async |mutation| {
+                sqlx::query("UPDATE environments SET resolved_generation=(SELECT generation FROM applications)")
+                    .execute(&store.pool)
+                    .await
+                    .unwrap();
+                store.accept(mutation, None, false, None).await.unwrap();
+                let current = store.get(&id).await.unwrap();
+                current.environment.resolved_generation == Some(current.application.generation)
+            };
+            assert_eq!(
+                resolved_after(rename(&id, "qa")).await,
+                keeps_environment_rename,
+                "{value}"
+            );
+            let application = Mutation::Rename {
+                id: application,
+                name: "journal".into(),
+            };
+            assert_eq!(
+                resolved_after(application).await,
+                keeps_application_rename,
+                "{value}"
+            );
+        }
     }
 
     /// Lifecycle changes advance the application revision, so a second change

@@ -213,13 +213,8 @@ impl ApplicationTemplate {
     /// the routes whose hostname renders without a deployment.
     #[must_use]
     pub fn hostnames(&self, environment: &EnvironmentName) -> Vec<Hostname> {
-        let mut spec = self.spec.clone();
-        spec.render(
-            self.metadata.name.as_str(),
-            &RenderContext::saved(environment.clone()),
-            &mut Vec::new(),
-        );
-        spec.routes
+        self.saved(environment)
+            .routes
             .iter()
             .filter_map(|route| route.hostname.as_literal())
             .filter_map(|hostname| {
@@ -232,6 +227,31 @@ impl ApplicationTemplate {
                 .ok()
             })
             .collect()
+    }
+
+    /// Whether `environment` renders the same saved configuration as
+    /// `renamed` does in `other`. Renames keep an environment resolved only
+    /// when this holds, since `${{ app.name }}` and `${{ env.name }}` read names.
+    #[must_use]
+    pub fn renders_like(
+        &self,
+        environment: &EnvironmentName,
+        other: &Self,
+        renamed: &EnvironmentName,
+    ) -> bool {
+        self.saved(environment) == other.saved(renamed)
+    }
+
+    /// `environment`'s saved configuration, rendered outside any deployment.
+    /// Values that only render when deploying stay templates.
+    fn saved(&self, environment: &EnvironmentName) -> ApplicationSpec {
+        let mut spec = self.spec.clone();
+        spec.render(
+            self.metadata.name.as_str(),
+            &RenderContext::saved(environment.clone()),
+            &mut Vec::new(),
+        );
+        spec
     }
 
     /// Each declared variable's value in `environment`'s saved configuration,

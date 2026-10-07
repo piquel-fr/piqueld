@@ -209,6 +209,11 @@ applies, so piqueld refuses to rename an environment while the saved manifest
 has a block for its current or its new name (`environment_configured`). Remove
 the block, rename the environment, then add the block back under the new name.
 
+A rename never touches running services. When the configuration renders the
+changed name through `${{ env.name }}`, `${{ env.slug }}` or `${{ app.name }}`,
+the environment no longer reports the saved configuration as resolved: deploy
+it to apply the new name.
+
 ## Validation and editor support
 
 `piquelctl app validate --file application.toml` applies the same parser and

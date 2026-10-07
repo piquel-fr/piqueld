@@ -173,7 +173,9 @@ Configuration generation starts at 1 and advances on saves, changed names,
 application deletion intent, and environment creation, renames and deletions,
 since environment names select `[spec.environments.<name>]` configuration.
 Deployments leave it unchanged; each environment records the revision it last
-resolved as `resolved_generation`, which environment changes keep current. Apply replaces the full configuration without merging. It returns
+resolved as `resolved_generation`, which environment changes and renames keep
+current unless the environment's configuration renders the changed name
+(`${{ env.name }}`, `${{ env.slug }}`, `${{ app.name }}`). Apply replaces the full configuration without merging. It returns
 200 with `SavedApplication` (`application_id`, `generation`, and null `operation_id`).
 With `?deploy=true`, apply atomically saves and deploys, returning 202 with a populated
 `operation_id`. Saving during deletion is rejected.

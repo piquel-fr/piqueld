@@ -56,7 +56,13 @@ impl Store {
         }
         let id = EnvironmentId::parse(super::new_id("env")).map_err(StoreError::corrupt)?;
         Self::insert_environment_on(tx, application.application.id(), &id, name, now).await?;
-        Self::bump_generation_on(tx, application.application.id(), application.generation).await?;
+        Self::bump_generation_on(
+            tx,
+            application.application.id(),
+            application.generation,
+            None,
+        )
+        .await?;
         Ok(id)
     }
 
@@ -64,7 +70,8 @@ impl Store {
     /// application revision. Its runtime is unaffected. Names select
     /// `[spec.environments.<name>]`, so a rename is refused while the saved
     /// manifest configures the old or the new name, rather than silently
-    /// switching the configuration the environment deploys.
+    /// switching the configuration the environment deploys. It stays resolved
+    /// unless its configuration renders the name, e.g. `${{ env.name }}`.
     pub(super) async fn rename_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
@@ -86,6 +93,8 @@ impl Store {
                 environment: configured.clone(),
             });
         }
+        let manifest = environment.manifest();
+        let stale = (!manifest.renders_like(old, manifest, name)).then(|| environment.id());
         let (id, name) = (environment.id().as_str(), name.as_str());
         sqlx::query!(
             "UPDATE environments SET name=?1,updated_at_ms=?2 WHERE id=?3",
@@ -106,12 +115,7 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        Self::bump_generation_on(
-            tx,
-            environment.manifest().id(),
-            environment.application.generation,
-        )
-        .await
+        Self::bump_generation_on(tx, manifest.id(), environment.application.generation, stale).await
     }
 
     /// Persists an environment's deletion intent and requests its delete
@@ -151,6 +155,7 @@ impl Store {
             tx,
             environment.manifest().id(),
             environment.application.generation,
+            None,
         )
         .await?;
         Ok(operation)
