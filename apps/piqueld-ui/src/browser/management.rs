@@ -1050,7 +1050,9 @@ fn ApplicationSettings() -> impl IntoView {
                     <RepositorySettings />
                 </div> <fieldset disabled={move || context.managed()}>
                     {move || {
-                        fetched.track();
+                        // Read, not only tracked: memos are lazy, and one never
+                        // read never subscribes to `saved`.
+                        fetched.with(|_| ());
                         view! {
                             <div hidden={move || context.tab.get() != "Services"}>
                                 <div class="section-header">
