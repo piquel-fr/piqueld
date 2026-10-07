@@ -277,14 +277,7 @@ impl std::error::Error for ValidationErrors {}
 /// Returns validation errors, or one decode error naming the rejected input
 /// and its location.
 pub fn parse_template_toml(input: &str) -> Result<ValidatedTemplate, ValidationErrors> {
-    let manifest: ApplicationManifest =
-        serde_path_to_error::deserialize(toml::Deserializer::new(input)).map_err(|error| {
-            ValidationErrors::decode(
-                &error.path().to_string(),
-                crate::TomlDiagnostic::new(input, error.inner()).to_string(),
-            )
-        })?;
-    manifest.validate_template()
+    ApplicationManifest::decode_toml(input)?.validate_template()
 }
 
 /// Parses and validates a strict JSON manifest whose values may reference
@@ -294,15 +287,7 @@ pub fn parse_template_toml(input: &str) -> Result<ValidatedTemplate, ValidationE
 /// Returns validation errors, or one decode error naming the rejected input
 /// and its location.
 pub fn parse_template_json(input: &str) -> Result<ValidatedTemplate, ValidationErrors> {
-    let mut deserializer = serde_json::Deserializer::from_str(input);
-    let manifest: ApplicationManifest = serde_path_to_error::deserialize(&mut deserializer)
-        .map_err(|error| {
-            ValidationErrors::decode(&error.path().to_string(), error.inner().to_string())
-        })?;
-    deserializer
-        .end()
-        .map_err(|error| ValidationErrors::decode("$", error.to_string()))?;
-    manifest.validate_template()
+    ApplicationManifest::decode_json(input)?.validate_template()
 }
 
 /// Parses and validates strict TOML that references no variables.
@@ -539,6 +524,36 @@ impl ApplicationManifest {
                 _ => error(errors, "route_target_invalid", &path, ROUTE_TARGET_MESSAGE),
             }
         }
+    }
+
+    /// Decodes strict TOML without validating it, so callers can adjust the
+    /// manifest (e.g. replace `spec.manifest`) before
+    /// [`Self::validate_template`].
+    ///
+    /// # Errors
+    /// Returns one decode error naming the rejected input and its location.
+    pub fn decode_toml(input: &str) -> Result<Self, ValidationErrors> {
+        serde_path_to_error::deserialize(toml::Deserializer::new(input)).map_err(|error| {
+            ValidationErrors::decode(
+                &error.path().to_string(),
+                crate::TomlDiagnostic::new(input, error.inner()).to_string(),
+            )
+        })
+    }
+
+    /// Decodes strict JSON without validating it; see [`Self::decode_toml`].
+    ///
+    /// # Errors
+    /// Returns one decode error naming the rejected input and its location.
+    pub fn decode_json(input: &str) -> Result<Self, ValidationErrors> {
+        let mut deserializer = serde_json::Deserializer::from_str(input);
+        let manifest = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+            ValidationErrors::decode(&error.path().to_string(), error.inner().to_string())
+        })?;
+        deserializer
+            .end()
+            .map_err(|error| ValidationErrors::decode("$", error.to_string()))?;
+        Ok(manifest)
     }
 
     /// Validates a manifest whose values may reference variables, as far as

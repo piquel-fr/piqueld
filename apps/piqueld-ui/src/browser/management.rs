@@ -27,7 +27,8 @@ use logs::ApplicationLogs;
 pub(super) use navigation::HistoryGuard;
 use navigation::guard_navigation;
 use piqueld_client::{
-    ApplicationManifest, ApplicationSpec, ApplicationView, Client, ClientError, Metadata,
+    ApplicationManifest, ApplicationSpec, ApplicationTemplate, ApplicationView, Client,
+    ClientError, Metadata,
     edit::{ApplicationEdit, EditOptions},
 };
 use secrets::{EnvironmentSecrets, SecretFileSettings};
@@ -105,6 +106,19 @@ impl EditorContext {
     /// The saved manifest, tracked so lists re-render after every save.
     fn manifest(self) -> ApplicationManifest {
         self.saved.with(|saved| saved.application.to_manifest())
+    }
+    /// The manifest the shown environment deploys, from its loaded detail:
+    /// its last fetched one when it follows a branch, else the saved one.
+    /// `None` before a branch's first fetch or while the detail loads.
+    fn environment_manifest(self) -> Option<ApplicationTemplate> {
+        let id = self.environment.get()?;
+        let signals = self.dashboard.with_value(|d| d.signals);
+        signals.detail.with(|detail| {
+            let detail = detail
+                .as_ref()
+                .filter(|detail| detail.environment.id.as_str() == id)?;
+            detail.manifest.clone()
+        })
     }
     fn id(self) -> String {
         self.saved

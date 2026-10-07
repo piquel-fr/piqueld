@@ -2499,7 +2499,8 @@ mod repository_deployments {
     }
 
     /// A fetched file's `spec.manifest` never redirects later fetches: it is
-    /// ignored, with a warning when it names another repository or path.
+    /// ignored, with a warning when it names another repository or path, and
+    /// may be omitted.
     #[tokio::test]
     async fn fetched_connections_are_ignored_with_a_warning() {
         let repository = RepositoryFixture::new();
@@ -2533,9 +2534,13 @@ mod repository_deployments {
         // Only the branch differs, as it does between environments: no warning.
         let mut branched = initial.clone();
         branched.spec.manifest.as_mut().unwrap().repository.branch = "release".into();
-        // Without `spec.manifest`, the application stays connected.
+        // Without `spec.manifest`, the application stays connected, and
+        // references that need it still validate.
         let mut bare = initial.clone();
         bare.spec.manifest = None;
+        bare.spec.services[0]
+            .environment
+            .insert("REVISION".into(), "${{ git.sha }}".into());
         for file in [branched, bare] {
             repository.write("app.json", &file);
             repository.commit();
@@ -2585,6 +2590,17 @@ mod repository_deployments {
         assert_eq!(staged, Some(3));
         let (before, production_manifest) = replicas(&production).await;
         assert_eq!(before, Some(1));
+        // An unchanged fetch is still the application's last fetched manifest.
+        let saved_replicas = async || {
+            let current = harness.store.get(&production).await.unwrap();
+            current.application.application.spec().services[0]
+                .replicas
+                .clone()
+        };
+        assert_eq!(saved_replicas().await, release.spec.services[0].replicas);
+        let deployed = RepositoryFixture::deploy(&harness, &production).await;
+        assert_eq!(deployed.state, OperationState::Succeeded);
+        assert_eq!(saved_replicas().await, main.spec.services[0].replicas);
         // A new main commit reaches production only, when it deploys.
         main.spec.services[0].replicas = 2.into();
         repository.write("app.json", &main);

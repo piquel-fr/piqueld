@@ -41,7 +41,9 @@ another environment.
 **Preview** and **Deploy to <environment>** on an environment page target that
 environment. On the application page they target its only environment; with
 several, **Deploy…** opens the Environments tab to choose one. Deployment actions
-are disabled for deleting environments. A service's Logs tab reads the only
+are disabled for deleting environments. Preview plans the manifest the
+environment deploys: for an environment that follows a branch, the one last
+fetched from it, so Preview is disabled until its first deployment. A service's Logs tab reads the only
 environment's logs, or links to each environment's logs.
 
 Values that differ between environments come from manifest variables. The

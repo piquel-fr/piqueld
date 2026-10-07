@@ -107,14 +107,15 @@ impl Store {
     }
 
     /// Records a fetched repository manifest as its environment's last
-    /// fetched one, while the environment still follows a branch, recording
-    /// `application_applied` when it changed. Other environments keep their own.
+    /// fetched one, while the environment still follows a branch. Other
+    /// environments keep their own.
     ///
     /// While the application is still repository-backed, the manifest, with the
     /// application's own connection, also becomes its saved manifest: what
     /// application-wide views show and what environments deploy after
-    /// disconnecting. Neither advances the application revision, since
-    /// repository-backed configuration cannot be edited.
+    /// disconnecting. Records `application_applied` when either changed;
+    /// neither advances the application revision, since repository-backed
+    /// configuration cannot be edited.
     /// Called in the same transaction that saves the fully prepared runtime target.
     pub(super) async fn accept_deployment_on(
         tx: &mut Transaction<'_, Sqlite>,
@@ -132,7 +133,7 @@ impl Store {
         };
         let now = now_ms();
         let environment = operation.environment_id.as_str();
-        let changed = sqlx::query!(
+        let mut changed = sqlx::query!(
             "UPDATE environments SET manifest_json=?1,updated_at_ms=?2 WHERE id=?3 AND branch IS NOT NULL AND manifest_json IS NOT ?1",
             row.application_json,
             now,
@@ -142,31 +143,33 @@ impl Store {
         .await
         .map_err(StoreError::database)?
         .rows_affected();
-        if changed == 0 {
-            return Ok(());
-        }
-        Self::operation_event(tx, &operation.id, "application_applied", None, now).await?;
         let fetched: ApplicationTemplate =
             serde_json::from_str(&row.application_json).map_err(StoreError::corrupt)?;
         let application = Self::application_on(tx, fetched.id().as_str())
             .await?
             .ok_or(StoreError::NotFound)?
             .application;
+        // Even when this environment's own manifest is unchanged, another
+        // environment may have fetched since.
         if let Some(connection) = application.spec().manifest.clone() {
             let saved = fetched
                 .with_manifest(Some(connection))
                 .canonical_json()
                 .map_err(StoreError::corrupt)?;
             let id = application.id().as_str();
-            sqlx::query!(
-                "UPDATE applications SET desired_json=?1,updated_at_ms=?2 WHERE id=?3",
+            changed += sqlx::query!(
+                "UPDATE applications SET desired_json=?1,updated_at_ms=?2 WHERE id=?3 AND desired_json IS NOT ?1",
                 saved,
                 now,
                 id
             )
             .execute(&mut **tx)
             .await
-            .map_err(StoreError::database)?;
+            .map_err(StoreError::database)?
+            .rows_affected();
+        }
+        if changed > 0 {
+            Self::operation_event(tx, &operation.id, "application_applied", None, now).await?;
         }
         Ok(())
     }

@@ -18,6 +18,15 @@ UPDATE environments SET
     manifest_json=(SELECT a.desired_json FROM applications a WHERE a.id=environments.application_id)
 WHERE (SELECT json_extract(a.desired_json,'$.spec.manifest') FROM applications a WHERE a.id=environments.application_id) IS NOT NULL;
 
+-- Stored environment responses replay retried requests. Their source was the
+-- string `saved` or `repository`; give them the environment's migrated one.
+UPDATE request_receipts SET response_json=json_set(response_json,'$.Environment.source',json(COALESCE(
+    (SELECT CASE WHEN e.branch IS NULL THEN json_object('type','saved')
+        ELSE json_patch(json_object('type','branch','branch',e.branch),json_object('commit',e.pinned_commit)) END
+     FROM environments e WHERE e.id=json_extract(request_receipts.response_json,'$.Environment.id')),
+    json_object('type','saved'))))
+WHERE json_type(response_json,'$.Environment.source')='text';
+
 -- Problems found while fetching a deployment's manifest that did not stop it,
 -- such as a `spec.manifest` that differs from the application's connection.
 ALTER TABLE deployments ADD COLUMN warnings_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(warnings_json));

@@ -270,12 +270,7 @@ pub(super) fn EnvironmentVariables() -> impl IntoView {
     let values = move || {
         let environment = context.selected_environment()?;
         let name = EnvironmentName::parse(environment.name.as_str()).ok()?;
-        signals.detail.with(|detail| {
-            let detail = detail
-                .as_ref()
-                .filter(|detail| detail.environment.id == environment.id)?;
-            Some(detail.manifest.as_ref()?.values(&name))
-        })
+        Some(context.environment_manifest()?.values(&name))
     };
     view! {
         <section class="card card-flush">

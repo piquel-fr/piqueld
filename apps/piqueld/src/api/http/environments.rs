@@ -44,7 +44,7 @@ fn environment_request<T: serde::de::DeserializeOwned>(
     responses((status=200,description="Environment created",body=Envelope<EnvironmentView>),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
     (status=409,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),
-    (status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+    (status=422,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn create(
     State(state): State<ApiState>,
     query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
@@ -194,7 +194,7 @@ pub(super) async fn rename(
     responses((status=200,description="Environment follows the branch from its next deployment",body=Envelope<EnvironmentView>),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
     (status=409,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),
-    (status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+    (status=422,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn branch(
     State(state): State<ApiState>,
     query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,

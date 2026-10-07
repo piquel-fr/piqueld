@@ -8461,6 +8461,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -17537,6 +17547,16 @@
             "description": "Structured, sanitized error"
           },
           "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
             "content": {
               "application/json": {
                 "schema": {

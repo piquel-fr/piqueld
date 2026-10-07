@@ -145,7 +145,8 @@ deploy the saved manifest) and `manifest_json`, the manifest last fetched from
 their branch. Every environment of a repository-backed application takes the
 branch and pinned commit its `spec.manifest` names, and the saved manifest,
 which was the last fetched one, as its own, so nothing deploys or reserves
-differently after upgrading. Deployments gain `warnings_json`, problems found
+differently after upgrading. Stored environment responses that replay retried
+requests take the migrated source. Deployments gain `warnings_json`, problems found
 while fetching that did not stop the deployment; existing ones have none.
 
 ## Upgrade and rollback

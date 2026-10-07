@@ -4,7 +4,7 @@ use crate::store::StoreError;
 use piqueld_core::{
     NormalizedApplication,
     api::DiagnosticView,
-    manifest::{GitRevision, RenderContext, RepositoryManifest},
+    manifest::{ApplicationManifest, GitRevision, RenderContext, RepositoryManifest},
 };
 
 impl<D: DockerApi> Controller<D> {
@@ -17,10 +17,11 @@ impl<D: DockerApi> Controller<D> {
     /// and the manifest file (at most 2 MiB; `.json` parsed as JSON, anything
     /// else as TOML) is validated, required to keep the application name,
     /// rendered for `environment` at the fetched commit, and persisted with it.
-    /// Its own `spec.manifest` is ignored: the repository it was fetched from
-    /// replaces it, with a `manifest_connection_ignored` warning when it names
-    /// another repository URL or manifest path. Inputs without repository
-    /// backing are marked fetched as-is.
+    /// Its own `spec.manifest` is ignored, even when absent or invalid: the
+    /// repository it was fetched from replaces it before validation, with a
+    /// `manifest_connection_ignored` warning when it names another repository
+    /// URL or manifest path. Inputs without repository backing are marked
+    /// fetched as-is.
     pub(super) async fn deployment_manifest(
         &self,
         operation: &Operation,
@@ -53,13 +54,17 @@ impl<D: DockerApi> Controller<D> {
                 tracing::error!(?error, "manifest repository fetch failed");
                 OperationError::ManifestFetchFailed(error)
             })?;
-        let parsed = Self::read_manifest(&checkout, &backing.path).await?;
-        let warnings = Self::ignored_connection(parsed.spec().manifest.as_ref(), backing)
+        let mut manifest = Self::read_manifest(&checkout, &backing.path).await?;
+        // Replaced before validation: `self` sources and `git.*` references
+        // need a connection, and the file's own may be absent or invalid.
+        let declared = manifest.spec.manifest.replace(backing.clone());
+        let warnings = Self::ignored_connection(declared.as_ref(), backing)
             .into_iter()
             .collect::<Vec<_>>();
-        let template = parsed
-            .normalize(input.template.id().clone())
-            .with_manifest(Some(backing.clone()));
+        let template = manifest
+            .validate_template()
+            .map_err(Self::invalid_manifest)?
+            .normalize(input.template.id().clone());
         if template.metadata().name != input.template.metadata().name {
             return Err(OperationError::ManifestInvalid);
         }
@@ -86,12 +91,13 @@ impl<D: DockerApi> Controller<D> {
         Ok(rendering.application.pin_manifest_sources(&checkout.commit))
     }
 
-    /// Reads and validates the manifest file at `relative` in `checkout`: at
-    /// most 2 MiB, `.json` parsed as JSON and anything else as TOML.
+    /// Reads and decodes, without validating, the manifest file at `relative`
+    /// in `checkout`: at most 2 MiB, `.json` parsed as JSON and anything else
+    /// as TOML.
     async fn read_manifest(
         checkout: &crate::git::Checkout,
         relative: &str,
-    ) -> Result<piqueld_core::manifest::ValidatedTemplate, OperationError> {
+    ) -> Result<ApplicationManifest, OperationError> {
         let path = checkout.path(relative).await.map_err(|error| {
             tracing::error!(?error, "manifest file lookup failed");
             let not_found = error
@@ -126,9 +132,9 @@ impl<D: DockerApi> Controller<D> {
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
         {
-            piqueld_core::manifest::parse_template_json(&contents)
+            ApplicationManifest::decode_json(&contents)
         } else {
-            piqueld_core::manifest::parse_template_toml(&contents)
+            ApplicationManifest::decode_toml(&contents)
         }
         .map_err(Self::invalid_manifest)
     }

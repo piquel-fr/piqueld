@@ -296,6 +296,7 @@ async fn database_at(path: &Path, version: usize) -> SqlitePool {
 /// Environments of repository-backed applications follow the branch and
 /// pinned commit `spec.manifest` named, keeping the manifest last fetched for
 /// the application; other environments keep deploying the saved manifest.
+/// Stored environment responses take the migrated source too.
 #[tokio::test]
 async fn repository_backed_environments_take_their_branch_from_the_connection() {
     let directory = tempfile::tempdir().unwrap();
@@ -327,10 +328,44 @@ async fn repository_backed_environments_take_their_branch_from_the_connection() 
                 .execute(&pool).await.unwrap();
         }
     }
+    // Receipts of environments created before the migration.
+    for (environment, application, source) in [
+        ("env-backed-staging", "app-backed-01", "repository"),
+        ("env-saved-staging", "app-saved-01", "saved"),
+    ] {
+        let response = serde_json::json!({"Environment": {
+            "id": environment, "application_id": application, "name": "staging",
+            "source": source, "resolved_generation": null, "delete_intent": false,
+            "created_at_ms": 1, "updated_at_ms": 1,
+        }});
+        sqlx::query("INSERT INTO request_receipts(request_id,fingerprint,response_json,expires_at_ms) VALUES(?1,'f',?2,?3)")
+            .bind(environment).bind(response.to_string()).bind(i64::MAX)
+            .execute(&pool).await.unwrap();
+    }
     pool.close().await;
 
     let store = Store::open(&path).await.unwrap();
     let release = TrackedBranch::new("release".into(), Some(commit)).unwrap();
+    let replayed = async |request: &str| {
+        let response: String = sqlx::query_scalar(
+            "SELECT json_extract(response_json,'$.Environment') FROM request_receipts WHERE request_id=?1",
+        )
+        .bind(request)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        serde_json::from_str::<piqueld_core::api::EnvironmentView>(&response)
+            .unwrap()
+            .source
+    };
+    assert_eq!(
+        replayed("env-backed-staging").await,
+        EnvironmentSource::Branch(release.clone())
+    );
+    assert_eq!(
+        replayed("env-saved-staging").await,
+        EnvironmentSource::Saved
+    );
     for id in ["app-backed-01", "env-backed-staging"] {
         let environment = store.get(&EnvironmentId::parse(id).unwrap()).await.unwrap();
         assert_eq!(

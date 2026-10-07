@@ -12,7 +12,7 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{
     Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest, EnvironmentName,
-    EnvironmentRequest, EnvironmentSource, EnvironmentView, TrackedBranch,
+    EnvironmentRequest, EnvironmentView, TrackedBranch,
 };
 
 enum EnvironmentChange {
@@ -197,7 +197,7 @@ pub(super) fn EnvironmentList() -> impl IntoView {
                                 let navigate = navigate.clone();
                                 let deleting = environment.delete_intent;
                                 let name = environment.name.to_string();
-                                let source = source_label(&environment.source);
+                                let source = environment.source.to_string();
                                 let label = format!("Deploy to {name}");
                                 let health = environment_row(signals, &id).map(|row| row.health());
                                 let latest = latest(&id);
@@ -257,14 +257,6 @@ pub(super) fn EnvironmentList() -> impl IntoView {
                     .into_any()
             }}
         </div>
-    }
-}
-
-/// Where an environment deploys from, as listed: `saved manifest` or its branch.
-fn source_label(source: &EnvironmentSource) -> String {
-    match source {
-        EnvironmentSource::Saved => "saved manifest".into(),
-        EnvironmentSource::Branch(branch) => format!("branch {branch}"),
     }
 }
 
