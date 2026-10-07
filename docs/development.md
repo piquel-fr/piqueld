@@ -30,7 +30,8 @@ does), and `just dev config --force` regenerates it:
 | `docker.socket` | the instance's own engine (below) |
 
 The instance is named after the worktree directory, or `main` for the main
-checkout. Edit the file freely: `just dev` reads the directories, port, and
+checkout, followed by a hash of its path, so separate clones never share an
+instance. Edit the file freely: `just dev` reads the directories, port, and
 Docker socket from it.
 
 ## Browser

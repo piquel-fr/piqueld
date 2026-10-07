@@ -5,7 +5,9 @@
 mod supervisor;
 
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, TryLockError};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -14,9 +16,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use bollard::models::{ContainerCreateBody, HostConfig};
-use bollard::query_parameters::{ListContainersOptionsBuilder, RemoveVolumeOptions};
+use bollard::query_parameters::{
+    InspectContainerOptions, ListContainersOptionsBuilder, RemoveVolumeOptions,
+};
 use clap::Subcommand;
-use rustix::process::{Pid, Signal, kill_process, test_kill_process};
+use rustix::process::{Pid, Signal, getpid, kill_process};
 use serde::{Deserialize, Serialize};
 
 use crate::Workspace;
@@ -87,7 +91,7 @@ impl Command {
             Self::Run => Instance::load_or_configure(workspace)?.run().await?,
             Self::Start { timeout } => {
                 let instance = Instance::load_or_configure(workspace)?;
-                instance.start()?;
+                instance.start().await?;
                 instance.wait(timeout).await?;
             }
             Self::Wait { timeout } => Instance::load(workspace)?.wait(timeout).await?,
@@ -234,7 +238,9 @@ auto_initialize_swarm = true
     }
 
     /// The instance is named after the worktree directory, or `main` for the
-    /// main checkout, e.g. `t3code-b681a751`.
+    /// main checkout, followed by a hash of its path that keeps checkouts with
+    /// the same name apart, e.g. `t3code-b681a751-0c1d2e3f`. The configuration
+    /// records the name, so the hash need not be stable across Rust versions.
     fn name_for(workspace: &Workspace) -> Result<String> {
         let main = workspace.worktrees()?.into_iter().next();
         let name = if main.as_deref() == Some(workspace.root()) {
@@ -256,7 +262,11 @@ auto_initialize_swarm = true
             }
         }
         slug.truncate(40);
-        Ok(slug.trim_matches('-').to_owned())
+        let mut hasher = DefaultHasher::new();
+        workspace.root().hash(&mut hasher);
+        // The low 32 bits are plenty to tell a few checkouts apart.
+        let hash = hasher.finish() & 0xffff_ffff;
+        Ok(format!("{}-{hash:08x}", slug.trim_matches('-')))
     }
 
     /// The lowest port from 7846 that nothing listens on and no other
@@ -318,12 +328,50 @@ auto_initialize_swarm = true
             .with_context(|| format!("create {}", path.display()))
     }
 
-    /// The supervisor's process, while it runs.
+    /// The supervisor's process, while it runs. The supervisor locks dev.pid
+    /// until it exits, so a file left behind by a crash never names an
+    /// unrelated process that reuses its pid.
     fn supervisor(&self) -> Option<Pid> {
-        let pid = fs::read_to_string(self.file("dev.pid")).ok()?;
-        let pid = Pid::from_raw(pid.trim().parse().ok()?)?;
-        test_kill_process(pid).ok()?;
-        Some(pid)
+        let mut file = fs::File::open(self.file("dev.pid")).ok()?;
+        // Taking the lock means no supervisor holds it; dropping the file
+        // releases it again.
+        let Err(TryLockError::WouldBlock) = file.try_lock_shared() else {
+            return None;
+        };
+        let mut pid = String::new();
+        file.read_to_string(&mut pid).ok()?;
+        Pid::from_raw(pid.trim().parse().ok()?)
+    }
+
+    /// Locks dev.pid and records our pid in it, for as long as the returned
+    /// file stays open. Fails when another supervisor holds the lock.
+    async fn claim(&self) -> Result<fs::File> {
+        let path = self.file("dev.pid");
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("open {}", path.display()))?;
+        // `supervisor` holds the lock for a moment while it checks, so a few
+        // attempts tell it apart from a running supervisor.
+        for _ in 0..20 {
+            match file.try_lock() {
+                Ok(()) => {
+                    file.set_len(0)?;
+                    write!(file, "{}", getpid().as_raw_nonzero())?;
+                    return Ok(file);
+                }
+                Err(TryLockError::WouldBlock) => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(TryLockError::Error(error)) => {
+                    return Err(error).with_context(|| format!("lock {}", path.display()));
+                }
+            }
+        }
+        bail!("already running; see `just dev status`")
     }
 
     fn state(&self) -> Option<State> {
@@ -453,15 +501,32 @@ auto_initialize_swarm = true
     }
 
     async fn clean(&self) -> Result<()> {
+        let engine = Engine::host().await?;
+        let container = self.container();
+        // A configuration copied from another worktree names its instance.
+        match engine
+            .inspect_container(&container, None::<InspectContainerOptions>)
+            .await
+        {
+            Ok(inspected) => {
+                let labels = inspected.config.and_then(|config| config.labels);
+                if let Some(owner) = labels
+                    .as_ref()
+                    .and_then(|labels| labels.get(WORKTREE_LABEL))
+                    && Path::new(owner) != self.workspace.root()
+                {
+                    bail!("{container} belongs to {owner}; run `just dev config --force` here");
+                }
+            }
+            Err(error) if Engine::is_not_found(&error) => {}
+            Err(error) => return Err(error).context("inspect the instance's engine"),
+        }
         self.stop().await?;
         let dirs = [
             &self.config.server.data_dir,
             &self.config.server.runtime_dir,
         ];
-        Engine::host()
-            .await?
-            .remove_dev_instance(&self.container(), &dirs)
-            .await?;
+        engine.remove_dev_instance(&container, &dirs).await?;
         eprintln!("removed instance {}", self.name());
         Ok(())
     }
@@ -480,8 +545,8 @@ auto_initialize_swarm = true
 
 impl Engine {
     /// Removes an instance's engine, its image store, and `dirs`. Only
-    /// directories under a `piqueld-dev` parent are deleted, so a configuration
-    /// pointing elsewhere never loses data.
+    /// directories directly under a `piqueld-dev` directory are deleted, so a
+    /// configuration pointing elsewhere never loses data.
     async fn remove_dev_instance(&self, container: &str, dirs: &[impl AsRef<Path>]) -> Result<()> {
         self.remove(container).await?;
         if let Err(error) = self
@@ -492,13 +557,17 @@ impl Engine {
             return Err(error).context("remove the instance's image store");
         }
         for dir in dirs {
-            let dir = dir.as_ref();
+            // Checking the resolved path keeps symbolic links from redirecting
+            // the deletion. A missing directory has nothing to delete.
+            let Ok(dir) = fs::canonicalize(dir) else {
+                continue;
+            };
             let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
                 continue;
             };
             if parent.file_name() != Some("piqueld-dev".as_ref()) {
                 eprintln!("kept {}", dir.display());
-            } else if fs::remove_dir_all(dir).is_err() && dir.exists() {
+            } else if fs::remove_dir_all(&dir).is_err() && dir.exists() {
                 // Containers may have left root-owned files behind, which only
                 // a container can remove.
                 self.run_once(ContainerCreateBody {

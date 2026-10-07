@@ -12,7 +12,8 @@ use tokio::signal::unix::{SignalKind, signal};
 
 /// A child process leading its own process group. Terminal signals reach only
 /// xtask, which stops the whole group, so no build script, test, or daemon
-/// child outlives it.
+/// child outlives it. A job dropped without being waited for, such as on an
+/// error, is killed.
 pub struct Job {
     name: String,
     child: Child,
@@ -28,6 +29,7 @@ impl Job {
             .into_owned();
         let child = command
             .process_group(0)
+            .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("start {name}"))?;
         let id = child.id().context("the child has no process ID")?;

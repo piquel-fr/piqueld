@@ -13,7 +13,6 @@ use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
     InspectContainerOptions, RestartContainerOptions, StartContainerOptions,
 };
-use rustix::process::getpid;
 use tokio::process::Command;
 
 use super::{DATA_LABEL, Instance, Phase, RUNTIME_LABEL, State, WORKTREE_LABEL};
@@ -33,13 +32,8 @@ enum Event {
 impl Instance {
     /// Supervises the instance in the foreground until a signal stops it.
     pub(super) async fn run(&self) -> Result<()> {
-        if let Some(other) = self.supervisor()
-            && other != getpid()
-        {
-            bail!("already running (pid {other:?}); see `just dev status`");
-        }
         Self::create_private_dir(&self.config.server.runtime_dir)?;
-        fs::write(self.file("dev.pid"), getpid().as_raw_nonzero().to_string())?;
+        let _claim = self.claim().await?;
         // Signals arriving while the engine starts stop the first build.
         let mut shutdown = Shutdown::listen()?;
         let result = async {
@@ -47,20 +41,19 @@ impl Instance {
             self.supervise(&mut shutdown).await
         }
         .await;
-        for name in ["dev.pid", "state.json"] {
-            fs::remove_file(self.file(name)).ok();
-        }
+        fs::remove_file(self.file("state.json")).ok();
         result
     }
 
-    /// Runs the supervisor in the background, unless it runs.
-    pub(super) fn start(&self) -> Result<()> {
+    /// Runs the supervisor in the background, unless it runs, and returns once
+    /// it holds dev.pid.
+    pub(super) async fn start(&self) -> Result<()> {
         if self.supervisor().is_some() {
             return Ok(());
         }
         Self::create_private_dir(&self.config.server.runtime_dir)?;
         let log = fs::File::create(self.file("dev.log"))?;
-        let child = std::process::Command::new(std::env::current_exe()?)
+        let mut child = std::process::Command::new(std::env::current_exe()?)
             .args(["dev", "run"])
             .current_dir(self.workspace.root())
             .stdin(Stdio::null())
@@ -69,8 +62,17 @@ impl Instance {
             .process_group(0)
             .spawn()
             .context("start the supervisor")?;
-        // Recording its pid here lets `wait` start immediately.
-        fs::write(self.file("dev.pid"), child.id().to_string())?;
+        while self.supervisor().is_none() {
+            if let Some(status) = child.try_wait()? {
+                // A concurrent start's supervisor may hold dev.pid instead.
+                if self.supervisor().is_some() {
+                    break;
+                }
+                self.print_tail("dev.log", 40);
+                bail!("the supervisor exited ({status})");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         Ok(())
     }
 
@@ -161,6 +163,7 @@ impl Instance {
         } else {
             "never"
         };
+        let log = fs::File::create(self.file("output.log"))?;
         let mut job = Job::spawn(
             Command::new("cargo")
                 .args(["build", "--package", "piqueld", "--bin", "piqueld"])
@@ -168,7 +171,7 @@ impl Instance {
                 .current_dir(self.workspace.root())
                 .stderr(Stdio::piped()),
         )?;
-        job.tee_stderr(fs::File::create(self.file("output.log"))?)?;
+        job.tee_stderr(log)?;
         Ok(job)
     }
 
@@ -178,6 +181,10 @@ impl Instance {
         let root = self.workspace.root();
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map_or_else(|| root.join("target"), |dir| root.join(dir));
+        let log = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.file("output.log"))?;
         let mut job = Job::spawn(
             Command::new(target.join("debug/piqueld"))
                 .arg("--config")
@@ -187,10 +194,6 @@ impl Instance {
                 .current_dir(root)
                 .stderr(Stdio::piped()),
         )?;
-        let log = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.file("output.log"))?;
         job.tee_stderr(log)?;
         Ok(job)
     }
