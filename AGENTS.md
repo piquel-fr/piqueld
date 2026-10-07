@@ -8,6 +8,14 @@ workspace foundation for the first single-node Docker Swarm prototype.
 When you are done making changes, make sure these commands run without errors:
 * `just`
 
+## Testing
+
+Skills in `.agents/skills` (linked from `.claude/skills`) describe the testing
+workflow: `piqueld-dev` runs this worktree's isolated development instance
+(`just dev`, see `docs/development.md`) on its own localhost port,
+`piqueld-e2e` exercises a change through the manifest, CLI, and dashboard
+preview, and `piqueld-verify` selects focused automated checks.
+
 ## Commits & Pull Requests
 
 Titles should follow the `feat(server): add docker swarm reconciliation` convention.

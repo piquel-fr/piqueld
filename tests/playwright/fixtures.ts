@@ -139,6 +139,12 @@ export const test = base.extend<{ daemon: Daemon; passkeys: Passkeys; account: U
     }
   },
   baseURL: async ({ daemon }, use) => { await use(daemon.origin); },
+  // The dashboard keeps fetching until the context closes, which disposes the
+  // response of any request a test's route handler is still rewriting.
+  page: async ({ page }, use) => {
+    await use(page);
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+  },
   passkeys: async ({ page }, use) => {
     const passkeys = await Passkeys.create(page);
     try { await use(passkeys); } finally { await passkeys.close(); }

@@ -65,6 +65,8 @@ struct Inner {
     origin: String,
     /// Whether the origin is HTTPS, which enables `Secure` and `__Host-` cookies.
     secure: bool,
+    /// The origin's explicit port, which names its cookies.
+    port: Option<u16>,
     /// Pending passkey ceremonies keyed by their random ceremony ID.
     ceremonies: Mutex<HashMap<String, ceremonies::Pending>>,
     /// Pending CLI device logins keyed by the hash of their device code.
@@ -118,6 +120,7 @@ impl Auth {
             webauthn,
             origin: origin.origin().ascii_serialization(),
             secure: origin.scheme() == "https",
+            port: origin.port(),
             ceremonies: Mutex::new(HashMap::new()),
             devices: Mutex::new(HashMap::new()),
             throttle: Mutex::new(throttle::Throttle::default()),
@@ -158,8 +161,9 @@ impl Auth {
 
     /// Creates a private setup link on disk while the installation is unclaimed,
     /// and keeps it in memory for [`Auth::setup_link`]. Repeated startup
-    /// preserves an existing valid link; initialized daemons never reopen
-    /// setup, even if the user table is manually emptied.
+    /// preserves the secret of an existing valid link, rebuilding the link for
+    /// the current origin; initialized daemons never reopen setup, even if the
+    /// user table is manually emptied.
     /// # Errors
     /// Returns filesystem or database errors with their underlying cause.
     pub async fn prepare_setup(&self, path: &Path) -> anyhow::Result<()> {
@@ -173,14 +177,15 @@ impl Auth {
             }
             return Ok(());
         }
-        if let Ok(existing) = std::fs::read_to_string(path)
-            && let Some((_, secret)) = existing.trim().split_once("#invite=")
-            && self.invitation_valid(secret).await?
-        {
-            *self.0.setup_link.lock().await = Some(existing.trim().to_owned());
-            return Ok(());
-        }
-        let secret = Self::secret()?;
+        let existing = std::fs::read_to_string(path).unwrap_or_default();
+        let preserved = match existing.trim().split_once("#invite=") {
+            Some((_, secret)) if self.invitation_valid(secret).await? => Some(secret),
+            _ => None,
+        };
+        let secret = match preserved {
+            Some(secret) => secret.to_owned(),
+            None => Self::secret()?,
+        };
         let link = format!("{}/dashboard/auth#invite={secret}", self.0.origin);
         let mut file = tempfile::NamedTempFile::new_in(
             path.parent()
@@ -257,12 +262,20 @@ impl Auth {
     }
     /// Returns the cookie name for this origin. HTTPS origins use the `__Host-`
     /// prefix so sibling subdomains, such as deployed applications, cannot set
-    /// or shadow piqueld cookies.
+    /// or shadow piqueld cookies. Browsers share cookies between the ports of a
+    /// host, so an explicit port is part of the name: daemons served on several
+    /// ports of one host keep separate sessions.
+    ///
+    /// ```text
+    /// https://piqueld.example       __Host-piqueld_session
+    /// https://piqueld.example:8443  __Host-piqueld_session_8443
+    /// http://localhost:7845         piqueld_session_7845
+    /// ```
     pub(crate) fn cookie_name(&self, name: &str) -> String {
-        if self.0.secure {
-            format!("__Host-{name}")
-        } else {
-            name.to_owned()
+        let prefix = if self.0.secure { "__Host-" } else { "" };
+        match self.0.port {
+            Some(port) => format!("{prefix}{name}_{port}"),
+            None => format!("{prefix}{name}"),
         }
     }
     /// Builds a strict, `HttpOnly` `Set-Cookie` value that expires after `age` seconds.

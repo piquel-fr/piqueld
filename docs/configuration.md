@@ -7,6 +7,10 @@ explicit file is selected with:
 piqueld --config /path/to/config.toml
 ```
 
+`--log-file <path>` also appends the daemon's logs to a file as JSON lines,
+created with mode `0600`. Standard output keeps its format: plain text on a
+terminal or the systemd journal, JSON elsewhere.
+
 An explicitly supplied file must exist and pass validation; a missing or
 invalid file is an error with its path included in the diagnostic. If the
 production default file is absent, the daemon uses its validated built-in

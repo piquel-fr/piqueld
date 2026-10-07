@@ -132,14 +132,9 @@ just dev
 ```
 
 This watches the daemon and dashboard sources, rebuilds the embedded bundle, and
-runs the daemon using `examples/piqueld.toml`, or a gitignored
-`piqueld.local.toml` at the repository root when present. Open
-`http://localhost:7845/dashboard/` and refresh the browser after a rebuild. To
-reach it through a private HTTPS proxy such as Tailscale serve, copy the example
-to `piqueld.local.toml` and set `server.allowed_hosts` and `auth.public_url` to
-the proxy hostname.
-Stopping the command allows the daemon its graceful shutdown period before
-terminating any remaining processes.
+restarts this worktree's isolated development instance, served on its own
+localhost port. Refresh the browser after a rebuild. See
+[`development.md`](development.md).
 
 Compile the browser client and dashboard without building the bundle with:
 

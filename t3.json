@@ -3,7 +3,7 @@
   "scripts": [
     {
       "name": "Setup Worktree",
-      "command": "just build",
+      "command": "just dev config && just build",
       "icon": "configure",
       "runOnWorktreeCreate": true
     },
@@ -11,6 +11,12 @@
       "name": "Run Control Plane",
       "command": "just dev",
       "icon": "play"
+    },
+    {
+      "name": "Stop Control Plane",
+      "command": "just dev stop",
+      "icon": "configure",
+      "runOnSettle": true
     },
     {
       "name": "Check Workspace",

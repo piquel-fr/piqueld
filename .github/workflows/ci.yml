@@ -246,8 +246,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      # The wrapper bounds cargo invocation inside the script; compilation is
-      # already warm through the prebuild below.
+      # `just docker-test` bounds each test run; compilation is already warm
+      # through the prebuild below.
       PIQUELD_DOCKER_TEST_TIMEOUT: 30m
       NEXTEST_PROFILE: docker-ci
     steps:

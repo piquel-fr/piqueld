@@ -320,6 +320,15 @@ async fn setup_link_is_private_stable_and_never_reopens() {
     f.auth.prepare_setup(&path).await.unwrap();
     assert_eq!(link, std::fs::read_to_string(&path).unwrap());
     assert_eq!(f.auth.setup_link().await.unwrap().url, link.trim());
+    // A link from a previous public_url keeps its secret under the current one.
+    let (_, secret) = link.split_once("#invite=").unwrap();
+    std::fs::write(
+        &path,
+        format!("https://old.example/dashboard/auth#invite={secret}"),
+    )
+    .unwrap();
+    f.auth.prepare_setup(&path).await.unwrap();
+    assert_eq!(link, std::fs::read_to_string(&path).unwrap());
     f.account("alice", CredentialKind::Token, None).await;
     assert!(matches!(
         f.auth.setup_link().await,
@@ -417,21 +426,21 @@ async fn middleware_protects_api_and_enforces_cookie_csrf_without_ownership_chec
         (
             "/api/v1/private",
             "POST",
-            Some(("cookie", format!("piqueld_session={token}"))),
+            Some(("cookie", format!("piqueld_session_7845={token}"))),
             None,
             StatusCode::FORBIDDEN,
         ),
         (
             "/api/v1/private",
             "POST",
-            Some(("cookie", format!("piqueld_session={token}"))),
+            Some(("cookie", format!("piqueld_session_7845={token}"))),
             Some("https://evil.example"),
             StatusCode::FORBIDDEN,
         ),
         (
             "/api/v1/private",
             "POST",
-            Some(("cookie", format!("piqueld_session={token}"))),
+            Some(("cookie", format!("piqueld_session_7845={token}"))),
             Some("http://localhost:7845"),
             StatusCode::OK,
         ),
@@ -470,7 +479,7 @@ async fn middleware_protects_api_and_enforces_cookie_csrf_without_ownership_chec
         ("http://localhost:7845", StatusCode::OK),
     ] {
         let request = Request::get("/api/v1/private")
-            .header("cookie", format!("piqueld_session={token}"))
+            .header("cookie", format!("piqueld_session_7845={token}"))
             .header("origin", origin)
             .header("upgrade", "websocket")
             .body(Body::empty())
@@ -589,7 +598,13 @@ async fn https_cookies_use_host_prefix_and_ignore_unprefixed_names() {
     );
     assert_eq!(
         f.auth.cookie("piqueld_session", "secret", 60),
-        "piqueld_session=secret; Path=/; HttpOnly; SameSite=Strict; Max-Age=60"
+        "piqueld_session_7845=secret; Path=/; HttpOnly; SameSite=Strict; Max-Age=60"
+    );
+    assert_eq!(
+        Auth::new(&f.auth.0.store, "https://piqueld.example:8443")
+            .unwrap()
+            .cookie_name("piqueld_session"),
+        "__Host-piqueld_session_8443"
     );
     let router = auth.guard(Router::new().route("/api/v1/private", get(|| async { "ok" })));
     for (cookie, expected) in [

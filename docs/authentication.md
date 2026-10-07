@@ -68,7 +68,8 @@ already completed. Startup also writes the link to a private
 Open the link, choose a username and optional display name, and register a
 passkey. The account, passkey, and permanent closure of initial setup commit
 together. The link becomes invalid immediately; the file is removed on the next
-startup. A restart before registration preserves the valid link. Initial setup
+startup. A restart before registration preserves the valid link, updated to
+the current `auth.public_url`. Initial setup
 never reopens automatically.
 
 Passkeys use discoverable credentials, so subsequent login starts directly with
@@ -160,7 +161,10 @@ alone. Do not put token values into connection profiles or Nix configuration.
 
 Browser sessions use HTTP-only, SameSite=Strict cookies. For HTTPS origins they
 are also Secure and use the `__Host-` name prefix, so applications on sibling
-subdomains cannot set or shadow them. Cookie-authenticated mutations require the configured Origin.
+subdomains cannot set or shadow them. Browsers share cookies between the ports of
+a host, so an origin with an explicit port, such as `https://host:8443`, adds it
+to the cookie names, keeping daemons served on different ports signed in
+separately. Cookie-authenticated mutations require the configured Origin.
 API/CLI credentials use `Authorization: Bearer …`. No tokens are automatically
 renewed. All API listeners require account authentication, regardless of socket
 group membership or Tailscale connectivity. The optional `metrics.listen`
