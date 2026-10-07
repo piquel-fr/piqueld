@@ -31,9 +31,9 @@ from. Applications that existed before environments have one environment named
 `production` that kept their ID; new applications get a `production`
 environment sharing the application ID, and further environments get their own IDs.
 An environment's `source` is `{ "type": "saved" }` for applications without a
-manifest repository, or `{ "type": "branch", "branch": "main", "commit": null }`
-for repository-backed ones: each such environment follows its own branch of the
-application's repository, optionally pinned to a commit. The repository URL and
+manifest repository, or `{ "type": "branch", "branch": "main" }` for
+repository-backed ones: each such environment follows its own branch of the
+application's repository, optionally pinned to a commit (`"commit"`). The repository URL and
 manifest path stay on the application (`spec.manifest`). Connecting a repository
 points every environment at the branch `spec.manifest` names; disconnecting
 returns them to the saved manifest.
@@ -318,12 +318,13 @@ returns the original acceptance. Use `piquelctl env deploy NAME [ENV] --yes` (or
 `app deploy NAME --yes` for an application with one environment) to request and
 wait for deployment.
 
-When `spec.manifest` is configured (environment `source: repository`), Deploy
-first fetches the selected manifest; a changed manifest becomes the application's
-saved configuration for every environment.
-Its `refresh` operation records `fetching_manifest` progress and a `manifest_fetched`
-event with the commit hash. Generation changes only when a changed candidate
-passes preparation; initial acceptance returns the currently stored generation.
+When `spec.manifest` is configured, each environment has `source: branch` and
+Deploy first fetches the manifest from that environment's branch (or the
+one-off `branch`/`commit`). Once the deployment is prepared, it becomes that
+environment's last fetched manifest and the application's saved configuration;
+other environments keep their own. Its `refresh` operation records
+`fetching_manifest` progress and a `manifest_fetched` event with the commit
+hash. Fetches never change the generation.
 Failures use `manifest_not_found`, `manifest_fetch_failed`, or `manifest_invalid`.
 Direct apply may repair manifest connection settings but rejects changes to
 repository-managed runtime fields with `409 repository_managed`.

@@ -187,15 +187,15 @@ impl ManifestRevision {
 /// accept, and cannot be read as a Git option.
 ///
 /// ```text
-/// "main", "release/2.0"             -> valid
-/// "-x", "a..b", "a/.hidden", "x.lock" -> invalid
+/// "main", "release/2.0"                     -> valid
+/// "-x", "/main", "a..b", "a/.hidden", "x.lock" -> invalid
 /// ```
 #[must_use]
 pub fn valid_git_branch(branch: &str) -> bool {
     !(branch.is_empty()
         || branch.len() > 255
         || branch == "@"
-        || branch.starts_with('-')
+        || branch.starts_with(['-', '/'])
         || branch.ends_with(['/', '.'])
         || branch.contains("..")
         || branch.contains("@{")
