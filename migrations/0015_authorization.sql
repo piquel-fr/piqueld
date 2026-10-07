@@ -20,3 +20,6 @@ INSERT INTO auth_grants(user_id, permission) SELECT id, 'admin' FROM auth_users;
 -- With user_id, an invitation adds a passkey to that existing account instead
 -- of creating a new one.
 ALTER TABLE auth_invitations ADD COLUMN user_id TEXT REFERENCES auth_users(id) ON DELETE CASCADE;
+-- A receipt replays only for the account that made the request (NULL for the
+-- daemon), so a reused key cannot reveal another account's outcome.
+ALTER TABLE request_receipts ADD COLUMN user_id TEXT;

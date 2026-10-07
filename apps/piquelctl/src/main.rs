@@ -227,6 +227,27 @@ mod tests {
     }
 
     #[test]
+    fn account_targets_do_not_select_the_credential() {
+        use super::{accounts::AccountCommand, cli::Command};
+        for (command, extra) in [
+            ("access", &["--permission", "apps:read"][..]),
+            ("enroll", &[]),
+        ] {
+            let mut arguments = vec!["piquelctl", "--account", "alice", "account", command, "bob"];
+            arguments.extend(extra);
+            let cli = Cli::try_parse_from(arguments).expect("command parses");
+            assert_eq!(cli.auth.account.as_deref(), Some("alice"));
+            let Command::Account {
+                command: AccountCommand::Access { target, .. } | AccountCommand::Enroll { target },
+            } = cli.command
+            else {
+                panic!("account command");
+            };
+            assert_eq!(target, "bob");
+        }
+    }
+
+    #[test]
     fn timeout_parser_accepts_bounded_units() {
         assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
         assert_eq!(parse_duration("30s").unwrap(), Duration::from_secs(30));

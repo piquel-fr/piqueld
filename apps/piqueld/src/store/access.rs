@@ -256,7 +256,7 @@ impl Store {
         grants: &Grants,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let caller = Self::check_account_on(&mut tx, caller, user_id).await?;
+        let (_, caller) = Self::check_account_on(&mut tx, caller, user_id).await?;
         caller.may_grant(grants).map_err(StoreError::Denied)?;
         Holder::User(user_id).replace(&mut tx, grants).await?;
         Self::require_an_admin(&mut tx).await?;
@@ -264,14 +264,14 @@ impl Store {
     }
 
     /// Checks that `caller` may change the account `user_id`, against both
-    /// sides' current grants, and returns the caller's grants. Unknown accounts
-    /// are checked as holding nothing, then reported `NotFound`, so only
-    /// callers allowed to manage accounts learn whether one exists.
+    /// sides' current grants, and returns the caller's ID and grants. Unknown
+    /// accounts are checked as holding nothing, then reported `NotFound`, so
+    /// only callers allowed to manage accounts learn whether one exists.
     pub(crate) async fn check_account_on(
         db: &mut SqliteConnection,
         caller: Caller<'_>,
         user_id: &str,
-    ) -> Result<Grants, StoreError> {
+    ) -> Result<(String, Grants), StoreError> {
         let (caller_id, caller) = caller.load(&mut *db).await?;
         let exists = sqlx::query_scalar!(
             r#"SELECT EXISTS(SELECT 1 FROM auth_users WHERE id=?1) AS "exists!: bool""#,
@@ -285,7 +285,7 @@ impl Store {
             .may_change_account(caller_id == user_id, &target)
             .map_err(StoreError::Denied)?;
         if exists {
-            Ok(caller)
+            Ok((caller_id, caller))
         } else {
             Err(StoreError::NotFound)
         }

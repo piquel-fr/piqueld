@@ -35,7 +35,8 @@ impl Store {
     ///
     /// 1. Checks that `actor` may submit the mutation against the current
     ///    application, before any replay.
-    /// 2. Returns the stored response when `request_id` replays an identical request.
+    /// 2. Returns the stored response when `request_id` replays an identical
+    ///    request from the same account.
     /// 3. With `force`, drops the generation and identity preconditions.
     /// 4. Executes the mutation against the current application or environment,
     ///    refusing manifest changes to repository-managed applications, and
@@ -61,9 +62,11 @@ impl Store {
             Some((_, grants)) => Self::authorize_mutation_on(&mut tx, grants, &mutation).await?,
             None => false,
         };
+        let owner = caller.as_ref().map(|(user_id, _)| user_id.as_str());
         if let Some(response) = Self::replay_on(
             &mut tx,
             request_id,
+            owner,
             [Some(&fingerprint), legacy.as_ref()],
             now,
         )
@@ -98,7 +101,7 @@ impl Store {
             let response_json =
                 serde_json::to_string(&accepted.response).map_err(StoreError::corrupt)?;
             let expires = now.saturating_add(86_400_000);
-            sqlx::query!("INSERT INTO request_receipts(request_id,fingerprint,response_json,expires_at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(request_id) DO UPDATE SET fingerprint=excluded.fingerprint,response_json=excluded.response_json,expires_at_ms=excluded.expires_at_ms",request_id,fingerprint,response_json,expires)
+            sqlx::query!("INSERT INTO request_receipts(request_id,fingerprint,response_json,expires_at_ms,user_id) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(request_id) DO UPDATE SET fingerprint=excluded.fingerprint,response_json=excluded.response_json,expires_at_ms=excluded.expires_at_ms,user_id=excluded.user_id",request_id,fingerprint,response_json,expires,owner)
                 .execute(&mut *tx).await.map_err(StoreError::database)?;
         }
         Self::commit_environment_changes(
@@ -180,23 +183,27 @@ impl Store {
         Self::mutation_fingerprint(&legacy, expected_generation, force).map(Some)
     }
 
-    /// Returns the stored response for an unexpired receipt with one of the
-    /// request's `fingerprints`, `ReplayConflict` for a mismatched one, or
-    /// `None` without a receipt.
+    /// Returns the stored response for an unexpired receipt of `owner` (the
+    /// account, or `None` for the daemon) with one of the request's
+    /// `fingerprints`, `ReplayConflict` for another owner's or a mismatched
+    /// one, or `None` without a receipt.
     async fn replay_on(
         connection: &mut SqliteConnection,
         request_id: Option<&str>,
+        owner: Option<&str>,
         fingerprints: [Option<&String>; 2],
         now: i64,
     ) -> Result<Option<MutationResponse>, StoreError> {
         let Some(request_id) = request_id else {
             return Ok(None);
         };
-        let receipt = sqlx::query!("SELECT fingerprint,response_json FROM request_receipts WHERE request_id=?1 AND expires_at_ms>?2",request_id,now)
+        let receipt = sqlx::query!("SELECT fingerprint,response_json,user_id FROM request_receipts WHERE request_id=?1 AND expires_at_ms>?2",request_id,now)
             .fetch_optional(connection).await.map_err(StoreError::database)?;
         receipt
             .map(|receipt| {
-                if !fingerprints.contains(&Some(&receipt.fingerprint)) {
+                if receipt.user_id.as_deref() != owner
+                    || !fingerprints.contains(&Some(&receipt.fingerprint))
+                {
                     return Err(StoreError::ReplayConflict);
                 }
                 serde_json::from_str(&receipt.response_json).map_err(StoreError::corrupt)

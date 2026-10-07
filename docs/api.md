@@ -218,8 +218,8 @@ digits, `-`, `_`, `.`, or `:`). The CLI generates one UUID per command and reuse
 it for transport retries. The daemon atomically stores the accepted response and a
 fingerprint of the normalized request in SQLite for 24 hours. A matching retry
 returns the original response before checking the current generation, even after
-restart, failure, or supersession. It never restarts the operation. Different input
-under the same key returns 409 `request_id_conflict`. Expired keys are treated as
+restart, failure, or supersession. It never restarts the operation. Different input,
+or another account, under the same key returns 409 `request_id_conflict`. Expired keys are treated as
 new requests subject to current preconditions. Receipts contain no manifests or
 raw request bodies, and do not guarantee exactly-once Docker effects. Force is
 part of request identity: retrying a forced request replays its receipt instead of

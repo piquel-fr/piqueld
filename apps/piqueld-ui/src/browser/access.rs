@@ -82,19 +82,13 @@ pub(super) fn summary(grants: &Grants) -> AnyView {
 fn build(permissions: &BTreeSet<Permission>, scope: &Scope) -> Grants {
     let mut grants = Grants::default();
     for permission in permissions {
-        let scope = if permission.scopable() {
-            scope
-        } else {
-            &Scope::All
-        };
-        grants
-            .grant(*permission, scope)
-            .expect("installation-wide permissions apply to every application");
+        grants.grant_within(*permission, scope);
     }
     grants
 }
 
-/// Edits grants into `value`, starting from `initial`.
+/// Edits grants into `value`, starting from `initial`. `value` keeps
+/// `initial` until the selection changes.
 #[component]
 pub(super) fn GrantEditor(initial: Grants, value: RwSignal<Grants>) -> impl IntoView {
     let list = initial.to_list();
@@ -104,7 +98,7 @@ pub(super) fn GrantEditor(initial: Grants, value: RwSignal<Grants>) -> impl Into
         .map(|grant| grant.applications.clone())
         .collect();
     // Grants limited to different applications per permission cannot be shown
-    // with one scope; saving replaces them with the shown selection.
+    // with one scope; changing the selection replaces them with it.
     let mixed = scopes.len() > 1;
     let permissions = RwSignal::new(
         list.iter()
@@ -121,18 +115,17 @@ pub(super) fn GrantEditor(initial: Grants, value: RwSignal<Grants>) -> impl Into
             Scope::Only(applications.get())
         }
     };
-    Effect::new(move |_| value.set(build(&permissions.get(), &scope())));
+    value.set(initial);
+    Effect::new(move |previous: Option<()>| {
+        let grants = build(&permissions.get(), &scope());
+        if previous.is_some() {
+            value.set(grants);
+        }
+    });
     let rows = super::dashboard_context().signals.applications;
     let apply_preset = move |name: String| {
         if let Some(preset) = Preset::parse(&name) {
-            let preset = preset.grants(&Scope::All);
-            permissions.set(
-                preset
-                    .to_list()
-                    .iter()
-                    .map(|grant| grant.permission)
-                    .collect(),
-            );
+            permissions.set(preset.permissions(everywhere.get_untracked()).collect());
         }
     };
     view! {
@@ -141,7 +134,7 @@ pub(super) fn GrantEditor(initial: Grants, value: RwSignal<Grants>) -> impl Into
                 .then(|| {
                     notice(
                         Tone::Warn,
-                        "These grants cover different applications per permission. Saving applies the selection below to every application permission.",
+                        "These grants cover different applications per permission. Changing the selection below applies it to every application permission.",
                     )
                 })}
             <label class="field">

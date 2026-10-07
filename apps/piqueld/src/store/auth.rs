@@ -726,8 +726,7 @@ impl Store {
         user_id: &str,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        Self::check_account_on(&mut tx, caller, user_id).await?;
-        let (issuer, _) = caller.load(&mut tx).await?;
+        let (issuer, _) = Self::check_account_on(&mut tx, caller, user_id).await?;
         Self::insert_invitation_on(&mut tx, invitation, &issuer, Some(user_id)).await?;
         tx.commit().await.map_err(StoreError::database)
     }

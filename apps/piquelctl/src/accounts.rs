@@ -26,7 +26,8 @@ pub(crate) enum AccountCommand {
     /// Replace an account's grants (requires accounts:manage and every grant involved).
     Access {
         /// Account username or ID.
-        account: String,
+        #[arg(value_name = "ACCOUNT")]
+        target: String,
         #[command(flatten)]
         grants: GrantArgs,
         /// Skip interactive confirmation.
@@ -41,7 +42,8 @@ pub(crate) enum AccountCommand {
     /// Create a 24-hour link that adds a passkey to an existing account.
     Enroll {
         /// Account username or ID.
-        account: String,
+        #[arg(value_name = "ACCOUNT")]
+        target: String,
     },
 }
 
@@ -93,9 +95,7 @@ impl GrantArgs {
             .preset
             .map_or_else(Grants::default, |preset| preset.grants(&scope));
         for permission in &self.permissions {
-            grants
-                .grant(*permission, &scope)
-                .map_err(|error| CliError::new(ErrorKind::Input, error.to_string()))?;
+            grants.grant_within(*permission, &scope);
         }
         Ok(grants)
     }
@@ -119,11 +119,11 @@ impl AccountCommand {
                 })
             }
             Self::Access {
-                account,
+                target,
                 grants,
                 yes,
             } => {
-                let target = find(&client.auth_directory().await?, account)?;
+                let target = find(&client.auth_directory().await?, target)?;
                 let grants = grants.grants(client).await?;
                 confirm(
                     console,
@@ -154,8 +154,8 @@ impl AccountCommand {
                     .await?;
                 console.emit(&LinkReport::new(managed.invitation_url)?)
             }
-            Self::Enroll { account } => {
-                let target = find(&client.auth_directory().await?, account)?;
+            Self::Enroll { target } => {
+                let target = find(&client.auth_directory().await?, target)?;
                 let managed = client
                     .auth_manage(&Manage::CreateEnrollment {
                         user_id: target.user.id,
@@ -167,13 +167,17 @@ impl AccountCommand {
     }
 }
 
-/// Finds a visible account by username or ID.
+/// Finds a visible account by ID, then by username (unique regardless of
+/// case). IDs come first because a username may equal another account's ID.
 fn find(directory: &Directory, account: &str) -> Result<Account> {
-    directory
-        .users
+    let users = &directory.users;
+    users
         .iter()
-        .find(|candidate| {
-            candidate.user.id == account || candidate.user.username.eq_ignore_ascii_case(account)
+        .find(|candidate| candidate.user.id == account)
+        .or_else(|| {
+            users
+                .iter()
+                .find(|candidate| candidate.user.username.eq_ignore_ascii_case(account))
         })
         .cloned()
         .ok_or_else(|| {
@@ -289,5 +293,31 @@ impl Report for LinkReport {
     }
     fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
         out.line(&self.url)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use piqueld_client::auth::User;
+
+    #[test]
+    fn account_ids_win_over_usernames() {
+        let account = |id: &str, username: &str| Account {
+            user: User {
+                id: id.into(),
+                username: username.into(),
+                display_name: String::new(),
+            },
+            grants: Grants::default(),
+        };
+        let directory = Directory {
+            users: vec![account("user-2", "user-1"), account("user-1", "Bob")],
+            passkeys: Vec::new(),
+            credentials: Vec::new(),
+            invitations: Vec::new(),
+        };
+        assert_eq!(find(&directory, "user-1").unwrap().user.username, "Bob");
+        assert_eq!(find(&directory, "bob").unwrap().user.id, "user-1");
     }
 }

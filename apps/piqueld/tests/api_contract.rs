@@ -2856,6 +2856,44 @@ async fn exec_rechecks_grants_when_the_command_starts() {
     ));
 }
 
+/// A request key replays only for the account that used it, so another caller
+/// reusing it cannot learn the outcome, e.g. of an application since renamed.
+#[tokio::test]
+async fn receipts_replay_only_for_their_account() {
+    use piqueld::api::{Actor, ApplicationError, Mutation};
+    use piqueld::store::{Caller, StoreError};
+    let temp = tempfile::tempdir().unwrap();
+    let state = state(&temp).await;
+    let database = temp.path().join("state.db");
+    let grants = [("apps:create", None), ("apps:write", None)];
+    seed_account(&database, "author", &grants).await;
+    seed_account(&database, "other", &grants).await;
+    let save = || Mutation::save(manifest().validate_template().unwrap(), None, false);
+    let author = Actor::Account(Caller {
+        credential_id: "author",
+    });
+    let other = Actor::Account(Caller {
+        credential_id: "other",
+    });
+    let original = state
+        .accept(author, save(), Some(0), false, Some("create-key"))
+        .await
+        .unwrap();
+    let replayed = state
+        .accept(author, save(), Some(0), false, Some("create-key"))
+        .await
+        .unwrap();
+    assert_eq!(format!("{replayed:?}"), format!("{original:?}"));
+    for caller in [other, Daemon] {
+        assert!(matches!(
+            state
+                .accept(caller, save(), Some(0), false, Some("create-key"))
+                .await,
+            Err(ApplicationError::Store(StoreError::ReplayConflict))
+        ));
+    }
+}
+
 #[tokio::test]
 async fn exec_streams_over_both_transports_and_records_history_without_the_command() {
     use futures_util::{SinkExt, StreamExt};
@@ -3003,9 +3041,13 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     let api = AcceptanceApi::start(&temp).await;
     let service = ApplicationService::new(api.store.clone(), api.runtime.clone());
     let request = AcceptanceApi::request();
+    // The same account as the HTTP client, since receipts replay only for theirs.
+    let caller = piqueld::api::Actor::Account(piqueld::store::Caller {
+        credential_id: "contract-admin",
+    });
     let MutationResponse::Saved(saved) = service
         .accept(
-            Daemon,
+            caller,
             Mutation::save(
                 request.manifest.clone().validate_template().unwrap(),
                 None,
@@ -3059,7 +3101,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
         .unwrap();
     let MutationResponse::Saved(replay) = service
         .accept(
-            Daemon,
+            caller,
             Mutation::save(
                 changed.manifest.validate_template().unwrap(),
                 changed.expected_application_id,

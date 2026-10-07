@@ -355,7 +355,22 @@ impl Grants {
         if scope.is_empty() {
             return Ok(());
         }
+        if !permission.scopable() && *scope != Scope::All {
+            return Err(GrantError::Unscopable(permission));
+        }
+        self.grant_within(permission, scope);
+        Ok(())
+    }
+
+    /// Adds `permission` on `scope` when it may be limited to applications,
+    /// and everywhere otherwise, e.g. for `--app blog --permission
+    /// accounts:manage`. An empty scope adds no application permission.
+    pub fn grant_within(&mut self, permission: Permission, scope: &Scope) {
         match permission {
+            Permission::Global(permission) => {
+                self.global.insert(permission);
+            }
+            _ if scope.is_empty() => {}
             Permission::Admin => self.admin.get_or_insert(Scope::NONE).extend(scope),
             Permission::App(permission) => {
                 self.apps
@@ -363,14 +378,7 @@ impl Grants {
                     .or_insert(Scope::NONE)
                     .extend(scope);
             }
-            Permission::Global(permission) => {
-                if *scope != Scope::All {
-                    return Err(GrantError::Unscopable(Permission::Global(permission)));
-                }
-                self.global.insert(permission);
-            }
         }
-        Ok(())
     }
 
     /// Adds every grant of `other`.
@@ -711,12 +719,11 @@ impl Preset {
             .find(|preset| preset.as_str() == value)
     }
 
-    /// The preset's grants on `scope`. On every application, read-only and
+    /// The preset's permissions. On every application, read-only and
     /// developer access also include reading daemon status. Developers may
     /// run commands in containers: deploying their own configuration already
     /// reaches everything a command could.
-    #[must_use]
-    pub fn grants(self, scope: &Scope) -> Grants {
+    pub fn permissions(self, everywhere: bool) -> impl Iterator<Item = Permission> {
         use AppPermission::{Deploy, EventsRead, Exec, LogsRead, Read, SecretsWrite, Write};
         let apps: &[AppPermission] = match self {
             Self::ReadOnly => &[Read, LogsRead, EventsRead],
@@ -732,20 +739,21 @@ impl Preset {
             ],
             Self::Admin => &[],
         };
-        if scope.is_empty() {
-            return Grants::default();
-        }
-        let mut grants = Grants {
-            apps: apps
-                .iter()
-                .map(|permission| (*permission, scope.clone()))
-                .collect(),
-            ..Grants::default()
-        };
-        if self == Self::Admin {
-            grants.admin = Some(scope.clone());
-        } else if *scope == Scope::All && self != Self::Deploy {
-            grants.global.insert(GlobalPermission::SystemRead);
+        let admin = (self == Self::Admin).then_some(Permission::Admin);
+        let system = (everywhere && matches!(self, Self::ReadOnly | Self::Developer))
+            .then_some(Permission::Global(GlobalPermission::SystemRead));
+        admin
+            .into_iter()
+            .chain(apps.iter().copied().map(Permission::App))
+            .chain(system)
+    }
+
+    /// The preset's [`permissions`](Self::permissions) on `scope`.
+    #[must_use]
+    pub fn grants(self, scope: &Scope) -> Grants {
+        let mut grants = Grants::default();
+        for permission in self.permissions(*scope == Scope::All) {
+            grants.grant_within(permission, scope);
         }
         grants
     }
@@ -888,5 +896,23 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<Grants>(invalid).is_err());
         }
+    }
+
+    /// A selection limited to applications keeps installation-wide
+    /// permissions everywhere, and scoped presets omit daemon status.
+    #[test]
+    fn selections_scope_only_application_permissions() {
+        let blog = only(&["app-blog0000"]);
+        let mut selected = Preset::Developer.grants(&blog);
+        selected.grant_within("accounts:manage".parse().unwrap(), &blog);
+        assert!(selected.has_global(GlobalPermission::AccountsManage));
+        assert!(!selected.has_global(GlobalPermission::SystemRead));
+        assert_eq!(selected.app_scope(AppPermission::Exec), blog);
+        assert!(
+            Preset::ReadOnly
+                .grants(&Scope::All)
+                .has_global(GlobalPermission::SystemRead)
+        );
+        assert!(Preset::Admin.grants(&Scope::NONE).is_empty());
     }
 }

@@ -54,6 +54,8 @@ and `OpenAPI` document are available to every signed-in account. The generated
   is refused with 403 rather than reported missing.
 - Daemon-scoped history requires `system:read`; application history requires
   `events:read` on that application.
+- Event IDs and stream checkpoints are installation-wide, so a reader can tell
+  that hidden events happened, but not what or where.
 
 ## Creating applications
 

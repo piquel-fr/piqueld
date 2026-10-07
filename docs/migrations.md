@@ -153,7 +153,10 @@ while fetching that did not stop the deployment; existing ones have none.
 and lets an invitation target an existing account for passkey enrollment. Every
 existing account receives `admin` on every application, so access is unchanged
 until reduced; see [authorization](authorization.md#upgrading). Grants on an
-application cover each of its environments and are removed with it.
+application cover each of its environments and are removed with it. Request
+receipts record the account that made the request. Receipts from before the
+upgrade have no account, so retrying an API or CLI request across the upgrade
+answers 409 `request_id_conflict`.
 
 ## Upgrade and rollback
 
