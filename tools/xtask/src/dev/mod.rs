@@ -5,9 +5,8 @@
 mod supervisor;
 
 use std::collections::HashMap;
-use std::fs::{self, TryLockError};
+use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -20,11 +19,11 @@ use bollard::query_parameters::{
     InspectContainerOptions, ListContainersOptionsBuilder, RemoveVolumeOptions,
 };
 use clap::Subcommand;
-use rustix::process::{Pid, Signal, getpid, kill_process};
 use serde::{Deserialize, Serialize};
 
 use crate::Workspace;
 use crate::docker::Engine;
+use supervisor::Supervisor;
 
 const CONFIG_FILE: &str = "piqueld.local.toml";
 /// Changes to these rebuild and restart the daemon. It embeds the dashboard at
@@ -63,7 +62,7 @@ pub enum Command {
     Stop,
     /// Stop, then delete the instance's Docker engine and state.
     Clean,
-    /// Clean the instances of worktrees that no longer exist.
+    /// Stop and clean the instances of worktrees that no longer exist.
     Prune,
     /// Write piqueld.local.toml unless it exists.
     Config {
@@ -96,7 +95,7 @@ impl Command {
             }
             Self::Wait { timeout } => Instance::load(workspace)?.wait(timeout).await?,
             Self::Status => Instance::load(workspace)?.status().await,
-            Self::Stop => Instance::load(workspace)?.stop().await?,
+            Self::Stop => Instance::load(workspace)?.supervisor().stop().await?,
             Self::Clean => Instance::load(workspace)?.clean().await?,
             Self::Ctl { args } => return Err(Instance::load(workspace)?.ctl(&args)),
         }
@@ -328,50 +327,9 @@ auto_initialize_swarm = true
             .with_context(|| format!("create {}", path.display()))
     }
 
-    /// The supervisor's process, while it runs. The supervisor locks dev.pid
-    /// until it exits, so a file left behind by a crash never names an
-    /// unrelated process that reuses its pid.
-    fn supervisor(&self) -> Option<Pid> {
-        let mut file = fs::File::open(self.file("dev.pid")).ok()?;
-        // Taking the lock means no supervisor holds it; dropping the file
-        // releases it again.
-        let Err(TryLockError::WouldBlock) = file.try_lock_shared() else {
-            return None;
-        };
-        let mut pid = String::new();
-        file.read_to_string(&mut pid).ok()?;
-        Pid::from_raw(pid.trim().parse().ok()?)
-    }
-
-    /// Locks dev.pid and records our pid in it, for as long as the returned
-    /// file stays open. Fails when another supervisor holds the lock.
-    async fn claim(&self) -> Result<fs::File> {
-        let path = self.file("dev.pid");
-        let mut file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .with_context(|| format!("open {}", path.display()))?;
-        // `supervisor` holds the lock for a moment while it checks, so a few
-        // attempts tell it apart from a running supervisor.
-        for _ in 0..20 {
-            match file.try_lock() {
-                Ok(()) => {
-                    file.set_len(0)?;
-                    write!(file, "{}", getpid().as_raw_nonzero())?;
-                    return Ok(file);
-                }
-                Err(TryLockError::WouldBlock) => {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Err(TryLockError::Error(error)) => {
-                    return Err(error).with_context(|| format!("lock {}", path.display()));
-                }
-            }
-        }
-        bail!("already running; see `just dev status`")
+    /// This instance's supervisor.
+    fn supervisor(&self) -> Supervisor {
+        Supervisor::in_dir(&self.config.server.runtime_dir)
     }
 
     fn state(&self) -> Option<State> {
@@ -418,7 +376,7 @@ auto_initialize_swarm = true
     async fn wait(&self, timeout: u64) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(timeout);
         while Instant::now() < deadline {
-            if self.supervisor().is_none() {
+            if self.supervisor().running().is_none() {
                 self.print_tail("dev.log", 40);
                 bail!("the instance is not running; start it with `just dev start`");
             }
@@ -459,7 +417,7 @@ auto_initialize_swarm = true
     }
 
     async fn status(&self) {
-        let (phase, url) = if self.supervisor().is_some() {
+        let (phase, url) = if self.supervisor().running().is_some() {
             let phase = self
                 .state()
                 .map_or("starting", |state| state.phase.as_str());
@@ -486,20 +444,6 @@ auto_initialize_swarm = true
         println!("logs      {}", self.file("daemon.log").display());
     }
 
-    async fn stop(&self) -> Result<()> {
-        let Some(pid) = self.supervisor() else {
-            return Ok(());
-        };
-        kill_process(pid, Signal::TERM).context("stop the instance")?;
-        for _ in 0..150 {
-            if self.supervisor().is_none() {
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        bail!("the instance did not stop within 15 seconds")
-    }
-
     async fn clean(&self) -> Result<()> {
         let engine = Engine::host().await?;
         let container = self.container();
@@ -521,7 +465,7 @@ auto_initialize_swarm = true
             Err(error) if Engine::is_not_found(&error) => {}
             Err(error) => return Err(error).context("inspect the instance's engine"),
         }
-        self.stop().await?;
+        self.supervisor().stop().await?;
         let dirs = [
             &self.config.server.data_dir,
             &self.config.server.runtime_dir,
@@ -589,7 +533,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Cleans the instances of worktrees that no longer exist.
+    /// Stops and cleans the instances of worktrees that no longer exist.
     async fn prune_dev_instances(&self) -> Result<()> {
         let filters = HashMap::from([("label", vec![WORKTREE_LABEL])]);
         let options = ListContainersOptionsBuilder::new()
@@ -604,6 +548,10 @@ impl Engine {
             };
             if Path::new(worktree).is_dir() {
                 continue;
+            }
+            // A supervisor from before its worktree was removed may still run.
+            if let Some(runtime) = labels.get(RUNTIME_LABEL) {
+                Supervisor::in_dir(Path::new(runtime)).stop().await?;
             }
             let dirs: Vec<&String> = [DATA_LABEL, RUNTIME_LABEL]
                 .iter()

@@ -58,5 +58,7 @@ device logins do not.
 
 `just dev stop` stops the daemon and watcher; the Docker engine keeps running
 so images stay cached. Leave the instance running at the end of a task if the
-user is likely to keep testing, and say so in your summary. `just dev clean`
-deletes the instance's data, engine, and images: only run it when the user asks.
+user is likely to keep testing, and say so in your summary: T3 Code stops it
+when the thread settles, and it stops itself if the worktree is removed.
+`just dev clean` deletes the instance's data, engine, and images: only run it
+when the user asks.

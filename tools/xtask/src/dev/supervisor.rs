@@ -2,9 +2,10 @@
 //! runs the daemon, rebuilding and restarting it whenever the sources change.
 
 use std::collections::HashMap;
-use std::fs;
-use std::io::IsTerminal;
+use std::fs::{self, TryLockError};
+use std::io::{IsTerminal, Read, Write};
 use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, SystemTime};
 
@@ -13,6 +14,7 @@ use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
     InspectContainerOptions, RestartContainerOptions, StartContainerOptions,
 };
+use rustix::process::{Pid, Signal, getpid, kill_process};
 use tokio::process::Command;
 
 use super::{DATA_LABEL, Instance, Phase, RUNTIME_LABEL, State, WORKTREE_LABEL};
@@ -21,6 +23,81 @@ use crate::process::{Job, Shutdown};
 
 /// The daemon allows ten seconds to finish in-flight requests.
 const GRACE: Duration = Duration::from_secs(11);
+
+/// An instance's supervisor, found through the dev.pid it locks while it
+/// runs, so a file left behind by a crash never names an unrelated process
+/// that reuses its pid.
+pub(super) struct Supervisor {
+    pid_file: PathBuf,
+}
+
+impl Supervisor {
+    /// The supervisor of the instance with this runtime directory.
+    pub(super) fn in_dir(runtime_dir: &Path) -> Self {
+        Self {
+            pid_file: runtime_dir.join("dev.pid"),
+        }
+    }
+
+    /// The supervisor's process, while it runs.
+    pub(super) fn running(&self) -> Option<Pid> {
+        let mut file = fs::File::open(&self.pid_file).ok()?;
+        // Taking the lock means no supervisor holds it; dropping the file
+        // releases it again.
+        let Err(TryLockError::WouldBlock) = file.try_lock_shared() else {
+            return None;
+        };
+        let mut pid = String::new();
+        file.read_to_string(&mut pid).ok()?;
+        Pid::from_raw(pid.trim().parse().ok()?)
+    }
+
+    /// Locks dev.pid and records our pid in it, for as long as the returned
+    /// file stays open. Fails when another supervisor holds the lock.
+    async fn claim(&self) -> Result<fs::File> {
+        let path = &self.pid_file;
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .with_context(|| format!("open {}", path.display()))?;
+        // `running` holds the lock for a moment while it checks, so a few
+        // attempts tell it apart from a running supervisor.
+        for _ in 0..20 {
+            match file.try_lock() {
+                Ok(()) => {
+                    file.set_len(0)?;
+                    write!(file, "{}", getpid().as_raw_nonzero())?;
+                    return Ok(file);
+                }
+                Err(TryLockError::WouldBlock) => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(TryLockError::Error(error)) => {
+                    return Err(error).with_context(|| format!("lock {}", path.display()));
+                }
+            }
+        }
+        bail!("already running; see `just dev status`")
+    }
+
+    /// Stops the supervisor, which stops the daemon, if it runs.
+    pub(super) async fn stop(&self) -> Result<()> {
+        let Some(pid) = self.running() else {
+            return Ok(());
+        };
+        kill_process(pid, Signal::TERM).context("stop the instance")?;
+        for _ in 0..150 {
+            if self.running().is_none() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        bail!("the instance did not stop within 15 seconds")
+    }
+}
 
 /// What ended a wait on the build, the daemon, or a fix.
 enum Event {
@@ -33,7 +110,7 @@ impl Instance {
     /// Supervises the instance in the foreground until a signal stops it.
     pub(super) async fn run(&self) -> Result<()> {
         Self::create_private_dir(&self.config.server.runtime_dir)?;
-        let _claim = self.claim().await?;
+        let _claim = self.supervisor().claim().await?;
         // Signals arriving while the engine starts stop the first build.
         let mut shutdown = Shutdown::listen()?;
         let result = async {
@@ -48,7 +125,7 @@ impl Instance {
     /// Runs the supervisor in the background, unless it runs, and returns once
     /// it holds dev.pid.
     pub(super) async fn start(&self) -> Result<()> {
-        if self.supervisor().is_some() {
+        if self.supervisor().running().is_some() {
             return Ok(());
         }
         Self::create_private_dir(&self.config.server.runtime_dir)?;
@@ -62,10 +139,10 @@ impl Instance {
             .process_group(0)
             .spawn()
             .context("start the supervisor")?;
-        while self.supervisor().is_none() {
+        while self.supervisor().running().is_none() {
             if let Some(status) = child.try_wait()? {
                 // A concurrent start's supervisor may hold dev.pid instead.
-                if self.supervisor().is_some() {
+                if self.supervisor().running().is_some() {
                     break;
                 }
                 self.print_tail("dev.log", 40);
@@ -119,10 +196,7 @@ impl Instance {
                     None => std::future::pending().await,
                 }
             } => Event::Exited(status?),
-            () = self.source_change(since) => {
-                eprintln!("[dev] sources changed; rebuilding");
-                Event::Changed
-            }
+            event = self.watch(since) => event,
             () = shutdown.requested() => Event::Shutdown,
         };
         if let Some(job) = job {
@@ -131,15 +205,24 @@ impl Instance {
         Ok(event)
     }
 
-    /// Resolves once a source is modified after `since`.
-    async fn source_change(&self, since: SystemTime) {
+    /// Resolves with `Changed` once a source is modified after `since`, or
+    /// with `Shutdown` once the worktree is removed, leaving nothing to run.
+    async fn watch(&self, since: SystemTime) -> Event {
+        let mut changed = false;
         loop {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            if self.sources_changed_since(since) {
-                // Let editors finish saving related files.
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                return;
+            // After a change, let editors finish saving related files. Removing
+            // the worktree changes its sources too, so check for that first.
+            let pause = if changed { 300 } else { 500 };
+            tokio::time::sleep(Duration::from_millis(pause)).await;
+            if !self.workspace.root().join(".git").exists() {
+                eprintln!("[dev] the worktree was removed; stopping");
+                return Event::Shutdown;
             }
+            if changed {
+                eprintln!("[dev] sources changed; rebuilding");
+                return Event::Changed;
+            }
+            changed = self.sources_changed_since(since);
         }
     }
 

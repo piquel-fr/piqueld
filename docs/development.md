@@ -69,8 +69,13 @@ Set `docker.socket = "/var/run/docker.sock"` to use the host engine instead;
 | `just dev status` | Print the state, URL, socket, and log files |
 | `just dev stop` | Stop the daemon and watcher; the engine keeps running |
 | `just dev clean` | Stop, then delete the engine, its volume, and the instance's state |
-| `just dev prune` | Clean the instances of worktrees that no longer exist |
+| `just dev prune` | Stop and clean the instances of worktrees that no longer exist |
 | `just ctl ARGS` | Run this worktree's `piquelctl` against the instance |
+
+T3 Code runs `just dev config` when it creates a worktree and `just dev stop`
+when its thread settles (see `t3.json`). An instance also stops itself once its
+worktree is removed; `just dev prune` then deletes its engine, volume, and
+directories.
 
 `just dev wait` considers sources saved after the current build started as not
 yet built, so it is safe to call right after an edit. It fails with the
