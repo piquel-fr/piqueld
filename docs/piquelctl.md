@@ -244,7 +244,8 @@ services wait for all jobs to succeed; a failed job does not roll back its
 dependencies. Jobs of dependency services must come earlier in the saved order.
 
 `app variable set` sets a variable's default, or with `--env NAME` its value in
-the environment named `NAME`, whether or not that environment exists yet.
+the environment named `NAME`, whether or not that environment exists yet. An
+environment's value overrides the default, and a variable needs no default.
 `true`, `false` and integers keep their type and anything else is text; `--string`
 keeps text such as `3` as text. `app variable unset` removes the default or the
 environment's value. Like routes, variable edits preserve the other variables and

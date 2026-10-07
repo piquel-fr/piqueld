@@ -506,7 +506,7 @@
               "$ref": "#/components/schemas/Variable"
             },
             "default": {},
-            "description": "Variables referenced as `${{ vars.<name> }}`, with their default values.",
+            "description": "Default values of variables referenced as `${{ vars.<name> }}`, used by\nenvironments that set no value of their own.",
             "type": "object"
           },
           "volumes": {
@@ -3774,7 +3774,7 @@
               "$ref": "#/components/schemas/Variable"
             },
             "default": {},
-            "description": "Values overriding `[spec.variables]` in this environment.",
+            "description": "This environment's values: each overrides the `[spec.variables]` default\nof the same name, or declares a variable without a default.",
             "type": "object"
           }
         },

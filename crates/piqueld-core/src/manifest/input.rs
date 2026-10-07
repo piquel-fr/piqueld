@@ -90,7 +90,8 @@ pub struct ApplicationSpec {
     /// One-shot jobs, run in declared order at their deployment point.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<Job>,
-    /// Variables referenced as `${{ vars.<name> }}`, with their default values.
+    /// Default values of variables referenced as `${{ vars.<name> }}`, used by
+    /// environments that set no value of their own.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub variables: BTreeMap<String, Variable>,
     /// Configuration for each environment, selected by environment name.
@@ -113,7 +114,8 @@ impl ApplicationSpec {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct EnvironmentConfig {
-    /// Values overriding `[spec.variables]` in this environment.
+    /// This environment's values: each overrides the `[spec.variables]` default
+    /// of the same name, or declares a variable without a default.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub variables: BTreeMap<String, Variable>,
 }

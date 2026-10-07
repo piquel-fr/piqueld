@@ -120,18 +120,18 @@ renames and deletion, since environment names select configuration.
 
 ## Variables
 
-Declare variables in `[spec.variables]`, give environments their own values in
+Declare variables with a default in `[spec.variables]` or for one environment in
 `[spec.environments.<name>.variables]`, and reference them as `${{ vars.<name> }}`:
 
 ```toml
 [spec.variables]
-domain = "piquel.fr"
 web_replicas = 1
 
 [spec.environments.staging.variables]
 domain = "staging.piquel.fr"
 
 [spec.environments.production.variables]
+domain = "piquel.fr"
 web_replicas = 3
 
 [[spec.routes]]
@@ -144,11 +144,15 @@ name = "web"
 replicas = "${{ vars.web_replicas }}"
 ```
 
-An environment uses its own value, else the default. A variable may be declared
-only for some environments; deploying or planning an environment without a value
-fails with `variable_value_missing`, naming the environment, the field and the
-variable. Environments of one application can therefore serve different
-hostnames; two environments that render the same hostname still conflict.
+An environment's own value overrides the default of the same name, as
+`web_replicas` does in production. An environment may also declare a variable
+that has no default, like `domain`. An environment uses its own value, else the
+default. Every environment renders the same manifest, so each environment that
+deploys a reference needs a value for it: planning or deploying an environment
+without one fails with `variable_value_missing`, naming the environment, the
+field and the variable. Here staging and production each set `domain`, so they
+serve different hostnames; two environments that render the same hostname
+still conflict.
 
 Syntax:
 

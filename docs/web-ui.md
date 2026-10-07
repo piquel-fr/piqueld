@@ -47,7 +47,8 @@ environment's logs, or links to each environment's logs.
 Values that differ between environments come from manifest variables. The
 Variables tab edits them: one row per variable, with its default and one column
 per environment, including environments the manifest configures before they
-exist; an empty cell has no value. Fields that accept variables, such as replicas
+exist. An environment's value overrides the default, and an empty cell has no
+value, so a variable may have only per-environment values. Fields that accept variables, such as replicas
 or health check settings, take `${{ vars.<name> }}` in place of a literal. An
 environment's Overview lists the value of each variable there, marking variables
 without one. Environments that render the same hostname conflict; the error
