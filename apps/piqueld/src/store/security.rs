@@ -152,13 +152,14 @@ impl Store {
         now: i64,
     ) -> Result<(), StoreError> {
         let (window, cooldown) = (now - 60_000, now - DENIAL_BURST_COOLDOWN_MS);
-        let kind = SecurityEvent::DenialBurst.kind();
         // Runs under the writer lock on every refusal, so it stays bounded:
-        // the cooldown is checked first and the count stops at the threshold,
-        // both over indexes of recent rows (`event_created_at`, `audit_refusals`).
+        // the cooldown only reads this address and account's recent bursts
+        // (`security_denial_bursts`, which needs the kind spelled out), and
+        // the count stops at the threshold (`audit_refusals`).
         let burst = sqlx::query_scalar!(
             r#"SELECT NOT EXISTS(SELECT 1 FROM events
-                WHERE created_at_ms>=?6 AND kind=?5 AND resource IS ?2 AND actor_user_id IS ?3)
+                WHERE kind='access_denial_burst' AND resource IS ?2 AND actor_user_id IS ?3
+                AND created_at_ms>=?5)
             AND (SELECT COUNT(*) FROM (SELECT 1 FROM audit_events
                 WHERE outcome='denied' AND user_id IS ?3 AND peer IS ?2 AND created_at_ms>=?1
                 LIMIT ?4)) >= ?4
@@ -167,7 +168,6 @@ impl Store {
             peer,
             actor.user_id,
             DENIAL_BURST,
-            kind,
             cooldown,
         )
         .fetch_one(&mut *db)

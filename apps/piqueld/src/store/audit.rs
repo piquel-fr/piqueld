@@ -2,14 +2,13 @@
 //! account and credential details, so they outlive both, and survive
 //! application deletion under their own retention.
 //!
-//! Rows form a hash chain: each stores a `link`, the SHA-256 of its
-//! predecessor's link and its own fields (see [`AuditRow::link_from`]). The
-//! oldest retained row extends `audit_chain.pruned_link`, the link of the
-//! newest pruned row. Rows from before the chain existed have no link; they
-//! end at `audit_chain.unlinked_through`.
+//! Rows form a hash chain: they have consecutive IDs, and each stores a
+//! `link`, the SHA-256 of its predecessor's link and its own ID and fields
+//! (see [`AuditRow::link_from`]). The oldest retained row extends the newest
+//! pruned one, `audit_chain.pruned_through` with `pruned_link`.
 use super::{Attribution, Store, StoreError, now_ms, page_limit};
 use piqueld_core::api::Page;
-use piqueld_core::audit::{AuditEvent, AuditFilter, AuditOutcome, AuditVerification};
+use piqueld_core::audit::{AuditEvent, AuditFilter, AuditLink, AuditOutcome, AuditVerification};
 use sqlx::{QueryBuilder, SqliteConnection};
 
 /// Columns read into [`AuditRow`].
@@ -58,10 +57,10 @@ struct AuditRow {
 }
 
 impl NewAuditEvent {
-    /// The row to store at `created_at_ms`, before its ID and link exist.
-    fn row(&self, created_at_ms: i64) -> AuditRow {
+    /// The row to store as `id` at `created_at_ms`, before its link exists.
+    fn row(&self, id: i64, created_at_ms: i64) -> AuditRow {
         AuditRow {
-            id: 0,
+            id,
             created_at_ms,
             action: self.action.clone(),
             outcome: self.outcome.as_str().to_owned(),
@@ -83,12 +82,12 @@ impl NewAuditEvent {
 
 impl AuditRow {
     /// This row's link after `previous`: lowercase hex SHA-256 of a JSON
-    /// array holding `previous` and every field except the ID, in column
-    /// order. The ID is left out because rows are linked by order instead.
+    /// array holding `previous` and every field, in column order.
     fn link_from(&self, previous: &str) -> Result<String, StoreError> {
         use sha2::{Digest, Sha256};
         let fields = (
             previous,
+            self.id,
             self.created_at_ms,
             &self.action,
             &self.outcome,
@@ -140,8 +139,20 @@ impl Store {
     /// # Errors
     /// Returns storage errors.
     pub(crate) async fn record_audit(&self, event: &NewAuditEvent) -> Result<(), StoreError> {
+        self.record_audit_at(event, now_ms()).await
+    }
+
+    /// [`Store::record_audit`] at `created_at_ms`.
+    pub(super) async fn record_audit_at(
+        &self,
+        event: &NewAuditEvent,
+        created_at_ms: i64,
+    ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let mut row = event.row(now_ms());
+        let head = Self::audit_head_on(&mut tx).await?;
+        // Only a tampered trail reaches the highest possible ID.
+        let id = head.id.checked_add(1).ok_or(StoreError::Corrupt)?;
+        let mut row = event.row(id, created_at_ms);
         if row.application_id.is_none()
             && (row.outcome == AuditOutcome::Allowed.as_str() || row.permission.is_some())
             && let Some(environment) = &row.environment_id
@@ -154,10 +165,9 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         }
-        let previous = Self::audit_head_on(&mut tx).await?;
-        row.link = Some(row.link_from(&previous)?);
+        row.link = Some(row.link_from(&head.link)?);
         sqlx::query!(
-            "INSERT INTO audit_events(created_at_ms,action,outcome,status,user_id,username,credential_id,credential_kind,scoped,peer,request_id,application_id,environment_id,permission,link) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            "INSERT INTO audit_events(created_at_ms,action,outcome,status,user_id,username,credential_id,credential_kind,scoped,peer,request_id,application_id,environment_id,permission,link,id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             row.created_at_ms,
             row.action,
             row.outcome,
@@ -173,6 +183,7 @@ impl Store {
             row.environment_id,
             row.permission,
             row.link,
+            row.id,
         )
         .execute(&mut *tx)
         .await
@@ -188,72 +199,110 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)
     }
 
-    /// The link a new record extends: the newest record's (empty if it
-    /// predates the chain), else the newest pruned record's, else empty.
-    async fn audit_head_on(db: &mut SqliteConnection) -> Result<String, StoreError> {
-        sqlx::query_scalar!(
-            r#"SELECT COALESCE(
-                (SELECT COALESCE(link,'') FROM audit_events ORDER BY id DESC LIMIT 1),
-                (SELECT pruned_link FROM audit_chain),
-                ''
-            ) AS "head!: String""#
+    /// The record a new one extends: the newest record, else the anchor,
+    /// else the chain's empty start before ID 1.
+    /// # Errors
+    /// Returns [`StoreError::Corrupt`] for a half-stored anchor.
+    async fn audit_head_on(db: &mut SqliteConnection) -> Result<AuditLink, StoreError> {
+        let anchor = Self::audit_anchor_on(&mut *db).await?;
+        let newest = sqlx::query!(
+            r#"SELECT id AS "id!",COALESCE(link,'') AS "link!: String" FROM audit_events
+            ORDER BY id DESC LIMIT 1"#
         )
-        .fetch_one(db)
+        .fetch_optional(db)
         .await
-        .map_err(StoreError::database)
+        .map_err(StoreError::database)?;
+        Ok(newest.map_or_else(
+            || anchor.unwrap_or_else(Self::audit_start),
+            |row| AuditLink {
+                id: row.id,
+                link: row.link,
+            },
+        ))
+    }
+
+    /// The newest pruned record, which the oldest retained one extends;
+    /// `None` until something is pruned.
+    /// # Errors
+    /// Returns [`StoreError::Corrupt`] when only its ID or its link is stored,
+    /// rather than silently verifying from the start.
+    async fn audit_anchor_on(db: &mut SqliteConnection) -> Result<Option<AuditLink>, StoreError> {
+        let chain = sqlx::query!("SELECT pruned_through,pruned_link FROM audit_chain")
+            .fetch_one(db)
+            .await
+            .map_err(StoreError::database)?;
+        match (chain.pruned_through, chain.pruned_link) {
+            (Some(id), Some(link)) => Ok(Some(AuditLink { id, link })),
+            (None, None) => Ok(None),
+            _ => Err(StoreError::Corrupt),
+        }
+    }
+
+    /// What the first record extends: nothing, before ID 1.
+    fn audit_start() -> AuditLink {
+        AuditLink {
+            id: 0,
+            link: String::new(),
+        }
     }
 
     /// Recomputes every retained record's link in order, inside one read
     /// transaction so concurrent pruning cannot interleave.
-    ///
-    /// Only records from before the chain may lack a link, and only before
-    /// any linked record (or linked pruning anchor); any other missing link
-    /// breaks the chain.
     /// # Errors
-    /// Returns storage errors.
+    /// Returns storage errors, or [`StoreError::Corrupt`] for a half-stored
+    /// anchor.
     pub async fn verify_audit(&self) -> Result<AuditVerification, StoreError> {
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
-        let chain = sqlx::query!("SELECT pruned_link,unlinked_through FROM audit_chain")
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(StoreError::database)?;
-        let mut previous = chain.pruned_link.unwrap_or_default();
-        let legacy = |id: i64| chain.unlinked_through.is_some_and(|last| id <= last);
+        Self::verify_audit_on(&mut tx, i64::MAX).await
+    }
+
+    /// Checks records from the pruning anchor through ID `through`: each must
+    /// have the next ID and the link that ID, its fields, and its predecessor
+    /// give.
+    async fn verify_audit_on(
+        db: &mut SqliteConnection,
+        through: i64,
+    ) -> Result<AuditVerification, StoreError> {
+        let anchor = Self::audit_anchor_on(&mut *db).await?;
+        let mut previous = anchor.clone().unwrap_or_else(Self::audit_start);
         let mut result = AuditVerification {
             checked: 0,
-            unlinked: 0,
+            anchor,
             head: None,
             broken_at: None,
         };
-        // Every row, including any written with a zero or negative ID, in
-        // pages that seek to the inclusive cursor `from`.
-        let page =
-            format!("SELECT {COLUMNS} FROM audit_events WHERE id >= ?1 ORDER BY id LIMIT 500");
+        // Every row, including any at the lowest possible ID, in pages that
+        // seek to the inclusive cursor `from`.
+        let page = format!(
+            "SELECT {COLUMNS} FROM audit_events WHERE id >= ?1 AND id <= ?2 ORDER BY id LIMIT 500"
+        );
         let mut from = i64::MIN;
         loop {
             let rows = sqlx::query_as::<_, AuditRow>(&page)
                 .bind(from)
-                .fetch_all(&mut *tx)
+                .bind(through)
+                .fetch_all(&mut *db)
                 .await
                 .map_err(StoreError::database)?;
             let Some(last) = rows.last() else {
                 return Ok(result);
             };
-            // The newest possible ID ends the trail.
+            // The highest possible ID ends the trail.
             let next = last.id.checked_add(1);
             for row in rows {
-                match &row.link {
-                    None if previous.is_empty() && legacy(row.id) => result.unlinked += 1,
-                    Some(link) if *link == row.link_from(&previous)? => {
-                        result.checked += 1;
-                        previous.clone_from(link);
-                        result.head = Some(previous.clone());
-                    }
-                    _ => {
-                        result.broken_at = Some(row.id);
-                        return Ok(result);
-                    }
+                let expected = row.link_from(&previous.link)?;
+                if previous.id.checked_add(1) != Some(row.id)
+                    || row.link.as_ref() != Some(&expected)
+                {
+                    result.broken_at = Some(row.id);
+                    return Ok(result);
                 }
+                result.checked += 1;
+                previous = AuditLink {
+                    id: row.id,
+                    link: expected,
+                };
+                result.head = Some(previous.clone());
             }
             let Some(next) = next else {
                 return Ok(result);
@@ -315,8 +364,10 @@ impl Store {
     }
 
     /// Prunes the oldest audit rows, through the newest one past the
-    /// configured retention, keeping its link as the chain's new anchor. Zero
-    /// days disables pruning.
+    /// configured retention, keeping it as the chain's new anchor. Zero days
+    /// disables pruning. Rows are only pruned while the chain through them
+    /// verifies, so pruning never erases evidence of tampering; a broken
+    /// chain is logged and left alone, without stopping other pruning.
     /// # Errors
     /// Returns storage errors.
     pub(crate) async fn prune_audit(&self) -> Result<(), StoreError> {
@@ -327,8 +378,8 @@ impl Store {
             i64::try_from(self.audit_days.saturating_mul(86_400_000)).unwrap_or(i64::MAX),
         );
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let newest = sqlx::query!(
-            "SELECT id,link FROM audit_events WHERE created_at_ms < ?1 ORDER BY id DESC LIMIT 1",
+        let newest = sqlx::query_scalar!(
+            r#"SELECT id AS "id!" FROM audit_events WHERE created_at_ms < ?1 ORDER BY id DESC LIMIT 1"#,
             cutoff,
         )
         .fetch_optional(&mut *tx)
@@ -337,14 +388,26 @@ impl Store {
         let Some(newest) = newest else {
             return Ok(());
         };
-        sqlx::query!("DELETE FROM audit_events WHERE id <= ?1", newest.id)
+        let verified = Self::verify_audit_on(&mut tx, newest).await?;
+        let Some(anchor) = verified.head.filter(|_| verified.broken_at.is_none()) else {
+            tracing::error!(
+                broken_at = verified.broken_at,
+                "the audit trail is broken; it is not pruned, to keep the evidence"
+            );
+            return Ok(());
+        };
+        sqlx::query!("DELETE FROM audit_events WHERE id <= ?1", anchor.id)
             .execute(&mut *tx)
             .await
             .map_err(StoreError::database)?;
-        sqlx::query!("UPDATE audit_chain SET pruned_link=?1", newest.link)
-            .execute(&mut *tx)
-            .await
-            .map_err(StoreError::database)?;
+        sqlx::query!(
+            "UPDATE audit_chain SET pruned_through=?1,pruned_link=?2",
+            anchor.id,
+            anchor.link
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)
     }
 }

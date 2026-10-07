@@ -1,17 +1,21 @@
--- Tamper evidence: each audit record stores a SHA-256 link over its
--- predecessor's link and its own fields. Records written before this
--- migration carry none.
+-- Tamper evidence: audit records get consecutive IDs, and each stores a
+-- SHA-256 link over its predecessor's link and its own ID and fields.
+-- Releases apply this together with 0017_audit.sql, so the trail is empty;
+-- records from pre-release builds cannot be linked in SQL and are dropped.
+DELETE FROM audit_events;
 ALTER TABLE audit_events ADD COLUMN link TEXT;
--- Link of the newest pruned record, which the oldest retained one extends,
--- and the newest record from before the chain: only those may lack a link.
+-- The newest pruned record, which the oldest retained one extends.
 CREATE TABLE audit_chain (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    pruned_through INTEGER,
     pruned_link TEXT,
-    unlinked_through INTEGER
+    CHECK ((pruned_through IS NULL) = (pruned_link IS NULL))
 );
-INSERT INTO audit_chain(singleton,unlinked_through) SELECT 1,MAX(id) FROM audit_events;
+INSERT INTO audit_chain(singleton) VALUES (1);
 -- Recent refusals by caller, counted on each refusal to detect bursts.
 CREATE INDEX audit_refusals ON audit_events(user_id, peer, created_at_ms) WHERE outcome = 'denied';
+-- Recent burst notifications by address and account, checked on each refusal.
+CREATE INDEX security_denial_bursts ON events(resource, actor_user_id, created_at_ms) WHERE kind = 'access_denial_burst';
 -- Network addresses each credential was used from, so use from a new one
 -- can raise a security notification.
 CREATE TABLE auth_credential_addresses (

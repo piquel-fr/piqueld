@@ -112,27 +112,30 @@ refused API requests since the daemon started.
 
 ### Tamper evidence
 
-Each audit record stores a link: the SHA-256 of the previous record's link and
-its own fields. Editing, inserting, or removing a record breaks every later
-link. `piquelctl audit verify`, the dashboard's **Verify integrity** button, and
+Audit records have consecutive IDs, and each stores a link: the SHA-256 of the
+previous record's link and its own ID and fields. Editing, inserting,
+renumbering, or removing a record breaks the chain from there on.
+`piquelctl audit verify`, the dashboard's **Verify integrity** button, and
 `GET /api/v1/audit/verify` (all requiring `audit:read`) recompute the chain and
-report the first altered record. The command fails when the chain is broken.
+report the first record that does not match (the change may also be a removal
+or insertion just before it). The command fails when the chain is broken.
 
 ```console
 $ piquelctl audit verify
 Chain: intact
-Linked records checked: 1834
-Newest link: 6f1c…
+Records checked: 1834
+Pruned through: 1203 9a40…
+Newest: 3037 6f1c…
 ```
 
-Removing the newest records leaves a shorter chain that is still valid, so keep
-the newest link somewhere piqueld cannot change, such as a ticket or a
-scheduled job's log, and compare it later. Pruning by `retention.audit_days`
-keeps the last pruned link as the anchor of the remaining chain. Records
-written before the chain existed (upgrades) are reported as unlinked; any
-other record without a link breaks the chain. The chain
-detects changes to the database; it cannot stop someone who controls the host
-from rewriting the whole trail, which comparing against an earlier link reveals.
+Pruning by `retention.audit_days` removes the oldest records only while the
+chain through them verifies, so it never erases evidence of tampering; the
+newest pruned record becomes the anchor the remaining chain extends. The chain
+detects changes to the database, but cannot tell who wrote it: someone who
+controls the host could rewrite the whole trail, remove the newest records, or
+prune more and move the anchor. Keep the reported anchor and newest record
+somewhere piqueld cannot change, such as a ticket or a scheduled job's log, and
+compare them later to detect that.
 
 ### Security notifications
 

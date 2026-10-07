@@ -797,6 +797,25 @@
         ],
         "type": "object"
       },
+      "AuditLink": {
+        "description": "One record's place in the audit chain.",
+        "properties": {
+          "id": {
+            "description": "Record ID.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "link": {
+            "description": "Its link, in lowercase hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "link"
+        ],
+        "type": "object"
+      },
       "AuditOutcome": {
         "description": "Whether an audited request was allowed.",
         "enum": [
@@ -807,10 +826,29 @@
         "type": "string"
       },
       "AuditVerification": {
-        "description": "Result of checking the audit trail's hash chain.\n\nEach record stores a SHA-256 link over its predecessor's link and its own\nfields, so editing, inserting, or removing a record breaks every later\nlink. Removing the newest records leaves a valid but shorter chain:\ncompare `head` with a value kept elsewhere to detect that.",
+        "description": "Result of checking the audit trail's hash chain.\n\nRecords have consecutive IDs, and each stores a SHA-256 link over its\npredecessor's link and its own ID and fields, so editing, inserting,\nrenumbering, or removing a record breaks the chain from there on. The\nchain cannot tell who wrote it, so someone able to write the database\ncould rewrite it whole or move its `anchor`: keep `anchor` and `head`\nelsewhere and compare them later to detect that, including removed newest\nrecords.",
         "properties": {
+          "anchor": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/AuditLink"
+                  }
+                ],
+                "description": "The newest pruned record, which the oldest retained one extends;\nabsent when nothing was pruned."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "broken_at": {
-            "description": "First record whose link does not match, if the chain is broken.",
+            "description": "First record whose ID or link does not match, if the chain is broken.\nThe change may also be a removal or insertion just before it.",
             "format": "int64",
             "nullable": true,
             "type": "integer"
@@ -822,20 +860,27 @@
             "type": "integer"
           },
           "head": {
-            "description": "Link of the newest record, if any record is linked.",
-            "nullable": true,
-            "type": "string"
-          },
-          "unlinked": {
-            "description": "Records written before the chain existed, which carry no link.",
-            "format": "int64",
-            "minimum": 0,
-            "type": "integer"
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/AuditLink"
+                  }
+                ],
+                "description": "The newest verified record; when the chain is broken, the last one\nverified before `broken_at`."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           }
         },
         "required": [
-          "checked",
-          "unlinked"
+          "checked"
         ],
         "type": "object"
       },
@@ -2330,10 +2375,29 @@
         "description": "Successful API response envelope.",
         "properties": {
           "data": {
-            "description": "Result of checking the audit trail's hash chain.\n\nEach record stores a SHA-256 link over its predecessor's link and its own\nfields, so editing, inserting, or removing a record breaks every later\nlink. Removing the newest records leaves a valid but shorter chain:\ncompare `head` with a value kept elsewhere to detect that.",
+            "description": "Result of checking the audit trail's hash chain.\n\nRecords have consecutive IDs, and each stores a SHA-256 link over its\npredecessor's link and its own ID and fields, so editing, inserting,\nrenumbering, or removing a record breaks the chain from there on. The\nchain cannot tell who wrote it, so someone able to write the database\ncould rewrite it whole or move its `anchor`: keep `anchor` and `head`\nelsewhere and compare them later to detect that, including removed newest\nrecords.",
             "properties": {
+              "anchor": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/AuditLink"
+                      }
+                    ],
+                    "description": "The newest pruned record, which the oldest retained one extends;\nabsent when nothing was pruned."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
               "broken_at": {
-                "description": "First record whose link does not match, if the chain is broken.",
+                "description": "First record whose ID or link does not match, if the chain is broken.\nThe change may also be a removal or insertion just before it.",
                 "format": "int64",
                 "nullable": true,
                 "type": "integer"
@@ -2345,20 +2409,27 @@
                 "type": "integer"
               },
               "head": {
-                "description": "Link of the newest record, if any record is linked.",
-                "nullable": true,
-                "type": "string"
-              },
-              "unlinked": {
-                "description": "Records written before the chain existed, which carry no link.",
-                "format": "int64",
-                "minimum": 0,
-                "type": "integer"
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/AuditLink"
+                      }
+                    ],
+                    "description": "The newest verified record; when the chain is broken, the last one\nverified before `broken_at`."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
               }
             },
             "required": [
-              "checked",
-              "unlinked"
+              "checked"
             ],
             "type": "object"
           }

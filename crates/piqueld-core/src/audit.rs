@@ -106,18 +106,33 @@ pub struct AuditFilter {
 
 /// Result of checking the audit trail's hash chain.
 ///
-/// Each record stores a SHA-256 link over its predecessor's link and its own
-/// fields, so editing, inserting, or removing a record breaks every later
-/// link. Removing the newest records leaves a valid but shorter chain:
-/// compare `head` with a value kept elsewhere to detect that.
+/// Records have consecutive IDs, and each stores a SHA-256 link over its
+/// predecessor's link and its own ID and fields, so editing, inserting,
+/// renumbering, or removing a record breaks the chain from there on. The
+/// chain cannot tell who wrote it, so someone able to write the database
+/// could rewrite it whole or move its `anchor`: keep `anchor` and `head`
+/// elsewhere and compare them later to detect that, including removed newest
+/// records.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct AuditVerification {
     /// Records whose links were checked.
     pub checked: u64,
-    /// Records written before the chain existed, which carry no link.
-    pub unlinked: u64,
-    /// Link of the newest record, if any record is linked.
-    pub head: Option<String>,
-    /// First record whose link does not match, if the chain is broken.
+    /// The newest pruned record, which the oldest retained one extends;
+    /// absent when nothing was pruned.
+    pub anchor: Option<AuditLink>,
+    /// The newest verified record; when the chain is broken, the last one
+    /// verified before `broken_at`.
+    pub head: Option<AuditLink>,
+    /// First record whose ID or link does not match, if the chain is broken.
+    /// The change may also be a removal or insertion just before it.
     pub broken_at: Option<i64>,
+}
+
+/// One record's place in the audit chain.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AuditLink {
+    /// Record ID.
+    pub id: i64,
+    /// Its link, in lowercase hex.
+    pub link: String,
 }

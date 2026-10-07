@@ -1081,15 +1081,16 @@ async fn refusal_bursts_and_new_addresses_notify_as_security() {
     );
 }
 
-/// The audit chain detects edited, removed, forged, and unlinked records,
-/// and stays verifiable after the oldest records are pruned.
+/// The audit chain detects edited, renumbered, inserted, and removed records,
+/// and pruning keeps it verifiable without ever erasing a broken part.
 #[tokio::test]
 async fn the_audit_chain_detects_alteration_and_survives_pruning() {
     let temp = tempfile::tempdir().unwrap();
     let mut store = Store::open(temp.path().join("db")).await.unwrap();
     store.audit_days = 1;
-    for peer in ["a", "b", "c", "d"] {
-        store.record_audit(&refused(peer)).await.unwrap();
+    let now = now_ms();
+    for (peer, at) in [("a", 0), ("b", 0), ("c", now), ("d", now)] {
+        store.record_audit_at(&refused(peer), at).await.unwrap();
     }
     let intact = store.verify_audit().await.unwrap();
     assert_eq!((intact.checked, intact.broken_at), (4, None));
@@ -1097,39 +1098,47 @@ async fn the_audit_chain_detects_alteration_and_survives_pruning() {
         sqlx::query(sql).execute(&store.pool).await.unwrap();
         store.verify_audit().await.unwrap()
     };
-    // Pruning the two oldest keeps the newest link and a verifiable chain.
-    let pruned = run("UPDATE audit_events SET created_at_ms=0 WHERE peer IN ('a','b')").await;
-    assert_eq!(
-        pruned.broken_at,
-        Some(1),
-        "editing a record breaks the chain"
-    );
+    // A broken part is never pruned away.
+    let edited = run("UPDATE audit_events SET status=200 WHERE peer='b'").await;
+    assert_eq!(edited.broken_at, Some(2));
     store.prune_audit().await.unwrap();
-    let after = store.verify_audit().await.unwrap();
-    assert_eq!((after.checked, after.broken_at), (2, None));
-    assert_eq!(after.head, intact.head);
-    let id_of = async |peer: &str| -> i64 {
-        let id = sqlx::query_scalar("SELECT id FROM audit_events WHERE peer=?1").bind(peer);
-        id.fetch_one(&store.pool).await.unwrap()
-    };
-    let (c, d) = (id_of("c").await, id_of("d").await);
-    let retargeted = run("UPDATE audit_events SET environment_id='env-other' WHERE peer='c'").await;
-    assert_eq!(retargeted.broken_at, Some(c));
+    assert_eq!(store.verify_audit().await.unwrap(), edited);
+    run("UPDATE audit_events SET status=404 WHERE peer='b'").await;
+    // Pruning the two oldest keeps the newest pruned one as the anchor.
+    store.prune_audit().await.unwrap();
+    let pruned = store.verify_audit().await.unwrap();
+    assert_eq!((pruned.checked, pruned.broken_at), (2, None));
+    assert_eq!(pruned.anchor.unwrap().id, 2);
+    assert_eq!(pruned.head, intact.head);
+    let edited = run("UPDATE audit_events SET environment_id='env-other' WHERE peer='c'").await;
+    assert_eq!(edited.broken_at, Some(3));
     run("UPDATE audit_events SET environment_id=NULL WHERE peer='c'").await;
-    let edited = run("UPDATE audit_events SET status=200 WHERE peer='c'").await;
-    assert_eq!(edited.broken_at, Some(c));
-    run("UPDATE audit_events SET status=404 WHERE peer='c'").await;
+    let renumbered = run("UPDATE audit_events SET id=9223372036854775807 WHERE peer='d'").await;
+    assert_eq!(renumbered.broken_at, Some(i64::MAX));
+    // Nothing can follow the highest possible ID, rather than wrapping around.
+    assert!(matches!(
+        store.record_audit(&refused("e")).await,
+        Err(StoreError::Corrupt)
+    ));
+    run("UPDATE audit_events SET id=4 WHERE peer='d'").await;
+    for id in [-5, i64::MIN] {
+        let forged = format!(
+            "INSERT INTO audit_events(id,created_at_ms,action,outcome,status) \
+            VALUES({id},0,'forged','allowed',200)"
+        );
+        assert_eq!(run(&forged).await.broken_at, Some(id));
+        // Pruning keeps the forged record as evidence.
+        store.prune_audit().await.unwrap();
+        assert_eq!(store.verify_audit().await.unwrap().broken_at, Some(id));
+        run(&format!("DELETE FROM audit_events WHERE id={id}")).await;
+    }
+    // The anchor is stored whole or not at all.
+    let half = sqlx::query("UPDATE audit_chain SET pruned_link=NULL");
+    assert!(half.execute(&store.pool).await.is_err());
     let removed = run("DELETE FROM audit_events WHERE peer='c'").await;
     assert_eq!(
         removed.broken_at,
-        Some(d),
+        Some(4),
         "removing breaks the next record"
     );
-    // Neither records at unusual IDs nor cleared links pass as unlinked.
-    let forged = "INSERT INTO audit_events(id,created_at_ms,action,outcome,status) \
-        VALUES(-5,0,'forged','allowed',200)";
-    assert_eq!(run(forged).await.broken_at, Some(-5));
-    run("DELETE FROM audit_events WHERE id=-5").await;
-    let cleared = run("UPDATE audit_events SET link=NULL").await;
-    assert_eq!(cleared.broken_at, Some(d));
 }

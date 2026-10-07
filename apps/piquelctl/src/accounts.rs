@@ -14,7 +14,7 @@ use clap::{Args, Subcommand};
 use piqueld_client::{
     ApplicationId, Client, Page,
     access::{Grant, Grants, Permission, Preset, Scope},
-    audit::{AuditEvent, AuditFilter, AuditOutcome, AuditVerification},
+    audit::{AuditEvent, AuditFilter, AuditLink, AuditOutcome, AuditVerification},
     auth::{Account, CredentialView, Directory, Manage, Session},
 };
 use serde::Serialize;
@@ -485,14 +485,24 @@ impl Report for VerificationReport {
             "intact"
         };
         out.label("Chain", state)?;
-        out.label("Linked records checked", result.checked)?;
-        if result.unlinked > 0 {
-            out.label("Records from before the chain", result.unlinked)?;
-        }
+        out.label("Records checked", result.checked)?;
         if let Some(id) = result.broken_at {
-            out.label("First altered record", id)?;
+            out.label("First mismatch", id)?;
         }
-        out.label("Newest link", result.head.as_deref().unwrap_or("none"))
+        // Operators keep both elsewhere to detect a rewritten or moved chain.
+        let link = |link: &Option<AuditLink>| {
+            link.as_ref().map_or_else(
+                || "none".to_owned(),
+                |link| format!("{} {}", link.id, link.link),
+            )
+        };
+        out.label("Pruned through", link(&result.anchor))?;
+        let head = if result.broken_at.is_some() {
+            "Last verified"
+        } else {
+            "Newest"
+        };
+        out.label(head, link(&result.head))
     }
 }
 

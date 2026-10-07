@@ -298,7 +298,8 @@ pub(crate) async fn recover_admin(cli: &Cli, client: &Client, console: &mut Cons
     let link = client.auth_recover_admin().await?;
     console.warning(
         "this link creates a new administrator account and works once within 24 hours; \
-         open it in a browser and register a passkey. Administrators were notified.",
+         open it in a browser and register a passkey. It was recorded as a security event, \
+         which notifies administrators when security notifications are enabled.",
     )?;
     console.emit(&LinkReport {
         url: link.url.clone(),
