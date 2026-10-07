@@ -496,15 +496,38 @@ pub(super) enum Slot<'a> {
     Typed(&'a mut dyn TypedSlot),
 }
 
+/// A type a [`Typed`] field holds, described in type errors instead of
+/// serde's message, which repeats the whole rendered value.
+pub(super) trait Expected: DeserializeOwned {
+    /// What the field accepts, e.g. `an integer from 0 to 65535`.
+    const EXPECTED: &'static str;
+}
+
+macro_rules! expected {
+    ($($type:ty => $expected:literal),* $(,)?) => {
+        $(impl Expected for $type {
+            const EXPECTED: &'static str = $expected;
+        })*
+    };
+}
+
+expected! {
+    u16 => "an integer from 0 to 65535",
+    u32 => "an integer from 0 to 4294967295",
+    u64 => "an integer from 0 to 18446744073709551615",
+    super::RolloutOrder => "`start-first` or `stop-first`",
+}
+
 /// Type-erased access to a [`Typed`] field.
 pub(super) trait TypedSlot {
     /// The template, unless the value is already literal.
     fn template(&self) -> Option<&Template>;
-    /// Replaces the value with `value` decoded as the field's type.
-    fn set(&mut self, value: serde_json::Value) -> Result<(), serde_json::Error>;
+    /// Replaces the value with `value` decoded as the field's type, or
+    /// returns what the field accepts.
+    fn set(&mut self, value: serde_json::Value) -> Result<(), &'static str>;
 }
 
-impl<T: DeserializeOwned> TypedSlot for Typed<T> {
+impl<T: Expected> TypedSlot for Typed<T> {
     fn template(&self) -> Option<&Template> {
         match self {
             Self::Literal(_) => None,
@@ -512,8 +535,8 @@ impl<T: DeserializeOwned> TypedSlot for Typed<T> {
         }
     }
 
-    fn set(&mut self, value: serde_json::Value) -> Result<(), serde_json::Error> {
-        *self = Self::Literal(serde_json::from_value(value)?);
+    fn set(&mut self, value: serde_json::Value) -> Result<(), &'static str> {
+        *self = Self::Literal(serde_json::from_value(value).map_err(|_| T::EXPECTED)?);
         Ok(())
     }
 }
@@ -1027,15 +1050,12 @@ impl<'a> Scope<'a> {
                 };
                 if let Some(value) = value {
                     let shown = value.to_string();
-                    if let Err(source) = typed.set(value) {
+                    if let Err(expected) = typed.set(value) {
                         error(
                             errors,
                             codes::VARIABLE_TYPE_INVALID,
                             path,
-                            &format!(
-                                "renders to {}, which is invalid here: {source}",
-                                echo(&shown)
-                            ),
+                            &format!("renders to {}, expected {expected}", echo(&shown)),
                         );
                     }
                 }
