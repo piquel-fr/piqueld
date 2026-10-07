@@ -261,14 +261,21 @@ pub(super) fn VariableSettings() -> impl IntoView {
     }
 }
 
-/// The value of each variable in the shown environment's saved configuration.
+/// The value of each variable in the manifest the shown environment deploys:
+/// its last fetched one when it follows a branch, else the saved one.
 #[component]
 pub(super) fn EnvironmentVariables() -> impl IntoView {
     let context = editor();
+    let signals = context.dashboard.with_value(|d| d.signals);
     let values = move || {
         let environment = context.selected_environment()?;
         let name = EnvironmentName::parse(environment.name.as_str()).ok()?;
-        Some(context.saved.with(|saved| saved.application.values(&name)))
+        signals.detail.with(|detail| {
+            let detail = detail
+                .as_ref()
+                .filter(|detail| detail.environment.id == environment.id)?;
+            Some(detail.manifest.as_ref()?.values(&name))
+        })
     };
     view! {
         <section class="card card-flush">
@@ -279,6 +286,15 @@ pub(super) fn EnvironmentVariables() -> impl IntoView {
                 </div>
             </header>
             {move || {
+                let fetched = context
+                    .selected_environment()
+                    .is_none_or(|environment| environment.source.branch().is_none())
+                    || signals.detail.with(|detail| {
+                        detail.as_ref().is_some_and(|detail| detail.manifest.is_some())
+                    });
+                if !fetched {
+                    return empty("Deploy this environment to fetch its manifest from its branch.");
+                }
                 let values = values().unwrap_or_default();
                 if values.is_empty() {
                     return empty("The manifest declares no variables.");

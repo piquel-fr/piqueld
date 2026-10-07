@@ -35,8 +35,6 @@ edit_method!(set_application_variables, (id), request: VariablesValue);
 edit_method!(set_manifest_repository, (id), request: RepositoryValue);
 edit_method!(disconnect_manifest_repository, (id));
 edit_method!(set_manifest_repository_url, (id), request: StringValue);
-edit_method!(set_manifest_repository_branch, (id), request: StringValue);
-edit_method!(set_manifest_repository_commit, (id), request: OptionalStringValue);
 edit_method!(set_manifest_repository_path, (id), request: StringValue);
 edit_method!(add_application_service, (id), request: Service);
 edit_method!(add_application_volume, (id), request: Volume);
@@ -127,14 +125,6 @@ impl Client {
             ApplicationEdit::RepositoryUrl(value) => {
                 send!(set_manifest_repository_url, StringValue, value.clone())
             }
-            ApplicationEdit::RepositoryBranch(value) => {
-                send!(set_manifest_repository_branch, StringValue, value.clone())
-            }
-            ApplicationEdit::RepositoryCommit(value) => send!(
-                set_manifest_repository_commit,
-                OptionalStringValue,
-                value.clone()
-            ),
             ApplicationEdit::RepositoryPath(value) => {
                 send!(set_manifest_repository_path, StringValue, value.clone())
             }

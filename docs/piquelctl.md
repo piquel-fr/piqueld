@@ -48,11 +48,12 @@ piquelctl app reconcile <name-or-id>
 piquelctl app deploy <name-or-id>
 piquelctl app rename <name-or-id> <new-name>
 piquelctl env list <app>
-piquelctl env create <app> <name>
+piquelctl env create <app> <name> [--branch <branch> [--commit <sha>]]
+piquelctl env branch <app> <env> <branch> [--commit <sha>]
 piquelctl env show <app> [<env>]
 piquelctl env rename <app> <env> <new-name>
 piquelctl env delete <app> <env>
-piquelctl env deploy <app> [<env>]
+piquelctl env deploy <app> [<env>] [--branch <branch> | --commit <sha>]
 piquelctl env reconcile <app> [<env>]
 piquelctl env logs <app> [<env>] [--service <name>]
 piquelctl events --application <application-id> --limit 50
@@ -73,14 +74,26 @@ application revision like other mutations (`--expected-generation`, `--force`),
 and advance it, so a command based on an earlier inspection fails instead of
 acting on a renamed or deleted environment.
 
+Each environment of a repository-backed application follows its own branch of
+the application's repository; the repository URL and manifest path stay on the
+application (`app repository url|path`). `env create --branch` chooses the
+branch, by default the one `spec.manifest` names, and `--commit` pins a commit.
+`env branch` points an existing environment at another branch, or pins or
+unpins (without `--commit`) a commit; nothing is redeployed until its next
+deployment. Both fail with `manifest_repository_required` for applications
+without a repository. `env list` and `env show` report the source as `saved` or
+as the branch, e.g. `main` or `main@<commit>`.
+
 The manifest is shared; values that differ between environments come from
 [manifest variables](application-manifest.md#variables). Environments that render
 the same route hostname conflict with `hostname_conflict`, naming the sibling
 environment that reserves it. `env rename` fails with `environment_configured`
-while the saved manifest has a `[spec.environments.<name>]` block for the old or
-the new name, since renaming would change which block applies: remove the block,
-rename, then add it back under the new name. `env show` lists each variable's
-value in the environment, or that it has none.
+while the manifest the environment deploys (for a repository-backed one, the one
+last fetched from its branch) has a `[spec.environments.<name>]` block for the old
+or the new name, since renaming would change which block applies: remove the
+block, rename, then add it back under the new name. `env show` lists each
+variable's value in that manifest, or that it has none, and says when a
+repository-backed environment has fetched nothing yet.
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit
 HTTP or HTTPS origin such as `http://127.0.0.1:7845/`; the two transport options are
@@ -118,8 +131,8 @@ written to stderr, so stdout remains valid JSON.
 | `app list` | `{ "items": [{ "application": ApplicationSummary, "environments": [EnvironmentRow] }], "next_cursor": null }` |
 | `app show` | `{ "application": ApplicationView, "environments": [EnvironmentRow] }` |
 | `env list` | `[EnvironmentRow]`, where `EnvironmentRow` is `{ "environment": EnvironmentView, "status": EnvironmentStatusView or null }` |
-| `env show` | `{ "application": ApplicationView, "environment": EnvironmentView, "status": EnvironmentStatusView }` |
-| `env create` / `env rename` | `EnvironmentView` |
+| `env show` | `EnvironmentDetailView` |
+| `env create` / `env rename` / `env branch` | `EnvironmentView` |
 | `app logs` / `env logs` | `ApplicationLogs` |
 | `app validate` | `{ "application": string }` |
 | `app exec` | None; the command's raw output |
@@ -275,13 +288,16 @@ require the corresponding source/check to be configured first. Use `--help` on
 any command for its values and options.
 
 Git-backed applications keep services, volumes, and the application name under
-repository ownership. Connection settings remain editable. Disconnect explicitly
-to retain the saved manifest and edit it locally:
+repository ownership. The repository URL and manifest path remain editable;
+connecting points every environment at `--branch` (default `main`), and each
+environment's branch then changes with `env branch`. Disconnect explicitly to
+retain the saved manifest (the one last fetched by any environment) and edit it
+locally:
 
 ```console
 piquelctl app repository connect notes https://example.com/infra.git infra/app.toml --yes
-piquelctl app repository branch notes release --yes
 piquelctl app repository path notes corrected/app.toml --yes
+piquelctl env branch notes production release --yes
 piquelctl app repository disconnect notes --yes
 ```
 
@@ -384,12 +400,16 @@ the current account, and `logout` to revoke it. Saved credentials are separate
 from profiles. `PIQUELD_TOKEN` supplies an automation token; `--account` selects
 a saved account. See [authentication](authentication.md) for details.
 
-`app deploy` and `env deploy` fetch repository-backed configuration when configured,
-then explicitly resolve image or Git build sources. They supersede pending work for
-the selected environment. Use `--yes` to skip interactive confirmation, `--no-wait` to return
-after acceptance, or a longer global `--timeout` for builds. `--branch NAME` or
-`--commit SHA` fetches a repository-backed manifest from another revision for this
-deployment only, without saving it; for example, to test a feature branch. The
+`app deploy` and `env deploy` fetch a repository-backed environment's manifest
+from its branch, then explicitly resolve image or Git build sources. They
+supersede pending work for the selected environment. Use `--yes` to skip
+interactive confirmation, `--no-wait` to return after acceptance, or a longer
+global `--timeout` for builds. `--branch NAME` or `--commit SHA` fetches a
+repository-backed manifest from another revision for this deployment only,
+without changing the environment's branch; for example, to test a feature
+branch. Once the deployment finishes, they warn about anything it reported, such
+as `manifest_connection_ignored` when the fetched file's `spec.manifest` names
+another repository URL or path. The
 server continues deployment if the CLI wait times out. `app reconcile` and
 `env reconcile` retry or repair the latest
 deployment snapshot and prepared target without refreshing sources.

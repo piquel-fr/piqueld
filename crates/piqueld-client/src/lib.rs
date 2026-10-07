@@ -41,8 +41,8 @@ pub use applications::{
 };
 pub use client::Client;
 pub use environments::{
-    EnvironmentDetailView, EnvironmentName, EnvironmentRequest, EnvironmentSource,
-    EnvironmentStatusView, EnvironmentView,
+    CreateEnvironmentRequest, EnvironmentBranchRequest, EnvironmentDetailView, EnvironmentName,
+    EnvironmentRequest, EnvironmentSource, EnvironmentStatusView, EnvironmentView, TrackedBranch,
 };
 pub use piqueld_core::manifest::{
     ApplicationManifest, ApplicationSpec, ApplicationTemplate, Build, EnvironmentConfig,

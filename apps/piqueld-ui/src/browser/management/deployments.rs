@@ -521,9 +521,9 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
     }
 }
 
-/// The variable values, services, volumes, and jobs captured in a
-/// deployment's configuration snapshot: the rendered configuration, or the
-/// captured manifest until a repository-backed manifest is fetched.
+/// The branch, warnings, variable values, services, volumes, and jobs captured
+/// in a deployment's configuration snapshot: the rendered configuration, or
+/// the captured manifest until a repository-backed manifest is fetched.
 #[component]
 fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
     view! {
@@ -539,8 +539,22 @@ fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
                     deployment.template.to_manifest().spec,
                 ),
             };
+            let fetched = deployment.template.spec().manifest.as_ref().map(|manifest| {
+                let revision = manifest
+                    .repository
+                    .commit
+                    .as_ref()
+                    .unwrap_or(&manifest.repository.branch);
+                format!("Manifest {} from {revision}.", manifest.path)
+            });
             view! {
                 <p class="hint">{hint}</p>
+                {fetched.map(|fetched| view! { <p class="hint">{fetched}</p> })}
+                {deployment
+                    .warnings
+                    .iter()
+                    .map(|warning| notice(Tone::Warn, format!("{}: {}", warning.code, warning.message)))
+                    .collect_view()}
                 {(!deployment.variables.is_empty())
                     .then(|| {
                         view! {

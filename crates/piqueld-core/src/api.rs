@@ -144,12 +144,44 @@ pub struct EnvironmentView {
     pub updated_at_ms: i64,
 }
 
-/// Creates or renames an environment, conditioned on the inspected application revision.
+/// Renames an environment, conditioned on the inspected application revision.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentRequest {
     /// Environment name, unique within the application.
     pub name: String,
+    /// Current application revision, required unless explicitly forced.
+    pub expected_generation: Option<u64>,
+}
+
+/// Creates an environment, conditioned on the inspected application revision.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateEnvironmentRequest {
+    /// Environment name, unique within the application.
+    pub name: String,
+    /// Branch of the application's manifest repository to follow. Defaults to
+    /// the branch `spec.manifest` names; only for repository-backed applications.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Full commit to pin instead of following `branch`'s head; requires `branch`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// Current application revision, required unless explicitly forced.
+    pub expected_generation: Option<u64>,
+}
+
+/// Points an environment of a repository-backed application at another
+/// branch, or pins or unpins its commit, conditioned on the inspected
+/// application revision.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentBranchRequest {
+    /// Branch of the application's manifest repository to follow.
+    pub branch: String,
+    /// Full commit to pin instead of following the branch head.
+    #[serde(default)]
+    pub commit: Option<String>,
     /// Current application revision, required unless explicitly forced.
     pub expected_generation: Option<u64>,
 }
@@ -281,6 +313,10 @@ pub struct EnvironmentDetailView {
     pub environment: EnvironmentView,
     /// Its application and shared desired configuration.
     pub application: ApplicationView,
+    /// The manifest this environment deploys, with references unresolved: the
+    /// last one fetched from its branch, or the application's saved manifest.
+    /// Absent until a repository-backed environment's first fetch.
+    pub manifest: Option<ApplicationTemplate>,
     /// Durable environment lifecycle status.
     pub status: EnvironmentStatusView,
     /// Sanitized runtime observation.
@@ -383,6 +419,10 @@ pub struct DeploymentView {
     pub variables: BTreeMap<String, VariableValue>,
     /// Rendered configuration; absent until a repository-backed manifest is fetched.
     pub application: Option<NormalizedApplication>,
+    /// Problems found while fetching the manifest that did not stop the
+    /// deployment, e.g. `manifest_connection_ignored`.
+    #[serde(default)]
+    pub warnings: Vec<DiagnosticView>,
     /// First successful convergence, retained during later drift repair.
     pub succeeded_at_ms: Option<i64>,
     /// Whether this is the currently promoted runtime target.

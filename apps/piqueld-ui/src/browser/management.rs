@@ -993,7 +993,7 @@ fn ApplicationSettings() -> impl IntoView {
                         .then(|| {
                             notice(
                                 Tone::Info,
-                                "Runtime configuration is managed in Git. Disconnect the repository in Source to edit services, variables, routes, volumes, jobs, and secret files here.",
+                                "Runtime configuration is managed in Git. This page shows the manifest last fetched by any environment; each environment's page shows what it deploys from its own branch. Disconnect the repository in Source to edit services, variables, routes, volumes, jobs, and secret files here.",
                             )
                         })
                 }} <div hidden={move || context.tab.get() != "Source"}>

@@ -139,6 +139,15 @@ existing deployments record their literal manifest and no variables.
 `manifest_json` keeps the rendered manifest, which is JSON `null` until a
 repository-backed manifest is fetched.
 
+`0014_environment_branches.sql` stores where each environment deploys from.
+Environments gain `branch` and `pinned_commit` (NULL for environments that
+deploy the saved manifest) and `manifest_json`, the manifest last fetched from
+their branch. Every environment of a repository-backed application takes the
+branch and pinned commit its `spec.manifest` names, and the saved manifest,
+which was the last fetched one, as its own, so nothing deploys or reserves
+differently after upgrading. Deployments gain `warnings_json`, problems found
+while fetching that did not stop the deployment; existing ones have none.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

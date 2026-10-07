@@ -131,6 +131,16 @@
       "rustType": "piqueld_core::api::EnvironmentRequest"
     },
     {
+      "schema": "CreateEnvironmentRequest",
+      "name": "CreateEnvironmentRequest",
+      "rustType": "piqueld_core::api::CreateEnvironmentRequest"
+    },
+    {
+      "schema": "EnvironmentBranchRequest",
+      "name": "EnvironmentBranchRequest",
+      "rustType": "piqueld_core::api::EnvironmentBranchRequest"
+    },
+    {
       "schema": "LogStream",
       "name": "LogStream",
       "rustType": "piqueld_core::api::LogStream"

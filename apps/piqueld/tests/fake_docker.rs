@@ -897,6 +897,7 @@ impl EnvironmentHarness {
                 Mutation::CreateEnvironment {
                     application: harness.application.id().clone(),
                     name: EnvironmentName::parse("staging").unwrap(),
+                    branch: None,
                 },
                 Some(saved.generation),
                 false,
@@ -1604,6 +1605,7 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
             .await
             .unwrap()
             .manifest()
+            .unwrap()
             .spec()
             .services[0]
             .environment
@@ -2329,6 +2331,7 @@ mod repository_deployments {
     use piqueld_core::manifest::{
         ApplicationManifest, GitRepository, ManifestRevision, RepositoryManifest, SourceRepository,
     };
+    use piqueld_core::{EnvironmentName, TrackedBranch};
 
     impl git_fixture::GitBuildFixture {
         pub fn failing_source(&self) -> piqueld_core::Source {
@@ -2451,12 +2454,64 @@ mod repository_deployments {
         }
     }
 
+    /// The warnings recorded on `operation`'s deployment.
+    async fn warnings(harness: &ControllerHarness, operation: &Operation) -> Vec<String> {
+        let deployments = harness
+            .store
+            .deployments(&operation.environment_id, None, 3)
+            .await
+            .unwrap();
+        deployments
+            .items
+            .into_iter()
+            .filter(|deployment| deployment.operation.id == operation.id)
+            .flat_map(|deployment| deployment.warnings)
+            .map(|warning| warning.code)
+            .collect()
+    }
+
+    /// Creates `name`, an environment of `production`'s application following `branch`.
+    async fn create_environment(
+        harness: &ControllerHarness,
+        production: &EnvironmentId,
+        name: &str,
+        branch: &str,
+    ) -> EnvironmentId {
+        let application = harness.store.get(production).await.unwrap();
+        let MutationResponse::Environment(environment) = harness
+            .applications()
+            .accept(
+                Mutation::CreateEnvironment {
+                    application: application.environment.application_id,
+                    name: EnvironmentName::parse(name).unwrap(),
+                    branch: Some(TrackedBranch::new(branch.into(), None).unwrap()),
+                },
+                None,
+                true,
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("environment expected")
+        };
+        environment.id
+    }
+
+    /// A fetched file's `spec.manifest` never redirects later fetches: it is
+    /// ignored, with a warning when it names another repository or path.
     #[tokio::test]
-    async fn deploy_updates_only_selected_manifest_then_follows_its_new_path_and_disconnects() {
+    async fn fetched_connections_are_ignored_with_a_warning() {
         let repository = RepositoryFixture::new();
         let harness = ControllerHarness::new().await;
         let initial = repository.manifest("app.json");
-        repository.write("app.json", &initial);
+        let mut redirected = initial.clone();
+        let declared = redirected.spec.manifest.as_mut().unwrap();
+        declared.path = "next.json".into();
+        declared.repository.url = "/elsewhere".into();
+        declared.repository.branch = "release".into();
+        redirected.spec.services[0].replicas = 2.into();
+        repository.write("app.json", &redirected);
         repository.commit();
         let first = harness
             .applications()
@@ -2464,60 +2519,114 @@ mod repository_deployments {
             .await
             .unwrap();
         harness.finish(&first).await;
-        let before = harness.pulls().await;
-        let mut next = repository.manifest("next.json");
-        next.spec.services[0].replicas = 2.into();
-        repository.write("app.json", &next);
-        repository.write("next.json", &next);
-        std::fs::write(
-            repository.directory.path().join("other.json"),
-            "not a manifest",
-        )
-        .unwrap();
-        repository.commit();
-        let deployed = RepositoryFixture::deploy(&harness, &first.environment_id).await;
-        assert_eq!(deployed.state, OperationState::Succeeded);
-        assert_eq!(deployed.generation, 2);
-        assert!(
-            harness.pulls().await > before,
-            "unchanged image references must be refreshed"
+        assert_eq!(
+            warnings(&harness, &first).await,
+            ["manifest_connection_ignored"]
         );
         let current = harness.store.get(&first.environment_id).await.unwrap();
+        assert_eq!(current.resolved.as_ref().unwrap().services[0].replicas, 2);
+        assert_eq!(current.repository(), initial.spec.manifest);
         assert_eq!(
-            current.manifest().spec().manifest.as_ref().unwrap().path,
-            "next.json"
+            current.application.application.spec().manifest,
+            initial.spec.manifest
         );
-        assert_eq!(current.resolved.unwrap().services[0].replicas, 2);
-        assert_eq!(harness.store.list(None, 50).await.unwrap().items.len(), 1);
-        next.spec.manifest = None;
-        next.spec.services.clear();
-        repository.write("next.json", &next);
-        std::fs::remove_file(repository.directory.path().join("app.json")).unwrap();
+        // Only the branch differs, as it does between environments: no warning.
+        let mut branched = initial.clone();
+        branched.spec.manifest.as_mut().unwrap().repository.branch = "release".into();
+        // Without `spec.manifest`, the application stays connected.
+        let mut bare = initial.clone();
+        bare.spec.manifest = None;
+        for file in [branched, bare] {
+            repository.write("app.json", &file);
+            repository.commit();
+            let deployed = RepositoryFixture::deploy(&harness, &first.environment_id).await;
+            assert_eq!(deployed.state, OperationState::Succeeded);
+            assert_eq!(warnings(&harness, &deployed).await, Vec::<String>::new());
+            let current = harness.store.get(&first.environment_id).await.unwrap();
+            assert_eq!(current.repository(), initial.spec.manifest);
+        }
+    }
+
+    /// Environments following different branches each deploy their own
+    /// branch, and a fetch for one never changes what the other deploys.
+    #[tokio::test]
+    async fn environments_on_different_branches_deploy_independently() {
+        let repository = RepositoryFixture::new();
+        let harness = ControllerHarness::new().await;
+        let mut main = repository.manifest("app.json");
+        repository.write("app.json", &main);
         repository.commit();
-        assert_eq!(
-            RepositoryFixture::deploy(&harness, &first.environment_id)
-                .await
-                .state,
-            OperationState::Succeeded
-        );
-        assert!(
-            harness
-                .store
-                .get(&first.environment_id)
-                .await
-                .unwrap()
-                .manifest()
-                .spec()
-                .manifest
-                .is_none()
-        );
-        std::fs::remove_file(repository.directory.path().join("next.json")).unwrap();
+        repository.git(&["checkout", "-b", "release"]);
+        let mut release = main.clone();
+        release.spec.services[0].replicas = 3.into();
+        repository.write("app.json", &release);
         repository.commit();
+        repository.git(&["checkout", "main"]);
+        let production = harness
+            .applications()
+            .apply(main.clone().validate_template().unwrap(), Some(0))
+            .await
+            .unwrap();
+        harness.finish(&production).await;
+        let production = production.environment_id;
+        let staging = create_environment(&harness, &production, "staging", "release").await;
+        let replicas = async |environment: &EnvironmentId| {
+            let current = harness.store.get(environment).await.unwrap();
+            (
+                current
+                    .resolved
+                    .map(|resolved| resolved.services[0].replicas),
+                current.fetched,
+            )
+        };
+        let deployed = RepositoryFixture::deploy(&harness, &staging).await;
+        assert_eq!(deployed.state, OperationState::Succeeded);
+        let (staged, fetched) = replicas(&staging).await;
+        assert_eq!(staged, Some(3));
+        let (before, production_manifest) = replicas(&production).await;
+        assert_eq!(before, Some(1));
+        // A new main commit reaches production only, when it deploys.
+        main.spec.services[0].replicas = 2.into();
+        repository.write("app.json", &main);
+        repository.commit();
+        let deployed = RepositoryFixture::deploy(&harness, &production).await;
+        assert_eq!(deployed.state, OperationState::Succeeded);
+        assert_eq!(replicas(&production).await.0, Some(2));
+        assert_ne!(replicas(&production).await.1, production_manifest);
+        assert_eq!(replicas(&staging).await, (Some(3), fetched));
+        // Pointing staging at main fetches main from its next deployment.
+        harness
+            .applications()
+            .accept(
+                Mutation::SetBranch {
+                    id: staging.clone(),
+                    branch: TrackedBranch::new("main".into(), None).unwrap(),
+                },
+                None,
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(replicas(&staging).await.0, Some(3));
+        let deployed = RepositoryFixture::deploy(&harness, &staging).await;
+        assert_eq!(deployed.state, OperationState::Succeeded);
+        assert_eq!(replicas(&staging).await.0, Some(2));
+        // One-off revisions deploy another branch without changing staging's.
+        let deployed = RepositoryFixture::deploy_revision(
+            &harness,
+            &staging,
+            Some(ManifestRevision::Branch("release".into())),
+        )
+        .await;
+        assert_eq!(deployed.state, OperationState::Succeeded);
+        assert_eq!(replicas(&staging).await.0, Some(3));
+        let current = harness.store.get(&staging).await.unwrap();
         assert_eq!(
-            RepositoryFixture::deploy(&harness, &first.environment_id)
-                .await
-                .state,
-            OperationState::Succeeded
+            current.environment.source,
+            piqueld_core::EnvironmentSource::Branch(
+                TrackedBranch::new("main".into(), None).unwrap()
+            )
         );
     }
 
@@ -2668,15 +2777,23 @@ mod repository_deployments {
             assert!(
                 matches!(&stored.resolved.as_ref().unwrap().services[0].source, ResolvedSource::Git { commit, .. } if commit == &expected)
             );
-            assert_eq!(stored.manifest().to_manifest().spec, expected_spec);
+            assert_eq!(
+                stored.application.application.to_manifest().spec,
+                expected_spec
+            );
         }
-        // "self" would otherwise pin another repository to this one's commit.
+        // "self" builds the repository the manifest was fetched from, whatever
+        // the file's own `spec.manifest` says.
         let mut moved = fetched;
         moved.spec.manifest.as_mut().unwrap().repository.url = "/elsewhere".into();
         repository.write("app.json", &moved);
-        repository.commit();
+        let head = repository.commit();
         let deployment = RepositoryFixture::deploy(&harness, &application_id).await;
-        assert_eq!(deployment.error_code.as_deref(), Some("manifest_invalid"));
+        assert_eq!(deployment.state, OperationState::Succeeded);
+        let stored = harness.store.get(&application_id).await.unwrap();
+        assert!(
+            matches!(&stored.resolved.as_ref().unwrap().services[0].source, ResolvedSource::Git { commit, .. } if commit == &head)
+        );
     }
 
     #[tokio::test]

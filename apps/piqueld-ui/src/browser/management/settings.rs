@@ -29,6 +29,8 @@ pub(super) fn RepositorySettings() -> impl IntoView {
         }),
     ));
     let baseline = RwSignal::new(draft.get_untracked());
+    // Once connected, each environment follows its own branch, changed on its page.
+    let connected = move || baseline.get().0;
     dirty_group("repository".into(), draft, baseline);
     let other_edits = move || {
         context
@@ -51,7 +53,7 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                 <div>
                     <h3>"Repository manifest"</h3>
                     <p>
-                        "Load the complete application manifest from Git on every deploy. Connection settings stay editable here; runtime configuration moves to the repository."
+                        "Load the complete application manifest from Git on every deploy. The repository and manifest path are shared by every environment; each environment follows its own branch, set when connecting or on its page. Runtime configuration moves to the repository."
                     </p>
                 </div>
             </header>
@@ -78,18 +80,20 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                             |v| v.1.repository.url.clone(),
                             |v, s| v.1.repository.url = s,
                         )}
-                        {text_input(
-                            "Branch",
-                            draft,
-                            |v| v.1.repository.branch.clone(),
-                            |v, s| v.1.repository.branch = s,
-                        )}
-                        {text_input(
-                            "Commit (optional)",
-                            draft,
-                            |v| v.1.repository.commit.clone().unwrap_or_default(),
-                            |v, s| v.1.repository.commit = (!s.is_empty()).then_some(s),
-                        )}
+                        <Show when={move || !connected()}>
+                            {text_input(
+                                "Branch",
+                                draft,
+                                |v| v.1.repository.branch.clone(),
+                                |v, s| v.1.repository.branch = s,
+                            )}
+                            {text_input(
+                                "Commit (optional)",
+                                draft,
+                                |v| v.1.repository.commit.clone().unwrap_or_default(),
+                                |v, s| v.1.repository.commit = (!s.is_empty()).then_some(s),
+                            )}
+                        </Show>
                         {text_input(
                             "Manifest path",
                             draft,

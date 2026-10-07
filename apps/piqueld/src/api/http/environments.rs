@@ -10,16 +10,16 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use piqueld_core::api::{
-    AcceptedOperation, Envelope, EnvironmentDetailView, EnvironmentRequest, EnvironmentStatusView,
-    EnvironmentView,
+    AcceptedOperation, CreateEnvironmentRequest, Envelope, EnvironmentBranchRequest,
+    EnvironmentDetailView, EnvironmentRequest, EnvironmentStatusView, EnvironmentView,
 };
-use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName};
+use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName, TrackedBranch};
 
 /// Decodes a JSON environment request, requiring the JSON content type.
-fn environment_request(
+fn environment_request<T: serde::de::DeserializeOwned>(
     headers: &HeaderMap,
     body: Result<Bytes, BytesRejection>,
-) -> Result<(EnvironmentName, Option<u64>), ApiError> {
+) -> Result<T, ApiError> {
     if super::content_type(headers) != Some("application/json") {
         return Err(ApiError::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -27,21 +27,20 @@ fn environment_request(
             "Content-Type must be application/json",
         ));
     }
-    let request: EnvironmentRequest = super::decode_json(&request_body(body)?)?;
-    Ok((
-        EnvironmentName::parse(request.name)?,
-        request.expected_generation,
-    ))
+    super::decode_json(&request_body(body)?)
 }
 
 /// Adds an environment to an application.
 ///
-/// The environment deploys the application's shared manifest and starts
-/// `not_deployed`. The inspected application `expected_generation` goes in the
-/// JSON body.
+/// The environment starts `not_deployed`. It deploys the application's saved
+/// manifest or, when the application is repository-backed, the manifest on
+/// `branch` (by default the branch `spec.manifest` names), optionally pinned
+/// to `commit`. A branch for an application without a repository fails with
+/// `manifest_repository_required`. The inspected application
+/// `expected_generation` goes in the JSON body.
 #[utoipa::path(post,path="/api/v1/applications/{id}/environments",operation_id="createEnvironment",
     params(("id"=String,Path),ForceQuery,("Idempotency-Key"=Option<String>,Header)),
-    request_body=EnvironmentRequest,
+    request_body=CreateEnvironmentRequest,
     responses((status=200,description="Environment created",body=Envelope<EnvironmentView>),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
     (status=409,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),
@@ -53,14 +52,26 @@ pub(super) async fn create(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
-    let (name, expected) = environment_request(&headers, body)?;
+    let request: CreateEnvironmentRequest = environment_request(&headers, body)?;
+    let branch = match (request.branch, request.commit) {
+        (Some(branch), commit) => Some(TrackedBranch::new(branch, commit)?),
+        (None, None) => None,
+        (None, Some(_)) => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "revision_invalid",
+                "a pinned commit requires a branch",
+            ));
+        }
+    };
     accept_mutation(
         &state,
         Mutation::CreateEnvironment {
             application: ApplicationId::parse(id)?,
-            name,
+            name: EnvironmentName::parse(request.name)?,
+            branch,
         },
-        expected,
+        request.expected_generation,
         ForceQuery::decode(query)?.force,
         &headers,
     )
@@ -156,14 +167,49 @@ pub(super) async fn rename(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
-    let (name, expected) = environment_request(&headers, body)?;
+    let request: EnvironmentRequest = environment_request(&headers, body)?;
     accept_mutation(
         &state,
         Mutation::RenameEnvironment {
             id: EnvironmentId::parse(id)?,
-            name,
+            name: EnvironmentName::parse(request.name)?,
         },
-        expected,
+        request.expected_generation,
+        ForceQuery::decode(query)?.force,
+        &headers,
+    )
+    .await
+}
+
+/// Changes the branch an environment follows.
+///
+/// Points an environment of a repository-backed application at another branch
+/// of its manifest repository, or pins or unpins a commit. Nothing is fetched
+/// or redeployed: the next deployment fetches the new branch. Environments
+/// deploying the saved manifest fail with `manifest_repository_required`. The
+/// inspected application `expected_generation` goes in the JSON body.
+#[utoipa::path(put,path="/api/v1/environments/{id}/branch",operation_id="setEnvironmentBranch",
+    params(("id"=String,Path),ForceQuery,("Idempotency-Key"=Option<String>,Header)),
+    request_body=EnvironmentBranchRequest,
+    responses((status=200,description="Environment follows the branch from its next deployment",body=Envelope<EnvironmentView>),
+    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
+    (status=409,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),
+    (status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn branch(
+    State(state): State<ApiState>,
+    query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
+    ApiPath(id): ApiPath<String>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Response, ApiError> {
+    let request: EnvironmentBranchRequest = environment_request(&headers, body)?;
+    accept_mutation(
+        &state,
+        Mutation::SetBranch {
+            id: EnvironmentId::parse(id)?,
+            branch: TrackedBranch::new(request.branch, request.commit)?,
+        },
+        request.expected_generation,
         ForceQuery::decode(query)?.force,
         &headers,
     )

@@ -2569,7 +2569,7 @@ async fn unavailable_observation_does_not_claim_services_are_missing() {
         .runtime
         .prepare(
             &id,
-            &app.render(app.manifest(), &accepted.operation_id)
+            &app.render(app.manifest().unwrap(), &accepted.operation_id)
                 .unwrap()
                 .application,
             &ResolutionSet::default(),
@@ -3447,7 +3447,7 @@ async fn field_edits_validate_atomically_and_preserve_git_ownership() {
     api.client
         .edit_application(
             id,
-            &ApplicationEdit::RepositoryBranch("release".into()),
+            &ApplicationEdit::RepositoryPath("release.toml".into()),
             &options,
         )
         .await
@@ -4752,6 +4752,7 @@ async fn two_environments(
     let create = |name: &str| Mutation::CreateEnvironment {
         application: application.clone(),
         name: piqueld_core::EnvironmentName::parse(name).unwrap(),
+        branch: None,
     };
     let MutationResponse::Environment(staging) = service
         .accept(create("staging"), Some(saved.generation), false, None)

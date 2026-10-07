@@ -519,20 +519,6 @@ impl ValidatedSpec {
             .collect()
     }
 
-    /// Whether any service builds from `"self"`, the manifest's own repository.
-    #[must_use]
-    pub fn builds_from_manifest(&self) -> bool {
-        self.services.iter().any(|service| {
-            matches!(
-                &service.source,
-                ValidatedSource::Git {
-                    repository: SourceRepository::Manifest(_),
-                    ..
-                }
-            )
-        })
-    }
-
     /// Converts back to the editable input shape used for export and plans.
     #[must_use]
     pub fn to_input(&self) -> input::ApplicationSpec {

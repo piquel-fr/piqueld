@@ -77,10 +77,6 @@ pub enum ApplicationEdit {
     Repository(Option<RepositoryManifest>),
     /// Change the repository URL.
     RepositoryUrl(String),
-    /// Change the repository branch.
-    RepositoryBranch(String),
-    /// Pin or unpin the repository commit.
-    RepositoryCommit(Option<String>),
     /// Change the manifest path.
     RepositoryPath(String),
     /// Add a new service, rejecting duplicate names.
@@ -248,11 +244,7 @@ impl ApplicationEdit {
     pub const fn is_repository_setting(&self) -> bool {
         matches!(
             self,
-            Self::Repository(_)
-                | Self::RepositoryUrl(_)
-                | Self::RepositoryBranch(_)
-                | Self::RepositoryCommit(_)
-                | Self::RepositoryPath(_)
+            Self::Repository(_) | Self::RepositoryUrl(_) | Self::RepositoryPath(_)
         )
     }
 
@@ -281,8 +273,6 @@ impl ApplicationEdit {
                 manifest.spec.manifest = value;
             }
             Self::RepositoryUrl(value) => Self::repository(manifest)?.repository.url = value,
-            Self::RepositoryBranch(value) => Self::repository(manifest)?.repository.branch = value,
-            Self::RepositoryCommit(value) => Self::repository(manifest)?.repository.commit = value,
             Self::RepositoryPath(value) => Self::repository(manifest)?.path = value,
             Self::AddService(service) => {
                 if manifest

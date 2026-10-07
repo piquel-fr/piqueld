@@ -9,7 +9,9 @@ mistyped value, e.g.
 the API returns them, like validation errors, as `details.errors` entries with a
 path and message; JSON request bodies report only `json_malformed`.
 
-The manifest is shared by the application's environments, including services,
+The manifest is shared by the application's environments (for a
+repository-backed application, each environment reads it from its own
+branch), including services,
 replica counts, limits, volumes, routes, jobs, repository settings and secret
 file references. Each environment has its own secret values and deployed
 snapshot. Values that differ between environments, such as hostnames or replica
@@ -147,7 +149,7 @@ replicas = "${{ vars.web_replicas }}"
 An environment's own value overrides the default of the same name, as
 `web_replicas` does in production. An environment may also declare a variable
 that has no default, like `domain`. An environment uses its own value, else the
-default. Every environment renders the same manifest, so each environment that
+default. Every environment renders the same manifest (or its own branch's), so each environment that
 deploys a reference needs a value for it: planning or deploying an environment
 without one fails with `variable_value_missing`, naming the environment, the
 field and the variable. Here staging and production each set `domain`, so they
@@ -170,7 +172,7 @@ variables, but not other variables. System variables:
 | `app.name` | Application name. |
 | `env.name` | Environment name. |
 | `env.slug` | DNS-safe environment identifier; the environment name. |
-| `git.branch`, `git.sha` | Branch and commit the manifest was read from; only with `spec.manifest`. |
+| `git.branch`, `git.sha` | Branch and commit the manifest was read from: the environment's branch, or a one-off `--branch`; only with `spec.manifest`. |
 | `deployment.id` | ID of the deployment being captured. |
 
 `secrets.*` is reserved for secret references.
@@ -200,13 +202,14 @@ when repository-backed, once the manifest is fetched and its commit is known. Th
 deployment records the manifest as captured, the value of every variable in
 scope, and the rendered manifest; retries reuse them and never read variables
 again. Plans render with `deployment.id` set to `preview` and, for repository
-manifests, the configured branch and pinned commit (or 40 zeros), since nothing
-is fetched. `deployment.id` changes with every deployment, so services that use
+manifests, the environment's branch and pinned commit (or 40 zeros), since
+nothing is fetched. `deployment.id` changes with every deployment, so services that use
 it are replaced on every deployment.
 
 Renaming an environment would change which `[spec.environments.<name>]` block
-applies, so piqueld refuses to rename an environment while the saved manifest
-has a block for its current or its new name (`environment_configured`). Remove
+applies, so piqueld refuses to rename an environment while the manifest it
+deploys (for a repository-backed environment, the one last fetched from its
+branch) has a block for its current or its new name (`environment_configured`). Remove
 the block, rename the environment, then add the block back under the new name.
 
 A rename never touches running services. When the configuration renders the
@@ -304,11 +307,10 @@ type = "docker"
 dockerfile = "infra/auth.Dockerfile"
 ```
 
-`self` uses the `spec.manifest` repository at the exact commit the manifest was
-fetched from, so every such service in a deployment builds from one revision.
-It requires `spec.manifest` to name the repository the manifest is fetched from;
-otherwise the deployment fails with `manifest_invalid`. Disconnecting repository backing replaces `self`
-with the former manifest repository and branch.
+`self` uses the repository the manifest was fetched from, at that exact commit,
+so every such service in a deployment builds from one revision. Disconnecting
+repository backing replaces `self` with the former manifest repository and
+branch.
 
 Git checkout permits file, Git, HTTP(S), and SSH transports. Executable remote
 helpers such as `ext::` are disabled, including through host URL rewrites.
@@ -331,26 +333,54 @@ Create the application manually with `piquelctl app apply --file bootstrap.toml`
 A bootstrap manifest may contain only its header, metadata, and `spec.manifest`;
 services can be supplied by the first fetched manifest. Then click **Deploy** in
 the dashboard or run `piquelctl app deploy NAME --yes` (`env deploy NAME ENV` when
-the application has several environments). Environments of a repository-backed
-application report `source: repository`; a fetched manifest becomes the saved
-configuration all of them deploy.
+the application has several environments).
 
-Deploy resolves the configured commit (or branch head), reads only the exact
-configured TOML/JSON file, and checks that its name matches the existing
-application. Empty manifests remove services and networks while retaining volume data. Other files in the
-repository are ignored. A missing file fails with `manifest_not_found`; no
-application is deleted. Invalid files and build failures preserve both accepted
-configuration and the existing running target.
+The repository URL and manifest path belong to the application: every
+environment reads the same file from the same repository. The branch belongs to
+each environment. The `production` environment created with the application,
+and environments created later without `--branch`, follow the branch and pinned
+commit `spec.manifest` names; other environments follow their own:
 
-The fetched file must include `spec.manifest` to keep repository backing. Its
-new repository, branch, commit, and path become the settings for subsequent
-fetches after successful preparation, unless newer configuration was saved while
-the deployment was preparing. Those intervening edits are preserved; the deployment
-still uses its captured inputs. Omitting the section disconnects backing.
-The fetched manifest and its commit are persisted for restart/retry; a new Deploy
-fetches again. A Git service source with an explicit repository resolves its own
-revision independently; `repository = "self"` builds the fetched manifest commit.
-Image sources are explicitly refreshed, even when the fetched manifest is unchanged.
+```console
+piquelctl env create notes staging --branch main
+piquelctl env branch notes staging release
+piquelctl env branch notes production main --commit 0123456789012345678901234567890123456789
+```
+
+Changing a branch redeploys nothing: the environment's next deployment fetches
+it. Connecting a repository to an application points every environment at the
+branch `spec.manifest` names; disconnecting returns every environment to the
+saved manifest. Environments report their source as `saved` or as the branch they
+follow.
+
+Deploying an environment resolves its pinned commit (or branch head), reads only
+the exact configured TOML/JSON file, and checks that its name matches the
+existing application. It renders the file with that environment's variables and
+records the environment, commit, manifest, and rendered manifest in the
+deployment. Empty manifests remove services and networks while retaining volume
+data. Other files in the repository are ignored. A missing file fails with
+`manifest_not_found`; no application is deleted. Invalid files and build
+failures preserve both accepted configuration and the existing running target.
+
+Each environment keeps the manifest last fetched from its branch. Its hostname
+reservations, the rename check, `app plan --env`, `env show`, and its dashboard
+page read that manifest, so a fetch for one environment never changes what
+another deploys or reserves. An environment that was never deployed has fetched
+nothing and reserves no hostnames yet. The application's saved manifest is the
+one last fetched by any of its environments, keeping the application's own
+connection: the application page and `app show` display it, and environments
+deploy it after disconnecting.
+
+A fetched file's own `spec.manifest` is ignored: files on different branches
+often differ, and one branch must not redirect every environment. When it names
+another repository URL or manifest path than the application's connection, the
+deployment records a `manifest_connection_ignored` warning, shown by
+`app deploy`/`env deploy` and on the dashboard's deployment snapshot. Change the
+connection with `piquelctl app repository url` or `path`. The fetched manifest
+and its commit are persisted for restart/retry; a new Deploy fetches again. A
+Git service source with an explicit repository resolves its own revision
+independently; `repository = "self"` builds the fetched manifest commit. Image
+sources are explicitly refreshed, even when the fetched manifest is unchanged.
 
 Git owns runtime configuration while backing is enabled: direct apply cannot
 change services or volumes, and rename is rejected with `repository_managed`.
@@ -359,10 +389,10 @@ can be repaired. Manifest connection settings do not change the runtime spec
 hash. Source builds, deployment, and rollback retain the behavior described above.
 Automatic synchronization and webhooks are not implemented.
 
-`piquelctl app deploy NAME --branch feature` (or `--commit SHA`, also on `env deploy`) fetches the
-manifest from another revision for one deployment, without saving it. `self`
-sources build that revision too. Subsequent deploys use the fetched manifest's own
-`spec.manifest` settings again.
+`piquelctl env deploy NAME ENV --branch feature` (or `--commit SHA`, also on
+`app deploy`) fetches the manifest from another revision for one deployment,
+without changing the environment's branch. `self` sources build that revision
+too. Subsequent deploys fetch the environment's own branch again.
 
 Services can reference environment-scoped secrets as files; every environment
 of an application has its own values:

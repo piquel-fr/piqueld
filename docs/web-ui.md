@@ -30,8 +30,8 @@ lists the environments with their health and latest deployment, deploys any one
 of them, and creates new ones, including for an application with no
 environments. Clicking anywhere on an environment's row opens its own page,
 `/dashboard/applications/<app>/environments/<environment>`, with a breadcrumb
-back to the application. Its Overview shows the runtime status and renames or
-deletes the environment; its other tabs are Deployments, Secrets (the
+back to the application. Its Overview shows the runtime status, the environment's
+source, and renames or deletes the environment; its other tabs are Deployments, Secrets (the
 environment's secret values), Logs, and Events. Deletion confirms the environment
 name, retains its Docker volumes, and leaves the application and other
 environments intact; **Retry deletion** resumes cleanup when needed. An
@@ -218,10 +218,22 @@ Dockerfile build. Git settings include repository, branch, optional commit,
 Dockerfile path, and build context relative to the repository root. Saving
 scaling or other service settings preserves the selected source.
 
-Repository manifest settings select the repository, branch, optional commit, and
-exact manifest file. Deploy fetches that file before preparing service sources.
-While backing is enabled, edit runtime configuration in Git; connection settings
-remain editable here. Configuration saved during preparation is preserved.
+Repository manifest settings select the repository and exact manifest file,
+shared by every environment, and, when connecting, the branch and optional commit
+every environment starts following. Deploy fetches that file from the
+environment's branch before preparing service sources. While backing is enabled,
+edit runtime configuration in Git; the repository and path remain editable here.
+The application page shows the manifest last fetched by any environment.
+
+Each environment of a repository-backed application follows its own branch.
+**New environment** asks for the branch (by default the one `spec.manifest`
+names) and an optional commit, the Environments list shows each environment's
+branch, and the **Source** card on an environment's Overview changes it; nothing
+is redeployed until its next deployment. The environment's Variables card reads
+the manifest last fetched from its branch, and says when it has fetched nothing
+yet. A deployment's Snapshot shows the manifest path and revision it was fetched
+from, and a warning when the fetched file's own `spec.manifest` names another
+repository or path (`manifest_connection_ignored`); that section is ignored.
 
 **Download saved manifest** exports the current server-saved configuration as TOML. Unsaved form edits and runtime/deployment state are excluded. Repository connection settings are preserved; the download does not fetch Git or require Docker. Original comments and formatting are not retained.
 

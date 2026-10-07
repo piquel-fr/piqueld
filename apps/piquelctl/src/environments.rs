@@ -13,8 +13,8 @@ use crate::{
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
-    ApplicationView, Client, ClientError, EnvironmentRequest, EnvironmentStatusView,
-    EnvironmentView,
+    ApplicationView, Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest,
+    EnvironmentRequest, EnvironmentStatusView, EnvironmentView,
 };
 
 // `env` subcommands; `///` on variants and fields is user-facing help.
@@ -25,12 +25,35 @@ pub(crate) enum EnvCommand {
         /// Application name or stable ID.
         application: String,
     },
-    /// Add an environment that deploys the application's saved manifest.
+    /// Add an environment. It deploys the application's saved manifest or, when
+    /// the application is repository-backed, the manifest on its own branch.
     Create {
         /// Application name or stable ID.
         application: String,
         /// New environment name, unique within the application.
         name: String,
+        /// Branch of the manifest repository to follow; defaults to the one
+        /// `spec.manifest` names.
+        #[arg(long)]
+        branch: Option<String>,
+        /// Pin this full commit instead of following the branch head.
+        #[arg(long, requires = "branch")]
+        commit: Option<String>,
+        #[command(flatten)]
+        change: ChangeFlags,
+    },
+    /// Point an environment of a repository-backed application at another
+    /// branch, or pin or unpin its commit. Its next deployment fetches it.
+    Branch {
+        /// Application name or stable ID.
+        application: String,
+        /// Environment name or stable ID.
+        environment: String,
+        /// Branch of the manifest repository to follow.
+        branch: String,
+        /// Pin this full commit instead of following the branch head; omit to unpin.
+        #[arg(long)]
+        commit: Option<String>,
         #[command(flatten)]
         change: ChangeFlags,
     },
@@ -107,13 +130,9 @@ pub(crate) struct ChangeFlags {
 }
 
 impl ChangeFlags {
-    /// The request for `name`, conditioned on the inspected revision unless forced.
-    fn request(&self, name: &str, application: &ApplicationView) -> EnvironmentRequest {
-        EnvironmentRequest {
-            name: name.to_owned(),
-            expected_generation: (!self.force)
-                .then_some(self.expected_generation.unwrap_or(application.generation)),
-        }
+    /// The inspected revision a change is conditioned on, unless forced.
+    fn expected(&self, application: &ApplicationView) -> Option<u64> {
+        (!self.force).then_some(self.expected_generation.unwrap_or(application.generation))
     }
 }
 
@@ -130,8 +149,40 @@ impl EnvCommand {
             Self::Create {
                 application,
                 name,
+                branch,
+                commit,
                 change,
-            } => create(cli, client, console, application, name, change).await,
+            } => {
+                let request = CreateEnvironmentRequest {
+                    name: name.clone(),
+                    branch: branch.clone(),
+                    commit: commit.clone(),
+                    expected_generation: None,
+                };
+                create(cli, client, console, application, request, change).await
+            }
+            Self::Branch {
+                application,
+                environment,
+                branch,
+                commit,
+                change,
+            } => {
+                let request = EnvironmentBranchRequest {
+                    branch: branch.clone(),
+                    commit: commit.clone(),
+                    expected_generation: None,
+                };
+                set_branch(
+                    cli,
+                    client,
+                    console,
+                    (application, environment),
+                    request,
+                    change,
+                )
+                .await
+            }
             Self::Show(target) => show(client, console, target).await,
             Self::Rename {
                 application,
@@ -202,7 +253,7 @@ async fn create(
     client: &Client,
     console: &mut Console,
     application: &str,
-    name: &str,
+    mut request: CreateEnvironmentRequest,
     change: &ChangeFlags,
 ) -> Result<()> {
     let application = resolve_application(client, application).await?;
@@ -211,12 +262,13 @@ async fn create(
         cli.noninteractive,
         change.yes,
         &format!(
-            "Create environment {name:?} of application {:?}? [y/N] ",
+            "Create environment {:?} of application {:?}? [y/N] ",
+            request.name,
             application.application.metadata().name
         ),
     )
     .await?;
-    let request = change.request(name, &application);
+    request.expected_generation = change.expected(&application);
     let environment = retry_transport(|| {
         client.create_environment(
             application.application.id().as_str(),
@@ -228,16 +280,44 @@ async fn create(
     console.emit(&environment)
 }
 
-/// Shows one environment and its status, warning with any status message.
+/// Confirms and points an environment at another branch, conditioned on the
+/// inspected application revision. Nothing is redeployed.
+async fn set_branch(
+    cli: &Cli,
+    client: &Client,
+    console: &mut Console,
+    (application, environment): (&str, &str),
+    mut request: EnvironmentBranchRequest,
+    change: &ChangeFlags,
+) -> Result<()> {
+    let (application, environment) = select(client, application, Some(environment)).await?;
+    confirm(
+        console,
+        cli.noninteractive,
+        change.yes,
+        &format!(
+            "Point environment {:?} of application {:?} at branch {:?}? [y/N] ",
+            environment.name.as_str(),
+            application.application.metadata().name,
+            request.branch
+        ),
+    )
+    .await?;
+    request.expected_generation = change.expected(&application);
+    let environment = retry_transport(|| {
+        client.set_environment_branch(environment.id.as_str(), &request, change.force)
+    })
+    .await?;
+    console.emit(&environment)
+}
+
+/// Shows one environment, the manifest it deploys, and its status, warning
+/// with any status message.
 async fn show(client: &Client, console: &mut Console, target: &EnvironmentArgs) -> Result<()> {
-    let (application, environment) = target.resolve(client).await?;
-    let status = client.environment_status(environment.id.as_str()).await?;
-    console.emit(&EnvironmentShowReport {
-        application: &application,
-        environment: &environment,
-        status: &status,
-    })?;
-    if let Some(message) = &status.message {
+    let (_, environment) = target.resolve(client).await?;
+    let detail = client.environment_detail(environment.id.as_str()).await?;
+    console.emit(&EnvironmentShowReport(&detail))?;
+    if let Some(message) = &detail.status.message {
         console.warning(message)?;
     }
     Ok(())
@@ -264,7 +344,10 @@ async fn rename(
         ),
     )
     .await?;
-    let request = change.request(new_name, &application);
+    let request = EnvironmentRequest {
+        name: new_name.to_owned(),
+        expected_generation: change.expected(&application),
+    };
     let environment = retry_transport(|| {
         client.rename_environment(environment.id.as_str(), &request, change.force)
     })
@@ -369,10 +452,11 @@ pub(crate) fn rows(
     Ok(rows)
 }
 
-/// Confirms and deploys saved configuration to an environment, fetching the
-/// manifest and resolving sources again (from `--branch` or `--commit` for this
-/// deployment only). Guarded by the expected generation, defaulting to the
-/// current one. Waits unless `--no-wait`.
+/// Confirms and deploys an environment from its source, fetching the manifest
+/// from its branch (or `--branch` or `--commit`, for this deployment only) and
+/// resolving sources again. Guarded by the expected generation, defaulting to
+/// the current one. Waits unless `--no-wait`, then warns about anything the
+/// deployment reported, such as an ignored `spec.manifest`.
 pub(crate) async fn deploy(
     cli: &Cli,
     client: &Client,
@@ -401,7 +485,21 @@ pub(crate) async fn deploy(
         )
     })
     .await?;
-    wait_for_accepted(console, client, flags.no_wait, &accepted).await
+    let result = wait_for_accepted(console, client, flags.no_wait, &accepted).await;
+    // The outcome matters more than its warnings, so failing to read them is ignored.
+    if !flags.no_wait
+        && let Ok(deployments) = client.deployments(environment.id.as_str(), None).await
+    {
+        let warnings = deployments
+            .items
+            .into_iter()
+            .filter(|deployment| deployment.operation.id == accepted.operation_id)
+            .flat_map(|deployment| deployment.warnings);
+        for warning in warnings {
+            console.warning(format_args!("{}: {}", warning.code, warning.message))?;
+        }
+    }
+    result
 }
 
 /// Confirms and retries an environment's latest operation with its saved inputs,

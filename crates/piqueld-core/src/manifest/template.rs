@@ -5,8 +5,8 @@ use super::domain::{ValidatedMetadata, ValidatedSpec};
 use super::variables::{RenderContext, VariableValue};
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, ApplicationSpec, Hostname,
-    ManifestRevision, Metadata, NormalizedApplication, ValidatedApplication, ValidationError,
-    ValidationErrors,
+    ManifestRevision, Metadata, NormalizedApplication, RepositoryManifest, ValidatedApplication,
+    ValidationError, ValidationErrors,
 };
 use crate::{ApplicationId, ApplicationName, EnvironmentName, codes};
 use serde::{Deserialize, Serialize};
@@ -147,6 +147,15 @@ impl ApplicationTemplate {
     #[must_use]
     pub fn with_name(mut self, name: ApplicationName) -> Self {
         self.metadata.name = name;
+        self
+    }
+
+    /// Replaces `spec.manifest`, the repository the manifest is fetched from.
+    /// Fetched manifests carry the repository they were actually read from,
+    /// whatever their own `spec.manifest` says.
+    #[must_use]
+    pub fn with_manifest(mut self, manifest: Option<RepositoryManifest>) -> Self {
+        self.spec.manifest = manifest;
         self
     }
 

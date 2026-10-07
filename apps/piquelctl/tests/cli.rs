@@ -428,7 +428,7 @@ fn environment(application: &str, id: &str, name: &str) -> Value {
         "id": id,
         "application_id": application,
         "name": name,
-        "source": "saved",
+        "source": {"type": "saved"},
         "resolved_generation": 1,
         "delete_intent": false,
         "created_at_ms": 1,
@@ -2205,14 +2205,56 @@ fn env_commands_target_the_named_environment() {
         "/api/v1/applications/app-notes-01/environments" => {
             assert_eq!(request.method, "POST");
             let body: Value = serde_json::from_slice(&request.body).expect("JSON body");
-            assert_eq!(body, json!({"name": "staging", "expected_generation": 1}));
+            assert_eq!(
+                body,
+                json!({"name": "staging", "branch": "release", "expected_generation": 1})
+            );
             Reply::json(environment("app-notes-01", "env-staging-01", "staging"))
         }
         path => panic!("unexpected path {path}"),
     });
     let output = run(
         &server,
-        &["env", "create", "app-notes-01", "staging", "--yes"],
+        &[
+            "env",
+            "create",
+            "app-notes-01",
+            "staging",
+            "--branch",
+            "release",
+            "--yes",
+        ],
+    );
+    assert_eq!(assert_json_success(&output)["name"], "staging");
+    let _ = server.finish();
+
+    let commit = "a".repeat(40);
+    let expected = commit.clone();
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
+        "/api/v1/environments/env-staging-01/branch" => {
+            assert_eq!(request.method, "PUT");
+            let body: Value = serde_json::from_slice(&request.body).expect("JSON body");
+            assert_eq!(
+                body,
+                json!({"branch": "main", "commit": expected, "expected_generation": 1})
+            );
+            Reply::json(environment("app-notes-01", "env-staging-01", "staging"))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(
+        &server,
+        &[
+            "env",
+            "branch",
+            "app-notes-01",
+            "staging",
+            "main",
+            "--commit",
+            &commit,
+            "--yes",
+        ],
     );
     assert_eq!(assert_json_success(&output)["name"], "staging");
     let _ = server.finish();

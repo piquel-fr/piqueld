@@ -11,7 +11,7 @@ use piqueld_core::{
         PlanView, ServiceRolloutView,
     },
     compile_application,
-    manifest::{RenderContext, Rendering, ValidatedTemplate},
+    manifest::{RenderContext, Rendering, RepositoryManifest, ValidatedTemplate},
     preview_resolution,
 };
 
@@ -103,6 +103,7 @@ impl ApplicationService {
             .environments(&stored.environment.application_id)
             .await?;
         Ok(EnvironmentDetailView {
+            manifest: stored.manifest().cloned(),
             environment: stored.environment,
             application: application_view(stored.application, environments),
             status,
@@ -115,8 +116,8 @@ impl ApplicationService {
     ///
     /// Checks the generation and identity preconditions when supplied (unlike
     /// apply, they are optional). For `environment`, or the application's only
-    /// environment when it is omitted, renders the manifest for it (see
-    /// [`RenderContext::preview`]), builds a runtime plan against its current
+    /// environment when it is omitted, renders the manifest for it at its
+    /// branch (see [`RenderContext::preview`]), builds a runtime plan against its current
     /// observation, and diffs it against its latest deployment's rendered
     /// manifest (no baseline after a delete). Without an environment and with
     /// several, diffs the saved manifest without rendering or a runtime plan,
@@ -160,13 +161,17 @@ impl ApplicationService {
         let environment = self
             .plan_environment(environment, current.is_some(), &id, &environments)
             .await?;
-        let render = |environment: EnvironmentName| -> Result<Rendering, StoreError> {
-            Ok(template.render(&RenderContext::preview(environment, template.spec()))?)
+        let render = |environment: EnvironmentName,
+                      repository: Option<&RepositoryManifest>|
+         -> Result<Rendering, StoreError> {
+            let repository = repository.or(template.spec().manifest.as_ref());
+            Ok(template.render(&RenderContext::preview(environment, repository))?)
         };
         let (operation, identical, changes, rendering, mut plan) = if let Some(environment) =
             &environment
         {
-            let rendering = render(environment.environment.name.clone())?;
+            let repository = environment.repository();
+            let rendering = render(environment.environment.name.clone(), repository.as_ref())?;
             let (operation, baseline) = self.latest_deployment(environment.id()).await?;
             let plan = self
                 .preview_plan(&rendering.application, environment.id(), Some(environment))
@@ -192,7 +197,7 @@ impl ApplicationService {
                 Plan::default(),
             )
         } else {
-            let rendering = render(EnvironmentName::default_name())?;
+            let rendering = render(EnvironmentName::default_name(), None)?;
             let environment = EnvironmentId::default_for(&id);
             let plan = self
                 .preview_plan(&rendering.application, &environment, None)
