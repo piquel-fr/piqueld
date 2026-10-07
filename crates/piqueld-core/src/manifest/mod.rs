@@ -51,12 +51,6 @@ pub const APPLICATION_KIND: &str = "Application";
 /// canonical spec, so cosmetic metadata changes no longer redeploy services.
 pub const SPEC_HASH_VERSION: &str = "piqueld-spec-hash/v2";
 
-/// A specification [`crate::api::ManifestChange`] can compare: a rendered
-/// one, or a saved one with references unresolved. Both serialize alike.
-pub trait Specification: Serialize {}
-impl Specification for ValidatedSpec {}
-impl Specification for ApplicationSpec {}
-
 /// Validated domain application before canonical collection ordering.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValidatedApplication {

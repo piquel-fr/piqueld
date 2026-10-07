@@ -3,21 +3,20 @@ use crate::{
     DiagnosticSeverity, NormalizedApplication, PlanDiagnostic,
     api::{ManifestChange, ServiceRolloutView},
     codes,
-    manifest::Specification,
+    manifest::ApplicationSpec,
 };
-use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 impl ManifestChange {
-    /// Compares specifications without exposing environment or process values:
-    /// rendered ones, or saved ones with references unresolved.
+    /// Compares specifications without exposing environment or process values.
+    /// Rendered specifications compare through [`crate::manifest::domain::ValidatedSpec::to_input`].
     ///
     /// Both sides are flattened into sorted field paths (see `fields`) and every path
     /// whose value differs is reported. `None` means the application does not exist
     /// yet, so every field is an addition.
     #[must_use]
-    pub fn between<S: Specification>(current: Option<&S>, proposed: &S) -> Vec<Self> {
+    pub fn between(current: Option<&ApplicationSpec>, proposed: &ApplicationSpec) -> Vec<Self> {
         let old = current.map_or_else(BTreeMap::new, Self::fields);
         let new = Self::fields(proposed);
         old.keys()
@@ -48,7 +47,7 @@ impl ManifestChange {
     /// variables.domain                      -> "example.com"
     /// environments.staging.variables.domain -> "staging.example.com"
     /// ```
-    fn fields(spec: &impl Serialize) -> BTreeMap<String, Value> {
+    fn fields(spec: &ApplicationSpec) -> BTreeMap<String, Value> {
         let Ok(Value::Object(mut spec)) = serde_json::to_value(spec) else {
             return BTreeMap::new();
         };
@@ -250,7 +249,8 @@ TOKEN="old-secret"
             .environment
             .insert("TOKEN".into(), "new-secret".into());
         let changed = changed.validate().unwrap().normalize(original.id().clone());
-        let differences = ManifestChange::between(Some(original.spec()), changed.spec());
+        let (original, changed) = (original.spec().to_input(), changed.spec().to_input());
+        let differences = ManifestChange::between(Some(&original), &changed);
         assert_eq!(differences.len(), 2);
         assert!(
             differences
@@ -263,6 +263,6 @@ TOKEN="old-secret"
         assert!(!json.contains("old-secret"));
         assert!(!json.contains("new-secret"));
         assert!(json.contains("redacted"));
-        assert!(ManifestChange::between(Some(original.spec()), original.spec()).is_empty());
+        assert!(ManifestChange::between(Some(&original), &original).is_empty());
     }
 }

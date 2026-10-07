@@ -533,8 +533,9 @@ impl ValidatedSpec {
         })
     }
 
-    /// Converts back to the editable input shape used for export.
-    pub(super) fn to_input(&self) -> input::ApplicationSpec {
+    /// Converts back to the editable input shape used for export and plans.
+    #[must_use]
+    pub fn to_input(&self) -> input::ApplicationSpec {
         input::ApplicationSpec {
             routes: self
                 .routes

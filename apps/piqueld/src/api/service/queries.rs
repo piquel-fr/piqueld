@@ -163,42 +163,43 @@ impl ApplicationService {
         let render = |environment: EnvironmentName| -> Result<Rendering, StoreError> {
             Ok(template.render(&RenderContext::preview(environment, template.spec()))?)
         };
-        let (operation, identical, changes, rendering, mut plan) =
-            if let Some(environment) = &environment {
-                let rendering = render(environment.environment.name.clone())?;
-                let (operation, baseline) = self.latest_deployment(environment.id()).await?;
-                let plan = self
-                    .preview_plan(&rendering.application, environment.id(), Some(environment))
-                    .await?;
-                let proposed = rendering.application.spec();
-                (
-                    operation,
-                    baseline.as_ref().is_some_and(|app| app.spec() == proposed),
-                    ManifestChange::between(
-                        baseline.as_ref().map(NormalizedApplication::spec),
-                        proposed,
-                    ),
-                    Some(rendering),
-                    plan,
-                )
-            } else if let Some(current) = &current {
-                let saved = current.application.spec();
-                (
-                    None,
-                    saved == template.spec(),
-                    ManifestChange::between(Some(saved), template.spec()),
-                    None,
-                    Plan::default(),
-                )
-            } else {
-                let rendering = render(EnvironmentName::default_name())?;
-                let environment = EnvironmentId::default_for(&id);
-                let plan = self
-                    .preview_plan(&rendering.application, &environment, None)
-                    .await?;
-                let changes = ManifestChange::between(None, rendering.application.spec());
-                (None, false, changes, Some(rendering), plan)
-            };
+        let (operation, identical, changes, rendering, mut plan) = if let Some(environment) =
+            &environment
+        {
+            let rendering = render(environment.environment.name.clone())?;
+            let (operation, baseline) = self.latest_deployment(environment.id()).await?;
+            let plan = self
+                .preview_plan(&rendering.application, environment.id(), Some(environment))
+                .await?;
+            let proposed = rendering.application.spec();
+            (
+                operation,
+                baseline.as_ref().is_some_and(|app| app.spec() == proposed),
+                ManifestChange::between(
+                    baseline.map(|app| app.spec().to_input()).as_ref(),
+                    &proposed.to_input(),
+                ),
+                Some(rendering),
+                plan,
+            )
+        } else if let Some(current) = &current {
+            let saved = current.application.spec();
+            (
+                None,
+                saved == template.spec(),
+                ManifestChange::between(Some(saved), template.spec()),
+                None,
+                Plan::default(),
+            )
+        } else {
+            let rendering = render(EnvironmentName::default_name())?;
+            let environment = EnvironmentId::default_for(&id);
+            let plan = self
+                .preview_plan(&rendering.application, &environment, None)
+                .await?;
+            let changes = ManifestChange::between(None, &rendering.application.spec().to_input());
+            (None, false, changes, Some(rendering), plan)
+        };
         let names = match &current {
             Some(_) => environments
                 .into_iter()
