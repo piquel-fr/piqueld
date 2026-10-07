@@ -123,7 +123,11 @@ pub(super) struct AuditQuery {
     /// Only this account's requests; callers without `audit:read` may only
     /// name their own account, which is also the default for them.
     user_id: Option<String>,
-    /// Only requests made with this credential.
+    /// Only requests by accounts that had this username when making them,
+    /// e.g. a deleted account's.
+    username: Option<String>,
+    /// Only requests made with this credential; scoped credentials without
+    /// `audit:read` may only name themselves, which is also their default.
     credential_id: Option<String>,
     /// Only requests with this outcome.
     outcome: Option<AuditOutcome>,
@@ -137,7 +141,9 @@ pub(super) struct AuditQuery {
 ///
 /// Refused requests, writes, and sensitive reads are recorded with their
 /// account, credential, address, and outcome. With `audit:read`, every
-/// account's trail is visible; otherwise only the caller's own. Follow
+/// account's trail is visible; otherwise only the caller's own account's, or
+/// only its own requests for a scoped credential like an API token, which
+/// must not see what its account does beyond the token's grants. Follow
 /// `next_cursor` to load older requests.
 #[utoipa::path(get,path="/api/v1/audit",operation_id="listAudit",params(AuditQuery),responses((status=200,body=Envelope<Page<AuditEvent>>),(status=400,response=inline(ApiErrorResponse)),(status=403,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn audit(
@@ -148,18 +154,23 @@ pub(super) async fn audit(
     let Query(query) = query.map_err(ApiError::query)?;
     let mut filter = AuditFilter {
         user_id: query.user_id,
+        username: query.username,
         credential_id: query.credential_id,
         outcome: query.outcome,
     };
     if !identity.grants.has_global(GlobalPermission::AuditRead) {
-        if filter
-            .user_id
-            .as_ref()
-            .is_some_and(|user| *user != identity.user.id)
+        let other = |requested: &Option<String>, own: &str| {
+            requested.as_ref().is_some_and(|value| value != own)
+        };
+        if other(&filter.user_id, &identity.user.id)
+            || identity.scoped && other(&filter.credential_id, &identity.credential_id)
         {
             return Err(Denied::Missing(Permission::Global(GlobalPermission::AuditRead)).into());
         }
         filter.user_id = Some(identity.user.id.clone());
+        if identity.scoped {
+            filter.credential_id = Some(identity.credential_id.clone());
+        }
     }
     Ok(ok(state
         .audit_events(&filter, query.cursor.as_deref(), query.limit.unwrap_or(50))

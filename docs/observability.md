@@ -73,20 +73,26 @@ The audit trail records who did what through the API: every refused request
 (missing credentials or permission, a hidden application, a rejected origin,
 or rate limiting), every write and sign-in, every command run with `app exec`
 (and, separately, one refused when it starts because access was lost after
-connecting), and reads of logs, configuration, manifests, and the account
-directory. Routine reads, such as dashboard polling
-and CLI logins still awaiting approval, appear only in daemon logs. Records are
-written in the background so requests never wait for them; on shutdown the
-daemon waits up to 10 seconds for pending records and logs any it loses. Each record keeps the action
+connecting), and reads of logs, the daemon configuration, manifest downloads,
+and the account directory. Routine reads, such as dashboard polling of
+application and environment views (whose saved configuration `apps:read`
+already allows) and CLI logins still awaiting approval, appear only in daemon
+logs. Records are written in the background so requests never wait for them;
+at most 1,024 wait at once, of which anonymous requests may hold only half, and
+on shutdown the daemon waits up to 10 seconds for pending records and logs any
+it loses. Each record keeps the action
 (method and route template), outcome (`allowed`, `denied`, or `failed`), status,
 account, credential and its kind, whether the credential was limited, the
 network address, request ID, addressed application or environment (with the
-environment's application), and the permission a refusal lacked. Bodies are never recorded. Records copy the account and
+environment's application, when the request was allowed or lacked a permission
+there, so a refusal never reveals who owns an environment hidden from its caller),
+and the permission a refusal lacked. Bodies are never recorded. Records copy the account and
 credential, so they outlive both, and application deletion keeps them.
 
 `GET /api/v1/audit` lists the trail newest first, filtered by `user_id`,
-`credential_id`, and `outcome`. Everyone reads their own account's trail;
-`audit:read` is needed for other accounts'. `piquelctl audit` and the dashboard's
+`username` (as recorded, ignoring case, so deleted accounts' too), `credential_id`, and
+`outcome`. Everyone reads their own account's trail, and API tokens and limited
+CLI logins only their own requests; `audit:read` is needed for more. `piquelctl audit` and the dashboard's
 Audit page read the same trail, and each session or token on the Accounts page
 links to its activity. `retention.audit_days` (default 365, `0` disables
 pruning) bounds it independently of other history.

@@ -4712,6 +4712,55 @@ async fn audit_trail_records_callers_and_outcomes() {
     );
 }
 
+/// Callers read their own trail, so it reveals nothing they could not see:
+/// a hidden environment's application is not recorded, and an API token
+/// reads only its own requests, not everything its account did.
+#[tokio::test]
+async fn own_audit_trails_reveal_nothing_hidden() {
+    let f = GrantFixture::new().await;
+    let none = serde_json::Value::Null;
+    let hidden = format!("/api/v1/environments/{}", f.shop);
+    assert_eq!(
+        f.call(&f.deployer, "GET", &hidden, none.clone()).await.0,
+        404
+    );
+    // Refusals before authorization, like a cross-site request, are no hint.
+    let foreign = Request::delete(&hidden)
+        .header("authorization", format!("Bearer {}", f.deployer))
+        .header("origin", "https://attacker.example")
+        .body(Body::empty())
+        .unwrap();
+    let response = f.router.clone().oneshot(foreign).await.unwrap();
+    assert_eq!(response.status(), 403);
+    let body = f.audit(&f.deployer, "/api/v1/audit", 2).await;
+    for event in body["data"]["items"].as_array().unwrap() {
+        assert_eq!(event["environment_id"], f.shop.as_str());
+        assert!(event["application_id"].is_null(), "{event}");
+    }
+    // Usernames match regardless of case, like accounts' own.
+    f.audit(&f.auditor, "/api/v1/audit?username=DEPLOYER", 2)
+        .await;
+    let create = serde_json::json!({
+        "action": "create_token",
+        "grants": [{"permission": "apps:deploy", "applications": [f.blog]}],
+        "name": "ci",
+        "days": 1
+    });
+    let (status, created) = f
+        .call(&f.deployer, "POST", "/api/v1/auth/manage", create)
+        .await;
+    assert_eq!(status, 200, "{created}");
+    let token = created["token"].as_str().unwrap();
+    let manifest = format!("/api/v1/applications/{}/manifest", f.blog);
+    assert_eq!(f.call(token, "GET", &manifest, none.clone()).await.0, 200);
+    let body = f.audit(token, "/api/v1/audit", 1).await;
+    let items = body["data"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{body}");
+    assert_eq!(items[0]["action"], "GET /api/v1/applications/{id}/manifest");
+    let account = "/api/v1/audit?credential_id=deployer";
+    assert_eq!(f.call(token, "GET", account, none).await.0, 403);
+}
+
 /// A command refused when it starts, after its connection was authorized
 /// and audited as allowed, is audited and counted as a refusal too.
 #[tokio::test]

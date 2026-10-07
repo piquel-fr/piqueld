@@ -226,6 +226,11 @@ in
             default = 90;
             description = "Days to retain daemon diagnostics independently of application deletion; zero disables pruning.";
           };
+          retention.audit_days = lib.mkOption {
+            type = lib.types.ints.unsigned;
+            default = 365;
+            description = "Days to retain the audit trail independently of application deletion; zero disables pruning.";
+          };
           metrics.listen = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [ ];

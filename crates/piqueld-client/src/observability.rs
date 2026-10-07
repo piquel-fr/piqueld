@@ -61,6 +61,7 @@ impl Client {
                     Some(i64::from(limit)),
                     filter.outcome.as_ref(),
                     filter.user_id.as_deref(),
+                    filter.username.as_deref(),
                 )
                 .await,
         )

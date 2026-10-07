@@ -879,9 +879,9 @@ pub(super) fn AuditPage() -> impl IntoView {
     let outcome = RwSignal::new(None::<AuditOutcome>);
     let data = LocalResource::new(move || {
         let filter = AuditFilter {
-            user_id: None,
             credential_id: query.with(|query| query.get("credential")),
             outcome: outcome.get(),
+            ..AuditFilter::default()
         };
         let cursor = cursor.get();
         async move {

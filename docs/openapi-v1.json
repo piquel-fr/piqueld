@@ -17174,7 +17174,7 @@
     },
     "/api/v1/audit": {
       "get": {
-        "description": "Refused requests, writes, and sensitive reads are recorded with their\naccount, credential, address, and outcome. With `audit:read`, every\naccount's trail is visible; otherwise only the caller's own. Follow\n`next_cursor` to load older requests.",
+        "description": "Refused requests, writes, and sensitive reads are recorded with their\naccount, credential, address, and outcome. With `audit:read`, every\naccount's trail is visible; otherwise only the caller's own account's, or\nonly its own requests for a scoped credential like an API token, which\nmust not see what its account does beyond the token's grants. Follow\n`next_cursor` to load older requests.",
         "operationId": "listAudit",
         "parameters": [
           {
@@ -17187,7 +17187,16 @@
             }
           },
           {
-            "description": "Only requests made with this credential.",
+            "description": "Only requests by accounts that had this username when making them,\ne.g. a deleted account's.",
+            "in": "query",
+            "name": "username",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only requests made with this credential; scoped credentials without\n`audit:read` may only name themselves, which is also their default.",
             "in": "query",
             "name": "credential_id",
             "required": false,

@@ -206,12 +206,13 @@ async fn refused(auth: &Auth, secret: Option<&str>, mut response: Response) -> R
     response
 }
 /// Returns the user as JSON, setting a seven-day session cookie when a new
-/// session `token` was issued. The audit trail records who signed in.
+/// session `token` was issued. The audit trail then records who signed in;
+/// otherwise, e.g. adding a passkey to the caller's account, the caller.
 fn session_response(auth: &Auth, user: User, token: Option<String>) -> Response {
     let signed_in = super::access::SignedIn(user.clone());
     let mut response = Json(user).into_response();
-    response.extensions_mut().insert(signed_in);
     if let Some(token) = token {
+        response.extensions_mut().insert(signed_in);
         response.headers_mut().append(
             header::SET_COOKIE,
             auth.cookie("piqueld_session", &token, 7 * 86400)

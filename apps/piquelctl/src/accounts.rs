@@ -395,7 +395,7 @@ impl Report for AccountsReport<'_> {
 #[derive(Debug, Args)]
 pub(crate) struct AuditArgs {
     /// Only this account's requests, by username or ID (including deleted
-    /// accounts' IDs); requires audit:read for other accounts. Defaults to
+    /// accounts'); requires audit:read for other accounts. Defaults to
     /// every visible account. Distinct from the global `--account`, which
     /// selects the saved login to read with.
     #[arg(long)]
@@ -421,17 +421,21 @@ fn parse_outcome(value: &str) -> std::result::Result<AuditOutcome, String> {
 impl AuditArgs {
     /// Prints one page of the audit trail.
     pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
-        // Deleted accounts keep their trail but leave the directory, so an
-        // unknown value is taken as an account ID.
-        let user_id = match &self.user {
-            Some(account) => Some(
-                find(&client.auth_directory().await?, account)
-                    .map_or_else(|_| account.clone(), |found| found.user.id),
-            ),
-            None => None,
+        // Deleted accounts keep their trail but leave the directory, and
+        // auditors without accounts:manage only see themselves there, so an
+        // account it lacks is matched by ID when the value is one (IDs are
+        // UUIDs), and otherwise by the username its requests recorded.
+        let (user_id, username) = match &self.user {
+            Some(account) => match find(&client.auth_directory().await?, account) {
+                Ok(found) => (Some(found.user.id), None),
+                Err(_) if uuid::Uuid::try_parse(account).is_ok() => (Some(account.clone()), None),
+                Err(_) => (None, Some(account.clone())),
+            },
+            None => (None, None),
         };
         let filter = AuditFilter {
             user_id,
+            username,
             credential_id: self.credential.clone(),
             outcome: self.outcome,
         };

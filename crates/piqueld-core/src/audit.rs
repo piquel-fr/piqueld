@@ -96,6 +96,8 @@ pub struct AuditFilter {
     /// Only this account's requests. Callers without `audit:read` always see
     /// only their own.
     pub user_id: Option<String>,
+    /// Only requests by accounts that had this username when making them.
+    pub username: Option<String>,
     /// Only requests made with this credential.
     pub credential_id: Option<String>,
     /// Only requests with this outcome.

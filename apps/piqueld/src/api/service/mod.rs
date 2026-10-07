@@ -227,6 +227,8 @@ pub struct ApplicationService {
     denials: Arc<std::sync::atomic::AtomicU64>,
     /// Slots for audit records waiting to be written.
     audit_backlog: Arc<tokio::sync::Semaphore>,
+    /// The share of `audit_backlog` anonymous records may hold.
+    anonymous_backlog: Arc<tokio::sync::Semaphore>,
 }
 
 /// Audit records allowed to wait for the writer at once.
@@ -245,6 +247,7 @@ impl ApplicationService {
             tailnet: None,
             denials: Arc::default(),
             audit_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG)),
+            anonymous_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG / 2)),
         }
     }
 

@@ -70,7 +70,11 @@ impl AuditRow {
 
 impl Store {
     /// Records one audited request. A request about an environment also
-    /// records the environment's application, while it exists.
+    /// records the environment's application, while it exists, if the caller
+    /// may know it: when the request was allowed, or refused for a missing
+    /// permission, which only happens on applications the caller can read.
+    /// Callers read their own trail and must not learn which application
+    /// owns an environment hidden from them.
     /// # Errors
     /// Returns storage errors.
     pub(crate) async fn record_audit(&self, event: &NewAuditEvent) -> Result<(), StoreError> {
@@ -78,7 +82,7 @@ impl Store {
         let now = now_ms();
         let outcome = event.outcome.as_str();
         sqlx::query!(
-            "INSERT INTO audit_events(created_at_ms,action,outcome,status,user_id,username,credential_id,credential_kind,scoped,peer,request_id,application_id,environment_id,permission) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,COALESCE(?12,(SELECT application_id FROM environments WHERE id=?13)),?13,?14)",
+            "INSERT INTO audit_events(created_at_ms,action,outcome,status,user_id,username,credential_id,credential_kind,scoped,peer,request_id,application_id,environment_id,permission) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,COALESCE(?12,CASE WHEN ?3='allowed' OR ?14 IS NOT NULL THEN (SELECT application_id FROM environments WHERE id=?13) END),?13,?14)",
             now,
             event.action,
             outcome,
@@ -119,17 +123,20 @@ impl Store {
             "SELECT id,created_at_ms,action,outcome,status,user_id,username,credential_id,credential_kind,scoped,peer,request_id,application_id,environment_id,permission FROM audit_events WHERE id < ",
         );
         query.push_bind(before);
-        for (column, value) in [
-            ("user_id", filter.user_id.as_deref()),
-            ("credential_id", filter.credential_id.as_deref()),
-            ("outcome", filter.outcome.map(AuditOutcome::as_str)),
+        // Usernames compare case-insensitively, like accounts' own.
+        for (column, value, collation) in [
+            ("user_id", filter.user_id.as_deref(), ""),
+            ("username", filter.username.as_deref(), " COLLATE NOCASE"),
+            ("credential_id", filter.credential_id.as_deref(), ""),
+            ("outcome", filter.outcome.map(AuditOutcome::as_str), ""),
         ] {
             if let Some(value) = value {
                 query
                     .push(" AND ")
                     .push(column)
                     .push(" = ")
-                    .push_bind(value);
+                    .push_bind(value)
+                    .push(collation);
             }
         }
         query.push(" ORDER BY id DESC LIMIT ").push_bind(fetch);

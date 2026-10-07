@@ -5024,18 +5024,23 @@ impl Client {
 
     Refused requests, writes, and sensitive reads are recorded with their
     account, credential, address, and outcome. With `audit:read`, every
-    account's trail is visible; otherwise only the caller's own. Follow
+    account's trail is visible; otherwise only the caller's own account's, or
+    only its own requests for a scoped credential like an API token, which
+    must not see what its account does beyond the token's grants. Follow
     `next_cursor` to load older requests.
 
     Sends a `GET` request to `/api/v1/audit`
 
     Arguments:
-    - `credential_id`: Only requests made with this credential.
+    - `credential_id`: Only requests made with this credential; scoped credentials without
+    `audit:read` may only name themselves, which is also their default.
     - `cursor`: `next_cursor` from a previous page.
     - `limit`: Page size; defaults to 50.
     - `outcome`: Only requests with this outcome.
     - `user_id`: Only this account's requests; callers without `audit:read` may only
     name their own account, which is also the default for them.
+    - `username`: Only requests by accounts that had this username when making them,
+    e.g. a deleted account's.
     */
     pub async fn list_audit<'a>(
         &'a self,
@@ -5044,6 +5049,7 @@ impl Client {
         limit: Option<i64>,
         outcome: Option<&'a piqueld_core::audit::AuditOutcome>,
         user_id: Option<&'a str>,
+        username: Option<&'a str>,
     ) -> Result<
         ResponseValue<
             piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::audit::AuditEvent>>,
@@ -5072,6 +5078,7 @@ impl Client {
             .query(&progenitor_client::QueryParam::new("limit", &limit))
             .query(&progenitor_client::QueryParam::new("outcome", &outcome))
             .query(&progenitor_client::QueryParam::new("user_id", &user_id))
+            .query(&progenitor_client::QueryParam::new("username", &username))
             .headers(header_map)
             .build()?;
         let info = OperationInfo {
