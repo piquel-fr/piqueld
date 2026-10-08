@@ -100,6 +100,7 @@ fn declarations_validate_names_values_and_only_the_first_bad_reference() {
                 spec.environments.insert(
                     "production".into(),
                     EnvironmentConfig {
+                        visibility: Visibility::Public,
                         variables: std::collections::BTreeMap::from([(name.into(), value.clone())]),
                     },
                 );
@@ -141,8 +142,13 @@ fn variable_limits_accept_boundaries_and_reject_one_more() {
                 .map(|i| (format!("v{i}"), Variable::Integer(i)))
                 .collect();
             if overrides {
-                spec.environments
-                    .insert("production".into(), EnvironmentConfig { variables });
+                spec.environments.insert(
+                    "production".into(),
+                    EnvironmentConfig {
+                        visibility: Visibility::Public,
+                        variables,
+                    },
+                );
             } else {
                 spec.variables = variables;
             }
@@ -202,6 +208,7 @@ fn unicode_diagnostic_keys_truncate_on_byte_boundaries_and_echo_on_characters() 
     spec.environments.insert(
         key.clone(),
         EnvironmentConfig {
+            visibility: Visibility::Public,
             variables: std::collections::BTreeMap::from([(key.clone(), Variable::Integer(1))]),
         },
     );
@@ -274,6 +281,7 @@ fn references_check_declarations_and_repository_availability_before_rendering() 
     manifest.spec.environments.insert(
         "staging".into(),
         EnvironmentConfig {
+            visibility: Visibility::Public,
             variables: std::collections::BTreeMap::from([("only".into(), Variable::Boolean(true))]),
         },
     );

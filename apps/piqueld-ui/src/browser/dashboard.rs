@@ -293,11 +293,35 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                                 } else {
                                     (Tone::Ok, "Ready")
                                 };
+                                // The apps node's name and addresses are what private
+                                // routes' DNS records point at.
+                                let private = &ingress.private;
+                                let private_card = (ingress.enabled && private.enabled)
+                                    .then(|| {
+                                        let (tone, label) = if private.healthy {
+                                            (Tone::Ok, "Ready")
+                                        } else {
+                                            (Tone::Bad, "Unhealthy")
+                                        };
+                                        let node = match (&private.dns_name, private.addresses.is_empty()) {
+                                            (Some(name), false) => {
+                                                format!("{name} ({}). ", private.addresses.join(", "))
+                                            }
+                                            _ => String::new(),
+                                        };
+                                        status_card(
+                                            "Private listener",
+                                            tone,
+                                            label,
+                                            &format!("{node}{}", private.message),
+                                        )
+                                    });
                                 view! {
                                     {dependency_readiness("Database", status.database)}
                                     {dependency_readiness("Docker Engine", status.docker)}
                                     {dependency_readiness("Swarm manager", status.swarm)}
                                     {status_card("HTTPS ingress", tone, label, &ingress.message)}
+                                    {private_card}
                                 }
                             })
                     }}

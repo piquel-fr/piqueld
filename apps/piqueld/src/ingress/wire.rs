@@ -1,6 +1,7 @@
-//! Sends HTTP requests through local socket files to Docker Engine and Caddy's
-//! private admin API. The gateway uses these APIs to manage its container and
-//! load routing configuration. Each request has a timeout and an 8 MiB response
+//! Sends HTTP requests through local socket files to Docker Engine, Caddy's
+//! private admin API, and the apps tailnet node's `LocalAPI`. The gateway uses
+//! these APIs to manage its containers, load routing configuration, and read
+//! the node's state. Each request has a timeout and an 8 MiB response
 //! limit so an unresponsive API cannot leave reconciliation waiting indefinitely.
 //!
 //! Reads are unrestricted. A mutating request can only be sent with an open
@@ -122,13 +123,26 @@ impl super::Ingress {
 pub(super) struct UnixApi {
     socket: PathBuf,
     timeout: Duration,
+    /// `Host` header of every request.
+    host: &'static str,
 }
 
 impl UnixApi {
     /// Uses the caller's timeout for the entire request, including connecting
     /// and reading the response. Ingress supplies the global Docker request timeout.
     pub(super) fn new(socket: PathBuf, timeout: Duration) -> Self {
-        Self { socket, timeout }
+        Self {
+            socket,
+            timeout,
+            host: "localhost",
+        }
+    }
+
+    /// Sends `host` instead of `localhost`, as Tailscale's `LocalAPI` requires
+    /// `local-tailscaled.sock`.
+    pub(super) fn with_host(mut self, host: &'static str) -> Self {
+        self.host = host;
+        self
     }
 
     /// Sends optional JSON and returns the HTTP status and raw response bytes.
@@ -157,7 +171,7 @@ impl UnixApi {
             let request = Request::builder()
                 .method(method)
                 .uri(path)
-                .header("Host", "localhost")
+                .header("Host", self.host)
                 .header("Content-Type", "application/json")
                 .header("Connection", "close")
                 .body(Full::new(Bytes::from(bytes)))?;

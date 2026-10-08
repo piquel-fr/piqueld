@@ -291,6 +291,11 @@
       "rustType": "piqueld_core::edit::VariablesValue"
     },
     {
+      "schema": "VisibilityValue",
+      "name": "VisibilityValue",
+      "rustType": "piqueld_core::edit::VisibilityValue"
+    },
+    {
       "schema": "Route",
       "name": "Route",
       "rustType": "piqueld_core::manifest::Route"

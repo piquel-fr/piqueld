@@ -37,9 +37,20 @@
             }
           ]
         },
+        "previews": {
+          "default": {
+            "visibility": "private"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/definitions/PreviewConfig",
+              "description": "Configuration shared by every preview."
+            }
+          ]
+        },
         "routes": {
           "default": [],
-          "description": "Exact public HTTP routes, activated on deployment.",
+          "description": "Exact-hostname HTTP routes, activated on deployment.",
           "items": {
             "$ref": "#/definitions/Route"
           },
@@ -147,6 +158,15 @@
             "type": "string"
           },
           "type": "object"
+        },
+        "visibility": {
+          "default": "public",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/Visibility",
+              "description": "The strictest visibility this environment's routes get. The default,\n`public`, restricts nothing; `private` keeps every route on the tailnet."
+            }
+          ]
         }
       },
       "type": "object"
@@ -334,6 +354,22 @@
       ],
       "type": "object"
     },
+    "PreviewConfig": {
+      "additionalProperties": false,
+      "description": "Configuration shared by previews, `[spec.previews]`.",
+      "properties": {
+        "visibility": {
+          "default": "private",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/Visibility",
+              "description": "The strictest visibility preview routes get; `private` by default, so\npreviews publish routes only with an explicit `public`."
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
     "Redirect": {
       "additionalProperties": false,
       "description": "Redirect route input.",
@@ -440,7 +476,7 @@
     },
     "Route": {
       "additionalProperties": false,
-      "description": "Public HTTP route input, validated independently of ingress enablement.\nA route sets either `service` and `port`, or `redirect`.",
+      "description": "HTTP route input, validated independently of ingress enablement.\nA route sets either `service` and `port`, or `redirect`.",
       "properties": {
         "hostname": {
           "$ref": "#/definitions/Template",
@@ -473,6 +509,10 @@
             "string",
             "null"
           ]
+        },
+        "visibility": {
+          "$ref": "#/definitions/Visibility",
+          "description": "Who may connect; `private` (tailnet only) by default. Its environment's\nceiling can make it stricter, never looser."
         }
       },
       "required": [
@@ -821,6 +861,14 @@
           "description": "Text, which may reference system variables."
         }
       ]
+    },
+    "Visibility": {
+      "description": "Who may connect to a route: everyone, or only tailnet devices. It says\nnothing about how traffic arrives; the installation decides that.\n\nVariants are ordered from least to most restrictive, so the stricter of\ntwo visibilities is their maximum.",
+      "enum": [
+        "public",
+        "private"
+      ],
+      "type": "string"
     },
     "Volume": {
       "additionalProperties": false,

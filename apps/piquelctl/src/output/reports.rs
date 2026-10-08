@@ -7,6 +7,7 @@ use piqueld_client::{
     EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event,
     Operation, OperationState, Page, PlanView, SavedApplication, SecretMetadata, Source,
     SystemStatus,
+    system::{IngressStatus, RouteStatus},
 };
 use serde::Serialize;
 use std::io;
@@ -24,10 +25,12 @@ macro_rules! report {
     };
 }
 
-/// Daemon status; JSON is the daemon's status, human output adds the transport used.
+/// Daemon status; JSON is the daemon's status, human output adds the transport
+/// used and, when readiness answered, each ingress listener.
 pub(crate) struct StatusReport<'a> {
     pub(crate) status: &'a SystemStatus,
     pub(crate) transport: &'a str,
+    pub(crate) ingress: Option<&'a IngressStatus>,
 }
 impl Report for StatusReport<'_> {
     type Json = SystemStatus;
@@ -58,7 +61,81 @@ impl Report for StatusReport<'_> {
                 out.label("Tailnet problem", &tailnet.message)?;
             }
         }
+        if let Some(ingress) = self.ingress.filter(|ingress| ingress.enabled) {
+            out.label(
+                "Public listener",
+                format_args!(
+                    "{}: {}",
+                    if ingress.healthy {
+                        "healthy"
+                    } else {
+                        "unhealthy"
+                    },
+                    ingress.message
+                ),
+            )?;
+            let private = &ingress.private;
+            if private.enabled {
+                out.label(
+                    "Private listener",
+                    format_args!(
+                        "apps node {} ({}, {})",
+                        private.dns_name.as_deref().unwrap_or("not joined"),
+                        if private.state.is_empty() {
+                            "unknown"
+                        } else {
+                            &private.state
+                        },
+                        if private.addresses.is_empty() {
+                            "no tailnet addresses".into()
+                        } else {
+                            private.addresses.join(", ")
+                        },
+                    ),
+                )?;
+                if !private.healthy {
+                    out.label("Private listener problem", &private.message)?;
+                }
+            }
+        }
         s.dns.render_human(out)
+    }
+}
+
+/// One deployed route of `route list`, with its environment's name.
+#[derive(Serialize)]
+pub(crate) struct RouteRow {
+    pub(crate) environment: String,
+    #[serde(flatten)]
+    pub(crate) route: RouteStatus,
+}
+
+impl Report for Vec<RouteRow> {
+    type Json = [RouteRow];
+    fn json(&self) -> &Self::Json {
+        self
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        if self.is_empty() {
+            return out.line("No deployed routes.");
+        }
+        out.heading("HOSTNAME  ENVIRONMENT  VISIBILITY  STATE  DESTINATION  DNS")?;
+        for row in self {
+            let route = &row.route;
+            out.line(format_args!(
+                "{}  {}  {}  {}  {}  {}",
+                route.hostname,
+                row.environment,
+                route.visibility,
+                route.state,
+                route.target,
+                route.dns
+            ))?;
+            if route.state != "ready" {
+                out.line(format_args!("  {}", route.message))?;
+            }
+        }
+        Ok(())
     }
 }
 

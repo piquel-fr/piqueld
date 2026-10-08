@@ -12,7 +12,7 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{
     Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest, EnvironmentName,
-    EnvironmentRequest, EnvironmentView, TrackedBranch,
+    EnvironmentRequest, EnvironmentView, TrackedBranch, Visibility, edit::ApplicationEdit,
 };
 
 enum EnvironmentChange {
@@ -468,8 +468,90 @@ fn EnvironmentBranch() -> impl IntoView {
     }
 }
 
-/// Source, rename and deletion of the environment page's environment.
-/// Deletion returns to the application's environments once accepted.
+/// The visibility ceiling of the environment page's environment, from the
+/// manifest it deploys and saved in `[spec.environments.<name>]`. Read-only
+/// while the application is managed in Git.
+#[component]
+fn EnvironmentVisibility() -> impl IntoView {
+    let context = editor();
+    let name = move || {
+        context
+            .selected_environment()
+            .map(|environment| environment.name.to_string())
+            .unwrap_or_default()
+    };
+    let current = move || {
+        context
+            .environment_manifest()
+            .and_then(|manifest| {
+                let name = name();
+                manifest
+                    .spec()
+                    .environments
+                    .get(&name)
+                    .map(|config| config.visibility)
+            })
+            .unwrap_or(Visibility::Public)
+    };
+    let draft = RwSignal::new(current());
+    // Follow saves and fetches.
+    Effect::new(move |_| draft.set(current()));
+    let save = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        context.save(
+            ApplicationEdit::EnvironmentVisibility {
+                environment: name(),
+                visibility: draft.get_untracked(),
+            },
+            Callback::new(|_| {}),
+        );
+    };
+    view! {
+        <section class="card">
+            <header>
+                <div>
+                    <h3>"Visibility"</h3>
+                    <p>
+                        "The strictest visibility this environment's routes get. Private keeps every route on the tailnet, whatever the route itself says; public leaves each route's own visibility. Save, then deploy to apply it."
+                    </p>
+                </div>
+            </header>
+            <form class="stack-sm" on:submit={save}>
+                <fieldset class="stack-sm" disabled={move || context.blocked() || context.managed()}>
+                    <label class="field">
+                        <span>"Route visibility"</span>
+                        <select
+                            prop:value={move || draft.get().to_string()}
+                            on:change={move |event| {
+                                if let Ok(visibility) = event_target_value(&event).parse() {
+                                    draft.set(visibility);
+                                }
+                            }}
+                        >
+                            <option value="public">"Public: routes keep their own visibility"</option>
+                            <option value="private">"Private: every route is tailnet-only"</option>
+                        </select>
+                    </label>
+                </fieldset>
+                <div class="form-actions">
+                    <button
+                        type="submit"
+                        class="btn"
+                        disabled={move || {
+                            context.blocked() || context.managed() || draft.get() == current()
+                        }}
+                    >
+                        "Save visibility"
+                    </button>
+                </div>
+            </form>
+        </section>
+    }
+}
+
+/// Source, visibility, rename and deletion of the environment page's
+/// environment. Deletion returns to the application's environments once
+/// accepted.
 #[component]
 pub(super) fn EnvironmentSettings() -> impl IntoView {
     let context = editor();
@@ -522,6 +604,7 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
     };
     view! {
         <EnvironmentBranch />
+        <EnvironmentVisibility />
         <section class="card">
             <header>
                 <div>

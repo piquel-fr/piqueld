@@ -35,7 +35,7 @@ impl Scenario {
         let _servers = self.traffic_backend();
         let original = self.gateway.caddy.get("/config/").await.unwrap();
         let mut configuration = original.clone();
-        for route in configuration["apps"]["http"]["servers"]["https"]["routes"]
+        for route in configuration["apps"]["http"]["servers"]["public"]["routes"]
             .as_array_mut()
             .unwrap()
         {
@@ -96,7 +96,7 @@ impl Scenario {
                 assert_eq!(response.version(), version);
                 assert_eq!(response.text().await.unwrap(), "persistent backend");
             }
-            configuration["apps"]["http"]["servers"]["http"]["routes"][0]["handle"][0]["headers"]
+            configuration["apps"]["http"]["servers"]["public_http"]["routes"][0]["handle"][0]["headers"]
                 ["X-Reload"] = serde_json::json!([revision.to_string()]);
             self.gateway
                 .caddy

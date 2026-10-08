@@ -48,7 +48,7 @@ and `OpenAPI` document are available to every signed-in account. The generated
 
 - Applications a caller cannot read do not exist for it: they and their
   environments answer 404 and are left out of lists, history, builds,
-  analytics, and the event stream.
+  analytics, the event stream, and the ingress routes in system readiness.
 - On an application it can read, a missing permission answers 403
   `permission_denied` with the permission in `details.permission`.
 - Saving a manifest by name for an existing application the caller cannot read

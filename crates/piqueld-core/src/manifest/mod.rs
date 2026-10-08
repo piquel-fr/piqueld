@@ -16,6 +16,7 @@ pub use domain::{
 pub use rollout::{Rollout, RolloutOrder, RolloutOrderSource, RolloutPolicy, ValidatedRollout};
 pub use routes::{
     Hostname, RedirectStatus, RedirectUrl, RouteTarget, ValidatedRedirect, ValidatedRoute,
+    Visibility, VisibilityError,
 };
 pub use template::{ApplicationTemplate, Rendering, ValidatedTemplate};
 pub use variables::{
@@ -28,7 +29,7 @@ pub mod validation;
 
 pub use input::{
     ApplicationManifest, ApplicationSpec, Build, EnvironmentConfig, GitRepository, HealthCheck,
-    Job, JobRun, ManifestRepository, ManifestRevision, Metadata, Mount, Redirect,
+    Job, JobRun, ManifestRepository, ManifestRevision, Metadata, Mount, PreviewConfig, Redirect,
     RepositoryManifest, ResourceLimits, Route, SecretDeclaration, SecretEncoding, SecretGenerator,
     SecretMount, Service, Source, SourceRepository, Variable, Volume,
 };

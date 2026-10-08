@@ -6,7 +6,7 @@ use piqueld_core::{
         MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositoryValue,
         ResourcesValue, RolloutValue, RoutesValue, SecondsValue, SecretsValue, ServiceEdit,
         ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue, TemplateValue,
-        TemplatesValue, VariablesValue, VolumesValue,
+        TemplatesValue, VariablesValue, VisibilityValue, VolumesValue,
     },
     manifest::{Mount, Service, Volume},
 };
@@ -32,6 +32,7 @@ edit_method!(set_application_routes, (id), request: RoutesValue);
 edit_method!(set_application_jobs, (id), request: JobsValue);
 edit_method!(set_application_name, (id), request: StringValue);
 edit_method!(set_application_variables, (id), request: VariablesValue);
+edit_method!(set_environment_visibility, (id, environment), request: VisibilityValue);
 edit_method!(set_manifest_repository, (id), request: RepositoryValue);
 edit_method!(disconnect_manifest_repository, (id));
 edit_method!(set_manifest_repository_url, (id), request: StringValue);
@@ -145,6 +146,18 @@ impl Client {
             }
             ApplicationEdit::Variables(value) => {
                 send!(set_application_variables, VariablesValue, value.clone())
+            }
+            ApplicationEdit::EnvironmentVisibility {
+                environment,
+                visibility,
+            } => {
+                self.set_environment_visibility(
+                    id,
+                    environment,
+                    &VisibilityValue { value: *visibility },
+                    options,
+                )
+                .await
             }
         }
     }

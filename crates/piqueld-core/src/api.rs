@@ -691,17 +691,74 @@ pub struct SecretKeyRecovery {
     pub discarded_versions: i64,
 }
 
-/// Managed gateway health and public route diagnostics.
+/// Managed gateway health, per listener, and route diagnostics.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct IngressStatus {
     /// Effective read-only daemon setting.
     pub enabled: bool,
-    /// Whether the gateway has accepted its desired configuration (or is stopped).
+    /// Whether the gateway has accepted its desired configuration (or is
+    /// stopped). Public routes depend only on this.
     pub healthy: bool,
     /// Safe diagnostic, with detailed causes in daemon logs.
     pub message: String,
-    /// Deployed routes and their latest independent HTTPS probes.
+    /// The private listener and the apps tailnet node carrying its traffic.
+    #[serde(default)]
+    pub private: PrivateIngressStatus,
+    /// Deployed routes and their latest independent HTTPS probes, limited to
+    /// applications the caller can read.
     pub routes: Vec<RouteStatus>,
+}
+
+/// The gateway's private listener, reached through the apps tailnet node.
+/// A broken node degrades only private routes.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct PrivateIngressStatus {
+    /// Effective read-only daemon setting, `[ingress.private] enabled`.
+    pub enabled: bool,
+    /// The node is logged in and the gateway serves the private listener.
+    pub healthy: bool,
+    /// Tailscale backend state of the node, such as `Running` or `NeedsLogin`.
+    pub state: String,
+    /// The node's fully qualified `MagicDNS` name.
+    pub dns_name: Option<String>,
+    /// The node's tailnet addresses, which private hostnames must resolve to.
+    pub addresses: Vec<String>,
+    /// Safe diagnostic: what to do while the node needs login (its login URL
+    /// is only logged), or the failed step, with detailed causes in daemon
+    /// logs.
+    pub message: String,
+}
+
+/// The A and AAAA records a route's hostname needs. piqueld does not create
+/// them; operators copy them to their DNS provider.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DnsRecords {
+    /// Public routes: this server's public addresses.
+    ServerAddresses,
+    /// Private routes: the apps tailnet node's addresses, empty until it has
+    /// joined the tailnet.
+    TailnetAddresses {
+        /// IPv4 and IPv6 tailnet addresses.
+        addresses: Vec<String>,
+    },
+}
+
+/// `A/AAAA -> this server's public addresses`, or the tailnet addresses.
+impl std::fmt::Display for DnsRecords {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ServerAddresses => {
+                formatter.write_str("A/AAAA -> this server's public addresses")
+            }
+            Self::TailnetAddresses { addresses } if addresses.is_empty() => {
+                formatter.write_str("A/AAAA -> the apps node's tailnet addresses, once it joins")
+            }
+            Self::TailnetAddresses { addresses } => {
+                write!(formatter, "A/AAAA -> {}", addresses.join(", "))
+            }
+        }
+    }
 }
 
 /// Login and certificate state of the daemon's own tailnet node.
@@ -759,19 +816,23 @@ pub struct CertificateStatus {
     pub error: Option<String>,
 }
 
-/// Public HTTPS readiness is separate from application rollout success.
+/// HTTPS readiness is separate from application rollout success.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct RouteStatus {
     /// Owning environment identity.
     pub environment_id: String,
     /// Exact public DNS hostname.
     pub hostname: String,
+    /// Effective visibility, which selects the listener serving the route.
+    pub visibility: crate::manifest::Visibility,
+    /// The records the hostname needs.
+    pub dns: DnsRecords,
     /// Backend service or redirect.
     #[serde(flatten)]
     pub target: crate::manifest::RouteTarget,
     /// disabled, pending, ready, or failed.
     pub state: String,
-    /// Public diagnostic explaining DNS, TLS, or gateway readiness.
+    /// Diagnostic explaining DNS, TLS, or gateway readiness.
     pub message: String,
 }
 

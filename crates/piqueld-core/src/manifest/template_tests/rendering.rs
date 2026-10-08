@@ -399,6 +399,7 @@ fn variable_values_render_system_references_overrides_and_native_interpolation()
     manifest.spec.environments.insert(
         "production".into(),
         EnvironmentConfig {
+            visibility: Visibility::Public,
             variables: std::collections::BTreeMap::from([
                 ("changed".into(), Variable::Boolean(false)),
                 ("only".into(), Variable::String("${{env.name}}".into())),
@@ -513,6 +514,7 @@ fn rendering_collects_sorted_errors_and_only_the_first_missing_value_per_field()
     manifest.spec.environments.insert(
         "staging".into(),
         EnvironmentConfig {
+            visibility: Visibility::Public,
             variables: std::collections::BTreeMap::from([
                 ("a".into(), Variable::Integer(1)),
                 ("b".into(), Variable::Integer(2)),
@@ -553,6 +555,7 @@ fn raw_rendering_reports_parse_errors_and_variable_declaration_paths() {
             spec.environments.insert(
                 "production".into(),
                 EnvironmentConfig {
+                    visibility: Visibility::Public,
                     variables: std::collections::BTreeMap::from([("bad".into(), variable)]),
                 },
             );
@@ -612,4 +615,60 @@ fn text_budget_accepts_exact_limit_and_reports_only_first_overflow() {
         )]
     );
     assert_eq!(spec.services[0].command[1], "later");
+}
+
+#[test]
+fn routes_default_to_private_and_environment_ceilings_only_tighten() {
+    let template = template(&format!(
+        r#"{VARIABLES}
+[spec.environments.staging]
+visibility = "private"
+
+[spec.environments.preview]
+visibility = "public"
+
+[[spec.routes]]
+hostname = "${{{{ vars.domain }}}}"
+service = "web"
+port = 3000
+visibility = "public"
+
+[[spec.routes]]
+hostname = "admin.${{{{ vars.domain }}}}"
+service = "web"
+port = 3000
+"#
+    ));
+    let exported = parse_template_toml(&template.export_toml().unwrap())
+        .unwrap()
+        .normalize(template.id().clone());
+    assert_eq!(exported, template);
+    assert_eq!(template.spec().previews.visibility, Visibility::Private);
+    let visibilities = |environment: &str| {
+        render(&template, environment)
+            .unwrap()
+            .application
+            .spec()
+            .routes
+            .iter()
+            .map(|route| (route.hostname.to_string(), route.visibility))
+            .collect::<Vec<_>>()
+    };
+    // Environments without a block, or with `public`, restrict nothing.
+    for environment in ["production", "preview"] {
+        assert_eq!(
+            visibilities(environment),
+            [
+                ("admin.piquel.fr".into(), Visibility::Private),
+                ("piquel.fr".into(), Visibility::Public),
+            ]
+        );
+    }
+    assert_eq!(
+        visibilities("staging"),
+        [
+            ("admin.staging.piquel.fr".into(), Visibility::Private),
+            ("staging.piquel.fr".into(), Visibility::Private),
+        ]
+    );
 }

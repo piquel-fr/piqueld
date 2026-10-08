@@ -223,9 +223,13 @@ piquelctl app volume add notes data --yes
 piquelctl app service mount set notes web data /var/lib/data --yes
 piquelctl app service mount remove notes web /var/lib/data --yes
 piquelctl app volume remove notes data --yes
-piquelctl app route add notes notes.example.com web 3000 --yes
-piquelctl app route redirect notes www.notes.example.com https://notes.example.com --yes
+piquelctl app route add notes notes.example.com web 3000 --visibility public --yes
+piquelctl app route add notes admin.notes.example.com admin 8080 --yes
+piquelctl app route redirect notes www.notes.example.com https://notes.example.com --visibility public --yes
+piquelctl app route visibility notes admin.notes.example.com private --yes
+piquelctl app route list notes
 piquelctl app route remove notes notes.example.com --yes
+piquelctl env visibility notes staging private --yes
 piquelctl app job set notes migrate web --timeout-seconds 600 --yes -- notes migrate
 piquelctl app job move notes migrate 1 --yes
 piquelctl app job remove notes migrate --yes
@@ -249,7 +253,15 @@ mounts are removed. Removing declarations retains Docker volume data.
 Route edits preserve other routes and use the inspected generation to reject
 concurrent changes. `route redirect` defaults to status 308 and appends the
 request path and query to the destination; use `--status` and
-`--no-preserve-path` to change that. Deploy after saving to activate or remove public routing.
+`--no-preserve-path` to change that. Routes are private (tailnet only) unless
+added with `--visibility public`; `route visibility` changes an existing route,
+and `env visibility` caps every route of one environment at `private` (or lifts
+the cap with `public`) in the saved manifest. Deploy after saving to activate or
+remove routing. `route list` shows each deployed route with its environment,
+effective visibility, state, destination and the DNS records its hostname needs,
+followed by the cause while it is not ready. `piquelctl status` also shows the
+public and private listeners, with the apps node's name, state and tailnet
+addresses.
 `job set` adds a job after the existing ones, or replaces the job with that name
 in place, keeping its timeout unless `--timeout-seconds` is given (300 for a new
 job). `job move` sets a job's 1-based position in the run order. Jobs run in

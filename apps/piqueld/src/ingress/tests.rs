@@ -15,7 +15,7 @@ use piqueld_core::{
 use serde_json::json;
 
 fn application(name: &str, host: &str, body: &str) -> NormalizedApplication {
-    piqueld_core::parse_toml(&format!("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[[spec.services]]\nname='web'\ncommand=['caddy']\narguments=['respond','--listen',':8080','--body','{body}']\n[spec.services.source]\ntype='image'\nimage='{CADDY_IMAGE}'\n[[spec.routes]]\nhostname='{host}'\nservice='web'\nport=8080")).unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap())
+    piqueld_core::parse_toml(&format!("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[[spec.services]]\nname='web'\ncommand=['caddy']\narguments=['respond','--listen',':8080','--body','{body}']\n[spec.services.source]\ntype='image'\nimage='{CADDY_IMAGE}'\n[[spec.routes]]\nhostname='{host}'\nvisibility='public'\nservice='web'\nport=8080")).unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap())
 }
 
 async fn request_deployment(store: &Store, app: NormalizedApplication) -> (EnvironmentId, String) {
@@ -106,6 +106,12 @@ impl Scenario {
             "http-acme.example.test:127.0.0.1".into(),
             "alpn-acme.example.test:127.0.0.1".into(),
         ];
+        gateway.private_port = Some(
+            std::env::var("PIQUELD_INGRESS_PRIVATE_PORT")
+                .unwrap()
+                .parse()
+                .unwrap(),
+        );
         let gateway = Arc::new(gateway);
         let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store))
             .with_ingress(Arc::clone(&gateway));
@@ -238,7 +244,7 @@ impl Scenario {
     /// A service-less application's redirect is answered by Caddy itself, so
     /// the application has no ingress network.
     async fn redirect_without_backend(&self) {
-        let app = piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='www'\n[[spec.routes]]\nhostname='www.example.test'\nredirect={to='https://one.example.test/base/'}").unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap());
+        let app = piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='www'\n[[spec.routes]]\nhostname='www.example.test'\nvisibility='public'\nredirect={to='https://one.example.test/base/'}").unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap());
         let id = deploy(&self.store, &self.controller, app).await;
         let response = self
             .client
@@ -595,6 +601,7 @@ impl Scenario {
         .unwrap();
         upgraded.issuer = self.gateway.issuer.clone();
         upgraded.extra_hosts = self.gateway.extra_hosts.clone();
+        upgraded.private_port = self.gateway.private_port;
         upgraded
             .extra_hosts
             .push("upgrade.example.test:127.0.0.1".into());
@@ -983,7 +990,7 @@ const PRIVATE_BODY: &str = "private-engine-detail";
 
 /// An enabled ingress whose Docker Engine fails every request with `PRIVATE_BODY`.
 struct FailingEngine {
-    _directory: tempfile::TempDir,
+    directory: tempfile::TempDir,
     store: Arc<Store>,
     ingress: Ingress,
     server: tokio::task::JoinHandle<std::io::Result<()>>,
@@ -1000,7 +1007,7 @@ impl FailingEngine {
         let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
         let ingress = Ingress::new(true, &socket, directory.path(), Arc::clone(&store)).unwrap();
         Self {
-            _directory: directory,
+            directory,
             store,
             ingress,
             server,
@@ -1144,4 +1151,233 @@ async fn ingress_caddy_dns01_certificates() {
     if let Err(panic) = result {
         std::panic::resume_unwind(panic);
     }
+}
+
+/// An ingress with private ingress enabled whose Docker Engine is never called.
+async fn private_ingress(directory: &tempfile::TempDir) -> Ingress {
+    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+    // Docker clients require the socket file to exist; nothing listens on it.
+    let socket = directory.path().join("docker.sock");
+    drop(tokio::net::UnixListener::bind(&socket).unwrap());
+    Ingress::new(true, &socket, directory.path(), store)
+        .unwrap()
+        .with_private(&crate::config::PrivateIngressConfig {
+            enabled: true,
+            ..Default::default()
+        })
+}
+
+#[tokio::test]
+async fn each_listener_serves_only_its_own_routes() {
+    let directory = tempfile::tempdir().unwrap();
+    let ingress = private_ingress(&directory).await;
+    let routes = |visibility: &str, host: &str| {
+        let mut manifest = application("one", host, "body").to_manifest();
+        manifest.spec.routes[0].visibility = visibility.parse().unwrap();
+        manifest.validate().unwrap().spec().routes.clone()
+    };
+    let table: crate::store::ingress::RoutingTable = [
+        (
+            EnvironmentId::parse("env-public").unwrap(),
+            routes("public", "www.example.com"),
+        ),
+        (
+            EnvironmentId::parse("env-private").unwrap(),
+            routes("private", "admin.example.com"),
+        ),
+    ]
+    .into();
+    let hosts = |server: &serde_json::Value| {
+        server["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|route| route["match"][0]["host"][0].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let edge = ["172.20.0.0/16".to_owned()];
+    let configuration = ingress.build_configuration(&table, Some(&edge));
+    let servers = &configuration["apps"]["http"]["servers"];
+    for (https, http, host) in [
+        ("public", "public_http", "www.example.com"),
+        ("private", "private_http", "admin.example.com"),
+    ] {
+        assert_eq!(hosts(&servers[https]), [host.to_owned()].into(), "{https}");
+        assert_eq!(hosts(&servers[http]), [host.to_owned()].into(), "{http}");
+        // No other hostname completes TLS on this listener.
+        assert_eq!(
+            servers[https]["tls_connection_policies"][0]["match"]["sni"],
+            json!([host])
+        );
+    }
+    // Applications reach the private listener over their networks, so only
+    // tailnet client addresses, set by edge peers' PROXY headers, complete TLS.
+    let tailnet = json!({"ranges":["100.64.0.0/10", "fd7a:115c:a1e0::/48"]});
+    assert_eq!(
+        servers["private"]["tls_connection_policies"][0]["match"]["remote_ip"],
+        tailnet
+    );
+    assert_eq!(
+        servers["private_http"]["routes"][0]["match"],
+        json!([{"not":[{"remote_ip":tailnet}]}])
+    );
+    assert!(
+        servers["public"]["tls_connection_policies"][0]["match"]
+            .get("remote_ip")
+            .is_none()
+    );
+    assert_eq!(servers["public"]["listen"], json!([":443"]));
+    assert_eq!(servers["private"]["listen"], json!([":8443"]));
+    let wrapper = json!({"wrapper":"proxy_protocol","allow":edge,"fallback_policy":"ignore"});
+    assert_eq!(
+        servers["private"]["listener_wrappers"],
+        json!([wrapper, {"wrapper":"tls"}])
+    );
+    assert_eq!(
+        servers["private_http"]["listener_wrappers"],
+        json!([wrapper])
+    );
+    // Private certificates come from DNS-01 only.
+    assert_eq!(
+        servers["private"]["automatic_https"],
+        json!({"disable":true})
+    );
+
+    // Without private ingress, private routes are served nowhere, never on
+    // the public listener.
+    let configuration = ingress.build_configuration(&table, None);
+    let servers = configuration["apps"]["http"]["servers"]
+        .as_object()
+        .unwrap();
+    assert_eq!(
+        servers.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["public", "public_http"]
+    );
+    assert_eq!(
+        hosts(&servers["public"]),
+        ["www.example.com".to_owned()].into()
+    );
+}
+
+#[tokio::test]
+async fn the_apps_node_forwards_to_the_private_listener_without_privileges() {
+    let directory = tempfile::tempdir().unwrap();
+    let ingress = private_ingress(&directory).await;
+    let gateway = &ingress.name;
+    assert_eq!(
+        ingress.serve_configuration(),
+        json!({"TCP":{
+            "443":{"TCPForward":format!("{gateway}:8443"),"ProxyProtocol":2},
+            "80":{"TCPForward":format!("{gateway}:8081"),"ProxyProtocol":2}
+        }})
+    );
+    let spec = ingress.node_spec(ingress.node.as_ref().unwrap());
+    assert_eq!(spec["HostConfig"]["NetworkMode"], json!(gateway));
+    assert_eq!(spec["HostConfig"]["CapDrop"], json!(["ALL"]));
+    assert_eq!(spec["HostConfig"]["ReadonlyRootfs"], true);
+    assert!(spec["HostConfig"].get("PortBindings").is_none());
+    let environment = spec["Env"].as_array().unwrap();
+    assert!(environment.contains(&json!("TS_USERSPACE=true")));
+    assert!(environment.contains(&json!("TS_HOSTNAME=piqueld-apps")));
+    // Without an auth key, the node logs in interactively.
+    assert!(
+        !environment
+            .iter()
+            .any(|value| value.as_str().unwrap().starts_with("TS_AUTHKEY"))
+    );
+    // A replaced auth key replaces the container, which reads it again.
+    let hash = |key: &str| {
+        let config = crate::config::PrivateIngressConfig {
+            enabled: true,
+            auth_key: Some(key.into()),
+            ..Default::default()
+        };
+        let node = node::Node::new(&config, &ingress.directory).unwrap();
+        ingress.node_spec(&node)["Labels"]["io.piqueld.ingress-configuration"].clone()
+    };
+    assert_ne!(hash("tskey-auth-old"), hash("tskey-auth-new"));
+    assert_ne!(
+        hash("tskey-auth-old"),
+        spec["Labels"]["io.piqueld.ingress-configuration"]
+    );
+}
+
+#[tokio::test]
+async fn disabled_private_ingress_is_unconfirmed_until_the_node_is_removed() {
+    let engine = FailingEngine::start().await;
+    engine.ingress.synchronize().await.unwrap_err();
+    // The gateway failed, but removing the node was still attempted.
+    let private = engine.ingress.status().await.private;
+    assert!(!private.enabled && !private.healthy);
+    assert!(
+        private
+            .message
+            .starts_with("Removing the apps node is not confirmed"),
+        "{}",
+        private.message
+    );
+}
+
+#[tokio::test]
+async fn disabled_ingress_confirms_the_node_stopped_only_once_removed() {
+    let engine = FailingEngine::start().await;
+    let directory = engine.directory.path();
+    let disabled = Ingress::new(
+        false,
+        &directory.join("docker.sock"),
+        directory,
+        Arc::clone(&engine.store),
+    )
+    .unwrap()
+    .with_private(&crate::config::PrivateIngressConfig {
+        enabled: true,
+        ..Default::default()
+    });
+    disabled.synchronize().await.unwrap_err();
+    let private = disabled.status().await.private;
+    assert!(!private.healthy);
+    assert!(
+        private
+            .message
+            .starts_with("Stopping the apps node is not confirmed"),
+        "{}",
+        private.message
+    );
+}
+
+/// Whether the private listener is configured on an engine whose Swarm
+/// allocates application networks from `pool`.
+async fn private_listener_with_pool(pool: &'static str) -> bool {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("docker.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let engine = axum::Router::new()
+        .route(
+            "/info",
+            axum::routing::get(move || async move {
+                axum::Json(json!({"Swarm":{"Cluster":{"DefaultAddrPool":[pool]}}}))
+            }),
+        )
+        .fallback(|| async { axum::Json(json!({"IPAM":{"Config":[{"Subnet":"172.20.0.0/16"}]}})) });
+    let server = tokio::spawn(async move { axum::serve(listener, engine).await });
+    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+    let ingress = Ingress::new(true, &socket, directory.path(), store)
+        .unwrap()
+        .with_private(&crate::config::PrivateIngressConfig {
+            enabled: true,
+            ..Default::default()
+        });
+    let configuration = ingress.configuration(&RoutingTable::new()).await.unwrap();
+    server.abort();
+    configuration["apps"]["http"]["servers"]
+        .get("private")
+        .is_some()
+}
+
+#[tokio::test]
+async fn the_private_listener_stays_off_while_application_pools_overlap_the_tailnet() {
+    assert!(private_listener_with_pool("10.0.0.0/8").await);
+    // Applications on such a pool could pass for tailnet clients.
+    assert!(!private_listener_with_pool("100.64.0.0/10").await);
+    assert!(!private_listener_with_pool("not a pool").await);
 }

@@ -4,6 +4,7 @@
 use crate::{
     cli::{Cli, DeletionFlags, LogArgs, OperationFlags, RevisionArgs},
     commands::{resolve_application, wait_for_accepted, wait_for_deletion},
+    editing::{EditFlags, save_loaded, visibility},
     error::{CliError, ErrorKind, ErrorReport, Result},
     output::{
         Console,
@@ -14,7 +15,7 @@ use crate::{
 use clap::{Args, Subcommand};
 use piqueld_client::{
     ApplicationView, Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest,
-    EnvironmentRequest, EnvironmentStatusView, EnvironmentView,
+    EnvironmentRequest, EnvironmentStatusView, EnvironmentView, Visibility, edit::ApplicationEdit,
 };
 
 // `env` subcommands; `///` on variants and fields is user-facing help.
@@ -59,6 +60,9 @@ pub(crate) enum EnvCommand {
     },
     /// Show one environment and its status.
     Show(EnvironmentArgs),
+    /// Cap the visibility of an environment's routes in the saved manifest:
+    /// `private` keeps every route on the tailnet, `public` restricts nothing.
+    Visibility(VisibilityArgs),
     /// Rename an environment without redeploying it.
     Rename {
         /// Application name or stable ID.
@@ -184,6 +188,7 @@ impl EnvCommand {
                 .await
             }
             Self::Show(target) => show(client, console, target).await,
+            Self::Visibility(args) => args.run(cli, client, console).await,
             Self::Rename {
                 application,
                 environment,
@@ -230,6 +235,34 @@ impl EnvCommand {
                 logs(console, client, &environment, window).await
             }
         }
+    }
+}
+
+/// `env visibility` arguments.
+#[derive(Debug, Args)]
+pub(crate) struct VisibilityArgs {
+    /// Application name or stable ID.
+    application: String,
+    /// Environment name or stable ID.
+    environment: String,
+    /// The strictest visibility its routes get.
+    #[arg(value_parser = visibility())]
+    visibility: Visibility,
+    #[command(flatten)]
+    flags: EditFlags,
+}
+
+impl VisibilityArgs {
+    /// Saves the environment's visibility ceiling in
+    /// `[spec.environments.<name>]`, addressing it by name or ID.
+    async fn run(&self, cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
+        let (application, environment) =
+            select(client, &self.application, Some(&self.environment)).await?;
+        let edit = ApplicationEdit::EnvironmentVisibility {
+            environment: environment.name.to_string(),
+            visibility: self.visibility,
+        };
+        save_loaded(cli, client, console, application, &self.flags, &edit).await
     }
 }
 

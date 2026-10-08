@@ -840,7 +840,8 @@ impl ApplicationSpec {
     }
 
     /// Replaces every reference with its value for `context`, leaving only
-    /// literal values, and clears the variable declarations. Returns the
+    /// literal values, caps routes at the environment's visibility ceiling,
+    /// and clears the variable declarations. Returns the
     /// values in scope, keyed by reference, for the deployment snapshot.
     pub(super) fn render(
         &mut self,
@@ -850,6 +851,7 @@ impl ApplicationSpec {
     ) -> BTreeMap<String, VariableValue> {
         let scope = Scope::new(application, self, context, errors);
         self.visit_values(&mut |path, slot| scope.render(path, slot, errors));
+        self.cap_visibility(context.environment.as_str());
         self.variables.clear();
         self.environments.clear();
         scope

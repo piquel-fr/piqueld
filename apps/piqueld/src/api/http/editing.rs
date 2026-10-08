@@ -22,7 +22,7 @@ use piqueld_core::{
         MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositoryValue,
         ResourcesValue, RolloutValue, RoutesValue, SecondsValue, SecretsValue, ServiceEdit,
         ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue, TemplateValue,
-        TemplatesValue, VariablesValue, VolumesValue,
+        TemplatesValue, VariablesValue, VisibilityValue, VolumesValue,
     },
     manifest::{Mount, Service, Volume},
 };
@@ -87,6 +87,7 @@ edit_endpoint!(set_application_routes, put, "/api/v1/applications/{id}/routes", 
 edit_endpoint!(set_application_jobs, put, "/api/v1/applications/{id}/jobs", (id: String = "id"), JobsValue, body::<JobsValue>, |_, body: JobsValue| ApplicationEdit::Jobs(body.value));
 edit_endpoint!(set_application_name, put, "/api/v1/applications/{id}/name", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::Name(body.value));
 edit_endpoint!(set_application_variables, put, "/api/v1/applications/{id}/variables", (id: String = "id"), VariablesValue, body::<VariablesValue>, |_, body: VariablesValue| ApplicationEdit::Variables(body.value));
+edit_endpoint!(set_environment_visibility, put, "/api/v1/applications/{id}/environments/{environment}/visibility", (id: String = "id", environment: String = "environment"), VisibilityValue, body::<VisibilityValue>, |(_, environment), body: VisibilityValue| ApplicationEdit::EnvironmentVisibility { environment, visibility: body.value });
 edit_endpoint!(set_manifest_repository, put, "/api/v1/applications/{id}/repository", (id: String = "id"), RepositoryValue, body::<RepositoryValue>, |_, body: RepositoryValue| ApplicationEdit::Repository(body.value));
 /// Disconnects the manifest repository.
 ///
@@ -316,6 +317,7 @@ pub(super) fn router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Write) => set_application_jobs))
         .routes(granted!(App(Write) => set_application_name))
         .routes(granted!(App(Write) => set_application_variables))
+        .routes(granted!(App(Write) => set_environment_visibility))
         .routes(granted!(App(Write) => set_manifest_repository))
         .routes(granted!(App(Write) => disconnect_manifest_repository))
         .routes(granted!(App(Write) => set_manifest_repository_url))

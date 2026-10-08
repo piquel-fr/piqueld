@@ -1,5 +1,7 @@
 //! DNS-01 issuance against Pebble, with TXT records served by `challtestsrv`.
 //! Both run inside the isolated Docker daemon; the harness publishes their ports.
+//! The certificates serve a private route on the private listener, which this
+//! test reaches through a relay adding a PROXY header, as the apps node does.
 use super::Scenario;
 use crate::{
     config::AcmeConfig,
@@ -7,6 +9,7 @@ use crate::{
     ingress::{
         Ingress,
         certificates::{CertificateName, Certificates, Challenge},
+        node::proxy_relay,
     },
 };
 use hickory_resolver::{
@@ -21,6 +24,8 @@ use std::{collections::BTreeSet, net::SocketAddr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 const PEBBLE_IMAGE: &str = "ghcr.io/letsencrypt/pebble:2.10.1@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199";
+const CURL_IMAGE: &str =
+    "alpine/curl:8.22.0@sha256:3f21f10cf24835f7baae20931f18640cc30915ea4151363fe4d8fb59ee296dfb";
 const CHALLTESTSRV_IMAGE: &str = "ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1@sha256:12ce21884def456bcf9786542113949e1f19dc7738d2c70e156c2d0c38a1405b";
 
 fn port(variable: &str) -> u16 {
@@ -163,10 +168,15 @@ impl Scenario {
             self.directory.path(),
             Arc::clone(&self.store),
         )
-        .unwrap();
+        .unwrap()
+        .with_private(&crate::config::PrivateIngressConfig {
+            enabled: true,
+            ..Default::default()
+        });
         // Same container spec and issuer as the scenario's gateway.
         ingress.issuer.clone_from(&self.gateway.issuer);
         ingress.extra_hosts.clone_from(&self.gateway.extra_hosts);
+        ingress.private_port = self.gateway.private_port;
         ingress.certificates = Certificates::new(
             dns,
             AcmeConfig {
@@ -209,19 +219,35 @@ impl Scenario {
         }
     }
 
-    /// The certificate Caddy presents for `hostname`.
-    async fn served_certificate(&self, hostname: &str) -> Vec<u8> {
-        let response = reqwest::Client::builder()
+    /// Requests `https://<hostname>/` from the listener on loopback `port`
+    /// without verifying its certificate.
+    async fn untrusted(&self, hostname: &str, port: u16) -> reqwest::Result<reqwest::Response> {
+        reqwest::Client::builder()
             .no_proxy()
             .danger_accept_invalid_certs(true)
             .tls_info(true)
-            .resolve(hostname, SocketAddr::from(([127, 0, 0, 1], self.tls_port)))
+            .resolve(hostname, SocketAddr::from(([127, 0, 0, 1], port)))
             .build()
             .unwrap()
-            .get(self.url(hostname))
+            .get(format!("https://{hostname}:{port}/"))
             .send()
             .await
+    }
+
+    /// A loopback port relaying to the private listener with a PROXY header
+    /// naming a tailnet client, like the apps node.
+    async fn relay(&self) -> (u16, tokio::task::JoinSet<()>) {
+        let private = SocketAddr::from(([127, 0, 0, 1], self.gateway.private_port.unwrap()));
+        let (relay, task) = proxy_relay(private, "100.64.0.9:41000".parse().unwrap())
+            .await
             .unwrap();
+        (relay.port(), task)
+    }
+
+    /// The certificate the private listener presents for `hostname`.
+    async fn served_certificate(&self, hostname: &str) -> Vec<u8> {
+        let (relay, _relay) = self.relay().await;
+        let response = self.untrusted(hostname, relay).await.unwrap();
         response
             .extensions()
             .get::<reqwest::tls::TlsInfo>()
@@ -229,6 +255,147 @@ impl Scenario {
             .peer_certificate()
             .unwrap()
             .to_vec()
+    }
+
+    /// Runs `curl` on `network` and returns its exit code.
+    async fn curl(&self, network: &str, arguments: &[String]) -> i64 {
+        let docker = &self.gateway.docker;
+        let name = "piqueld-test-curl";
+        docker
+            .external(
+                Method::POST,
+                &format!("/containers/create?name={name}"),
+                Some(&json!({"Image":CURL_IMAGE,"Cmd":arguments,"HostConfig":{"NetworkMode":network}})),
+            )
+            .await
+            .unwrap();
+        docker
+            .external(Method::POST, &format!("/containers/{name}/start"), None)
+            .await
+            .unwrap();
+        let exited = docker
+            .external(Method::POST, &format!("/containers/{name}/wait"), None)
+            .await
+            .unwrap();
+        docker
+            .external(
+                Method::DELETE,
+                &format!("/containers/{name}?force=true"),
+                None,
+            )
+            .await
+            .unwrap();
+        exited["StatusCode"].as_i64().unwrap()
+    }
+
+    /// Applications reach the gateway's private listener over their ingress
+    /// network, but complete TLS for a private route neither directly nor
+    /// with a forged PROXY header. Public routes stay reachable as a control.
+    async fn applications_cannot_reach_private_routes(&self, admin: &piqueld_core::EnvironmentId) {
+        let network = piqueld_core::DockerNetworkName::for_ingress(admin).to_string();
+        let gateway = self.gateway.container().await.unwrap().unwrap();
+        let address = gateway["NetworkSettings"]["Networks"][&network]["IPAddress"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        self.pull(CURL_IMAGE).await;
+        let request = |host: &str, port: u16| {
+            vec![
+                "-sk".to_owned(),
+                "--max-time".into(),
+                "5".into(),
+                "--resolve".into(),
+                format!("{host}:{port}:{address}"),
+                format!("https://{host}:{port}/"),
+            ]
+        };
+        assert_eq!(
+            self.curl(&network, &request("one.example.test", 443)).await,
+            0
+        );
+        assert_ne!(
+            self.curl(&network, &request("admin.example.test", 8443))
+                .await,
+            0
+        );
+        let mut forged = request("admin.example.test", 8443);
+        forged.extend(["--haproxy-protocol", "--haproxy-clientip", "100.64.0.9"].map(String::from));
+        assert_ne!(self.curl(&network, &forged).await, 0);
+    }
+
+    /// Deploys `admin.example.test` publicly, then makes it private: the
+    /// change withdraws it from the public listener.
+    async fn deploy_private_route(&self) -> piqueld_core::EnvironmentId {
+        let admin = |visibility: &str| {
+            let mut manifest = super::application(
+                "admin",
+                "admin.example.test",
+                "{http.request.header.X-Forwarded-For}",
+            )
+            .to_manifest();
+            manifest.spec.routes[0].visibility = visibility.parse().unwrap();
+            manifest
+                .validate()
+                .unwrap()
+                .normalize(piqueld_core::ApplicationId::parse("admin-input").unwrap())
+        };
+        let id = super::deploy(&self.store, &self.controller, admin("public")).await;
+        let public = |scheme: &str, port: u16| {
+            self.client
+                .get(format!("{scheme}://127.0.0.1:{port}/"))
+                .header("Host", "admin.example.test")
+                .send()
+        };
+        assert_eq!(public("http", self.plain_port).await.unwrap().status(), 308);
+        let deployed =
+            admin("private").with_id(piqueld_core::ApplicationId::parse(id.as_str()).unwrap());
+        super::deploy(&self.store, &self.controller, deployed).await;
+        // A forged Host gets a 404, and its SNI no certificate.
+        assert_eq!(public("http", self.plain_port).await.unwrap().status(), 404);
+        assert!(
+            self.untrusted("admin.example.test", self.tls_port)
+                .await
+                .is_err()
+        );
+        id
+    }
+
+    /// The private listener serves only private routes, with their DNS-01
+    /// certificate, and backends see the PROXY header's client address.
+    async fn private_listener_serves_private_routes(&self, ingress: &Ingress) {
+        let private = self.gateway.private_port.unwrap();
+        assert!(
+            self.untrusted("one.example.test", private).await.is_err(),
+            "a public route completed TLS on the private listener"
+        );
+        let (relay, _relay) = self.relay().await;
+        let body = self
+            .untrusted("admin.example.test", relay)
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(body, "100.64.0.9");
+        // The apps node runs hardened beside the gateway and answers on its
+        // LocalAPI, logged in or not.
+        let node = ingress
+            .named_container(&ingress.node_name())
+            .await
+            .unwrap()
+            .expect("the apps node runs");
+        assert_eq!(node["HostConfig"]["ReadonlyRootfs"], true);
+        tokio::time::timeout(Duration::from_mins(1), async {
+            loop {
+                ingress.synchronize().await.unwrap();
+                if !ingress.status().await.private.state.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        })
+        .await
+        .expect("the apps node reports its state");
     }
 
     /// The newest 100 `kind` events, filtered to journal `phase`.
@@ -270,9 +437,12 @@ impl Scenario {
         let root_path = self.directory.path().join("pebble.minica.pem");
         tokio::fs::write(&root_path, &root).await.unwrap();
         let ingress = self.pebble_ingress(&root_path);
+        let admin = self.deploy_private_route().await;
         let desired = hosts(&["admin.example.test", "www.example.test", "example.test"]);
         let now = crate::store::now_ms();
         let expires = self.dns01_issue(&ingress, &desired, now).await;
+        self.private_listener_serves_private_routes(&ingress).await;
+        self.applications_cannot_reach_private_routes(&admin).await;
         self.dns01_renew(&ingress, &desired, expires).await;
         self.dns01_failure(&ingress, now).await;
         self.dns01_cancel(&root_path, now).await;
@@ -283,7 +453,7 @@ impl Scenario {
     }
 
     /// Two children share the zone's wildcard and the apex gets an exact name;
-    /// Caddy serves them and skips automatic HTTPS. Returns the latest expiry.
+    /// the private listener serves them. Returns the latest expiry.
     async fn dns01_issue(&self, ingress: &Ingress, desired: &BTreeSet<Hostname>, now: i64) -> i64 {
         use std::os::unix::fs::PermissionsExt;
         tokio::time::timeout(
@@ -320,11 +490,6 @@ impl Scenario {
         }
 
         ingress.synchronize().await.unwrap();
-        let configuration = ingress.caddy.get("/config/").await.unwrap();
-        assert_eq!(
-            configuration["apps"]["http"]["servers"]["https"]["automatic_https"]["skip"],
-            json!(["admin.example.test", "example.test", "www.example.test"])
-        );
         assert_eq!(
             self.served_certificate("admin.example.test").await,
             self.stored_leaf("_wildcard.example.test.pem").await

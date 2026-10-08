@@ -122,6 +122,15 @@ impl DaemonConfig {
         }
         self.tailscale.validate()?;
         self.ingress.acme.validate()?;
+        dns_label("ingress.private.hostname", &self.ingress.private.hostname)?;
+        if self.tailscale.enabled
+            && self.ingress.private.enabled
+            && self.tailscale.hostname == self.ingress.private.hostname
+        {
+            return Err(ConfigError::Invalid(
+                "ingress.private.hostname must differ from tailscale.hostname".into(),
+            ));
+        }
         absolute_file("docker.socket", &self.docker.socket)?;
         for host in &self.server.allowed_hosts {
             if host.len() > 253
@@ -218,30 +227,96 @@ impl Default for TailscaleConfig {
 
 impl TailscaleConfig {
     fn validate(&self) -> Result<(), ConfigError> {
-        if !(1..=63).contains(&self.hostname.len())
-            || self.hostname.starts_with('-')
-            || self.hostname.ends_with('-')
-            || !self
-                .hostname
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        {
-            return Err(ConfigError::Invalid(
-                "tailscale.hostname must be a single DNS label".into(),
-            ));
-        }
-        Ok(())
+        dns_label("tailscale.hostname", &self.hostname)
     }
+}
+
+/// Requires a tailnet node name: a single DNS label.
+fn dns_label(name: &str, value: &str) -> Result<(), ConfigError> {
+    if !(1..=63).contains(&value.len())
+        || value.starts_with('-')
+        || value.ends_with('-')
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(ConfigError::Invalid(format!(
+            "{name} must be a single DNS label"
+        )));
+    }
+    Ok(())
 }
 
 /// Explicit installation-wide ingress enablement.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct IngressConfig {
-    /// Start the managed Caddy gateway and expose deployed routes on ports 80/443.
+    /// Start the managed Caddy gateway and expose public routes on ports 80/443.
     pub enabled: bool,
     /// ACME account used for DNS-01 certificates.
     pub acme: AcmeConfig,
+    /// The apps tailnet node, which serves private routes.
+    pub private: PrivateIngressConfig,
+}
+
+/// The apps tailnet node: a Tailscale container that carries private routes'
+/// traffic to the gateway's private listener. It is separate from the
+/// daemon's own node (`[tailscale]`), with its own ACLs and tags.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(try_from = "RawPrivateIngressConfig")]
+pub struct PrivateIngressConfig {
+    /// Run the node and serve private routes on the tailnet. While disabled,
+    /// private routes report `disabled`.
+    pub enabled: bool,
+    /// Node name, which becomes `<hostname>.<tailnet>.ts.net`.
+    pub hostname: String,
+    /// Auth key for the first login, read from `auth_key_file`. Without one,
+    /// the node's login URL is relayed to the daemon logs.
+    pub auth_key: Option<Credential>,
+}
+
+impl Default for PrivateIngressConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hostname: "piqueld-apps".into(),
+            auth_key: None,
+        }
+    }
+}
+
+/// `[ingress.private]` as written: the auth key is given only as a file.
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawPrivateIngressConfig {
+    enabled: bool,
+    hostname: String,
+    auth_key_file: Option<CredentialFile>,
+}
+
+impl Default for RawPrivateIngressConfig {
+    fn default() -> Self {
+        let defaults = PrivateIngressConfig::default();
+        Self {
+            enabled: defaults.enabled,
+            hostname: defaults.hostname,
+            auth_key_file: None,
+        }
+    }
+}
+
+impl TryFrom<RawPrivateIngressConfig> for PrivateIngressConfig {
+    type Error = CredentialError;
+    fn try_from(raw: RawPrivateIngressConfig) -> Result<Self, Self::Error> {
+        Ok(Self {
+            enabled: raw.enabled,
+            hostname: raw.hostname,
+            auth_key: raw
+                .auth_key_file
+                .map(|file| Credential::read("auth_key", file))
+                .transpose()?,
+        })
+    }
 }
 
 /// The CA piqueld itself orders DNS-01 certificates from.
@@ -587,24 +662,7 @@ impl DaemonConfig {
                     ),
                 ],
             ),
-            (
-                "Ingress",
-                vec![
-                    (
-                        "Enabled (restart required)",
-                        self.ingress.enabled.to_string(),
-                    ),
-                    ("ACME directory", self.ingress.acme.directory.clone()),
-                    (
-                        "ACME email",
-                        self.ingress
-                            .acme
-                            .email
-                            .clone()
-                            .unwrap_or_else(|| "none".into()),
-                    ),
-                ],
-            ),
+            ("Ingress", self.ingress_view()),
             (
                 "Reconciliation",
                 vec![
@@ -637,6 +695,7 @@ impl DaemonConfig {
         groups.insert("Retention".into(), self.retention_view());
         groups.insert("Authentication".into(), self.auth_view());
         groups.insert("Tailscale".into(), self.tailscale_view());
+        groups.insert("Private ingress".into(), self.private_ingress_view());
         groups.extend(self.dns_view().map(|view| ("DNS providers".into(), view)));
         groups.insert("Observability".into(), self.observability_view());
         piqueld_core::api::HostConfiguration { groups }
@@ -690,6 +749,44 @@ impl DaemonConfig {
                 self.server.tailscale_dir().display().to_string(),
             ),
             ("Public URL".into(), self.public_url().to_owned()),
+        ])
+    }
+    /// Builds the `Ingress` group.
+    fn ingress_view(&self) -> Vec<(&'static str, String)> {
+        let ingress = &self.ingress;
+        vec![
+            ("Enabled (restart required)", ingress.enabled.to_string()),
+            ("ACME directory", ingress.acme.directory.clone()),
+            (
+                "ACME email",
+                ingress.acme.email.clone().unwrap_or_else(|| "none".into()),
+            ),
+        ]
+    }
+    /// Builds the `Private ingress` group. The auth key appears only as its file.
+    fn private_ingress_view(&self) -> std::collections::BTreeMap<String, String> {
+        let private = &self.ingress.private;
+        std::collections::BTreeMap::from([
+            (
+                "Enabled (restart required)".into(),
+                private.enabled.to_string(),
+            ),
+            ("Hostname".into(), private.hostname.clone()),
+            (
+                "Auth key".into(),
+                private
+                    .auth_key
+                    .as_ref()
+                    .map_or_else(|| "none".into(), ToString::to_string),
+            ),
+            (
+                "State directory".into(),
+                self.server
+                    .data_dir
+                    .join("ingress/tailscale")
+                    .display()
+                    .to_string(),
+            ),
         ])
     }
     /// Builds the `DNS providers` group, numbered in configuration order, or

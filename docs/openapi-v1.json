@@ -495,9 +495,20 @@
               }
             ]
           },
+          "previews": {
+            "default": {
+              "visibility": "private"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PreviewConfig",
+                "description": "Configuration shared by every preview."
+              }
+            ]
+          },
           "routes": {
             "default": [],
-            "description": "Exact public HTTP routes, activated on deployment.",
+            "description": "Exact-hostname HTTP routes, activated on deployment.",
             "items": {
               "$ref": "#/components/schemas/Route"
             },
@@ -2261,6 +2272,49 @@
           "message"
         ],
         "type": "object"
+      },
+      "DnsRecords": {
+        "description": "The A and AAAA records a route's hostname needs. piqueld does not create\nthem; operators copy them to their DNS provider.",
+        "oneOf": [
+          {
+            "description": "Public routes: this server's public addresses.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "server_addresses"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Private routes: the apps tailnet node's addresses, empty until it has\njoined the tailnet.",
+            "properties": {
+              "addresses": {
+                "description": "IPv4 and IPv6 tailnet addresses.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "tailnet_addresses"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "addresses",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "DnsStatus": {
         "description": "DNS providers from daemon TOML and the DNS-01 certificates piqueld issues\nthrough them.",
@@ -4578,6 +4632,15 @@
             "default": {},
             "description": "This environment's values: each overrides the `[spec.variables]` default\nof the same name, or declares a variable without a default.",
             "type": "object"
+          },
+          "visibility": {
+            "default": "public",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Visibility",
+                "description": "The strictest visibility this environment's routes get. The default,\n`public`, restricts nothing; `private` keeps every route on the tailnet."
+              }
+            ]
           }
         },
         "type": "object"
@@ -5311,22 +5374,26 @@
         "type": "string"
       },
       "IngressStatus": {
-        "description": "Managed gateway health and public route diagnostics.",
+        "description": "Managed gateway health, per listener, and route diagnostics.",
         "properties": {
           "enabled": {
             "description": "Effective read-only daemon setting.",
             "type": "boolean"
           },
           "healthy": {
-            "description": "Whether the gateway has accepted its desired configuration (or is stopped).",
+            "description": "Whether the gateway has accepted its desired configuration (or is\nstopped). Public routes depend only on this.",
             "type": "boolean"
           },
           "message": {
             "description": "Safe diagnostic, with detailed causes in daemon logs.",
             "type": "string"
           },
+          "private": {
+            "$ref": "#/components/schemas/PrivateIngressStatus",
+            "description": "The private listener and the apps tailnet node carrying its traffic."
+          },
           "routes": {
-            "description": "Deployed routes and their latest independent HTTPS probes.",
+            "description": "Deployed routes and their latest independent HTTPS probes, limited to\napplications the caller can read.",
             "items": {
               "$ref": "#/components/schemas/RouteStatus"
             },
@@ -6449,6 +6516,22 @@
         ],
         "type": "object"
       },
+      "PreviewConfig": {
+        "additionalProperties": false,
+        "description": "Configuration shared by previews, `[spec.previews]`.",
+        "properties": {
+          "visibility": {
+            "default": "private",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Visibility",
+                "description": "The strictest visibility preview routes get; `private` by default, so\npreviews publish routes only with an explicit `public`."
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
       "Principal": {
         "description": "Who a request acts as, serialized as a `user` or an `operator` field.",
         "oneOf": [
@@ -6479,6 +6562,47 @@
             "type": "object"
           }
         ]
+      },
+      "PrivateIngressStatus": {
+        "description": "The gateway's private listener, reached through the apps tailnet node.\nA broken node degrades only private routes.",
+        "properties": {
+          "addresses": {
+            "description": "The node's tailnet addresses, which private hostnames must resolve to.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "dns_name": {
+            "description": "The node's fully qualified `MagicDNS` name.",
+            "nullable": true,
+            "type": "string"
+          },
+          "enabled": {
+            "description": "Effective read-only daemon setting, `[ingress.private] enabled`.",
+            "type": "boolean"
+          },
+          "healthy": {
+            "description": "The node is logged in and the gateway serves the private listener.",
+            "type": "boolean"
+          },
+          "message": {
+            "description": "Safe diagnostic: what to do while the node needs login (its login URL\nis only logged), or the failed step, with detailed causes in daemon\nlogs.",
+            "type": "string"
+          },
+          "state": {
+            "description": "Tailscale backend state of the node, such as `Running` or `NeedsLogin`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "healthy",
+          "state",
+          "addresses",
+          "message"
+        ],
+        "type": "object"
       },
       "ReadinessStatus": {
         "description": "Deployment prerequisites. Configuration APIs remain available when false.",
@@ -6896,7 +7020,7 @@
       },
       "Route": {
         "additionalProperties": false,
-        "description": "Public HTTP route input, validated independently of ingress enablement.\nA route sets either `service` and `port`, or `redirect`.",
+        "description": "HTTP route input, validated independently of ingress enablement.\nA route sets either `service` and `port`, or `redirect`.",
         "properties": {
           "hostname": {
             "$ref": "#/components/schemas/Template",
@@ -6933,6 +7057,10 @@
             "description": "Logical service in this application.",
             "nullable": true,
             "type": "string"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/Visibility",
+            "description": "Who may connect; `private` (tailnet only) by default. Its environment's\nceiling can make it stricter, never looser."
           }
         },
         "required": [
@@ -6948,6 +7076,10 @@
           },
           {
             "properties": {
+              "dns": {
+                "$ref": "#/components/schemas/DnsRecords",
+                "description": "The records the hostname needs."
+              },
               "environment_id": {
                 "description": "Owning environment identity.",
                 "type": "string"
@@ -6957,24 +7089,30 @@
                 "type": "string"
               },
               "message": {
-                "description": "Public diagnostic explaining DNS, TLS, or gateway readiness.",
+                "description": "Diagnostic explaining DNS, TLS, or gateway readiness.",
                 "type": "string"
               },
               "state": {
                 "description": "disabled, pending, ready, or failed.",
                 "type": "string"
+              },
+              "visibility": {
+                "$ref": "#/components/schemas/Visibility",
+                "description": "Effective visibility, which selects the listener serving the route."
               }
             },
             "required": [
               "environment_id",
               "hostname",
+              "visibility",
+              "dns",
               "state",
               "message"
             ],
             "type": "object"
           }
         ],
-        "description": "Public HTTPS readiness is separate from application rollout success."
+        "description": "HTTPS readiness is separate from application rollout success."
       },
       "RouteTarget": {
         "description": "What a route's hostname serves. The variants keep their historical flat\nwire shape (`service`/`port`, or `redirect`) inside [`ValidatedRoute`].",
@@ -8135,6 +8273,10 @@
               "hostname": {
                 "$ref": "#/components/schemas/Hostname",
                 "description": "Exact canonical public hostname."
+              },
+              "visibility": {
+                "$ref": "#/components/schemas/Visibility",
+                "description": "Effective visibility: the route's own, capped by its environment's\nceiling when the manifest was rendered."
               }
             },
             "required": [
@@ -8452,6 +8594,27 @@
         "properties": {
           "value": {
             "$ref": "#/components/schemas/Variables",
+            "description": "New value; null explicitly clears an optional setting."
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
+      "Visibility": {
+        "description": "Who may connect to a route: everyone, or only tailnet devices. It says\nnothing about how traffic arrives; the installation decides that.\n\nVariants are ordered from least to most restrictive, so the stricter of\ntwo visibilities is their maximum.",
+        "enum": [
+          "public",
+          "private"
+        ],
+        "type": "string"
+      },
+      "VisibilityValue": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/Visibility",
             "description": "New value; null explicitly clears an optional setting."
           }
         },
@@ -9505,6 +9668,189 @@
           }
         },
         "summary": "Adds an environment to an application.",
+        "x-piqueld-access": "apps:write"
+      }
+    },
+    "/api/v1/applications/{id}/environments/{environment}/visibility": {
+      "put": {
+        "operationId": "set_environment_visibility",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "environment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required inspected generation unless force is set.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass the revision check.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "in": "query",
+            "name": "deploy",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VisibilityValue"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved and deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
         "x-piqueld-access": "apps:write"
       }
     },
@@ -20833,7 +21179,7 @@
     },
     "/api/v1/system/readiness": {
       "get": {
-        "description": "Probes the database, Docker Engine, and the Swarm manager with bounded\ntimeouts, and reports ingress status. The same body is returned in both\ncases; only the status code differs (200 when ready, 503 otherwise).",
+        "description": "Probes the database, Docker Engine, and the Swarm manager with bounded\ntimeouts, and reports ingress status. The same body is returned in both\ncases; only the status code differs (200 when ready, 503 otherwise).\nIngress routes are listed only for applications the caller can read.",
         "operationId": "systemReadiness",
         "responses": {
           "200": {

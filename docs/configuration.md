@@ -54,6 +54,9 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `ingress.enabled` | `false` (restart required) |
 | `ingress.acme.directory` | `https://acme-v02.api.letsencrypt.org/directory` |
 | `ingress.acme.email` | none |
+| `ingress.private.enabled` | `false` (restart required) |
+| `ingress.private.hostname` | `"piqueld-apps"` |
+| `ingress.private.auth_key_file` | none |
 | `dns.providers` | `[]` |
 | `reconciliation.scan_interval_seconds` | `60` |
 | `reconciliation.prepare_timeout_seconds` | `300` |
@@ -78,7 +81,8 @@ consume no I/O slot. These limits are not configurable.
 The data directory is the only persistent daemon state. Back up the database,
 `secrets.key` (see below), and `<data_dir>/ingress/acme` and
 `<data_dir>/ingress/certificates`, which hold the ACME account key and the
-DNS-01 certificates with their private keys (all mode 0600). Lost certificates
+DNS-01 certificates with their private keys (all mode 0600), and
+`<data_dir>/ingress/tailscale`, the apps tailnet node's identity. Lost certificates
 are reissued, but each reissue counts against the CA's rate limits. The daemon holds
 exclusive OS locks on both directories for its lifetime. Separate instances
 require separate data and runtime directories. A competing process fails before
@@ -253,6 +257,9 @@ url_file = "discord-webhook" # $CREDENTIALS_DIRECTORY/discord-webhook
 `tailscale.auth_key_file` has no inline variant and follows the same path
 rules, but piqueld hands the path to Tailscale instead of reading the key, so the
 file only has to exist for the node's first login.
+`ingress.private.auth_key_file` has no inline variant either. piqueld reads it at
+startup and writes it, mode 0600, to `<data_dir>/ingress/tailscale/config/auth-key`
+for the apps node's container, which only uses it for its first login.
 
 Errors and the read-only settings view name the file a value came from, never
 the value. Restart the daemon after changing a credential file.
@@ -308,6 +315,21 @@ made while disabled, without activating saved-but-undeployed changes.
 
 Routes cannot use the `auth.public_url` hostname or its subdomains, and the
 website's reverse proxy cannot share the gateway's ports on the same address.
+
+`[ingress.private]` serves private routes to the tailnet through a second tailnet
+node, the apps node, run as a container beside the gateway:
+
+```toml
+[ingress.private]
+enabled = true
+hostname = "piqueld-apps"            # piqueld-apps.<tailnet>.ts.net
+auth_key_file = "ts-apps-auth-key"   # $CREDENTIALS_DIRECTORY/ts-apps-auth-key
+```
+
+`hostname` must be a single DNS label, different from `tailscale.hostname` when
+both nodes run. Without `auth_key_file`, the daemon logs the node's login URL.
+It is read once at startup; while disabled, private routes report `disabled`.
+See [public and private routes](ingress.md#public-and-private-routes).
 
 Gateway certificates, accepted configuration, and the private administration socket
 live below `<data_dir>/ingress`. Only dedicated subdirectories are mounted into

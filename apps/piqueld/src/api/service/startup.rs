@@ -100,7 +100,8 @@ impl ApplicationService {
                 &config.server.data_dir,
                 Arc::clone(&store),
             )?
-            .with_dns(&config.dns, &config.ingress.acme)?,
+            .with_dns(&config.dns, &config.ingress.acme)?
+            .with_private(&config.ingress.private),
         );
         let wake = Arc::new(Notify::new());
         let reconciler = Controller::new(docker, Arc::clone(&store))

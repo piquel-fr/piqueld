@@ -276,19 +276,27 @@ impl Certificates {
         }
     }
 
-    /// Certificates for Caddy to load, and every hostname they serve. Only
-    /// certificates that a route needs are loaded.
-    pub(super) fn loaded(&self) -> (Vec<(String, String)>, BTreeSet<Hostname>) {
+    /// Certificate chains and keys for Caddy to load. Only certificates that
+    /// a route needs are loaded.
+    pub(super) fn loaded(&self) -> Vec<(String, String)> {
         let entries = self.entries.read().expect("certificate state lock");
-        let mut pems = Vec::new();
-        let mut hostnames = BTreeSet::new();
-        for entry in entries.values().filter(|entry| !entry.hostnames.is_empty()) {
-            hostnames.extend(entry.hostnames.iter().cloned());
-            if let Some(stored) = &entry.stored {
-                pems.push((stored.chain.clone(), stored.key.clone()));
-            }
-        }
-        (pems, hostnames)
+        entries
+            .values()
+            .filter(|entry| !entry.hostnames.is_empty())
+            .filter_map(|entry| entry.stored.as_ref())
+            .map(|stored| (stored.chain.clone(), stored.key.clone()))
+            .collect()
+    }
+
+    /// Why `hostname` has no certificate to serve: no provider zone owns it,
+    /// or its issuance failed. `None` while one is stored or being issued.
+    pub(super) fn problem(&self, hostname: &Hostname) -> Option<String> {
+        let entries = self.entries.read().expect("certificate state lock");
+        entries
+            .values()
+            .find(|entry| entry.hostnames.contains(hostname))
+            .filter(|entry| entry.stored.is_none())
+            .and_then(Entry::problem)
     }
 
     /// Refreshes provider zones when they are stale, then records which
@@ -917,9 +925,16 @@ mod tests {
         );
         let desired = [host("admin.piquel.fr"), host("other.fr")].into();
         assert!(certificates.due(&desired, 0).await.is_empty());
-        let (pems, hostnames) = certificates.loaded();
-        assert_eq!(pems, [("chain".to_owned(), "key".to_owned())]);
-        assert_eq!(hostnames, desired);
+        assert_eq!(
+            certificates.loaded(),
+            [("chain".to_owned(), "key".to_owned())]
+        );
+        // Only the hostname without a stored certificate fails its route.
+        assert_eq!(certificates.problem(&host("admin.piquel.fr")), None);
+        assert_eq!(
+            certificates.problem(&host("other.fr")).as_deref(),
+            Some("no configured DNS provider zone contains other.fr")
+        );
         let problems: Vec<_> = certificates
             .status()
             .into_iter()

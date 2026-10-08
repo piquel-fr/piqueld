@@ -1,11 +1,13 @@
 //! Transactional hostname ownership and the gateway's durable routing projection.
-use super::{Store, StoreError};
+use super::{Store, StoreError, access::scope_json};
 use piqueld_core::{
     EnvironmentId,
+    access::Scope,
+    api::RouteStatus,
     manifest::{Hostname, ValidatedRoute},
 };
 use sqlx::{Sqlite, SqliteConnection, SqliteExecutor, Transaction};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Routes the gateway serves, keyed by owning environment in a stable order.
 pub(crate) type RoutingTable = BTreeMap<EnvironmentId, Vec<ValidatedRoute>>;
@@ -195,8 +197,10 @@ impl Store {
         Ok(())
     }
 
-    /// Persists a ready cutover, or withdraws removed hostnames while retaining
-    /// existing destinations until their replacements are ready.
+    /// Persists a ready cutover, or withdraws removed routes while retaining
+    /// existing destinations until their replacements are ready. A route whose
+    /// visibility changes counts as removed, so it leaves its old listener as
+    /// the deployment starts and joins the new one once backends are ready.
     /// When `operation_id` is given, fails with `StoreError::IllegalTransition`
     /// unless it is the application's latest operation and still running, so a
     /// superseded deployment cannot publish stale routes.
@@ -232,7 +236,7 @@ impl Store {
         if ready {
             desired = routes.to_vec();
         } else {
-            desired.retain(|old| routes.iter().any(|new| new.hostname == old.hostname));
+            desired.retain(|old| routes.iter().any(|new| new.same_listener(old)));
         }
         let json = serde_json::to_string(&desired).map_err(StoreError::corrupt)?;
         sqlx::query!("INSERT INTO environment_routes(environment_id,desired_json) VALUES(?1,?2) ON CONFLICT(environment_id) DO UPDATE SET desired_json=excluded.desired_json",id,json)
@@ -265,6 +269,30 @@ impl Store {
             ))
         })
         .collect()
+    }
+
+    /// The `routes` whose environment belongs to a `readable` application.
+    /// Route statuses name hostnames and backends, so other applications'
+    /// routes stay hidden like the applications themselves.
+    pub(crate) async fn readable_routes(
+        &self,
+        readable: &Scope,
+        mut routes: Vec<RouteStatus>,
+    ) -> Result<Vec<RouteStatus>, StoreError> {
+        let Some(applications) = scope_json(readable) else {
+            return Ok(routes);
+        };
+        let environments: HashSet<String> = sqlx::query_scalar!(
+            r#"SELECT id AS "id!" FROM environments WHERE application_id IN (SELECT value FROM json_each(?1))"#,
+            applications
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::database)?
+        .into_iter()
+        .collect();
+        routes.retain(|route| environments.contains(&route.environment_id));
+        Ok(routes)
     }
 
     /// Records `table` as each application's applied routes and recomputes their
@@ -725,5 +753,69 @@ mod tests {
             store.routing_table().await.unwrap()[&id],
             [] as [piqueld_core::manifest::ValidatedRoute; 0]
         );
+    }
+
+    #[tokio::test]
+    async fn changing_visibility_withdraws_the_route_until_backends_are_ready() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let input = app("one", Some("site.example.com"));
+        let saved = save(&store, input.clone(), false).await.unwrap();
+        let id = EnvironmentId::parse(saved.application_id).unwrap();
+        let mut public = input.spec().routes.clone();
+        public[0].visibility = piqueld_core::manifest::Visibility::Public;
+        store.stage_routes(&id, &public, true, None).await.unwrap();
+        // Public -> private leaves the public listener as the deployment
+        // starts; the private route joins once backends are ready.
+        let private = input.spec().routes.clone();
+        store
+            .stage_routes(&id, &private, false, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.routing_table().await.unwrap()[&id],
+            [] as [piqueld_core::manifest::ValidatedRoute; 0]
+        );
+        store.stage_routes(&id, &private, true, None).await.unwrap();
+        assert_eq!(store.routing_table().await.unwrap()[&id], private);
+    }
+
+    #[tokio::test]
+    async fn route_statuses_are_limited_to_readable_applications() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let mut statuses = Vec::new();
+        let mut applications = Vec::new();
+        for (name, hostname) in [("one", "one.example.com"), ("two", "two.example.com")] {
+            let input = app(name, Some(hostname));
+            let saved = save(&store, input.clone(), false).await.unwrap();
+            let route = &input.spec().routes[0];
+            statuses.push(RouteStatus {
+                environment_id: saved.application_id.clone(),
+                hostname: hostname.into(),
+                visibility: route.visibility,
+                dns: piqueld_core::api::DnsRecords::ServerAddresses,
+                target: route.target.clone(),
+                state: "ready".into(),
+                message: String::new(),
+            });
+            applications.push(piqueld_core::ApplicationId::parse(saved.application_id).unwrap());
+        }
+        let hostnames = |routes: Vec<RouteStatus>| {
+            routes
+                .into_iter()
+                .map(|route| route.hostname)
+                .collect::<Vec<_>>()
+        };
+        let all = store.readable_routes(&Scope::All, statuses.clone()).await;
+        assert_eq!(
+            hostnames(all.unwrap()),
+            ["one.example.com", "two.example.com"]
+        );
+        let one = Scope::one(applications[0].clone());
+        let limited = store.readable_routes(&one, statuses.clone()).await;
+        assert_eq!(hostnames(limited.unwrap()), ["one.example.com"]);
+        let none = store.readable_routes(&Scope::NONE, statuses).await;
+        assert_eq!(hostnames(none.unwrap()), [] as [String; 0]);
     }
 }

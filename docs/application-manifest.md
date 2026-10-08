@@ -140,6 +140,7 @@ web_replicas = 3
 hostname = "${{ vars.domain }}"
 service = "web"
 port = 3000
+visibility = "public"
 
 [[spec.services]]
 name = "web"
@@ -555,14 +556,30 @@ Besides applying a manifest, jobs can be edited with `piquelctl app job`, the
 dashboard's Jobs tab, or `PUT /api/v1/applications/{id}/jobs`. Renaming a
 service repoints its jobs; removing a service removes them.
 
-## Public routes
+## Routes
 
 ```toml
 [[spec.routes]]
 hostname = "notes.example.com"
 service = "web"
 port = 3000
+visibility = "public"
 ```
+
+`visibility` is `public` (the internet) or `private` (only the tailnet, on the
+same hostname), and defaults to `private`. `[spec.environments.<name>]
+visibility` and `[spec.previews] visibility` cap the routes of an environment and
+of previews: a route's effective visibility is the stricter of its own and the
+ceiling. Environments default to `public`, which restricts nothing; previews
+default to `private`.
+
+```toml
+[spec.environments.staging]
+visibility = "private"
+```
+
+See [public and private routes](ingress.md#public-and-private-routes) for
+listeners, the apps tailnet node and DNS.
 
 Each route either references a service in the same application and its internal
 HTTP port (1–65535), or sets `redirect` instead:
@@ -571,6 +588,7 @@ HTTP port (1–65535), or sets `redirect` instead:
 [[spec.routes]]
 hostname = "www.notes.example.com"
 redirect = { to = "https://notes.example.com", status = 308, preserve_path = true }
+visibility = "public"
 ```
 
 Redirects are answered by the gateway, so an application may consist of redirect
