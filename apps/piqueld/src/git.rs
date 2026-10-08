@@ -1,9 +1,70 @@
 //! Isolated Git checkouts. No shared mutable repository or credential store.
 
 use anyhow::{Context, bail};
+use piqueld_core::api::BranchState;
 use piqueld_core::manifest::{GitRepository, valid_git_commit, valid_repository_path};
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 use tokio::process::Command;
+
+/// The branch heads of a remote repository, listed with `git ls-remote`.
+pub(crate) struct Heads(BTreeMap<String, String>);
+
+impl Heads {
+    /// Longest a listing may take before it counts as failed.
+    const TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// Lists every branch of `url` with its head commit. Any repository,
+    /// network, or authentication failure is an error, never an empty
+    /// listing, so a branch only counts as gone when the repository answered.
+    pub(crate) async fn list(url: &str) -> anyhow::Result<Self> {
+        let output = tokio::time::timeout(
+            Self::TIMEOUT,
+            Checkout::command()
+                .args(["ls-remote", "--heads", "--"])
+                .arg(url)
+                .stdin(std::process::Stdio::null())
+                .output(),
+        )
+        .await
+        .context("git ls-remote timed out")?
+        .context("run git ls-remote")?;
+        if !output.status.success() {
+            // Git may echo the URL, credentials included; keep it in logs.
+            tracing::warn!(
+                status = %output.status,
+                stderr = %String::from_utf8_lossy(&output.stderr),
+                "git ls-remote failed"
+            );
+            bail!("git ls-remote failed ({})", output.status);
+        }
+        let mut heads = BTreeMap::new();
+        for line in String::from_utf8(output.stdout)
+            .context("decode git ls-remote output")?
+            .lines()
+        {
+            let (commit, reference) = line
+                .split_once('\t')
+                .context("parse git ls-remote output")?;
+            if let Some(branch) = reference.strip_prefix("refs/heads/") {
+                heads.insert(branch.to_owned(), commit.to_owned());
+            }
+        }
+        Ok(Self(heads))
+    }
+
+    /// Where `branch` is compared with `fetched`, the commit a preview last
+    /// fetched its manifest from.
+    pub(crate) fn state(&self, branch: &str, fetched: Option<&str>) -> BranchState {
+        match (self.0.get(branch), fetched) {
+            (None, _) => BranchState::Gone,
+            (Some(head), Some(deployed)) if head != deployed => BranchState::Moved {
+                head: head.clone(),
+                deployed: deployed.to_owned(),
+            },
+            (Some(head), _) => BranchState::Exists { head: head.clone() },
+        }
+    }
+}
 
 /// A private checkout pinned once, retained until preparation finishes.
 pub(crate) struct Checkout {

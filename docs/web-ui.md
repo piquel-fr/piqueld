@@ -45,6 +45,18 @@ environments intact; **Retry deletion** resumes cleanup when needed. An
 environment page whose environment no longer exists says so rather than showing
 another environment.
 
+The **Previews** tab lists the application's
+[previews](application-manifest.md#previews), never shown among its
+environments: each preview's branch, slot, slug, status (or **Deleting**) with
+its status message, its URLs as `https://` links, and its branch state (exists,
+moved or gone, with shortened commits, or unknown with the repository error).
+The list loads when the tab opens and on **Refresh**, not on a timer, since
+each load runs `git ls-remote` on the manifest repository. **Delete** confirms,
+then deletes the preview with every volume it created and their data; it needs
+no saved revision, so unsaved edits elsewhere on the page don't block it.
+Without previews, the tab explains how to create one with `piquelctl preview
+create`, and first to connect a manifest repository when there is none.
+
 **Preview** and **Deploy to <environment>** on an environment page target that
 environment. On the application page they target its only environment; with
 several, **Deploy…** opens the Environments tab to choose one. Deployment actions
@@ -54,9 +66,10 @@ fetched from it, so Preview is disabled until its first deployment. A service's 
 environment's logs, or links to each environment's logs.
 
 Values that differ between environments come from manifest variables. The
-Variables tab edits them: one row per variable, with its default and one column
+Variables tab edits them: one row per variable, with its default, one column
 per environment, including environments the manifest configures before they
-exist. An environment's value overrides the default, and an empty cell has no
+exist, and a Previews column for `[spec.previews.variables]`. An environment's
+or the previews' value overrides the default, and an empty cell has no
 value, so a variable may have only per-environment values. Fields that accept variables, such as replicas
 or health check settings, take `${{ vars.<name> }}` in place of a literal. An
 environment's Overview lists the value of each variable there, marking variables
@@ -64,9 +77,9 @@ without one. Environments that render the same hostname conflict; the error
 names the environment already reserving it.
 
 Applications have one main tab row: Overview (the default), Environments,
-Services, Source, Variables, Routes, Volumes, Jobs, Secrets, Releases, Builds,
+Previews, Services, Source, Variables, Routes, Volumes, Jobs, Secrets, Releases, Builds,
 and Events. The Releases tab lists the application's immutable releases, newest
-first: each successful preparation of an environment's deployment records one,
+first: each successful preparation of an environment's deployment (never a preview's) records one,
 environments that prepared the same content share it, and deleting an environment keeps
 them. Expanding a release shows the commit its manifest was read from, its
 content hash, and for each service its image (a registry digest or local image
@@ -142,7 +155,8 @@ local storage. See [authentication](authentication.md).
 The application's **Secrets** tab lists the secret store's names, versions and
 who may mount each one, by environment name. It creates or replaces write-only
 text values, edits access (every environment, including ones created later, or
-the checked environments, plus a previews flag kept for when previews exist), and
+the checked environments, plus whether previews may mount it, which "every
+environment" never includes), and
 deletes secrets no environment uses. Submitted values are cleared and cannot
 be read back; use the CLI for binary secret files. If a write or deletion fails,
 further secret changes are disabled until metadata refresh succeeds. Metadata

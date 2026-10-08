@@ -9,6 +9,7 @@
 //! fetched manifest after source preparation succeeds.
 use super::{Operation, Store, StoreError, now_ms};
 use piqueld_core::{
+    EnvironmentKind,
     api::DiagnosticView,
     manifest::{ApplicationTemplate, Rendering},
 };
@@ -110,10 +111,10 @@ impl Store {
     /// name, as its environment's last fetched one, while the environment
     /// still follows a branch. Other environments keep their own.
     ///
-    /// While the application is still repository-backed, the manifest, with the
-    /// application's own connection, also becomes its saved manifest: what
-    /// application-wide views show and what environments deploy after
-    /// disconnecting. Records `application_applied` when either changed;
+    /// While the application is still repository-backed, a manifest an
+    /// environment fetched, with the application's own connection, also
+    /// becomes its saved manifest: what application-wide views show and what
+    /// environments deploy after disconnecting. A preview's branch never does. Records `application_applied` when either changed;
     /// neither advances the application revision, since repository-backed
     /// configuration cannot be edited.
     /// Fails with `secret_name_conflict` when the application's store now holds
@@ -122,6 +123,7 @@ impl Store {
     pub(super) async fn accept_deployment_on(
         tx: &mut Transaction<'_, Sqlite>,
         operation: &Operation,
+        fetching: &EnvironmentKind,
     ) -> Result<(), StoreError> {
         let row = sqlx::query!(
             "SELECT application_json FROM deployment_inputs WHERE operation_id=?1 AND fetched=1 AND repository_commit IS NOT NULL",
@@ -164,7 +166,9 @@ impl Store {
         .rows_affected();
         // Even when this environment's own manifest is unchanged, another
         // environment may have fetched since.
-        if let Some(connection) = application.spec().manifest.clone() {
+        if let (EnvironmentKind::Environment, Some(connection)) =
+            (fetching, application.spec().manifest.clone())
+        {
             let saved = fetched
                 .with_manifest(Some(connection))
                 .canonical_json()

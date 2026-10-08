@@ -2,7 +2,7 @@
 //! them into the configuration one environment deploys.
 
 use super::domain::{ValidatedMetadata, ValidatedSpec};
-use super::variables::{RenderContext, VariableValue};
+use super::variables::{RenderContext, RenderTarget, VariableValue};
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, ApplicationSpec, Hostname,
     ManifestRevision, Metadata, NormalizedApplication, RepositoryManifest, SecretSource,
@@ -218,11 +218,11 @@ impl ApplicationTemplate {
         })
     }
 
-    /// The hostnames `environment` routes before anything is deployed, from
-    /// the routes whose hostname renders without a deployment.
+    /// The hostnames `target` routes before anything is deployed, from the
+    /// routes whose hostname renders without a deployment.
     #[must_use]
-    pub fn hostnames(&self, environment: &EnvironmentName) -> Vec<Hostname> {
-        self.saved(environment)
+    pub fn hostnames(&self, target: &RenderTarget) -> Vec<Hostname> {
+        self.saved(target)
             .routes
             .iter()
             .filter_map(|route| route.hostname.as_literal())
@@ -238,37 +238,36 @@ impl ApplicationTemplate {
             .collect()
     }
 
-    /// Whether `environment` renders the same saved configuration as
-    /// `renamed` does in `other`. Renames keep an environment resolved only
-    /// when this holds, since `${{ app.name }}` and `${{ env.name }}` read names.
+    /// Whether `target` renders the same saved configuration as `renamed`
+    /// does in `other`. Renames keep an environment resolved only when this
+    /// holds, since `${{ app.name }}` and `${{ env.name }}` read names.
     #[must_use]
     pub fn renders_like(
         &self,
-        environment: &EnvironmentName,
+        target: &RenderTarget,
         other: &Self,
-        renamed: &EnvironmentName,
+        renamed: &RenderTarget,
     ) -> bool {
-        self.saved(environment) == other.saved(renamed)
+        self.saved(target) == other.saved(renamed)
     }
 
-    /// `environment`'s saved configuration, rendered outside any deployment.
+    /// `target`'s saved configuration, rendered outside any deployment.
     /// Values that only render when deploying stay templates.
-    fn saved(&self, environment: &EnvironmentName) -> ApplicationSpec {
+    fn saved(&self, target: &RenderTarget) -> ApplicationSpec {
         let mut spec = self.spec.clone();
         spec.render(
             self.metadata.name.as_str(),
-            &RenderContext::saved(environment.clone()),
+            &RenderContext::saved(target.clone()),
             &mut Vec::new(),
         );
         spec
     }
 
-    /// The secrets `environment`'s saved configuration mounts and where each
-    /// value comes from. Names that only render when deploying are kept as
-    /// written.
+    /// The secrets `target`'s saved configuration mounts and where each value
+    /// comes from. Names that only render when deploying are kept as written.
     #[must_use]
-    pub fn mounted_secrets(&self, environment: &EnvironmentName) -> BTreeMap<String, SecretSource> {
-        let spec = self.saved(environment);
+    pub fn mounted_secrets(&self, target: &RenderTarget) -> BTreeMap<String, SecretSource> {
+        let spec = self.saved(target);
         spec.services
             .iter()
             .flat_map(|service| &service.secrets)
@@ -287,13 +286,13 @@ impl ApplicationTemplate {
             .collect()
     }
 
-    /// Each declared variable's value in `environment`'s saved configuration,
+    /// Each declared variable's value in `target`'s saved configuration,
     /// keyed by name, or `None` when it has none there.
     #[must_use]
-    pub fn values(&self, environment: &EnvironmentName) -> BTreeMap<String, Option<VariableValue>> {
+    pub fn values(&self, target: &RenderTarget) -> BTreeMap<String, Option<VariableValue>> {
         self.spec.values(
             self.metadata.name.as_str(),
-            &RenderContext::saved(environment.clone()),
+            &RenderContext::saved(target.clone()),
         )
     }
 

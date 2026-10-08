@@ -59,6 +59,13 @@ piquelctl env deploy <app> [<env>] [--branch <branch> | --commit <sha>]
 piquelctl env reconcile <app> [<env>]
 piquelctl env logs <app> [<env>] [--service <name>]
 piquelctl env secret <app> [--env <env>] list|regenerate|delete
+piquelctl preview create <app> --branch <branch> [--slot <slot>]
+piquelctl preview deploy <app> <preview> [--slot <slot>]
+piquelctl preview list <app>
+piquelctl preview show <app> <preview> [--slot <slot>]
+piquelctl preview logs <app> <preview> [--slot <slot>] [--service <name>]
+piquelctl preview delete <app> <preview> [--slot <slot>]
+piquelctl preview prune <app> --branch-gone
 piquelctl events --application <application-id> --limit 50
 ```
 
@@ -98,7 +105,8 @@ block, rename, then add it back under the new name. `env show` lists each
 variable's value in that manifest, or that it has none, and says when a
 repository-backed environment has fetched nothing yet.
 
-Each successful preparation of an environment's deployment records an immutable **release**:
+Each successful preparation of an environment's deployment records an immutable **release**
+(previews never record one):
 the manifest it deployed (and its commit when repository-backed), each
 service's image (a registry digest, or the local image ID and commit of a Git
 build), and the build inputs those images came from. Releases belong to the
@@ -109,6 +117,26 @@ adds the manifest and build inputs. `env show` reports the release the
 environment's current target runs (`none` before its first prepared
 deployment). Deployments prepared before upgrading record theirs when the
 daemon first starts.
+
+A [preview](application-manifest.md#previews) is a disposable deployment of
+one branch of a repository-backed application. `preview` commands address a
+preview by stable ID, then slug, then branch with `--slot` for a slotted one;
+`env` commands and `env list` never show or act on previews. `preview create`
+creates and deploys the preview of `--branch` and `--slot`, or returns the
+existing one and its latest deployment without redeploying it, and fails with
+`preview_requires_repository` for other applications. `preview deploy`
+redeploys the head of its branch. None of them needs the application revision.
+`preview list` and `preview show` report each branch as `exists`, `moved`,
+`gone` or `unknown`, read with `git ls-remote`; `show` also lists the
+preview's URLs. `preview delete` removes the preview and every volume it
+created, after confirmation. `preview prune --branch-gone` lists the previews
+whose branch is gone, confirms, and deletes them; the daemon checks each branch
+again, keeps any it can no longer confirm gone, and deletes nothing while the
+repository cannot be read. Previews whose branch state is unknown are kept,
+with a warning. `preview create`, `deploy`, `delete` and `prune` wait for their
+operations unless `--no-wait`; `delete` and `prune` confirm unless `--yes`.
+Creating, deploying and logs need the `apps:deploy` and `logs:read` permissions
+as for environments; deleting and pruning need `apps:delete`.
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit
 HTTP or HTTPS origin such as `http://127.0.0.1:7845/`; the two transport options are
@@ -167,6 +195,15 @@ written to stderr, so stdout remains valid JSON.
 | `app delete` | `{ "deleted": DeletedApplication, "outcome": "deleted", "volumes_retained": true }` |
 | `env delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": true }` |
 | `env delete` | `{ "accepted": AcceptedOperation, "outcome": "deleted", "volumes_retained": true }` |
+| `preview create --no-wait` | `CreatedPreview` |
+| `preview create` | `CreatedPreview`, with `"outcome": OperationState` |
+| `preview list` | `[PreviewView]` |
+| `preview show` | `PreviewView` |
+| `preview deploy` | Same as `env deploy` |
+| `preview logs` | `ApplicationLogs` |
+| `preview delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": false }` |
+| `preview delete` | `{ "accepted": AcceptedOperation, "outcome": "deleted", "volumes_retained": false }` |
+| `preview prune` | `[DeletedPreview]` |
 | `operation --no-wait` | `Operation` |
 | `operation` | `Operation` |
 | `app`/`env` `reconcile` / `deploy` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
@@ -291,15 +328,19 @@ services wait for all jobs to succeed; a failed job does not roll back its
 dependencies. Jobs of dependency services must come earlier in the saved order.
 
 `app variable set` sets a variable's default, or with `--env NAME` its value in
-the environment named `NAME`, whether or not that environment exists yet. An
-environment's value overrides the default, and a variable needs no default.
+the environment named `NAME`, whether or not that environment exists yet, or
+with `--previews` its value in every preview (`[spec.previews.variables]`). An
+environment's or the previews' value overrides the default, and a variable
+needs no default.
 `true`, `false` and integers keep their type and anything else is text; `--string`
-keeps text such as `3` as text. `app variable unset` removes the default or the
-environment's value. Like routes, variable edits preserve the other variables and
+keeps text such as `3` as text. `app variable unset` removes the default, the
+environment's value, or the previews' value. Like routes, variable edits preserve the other variables and
 use the inspected generation. Settings that accept variables, such as replicas,
 limits, health check settings, environment values, commands and images, take a
 `${{ vars.<name> }}` reference in place of a literal; quote it for the shell.
-`app show` lists the defaults and per-environment values.
+`app show` lists the defaults and per-environment and preview values.
+Previews only exist for repository-backed applications, whose configuration is
+edited in their repository, so `[spec.previews]` is usually set there.
 
 `app service rollout` replaces the service's rollout block: an omitted `--order`
 derives the order from the mounts, and an omitted `--monitor-seconds` uses 30
@@ -588,11 +629,12 @@ piquelctl app secret notes delete database-password --yes
 
 `list` shows each secret's version and who may mount it, naming environments.
 `--environments a,b` (names or IDs; `--environments ''` for none) or
-`--all-environments` sets the environments, and `--previews` or `--no-previews` the previews flag, which is
-kept for when previews exist. Unset flags keep the current access. Environments
+`--all-environments` sets the environments, and `--previews` or `--no-previews`
+whether previews may mount it; `--all-environments` never includes previews.
+Unset flags keep the current access. Environments
 are stored by ID, so renaming one keeps its access and deleting one removes it.
-Deploying, or `app plan --env`, for an environment that mounts a secret it may
-not use fails with `secret_access_denied`.
+Deploying, or `app plan --env`, for an environment or preview that mounts a
+secret it may not use fails with `secret_access_denied`.
 
 Prefer protected files or a secure stdin producer over literal shell values in
 real use. `--expected-generation` pins a write to inspected metadata; otherwise

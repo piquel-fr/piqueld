@@ -94,6 +94,34 @@ validated_string!(
     crate::resource::valid_logical_name
 );
 validated_string!(
+    /// A valid Git branch name, such as the branch a preview deploys.
+    GitBranch, GitBranchError,
+    "branch must be a valid Git branch name",
+    crate::manifest::valid_git_branch
+);
+validated_string!(
+    /// Distinguishes several previews of one branch, e.g. one per agent.
+    PreviewSlot, PreviewSlotError,
+    "preview slots must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
+    crate::resource::valid_logical_name
+);
+validated_string!(
+    /// DNS-safe identifier of a preview, derived once by
+    /// [`PreviewSlug::derive`] and persisted. It is also the preview's name,
+    /// so no environment of its application can share it.
+    PreviewSlug, PreviewSlugError,
+    "preview slugs must be 1-40 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
+    |value: &str| value.len() <= PreviewSlug::MAX_LEN && crate::resource::valid_logical_name(value)
+);
+
+/// A slug is a valid name, and previews are named by their slug.
+impl From<PreviewSlug> for EnvironmentName {
+    fn from(slug: PreviewSlug) -> Self {
+        Self(slug.0)
+    }
+}
+
+validated_string!(
     /// Logical service name, distinct from an application or volume name.
     ///
     /// ```compile_fail

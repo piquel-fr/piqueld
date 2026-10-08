@@ -954,6 +954,44 @@ impl DockerApi for BollardDocker {
             })
             .await
     }
+
+    /// Removes the volume by name after rechecking its ownership. Volume
+    /// names are unique and cannot be reused while it exists, so the check
+    /// and removal target the same volume. A volume still in use fails, and
+    /// a missing one counts as removed.
+    async fn remove_volume(
+        &self,
+        name: &str,
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        DockerTimeout::Request
+            .run("remove volume", async {
+                let existing = match self.docker.inspect_volume(name).await {
+                    Ok(value) => value,
+                    Err(bollard::errors::Error::DockerResponseServerError {
+                        status_code: 404,
+                        ..
+                    }) => return Ok(()),
+                    Err(error) => return Err(DockerError::request("inspect volume", error)),
+                };
+                if !Self::owns_resource(existing.labels, ownership, ResourceKind::Volume, name) {
+                    return Err(DockerError::OwnershipConflict);
+                }
+                match self
+                    .docker
+                    .remove_volume(name, None::<bollard::query_parameters::RemoveVolumeOptions>)
+                    .await
+                {
+                    Ok(())
+                    | Err(bollard::errors::Error::DockerResponseServerError {
+                        status_code: 404,
+                        ..
+                    }) => Ok(()),
+                    Err(error) => Err(DockerError::request("delete volume", error)),
+                }
+            })
+            .await
+    }
 }
 
 impl BollardDocker {

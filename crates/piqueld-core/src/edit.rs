@@ -120,6 +120,8 @@ pub struct Variables {
     pub defaults: BTreeMap<String, Variable>,
     /// Values per environment name, `[spec.environments.<name>.variables]`.
     pub environments: BTreeMap<String, BTreeMap<String, Variable>>,
+    /// Values for every preview, `[spec.previews.variables]`.
+    pub previews: BTreeMap<String, Variable>,
 }
 
 impl Variables {
@@ -129,8 +131,10 @@ impl Variables {
         let Self {
             defaults,
             mut environments,
+            previews,
         } = self;
         spec.variables = defaults;
+        spec.previews.variables = previews;
         for (name, config) in &mut spec.environments {
             config.variables = environments.remove(name).unwrap_or_default();
         }
@@ -152,6 +156,7 @@ impl Variables {
                 .iter()
                 .map(|(name, config)| (name.clone(), config.variables.clone()))
                 .collect(),
+            previews: manifest.spec.previews.variables.clone(),
         }
     }
 }

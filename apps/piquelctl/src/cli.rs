@@ -133,6 +133,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: crate::environments::EnvCommand,
     },
+    /// Create, inspect, deploy, and delete previews: disposable deployments of a branch.
+    Preview {
+        #[command(subcommand)]
+        command: crate::previews::PreviewCommand,
+    },
     /// Inspect build attempts and their persisted output.
     Builds(BuildArgs),
     /// Inspect or wait for one asynchronous operation.

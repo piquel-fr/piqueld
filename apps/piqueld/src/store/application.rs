@@ -170,7 +170,7 @@ impl Store {
         .transpose()
     }
 
-    /// Lists an application's environments in name order.
+    /// Lists an application's environments, never its previews, in name order.
     ///
     /// # Errors
     /// Returns a storage or decoding error. Absent applications have none.
@@ -185,13 +185,14 @@ impl Store {
         .await
     }
 
-    /// Lists an application's environments on an existing connection or transaction.
+    /// Lists an application's environments on an existing connection or
+    /// transaction, never its previews.
     pub(super) async fn environments_on(
         connection: &mut SqliteConnection,
         id: &str,
     ) -> Result<Vec<EnvironmentView>, StoreError> {
         sqlx::query_as!(EnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.branch,e.pinned_commit,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!" FROM environments e WHERE e.application_id=?1 ORDER BY e.name"#,id)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.preview_slot,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!" FROM environments e WHERE e.application_id=?1 AND e.kind='environment' ORDER BY e.name"#,id)
             .fetch_all(connection).await.map_err(StoreError::database)?
             .into_iter().map(EnvironmentRow::decode).collect()
     }
@@ -233,7 +234,8 @@ impl Store {
     /// Keeps environment sources in step with the application's repository
     /// connection: connecting points every environment without a branch at the
     /// branch `spec.manifest` names, and disconnecting returns every environment
-    /// to the saved manifest, forgetting what was fetched.
+    /// to the saved manifest, forgetting what was fetched. Previews keep their
+    /// branch: they cannot deploy until a repository is connected again.
     pub(super) async fn follow_connection_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &ApplicationTemplate,
@@ -244,7 +246,7 @@ impl Store {
             Some(branch) => {
                 let (name, commit) = (branch.branch(), branch.commit());
                 sqlx::query!(
-                    "UPDATE environments SET branch=?1,pinned_commit=?2 WHERE application_id=?3 AND branch IS NULL",
+                    "UPDATE environments SET branch=?1,pinned_commit=?2 WHERE application_id=?3 AND branch IS NULL AND kind='environment'",
                     name,
                     commit,
                     id
@@ -254,7 +256,7 @@ impl Store {
             }
             None => {
                 sqlx::query!(
-                    "UPDATE environments SET branch=NULL,pinned_commit=NULL,manifest_json=NULL WHERE application_id=?1",
+                    "UPDATE environments SET branch=NULL,pinned_commit=NULL,manifest_json=NULL WHERE application_id=?1 AND kind='environment'",
                     id
                 )
                 .execute(&mut **tx)

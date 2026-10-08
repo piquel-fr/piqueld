@@ -215,7 +215,7 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         // Receipts accepted before environments existed name the environment `application_id`.
-        sqlx::query!("DELETE FROM request_receipts WHERE json_extract(response_json,'$.Operation.environment_id')=?1 OR json_extract(response_json,'$.Operation.application_id')=?1 OR json_extract(response_json,'$.Environment.id')=?1",app_id).execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!("DELETE FROM request_receipts WHERE json_extract(response_json,'$.Operation.environment_id')=?1 OR json_extract(response_json,'$.Operation.application_id')=?1 OR json_extract(response_json,'$.Environment.id')=?1 OR json_extract(response_json,'$.Preview.preview.id')=?1",app_id).execute(&mut *tx).await.map_err(StoreError::database)?;
         let application = sqlx::query_scalar!(
             r#"SELECT application_id AS "application_id!" FROM environments WHERE id=?1 AND delete_intent=1"#,
             app_id

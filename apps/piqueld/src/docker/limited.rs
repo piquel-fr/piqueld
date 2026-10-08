@@ -191,6 +191,13 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     ) -> Result<(), DockerError> {
         self.inner.remove_network(name, ownership).await
     }
+    async fn remove_volume(
+        &self,
+        name: &str,
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        self.inner.remove_volume(name, ownership).await
+    }
 }
 
 #[cfg(test)]

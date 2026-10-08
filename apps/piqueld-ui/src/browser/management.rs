@@ -4,6 +4,7 @@ mod environments;
 mod jobs;
 mod logs;
 mod navigation;
+mod previews;
 mod releases;
 mod routes;
 mod secrets;
@@ -36,9 +37,10 @@ use secrets::{EnvironmentSecrets, SecretFileSettings};
 use settings::{MetadataSettings, NewService, RepositorySettings, VolumeSettings};
 use std::collections::BTreeSet;
 
-const APPLICATION_TABS: [&str; 12] = [
+const APPLICATION_TABS: [&str; 13] = [
     "Overview",
     "Environments",
+    "Previews",
     "Services",
     "Source",
     "Variables",
@@ -272,9 +274,15 @@ impl EditorContext {
             .with_value(|page| matches!(page, Page::Environment(_)))
     }
 
-    /// Deploys the saved revision to `environment`, retrying once on transport
-    /// failure, then runs `accepted`.
-    fn deploy(self, environment: String, accepted: impl FnOnce() + 'static) {
+    /// Sends one mutation with a fresh request identity while the editor is
+    /// busy, retrying once on transport failure with the same identity so the
+    /// server can deduplicate it. Runs `done` with the response, or shows the
+    /// failure.
+    fn mutate<T: 'static, F: Future<Output = Result<T, ClientError>>>(
+        self,
+        request: impl Fn(Client) -> F + 'static,
+        done: impl FnOnce(T) + 'static,
+    ) {
         self.set_error(None);
         let client = match mutation_client() {
             Ok(client) => client,
@@ -283,28 +291,39 @@ impl EditorContext {
                 return;
             }
         };
-        let generation = self.saved.with_untracked(|saved| saved.generation);
         self.busy.set(true);
         spawn_local(async move {
-            let mut result = client
-                .deploy_environment(&environment, generation, None)
-                .await;
+            let mut result = request(client.clone()).await;
             if result.as_ref().is_err_and(transport_failure) {
-                result = client
-                    .deploy_environment(&environment, generation, None)
-                    .await;
+                result = request(client).await;
             }
             match result {
-                Ok(_) => {
-                    self.notice
-                        .set("Deployment accepted. Follow its progress below.".into());
-                    accepted();
-                    self.dashboard.with_value(|d| d.refresh.run(()));
-                }
+                Ok(response) => done(response),
                 Err(error) => self.failure(&error),
             }
             self.busy.set(false);
         });
+    }
+
+    /// Deploys the saved revision to `environment`, then runs `accepted`.
+    fn deploy(self, environment: String, accepted: impl FnOnce() + 'static) {
+        let generation = self.saved.with_untracked(|saved| saved.generation);
+        self.mutate(
+            move |client| {
+                let environment = environment.clone();
+                async move {
+                    client
+                        .deploy_environment(&environment, generation, None)
+                        .await
+                }
+            },
+            move |_| {
+                self.notice
+                    .set("Deployment accepted. Follow its progress below.".into());
+                accepted();
+                self.dashboard.with_value(|d| d.refresh.run(()));
+            },
+        );
     }
 }
 
@@ -672,6 +691,9 @@ fn ApplicationSections() -> impl IntoView {
         <div hidden={move || context.tab.get() != "Environments"}>
             <environments::EnvironmentList />
         </div>
+        <Show when={move || context.tab.get() == "Previews"}>
+            <previews::PreviewList />
+        </Show>
         <ApplicationSettings />
         <Show when={move || context.tab.get() == "Releases"}>
             <releases::ReleaseHistory application={context.id()} />

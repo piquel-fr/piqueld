@@ -5,7 +5,9 @@ use super::{
     ResolvedApplication, Store, StoreError, StoredEnvironment, StoredEnvironmentRow, now_ms,
     page_limit,
 };
-use piqueld_core::{EnvironmentName, EnvironmentSource, TrackedBranch};
+use piqueld_core::{
+    EnvironmentKind, EnvironmentName, EnvironmentSource, TrackedBranch, manifest::RenderTarget,
+};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 impl Store {
@@ -111,7 +113,13 @@ impl Store {
             });
         }
         let stale = manifest
-            .is_some_and(|manifest| !manifest.renders_like(old, manifest, name))
+            .is_some_and(|manifest| {
+                !manifest.renders_like(
+                    &RenderTarget::Environment(old.clone()),
+                    manifest,
+                    &RenderTarget::Environment(name.clone()),
+                )
+            })
             .then(|| environment.id());
         let (id, name) = (environment.id().as_str(), name.as_str());
         sqlx::query!(
@@ -330,7 +338,8 @@ impl Store {
     /// Publishes a completely resolved target only while its operation is current.
     /// Stores the target on the running, latest operation, records any fetched
     /// repository manifest as the environment's own and the release the target
-    /// runs, and records `target_resolved`.
+    /// runs, adds a preview's volumes to its inventory before they exist, and
+    /// records `target_resolved`.
     /// # Errors
     /// Returns storage errors or `IllegalTransition` for obsolete preparation.
     pub async fn save_prepared(
@@ -344,7 +353,19 @@ impl Store {
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
-        Self::accept_deployment_on(&mut tx, operation).await?;
+        // Boxed: the read would otherwise grow every preparation's future.
+        let kind = Box::pin(Self::environment_on(
+            &mut tx,
+            operation.environment_id.as_str(),
+        ))
+        .await?
+        .ok_or(StoreError::NotFound)?
+        .environment
+        .kind;
+        Self::accept_deployment_on(&mut tx, operation, &kind).await?;
+        if let EnvironmentKind::Preview(_) = kind {
+            Self::record_preview_volumes_on(&mut tx, resolved).await?;
+        }
         let now = now_ms();
         Self::record_release_on(
             &mut tx,
@@ -437,7 +458,7 @@ impl Store {
         id: &str,
     ) -> Result<Option<StoredEnvironment>, StoreError> {
         sqlx::query_as!(StoredEnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.branch,e.pinned_commit,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?1"#,id)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.preview_slot,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?1"#,id)
             .fetch_optional(connection).await.map_err(StoreError::database)?
             .map(StoredEnvironmentRow::decode).transpose()
     }
@@ -474,7 +495,7 @@ impl Store {
             .transpose()?
             .unwrap_or("");
         let mut rows = sqlx::query_as!(StoredEnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.branch,e.pinned_commit,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id>?1 ORDER BY e.id LIMIT ?2"#,after,fetch_limit)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.preview_slot,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id>?1 ORDER BY e.id LIMIT ?2"#,after,fetch_limit)
             .fetch_all(&self.pool).await.map_err(StoreError::database)?;
         let has_more = rows.len() > limit;
         rows.truncate(limit);

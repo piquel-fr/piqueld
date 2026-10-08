@@ -8,7 +8,7 @@
 //! [`super::NormalizedApplication`].
 
 use super::{ApplicationSpec, RepositoryManifest, ValidationError, input::Variable};
-use crate::{EnvironmentName, codes};
+use crate::{EnvironmentName, PreviewSlug, codes};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use std::{collections::BTreeMap, fmt, str::FromStr};
 use utoipa::ToSchema;
@@ -425,13 +425,45 @@ impl fmt::Display for VariableValue {
 /// What a manifest is rendered for.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RenderContext {
-    /// The environment: its `[spec.environments.<name>]` block, `env.name`,
+    /// The environment or preview, selecting its configuration, `env.name`,
     /// and `env.slug`.
-    pub environment: EnvironmentName,
+    pub target: RenderTarget,
     /// The manifest revision of a repository-backed deployment.
     pub git: Option<GitRevision>,
     /// The deployment being captured, for `deployment.id`.
     pub deployment: Option<String>,
+}
+
+/// The environment or preview a manifest renders for.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RenderTarget {
+    /// An environment, configured by `[spec.environments.<name>]`. Its name
+    /// is both `env.name` and `env.slug`.
+    Environment(EnvironmentName),
+    /// A preview, configured by `[spec.previews]` and never by an
+    /// environment's block. Its slug is both `env.name` and `env.slug`.
+    Preview(PreviewSlug),
+}
+
+impl RenderTarget {
+    /// `env.name` and `env.slug`.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Environment(name) => name.as_str(),
+            Self::Preview(slug) => slug.as_str(),
+        }
+    }
+}
+
+/// Names the target in messages: `environment staging`, `preview notes-feat-3fa2c1`.
+impl fmt::Display for RenderTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Environment(name) => write!(formatter, "environment {name}"),
+            Self::Preview(slug) => write!(formatter, "preview {slug}"),
+        }
+    }
 }
 
 /// The repository revision a manifest was read from.
@@ -447,23 +479,23 @@ pub struct GitRevision {
 pub const PREVIEW_DEPLOYMENT_ID: &str = "preview";
 
 impl RenderContext {
-    /// Renders for a deployment of `environment`.
+    /// Renders for a deployment of `target`.
     #[must_use]
-    pub fn deployment(environment: EnvironmentName, deployment: String) -> Self {
+    pub fn deployment(target: RenderTarget, deployment: String) -> Self {
         Self {
-            environment,
+            target,
             git: None,
             deployment: Some(deployment),
         }
     }
 
-    /// Renders a preview of `environment` before anything is deployed:
+    /// Renders a plan for `target` before anything is deployed:
     /// `deployment.id` is [`PREVIEW_DEPLOYMENT_ID`], and a manifest fetched
     /// from `repository` uses its branch and pinned commit, or 40 zeros.
     #[must_use]
-    pub fn preview(environment: EnvironmentName, repository: Option<&RepositoryManifest>) -> Self {
+    pub fn preview(target: RenderTarget, repository: Option<&RepositoryManifest>) -> Self {
         Self {
-            environment,
+            target,
             git: repository.map(|manifest| GitRevision {
                 branch: manifest.repository.branch.clone(),
                 sha: manifest
@@ -479,9 +511,9 @@ impl RenderContext {
     /// Renders saved configuration outside any deployment, e.g. to reserve
     /// the hostnames an environment will serve.
     #[must_use]
-    pub const fn saved(environment: EnvironmentName) -> Self {
+    pub const fn saved(target: RenderTarget) -> Self {
         Self {
-            environment,
+            target,
             git: None,
             deployment: None,
         }
@@ -739,8 +771,8 @@ impl ApplicationSpec {
         }
     }
 
-    /// Every declared variable value, keyed by path: the defaults, then each
-    /// environment's overrides.
+    /// Every declared variable value, keyed by path: the defaults, each
+    /// environment's overrides, then the previews' overrides.
     fn declarations(&self) -> impl Iterator<Item = (String, &str, &Variable)> {
         self.variables
             .iter()
@@ -761,6 +793,10 @@ impl ApplicationSpec {
                     )
                 })
             }))
+            .chain(self.previews.variables.iter().map(|(name, value)| {
+                let path = format!("spec.previews.variables.{}", path_key(name));
+                (path, name.as_str(), value)
+            }))
     }
 
     /// Checks variable declarations and references without rendering:
@@ -773,6 +809,7 @@ impl ApplicationSpec {
 
         let repository = self.manifest.is_some();
         if self.variables.len() > MAX_VARIABLES
+            || self.previews.variables.len() > MAX_VARIABLES
             || self
                 .environments
                 .values()
@@ -869,7 +906,7 @@ impl ApplicationSpec {
                             Some((
                                 codes::VARIABLE_UNDECLARED,
                                 format!(
-                                    "vars.{name} is not declared in [spec.variables] or any [spec.environments.<name>.variables]"
+                                    "vars.{name} is not declared in [spec.variables], any [spec.environments.<name>.variables], or [spec.previews.variables]"
                                 ),
                             ))
                         }
@@ -896,9 +933,10 @@ impl ApplicationSpec {
     ) -> BTreeMap<String, VariableValue> {
         let scope = Scope::new(application, self, context, errors);
         self.visit_values(&mut |path, slot| scope.render(path, slot, errors));
-        self.cap_visibility(context.environment.as_str());
+        self.cap_visibility(&context.target);
         self.variables.clear();
         self.environments.clear();
+        self.previews.variables.clear();
         scope
             .values
             .into_iter()
@@ -915,7 +953,7 @@ impl ApplicationSpec {
         context: &RenderContext,
     ) -> BTreeMap<String, Option<VariableValue>> {
         let scope = Scope::new(application, self, context, &mut Vec::new());
-        self.variables_for(context.environment.as_str())
+        self.variables_for(&context.target)
             .into_keys()
             .map(|name| {
                 let value = scope.values.get(&Reference::Variable(name.into())).cloned();
@@ -924,13 +962,10 @@ impl ApplicationSpec {
             .collect()
     }
 
-    /// Each declared variable's value for `environment`: its override, else
-    /// its default, else `None`. String values are shown as written.
-    fn variables_for(&self, environment: &str) -> BTreeMap<&str, Option<&Variable>> {
-        let overrides = self
-            .environments
-            .get(environment)
-            .map(|config| &config.variables);
+    /// Each declared variable's value for `target`: its override, else its
+    /// default, else `None`. String values are shown as written.
+    fn variables_for(&self, target: &RenderTarget) -> BTreeMap<&str, Option<&Variable>> {
+        let overrides = self.overrides(target).map(|(_, variables)| variables);
         self.declarations()
             .map(|(_, name, _)| {
                 let value = overrides
@@ -960,7 +995,6 @@ impl<'a> Scope<'a> {
         context: &'a RenderContext,
         errors: &mut Vec<ValidationError>,
     ) -> Self {
-        let environment = context.environment.as_str();
         let mut values = BTreeMap::new();
         let mut system = |variable, value: &str| {
             values.insert(
@@ -969,8 +1003,8 @@ impl<'a> Scope<'a> {
             );
         };
         system(SystemVariable::AppName, application);
-        system(SystemVariable::EnvName, environment);
-        system(SystemVariable::EnvSlug, environment);
+        system(SystemVariable::EnvName, context.target.name());
+        system(SystemVariable::EnvSlug, context.target.name());
         if let Some(git) = &context.git {
             system(SystemVariable::GitBranch, &git.branch);
             system(SystemVariable::GitSha, &git.sha);
@@ -983,13 +1017,14 @@ impl<'a> Scope<'a> {
             values,
             rendered: std::cell::Cell::new(0),
         };
-        let overrides = spec.environments.get(environment);
-        for (name, value) in spec.variables_for(environment) {
+        let overrides = spec.overrides(&context.target);
+        for (name, value) in spec.variables_for(&context.target) {
             let Some(value) = value else { continue };
-            let path = if overrides.is_some_and(|config| config.variables.contains_key(name)) {
-                format!("spec.environments.{environment}.variables.{name}")
-            } else {
-                format!("spec.variables.{name}")
+            let path = match overrides {
+                Some((ref table, variables)) if variables.contains_key(name) => {
+                    format!("{table}.{name}")
+                }
+                _ => format!("spec.variables.{name}"),
             };
             let value = match value {
                 Variable::Boolean(value) => Some(VariableValue::Boolean(*value)),
@@ -1015,20 +1050,20 @@ impl<'a> Scope<'a> {
     ) -> Option<&VariableValue> {
         let value = self.values.get(reference);
         if value.is_none() {
-            let environment = &self.context.environment;
+            let target = &self.context.target;
             let (code, message) = match reference {
                 Reference::Variable(_) => (
                     codes::VARIABLE_VALUE_MISSING,
-                    format!("{reference} has no value for environment {environment}"),
+                    format!("{reference} has no value for {target}"),
                 ),
                 Reference::System(SystemVariable::DeploymentId) => (
                     codes::VARIABLE_UNAVAILABLE,
-                    format!("{reference} is only set when deploying {environment}"),
+                    format!("{reference} is only set when deploying {target}"),
                 ),
                 Reference::System(_) => (
                     codes::VARIABLE_UNAVAILABLE,
                     format!(
-                        "{reference} is only set for repository-backed deployments of {environment}"
+                        "{reference} is only set for repository-backed deployments of {target}"
                     ),
                 ),
             };

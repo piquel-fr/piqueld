@@ -59,10 +59,12 @@ permissions! {
         /// Save configuration edits, apply manifests, rename, and add or
         /// rename environments.
         Write => "apps:write", "Edit configuration, apply manifests, rename and add environments",
-        /// Deploy saved configuration to environments and request reconciliation.
-        Deploy => "apps:deploy", "Deploy and reconcile environments",
-        /// Delete the application or its environments, with their runtime resources.
-        Delete => "apps:delete", "Delete applications and environments",
+        /// Deploy saved configuration to environments, request reconciliation,
+        /// and create and deploy previews.
+        Deploy => "apps:deploy", "Deploy and reconcile environments, create and deploy previews",
+        /// Delete the application, its environments, or its previews, with
+        /// their runtime resources.
+        Delete => "apps:delete", "Delete applications, environments and previews",
         /// Store and delete secret values.
         SecretsWrite => "secrets:write", "Store and delete secret values",
         /// Read runtime, build and job logs, which may contain sensitive output.

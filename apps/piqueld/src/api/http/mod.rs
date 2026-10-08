@@ -11,7 +11,9 @@ use axum::{
 };
 use piqueld_core::api::{ApplyApplicationRequest, Envelope, ErrorBody};
 use piqueld_core::auth::HostOperator;
-use piqueld_core::{ApplicationIdError, EnvironmentIdError, EnvironmentNameError};
+use piqueld_core::{
+    ApplicationIdError, EnvironmentIdError, EnvironmentNameError, GitBranchError, PreviewSlotError,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc};
@@ -39,6 +41,7 @@ mod logs;
 mod observability;
 mod openapi;
 mod operations;
+mod previews;
 mod secrets;
 mod system;
 mod ui;
@@ -190,7 +193,8 @@ impl ApiError {
     }
 
     /// Maps environment selection and rename failures selected by
-    /// `From<StoreError>`, naming the environments in `details`.
+    /// `From<StoreError>`, naming the environments in `details`, and previews
+    /// of applications without a manifest repository.
     ///
     /// Panics if given another variant; callers must pre-filter.
     fn from_environment_error(error: StoreError) -> Self {
@@ -213,7 +217,33 @@ impl ApiError {
                 error.to_string(),
             )
             .details(json!({"environment": environment})),
+            ref error @ StoreError::PreviewRequiresRepository => Self::new(
+                StatusCode::CONFLICT,
+                piqueld_core::codes::PREVIEW_REQUIRES_REPOSITORY,
+                error.to_string(),
+            ),
             other => unreachable!("non-environment storage error: {other}"),
+        }
+    }
+
+    /// Maps hostname reservation conflicts selected by `From<StoreError>`,
+    /// naming the hostname, and the sibling environment reserving it if any.
+    ///
+    /// Panics if given another variant; callers must pre-filter.
+    fn from_hostname_conflict(error: StoreError) -> Self {
+        match error {
+            StoreError::HostnameConflict { hostname } => Self::new(
+                StatusCode::CONFLICT,
+                "hostname_conflict",
+                "Hostname is reserved by another environment or this installation",
+            )
+            .details(json!({"hostname": hostname})),
+            ref error @ StoreError::SharedHostnameConflict {
+                ref hostname,
+                ref environment,
+            } => Self::new(StatusCode::CONFLICT, "hostname_conflict", error.to_string())
+                .details(json!({"hostname": hostname, "environment": environment})),
+            other => unreachable!("non-hostname storage error: {other}"),
         }
     }
 }
@@ -234,20 +264,12 @@ impl From<StoreError> for ApiError {
             | StoreError::SecretQuota
             | StoreError::SecretReferenced
             | StoreError::SecretAccessDenied { .. }) => Self::from_secret_error(error),
-            StoreError::HostnameConflict { hostname } => Self::new(
-                StatusCode::CONFLICT,
-                "hostname_conflict",
-                "Hostname is reserved by another environment or this installation",
-            )
-            .details(json!({"hostname": hostname})),
-            ref error @ StoreError::SharedHostnameConflict {
-                ref hostname,
-                ref environment,
-            } => Self::new(StatusCode::CONFLICT, "hostname_conflict", error.to_string())
-                .details(json!({"hostname": hostname, "environment": environment})),
+            error @ (StoreError::HostnameConflict { .. }
+            | StoreError::SharedHostnameConflict { .. }) => Self::from_hostname_conflict(error),
             error @ (StoreError::EnvironmentRequired { .. }
             | StoreError::ConfirmationRequired { .. }
-            | StoreError::EnvironmentConfigured { .. }) => Self::from_environment_error(error),
+            | StoreError::EnvironmentConfigured { .. }
+            | StoreError::PreviewRequiresRepository) => Self::from_environment_error(error),
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "generation_conflict",
@@ -292,7 +314,7 @@ impl From<StoreError> for ApiError {
             StoreError::AlreadyExists => Self::new(
                 StatusCode::CONFLICT,
                 "application_name_collision",
-                "application or environment identity or name already exists",
+                "application, environment, or preview identity or name already exists",
             ),
             StoreError::IllegalTransition => Self::new(
                 StatusCode::CONFLICT,
@@ -405,6 +427,26 @@ impl From<EnvironmentNameError> for ApiError {
             StatusCode::BAD_REQUEST,
             "environment_name_invalid",
             "environment names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
+        )
+    }
+}
+
+impl From<GitBranchError> for ApiError {
+    fn from(error: GitBranchError) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            "git_branch_invalid",
+            error.to_string(),
+        )
+    }
+}
+
+impl From<PreviewSlotError> for ApiError {
+    fn from(error: PreviewSlotError) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            "preview_slot_invalid",
+            error.to_string(),
         )
     }
 }
@@ -689,6 +731,12 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Deploy) => environments::reconcile))
         .routes(granted!(App(Write) => environments::rename))
         .routes(granted!(App(Write) => environments::branch))
+        .routes(granted!(App(Deploy) => previews::create))
+        .routes(granted!(App(Read) => previews::list))
+        .routes(granted!(App(Read) => previews::get))
+        .routes(granted!(App(Deploy) => previews::deploy))
+        .routes(granted!(App(Delete) => previews::delete))
+        .routes(granted!(App(Delete) => previews::prune))
         .routes(granted!(App(Deploy) => deployments::deploy))
         .routes(granted!(App(Read) => deployments::list))
         .routes(granted!(App(Read) => deployments::attempts))
@@ -719,7 +767,8 @@ fn documented_router() -> OpenApiRouter<ApiState> {
 /// Middleware that runs the request inside a `request_context` span and
 /// post-processes JSON error responses.
 ///
-/// 1. Extracts the environment ID from `/api/v1/environments/{id}` routes.
+/// 1. Extracts the environment ID from `/api/v1/environments/{id}` and
+///    `/api/v1/previews/{id}` routes.
 /// 2. Runs the inner handler.
 /// 3. For 4xx/5xx JSON `ErrorBody` responses, rewrites `request_id` to the
 ///    `x-request-id` value.
@@ -737,7 +786,11 @@ async fn bind_error_request_id(
     next: Next,
 ) -> Response {
     let environment = matched
-        .filter(|path| path.as_str().starts_with("/api/v1/environments/{id}"))
+        .filter(|path| {
+            ["/api/v1/environments/{id}", "/api/v1/previews/{id}"]
+                .iter()
+                .any(|prefix| path.as_str().starts_with(prefix))
+        })
         .and_then(|_| params.ok())
         .and_then(|params| {
             params
@@ -1092,6 +1145,16 @@ impl From<ApplicationError> for ApiError {
                 "runtime plan contains blocking conflicts",
             )
             .details(json!({"diagnostics":diagnostics})),
+            ApplicationError::RepositoryUnavailable(error) => {
+                tracing::warn!(?error, "manifest repository unavailable");
+                Self::new(
+                    StatusCode::BAD_GATEWAY,
+                    "repository_unavailable",
+                    format!(
+                        "The manifest repository could not be read ({error:#}); no preview was deleted"
+                    ),
+                )
+            }
         }
     }
 }

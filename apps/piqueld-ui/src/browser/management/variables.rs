@@ -4,17 +4,19 @@ use super::super::ui::{Icon, Tone, badge, empty, icon, remove_button};
 use super::{dirty_group, editor, save_actions};
 use leptos::prelude::*;
 use piqueld_client::{
-    EnvironmentName, Variable,
+    Variable,
     edit::{ApplicationEdit, Variables},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-/// One variable row: its default and its value per environment name, as typed.
+/// One variable row: its default, its value per environment name, and its
+/// value in previews, as typed.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct VariableDraft {
     name: String,
     default: String,
     environments: BTreeMap<String, String>,
+    previews: String,
 }
 
 impl VariableDraft {
@@ -24,6 +26,7 @@ impl VariableDraft {
             .defaults
             .keys()
             .chain(variables.environments.values().flat_map(BTreeMap::keys))
+            .chain(variables.previews.keys())
             .collect::<BTreeSet<_>>();
         names
             .into_iter()
@@ -41,6 +44,11 @@ impl VariableDraft {
                         Some((environment.clone(), values.get(name)?.to_text()))
                     })
                     .collect(),
+                previews: variables
+                    .previews
+                    .get(name)
+                    .map(Variable::to_text)
+                    .unwrap_or_default(),
             })
             .collect()
     }
@@ -72,14 +80,19 @@ impl VariableDraft {
                         .insert(name.into(), Variable::from_text(value));
                 }
             }
+            if !row.previews.trim().is_empty() {
+                variables
+                    .previews
+                    .insert(name.into(), Variable::from_text(&row.previews));
+            }
         }
         Ok(variables)
     }
 }
 
-/// Variable editor: one row per variable, with its default and one column per
+/// Variable editor: one row per variable, with its default, one column per
 /// environment, including environments the manifest configures before they
-/// exist. Saving replaces every value.
+/// exist, and one for previews. Saving replaces every value.
 #[component]
 pub(super) fn VariableSettings() -> impl IntoView {
     let context = editor();
@@ -140,7 +153,7 @@ pub(super) fn VariableSettings() -> impl IntoView {
                     <h3>"Variables"</h3>
                     <p>
                         "Reference a variable as " <code>"${{ vars.<name> }}"</code>
-                        " in hostnames, environment values, commands, replicas, limits, and other settings. Each environment uses its own value, else the default. "
+                        " in hostnames, environment values, commands, replicas, limits, and other settings. Each environment uses its own value, else the default; previews use the Previews value, else the default. "
                         <code>"true"</code>", "<code>"false"</code>
                         " and integers keep their type; wrap text in quotes to keep "
                         <code>"\"3\""</code>" as text."
@@ -161,6 +174,7 @@ pub(super) fn VariableSettings() -> impl IntoView {
                                         .map(|environment| view! { <th>{environment}</th> })
                                         .collect_view()
                                 }}
+                                <th>"Previews"</th>
                                 <th></th>
                             </tr>
                         </thead>
@@ -232,6 +246,18 @@ pub(super) fn VariableSettings() -> impl IntoView {
                                                     })
                                                     .collect_view()
                                             }}
+                                            <td>
+                                                <input
+                                                    type="text"
+                                                    aria-label="Value in previews"
+                                                    placeholder="Default"
+                                                    prop:value={move || cell(index, |row| row.previews.clone())}
+                                                    on:input={move |event| {
+                                                        let value = event_target_value(&event);
+                                                        update(index, Box::new(move |row| row.previews = value));
+                                                    }}
+                                                />
+                                            </td>
                                             <td class="actions">
                                                 {remove_button(move || {
                                                     draft
@@ -269,8 +295,11 @@ pub(super) fn EnvironmentVariables() -> impl IntoView {
     let signals = context.dashboard.with_value(|d| d.signals);
     let values = move || {
         let environment = context.selected_environment()?;
-        let name = EnvironmentName::parse(environment.name.as_str()).ok()?;
-        Some(context.environment_manifest()?.values(&name))
+        Some(
+            context
+                .environment_manifest()?
+                .values(&environment.target()),
+        )
     };
     view! {
         <section class="card card-flush">

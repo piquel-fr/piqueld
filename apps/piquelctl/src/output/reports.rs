@@ -3,10 +3,11 @@ use super::{HumanWriter, Report};
 use crate::profiles::ProfileSummary;
 use piqueld_client::{
     AcceptedOperation, ActionReason, ActionRisk, ApplicationLogs, ApplicationSummary,
-    ApplicationView, BuildLogPage, BuildRecord, DeletedApplication, DnsStatus,
-    EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event,
-    MountedSecret, Operation, OperationState, Page, PlanView, ReleaseView, ResolvedSource,
-    SavedApplication, SecretMetadata, Source, StoredSecret, SystemStatus,
+    ApplicationView, BranchState, BuildLogPage, BuildRecord, CreatedPreview, DeletedApplication,
+    DeletedPreview, DnsStatus, EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView,
+    EnvironmentView, Event, MountedSecret, Operation, OperationState, Page, PlanView, PreviewView,
+    ReleaseView, ResolvedSource, SavedApplication, SecretMetadata, Source, StoredSecret,
+    SystemStatus,
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
 use serde::Serialize;
@@ -367,7 +368,10 @@ report!(ShowReport<'_>, self, out, {
         out.line("Named volumes are retained on deletion.")?;
     }
     let spec = app.application.spec();
-    if !spec.variables.is_empty() || !spec.environments.is_empty() {
+    if !spec.variables.is_empty()
+        || !spec.environments.is_empty()
+        || !spec.previews.variables.is_empty()
+    {
         out.blank()?;
         for (name, value) in &spec.variables {
             out.label("Variable", format_args!("{name} = {value}"))?;
@@ -380,9 +384,158 @@ report!(ShowReport<'_>, self, out, {
                 )?;
             }
         }
+        for (name, value) in &spec.previews.variables {
+            out.label("Variable", format_args!("{name} = {value} (in previews)"))?;
+        }
     }
     Ok(())
 });
+
+/// A preview's branch and slot, e.g. `feat/login` or `feat/login (slot agent-2)`.
+fn preview_branch(preview: &EnvironmentView) -> String {
+    match preview.preview() {
+        Some(identity) => match &identity.slot {
+            Some(slot) => format!("{} (slot {slot})", identity.branch),
+            None => identity.branch.to_string(),
+        },
+        None => preview.name.to_string(),
+    }
+}
+
+/// A branch state in words, with the commits involved.
+fn branch_state(state: &BranchState) -> String {
+    match state {
+        BranchState::Exists { head } => format!("exists at {head}"),
+        BranchState::Moved { head, deployed } => {
+            format!("moved to {head} (deployed {deployed})")
+        }
+        BranchState::Gone => "gone".into(),
+        BranchState::Unknown { message } => format!("unknown: {message}"),
+    }
+}
+
+/// `preview list` result.
+impl Report for Vec<PreviewView> {
+    type Json = [PreviewView];
+    fn json(&self) -> &Self::Json {
+        self
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        if self.is_empty() {
+            return out.line("No previews.");
+        }
+        out.heading("BRANCH  SLOT  SLUG  STATE  BRANCH STATE  LAST OPERATION  ID")?;
+        for view in self {
+            let preview = &view.preview;
+            let slot = preview
+                .preview()
+                .and_then(|identity| identity.slot.as_ref())
+                .map_or("-", |slot| slot.as_str());
+            out.line(format_args!(
+                "{}  {slot}  {}  {}  {}  {}  {}",
+                preview
+                    .preview()
+                    .map_or_else(|| preview.name.to_string(), |p| p.branch.to_string()),
+                preview.name,
+                view.status.state,
+                view.branch,
+                view.latest_operation
+                    .as_ref()
+                    .map_or_else(|| "none".to_owned(), |op| op.state.to_string()),
+                preview.id
+            ))?;
+        }
+        Ok(())
+    }
+}
+
+report!(PreviewView, self, out, {
+    let preview = &self.preview;
+    out.line(format_args!(
+        "Preview {} of branch {} ({})",
+        preview.name,
+        preview_branch(preview),
+        preview.id
+    ))?;
+    out.blank()?;
+    out.label("Intent", self.status.state)?;
+    out.label(
+        "Runtime",
+        self.status.runtime_health.as_deref().unwrap_or("unknown"),
+    )?;
+    out.label("Branch", branch_state(&self.branch))?;
+    if let Some(operation) = &self.latest_operation {
+        out.label(
+            "Last operation",
+            format_args!("{} {} ({})", operation.kind, operation.state, operation.id),
+        )?;
+    }
+    for hostname in &self.hostnames {
+        out.label("URL", format_args!("https://{hostname}"))?;
+    }
+    if let Some(message) = &self.status.message {
+        out.label("Message", message)?;
+    }
+    Ok(())
+});
+
+/// `preview create` result: the preview, its deployment, and, after waiting,
+/// how the deployment ended.
+#[derive(Serialize)]
+pub(crate) struct CreatedPreviewReport<'a> {
+    #[serde(flatten)]
+    pub(crate) created: &'a CreatedPreview,
+    /// The deployment's final state; omitted with `--no-wait`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) outcome: Option<OperationState>,
+}
+report!(CreatedPreviewReport<'_>, self, out, {
+    let CreatedPreview {
+        preview,
+        operation,
+        created,
+    } = self.created;
+    out.line(format_args!(
+        "Preview {} of branch {} ({}) {}",
+        preview.name,
+        preview_branch(preview),
+        preview.id,
+        if *created {
+            "created"
+        } else {
+            "already exists; not redeployed"
+        }
+    ))?;
+    match self.outcome {
+        Some(outcome) => out.label(
+            "Operation",
+            format_args!("{} {outcome}", operation.operation_id),
+        ),
+        None => out.label("Operation", &operation.operation_id),
+    }
+});
+
+/// `preview prune` result: the previews whose deletion was accepted.
+impl Report for Vec<DeletedPreview> {
+    type Json = [DeletedPreview];
+    fn json(&self) -> &Self::Json {
+        self
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        if self.is_empty() {
+            return out.line("No preview deleted.");
+        }
+        for deleted in self {
+            out.line(format_args!(
+                "Deleted preview {} of branch {} ({}) and its volumes",
+                deleted.preview.name,
+                preview_branch(&deleted.preview),
+                deleted.preview.id
+            ))?;
+        }
+        Ok(())
+    }
+}
 
 /// `env show` result: an environment's intent, the manifest it deploys, and
 /// its runtime state.
@@ -433,7 +586,7 @@ report!(EnvironmentShowReport<'_>, self, out, {
     )?;
     let values = manifest
         .iter()
-        .flat_map(|manifest| manifest.values(&environment.name));
+        .flat_map(|manifest| manifest.values(&environment.target()));
     for (name, value) in values {
         match value {
             Some(value) => out.label("Variable", format_args!("{name} = {value}"))?,
@@ -727,8 +880,8 @@ report!(OperationOutcomeReport<'_>, self, out, {
     self.operation.render_human(out)
 });
 
-/// Environment deletion result. `outcome` is present only after waiting; volumes
-/// are always retained.
+/// Environment or preview deletion result. `outcome` is present only after
+/// waiting. Environments retain their volumes; previews remove theirs.
 #[derive(Serialize)]
 pub(crate) struct DeletionReport<'a> {
     accepted: &'a AcceptedOperation,
@@ -754,23 +907,34 @@ impl<'a> DeletionReport<'a> {
             volumes_retained: true,
         }
     }
+
+    /// The deletion of a preview, which removes its volumes too.
+    pub(crate) const fn removing_volumes(mut self) -> Self {
+        self.volumes_retained = false;
+        self
+    }
 }
 report!(DeletionReport<'_>, self, out, {
+    let (noun, volumes) = if self.volumes_retained {
+        ("Environment", "named volumes retained")
+    } else {
+        ("Preview", "its volumes are removed")
+    };
     if self.outcome.is_some() {
         out.line(format_args!(
-            "Environment {} deleted (named volumes retained)",
+            "{noun} {} deleted ({volumes})",
             self.accepted.environment_id
         ))
     } else {
         out.line(format_args!(
-            "Accepted operation {} (named volumes retained)",
+            "Accepted operation {} ({volumes})",
             self.accepted.operation_id
         ))
     }
 });
 
 /// Application deletion result. `outcome` is present only after waiting;
-/// volumes are always retained.
+/// environments retain their volumes, previews remove theirs.
 #[derive(Serialize)]
 pub(crate) struct ApplicationDeletionReport<'a> {
     deleted: &'a DeletedApplication,
@@ -800,13 +964,13 @@ impl<'a> ApplicationDeletionReport<'a> {
 report!(ApplicationDeletionReport<'_>, self, out, {
     if self.outcome.is_some() {
         return out.line(format_args!(
-            "Application {} deleted (named volumes retained)",
+            "Application {} deleted (environments' named volumes retained)",
             self.deleted.application_id
         ));
     }
     for operation in &self.deleted.operations {
         out.line(format_args!(
-            "Accepted operation {} for environment {} (named volumes retained)",
+            "Accepted operation {} for {} (environments' named volumes retained)",
             operation.operation_id, operation.environment_id
         ))?;
     }

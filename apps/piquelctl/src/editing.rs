@@ -504,12 +504,16 @@ pub(crate) struct VariableTarget {
     /// Environment name whose value changes; omit to change the default.
     #[arg(long = "env", value_name = "ENV")]
     environment: Option<String>,
+    /// Change the value every preview uses, `[spec.previews.variables]`.
+    #[arg(long, conflicts_with = "environment")]
+    previews: bool,
     #[command(flatten)]
     flags: EditFlags,
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum VariableCommand {
-    /// Set a variable's default, or with --env its value in one environment.
+    /// Set a variable's default, or with --env its value in one environment,
+    /// or with --previews its value in previews.
     Set {
         #[command(flatten)]
         target: VariableTarget,
@@ -520,7 +524,8 @@ pub(crate) enum VariableCommand {
         #[arg(long)]
         string: bool,
     },
-    /// Remove a variable's default, or with --env its value in one environment.
+    /// Remove a variable's default, or with --env its value in one
+    /// environment, or with --previews its value in previews.
     Unset(VariableTarget),
 }
 
@@ -536,12 +541,13 @@ impl VariableCommand {
         let (Self::Set { target, .. } | Self::Unset(target)) = self;
         let current = resolve_application(client, &target.app).await?;
         let mut variables = Variables::of(&current.application.to_manifest());
-        let values = match &target.environment {
-            Some(environment) => variables
+        let values = match (&target.environment, target.previews) {
+            (Some(environment), _) => variables
                 .environments
                 .entry(environment.clone())
                 .or_default(),
-            None => &mut variables.defaults,
+            (None, true) => &mut variables.previews,
+            (None, false) => &mut variables.defaults,
         };
         match self {
             Self::Set { value, string, .. } => {

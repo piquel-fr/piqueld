@@ -17,8 +17,8 @@ use piqueld_core::api::{
 };
 use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName, TrackedBranch};
 
-/// Decodes a JSON environment request, requiring the JSON content type.
-fn environment_request<T: serde::de::DeserializeOwned>(
+/// Decodes a JSON environment or preview request, requiring the JSON content type.
+pub(super) fn environment_request<T: serde::de::DeserializeOwned>(
     headers: &HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<T, ApiError> {

@@ -1,6 +1,6 @@
 //! Public manifest input and export shapes, before semantic validation.
 
-use super::variables::{Template, Typed};
+use super::variables::{RenderTarget, Template, Typed};
 use super::{APPLICATION_API_VERSION, APPLICATION_KIND, Visibility};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
@@ -113,15 +113,39 @@ impl ApplicationSpec {
         }
     }
 
-    /// Caps every route at `environment`'s visibility ceiling, as rendering
-    /// for that environment does. Unconfigured environments restrict nothing.
-    pub(super) fn cap_visibility(&mut self, environment: &str) {
-        let ceiling = self
-            .environments
-            .get(environment)
-            .map_or(Visibility::Public, |config| config.visibility);
+    /// Caps every route at `target`'s visibility ceiling, as rendering for it
+    /// does. Unconfigured environments restrict nothing; previews are private
+    /// unless `[spec.previews] visibility` says otherwise.
+    pub(super) fn cap_visibility(&mut self, target: &RenderTarget) {
+        let ceiling = match target {
+            RenderTarget::Environment(name) => self
+                .environments
+                .get(name.as_str())
+                .map_or(Visibility::Public, |config| config.visibility),
+            RenderTarget::Preview(_) => self.previews.visibility,
+        };
         for route in &mut self.routes {
             route.visibility = route.visibility.capped(ceiling);
+        }
+    }
+
+    /// The table of values that override the defaults for `target`, with its
+    /// path: the environment's block, if any, or `[spec.previews.variables]`.
+    pub(super) fn overrides(
+        &self,
+        target: &RenderTarget,
+    ) -> Option<(String, &BTreeMap<String, Variable>)> {
+        match target {
+            RenderTarget::Environment(name) => self.environments.get(name.as_str()).map(|config| {
+                (
+                    format!("spec.environments.{name}.variables"),
+                    &config.variables,
+                )
+            }),
+            RenderTarget::Preview(_) => Some((
+                "spec.previews.variables".to_owned(),
+                &self.previews.variables,
+            )),
         }
     }
 }
@@ -156,6 +180,10 @@ pub struct PreviewConfig {
     /// The strictest visibility preview routes get; `private` by default, so
     /// previews publish routes only with an explicit `public`.
     pub visibility: Visibility,
+    /// Values for every preview: each overrides the `[spec.variables]`
+    /// default of the same name, or declares a variable without a default.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub variables: BTreeMap<String, Variable>,
 }
 
 impl PreviewConfig {

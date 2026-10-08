@@ -70,8 +70,8 @@ fn codes_and_paths(errors: &ValidationErrors) -> Vec<(&str, &str)> {
 fn id() -> ApplicationId {
     ApplicationId::parse("app-notes-01").unwrap()
 }
-fn environment(name: &str) -> EnvironmentName {
-    EnvironmentName::parse(name).unwrap()
+fn environment(name: &str) -> RenderTarget {
+    RenderTarget::Environment(EnvironmentName::parse(name).unwrap())
 }
 fn saved() -> RenderContext {
     RenderContext::saved(environment("production"))

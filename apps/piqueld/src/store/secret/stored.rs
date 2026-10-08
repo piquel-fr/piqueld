@@ -337,7 +337,7 @@ impl Store {
         for (name, source) in app.spec().mounted_secrets() {
             if source == SecretSource::Stored
                 && stored.iter().any(|secret| {
-                    secret.metadata.name == name && !secret.access.allows(&environment.id)
+                    secret.metadata.name == name && !secret.access.allows(environment)
                 })
             {
                 return Err(StoreError::SecretAccessDenied {
@@ -400,7 +400,7 @@ impl Store {
                 .push(copy.swarm_name);
         }
         if row.deletion_id.is_none() {
-            for environment in Self::environments_on(&mut tx, id).await? {
+            for environment in Self::deployables_on(&mut tx, id).await? {
                 let environment = Self::environment_on(&mut tx, environment.id.as_str())
                     .await?
                     .ok_or(StoreError::NotFound)?;

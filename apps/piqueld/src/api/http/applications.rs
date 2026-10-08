@@ -151,10 +151,11 @@ pub(super) struct DeleteApplicationQuery {
     environments: Option<String>,
 }
 
-// Accepts a deletion operation for every environment; named volumes are retained.
+// Accepts a deletion operation for every environment, whose named volumes are
+// retained, and every preview, whose volumes are removed.
 #[utoipa::path(
     delete, path = "/api/v1/applications/{id}", operation_id = "deleteApplication",
-    summary = "Delete an application and all its environments, retaining volumes",
+    summary = "Delete an application with its environments, retaining their volumes, and its previews",
     params(("id" = String, Path, min_length = 8, max_length = 64), DeleteApplicationQuery,("Idempotency-Key"=Option<String>,Header)),
     responses(
         (status = 409, response = inline(ApiErrorResponse)),
@@ -303,7 +304,8 @@ impl GenerationQuery {
 
 /// Submits a mutation with the request's `Idempotency-Key` and renders the
 /// acceptance: 202 when a durable operation was started (including a save that
-/// also deploys, or a deletion), 200 for a plain save, rename, or environment change.
+/// also deploys, a created preview, or a deletion), 200 for a plain save,
+/// rename, environment change, or an existing preview.
 pub(super) async fn accept_mutation(
     state: &ApiState,
     identity: &Identity,
@@ -333,6 +335,8 @@ pub(super) async fn accept_mutation(
         }
         MutationResponse::Rename(renamed) => Ok(ok(renamed).into_response()),
         MutationResponse::Environment(environment) => Ok(ok(environment).into_response()),
+        MutationResponse::Preview(preview) if preview.created => Ok(accepted(preview)),
+        MutationResponse::Preview(preview) => Ok(ok(preview).into_response()),
         MutationResponse::Deleted(deleted) => Ok(accepted(deleted)),
     }
 }

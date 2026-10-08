@@ -49,6 +49,18 @@ application views show and what environments deploy after disconnecting.
 A sibling hostname conflict returns `hostname_conflict` with the hostname and
 reserving environment name in `details.hostname` and `details.environment`.
 
+A [preview](application-manifest.md#previews) is an environment whose `kind`
+is `{ "type": "preview", "branch": "feat/login", "slot": "agent-2", "slug":
+"notes-feat-login-agent-2-503aa8" }`; environments have `{ "type": "environment" }`.
+A preview's `name` is its slug and its `source` is its branch. Application
+views list previews separately in `previews`, never in `environments`, and the
+environment mutation endpoints (deploy, rename, branch, delete, reconcile)
+return 404 for a preview's ID, as the preview endpoints do for an
+environment's. The environment read endpoints (`detail`, `status`,
+`deployments`, `logs`, `secrets`) accept a preview's ID. Preview creation,
+deployment and deletion take no `expected_generation` and never advance the
+application revision: creation is idempotent on (branch, slot) instead.
+
 Application list items contain `id`, `name`, generation metadata, deletion
 intent, timestamps, and their environments. Read `/api/v1/applications/{id}`
 when the complete normalized manifest is needed.
@@ -63,7 +75,7 @@ when the complete normalized manifest is needed.
 | GET | `/api/v1/applications/{id}` | Full latest accepted application intent and its environments |
 | POST | `/api/v1/applications/plan` | Preview a manifest without pulling images; `environment=ID` selects the environment to compare with |
 | POST | `/api/v1/applications/apply` | Save configuration by name; `?deploy=true` also deploys its only environment |
-| DELETE | `/api/v1/applications/{id}` | Request deletion of every environment; no body. `environments=a,b` must name every environment when there are several |
+| DELETE | `/api/v1/applications/{id}` | Request deletion of every environment and preview; no body. `environments=a,b` must name every environment when there are several |
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment |
 | POST | `/api/v1/applications/{id}/environments` | Add an environment: `{ "name": "staging", "branch": "main", "commit": null, "expected_generation": 3 }`; `branch` defaults to the one `spec.manifest` names and requires a repository-backed application |
 | PUT | `/api/v1/environments/{id}/branch` | Follow another branch, or pin or unpin a commit, without redeploying: `{ "branch": "release", "commit": null, "expected_generation": 3 }` |
@@ -77,6 +89,12 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/environments/{id}/rename` | Rename an environment without redeployment: `{ "name": "...", "expected_generation": 3 }` |
 | DELETE | `/api/v1/environments/{id}` | Request deletion of one environment; no body |
 | POST | `/api/v1/environments/{id}/reconcile` | Retry the latest operation with its saved inputs once it has ended or failed; an operation still in progress is returned unchanged |
+| GET | `/api/v1/applications/{id}/previews` | Previews with status, latest operation, hostnames and branch state (`exists`, `moved`, `gone` or `unknown`), from one `git ls-remote` |
+| POST | `/api/v1/applications/{id}/previews` | Create and deploy a preview: `{ "branch": "feat/login", "slot": "agent-2" }`; 202 with `CreatedPreview` (`preview`, `operation`, `created: true`), or 200 with the existing preview of that branch and slot and its latest operation (`created: false`), never redeploying it. 409 `preview_requires_repository` without a manifest repository |
+| POST | `/api/v1/applications/{id}/previews/prune` | Delete each listed preview whose branch is confirmed gone: `{ "previews": [preview IDs] }`; returns the `DeletedPreview`s and keeps the rest. 502 `repository_unavailable`, deleting nothing, when the repository cannot be read |
+| GET | `/api/v1/previews/{id}` | One `PreviewView` |
+| POST | `/api/v1/previews/{id}/deploy` | Deploy the head of the preview's branch; 202 with `AcceptedOperation` |
+| DELETE | `/api/v1/previews/{id}` | Delete the preview and every volume it created; 202 with `AcceptedOperation` |
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
 | GET | `/api/v1/environments/{id}/exec` | WebSocket streaming a command in a running service task |
@@ -278,9 +296,9 @@ for an application without a manifest repository fails with 422
 `git_branch_invalid` or `git_commit_invalid`. Changing a branch advances the
 application revision and leaves that environment unresolved until it deploys.
 
-Deleting an application requests deletion of each environment and returns 202
-with `DeletedApplication` (`application_id`, `generation`, and one
-`AcceptedOperation` per environment). With several environments, `environments`
+Deleting an application requests deletion of each environment and preview and
+returns 202 with `DeletedApplication` (`application_id`, `generation`, and one
+`AcceptedOperation` per environment and preview). Previews need no confirmation. With several environments, `environments`
 must list every environment name (409 `environment_confirmation_required`
 otherwise, naming them in `details.environments`); force never skips this. The
 application disappears with its last environment; an application without
@@ -450,7 +468,8 @@ belong to their environment. Secret endpoints expose metadata only:
   `access`. Access is `{ "environments": "all" | { "only": [environment IDs] },
   "previews": bool }`. `all` covers environments created later; IDs keep a renamed
   environment's access, and deleting an environment removes it from every list.
-  `previews` is stored for previews, which do not exist yet.
+  Previews may mount the secret only when `previews` is true; `all` never covers
+  them, and lists accept only environment IDs.
 - `PUT /api/v1/applications/{id}/secrets/{name}` accepts an `application/octet-stream`
   value of 1–512000 bytes. `X-Expected-Generation: 0` creates; a current generation
   replaces. The `environments` query parameter (`all`, or comma-separated

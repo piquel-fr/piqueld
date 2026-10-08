@@ -82,7 +82,7 @@ impl Store {
             .is_some_and(|r| r.secret_names.values().any(|n| versions.contains(n)));
         Ok(environment.manifest().is_some_and(|manifest| {
             manifest
-                .mounted_secrets(&environment.environment.name)
+                .mounted_secrets(&environment.environment.target())
                 .get(name)
                 == Some(&source)
         }) || captured

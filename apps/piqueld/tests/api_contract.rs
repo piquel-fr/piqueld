@@ -6567,3 +6567,134 @@ async fn deploys_and_previews_fail_when_an_environment_may_not_mount_a_stored_se
         .unwrap();
     server.abort();
 }
+
+/// Runs `git` in `directory`.
+fn git(directory: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .current_dir(directory)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A Git repository in `parent` with one empty commit on `main` and on each
+/// of `branches`.
+fn repository_with_branches(parent: &std::path::Path, branches: &[&str]) -> std::path::PathBuf {
+    let repository = parent.join("repository");
+    std::fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "--initial-branch=main"]);
+    let identity = ["-c", "user.name=Test", "-c", "user.email=test@example.com"];
+    git(
+        &repository,
+        &[&identity[..], &["commit", "--allow-empty", "-m", "fixture"]].concat(),
+    );
+    for branch in branches {
+        git(&repository, &["branch", branch]);
+    }
+    repository
+}
+
+/// Pruning deletes only the previews whose branch the repository confirms is
+/// gone, and nothing at all while the repository cannot be read.
+#[tokio::test]
+async fn pruning_deletes_previews_only_when_their_branch_is_confirmed_gone() {
+    use piqueld_client::{BranchState, ClientError, CreatePreviewRequest, PrunePreviewsRequest};
+    let temp = tempfile::tempdir().unwrap();
+    let repository = repository_with_branches(temp.path(), &["feat/gone", "feat/kept"]);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
+    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let mut manifest = manifest();
+    manifest.spec.manifest = Some(
+        serde_json::from_value(serde_json::json!({
+            "repository": {"url": repository.display().to_string(), "branch": "main"},
+            "path": "app.toml",
+        }))
+        .unwrap(),
+    );
+    let saved = client
+        .apply_application(&ApplyApplicationRequest {
+            expected_generation: Some(0),
+            expected_application_id: None,
+            manifest,
+        })
+        .await
+        .unwrap();
+    let application = saved.application_id.as_str();
+    let mut previews = Vec::new();
+    for branch in ["feat/gone", "feat/kept"] {
+        let request = CreatePreviewRequest {
+            branch: branch.into(),
+            slot: None,
+        };
+        previews.push(
+            client
+                .create_preview(application, &request)
+                .await
+                .unwrap()
+                .preview
+                .id,
+        );
+    }
+    let prune = PrunePreviewsRequest {
+        previews: previews.clone(),
+    };
+    let deleting = async || {
+        let mut deleting = Vec::new();
+        for preview in &previews {
+            deleting.push(
+                client
+                    .preview(preview.as_str())
+                    .await
+                    .unwrap()
+                    .preview
+                    .delete_intent,
+            );
+        }
+        deleting
+    };
+    git(&repository, &["branch", "-D", "feat/gone"]);
+    let states = async || {
+        client
+            .previews(application)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|view| view.branch)
+            .collect::<Vec<_>>()
+    };
+    assert!(matches!(
+        states().await.as_slice(),
+        [BranchState::Gone, BranchState::Exists { .. }]
+    ));
+
+    // An unreadable repository leaves every branch unknown and deletes nothing.
+    let moved = temp.path().join("moved");
+    std::fs::rename(&repository, &moved).unwrap();
+    assert!(matches!(
+        states().await.as_slice(),
+        [BranchState::Unknown { .. }, BranchState::Unknown { .. }]
+    ));
+    let error = client
+        .prune_previews(application, &prune)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, ClientError::Api { status, .. } if status.as_u16() == 502),
+        "{error:?}"
+    );
+    assert_eq!(deleting().await, [false, false]);
+
+    std::fs::rename(&moved, &repository).unwrap();
+    let deleted = client.prune_previews(application, &prune).await.unwrap();
+    assert_eq!(deleted.len(), 1);
+    assert_eq!(deleted[0].preview.id, previews[0]);
+    assert_eq!(deleting().await, [true, false]);
+    server.abort();
+}

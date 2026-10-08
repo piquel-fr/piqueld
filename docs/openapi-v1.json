@@ -662,7 +662,7 @@
             "type": "boolean"
           },
           "environments": {
-            "description": "Environments in name order.",
+            "description": "Environments in name order. Never includes previews.",
             "items": {
               "$ref": "#/components/schemas/EnvironmentView"
             },
@@ -673,6 +673,13 @@
             "format": "int64",
             "minimum": 0,
             "type": "integer"
+          },
+          "previews": {
+            "description": "Previews in slug order.",
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentView"
+            },
+            "type": "array"
           },
           "spec_hash": {
             "description": "Hash of the normalized desired specification.",
@@ -936,6 +943,91 @@
           "public_url"
         ],
         "type": "object"
+      },
+      "BranchState": {
+        "description": "Where a preview's branch is, read on demand with `git ls-remote`.",
+        "oneOf": [
+          {
+            "description": "The branch is at the deployed commit, or nothing was fetched yet.",
+            "properties": {
+              "head": {
+                "description": "Commit at the branch head.",
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "exists"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "head",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The branch moved past the deployed commit.",
+            "properties": {
+              "deployed": {
+                "description": "Commit the preview last fetched its manifest from.",
+                "type": "string"
+              },
+              "head": {
+                "description": "Commit at the branch head.",
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "moved"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "head",
+              "deployed",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The repository answered and has no such branch.",
+            "properties": {
+              "state": {
+                "enum": [
+                  "gone"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The repository could not be read. Never counts as gone.",
+            "properties": {
+              "message": {
+                "description": "Why the repository could not be read.",
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "message",
+              "state"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "Build": {
         "description": "Explicit build backend, extensible independently from source selection.",
@@ -1301,6 +1393,48 @@
         ],
         "type": "object"
       },
+      "CreatePreviewRequest": {
+        "additionalProperties": false,
+        "description": "Creates a preview of a branch of the application's manifest repository,\nor returns the existing preview of that branch and slot. Needs no\napplication revision.",
+        "properties": {
+          "branch": {
+            "description": "Branch to deploy.",
+            "type": "string"
+          },
+          "slot": {
+            "description": "Distinguishes several previews of one branch, e.g. one per agent.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch"
+        ],
+        "type": "object"
+      },
+      "CreatedPreview": {
+        "description": "A preview and its deployment, as created or found.",
+        "properties": {
+          "created": {
+            "description": "Whether this request created the preview.",
+            "type": "boolean"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/AcceptedOperation",
+            "description": "Its first deployment or, when it already existed, its latest\noperation: creating a preview again never redeploys it."
+          },
+          "preview": {
+            "$ref": "#/components/schemas/EnvironmentView",
+            "description": "The preview."
+          }
+        },
+        "required": [
+          "preview",
+          "operation",
+          "created"
+        ],
+        "type": "object"
+      },
       "CredentialView": {
         "description": "Revocable browser session, CLI session, or automation token metadata.",
         "properties": {
@@ -1507,6 +1641,24 @@
           "application_id",
           "generation",
           "operations"
+        ],
+        "type": "object"
+      },
+      "DeletedPreview": {
+        "description": "A preview whose deletion was accepted.",
+        "properties": {
+          "operation": {
+            "$ref": "#/components/schemas/AcceptedOperation",
+            "description": "Its deletion."
+          },
+          "preview": {
+            "$ref": "#/components/schemas/EnvironmentView",
+            "description": "The preview."
+          }
+        },
+        "required": [
+          "preview",
+          "operation"
         ],
         "type": "object"
       },
@@ -2489,7 +2641,7 @@
                 "type": "boolean"
               },
               "environments": {
-                "description": "Environments in name order.",
+                "description": "Environments in name order. Never includes previews.",
                 "items": {
                   "$ref": "#/components/schemas/EnvironmentView"
                 },
@@ -2500,6 +2652,13 @@
                 "format": "int64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "previews": {
+                "description": "Previews in slug order.",
+                "items": {
+                  "$ref": "#/components/schemas/EnvironmentView"
+                },
+                "type": "array"
               },
               "spec_hash": {
                 "description": "Hash of the normalized desired specification.",
@@ -2628,6 +2787,38 @@
               "items",
               "truncated",
               "expired"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_CreatedPreview": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "A preview and its deployment, as created or found.",
+            "properties": {
+              "created": {
+                "description": "Whether this request created the preview.",
+                "type": "boolean"
+              },
+              "operation": {
+                "$ref": "#/components/schemas/AcceptedOperation",
+                "description": "Its first deployment or, when it already existed, its latest\noperation: creating a preview again never redeploys it."
+              },
+              "preview": {
+                "$ref": "#/components/schemas/EnvironmentView",
+                "description": "The preview."
+              }
+            },
+            "required": [
+              "preview",
+              "operation",
+              "created"
             ],
             "type": "object"
           }
@@ -3091,9 +3282,13 @@
                 "$ref": "#/components/schemas/EnvironmentId",
                 "description": "Stable environment identifier; runtime names derive from it."
               },
+              "kind": {
+                "$ref": "#/components/schemas/EnvironmentKind",
+                "description": "An environment, or a preview of a branch."
+              },
               "name": {
                 "$ref": "#/components/schemas/EnvironmentName",
-                "description": "Name, unique within the application."
+                "description": "Name, unique within the application; a preview's slug."
               },
               "resolved_generation": {
                 "description": "Application revision of the last completely resolved target, not a\nconvergence guarantee.",
@@ -3104,7 +3299,7 @@
               },
               "source": {
                 "$ref": "#/components/schemas/EnvironmentSource",
-                "description": "Where deployments come from."
+                "description": "Where deployments come from; a preview's branch."
               },
               "updated_at_ms": {
                 "description": "Last update timestamp in Unix milliseconds.",
@@ -4464,6 +4659,65 @@
         ],
         "type": "object"
       },
+      "Envelope_PreviewView": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "A preview with its status, latest operation, hostnames, and branch state.",
+            "properties": {
+              "branch": {
+                "$ref": "#/components/schemas/BranchState",
+                "description": "Where its branch is now."
+              },
+              "hostnames": {
+                "description": "Hostnames the manifest it last fetched routes, rendered for it.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "latest_operation": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Operation"
+                      }
+                    ],
+                    "description": "Its newest operation, if any."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
+              "preview": {
+                "$ref": "#/components/schemas/EnvironmentView",
+                "description": "The preview."
+              },
+              "status": {
+                "$ref": "#/components/schemas/EnvironmentStatusView",
+                "description": "Its reconciliation status."
+              }
+            },
+            "required": [
+              "preview",
+              "status",
+              "hostnames",
+              "branch"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_ReadinessStatus": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -4723,6 +4977,98 @@
               "instance_id"
             ],
             "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_Vec_DeletedPreview": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "items": {
+              "description": "A preview whose deletion was accepted.",
+              "properties": {
+                "operation": {
+                  "$ref": "#/components/schemas/AcceptedOperation",
+                  "description": "Its deletion."
+                },
+                "preview": {
+                  "$ref": "#/components/schemas/EnvironmentView",
+                  "description": "The preview."
+                }
+              },
+              "required": [
+                "preview",
+                "operation"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_Vec_PreviewView": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "items": {
+              "description": "A preview with its status, latest operation, hostnames, and branch state.",
+              "properties": {
+                "branch": {
+                  "$ref": "#/components/schemas/BranchState",
+                  "description": "Where its branch is now."
+                },
+                "hostnames": {
+                  "description": "Hostnames the manifest it last fetched routes, rendered for it.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "latest_operation": {
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Operation"
+                        }
+                      ],
+                      "description": "Its newest operation, if any."
+                    },
+                    {
+                      "enum": [
+                        null
+                      ],
+                      "nullable": true,
+                      "type": "string"
+                    }
+                  ]
+                },
+                "preview": {
+                  "$ref": "#/components/schemas/EnvironmentView",
+                  "description": "The preview."
+                },
+                "status": {
+                  "$ref": "#/components/schemas/EnvironmentStatusView",
+                  "description": "Its reconciliation status."
+                }
+              },
+              "required": [
+                "preview",
+                "status",
+                "hostnames",
+                "branch"
+              ],
+              "type": "object"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -4996,6 +5342,49 @@
         "description": "Stable internal environment identity, assigned by persistence. Docker names,\nownership labels, secret encryption context, and history all derive from it.\nEnvironments migrated from single-environment applications keep the\napplication ID they had before environments existed.",
         "type": "string"
       },
+      "EnvironmentKind": {
+        "description": "What an environment is. Behaviour that differs between environments and\npreviews matches on this kind.",
+        "oneOf": [
+          {
+            "description": "A long-lived environment, configured by `[spec.environments.<name>]`.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "environment"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Preview",
+                "description": "A disposable deployment of a branch, configured by `[spec.previews]`.\nBoxed, so environment views stay small in the many futures that hold them."
+              },
+              {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "preview"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "A disposable deployment of a branch, configured by `[spec.previews]`.\nBoxed, so environment views stay small in the many futures that hold them."
+          }
+        ]
+      },
       "EnvironmentName": {
         "description": "User-facing environment name, unique within its application.",
         "type": "string"
@@ -5134,9 +5523,13 @@
             "$ref": "#/components/schemas/EnvironmentId",
             "description": "Stable environment identifier; runtime names derive from it."
           },
+          "kind": {
+            "$ref": "#/components/schemas/EnvironmentKind",
+            "description": "An environment, or a preview of a branch."
+          },
           "name": {
             "$ref": "#/components/schemas/EnvironmentName",
-            "description": "Name, unique within the application."
+            "description": "Name, unique within the application; a preview's slug."
           },
           "resolved_generation": {
             "description": "Application revision of the last completely resolved target, not a\nconvergence guarantee.",
@@ -5147,7 +5540,7 @@
           },
           "source": {
             "$ref": "#/components/schemas/EnvironmentSource",
-            "description": "Where deployments come from."
+            "description": "Where deployments come from; a preview's branch."
           },
           "updated_at_ms": {
             "description": "Last update timestamp in Unix milliseconds.",
@@ -5449,6 +5842,10 @@
           "count"
         ],
         "type": "object"
+      },
+      "GitBranch": {
+        "description": "A valid Git branch name, such as the branch a preview deploys.",
+        "type": "string"
       },
       "GitRepository": {
         "additionalProperties": false,
@@ -6793,10 +7190,55 @@
         ],
         "type": "object"
       },
+      "Preview": {
+        "description": "A preview's identity. Creation is idempotent on its branch and slot.",
+        "properties": {
+          "branch": {
+            "$ref": "#/components/schemas/GitBranch",
+            "description": "Branch of the application's manifest repository it deploys."
+          },
+          "slot": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/PreviewSlot"
+                  }
+                ],
+                "description": "Distinguishes several previews of one branch."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "slug": {
+            "$ref": "#/components/schemas/PreviewSlug",
+            "description": "DNS-safe identifier, `env.slug`, persisted when the preview is created."
+          }
+        },
+        "required": [
+          "branch",
+          "slug"
+        ],
+        "type": "object"
+      },
       "PreviewConfig": {
         "additionalProperties": false,
         "description": "Configuration shared by previews, `[spec.previews]`.",
         "properties": {
+          "variables": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Variable"
+            },
+            "default": {},
+            "description": "Values for every preview: each overrides the `[spec.variables]`\ndefault of the same name, or declares a variable without a default.",
+            "type": "object"
+          },
           "visibility": {
             "default": "private",
             "oneOf": [
@@ -6807,6 +7249,64 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "PreviewSlot": {
+        "description": "Distinguishes several previews of one branch, e.g. one per agent.",
+        "type": "string"
+      },
+      "PreviewSlug": {
+        "description": "DNS-safe identifier of a preview, derived once by\n[`PreviewSlug::derive`] and persisted. It is also the preview's name,\nso no environment of its application can share it.",
+        "type": "string"
+      },
+      "PreviewView": {
+        "description": "A preview with its status, latest operation, hostnames, and branch state.",
+        "properties": {
+          "branch": {
+            "$ref": "#/components/schemas/BranchState",
+            "description": "Where its branch is now."
+          },
+          "hostnames": {
+            "description": "Hostnames the manifest it last fetched routes, rendered for it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "latest_operation": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Operation"
+                  }
+                ],
+                "description": "Its newest operation, if any."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "preview": {
+            "$ref": "#/components/schemas/EnvironmentView",
+            "description": "The preview."
+          },
+          "status": {
+            "$ref": "#/components/schemas/EnvironmentStatusView",
+            "description": "Its reconciliation status."
+          }
+        },
+        "required": [
+          "preview",
+          "status",
+          "hostnames",
+          "branch"
+        ],
         "type": "object"
       },
       "Principal": {
@@ -6878,6 +7378,23 @@
           "state",
           "addresses",
           "message"
+        ],
+        "type": "object"
+      },
+      "PrunePreviewsRequest": {
+        "additionalProperties": false,
+        "description": "Deletes the listed previews whose branch the repository confirms is gone.",
+        "properties": {
+          "previews": {
+            "description": "Previews to delete, as confirmed by the caller. Any whose branch is\nnot confirmed gone when the request runs is kept.",
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentId"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "previews"
         ],
         "type": "object"
       },
@@ -7612,7 +8129,7 @@
             "description": "Environments that may mount the secret."
           },
           "previews": {
-            "description": "Whether previews may mount the secret. Stored for previews, which do\nnot exist yet.",
+            "description": "Whether previews may mount the secret. Previews are never covered by\n`environments`, even `all`.",
             "type": "boolean"
           }
         },
@@ -9044,6 +9561,14 @@
             "default": {},
             "description": "Values per environment name, `[spec.environments.<name>.variables]`.",
             "type": "object"
+          },
+          "previews": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Variable"
+            },
+            "default": {},
+            "description": "Values for every preview, `[spec.previews.variables]`.",
+            "type": "object"
           }
         },
         "type": "object"
@@ -9910,7 +10435,7 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Delete an application and all its environments, retaining volumes",
+        "summary": "Delete an application with its environments, retaining their volumes, and its previews",
         "x-piqueld-access": "apps:delete"
       },
       "get": {
@@ -10755,6 +11280,332 @@
           }
         },
         "x-piqueld-access": "apps:write"
+      }
+    },
+    "/api/v1/applications/{id}/previews": {
+      "get": {
+        "description": "Each preview comes with its status, latest operation, hostnames, and\nbranch state, read with one `git ls-remote` of the manifest repository.\nRepository failures make every branch state `unknown`.",
+        "operationId": "listPreviews",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Vec_PreviewView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Lists an application's previews.",
+        "x-piqueld-access": "apps:read"
+      },
+      "post": {
+        "description": "Creates and deploys a preview of `branch` of the application's manifest\nrepository, distinguished by `slot` when several previews share a branch.\nRepeating the request returns the existing preview of that branch and\nslot with its latest operation, without redeploying it. Applications\nwithout a manifest repository fail with `preview_requires_repository`.\nNeeds no application revision.",
+        "operationId": "createPreview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_CreatedPreview"
+                }
+              }
+            },
+            "description": "The preview of this branch and slot already exists"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_CreatedPreview"
+                }
+              }
+            },
+            "description": "Preview created and its first deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Creates a preview of a branch.",
+        "x-piqueld-access": "apps:deploy"
+      }
+    },
+    "/api/v1/applications/{id}/previews/prune": {
+      "post": {
+        "description": "Deletes each listed preview whose branch the manifest repository confirms\nis gone when the request runs, and keeps the others. When the repository\ncannot be read, fails with `repository_unavailable` and deletes nothing.",
+        "operationId": "prunePreviews",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrunePreviewsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Vec_DeletedPreview"
+                }
+              }
+            },
+            "description": "Previews whose deletion was accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Deletes previews whose branch is gone.",
+        "x-piqueld-access": "apps:delete"
       }
     },
     "/api/v1/applications/{id}/releases": {
@@ -22023,6 +22874,281 @@
         },
         "summary": "Get an operation",
         "x-piqueld-access": "apps:read"
+      }
+    },
+    "/api/v1/previews/{id}": {
+      "delete": {
+        "operationId": "deletePreview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                }
+              }
+            },
+            "description": "Deletion operation"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Deletes a preview with its services, network, secrets, and every volume\nit ever created; the deletion verifies the volumes are gone.",
+        "x-piqueld-access": "apps:delete"
+      },
+      "get": {
+        "operationId": "getPreview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_PreviewView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Gets a preview with its branch state.",
+        "x-piqueld-access": "apps:read"
+      }
+    },
+    "/api/v1/previews/{id}/deploy": {
+      "post": {
+        "operationId": "deployPreview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                }
+              }
+            },
+            "description": "Deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Deploys the head of a preview's branch.",
+        "x-piqueld-access": "apps:deploy"
       }
     },
     "/api/v1/system/configuration": {

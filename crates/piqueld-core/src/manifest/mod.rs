@@ -21,8 +21,8 @@ pub use routes::{
 };
 pub use template::{ApplicationTemplate, Rendering, ValidatedTemplate};
 pub use variables::{
-    GitRevision, PREVIEW_DEPLOYMENT_ID, RenderContext, Template, TemplateError, Typed,
-    VariableValue,
+    GitRevision, PREVIEW_DEPLOYMENT_ID, RenderContext, RenderTarget, Template, TemplateError,
+    Typed, VariableValue,
 };
 
 use domain::{ValidatedMetadata, ValidatedSpec};

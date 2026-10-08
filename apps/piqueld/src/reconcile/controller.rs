@@ -151,7 +151,9 @@ impl<D: DockerApi> Controller<D> {
         persisted.map(|()| outcome)
     }
 
-    /// Completes convergence and removes retained secrets after service deletion.
+    /// Completes convergence and removes retained secrets after service
+    /// deletion, and a deleted preview's volumes (environments have no
+    /// volume inventory, so they keep theirs).
     async fn execute_and_cleanup(
         &self,
         operation: &Operation,
@@ -164,6 +166,64 @@ impl<D: DockerApi> Controller<D> {
             if !names.is_empty() {
                 self.remove_secrets(operation, &names).await?;
             }
+            // Boxed: it would otherwise grow every operation's future.
+            Box::pin(self.remove_preview_volumes(operation)).await?;
+        }
+        Ok(())
+    }
+
+    /// Removes every volume in a preview's inventory, including volumes later
+    /// manifests dropped, journaled like other runtime mutations. Then
+    /// observes the runtime and fails, so the deletion is retried, while any
+    /// of them is left.
+    async fn remove_preview_volumes(&self, operation: &Operation) -> Result<(), OperationError> {
+        let names = self
+            .store
+            .preview_volumes(&operation.environment_id)
+            .await?;
+        if names.is_empty() {
+            return Ok(());
+        }
+        let journal = self
+            .store
+            .begin_action(Some(&operation.id), "remove_volumes", None)
+            .await?;
+        let result = match self.store.action_request(&journal, 1).await {
+            Ok(()) => self.remove_volumes(operation, &names).await,
+            Err(error) => Err(error.into()),
+        };
+        self.store
+            .finish_action(
+                &journal,
+                result.as_ref().err().map(OperationError::diagnostic),
+            )
+            .await?;
+        result?;
+        self.store
+            .mutation_event(&operation.id)
+            .await
+            .map_err(OperationError::from)
+    }
+
+    /// Removes `names` and verifies none of them is still observed.
+    async fn remove_volumes(
+        &self,
+        operation: &Operation,
+        names: &[String],
+    ) -> Result<(), OperationError> {
+        let ownership = self.ownership_labels(&operation.environment_id);
+        for name in names {
+            self.docker.remove_volume(name, &ownership).await?;
+        }
+        let observed = self.docker.observe(&operation.environment_id).await?;
+        if observed
+            .volumes
+            .iter()
+            .any(|volume| names.contains(&volume.name))
+        {
+            return Err(OperationError::DockerRequestFailed(
+                "verifying the preview's volumes were removed",
+            ));
         }
         Ok(())
     }
