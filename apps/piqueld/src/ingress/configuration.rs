@@ -51,11 +51,13 @@ struct Listener {
 
 impl Ingress {
     /// The complete replacement configuration for `table`, with the private
-    /// listener trusting PROXY headers from the edge network's subnets.
+    /// listener trusting PROXY headers from the edge network's subnets. The
+    /// private listener is left out unless Swarm's address pools are verified
+    /// outside the tailnet ranges.
     pub(super) async fn configuration(&self, table: &RoutingTable) -> Result<Value> {
         let proxies = match &self.node {
-            Some(_) => Some(self.edge_subnets().await?),
-            None => None,
+            Some(_) if self.check_tailnet_pools().await.is_ok() => Some(self.edge_subnets().await?),
+            _ => None,
         };
         // Tests outside the engine reach the published private listener from
         // the host's Docker bridge, outside the edge network. Application

@@ -244,9 +244,7 @@ impl Ingress {
     /// (withdrawn or redirect-only) need no network and are passed through.
     /// Keep unavailable apps on their accepted destinations, but always honor
     /// withdrawals. Never attach an unverified network or acknowledge a new route
-    /// for an app whose network failed validation. A network overlapping the
-    /// tailnet ranges instead withdraws the app's proxied routes, which detaches
-    /// it: its containers could otherwise pass for tailnet clients.
+    /// for an app whose network failed validation.
     pub(super) async fn prepare_routes(
         &self,
         desired: &RoutingTable,
@@ -267,12 +265,6 @@ impl Ingress {
                 Ok(()) => {
                     networks.insert(name);
                 }
-                Err(error) if error.is::<TailnetOverlap>() => {
-                    tracing::error!(environment_id=%id, network=%name, error=?error,
-                        "withdrawing proxied routes; other applications can still update");
-                    routes.retain(|route| route.target.service().is_none());
-                    failures.insert(id.clone(), format!("{error:#}"));
-                }
                 Err(error) => {
                     tracing::error!(environment_id=%id, network=%name, error=?error,
                         "preserving accepted destinations; other applications can still update");
@@ -287,8 +279,7 @@ impl Ingress {
     }
 
     /// Verifies an application's ingress network exists, is owned by that
-    /// application on this instance, and is an attachable overlay, outside the
-    /// tailnet ranges while private ingress is enabled.
+    /// application on this instance, and is an attachable overlay.
     async fn check_ingress_network(
         &self,
         id: &piqueld_core::EnvironmentId,
@@ -309,22 +300,37 @@ impl Ingress {
             network["Driver"] == "overlay" && network["Attachable"] == true,
             "application ingress network must be an attachable overlay"
         );
-        if self.node.is_some() {
-            for config in network["IPAM"]["Config"].as_array().into_iter().flatten() {
-                let subnet = config["Subnet"]
-                    .as_str()
-                    .context("application ingress network has no subnet")?;
-                let parsed = Subnet::parse(subnet)
-                    .with_context(|| format!("decode ingress network subnet {subnet}"))?;
-                if parsed.overlaps_tailnet() {
-                    return Err(TailnetOverlap {
-                        subnet: subnet.to_owned(),
-                    }
-                    .into());
-                }
-            }
-        }
         Ok(())
+    }
+
+    /// Requires Swarm's default address pools, which every application
+    /// ingress network is allocated from, to lie outside the tailnet ranges.
+    /// Otherwise an application's containers could pass for tailnet clients on
+    /// the private listener, which therefore stays off until this holds.
+    /// Pools are fixed when the Swarm is created, so success is remembered.
+    pub(super) async fn check_tailnet_pools(&self) -> Result<()> {
+        self.tailnet_pools
+            .get_or_try_init(|| async {
+                let info = self.docker.get("/info").await?;
+                let pools = info["Swarm"]["Cluster"]["DefaultAddrPool"]
+                    .as_array()
+                    .filter(|pools| !pools.is_empty())
+                    .context("Docker reports no Swarm address pools")?;
+                for pool in pools {
+                    let pool = pool.as_str().context("Swarm address pool is not text")?;
+                    let subnet = Subnet::parse(pool)
+                        .with_context(|| format!("decode Swarm address pool {pool}"))?;
+                    if subnet.overlaps_tailnet() {
+                        return Err(TailnetOverlap {
+                            pool: pool.to_owned(),
+                        }
+                        .into());
+                    }
+                }
+                Ok(())
+            })
+            .await
+            .copied()
     }
 
     /// Builds the hardened Caddy container spec: runs as the daemon's user with a

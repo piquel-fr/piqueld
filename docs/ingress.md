@@ -128,11 +128,11 @@ can open connections to the private listener too; it therefore completes TLS (an
 answers HTTP) only for tailnet client addresses (`100.64.0.0/10`,
 `fd7a:115c:a1e0::/48`). Only peers on the gateway's edge network, such as the apps
 node, may set the client address with a PROXY protocol header; anyone else's
-header is ignored and their own address is used. An application ingress network
-overlapping those ranges, possible with a custom Swarm address pool, could pass for
-the tailnet: while private ingress is enabled, such an application's proxied routes
-are withdrawn and its network detached, and ingress health names the subnet. Both
-listeners serve the probe endpoint. If
+header is ignored and their own address is used. Application networks come from
+Swarm's default address pools; a custom pool overlapping those ranges would let
+application containers pass for tailnet clients. The private listener therefore
+stays off, and its health names the pool, until the pools are verified outside
+the tailnet ranges. Both listeners serve the probe endpoint. If
 private ingress fails, private routes are unavailable; they never fall back to the
 public listener.
 

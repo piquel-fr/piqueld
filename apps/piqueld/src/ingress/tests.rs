@@ -1344,3 +1344,40 @@ async fn disabled_ingress_confirms_the_node_stopped_only_once_removed() {
         private.message
     );
 }
+
+/// Whether the private listener is configured on an engine whose Swarm
+/// allocates application networks from `pool`.
+async fn private_listener_with_pool(pool: &'static str) -> bool {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("docker.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let engine = axum::Router::new()
+        .route(
+            "/info",
+            axum::routing::get(move || async move {
+                axum::Json(json!({"Swarm":{"Cluster":{"DefaultAddrPool":[pool]}}}))
+            }),
+        )
+        .fallback(|| async { axum::Json(json!({"IPAM":{"Config":[{"Subnet":"172.20.0.0/16"}]}})) });
+    let server = tokio::spawn(async move { axum::serve(listener, engine).await });
+    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+    let ingress = Ingress::new(true, &socket, directory.path(), store)
+        .unwrap()
+        .with_private(&crate::config::PrivateIngressConfig {
+            enabled: true,
+            ..Default::default()
+        });
+    let configuration = ingress.configuration(&RoutingTable::new()).await.unwrap();
+    server.abort();
+    configuration["apps"]["http"]["servers"]
+        .get("private")
+        .is_some()
+}
+
+#[tokio::test]
+async fn the_private_listener_stays_off_while_application_pools_overlap_the_tailnet() {
+    assert!(private_listener_with_pool("10.0.0.0/8").await);
+    // Applications on such a pool could pass for tailnet clients.
+    assert!(!private_listener_with_pool("100.64.0.0/10").await);
+    assert!(!private_listener_with_pool("not a pool").await);
+}

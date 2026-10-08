@@ -74,6 +74,8 @@ pub struct Ingress {
     certificates: Certificates,
     /// The apps tailnet node, while `[ingress.private]` is enabled.
     node: Option<node::Node>,
+    /// Set once Swarm's address pools are verified outside the tailnet ranges.
+    tailnet_pools: tokio::sync::OnceCell<()>,
     #[cfg(test)]
     issuer: Option<serde_json::Value>,
     #[cfg(test)]
@@ -132,6 +134,7 @@ impl Ingress {
             logs_since: Mutex::default(),
             certificates,
             node: None,
+            tailnet_pools: tokio::sync::OnceCell::new(),
             #[cfg(test)]
             issuer: None,
             #[cfg(test)]
@@ -420,6 +423,16 @@ impl Ingress {
                 false,
                 "The gateway is unavailable, and with it the private listener. See ingress health",
             );
+        }
+        if let Err(error) = self.check_tailnet_pools().await {
+            tracing::error!(error=?error, "the private listener stays off");
+            return match error.downcast_ref::<node::TailnetOverlap>() {
+                Some(overlap) => status(false, &overlap.to_string()),
+                None => status(
+                    false,
+                    "The private listener stays off: Swarm's address pools could not be verified outside the tailnet ranges. See daemon logs for details.",
+                ),
+            };
         }
         if let Err(error) = self.ensure_node().await {
             tracing::error!(error=?error, "apps tailnet node is unavailable");
