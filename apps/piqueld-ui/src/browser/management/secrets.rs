@@ -621,7 +621,7 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                 let tone = match source {
                     MountedSecret::Generated | MountedSecret::Stored { .. } => Tone::Ok,
                     MountedSecret::Missing => Tone::Warn,
-                    MountedSecret::Denied => Tone::Bad,
+                    MountedSecret::Denied | MountedSecret::Unavailable => Tone::Bad,
                 };
                 view! {
                     <tr>

@@ -601,7 +601,8 @@ piquelctl env secret notes --env staging delete database-password --yes
 
 `env show` lists each secret the environment mounts and where its value comes
 from: generated for the environment, the application store (with its version),
-missing, or not allowed by the secret's access list.
+missing, not allowed by the secret's access list, or discarded by key recovery,
+which would fail the next deploy until replaced.
 
 If the daemon's `secrets.key` is lost and no backup exists, recover by discarding
 stored and generated values across ALL applications and environments:

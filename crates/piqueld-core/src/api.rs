@@ -814,11 +814,14 @@ pub enum MountedSecret {
     /// The application store's secret, whose access list excludes the
     /// environment: deploying fails with `secret_access_denied`.
     Denied,
+    /// The application store's secret, whose current value key recovery
+    /// discarded: deploying fails with `secret_unavailable` until it is replaced.
+    Unavailable,
 }
 
 impl MountedSecret {
-    /// Each secret `environment`'s saved configuration mounts, given the
-    /// application's `stored` secrets.
+    /// Each secret `template`, the manifest `environment` deploys, mounts
+    /// there, given the application's `stored` secrets.
     #[must_use]
     pub fn list(
         template: &ApplicationTemplate,
@@ -834,10 +837,11 @@ impl MountedSecret {
                     SecretSource::Stored => {
                         match stored.iter().find(|secret| secret.metadata.name == name) {
                             None => Self::Missing,
-                            Some(secret) if secret.access.allows(&environment.id) => Self::Stored {
+                            Some(secret) if !secret.access.allows(&environment.id) => Self::Denied,
+                            Some(secret) if secret.metadata.unavailable => Self::Unavailable,
+                            Some(secret) => Self::Stored {
                                 generation: secret.metadata.generation,
                             },
-                            Some(_) => Self::Denied,
                         }
                     }
                 };
@@ -856,6 +860,9 @@ impl std::fmt::Display for MountedSecret {
             }
             Self::Missing => formatter.write_str("not set in the application store"),
             Self::Denied => formatter.write_str("application store, not allowed here"),
+            Self::Unavailable => {
+                formatter.write_str("application store, value discarded; replace it")
+            }
         }
     }
 }
@@ -1021,7 +1028,10 @@ pub struct RouteStatus {
 
 #[cfg(test)]
 mod environment_tests {
-    use super::{ApplicationView, EnvironmentView};
+    use super::{
+        ApplicationView, EnvironmentAccess, EnvironmentView, MountedSecret, SecretAccess,
+        SecretMetadata, StoredSecret,
+    };
     use crate::{ApplicationId, EnvironmentId, EnvironmentName, EnvironmentSource};
 
     fn environment(id: &str, name: &str) -> EnvironmentView {
@@ -1064,6 +1074,59 @@ mod environment_tests {
         assert_eq!(
             view.environment("production").unwrap().id.as_str(),
             "app-notes-01"
+        );
+    }
+
+    /// Each mounted secret reports what its next deployment would find, so
+    /// failures show before deploying.
+    #[test]
+    fn mounted_secrets_report_what_deploying_would_find() {
+        let manifest = crate::manifest::parse_template_toml(
+            r"api_version='piqueld.dev/v1alpha1'
+kind='Application'
+[metadata]
+name='notes'
+[[spec.services]]
+name='web'
+source={type='image',image='nginx:alpine'}
+secrets=[{name='session',target='/run/secrets/1'},{name='stripe',target='/run/secrets/2'},{name='other',target='/run/secrets/3'},{name='discarded',target='/run/secrets/4'},{name='unset',target='/run/secrets/5'}]
+[[spec.secrets]]
+name='session'
+generate={type='random',bytes=16}
+",
+        )
+        .unwrap()
+        .normalize(ApplicationId::parse("app-notes-01").unwrap());
+        let production = environment("app-notes-01", "production");
+        let stored = |name: &str, environments, unavailable| StoredSecret {
+            access: SecretAccess {
+                environments,
+                previews: false,
+            },
+            metadata: SecretMetadata {
+                name: name.into(),
+                generation: 3,
+                updated_at_ms: 1,
+                deleting: false,
+                unavailable,
+            },
+        };
+        let others =
+            EnvironmentAccess::Only([EnvironmentId::parse("env-staging-01").unwrap()].into());
+        let stored = [
+            stored("stripe", EnvironmentAccess::All, false),
+            stored("other", others, false),
+            stored("discarded", EnvironmentAccess::All, true),
+        ];
+        assert_eq!(
+            MountedSecret::list(&manifest, &production, &stored),
+            [
+                ("discarded".into(), MountedSecret::Unavailable),
+                ("other".into(), MountedSecret::Denied),
+                ("session".into(), MountedSecret::Generated),
+                ("stripe".into(), MountedSecret::Stored { generation: 3 }),
+                ("unset".into(), MountedSecret::Missing),
+            ]
         );
     }
 }
