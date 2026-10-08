@@ -78,8 +78,8 @@ and the account directory. Routine reads, such as dashboard polling of
 application and environment views (whose saved configuration `apps:read`
 already allows) and CLI logins still awaiting approval, appear only in daemon
 logs. Records are written in the background so requests never wait for them;
-at most 1,024 wait at once, of which anonymous requests may hold only half, and
-on shutdown the daemon waits up to 10 seconds for pending records and logs any
+at most 1,024 wait at once, of which anonymous requests (made by neither an
+account nor the host operator) may hold only half, and on shutdown the daemon waits up to 10 seconds for pending records and logs any
 it loses. Each record keeps the action
 (method and route template), outcome (`allowed`, `denied`, or `failed`), status,
 account, credential and its kind, whether the credential was limited, the

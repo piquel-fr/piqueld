@@ -90,11 +90,12 @@ impl ApplicationService {
     /// Records one audited API request in the background, so responses never
     /// wait for the writer, e.g. during a storage outage. At most
     /// [`super::AUDIT_BACKLOG`] records wait at once; further ones are dropped and
-    /// logged rather than accumulating without bound. Anonymous requests also
-    /// need one of half as many slots of their own, so a flood of them cannot
-    /// crowd out records of signed-in callers.
+    /// logged rather than accumulating without bound. Anonymous requests, made
+    /// by neither an account nor the host operator, also need one of half as
+    /// many slots of their own, so a flood of them cannot crowd out records of
+    /// identified callers.
     pub(crate) fn record_audit(&self, event: crate::store::NewAuditEvent) {
-        let anonymous = if event.user_id.is_some() {
+        let anonymous = if event.user_id.is_some() || event.operator.is_some() {
             None
         } else {
             let Ok(slot) = self.anonymous_backlog.clone().try_acquire_owned() else {
