@@ -331,3 +331,82 @@ pub(super) async fn proxy_relay(
     });
     Ok((address, relay))
 }
+
+/// An IP subnet such as `10.0.3.0/24`, as Docker reports network ranges.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Subnet {
+    address: IpAddr,
+    prefix: u8,
+}
+
+/// An application ingress network overlaps the tailnet ranges, so its
+/// containers could pass for tailnet clients on the private listener.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "application ingress network subnet {subnet} overlaps the tailnet ranges the private listener trusts; give Swarm an address pool outside 100.64.0.0/10"
+)]
+pub(super) struct TailnetOverlap {
+    pub(super) subnet: String,
+}
+
+impl Subnet {
+    /// Parses `<address>/<prefix length>`.
+    pub(super) fn parse(text: &str) -> Option<Self> {
+        let (address, prefix) = text.split_once('/')?;
+        let address: IpAddr = address.parse().ok()?;
+        let prefix: u8 = prefix.parse().ok()?;
+        let bits = if address.is_ipv4() { 32 } else { 128 };
+        (prefix <= bits).then_some(Self { address, prefix })
+    }
+
+    /// Whether the subnets share an address: the shorter prefix of the two
+    /// selects the same network in both.
+    fn overlaps(self, other: Self) -> bool {
+        let prefix = u32::from(self.prefix.min(other.prefix));
+        match (self.address, other.address) {
+            (IpAddr::V4(a), IpAddr::V4(b)) => {
+                let mask = u32::MAX.checked_shl(32 - prefix).unwrap_or(0);
+                u32::from(a) & mask == u32::from(b) & mask
+            }
+            (IpAddr::V6(a), IpAddr::V6(b)) => {
+                let mask = u128::MAX.checked_shl(128 - prefix).unwrap_or(0);
+                u128::from(a) & mask == u128::from(b) & mask
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether any address of the subnet lies in [`TAILNET_RANGES`].
+    pub(super) fn overlaps_tailnet(self) -> bool {
+        TAILNET_RANGES
+            .iter()
+            .filter_map(|range| Self::parse(range))
+            .any(|range| self.overlaps(range))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Subnet;
+
+    #[test]
+    fn subnets_overlapping_the_tailnet_ranges_are_detected() {
+        for (subnet, overlaps) in [
+            ("10.0.3.0/24", false),
+            ("172.18.0.0/16", false),
+            ("100.64.5.0/24", true),
+            ("100.0.0.0/8", true),
+            ("100.128.0.0/16", false),
+            ("0.0.0.0/0", true),
+            ("fd7a:115c:a1e0:ab12::/64", true),
+            ("fd00::/8", true),
+            ("fd7b::/16", false),
+        ] {
+            let parsed = Subnet::parse(subnet).unwrap();
+            assert_eq!(parsed.overlaps_tailnet(), overlaps, "{subnet}");
+        }
+        for invalid in ["10.0.0.0", "10.0.0.0/33", "::/129", "nonsense/8"] {
+            assert_eq!(Subnet::parse(invalid), None, "{invalid}");
+        }
+    }
+}

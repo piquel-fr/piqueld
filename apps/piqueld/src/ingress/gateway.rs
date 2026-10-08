@@ -9,7 +9,11 @@
 //! decide from reads before opening an action, so steady-state passes record no
 //! history. Helpers taking a [`Journaled`] run inside their caller's action.
 
-use super::{CADDY_IMAGE, Ingress, node::PRIVATE_HTTPS_PORT, wire::Journaled};
+use super::{
+    CADDY_IMAGE, Ingress,
+    node::{PRIVATE_HTTPS_PORT, Subnet, TailnetOverlap},
+    wire::Journaled,
+};
 use crate::store::ingress::RoutingTable;
 use anyhow::{Context, Result, ensure};
 use futures_util::TryStreamExt;
@@ -68,32 +72,37 @@ impl Ingress {
     }
 
     /// Removes the serving, `-previous`, and `-next` gateway containers and the
-    /// apps node in a single action when ingress is disabled. Records nothing
-    /// if none exist.
+    /// apps node in a single action when ingress is disabled. Every removal is
+    /// attempted, so a failing one never keeps another serving; the first
+    /// failure is returned. Records nothing if none exist.
     pub(super) async fn stop_gateway(&self) -> Result<()> {
         let mut existing = Vec::new();
+        let mut failure = None;
         for name in [
+            self.node_name(),
             self.name.clone(),
             format!("{}-previous", self.name),
             format!("{}-next", self.name),
-            self.node_name(),
         ] {
-            if self.named_container(&name).await?.is_some() {
-                existing.push(name);
+            match self.named_container(&name).await {
+                Ok(Some(_)) => existing.push(name),
+                Ok(None) => {}
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
             }
         }
-        if existing.is_empty() {
-            return Ok(());
-        }
-        let journal = self.journal("ingress_stop_gateway", &self.name).await?;
-        let result = async {
+        if !existing.is_empty() {
+            let journal = self.journal("ingress_stop_gateway", &self.name).await?;
+            let mut result = Ok(());
             for name in &existing {
-                self.remove_container(&journal, name).await?;
+                if let Err(error) = self.remove_container(&journal, name).await {
+                    result = result.and(Err(error));
+                }
             }
-            Ok(())
+            journal.finish(result).await?;
         }
-        .await;
-        journal.finish(result).await
+        failure.map_or(Ok(()), Err)
     }
 
     /// Removes a leftover container in its own action; used for best-effort cleanup.
@@ -235,7 +244,9 @@ impl Ingress {
     /// (withdrawn or redirect-only) need no network and are passed through.
     /// Keep unavailable apps on their accepted destinations, but always honor
     /// withdrawals. Never attach an unverified network or acknowledge a new route
-    /// for an app whose network failed validation.
+    /// for an app whose network failed validation. A network overlapping the
+    /// tailnet ranges instead withdraws the app's proxied routes, which detaches
+    /// it: its containers could otherwise pass for tailnet clients.
     pub(super) async fn prepare_routes(
         &self,
         desired: &RoutingTable,
@@ -256,6 +267,12 @@ impl Ingress {
                 Ok(()) => {
                     networks.insert(name);
                 }
+                Err(error) if error.is::<TailnetOverlap>() => {
+                    tracing::error!(environment_id=%id, network=%name, error=?error,
+                        "withdrawing proxied routes; other applications can still update");
+                    routes.retain(|route| route.target.service().is_none());
+                    failures.insert(id.clone(), format!("{error:#}"));
+                }
                 Err(error) => {
                     tracing::error!(environment_id=%id, network=%name, error=?error,
                         "preserving accepted destinations; other applications can still update");
@@ -270,7 +287,8 @@ impl Ingress {
     }
 
     /// Verifies an application's ingress network exists, is owned by that
-    /// application on this instance, and is an attachable overlay.
+    /// application on this instance, and is an attachable overlay, outside the
+    /// tailnet ranges while private ingress is enabled.
     async fn check_ingress_network(
         &self,
         id: &piqueld_core::EnvironmentId,
@@ -291,6 +309,21 @@ impl Ingress {
             network["Driver"] == "overlay" && network["Attachable"] == true,
             "application ingress network must be an attachable overlay"
         );
+        if self.node.is_some() {
+            for config in network["IPAM"]["Config"].as_array().into_iter().flatten() {
+                let subnet = config["Subnet"]
+                    .as_str()
+                    .context("application ingress network has no subnet")?;
+                let parsed = Subnet::parse(subnet)
+                    .with_context(|| format!("decode ingress network subnet {subnet}"))?;
+                if parsed.overlaps_tailnet() {
+                    return Err(TailnetOverlap {
+                        subnet: subnet.to_owned(),
+                    }
+                    .into());
+                }
+            }
+        }
         Ok(())
     }
 

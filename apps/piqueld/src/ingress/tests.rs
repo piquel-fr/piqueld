@@ -990,7 +990,7 @@ const PRIVATE_BODY: &str = "private-engine-detail";
 
 /// An enabled ingress whose Docker Engine fails every request with `PRIVATE_BODY`.
 struct FailingEngine {
-    _directory: tempfile::TempDir,
+    directory: tempfile::TempDir,
     store: Arc<Store>,
     ingress: Ingress,
     server: tokio::task::JoinHandle<std::io::Result<()>>,
@@ -1007,7 +1007,7 @@ impl FailingEngine {
         let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
         let ingress = Ingress::new(true, &socket, directory.path(), Arc::clone(&store)).unwrap();
         Self {
-            _directory: directory,
+            directory,
             store,
             ingress,
             server,
@@ -1313,6 +1313,33 @@ async fn disabled_private_ingress_is_unconfirmed_until_the_node_is_removed() {
         private
             .message
             .starts_with("Removing the apps node is not confirmed"),
+        "{}",
+        private.message
+    );
+}
+
+#[tokio::test]
+async fn disabled_ingress_confirms_the_node_stopped_only_once_removed() {
+    let engine = FailingEngine::start().await;
+    let directory = engine.directory.path();
+    let disabled = Ingress::new(
+        false,
+        &directory.join("docker.sock"),
+        directory,
+        Arc::clone(&engine.store),
+    )
+    .unwrap()
+    .with_private(&crate::config::PrivateIngressConfig {
+        enabled: true,
+        ..Default::default()
+    });
+    disabled.synchronize().await.unwrap_err();
+    let private = disabled.status().await.private;
+    assert!(!private.healthy);
+    assert!(
+        private
+            .message
+            .starts_with("Stopping the apps node is not confirmed"),
         "{}",
         private.message
     );

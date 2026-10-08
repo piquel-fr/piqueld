@@ -386,11 +386,19 @@ impl Ingress {
             message: message.into(),
             ..PrivateIngressStatus::default()
         };
+        // Disabled ingress stops the node with the gateway.
         if !self.enabled {
-            return status(
-                false,
-                "Ingress is disabled in daemon TOML; the apps node is stopped",
-            );
+            return if gateway {
+                status(
+                    true,
+                    "Ingress is disabled in daemon TOML; the apps node is stopped",
+                )
+            } else {
+                status(
+                    false,
+                    "Stopping the apps node is not confirmed; private routes may still be reachable from the tailnet. See ingress health",
+                )
+            };
         }
         let Some(node) = &self.node else {
             return match self.ensure_node().await {
