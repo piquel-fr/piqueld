@@ -201,3 +201,41 @@ fn credential_files_are_read_and_never_shown() {
     let both = format!("{source}\nurl = 'https://hooks.example.com/inline'");
     assert!(DaemonConfig::from_toml(&both).is_err(), "accepted {both}");
 }
+
+#[test]
+fn provisioned_tokens_are_read_at_startup_and_never_shown() {
+    let directory = tempfile::tempdir().unwrap();
+    let token = |name: &str, value: &str| {
+        let path = directory.path().join(name);
+        std::fs::write(&path, value).unwrap();
+        format!(
+            "[[auth.provisioned_tokens]]\naccount = 'piquel'\nname = '{name}'\ntoken_file = '{}'\n",
+            path.display()
+        )
+    };
+    let secret = "a".repeat(32);
+    let inline = "b".repeat(32);
+    let ci = token("ci", &format!("{secret}\n"));
+    let cd =
+        format!("[[auth.provisioned_tokens]]\naccount = 'bob'\nname = 'cd'\ntoken = '{inline}'\n");
+    let config = DaemonConfig::from_toml(&format!("{ci}{cd}")).unwrap();
+    let tokens = &config.auth.provisioned_tokens;
+    assert_eq!(tokens[0].token.expose(), secret);
+    assert_eq!(tokens[1].token.expose(), inline);
+    let view = format!("{:?} {config:?}", config.view());
+    assert!(view.contains("piquel/ci (from "), "{view}");
+    assert!(view.contains("bob/cd (inline)"), "{view}");
+    assert!(!view.contains(&secret) && !view.contains(&inline), "{view}");
+
+    for document in [
+        format!("{cd}token_file = '/run/token'"),
+        format!("{ci}{}", ci.replace("'piquel'", "'Piquel'")),
+        cd.replace(&inline, "short"),
+        format!("{ci}{}", token("copy", &secret)),
+    ] {
+        assert!(
+            DaemonConfig::from_toml(&document).is_err(),
+            "accepted {document}"
+        );
+    }
+}

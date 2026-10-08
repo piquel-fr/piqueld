@@ -18,7 +18,7 @@ use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::Subscribe
 pub struct DaemonConfig {
     /// API listeners and state directory.
     pub server: ServerConfig,
-    /// Canonical browser origin for passkeys and invitation links.
+    /// Browser origin and declared automation tokens.
     pub auth: AuthConfig,
     /// Dedicated tailnet node serving the website over HTTPS.
     pub tailscale: TailscaleConfig,
@@ -108,10 +108,7 @@ impl DaemonConfig {
                 "server.data_dir and server.runtime_dir must be different directories".into(),
             ));
         }
-        if let Some(public_url) = &self.auth.public_url {
-            crate::auth::Auth::validate_origin(public_url)
-                .map_err(|error| ConfigError::Invalid(error.to_string()))?;
-        }
+        self.auth.validate()?;
         self.tailscale.validate()?;
         absolute_file("docker.socket", &self.docker.socket)?;
         for host in &self.server.allowed_hosts {
@@ -159,13 +156,15 @@ impl DaemonConfig {
     }
 }
 
-/// Canonical website origin.
+/// Canonical website origin and declared automation tokens.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct AuthConfig {
     /// HTTPS origin, or HTTP localhost for development. Defaults to the
     /// tailnet node's HTTPS URL when it is enabled, otherwise localhost.
     pub public_url: Option<String>,
+    /// API tokens accepted in addition to the ones stored in the database.
+    pub provisioned_tokens: Vec<ProvisionedToken>,
 }
 
 impl DaemonConfig {
@@ -201,6 +200,76 @@ impl Default for TailscaleConfig {
             hostname: "piqueld".into(),
             auth_key_file: None,
         }
+    }
+}
+
+impl AuthConfig {
+    /// Shortest accepted provisioned token, matching generated token strength.
+    const MIN_TOKEN_BYTES: usize = 32;
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(public_url) = &self.public_url {
+            crate::auth::Auth::validate_origin(public_url)
+                .map_err(|error| ConfigError::Invalid(error.to_string()))?;
+        }
+        let mut names = std::collections::BTreeSet::new();
+        let mut values = std::collections::BTreeSet::new();
+        for token in &self.provisioned_tokens {
+            if token.name.is_empty() || !names.insert((token.account.to_lowercase(), &token.name)) {
+                return Err(ConfigError::Invalid(
+                    "provisioned token names must be non-empty and unique per account".into(),
+                ));
+            }
+            let value = token.token.expose();
+            if value.len() < Self::MIN_TOKEN_BYTES || !values.insert(value) {
+                return Err(ConfigError::Invalid(format!(
+                    "provisioned token {token} must be unique and at least {} bytes",
+                    Self::MIN_TOKEN_BYTES
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// An API token declared in configuration. It is held in memory only, so
+/// removing the entry revokes the token at the next restart.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(try_from = "RawProvisionedToken")]
+pub struct ProvisionedToken {
+    /// Username the token authenticates as. Rejected while no such account exists.
+    pub account: String,
+    /// Token name, unique among the account's provisioned tokens.
+    pub name: String,
+    /// Bearer secret, given as `token` or `token_file`.
+    pub token: Credential,
+}
+
+/// TOML form of [`ProvisionedToken`], before its secret is resolved.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProvisionedToken {
+    account: String,
+    name: String,
+    token: Option<String>,
+    token_file: Option<CredentialFile>,
+}
+
+impl TryFrom<RawProvisionedToken> for ProvisionedToken {
+    type Error = CredentialError;
+    fn try_from(raw: RawProvisionedToken) -> Result<Self, Self::Error> {
+        Ok(Self {
+            account: raw.account,
+            name: raw.name,
+            token: Credential::resolve("token", raw.token, raw.token_file)?,
+        })
+    }
+}
+
+/// Shows `account/name` and where the secret comes from, never the secret.
+impl std::fmt::Display for ProvisionedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{} ({})", self.account, self.name, self.token)
     }
 }
 
@@ -575,6 +644,7 @@ impl DaemonConfig {
             )
         })
         .collect();
+        groups.insert("Authentication".into(), self.auth_view());
         groups.insert("Tailscale".into(), self.tailscale_view());
         groups.insert("Observability".into(), self.observability_view());
         piqueld_core::api::HostConfiguration { groups }
@@ -598,6 +668,18 @@ impl DaemonConfig {
             ),
             ("Public URL".into(), self.public_url().to_owned()),
         ])
+    }
+    /// Builds the `Authentication` group. Declared tokens appear only as their source.
+    fn auth_view(&self) -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::from([(
+            "Provisioned tokens".into(),
+            self.auth
+                .provisioned_tokens
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+        )])
     }
     /// Builds the `Observability` group, listing notification destinations by name
     /// only so webhook URLs never reach the dashboard.

@@ -47,6 +47,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `server.allowed_hosts` | `[]` (additional trusted DNS hostnames) |
 | derived socket path | `<runtime_dir>/piqueld.sock` |
 | derived database path | `<data_dir>/piqueld.db` |
+| `auth.provisioned_tokens` | `[]` (declarative automation tokens) |
 | `docker.socket` | `/var/run/docker.sock` |
 | `docker.auto_initialize_swarm` | `true` |
 | `ingress.enabled` | `false` (restart required) |
@@ -207,10 +208,10 @@ first-account link, invitations, and credential lifetimes.
 
 ## Credential files
 
-Settings that carry credentials, such as webhook `url`, also accept a `_file`
-variant (`url_file`) that reads the value from a file at startup. Setting both
-variants is an error. Surrounding whitespace, such as a trailing newline, is
-removed, and an empty file is rejected.
+Settings that carry credentials, such as webhook `url` and provisioned token
+`token`, also accept a `_file` variant (`url_file`, `token_file`) that reads the
+value from a file at startup. Setting both variants is an error. Surrounding
+whitespace, such as a trailing newline, is removed, and an empty file is rejected.
 Relative paths resolve against `$CREDENTIALS_DIRECTORY`, so systemd
 `LoadCredential=`, agenix and sops-nix work unchanged:
 

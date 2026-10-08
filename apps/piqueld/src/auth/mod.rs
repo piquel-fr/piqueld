@@ -74,6 +74,8 @@ struct Inner {
     throttle: Mutex<throttle::Throttle>,
     /// Link written by [`Auth::prepare_setup`] while the installation is unclaimed.
     setup_link: Mutex<Option<String>>,
+    /// Usernames behind tokens declared in configuration, keyed by token hash.
+    provisioned: HashMap<String, String>,
 }
 
 impl Auth {
@@ -87,7 +89,7 @@ impl Auth {
         store: &crate::store::Store,
         config: &crate::config::DaemonConfig,
     ) -> anyhow::Result<Self> {
-        let auth = Self::new(store, config.public_url())?;
+        let auth = Self::new(store, config.public_url(), &config.auth.provisioned_tokens)?;
         let path = config.server.data_dir.join("setup-link");
         auth.prepare_setup(&path).await?;
         if auth.0.setup_link.lock().await.is_some() {
@@ -99,10 +101,15 @@ impl Auth {
         Ok(auth)
     }
 
-    /// Constructs the service for one exact browser origin.
+    /// Constructs the service for one exact browser origin, also accepting the
+    /// the `provisioned` tokens declared in configuration.
     /// # Errors
     /// Rejects origins that `WebAuthn` cannot safely use.
-    pub fn new(store: &crate::store::Store, public_url: &str) -> Result<Self> {
+    pub fn new(
+        store: &crate::store::Store,
+        public_url: &str,
+        provisioned: &[crate::config::ProvisionedToken],
+    ) -> Result<Self> {
         let origin = Self::validate_origin(public_url)?;
         let host = origin
             .domain()
@@ -125,6 +132,10 @@ impl Auth {
             devices: Mutex::new(HashMap::new()),
             throttle: Mutex::new(throttle::Throttle::default()),
             setup_link: Mutex::new(None),
+            provisioned: provisioned
+                .iter()
+                .map(|token| (Self::hash(token.token.expose()), token.account.clone()))
+                .collect(),
         })))
     }
 
