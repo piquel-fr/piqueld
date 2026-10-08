@@ -44,9 +44,11 @@ impl ApplicationService {
     }
 
     /// Deletes each of `confirmed` that is a preview of `application` whose
-    /// branch the repository confirms is gone, and keeps the others. Fails
-    /// with `repository_unavailable`, deleting nothing, when the repository
-    /// cannot be read: an unreadable repository never makes a branch gone.
+    /// branch the repository confirms is gone, and keeps the others,
+    /// including all of them when the application's repository changes
+    /// meanwhile. Fails with `repository_unavailable`, deleting nothing, when
+    /// the repository cannot be read: an unreadable repository never makes a
+    /// branch gone.
     ///
     /// # Errors
     /// Returns absence, repository, authorization, or storage errors.
@@ -70,13 +72,15 @@ impl ApplicationService {
             {
                 continue;
             }
-            let mutation = Mutation::Preview(PreviewMutation::Delete {
+            let mutation = Mutation::Preview(PreviewMutation::Prune {
                 id: preview.id.clone(),
+                repository: heads.url().to_owned(),
             });
-            let MutationResponse::Operation(operation) =
-                self.accept(actor, mutation, None, false, None).await?
-            else {
-                return Err(StoreError::Corrupt.into());
+            let operation = match self.accept(actor, mutation, None, false, None).await {
+                Ok(MutationResponse::Operation(operation)) => operation,
+                Err(ApplicationError::Store(StoreError::IdentityConflict)) => continue,
+                Ok(_) => return Err(StoreError::Corrupt.into()),
+                Err(error) => return Err(error),
             };
             deleted.push(DeletedPreview { preview, operation });
         }
@@ -99,19 +103,22 @@ impl ApplicationService {
     }
 
     /// Projects a preview with its status, latest operation, the hostnames
-    /// of the manifest it last fetched, and its branch state.
+    /// its deployed target routes, and its branch state.
     async fn preview_view(
         &self,
         preview: EnvironmentView,
         heads: &Result<Heads, anyhow::Error>,
     ) -> Result<PreviewView, ApplicationError> {
-        let stored = self.store.get(&preview.id).await?;
-        let hostnames = stored
-            .manifest()
-            .map(|manifest| manifest.hostnames(&preview.target()))
-            .unwrap_or_default()
-            .into_iter()
-            .map(String::from)
+        // Deployed routes include hostnames that only render when deploying,
+        // such as `${{ git.sha }}`.
+        let hostnames = self
+            .store
+            .get(&preview.id)
+            .await?
+            .resolved
+            .iter()
+            .flat_map(|target| &target.routes)
+            .map(|route| route.hostname.to_string())
             .collect();
         let branch = match (heads, preview.preview()) {
             (Ok(heads), Some(identity)) => heads.state(

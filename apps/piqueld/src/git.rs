@@ -7,7 +7,12 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 use tokio::process::Command;
 
 /// The branch heads of a remote repository, listed with `git ls-remote`.
-pub(crate) struct Heads(BTreeMap<String, String>);
+pub(crate) struct Heads {
+    /// The repository listed.
+    url: String,
+    /// Head commit of each branch.
+    branches: BTreeMap<String, String>,
+}
 
 impl Heads {
     /// Longest a listing may take before it counts as failed.
@@ -49,13 +54,21 @@ impl Heads {
                 heads.insert(branch.to_owned(), commit.to_owned());
             }
         }
-        Ok(Self(heads))
+        Ok(Self {
+            url: url.to_owned(),
+            branches: heads,
+        })
+    }
+
+    /// The repository listed, which a branch state only describes.
+    pub(crate) fn url(&self) -> &str {
+        &self.url
     }
 
     /// Where `branch` is compared with `fetched`, the commit a preview last
     /// fetched its manifest from.
     pub(crate) fn state(&self, branch: &str, fetched: Option<&str>) -> BranchState {
-        match (self.0.get(branch), fetched) {
+        match (self.branches.get(branch), fetched) {
             (None, _) => BranchState::Gone,
             (Some(head), Some(deployed)) if head != deployed => BranchState::Moved {
                 head: head.clone(),

@@ -171,6 +171,14 @@ pub enum PreviewMutation {
         /// Stable preview ID.
         id: EnvironmentId,
     },
+    /// Delete a preview whose branch `repository` no longer has, unless the
+    /// application's manifest repository changed since (`IdentityConflict`).
+    Prune {
+        /// Stable preview ID.
+        id: EnvironmentId,
+        /// URL of the repository the branch was found gone from.
+        repository: String,
+    },
 }
 
 /// Small acceptance response stored for request replay, without manifest contents.
@@ -214,7 +222,9 @@ impl Mutation {
             }
             Self::DeleteApplication { .. }
             | Self::Delete { .. }
-            | Self::Preview(PreviewMutation::Delete { .. }) => &[Delete],
+            | Self::Preview(PreviewMutation::Delete { .. } | PreviewMutation::Prune { .. }) => {
+                &[Delete]
+            }
         }
     }
 

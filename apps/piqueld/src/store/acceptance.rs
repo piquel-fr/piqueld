@@ -200,9 +200,11 @@ impl Store {
             | Mutation::Deploy { id, .. }
             | Mutation::Delete { id }
             | Mutation::Reconcile { id }
-            | Mutation::Preview(PreviewMutation::Deploy { id } | PreviewMutation::Delete { id }) => {
-                Self::environment_application_on(tx, id).await?
-            }
+            | Mutation::Preview(
+                PreviewMutation::Deploy { id }
+                | PreviewMutation::Delete { id }
+                | PreviewMutation::Prune { id, .. },
+            ) => Self::environment_application_on(tx, id).await?,
         };
         let target = match (&application, mutation) {
             (None, Mutation::Save { .. }) => Target::New,
@@ -434,17 +436,37 @@ impl Store {
             }
             PreviewMutation::Delete { id } => {
                 let preview = Self::preview_on(tx, &id).await?;
-                let operation = match Self::latest_operation_on(tx, &id).await? {
-                    Some(operation)
-                        if preview.delete_intent() && operation.kind == OperationKind::Delete =>
-                    {
-                        operation
-                    }
-                    _ => Self::request_delete_on(tx, &id).await?,
-                };
-                Ok(Self::operation_accepted(&operation))
+                Self::delete_preview_on(tx, &preview).await
+            }
+            PreviewMutation::Prune { id, repository } => {
+                let preview = Self::preview_on(tx, &id).await?;
+                // A branch gone from one repository says nothing about another.
+                if preview
+                    .repository()
+                    .is_none_or(|current| current.repository.url != repository)
+                {
+                    return Err(StoreError::IdentityConflict);
+                }
+                Self::delete_preview_on(tx, &preview).await
             }
         }
+    }
+
+    /// Requests a preview's deletion, or returns the one already pending.
+    async fn delete_preview_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        preview: &super::StoredEnvironment,
+    ) -> Result<Accepted, StoreError> {
+        let id = preview.id();
+        let operation = match Self::latest_operation_on(tx, id).await? {
+            Some(operation)
+                if preview.delete_intent() && operation.kind == OperationKind::Delete =>
+            {
+                operation
+            }
+            _ => Self::request_delete_on(tx, id).await?,
+        };
+        Ok(Self::operation_accepted(&operation))
     }
 
     /// Loads an application after checking the revision precondition, so a

@@ -4670,7 +4670,7 @@
                 "description": "Where its branch is now."
               },
               "hostnames": {
-                "description": "Hostnames the manifest it last fetched routes, rendered for it.",
+                "description": "Hostnames its deployed target routes; none before its first deployment.",
                 "items": {
                   "type": "string"
                 },
@@ -5026,7 +5026,7 @@
                   "description": "Where its branch is now."
                 },
                 "hostnames": {
-                  "description": "Hostnames the manifest it last fetched routes, rendered for it.",
+                  "description": "Hostnames its deployed target routes; none before its first deployment.",
                   "items": {
                     "type": "string"
                   },
@@ -7267,7 +7267,7 @@
             "description": "Where its branch is now."
           },
           "hostnames": {
-            "description": "Hostnames the manifest it last fetched routes, rendered for it.",
+            "description": "Hostnames its deployed target routes; none before its first deployment.",
             "items": {
               "type": "string"
             },

@@ -441,7 +441,7 @@ impl Report for Vec<PreviewView> {
                 view.branch,
                 view.latest_operation
                     .as_ref()
-                    .map_or_else(|| "none".to_owned(), |op| op.state.to_string()),
+                    .map_or_else(|| "none".to_owned(), |op| format!("{} {}", op.state, op.id)),
                 preview.id
             ))?;
         }

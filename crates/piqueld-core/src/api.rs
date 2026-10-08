@@ -302,7 +302,7 @@ pub struct PreviewView {
     pub status: EnvironmentStatusView,
     /// Its newest operation, if any.
     pub latest_operation: Option<Operation>,
-    /// Hostnames the manifest it last fetched routes, rendered for it.
+    /// Hostnames its deployed target routes; none before its first deployment.
     pub hostnames: Vec<String>,
     /// Where its branch is now.
     pub branch: BranchState,

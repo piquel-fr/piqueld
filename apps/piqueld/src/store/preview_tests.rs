@@ -228,3 +228,45 @@ async fn previews_mount_shared_secrets_only_when_their_access_allows_previews() 
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn pruning_keeps_a_preview_once_the_repository_changed() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let application = save(&store, false).await;
+    let preview = create(&store, &application, "feat/login", None)
+        .await
+        .unwrap()
+        .preview;
+    let prune = |repository: &str| {
+        Mutation::Preview(PreviewMutation::Prune {
+            id: preview.id.clone(),
+            repository: repository.into(),
+        })
+    };
+    // The branch was found gone from a repository the application no longer reads.
+    assert!(matches!(
+        store
+            .accept(
+                Daemon,
+                prune("https://example.com/old.git"),
+                None,
+                false,
+                None
+            )
+            .await,
+        Err(StoreError::IdentityConflict)
+    ));
+    assert!(!store.get(&preview.id).await.unwrap().delete_intent());
+    store
+        .accept(
+            Daemon,
+            prune("https://example.com/notes.git"),
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(store.get(&preview.id).await.unwrap().delete_intent());
+}
