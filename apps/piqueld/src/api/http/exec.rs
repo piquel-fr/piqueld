@@ -1,5 +1,5 @@
 //! `WebSocket` connections streaming one-off commands. See `piqueld_core::exec`.
-use super::{ApiError, ApiPath, ApiState, decode_json, openapi::ApiErrorResponse};
+use super::{ApiError, ApiPath, ApiState, access::Audit, decode_json, openapi::ApiErrorResponse};
 use crate::{api::ExecSession, auth::Identity, docker::ExecIo};
 use axum::{
     Extension,
@@ -54,6 +54,7 @@ pub(super) async fn exec(
     ApiPath(id): ApiPath<String>,
     ExecUpgrade(upgrade): ExecUpgrade,
     Extension(identity): Extension<Identity>,
+    Extension(audit): Extension<Audit>,
     request_id: Option<Extension<RequestId>>,
 ) -> Result<Response, ApiError> {
     let id = EnvironmentId::parse(id)?;
@@ -78,13 +79,25 @@ pub(super) async fn exec(
                 None => None,
                 Some(Ok(code)) => Some(ExecOutput::Exit(code)),
                 Some(Err(error)) => {
+                    // Grants are rechecked once the command arrives, after
+                    // the upgrade was audited as allowed.
+                    if error.denied.is_some() || error.status == StatusCode::UNAUTHORIZED {
+                        audit.refused_later(&state, identity.clone(), &error);
+                    }
                     let mut body = error.body();
                     if let Some(request_id) = request_id {
                         body.request_id = request_id;
                     }
                     let diagnostic = error.diagnostic.map(|diagnostic| *diagnostic);
+                    let caller = crate::api::Actor::Account(identity.caller());
                     state
-                        .record_failure(error.status, &mut body, diagnostic, Some(&id))
+                        .record_failure(
+                            error.status,
+                            &mut body,
+                            diagnostic,
+                            Some(&id),
+                            caller.attribution(),
+                        )
                         .await;
                     Some(ExecOutput::Failed {
                         status: error.status.as_u16(),

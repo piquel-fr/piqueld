@@ -1,5 +1,5 @@
 //! Persist intent before a runtime request and record its observed outcome afterward.
-use super::{EnvironmentId, Store, StoreError, new_id, now_ms};
+use super::{Attribution, EnvironmentId, Store, StoreError, new_id, now_ms};
 use piqueld_core::observability::{Diagnostic, DiagnosticCode, EventScope};
 use sqlx::{Sqlite, Transaction};
 
@@ -18,11 +18,33 @@ pub(crate) struct JournalAction {
     resource: Option<String>,
     attempt: Option<i64>,
     started_at_ms: i64,
+    /// Who requested the action: its operation's actor when it started (a
+    /// later restart by someone else does not change it), or the caller of a
+    /// request outside any operation.
+    actor_user_id: Option<String>,
+    actor_credential_id: Option<String>,
+}
+impl JournalAction {
+    /// A daemon-scoped action outside any operation, starting now.
+    fn daemon(phase: &str, resource: Option<&str>) -> Self {
+        Self {
+            id: new_id("action"),
+            operation_id: None,
+            environment_id: None,
+            generation: None,
+            phase: phase.to_owned(),
+            resource: resource.map(str::to_owned),
+            attempt: None,
+            started_at_ms: now_ms(),
+            actor_user_id: None,
+            actor_credential_id: None,
+        }
+    }
 }
 impl Store {
     /// Journals a runtime request before it is made, optionally under an
-    /// operation whose environment, generation, and attempt are copied onto the
-    /// action. Without an operation the action is daemon-scoped.
+    /// operation whose environment, generation, attempt, and actor are copied
+    /// onto the action. Without an operation the action is daemon-scoped.
     pub(crate) async fn begin_action(
         &self,
         operation: Option<&str>,
@@ -30,53 +52,76 @@ impl Store {
         resource: Option<&str>,
     ) -> Result<JournalAction, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let op = match operation {
-            Some(id) => Some(Self::operation_on(&mut tx, id).await?),
-            None => None,
-        };
-        let action = JournalAction {
-            id: new_id("action"),
+        let mut action = JournalAction {
             operation_id: operation.map(str::to_owned),
-            environment_id: op.as_ref().map(|o| o.environment_id.to_string()),
-            generation: op
-                .as_ref()
-                .map(|o| i64::try_from(o.generation))
-                .transpose()
-                .map_err(StoreError::corrupt)?,
-            phase: phase.to_owned(),
-            resource: resource.map(str::to_owned),
-            attempt: op
-                .as_ref()
-                .map(|o| i64::try_from(o.attempt))
-                .transpose()
-                .map_err(StoreError::corrupt)?,
-            started_at_ms: now_ms(),
+            ..JournalAction::daemon(phase, resource)
         };
+        if let Some(id) = operation {
+            let op = Self::operation_on(&mut tx, id).await?;
+            action.environment_id = Some(op.environment_id.to_string());
+            action.generation = Some(i64::try_from(op.generation).map_err(StoreError::corrupt)?);
+            action.attempt = Some(i64::try_from(op.attempt).map_err(StoreError::corrupt)?);
+        }
+        Self::attribute_action_on(&mut tx, &mut action, operation).await?;
         Self::start_action_on(&mut tx, &action).await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(action)
     }
-    /// Journals an environment-owned runtime request made outside any operation.
+    /// Journals a daemon-scoped runtime request made on behalf of
+    /// `requested_by`'s operation, e.g. shared gateway changes a deployment
+    /// needs: it records the operation's actor but belongs to no environment.
+    pub(crate) async fn begin_daemon_action(
+        &self,
+        requested_by: Option<&str>,
+        phase: &str,
+        resource: Option<&str>,
+    ) -> Result<JournalAction, StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let mut action = JournalAction::daemon(phase, resource);
+        Self::attribute_action_on(&mut tx, &mut action, requested_by).await?;
+        Self::start_action_on(&mut tx, &action).await?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(action)
+    }
+    /// Journals an environment-owned runtime request made outside any
+    /// operation on behalf of `actor`.
     pub(crate) async fn begin_application_action(
         &self,
+        actor: Attribution<'_>,
         application: &EnvironmentId,
         phase: &str,
         resource: Option<&str>,
     ) -> Result<JournalAction, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let action = JournalAction {
-            id: new_id("action"),
-            operation_id: None,
             environment_id: Some(application.to_string()),
-            generation: None,
-            phase: phase.to_owned(),
-            resource: resource.map(str::to_owned),
-            attempt: None,
-            started_at_ms: now_ms(),
+            actor_user_id: actor.user_id.map(str::to_owned),
+            actor_credential_id: actor.credential_id.map(str::to_owned),
+            ..JournalAction::daemon(phase, resource)
         };
         Self::start_action_on(&mut tx, &action).await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(action)
+    }
+    /// Snapshots `operation`'s current actor onto `action`, so restarting the
+    /// operation later does not reattribute it.
+    async fn attribute_action_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        action: &mut JournalAction,
+        operation: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let actor = sqlx::query!(
+            "SELECT actor_user_id,actor_credential_id FROM operations WHERE id=?1",
+            operation,
+        )
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        if let Some(actor) = actor {
+            action.actor_user_id = actor.actor_user_id;
+            action.actor_credential_id = actor.actor_credential_id;
+        }
+        Ok(())
     }
     /// Inserts the `active_actions` row and its `action_started` event.
     async fn start_action_on(
@@ -84,8 +129,9 @@ impl Store {
         action: &JournalAction,
     ) -> Result<(), StoreError> {
         sqlx::query!(
-            "INSERT INTO active_actions(id,operation_id,environment_id,generation,phase,resource,attempt,started_at_ms)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            "INSERT INTO active_actions(id,operation_id,environment_id,generation,phase,resource,attempt,started_at_ms,
+            actor_user_id,actor_credential_id)
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             action.id,
             action.operation_id,
             action.environment_id,
@@ -94,6 +140,8 @@ impl Store {
             action.resource,
             action.attempt,
             action.started_at_ms,
+            action.actor_user_id,
+            action.actor_credential_id,
         )
         .execute(&mut **tx)
         .await
@@ -250,7 +298,8 @@ impl Store {
         sqlx::query!(
             "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,
             error_code,phase,resource,created_at_ms,scope,action_id,retry,duration_ms,diagnostic_id,
-            diagnostic_json) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            diagnostic_json,actor_user_id,actor_credential_id)
+            VALUES((SELECT application_id FROM environments WHERE id=?1),?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
             action.environment_id,
             action.operation_id,
             action.generation,
@@ -267,6 +316,8 @@ impl Store {
             duration,
             id,
             json,
+            action.actor_user_id,
+            action.actor_credential_id,
         )
         .execute(&mut **tx)
         .await
@@ -284,11 +335,12 @@ impl Store {
         let now = now_ms();
         sqlx::query!(
             "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,phase,
-            resource,created_at_ms,scope,action_id,retry) SELECT (SELECT application_id FROM environments WHERE id=active_actions.environment_id),
+            resource,created_at_ms,scope,action_id,retry,actor_user_id,actor_credential_id)
+            SELECT (SELECT application_id FROM environments WHERE id=active_actions.environment_id),
             environment_id,operation_id,generation,attempt,'action_outcome_unknown',
             'Execution was interrupted before its result was committed; reconciliation will inspect current runtime state',
             phase,resource,?1,CASE WHEN environment_id IS NULL THEN 'daemon' ELSE 'application' END,
-            id,retry
+            id,retry,actor_user_id,actor_credential_id
             FROM active_actions
             WHERE ?2 IS NULL OR operation_id=?2",
             now,

@@ -86,24 +86,31 @@ impl Journaled<'_> {
 }
 
 impl super::Ingress {
-    /// Opens a daemon-scoped journal action. Callers decide from reads first and
-    /// open an action only when a change is needed, so unchanged passes record
-    /// no history.
+    /// Opens a daemon-scoped journal action, attributed to the deployment the
+    /// current pass serves (see `requester`). Callers decide from reads first
+    /// and open an action only when a change is needed, so unchanged passes
+    /// record no history.
     pub(super) async fn journal(&self, phase: &str, resource: &str) -> Result<Journaled<'_>> {
         self.journal_as(DiagnosticCode::IngressUnavailable, phase, resource)
             .await
     }
 
-    /// Opens an action whose failure is classified as `code`.
+    /// Opens an action whose failure is classified as `code`, attributed like
+    /// [`Self::journal`].
     pub(super) async fn journal_as(
         &self,
         code: DiagnosticCode,
         phase: &str,
         resource: &str,
     ) -> Result<Journaled<'_>> {
+        let requester = self.requester.lock().await.clone();
+        let action = self
+            .store
+            .begin_daemon_action(requester.as_deref(), phase, Some(resource))
+            .await?;
         Ok(Journaled {
             store: &self.store,
-            action: self.store.begin_action(None, phase, Some(resource)).await?,
+            action,
             code,
             requests: AtomicU32::new(0),
         })

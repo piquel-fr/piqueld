@@ -66,6 +66,16 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::api::DeploymentView>>"
     },
     {
+      "schema": "AuditOutcome",
+      "name": "AuditOutcome",
+      "rustType": "piqueld_core::audit::AuditOutcome"
+    },
+    {
+      "schema": "Envelope_Page_AuditEvent",
+      "name": "EnvelopePageAuditEvent",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::audit::AuditEvent>>"
+    },
+    {
       "schema": "Envelope_Page_Event",
       "name": "EnvelopePageEvent",
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::Event>>"

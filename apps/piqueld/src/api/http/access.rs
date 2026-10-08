@@ -15,25 +15,28 @@
 use super::{ApiError, ApiState, ui};
 use crate::auth::{AuthError, Identity};
 use axum::{
-    Extension,
-    extract::{MatchedPath, RawPathParams, Request, State, rejection::RawPathParamsRejection},
+    extract::{
+        ConnectInfo, MatchedPath, RawPathParams, Request, State, rejection::RawPathParamsRejection,
+    },
     http::{Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use piqueld_core::audit::AuditOutcome;
 use piqueld_core::{
     ApplicationId, EnvironmentId,
     access::{AppPermission, Denied, GlobalPermission, Permission, Target},
 };
 use serde_json::json;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use tower_http::request_id::RequestId;
 use utoipa::openapi::{OpenApi, PathItem, path::Operation};
 use utoipa_axum::router::UtoipaMethodRouter;
 
 /// `OpenAPI` operation extension naming the route's requirement.
 const EXTENSION: &str = "x-piqueld-access";
 /// What the `{id}` path parameter of a route names.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PathOwner {
     /// An application.
     Application,
@@ -48,12 +51,18 @@ impl PathOwner {
         ("/api/v1/environments/{id}", Self::Environment),
     ];
 
-    /// The owner named by a matched route, if any.
-    fn of(path: &MatchedPath) -> Option<Self> {
-        Self::ROUTES
+    /// The owner a matched route names, with its `{id}`, if any.
+    fn find(
+        matched: Option<&MatchedPath>,
+        params: Result<RawPathParams, RawPathParamsRejection>,
+    ) -> Option<(Self, String)> {
+        let path = matched?.as_str();
+        let (_, owner) = Self::ROUTES
             .iter()
-            .find(|(prefix, _)| path.as_str().starts_with(prefix))
-            .map(|(_, owner)| *owner)
+            .find(|(prefix, _)| path.starts_with(prefix))?;
+        let params = params.ok()?;
+        let id = params.iter().find(|(name, _)| *name == "id")?.1.to_owned();
+        Some((*owner, id))
     }
 
     /// The application `id` names, if it exists. Malformed IDs name none.
@@ -199,12 +208,11 @@ impl RouteAccess {
 /// 1. Public routes pass.
 /// 2. Requests without an authenticated identity get 401.
 /// 3. Permission routes check the caller's grants, on the path's application
-///    when there is one. Refusals are logged with the caller.
+///    when there is one.
 pub(super) async fn enforce(
     State((routes, state)): State<(Arc<RouteAccess>, ApiState)>,
     matched: Option<MatchedPath>,
     params: Result<RawPathParams, RawPathParamsRejection>,
-    identity: Option<Extension<Identity>>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -212,41 +220,219 @@ pub(super) async fn enforce(
         return next.run(request).await;
     }
     let access = routes.get(matched.as_ref(), request.method());
+    let owner = PathOwner::find(matched.as_ref(), params);
+    let identity = request.extensions().get::<Identity>().cloned();
+    match refusal(&state, access, identity.as_ref(), owner).await {
+        None => next.run(request).await,
+        Some(response) => response,
+    }
+}
+
+/// Checks the route's requirement for `identity`, returning the refusal
+/// response when it is not met.
+async fn refusal(
+    state: &ApiState,
+    access: Access,
+    identity: Option<&Identity>,
+    owner: Option<(PathOwner, String)>,
+) -> Option<Response> {
     if access == Access::Public {
+        return None;
+    }
+    let Some(identity) = identity else {
+        return Some(ApiError::from(AuthError::Unauthorized).into_response());
+    };
+    let Access::Granted(permission) = access else {
+        return None;
+    };
+    let application = match owner {
+        Some((owner, id)) => match owner.application(state, &id).await {
+            Ok(application) => Some(application),
+            Err(error) => return Some(error.into_response()),
+        },
+        None => None,
+    };
+    let target = application
+        .as_ref()
+        .map(|application| application.as_ref().map_or(Target::Unknown, Target::Id));
+    check(identity, permission, target)
+        .err()
+        .map(|denied| ApiError::from(denied).into_response())
+}
+
+/// Audit middleware for API paths, wrapping authentication so its refusals
+/// are recorded too. Refusals, writes, and sensitive reads are recorded with
+/// their outcome (see [`Audit`]); the caller's identity comes back on the
+/// response from authentication.
+pub(super) async fn audit(
+    State((routes, state)): State<(Arc<RouteAccess>, super::ApiState)>,
+    matched: Option<MatchedPath>,
+    params: Result<RawPathParams, RawPathParamsRejection>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    if !ui::is_api_path(request.uri().path()) {
         return next.run(request).await;
     }
-    let Some(Extension(identity)) = identity else {
-        return ApiError::from(AuthError::Unauthorized).into_response();
+    let extensions = request.extensions();
+    let audit = Audit {
+        access: routes.get(matched.as_ref(), request.method()),
+        route: matched.as_ref().map_or_else(
+            || request.uri().path().chars().take(256).collect(),
+            |path| path.as_str().to_owned(),
+        ),
+        method: request.method().clone(),
+        owner: PathOwner::find(matched.as_ref(), params),
+        peer: extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(peer)| peer.ip().to_string()),
+        request_id: extensions
+            .get::<RequestId>()
+            .and_then(|id| id.header_value().to_str().ok().map(str::to_owned)),
     };
-    if let Access::Granted(permission) = access {
-        let owner = matched.as_ref().and_then(PathOwner::of).and_then(|owner| {
-            let params = params.ok()?;
-            let id = params.iter().find(|(name, _)| *name == "id")?.1.to_owned();
-            Some((owner, id))
-        });
-        let checked = match owner {
-            Some((owner, id)) => match owner.application(&state, &id).await {
-                Ok(application) => {
-                    let target = application.as_ref().map_or(Target::Unknown, Target::Id);
-                    check(&identity, permission, Some(target))
-                }
-                Err(error) => return error.into_response(),
-            },
-            None => check(&identity, permission, None),
-        };
-        if let Err(denied) = checked {
-            tracing::info!(
-                user_id = %identity.user.id,
-                credential_id = %identity.credential_id,
-                method = %request.method(),
-                path = %request.uri().path(),
-                %denied,
-                "request denied"
-            );
-            return ApiError::from(denied).into_response();
-        }
+    // Handlers that refuse after responding, like exec, record it themselves.
+    request.extensions_mut().insert(audit.clone());
+    let response = next.run(request).await;
+    let extensions = response.extensions();
+    let answer = Answer {
+        status: response.status(),
+        denied: extensions.get::<Denied>().copied(),
+        identity: extensions.get::<Identity>().cloned(),
+        signed_in: extensions
+            .get::<SignedIn>()
+            .map(|SignedIn(user)| user.clone()),
+    };
+    audit.record(&state, answer);
+    response
+}
+
+/// Account signed in by a public request, e.g. passkey login or a completed
+/// CLI login, attached to its response so the audit trail names who signed in.
+#[derive(Clone)]
+pub(super) struct SignedIn(pub(super) piqueld_core::auth::User);
+
+/// What the audit trail needs from a response.
+struct Answer {
+    status: StatusCode,
+    /// Authorization refusal behind an error response.
+    denied: Option<Denied>,
+    /// Caller that authentication resolved, if any.
+    identity: Option<Identity>,
+    /// Account a sign-in request signed in.
+    signed_in: Option<piqueld_core::auth::User>,
+}
+
+/// One API request, as the audit trail will record it.
+#[derive(Clone)]
+pub(super) struct Audit {
+    access: Access,
+    /// Route template, or the raw path (truncated) when no route matched.
+    route: String,
+    method: Method,
+    /// Application or environment the route names.
+    owner: Option<(PathOwner, String)>,
+    peer: Option<String>,
+    request_id: Option<String>,
+}
+
+impl Audit {
+    /// Reads that reveal sensitive data and are always recorded; other reads,
+    /// often polled by clients, are recorded only when refused.
+    const SENSITIVE_READS: &[&str] = &[
+        "/api/v1/system/configuration",
+        "/api/v1/auth/directory",
+        "/api/v1/applications/{id}/manifest",
+    ];
+    /// Writes recorded only when refused or signing someone in: CLI login
+    /// polling, which repeats every few seconds until approval.
+    const QUIET_WRITES: &[&str] = &["/api/v1/auth/device/poll"];
+
+    /// The `{id}` the route names, when it names an `owner`.
+    fn owner_id(&self, owner: PathOwner) -> Option<String> {
+        self.owner
+            .as_ref()
+            .filter(|(named, _)| *named == owner)
+            .map(|(_, id)| id.clone())
     }
-    next.run(request).await
+
+    /// Records the request when it was refused, wrote state, signed someone
+    /// in, ran a command, or read sensitive data (logs, configuration,
+    /// manifests, the account directory), and counts refusals. Recording happens in the background
+    /// (see `ApplicationService::record_audit`); the response never waits.
+    /// Records a refusal decided after the response was sent, e.g. a
+    /// command refused after its WebSocket upgrade was allowed.
+    pub(super) fn refused_later(
+        self,
+        state: &super::ApiState,
+        identity: Identity,
+        error: &ApiError,
+    ) {
+        let answer = Answer {
+            status: error.status,
+            denied: error.denied,
+            identity: Some(identity),
+            signed_in: None,
+        };
+        self.record(state, answer);
+    }
+
+    fn record(self, state: &super::ApiState, answer: Answer) {
+        let Answer {
+            status,
+            denied,
+            identity,
+            signed_in,
+        } = answer;
+        let refused = denied.is_some()
+            || matches!(
+                status,
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS
+            );
+        let write = !matches!(self.method, Method::GET | Method::HEAD | Method::OPTIONS)
+            && (signed_in.is_some() || !Self::QUIET_WRITES.contains(&self.route.as_str()));
+        let sensitive = matches!(
+            self.access,
+            Access::Granted(Permission::App(
+                AppPermission::LogsRead | AppPermission::Exec
+            ))
+        ) || Self::SENSITIVE_READS.contains(&self.route.as_str());
+        if !(refused || write || sensitive) {
+            return;
+        }
+        let outcome = if refused {
+            state.count_denial();
+            AuditOutcome::Denied
+        } else if status.is_client_error() || status.is_server_error() {
+            AuditOutcome::Failed
+        } else {
+            AuditOutcome::Allowed
+        };
+        // A sign-in names the account it signed in; any credential the request
+        // also carried belongs to whoever was signed in before.
+        let credential = identity.as_ref().filter(|_| signed_in.is_none());
+        let user = signed_in.or_else(|| identity.as_ref().map(|identity| identity.user.clone()));
+        let permission = match denied {
+            Some(Denied::Missing(permission)) => Some(permission.as_str()),
+            _ => None,
+        };
+        let application_id = self.owner_id(PathOwner::Application);
+        let environment_id = self.owner_id(PathOwner::Environment);
+        state.record_audit(crate::store::NewAuditEvent {
+            action: format!("{} {}", self.method, self.route),
+            outcome,
+            status: status.as_u16(),
+            user_id: user.as_ref().map(|user| user.id.clone()),
+            username: user.map(|user| user.username),
+            credential_id: credential.map(|identity| identity.credential_id.clone()),
+            credential_kind: credential.map(|identity| identity.kind.as_str()),
+            scoped: credential.map(|identity| identity.scoped),
+            peer: self.peer,
+            request_id: self.request_id,
+            application_id,
+            environment_id,
+            permission,
+        });
+    }
 }
 
 /// Checks `permission`, on the route's `target` application when it names
@@ -317,7 +503,7 @@ impl From<Denied> for ApiError {
     /// Hidden targets look exactly like missing ones; other refusals name what
     /// the caller lacks.
     fn from(denied: Denied) -> Self {
-        match denied {
+        let mut error = match denied {
             Denied::Hidden => {
                 Self::new(StatusCode::NOT_FOUND, "not_found", "resource was not found")
             }
@@ -337,6 +523,8 @@ impl From<Denied> for ApiError {
                 "credential_scoped",
                 "Credentials with limited access, like API tokens, cannot create credentials or change their account",
             ),
-        }
+        };
+        error.denied = Some(denied);
+        error
     }
 }

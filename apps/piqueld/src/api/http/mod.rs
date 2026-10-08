@@ -76,6 +76,9 @@ struct ApiError {
     /// Diagnostic attached as a response extension so `bind_error_request_id`
     /// can record it instead of synthesizing a generic one.
     diagnostic: Option<Box<piqueld_core::observability::Diagnostic>>,
+    /// Authorization refusal attached as a response extension, so the audit
+    /// trail records it even when it reads as a plain 404.
+    denied: Option<piqueld_core::access::Denied>,
 }
 
 impl ApiError {
@@ -88,6 +91,7 @@ impl ApiError {
             details: Value::Null,
             allow: None,
             diagnostic: None,
+            denied: None,
         }
     }
     fn endpoint_not_found() -> Self {
@@ -446,6 +450,9 @@ impl IntoResponse for ApiError {
         if let Some(diagnostic) = self.diagnostic {
             response.extensions_mut().insert(*diagnostic);
         }
+        if let Some(denied) = self.denied {
+            response.extensions_mut().insert(denied);
+        }
         if let Some(allow) = self.allow
             && let Ok(value) = header::HeaderValue::from_str(&allow)
         {
@@ -516,8 +523,8 @@ pub fn health_router() -> Router<ApiState> {
 /// Wraps a route set with the layers shared by every transport.
 ///
 /// Layers, innermost first: browser trust policy (TCP only, when
-/// `browser_policy` is set), route authorization, authentication guard, state
-/// and `OpenAPI` 3.0
+/// `browser_policy` is set), route authorization, authentication guard, audit
+/// trail, state and `OpenAPI` 3.0
 /// document extension, request ID propagation, error request ID binding and
 /// diagnostic recording, request ID generation, body size limit, and tracing.
 fn finish_router(
@@ -546,13 +553,18 @@ fn finish_router(
         router
     };
     // Authorization runs after authentication, which may reject requests
-    // without reaching a handler. Keep both inside the shared request tracing
-    // and error/diagnostic response layers.
+    // without reaching a handler; auditing wraps both to record either's
+    // refusals. Keep all three inside the shared request tracing and
+    // error/diagnostic response layers.
     let router = router.layer(middleware::from_fn_with_state(
-        (route_access, state.clone()),
+        (Arc::clone(&route_access), state.clone()),
         access::enforce,
     ));
     auth.guard(router)
+        .layer(middleware::from_fn_with_state(
+            (route_access, state.clone()),
+            access::audit,
+        ))
         .with_state(state.clone())
         .layer(Extension(Arc::new(openapi)))
         // The propagator stamps errors with their request ID, and the binder
@@ -638,6 +650,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(EventsRead) => observability::analytics))
         .routes(granted!(Global(SystemRead) => observability::deliveries))
         .routes(granted!(Global(SystemOperate) => observability::retry_delivery))
+        .routes(authenticated!(observability::audit))
         .routes(granted!(App(LogsRead) => logs::get))
         .routes(granted!(App(Exec) => exec::exec))
         .routes(authenticated!(builds::list))
@@ -719,8 +732,18 @@ async fn bind_error_request_id(
         .extensions
         .get::<piqueld_core::observability::Diagnostic>()
         .cloned();
+    let identity = parts.extensions.get::<crate::auth::Identity>();
+    let actor = identity.map_or(crate::store::Actor::Daemon, |identity| {
+        crate::store::Actor::Account(identity.caller())
+    });
     state
-        .record_failure(parts.status, &mut error, diagnostic, environment.as_ref())
+        .record_failure(
+            parts.status,
+            &mut error,
+            diagnostic,
+            environment.as_ref(),
+            actor.attribution(),
+        )
         .await;
     let bytes = serde_json::to_vec(&error).unwrap_or_else(|_| b"{}".to_vec());
     Response::from_parts(parts, Body::from(bytes))
@@ -728,7 +751,8 @@ async fn bind_error_request_id(
 
 impl ApiState {
     /// Records a server error's diagnostic (`diagnostic`, or a synthesized one)
-    /// in `environment`'s history, and exposes its ID as `details.diagnostic_id`. Client errors and
+    /// in `environment`'s history, attributed to the request's `actor`, and
+    /// exposes its ID as `details.diagnostic_id`. Client errors and
     /// `configuration_unavailable` are left untouched.
     async fn record_failure(
         &self,
@@ -736,6 +760,7 @@ impl ApiState {
         error: &mut ErrorBody,
         diagnostic: Option<piqueld_core::observability::Diagnostic>,
         environment: Option<&piqueld_core::EnvironmentId>,
+        actor: crate::store::Attribution<'_>,
     ) {
         if !status.is_server_error() || error.code == "configuration_unavailable" {
             return;
@@ -753,7 +778,7 @@ impl ApiState {
             error.code.as_str(),
             "storage_unavailable" | "schema_mismatch"
         ) {
-            self.record_diagnostic(&diagnostic, Some(&error.request_id), environment)
+            self.record_diagnostic(&diagnostic, Some(&error.request_id), environment, actor)
                 .await;
         }
         tracing::error!(diagnostic_id=%diagnostic.id, request_id=%error.request_id, code=%diagnostic.code, "API request failed");

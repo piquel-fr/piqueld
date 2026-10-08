@@ -406,7 +406,11 @@ the current account and its grants, and `logout` to revoke it. `piquelctl accoun
 lists accounts, replaces their grants (`access`), and creates invitation (`invite`)
 and passkey enrollment (`enroll`) links. `piquelctl token create|list|revoke`
 manages API tokens for your account, and `login` accepts the same grant options
-to ask for a limited session; see [authorization](authorization.md). Saved credentials are separate
+to ask for a limited session; see [authorization](authorization.md).
+`piquelctl audit` reads the [audit trail](observability.md#audit-trail), one line
+per request with the application or environment it addressed, filtered
+by `--user` (a username, or any account ID, including a deleted account's),
+`--credential`, and `--outcome`. Saved credentials are separate
 from profiles. `PIQUELD_TOKEN` supplies an automation token; `--account` selects
 a saved account. See [authentication](authentication.md) for details.
 

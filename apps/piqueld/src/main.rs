@@ -65,7 +65,8 @@ impl Args {
 ///    state is opened.
 /// 3. Starts the application service and reconciliation controller.
 /// 4. Serves the dashboard/API over TCP, metrics, and the Unix API socket.
-/// 5. After cancellation, waits for every task and surfaces the first failure.
+/// 5. After cancellation, waits for every task and pending audit record, and
+///    surfaces the first failure.
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -151,6 +152,7 @@ async fn main() -> Result<()> {
             )
         })
         .collect();
+    let audit = state.clone();
     let unix_api = spawn_unix_api(unix_listener, state, auth, cancellation.clone());
 
     piqueld::run_until_cancelled(cancellation).await?;
@@ -166,6 +168,7 @@ async fn main() -> Result<()> {
         .await
         .context("Unix API task failed")?
         .context("Unix API failed")?;
+    audit.drain_audit(SHUTDOWN_GRACE).await;
     controller
         .await
         .context("reconciliation controller failed")?

@@ -1,5 +1,6 @@
 use super::*;
 use crate::api::Actor::Daemon;
+use crate::store::Attribution;
 use piqueld_core::manifest::ApplicationTemplate;
 
 fn application() -> NormalizedApplication {
@@ -70,27 +71,22 @@ async fn deletion_reservations_survive_restart_and_do_not_block_other_writes() {
     let path = temp.path().join("db");
     let store = Store::open(&path).await.unwrap();
     let app = application();
+    let env = environment(&app);
     let op = store
         .save_application(&ApplicationTemplate::from(&app), None, None)
         .await
         .unwrap();
     store
-        .put_secret(Daemon, &environment(&app), "token", 0, b"value".to_vec())
+        .put_secret(Daemon, &env, "token", 0, b"value".to_vec())
         .await
         .unwrap();
     let deletion = store
-        .begin_secret_deletion(Daemon, &environment(&app), "token", 1)
+        .begin_secret_deletion(Daemon, &env, "token", 1)
         .await
         .unwrap();
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        store.put_secret(
-            Daemon,
-            &environment(&app),
-            "other",
-            0,
-            b"unrelated".to_vec(),
-        ),
+        store.put_secret(Daemon, &env, "other", 0, b"unrelated".to_vec()),
     )
     .await
     .unwrap()
@@ -99,7 +95,7 @@ async fn deletion_reservations_survive_restart_and_do_not_block_other_writes() {
     let store = Store::open(&path).await.unwrap();
     assert!(
         store
-            .secrets(&environment(&app))
+            .secrets(&env)
             .await
             .unwrap()
             .iter()
@@ -109,13 +105,7 @@ async fn deletion_reservations_survive_restart_and_do_not_block_other_writes() {
     );
     assert!(matches!(
         store
-            .put_secret(
-                Daemon,
-                &environment(&app),
-                "token",
-                1,
-                b"replacement".to_vec()
-            )
+            .put_secret(Daemon, &env, "token", 1, b"replacement".to_vec())
             .await,
         Err(StoreError::SecretDeleting)
     ));
@@ -130,30 +120,24 @@ async fn deletion_reservations_survive_restart_and_do_not_block_other_writes() {
         Err(StoreError::SecretDeleting)
     ));
     let retry = store
-        .begin_secret_deletion(Daemon, &environment(&app), "token", 1)
+        .begin_secret_deletion(Daemon, &env, "token", 1)
         .await
         .unwrap();
     assert_eq!(retry.id, deletion.id);
     assert_eq!(retry.versions, deletion.versions);
     store
-        .finish_secret_deletion(&environment(&app), "token", &retry.id)
+        .finish_secret_deletion(Attribution::default(), &env, "token", &retry.id)
         .await
         .unwrap();
     store
-        .put_secret(
-            Daemon,
-            &environment(&app),
-            "token",
-            0,
-            b"new value".to_vec(),
-        )
+        .put_secret(Daemon, &env, "token", 0, b"new value".to_vec())
         .await
         .unwrap();
     store
-        .finish_secret_deletion(&environment(&app), "token", &deletion.id)
+        .finish_secret_deletion(Attribution::default(), &env, "token", &deletion.id)
         .await
         .unwrap();
-    let names = store.secret_names(&environment(&app)).await.unwrap();
+    let names = store.secret_names(&env).await.unwrap();
     assert_eq!(
         names.len(),
         2,
@@ -215,7 +199,12 @@ async fn wrong_master_key_blocks_writes_and_original_key_restores_them() {
         .await
         .unwrap();
     store
-        .finish_secret_deletion(&environment(&app), "token", &deletion.id)
+        .finish_secret_deletion(
+            Attribution::default(),
+            &environment(&app),
+            "token",
+            &deletion.id,
+        )
         .await
         .unwrap();
     std::fs::remove_file(&key).unwrap();
@@ -274,7 +263,12 @@ async fn retained_version_quota_rejects_writes_without_removing_values() {
         .await
         .unwrap();
     store
-        .finish_secret_deletion(&environment(&app), "token", &deletion.id)
+        .finish_secret_deletion(
+            Attribution::default(),
+            &environment(&app),
+            "token",
+            &deletion.id,
+        )
         .await
         .unwrap();
     store
@@ -604,11 +598,13 @@ async fn sibling_environment_deletions_do_not_block_another_environments_deploym
 }
 
 /// Secret writes check the caller's grants inside their transaction, so a
-/// caller demoted after authenticating cannot store or delete values.
+/// caller demoted after authenticating cannot store or delete values. Their
+/// events, including the deletion's runtime action, record the caller.
 #[tokio::test]
 async fn secret_writes_use_the_callers_current_grants() {
-    use crate::store::{Actor, Caller, CredentialKind, NewCredential};
+    use crate::store::{Actor, Caller, CredentialKind, NewCredential, Visibility};
     use piqueld_core::access::{AppPermission, Denied, Permission, Preset, Scope};
+    use piqueld_core::observability::EventFilter;
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path().join("db")).await.unwrap();
     let app = application();
@@ -639,7 +635,46 @@ async fn secret_writes_use_the_callers_current_grants() {
         .unwrap();
     let caller = Actor::Account(Caller {
         credential_id: "dev-token",
+        user_id: "dev",
     });
+    store
+        .put_secret(caller, &production, "token", 0, b"value".to_vec())
+        .await
+        .unwrap();
+    let by = caller.attribution();
+    let deletion = store
+        .begin_secret_deletion(caller, &production, "token", 1)
+        .await
+        .unwrap();
+    store
+        .begin_application_action(by, &production, "remove_secrets", Some("token"))
+        .await
+        .unwrap();
+    store.interrupt_actions(None).await.unwrap();
+    store
+        .finish_secret_deletion(by, &production, "token", &deletion.id)
+        .await
+        .unwrap();
+    let filter = EventFilter {
+        application_id: Some(app.id().to_string()),
+        ..EventFilter::default()
+    };
+    let attributed: std::collections::BTreeSet<_> = store
+        .filtered_events(&filter, &Visibility::ALL, None, 100)
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .filter(|event| event.actor_user_id.as_deref() == Some("dev"))
+        .map(|event| event.kind)
+        .collect();
+    let expected = [
+        "secret_saved",
+        "action_started",
+        "action_outcome_unknown",
+        "secret_deleted",
+    ];
+    assert_eq!(attributed, expected.map(String::from).into());
     store
         .put_secret(caller, &production, "token", 0, b"value".to_vec())
         .await

@@ -323,6 +323,16 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
                         }
                     }
                     {event
+                        .actor_credential_id
+                        .clone()
+                        .map(|id| {
+                            view! {
+                                <A href={format!("/dashboard/audit?credential={id}")}>
+                                    "Requester"
+                                </A>
+                            }
+                        })}
+                    {event
                         .operation_id
                         .map(|id| {
                             view! {
@@ -846,6 +856,145 @@ pub(super) fn NotificationsPage() -> impl IntoView {
                                             on:click={move |_| cursor.set(Some(next.clone()))}
                                         >
                                             "Older deliveries"
+                                        </button>
+                                    </div>
+                                }
+                            })}
+                    }
+                        .into_any()
+                }
+            }}
+        </div>
+    }
+}
+
+/// Audit trail: refused requests, writes, and sensitive reads, newest first.
+/// Accounts without `audit:read` see only their own; `?credential=<id>`
+/// narrows the trail to one session or token.
+#[component]
+pub(super) fn AuditPage() -> impl IntoView {
+    use piqueld_client::audit::{AuditFilter, AuditOutcome};
+    let query = use_query_map();
+    let cursor = RwSignal::new(None::<String>);
+    let outcome = RwSignal::new(None::<AuditOutcome>);
+    let data = LocalResource::new(move || {
+        let filter = AuditFilter {
+            credential_id: query.with(|query| query.get("credential")),
+            outcome: outcome.get(),
+            ..AuditFilter::default()
+        };
+        let cursor = cursor.get();
+        async move {
+            Client::browser()
+                .audit_events(&filter, cursor.as_deref(), 50)
+                .await
+                .map_err(|e| client_error_message(&e))
+        }
+    });
+    view! {
+        <PageHeader
+            title="Audit"
+            description="Refused requests, changes, and reads of logs, configuration, and accounts. Without audit:read, only your own account's requests are shown."
+        >
+            <label class="field">
+                <span>"Outcome"</span>
+                <select on:change={move |event| {
+                    cursor.set(None);
+                    outcome.set(AuditOutcome::parse(&event_target_value(&event)));
+                }}>
+                    <option value="">"Any"</option>
+                    <option value="allowed">"Allowed"</option>
+                    <option value="denied">"Denied"</option>
+                    <option value="failed">"Failed"</option>
+                </select>
+            </label>
+        </PageHeader>
+        <div class="stack">
+            {move || match data.get() {
+                None => empty("Loading audit trail…"),
+                Some(Err(e)) => notice(Tone::Bad, e),
+                Some(Ok(page)) => {
+                    view! {
+                        <div class="table-wrap">
+                            {if page.items.is_empty() {
+                                empty("No audited requests.")
+                            } else {
+                                view! {
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>"When"</th>
+                                                <th>"Outcome"</th>
+                                                <th>"Request"</th>
+                                                <th>"Account"</th>
+                                                <th>"Credential"</th>
+                                                <th>"From"</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {page
+                                                .items
+                                                .into_iter()
+                                                .map(|event| {
+                                                    let tone = match event.outcome {
+                                                        AuditOutcome::Allowed => Tone::Ok,
+                                                        AuditOutcome::Denied => Tone::Bad,
+                                                        AuditOutcome::Failed => Tone::Warn,
+                                                    };
+                                                    let target = event.target();
+                                                    let missing = event
+                                                        .permission
+                                                        .map(|permission| format!(" (requires {permission})"));
+                                                    view! {
+                                                        <tr>
+                                                            <td class="muted">{when(event.created_at_ms)}</td>
+                                                            <td>{badge(tone, event.outcome.as_str())}</td>
+                                                            <td>
+                                                                <code>{event.action}</code>
+                                                                {format!(" {}", event.status)}
+                                                                {missing}
+                                                                {target
+                                                                    .map(|target| {
+                                                                        view! { <div class="muted">{target}</div> }
+                                                                    })}
+                                                            </td>
+                                                            <td>
+                                                                {event
+                                                                    .username
+                                                                    .or(event.user_id)
+                                                                    .unwrap_or_else(|| "anonymous".into())}
+                                                            </td>
+                                                            <td class="muted" title={event.credential_id.clone()}>
+                                                                {event.credential_kind.unwrap_or_default()}
+                                                                {event
+                                                                    .scoped
+                                                                    .unwrap_or(false)
+                                                                    .then_some(" (limited)")}
+                                                            </td>
+                                                            <td class="muted">
+                                                                {event.peer.unwrap_or_else(|| "Unix socket".into())}
+                                                            </td>
+                                                        </tr>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </tbody>
+                                    </table>
+                                }
+                                    .into_any()
+                            }}
+                        </div>
+                        {page
+                            .next_cursor
+                            .map(|next| {
+                                view! {
+                                    <div class="btn-group">
+                                        <button
+                                            type="button"
+                                            class="btn"
+                                            on:click={move |_| cursor.set(Some(next.clone()))}
+                                        >
+                                            "Older requests"
                                         </button>
                                     </div>
                                 }

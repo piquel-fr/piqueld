@@ -124,9 +124,11 @@ impl Store {
     }
 
     /// Deletes the secret, its versions and pins after runtime cleanup succeeded,
-    /// recording `secret_deleted`. A no-op if the reservation token no longer matches.
+    /// recording `secret_deleted` by `actor`. A no-op if the reservation token
+    /// no longer matches.
     pub(crate) async fn finish_secret_deletion(
         &self,
+        actor: crate::store::Attribution<'_>,
         application: &EnvironmentId,
         name: &str,
         deletion_id: &str,
@@ -141,7 +143,7 @@ impl Store {
             .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         if deleted > 0 {
             let now = super::now_ms();
-            sqlx::query!("INSERT INTO events(application_id,environment_id,kind,message,resource,created_at_ms) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'secret_deleted','Deleted secret and its runtime versions',?2,?3)",id,name,now)
+            sqlx::query!("INSERT INTO events(application_id,environment_id,kind,message,resource,created_at_ms,actor_user_id,actor_credential_id) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'secret_deleted','Deleted secret and its runtime versions',?2,?3,?4,?5)",id,name,now,actor.user_id,actor.credential_id)
                 .execute(&mut *tx).await.map_err(StoreError::database)?;
         }
         tx.commit().await.map_err(StoreError::database)

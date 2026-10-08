@@ -70,8 +70,9 @@ impl Store {
         let usage = sqlx::query!("SELECT COUNT(*) AS versions, COUNT(DISTINCT environment_id) AS applications, COUNT(DISTINCT environment_id||char(0)||name) AS secrets FROM secret_versions WHERE available=1")
             .fetch_one(&mut *tx).await.map_err(StoreError::database)?;
         let now = super::now_ms();
+        let by = actor.attribution();
         // Each affected application's history explains why its values need replacing.
-        sqlx::query!("INSERT INTO events(application_id,environment_id,kind,message,created_at_ms) SELECT (SELECT application_id FROM environments WHERE id=secret_versions.environment_id),environment_id,'secret_values_discarded','Secret key recovery discarded '||COUNT(*)||' stored values; store replacements, then deploy',?1 FROM secret_versions WHERE available=1 GROUP BY environment_id",now)
+        sqlx::query!("INSERT INTO events(application_id,environment_id,kind,message,created_at_ms,actor_user_id,actor_credential_id) SELECT (SELECT application_id FROM environments WHERE id=secret_versions.environment_id),environment_id,'secret_values_discarded','Secret key recovery discarded '||COUNT(*)||' stored values; store replacements, then deploy',?1,?2,?3 FROM secret_versions WHERE available=1 GROUP BY environment_id",now,by.user_id,by.credential_id)
             .execute(&mut *tx).await.map_err(StoreError::database)?;
         sqlx::query!(
             "UPDATE secret_versions SET available=0,nonce=X'',ciphertext=X'' WHERE available=1"
@@ -87,7 +88,7 @@ impl Store {
             "Recovered the secret master key; discarded {} values across {} applications",
             usage.versions, usage.applications
         );
-        sqlx::query!("INSERT INTO events(scope,kind,message,created_at_ms) VALUES('daemon','secret_key_recovered',?1,?2)",message,now)
+        sqlx::query!("INSERT INTO events(scope,kind,message,created_at_ms,actor_user_id,actor_credential_id) VALUES('daemon','secret_key_recovered',?1,?2,?3,?4)",message,now,by.user_id,by.credential_id)
             .execute(&mut *tx).await.map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)?;
         SecretCipher::retire(&self.secret_key_path, now).map_err(StoreError::SecretSource)?;

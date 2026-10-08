@@ -427,7 +427,7 @@ report!(SecretDeletionReport<'_>, self, out, {
 report!(Page<Event>, self, out, {
     for event in &self.items {
         out.line(format_args!(
-            "{}  {}  {}  {}  attempt {}  {} {} {} {}",
+            "{}  {}  {}  {}  attempt {}  {} {} {} {}{}",
             event.id,
             event.created_at_ms,
             event.kind,
@@ -436,7 +436,11 @@ report!(Page<Event>, self, out, {
             event.phase.as_deref().unwrap_or(""),
             event.resource.as_deref().unwrap_or(""),
             event.error_code.as_deref().unwrap_or(""),
-            event.message.as_deref().unwrap_or("")
+            event.message.as_deref().unwrap_or(""),
+            event
+                .actor_user_id
+                .as_deref()
+                .map_or_else(String::new, |actor| format!("  by {actor}"))
         ))?;
     }
     if let Some(cursor) = &self.next_cursor {

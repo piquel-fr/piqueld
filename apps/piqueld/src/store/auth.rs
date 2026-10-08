@@ -45,8 +45,8 @@ impl fmt::Display for Lockout {
 impl std::error::Error for Lockout {}
 
 /// Credential classes. Only browser sessions have an idle timeout.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum CredentialKind {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialKind {
     /// Dashboard session cookie.
     Browser,
     /// Session approved for the command-line client.
@@ -57,11 +57,22 @@ pub(crate) enum CredentialKind {
 
 impl CredentialKind {
     /// Value stored in the `kind` column.
-    const fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Browser => "browser",
             Self::Cli => "cli",
             Self::Token => "token",
+        }
+    }
+
+    /// Parses a stored kind, reporting unknown values as corruption.
+    fn parse(value: &str) -> Result<Self, StoreError> {
+        match value {
+            "browser" => Ok(Self::Browser),
+            "cli" => Ok(Self::Cli),
+            "token" => Ok(Self::Token),
+            _ => Err(StoreError::Corrupt),
         }
     }
 }
@@ -163,6 +174,8 @@ pub(crate) struct NewInvitation {
 
 /// The account behind a live credential.
 pub(crate) struct CredentialOwner {
+    /// Credential class.
+    pub(crate) kind: CredentialKind,
     /// Matched credential, used to record its use or revoke it.
     pub(crate) credential_id: String,
     /// Account that owns the credential.
@@ -444,7 +457,7 @@ impl Store {
         let idle = now - SESSION_IDLE_SECS;
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let row = sqlx::query!(
-            r#"SELECT c.id AS "credential_id!",c.last_used_at,c.scoped AS "scoped: bool",u.id AS "id!",u.username,u.display_name FROM auth_credentials c JOIN auth_users u ON u.id=c.user_id WHERE c.secret_hash=?1 AND (c.expires_at IS NULL OR c.expires_at>?2) AND (c.kind!='browser' OR c.last_used_at>?3)"#,
+            r#"SELECT c.id AS "credential_id!",c.kind,c.last_used_at,c.scoped AS "scoped: bool",u.id AS "id!",u.username,u.display_name FROM auth_credentials c JOIN auth_users u ON u.id=c.user_id WHERE c.secret_hash=?1 AND (c.expires_at IS NULL OR c.expires_at>?2) AND (c.kind!='browser' OR c.last_used_at>?3)"#,
             hash,
             now,
             idle
@@ -459,6 +472,7 @@ impl Store {
             Authority::read(&mut tx, row.id.clone(), &row.credential_id, row.scoped).await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(Some(CredentialOwner {
+            kind: CredentialKind::parse(&row.kind)?,
             credential_id: row.credential_id,
             user: User {
                 id: row.id,

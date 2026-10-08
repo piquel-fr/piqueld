@@ -477,6 +477,8 @@ pub struct RetentionConfig {
     pub event_days: u64,
     /// Days daemon-scoped history is retained; zero disables pruning.
     pub daemon_event_days: u64,
+    /// Days the audit trail is retained; zero disables pruning.
+    pub audit_days: u64,
 }
 
 impl Default for RetentionConfig {
@@ -485,6 +487,7 @@ impl Default for RetentionConfig {
             finished_operation_days: 10,
             event_days: 90,
             daemon_event_days: 90,
+            audit_days: 365,
         }
     }
 }
@@ -736,6 +739,10 @@ impl DaemonConfig {
             (
                 "Daemon history (days)".into(),
                 self.retention.daemon_event_days.to_string(),
+            ),
+            (
+                "Audit trail (days)".into(),
+                self.retention.audit_days.to_string(),
             ),
             (
                 "Notifications enabled".into(),

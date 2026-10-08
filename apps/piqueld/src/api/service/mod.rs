@@ -223,7 +223,16 @@ pub struct ApplicationService {
     store: Arc<Store>,
     /// Docker/Swarm adapter used for runtime requests and reconciliation wakeups.
     runtime: Arc<dyn RuntimeBoundary>,
+    /// API requests refused since start, exported as a metric.
+    denials: Arc<std::sync::atomic::AtomicU64>,
+    /// Slots for audit records waiting to be written.
+    audit_backlog: Arc<tokio::sync::Semaphore>,
+    /// The share of `audit_backlog` anonymous records may hold.
+    anonymous_backlog: Arc<tokio::sync::Semaphore>,
 }
+
+/// Audit records allowed to wait for the writer at once.
+pub(crate) const AUDIT_BACKLOG: usize = 1024;
 
 impl ApplicationService {
     /// Creates a service over supplied storage and runtime adapters.
@@ -236,6 +245,9 @@ impl ApplicationService {
             configuration: None,
             ingress: None,
             tailnet: None,
+            denials: Arc::default(),
+            audit_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG)),
+            anonymous_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG / 2)),
         }
     }
 
@@ -329,7 +341,12 @@ impl ApplicationService {
             .await?;
         let journal = self
             .store
-            .begin_application_action(environment, "remove_secrets", Some(name))
+            .begin_application_action(
+                actor.attribution(),
+                environment,
+                "remove_secrets",
+                Some(name),
+            )
             .await?;
         let result = match self.store.action_request(&journal, 1).await {
             Ok(()) => {
@@ -347,7 +364,7 @@ impl ApplicationService {
             .await?;
         result?;
         self.store
-            .finish_secret_deletion(environment, name, &deletion.id)
+            .finish_secret_deletion(actor.attribution(), environment, name, &deletion.id)
             .await?;
         Ok(())
     }

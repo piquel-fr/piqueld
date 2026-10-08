@@ -2427,3 +2427,41 @@ fn limited_credentials_are_never_requested_from_older_daemons() {
         ]
     );
 }
+
+/// Auditors without accounts:manage only see themselves in the directory, so
+/// other accounts are matched by ID when given one, and otherwise by the
+/// username their requests recorded.
+#[test]
+fn audit_matches_accounts_missing_from_the_directory() {
+    let deleted = "0199b0a4-7c1e-7d2a-9f3e-2b6c8d4e5f60";
+    let server = start_server(false, 4, |request| match request.path.as_str() {
+        "/api/v1/auth/directory" => Reply::bare(&json!({
+            "users": [{
+                "user": {"id": "auditor-id", "username": "auditor", "display_name": ""},
+                "grants": [{"permission": "audit:read"}]
+            }],
+            "passkeys": [],
+            "credentials": [],
+            "invitations": []
+        })),
+        path if path.starts_with("/api/v1/audit?") => {
+            Reply::json(json!({"items": [], "next_cursor": null}))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    for user in ["alice", deleted] {
+        assert_json_success(&run(&server, &["audit", "--user", user]));
+    }
+    let audits: Vec<_> = server
+        .finish()
+        .into_iter()
+        .map(|request| request.path)
+        .filter(|path| path.starts_with("/api/v1/audit?"))
+        .collect();
+    assert!(audits[0].contains("username=alice"), "{audits:?}");
+    assert!(!audits[0].contains("user_id"), "{audits:?}");
+    assert!(
+        audits[1].contains(&format!("user_id={deleted}")),
+        "{audits:?}"
+    );
+}

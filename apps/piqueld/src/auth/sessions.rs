@@ -12,6 +12,8 @@ pub struct Identity {
     pub user: User,
     /// Credential that authenticated the request.
     pub credential_id: String,
+    /// Class of that credential.
+    pub kind: crate::store::CredentialKind,
     /// Effective grants, read when the request was authenticated.
     pub grants: Grants,
     /// Whether the credential is limited to its own grants, like an API
@@ -25,6 +27,7 @@ impl Identity {
     pub fn caller(&self) -> crate::store::Caller<'_> {
         crate::store::Caller {
             credential_id: &self.credential_id,
+            user_id: &self.user.id,
         }
     }
 }
@@ -38,8 +41,9 @@ pub(super) struct Device {
     expires: i64,
     /// Earliest time the CLI may poll again without receiving `slow_down`.
     pub(super) next_poll: i64,
-    /// Credential ID of the approving session; the issued token belongs to its owner.
-    approved_by: Option<String>,
+    /// Credential and account IDs of the approving session; the issued token
+    /// belongs to its owner.
+    approved_by: Option<(String, String)>,
     /// Grants the issued CLI session is limited to; `None` for the approver's
     /// full access.
     grants: Option<Grants>,
@@ -51,6 +55,24 @@ impl Auth {
     /// `pqd_` followed by 43 are rejected without a database lookup.
     /// The credential's last-used time is refreshed at most once per minute.
     pub(crate) async fn authenticate(&self, secret: &str) -> Result<Identity> {
+        let (identity, last_used_at) = self.identify(secret).await?;
+        // Keep ordinary requests read-only. A refresh queues with reconciliation
+        // writers and rechecks validity after waiting, so revocation still wins.
+        if last_used_at <= now_secs() - 60
+            && !self
+                .0
+                .store
+                .touch_credential(&identity.credential_id)
+                .await?
+        {
+            return Err(AuthError::Unauthorized);
+        }
+        Ok(identity)
+    }
+    /// Resolves a live credential's secret to its caller and when it was last
+    /// used, without refreshing it. Refused requests use this directly, so
+    /// they are attributed without keeping a session alive.
+    pub(crate) async fn identify(&self, secret: &str) -> Result<(Identity, i64)> {
         let prefixed = secret.starts_with(super::CREDENTIAL_PREFIX)
             && secret.len() == super::CREDENTIAL_PREFIX.len() + 43;
         if secret.len() != 43 && !prefixed {
@@ -62,19 +84,14 @@ impl Auth {
             .credential_owner(&Self::hash(secret))
             .await?
             .ok_or(AuthError::Unauthorized)?;
-        // Keep ordinary requests read-only. A refresh queues with reconciliation
-        // writers and rechecks validity after waiting, so revocation still wins.
-        if owner.last_used_at <= now_secs() - 60
-            && !self.0.store.touch_credential(&owner.credential_id).await?
-        {
-            return Err(AuthError::Unauthorized);
-        }
-        Ok(Identity {
+        let identity = Identity {
             user: owner.user,
             credential_id: owner.credential_id,
+            kind: owner.kind,
             grants: owner.grants,
             scoped: owner.scoped,
-        })
+        };
+        Ok((identity, owner.last_used_at))
     }
     /// Revokes the credential used for the current request.
     pub(crate) async fn logout(&self, identity: &Identity) -> Result<()> {
@@ -177,7 +194,7 @@ impl Auth {
         if let Some(grants) = &device.grants {
             identity.grants.may_grant(grants)?;
         }
-        device.approved_by = Some(identity.credential_id.clone());
+        device.approved_by = Some((identity.credential_id.clone(), identity.user.id.clone()));
         tracing::info!(
             user_id = %identity.user.id,
             username = %identity.user.username,
@@ -226,7 +243,8 @@ impl Auth {
             grants.as_ref(),
         )?;
         let approver = crate::store::Caller {
-            credential_id: &approved_by,
+            credential_id: &approved_by.0,
+            user_id: &approved_by.1,
         };
         let user = self
             .0

@@ -36,6 +36,7 @@ impl Authenticator for FakeAuth {
                 display_name: String::new(),
             },
             credential_id: "contract-admin".into(),
+            kind: piqueld::store::CredentialKind::Token,
             grants: piqueld_core::access::Grants::admin(),
             scoped: false,
         }))
@@ -2806,7 +2807,8 @@ async fn application_log_snapshot_validates_bounds_and_preserves_task_identity()
 }
 
 /// Exec rechecks the caller's grants when the command starts, so access lost
-/// after the connection was authorized cannot start one.
+/// after the connection was authorized cannot start one. History names who
+/// started a command.
 #[tokio::test]
 async fn exec_rechecks_grants_when_the_command_starts() {
     use piqueld::store::{Caller, StoreError};
@@ -2832,6 +2834,7 @@ async fn exec_rechecks_grants_when_the_command_starts() {
     };
     let caller = piqueld::api::Actor::Account(Caller {
         credential_id: "operator",
+        user_id: "operator",
     });
     assert!(
         state
@@ -2839,6 +2842,17 @@ async fn exec_rechecks_grants_when_the_command_starts() {
             .await
             .is_ok()
     );
+    let filter = piqueld_core::observability::EventFilter {
+        kind: Some("command_started".into()),
+        ..Default::default()
+    };
+    let started = state
+        .filtered_events(&filter, &piqueld::store::Visibility::ALL, None, 10)
+        .await
+        .unwrap()
+        .items;
+    assert_eq!(started[0].actor_user_id.as_deref(), Some("operator"));
+    assert_eq!(started[0].actor_credential_id.as_deref(), Some("operator"));
     let mut connection = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!(
         "sqlite:{}",
         database.display()
@@ -2873,9 +2887,11 @@ async fn receipts_replay_only_for_their_account() {
     let save = || Mutation::save(manifest().validate_template().unwrap(), None, false);
     let author = Actor::Account(Caller {
         credential_id: "author",
+        user_id: "author",
     });
     let other = Actor::Account(Caller {
         credential_id: "other",
+        user_id: "other",
     });
     let original = state
         .accept(author, save(), Some(0), false, Some("create-key"))
@@ -3046,6 +3062,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     // The same account as the HTTP client, since receipts replay only for theirs.
     let caller = piqueld::api::Actor::Account(piqueld::store::Caller {
         credential_id: "contract-admin",
+        user_id: "contract-admin",
     });
     let MutationResponse::Saved(saved) = service
         .accept(
@@ -4401,16 +4418,18 @@ async fn seed_account(
 
 /// Two applications, `blog` and `shop`, served by the real authenticator, with
 /// a `deployer` holding `apps:deploy` on `blog`, a `creator` holding
-/// `apps:create` plus `apps:write` on `blog`, and a `lead` holding only
-/// `accounts:manage`.
+/// `apps:create` plus `apps:write` on `blog`, a `lead` holding only
+/// `accounts:manage`, and an `auditor` holding only `audit:read`.
 struct GrantFixture {
-    _temp: TempDir,
+    temp: TempDir,
+    state: ApiState,
     router: axum::Router,
     blog: String,
     shop: String,
     deployer: String,
     creator: String,
     lead: String,
+    auditor: String,
 }
 
 impl GrantFixture {
@@ -4436,18 +4455,51 @@ impl GrantFixture {
         let creator = [("apps:create", None), ("apps:write", blog)];
         let creator = seed_account(&database, "creator", &creator).await;
         let lead = seed_account(&database, "lead", &[("accounts:manage", None)]).await;
+        let auditor = seed_account(&database, "auditor", &[("audit:read", None)]).await;
         let store = Store::open(&database).await.unwrap();
         let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
         let [blog, shop] = <[String; 2]>::try_from(ids).unwrap();
         Self {
-            _temp: temp,
-            router: api_router(state, auth),
+            temp,
+            router: api_router(state.clone(), auth),
+            state,
             blog,
             shop,
             deployer,
             creator,
             lead,
+            auditor,
         }
+    }
+
+    /// Adds environment `name` to `application`, returning its route.
+    async fn environment(&self, application: &str, name: &str) -> String {
+        let create = piqueld::api::Mutation::CreateEnvironment {
+            application: piqueld_core::ApplicationId::parse(application).unwrap(),
+            name: piqueld_core::EnvironmentName::parse(name).unwrap(),
+            branch: None,
+        };
+        let Ok(piqueld::api::MutationResponse::Environment(environment)) =
+            self.state.accept(Daemon, create, None, true, None).await
+        else {
+            panic!("environment");
+        };
+        format!("/api/v1/environments/{}", environment.id)
+    }
+
+    /// Reads the audit trail at `uri` as `token` once it holds `count`
+    /// records, since they are written in the background.
+    async fn audit(&self, token: &str, uri: &str, count: usize) -> serde_json::Value {
+        // Records are written in the background; allow for a loaded machine.
+        for _ in 0..500 {
+            let (status, body) = self.call(token, "GET", uri, serde_json::Value::Null).await;
+            assert_eq!(status, 200, "{body}");
+            if body["data"]["items"].as_array().unwrap().len() >= count {
+                return body;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("audit trail at {uri} never held {count} records");
     }
 
     /// Sends a JSON request as `token`, returning the status and JSON body.
@@ -4552,6 +4604,267 @@ async fn grants_hide_applications_and_name_missing_permissions() {
     }
 }
 
+/// Refusals (including unauthenticated ones), writes, and sensitive reads
+/// enter the audit trail with their caller and outcome, routine reads do not,
+/// and only `audit:read` reveals other accounts' trails.
+#[tokio::test]
+async fn audit_trail_records_callers_and_outcomes() {
+    let f = GrantFixture::new().await;
+    let none = serde_json::Value::Null;
+    let blog = format!("/api/v1/applications/{}", f.blog);
+    let shop = format!("/api/v1/applications/{}", f.shop);
+    let staging = f.environment(&f.blog, "staging").await;
+    for (method, uri, status) in [
+        ("DELETE", format!("{blog}?force=true"), 403),
+        ("GET", shop, 404),
+        ("POST", format!("{staging}/deploy?force=true"), 202),
+        ("GET", format!("{staging}/exec"), 403),
+        ("GET", format!("{blog}/manifest"), 200),
+        ("GET", "/api/v1/applications".to_owned(), 200),
+    ] {
+        assert_eq!(
+            f.call(&f.deployer, method, &uri, none.clone()).await.0,
+            status
+        );
+    }
+    let body = f.audit(&f.deployer, "/api/v1/audit", 5).await;
+    // Records are written in the background, so their order is not asserted.
+    // Requests about an environment also name its application.
+    let trail: std::collections::BTreeSet<_> = body["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            assert_eq!(event["user_id"], "deployer");
+            assert_eq!(event["credential_kind"], "token");
+            if !event["environment_id"].is_null() {
+                assert_eq!(event["application_id"], f.blog.as_str());
+            }
+            (
+                event["outcome"].as_str().unwrap().to_owned(),
+                event["action"].as_str().unwrap().to_owned(),
+                event["permission"].as_str().map(str::to_owned),
+            )
+        })
+        .collect();
+    let (id, environment) = ("/api/v1/applications/{id}", "/api/v1/environments/{id}");
+    assert_eq!(
+        trail,
+        [
+            ("allowed".into(), format!("POST {environment}/deploy"), None),
+            (
+                "denied".into(),
+                format!("GET {environment}/exec"),
+                Some("apps:exec".into())
+            ),
+            ("allowed".into(), format!("GET {id}/manifest"), None),
+            ("denied".into(), format!("GET {id}"), None),
+            (
+                "denied".into(),
+                format!("DELETE {id}"),
+                Some("apps:delete".into())
+            ),
+        ]
+        .into()
+    );
+    let others = "/api/v1/audit?user_id=creator";
+    assert_eq!(
+        f.call(&f.deployer, "GET", others, none.clone()).await.0,
+        403
+    );
+    // A cross-site write is refused, yet still names its valid caller.
+    let foreign = Request::post("/api/v1/applications")
+        .header("authorization", format!("Bearer {}", f.deployer))
+        .header("origin", "https://attacker.example")
+        .body(Body::empty())
+        .unwrap();
+    let response = f.router.clone().oneshot(foreign).await.unwrap();
+    assert_eq!(response.status(), 403);
+    // So is a throttled one, once the peer's sign-in start allowance is spent.
+    let mut status = 0;
+    for _ in 0..31 {
+        let start = serde_json::json!({});
+        status = f
+            .call(&f.deployer, "POST", "/api/v1/auth/device/start", start)
+            .await
+            .0;
+    }
+    assert_eq!(status, 429);
+    let unknown = "pqd_0000000000000000000000000000000000000000000";
+    let (status, _) = f.call(unknown, "GET", "/api/v1/applications", none).await;
+    assert_eq!(status, 401);
+    let body = f.audit(&f.auditor, "/api/v1/audit?outcome=denied", 7).await;
+    let anonymous: Vec<_> = body["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["user_id"].is_null())
+        .map(|event| event["status"].as_u64().unwrap())
+        .collect();
+    assert_eq!(anonymous, [401]);
+    let deployer = "/api/v1/audit?user_id=deployer&outcome=denied";
+    let body = f.audit(&f.auditor, deployer, 6).await;
+    assert_eq!(body["data"]["items"].as_array().unwrap().len(), 6);
+    let metrics = f.state.prometheus_metrics().await.unwrap();
+    assert!(
+        metrics.contains("piqueld_access_denied_total 7"),
+        "{metrics}"
+    );
+}
+
+/// Callers read their own trail, so it reveals nothing they could not see:
+/// a hidden environment's application is not recorded, and an API token
+/// reads only its own requests, not everything its account did.
+#[tokio::test]
+async fn own_audit_trails_reveal_nothing_hidden() {
+    let f = GrantFixture::new().await;
+    let none = serde_json::Value::Null;
+    let hidden = format!("/api/v1/environments/{}", f.shop);
+    assert_eq!(
+        f.call(&f.deployer, "GET", &hidden, none.clone()).await.0,
+        404
+    );
+    // Refusals before authorization, like a cross-site request, are no hint.
+    let foreign = Request::delete(&hidden)
+        .header("authorization", format!("Bearer {}", f.deployer))
+        .header("origin", "https://attacker.example")
+        .body(Body::empty())
+        .unwrap();
+    let response = f.router.clone().oneshot(foreign).await.unwrap();
+    assert_eq!(response.status(), 403);
+    let body = f.audit(&f.deployer, "/api/v1/audit", 2).await;
+    for event in body["data"]["items"].as_array().unwrap() {
+        assert_eq!(event["environment_id"], f.shop.as_str());
+        assert!(event["application_id"].is_null(), "{event}");
+    }
+    // Usernames match regardless of case, like accounts' own.
+    f.audit(&f.auditor, "/api/v1/audit?username=DEPLOYER", 2)
+        .await;
+    let create = serde_json::json!({
+        "action": "create_token",
+        "grants": [{"permission": "apps:deploy", "applications": [f.blog]}],
+        "name": "ci",
+        "days": 1
+    });
+    let (status, created) = f
+        .call(&f.deployer, "POST", "/api/v1/auth/manage", create)
+        .await;
+    assert_eq!(status, 200, "{created}");
+    let token = created["token"].as_str().unwrap();
+    let manifest = format!("/api/v1/applications/{}/manifest", f.blog);
+    assert_eq!(f.call(token, "GET", &manifest, none.clone()).await.0, 200);
+    let body = f.audit(token, "/api/v1/audit", 1).await;
+    let items = body["data"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{body}");
+    assert_eq!(items[0]["action"], "GET /api/v1/applications/{id}/manifest");
+    let account = "/api/v1/audit?credential_id=deployer";
+    assert_eq!(f.call(token, "GET", account, none).await.0, 403);
+}
+
+/// A command refused when it starts, after its connection was authorized
+/// and audited as allowed, is audited and counted as a refusal too.
+#[tokio::test]
+async fn exec_refusals_after_the_upgrade_are_audited() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+    let f = GrantFixture::new().await;
+    let database = f.temp.path().join("state.db");
+    let grants = [
+        ("apps:exec", Some(f.blog.as_str())),
+        ("apps:read", Some(f.blog.as_str())),
+    ];
+    let operator = seed_account(&database, "operator", &grants).await;
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = tcp.local_addr().unwrap();
+    let server = tokio::spawn(serve(tcp, f.router.clone()).into_future());
+    let url = format!("ws://{address}/api/v1/environments/{}/exec", f.blog);
+    let mut request = url.into_client_request().unwrap();
+    let bearer = format!("Bearer {operator}").parse().unwrap();
+    request.headers_mut().insert("authorization", bearer);
+    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let (mut socket, _) = tokio_tungstenite::client_async(request, stream)
+        .await
+        .unwrap();
+    let mut connection = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!(
+        "sqlite:{}",
+        database.display()
+    ))
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM auth_grants WHERE user_id='operator' AND permission='apps:exec'")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let start = serde_json::json!({"service": "web", "command": ["true"], "stdin": false});
+    socket.send(Message::text(start.to_string())).await.unwrap();
+    while let Some(Ok(message)) = socket.next().await {
+        if message.is_close() {
+            break;
+        }
+    }
+    let body = f
+        .audit(&f.auditor, "/api/v1/audit?user_id=operator", 2)
+        .await;
+    let outcomes: Vec<_> = body["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            assert_eq!(event["action"], "GET /api/v1/environments/{id}/exec");
+            (event["outcome"].clone(), event["permission"].clone())
+        })
+        .collect();
+    assert!(
+        outcomes.contains(&("denied".into(), "apps:exec".into())),
+        "{outcomes:?}"
+    );
+    assert!(
+        outcomes.contains(&("allowed".into(), serde_json::Value::Null)),
+        "{outcomes:?}"
+    );
+    server.abort();
+}
+
+/// A CLI login's approval and the poll that signs it in are audited for the
+/// approving account; polls still awaiting approval are not.
+#[tokio::test]
+async fn device_sign_ins_are_audited() {
+    use serde_json::json;
+    let f = GrantFixture::new().await;
+    let start = "/api/v1/auth/device/start";
+    let poll = "/api/v1/auth/device/poll";
+    let mut codes = Vec::new();
+    for _ in 0..2 {
+        let (status, body) = f.call(&f.deployer, "POST", start, json!({})).await;
+        assert_eq!(status, 200, "{body}");
+        codes.push((body["device_code"].clone(), body["user_code"].clone()));
+    }
+    let [(pending, _), (approved, user_code)] = <[_; 2]>::try_from(codes).unwrap();
+    let (_, body) = f
+        .call(&f.deployer, "POST", poll, json!({"device_code": pending}))
+        .await;
+    assert_eq!(body["status"], "authorization_pending");
+    let approve = json!({"user_code": user_code});
+    let (status, _) = f
+        .call(&f.deployer, "POST", "/api/v1/auth/device/approve", approve)
+        .await;
+    assert_eq!(status, 200);
+    let (_, body) = f
+        .call(&f.deployer, "POST", poll, json!({"device_code": approved}))
+        .await;
+    assert_eq!(body["status"], "complete", "{body}");
+    // Two starts, the approval, and the completing poll.
+    let body = f.audit(&f.auditor, "/api/v1/audit", 4).await;
+    let polls: Vec<_> = body["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["action"] == format!("POST {poll}"))
+        .map(|event| (event["outcome"].clone(), event["user_id"].clone()))
+        .collect();
+    assert_eq!(polls, [(json!("allowed"), json!("deployer"))]);
+}
+
 /// Creating requires `apps:create` and grants the creator matching access;
 /// saving an unreadable application by name is refused rather than absent.
 #[tokio::test]
@@ -4587,7 +4900,8 @@ async fn creators_receive_matching_grants_on_new_applications() {
     assert_eq!(status, 403);
 }
 
-/// Before the first account exists, only the Unix socket reveals the setup link.
+/// Before the first account exists, only the Unix socket reveals the setup
+/// link; remote requests for it are audited as refusals.
 #[tokio::test]
 async fn setup_link_is_served_only_over_the_unix_socket() {
     let temp = TempDir::new().unwrap();
@@ -4621,6 +4935,23 @@ async fn setup_link_is_served_only_over_the_unix_socket() {
             assert_eq!(setup.url, link.trim());
         }
     }
+    // The refused remote request is audited in the background.
+    let denied = piqueld_core::audit::AuditFilter {
+        outcome: Some(piqueld_core::audit::AuditOutcome::Denied),
+        ..Default::default()
+    };
+    for _ in 0..100 {
+        let page = state.audit_events(&denied, None, 10).await.unwrap();
+        if let [event] = page.items.as_slice() {
+            assert_eq!(
+                (event.action.as_str(), event.status),
+                ("GET /api/v1/auth/setup-link", 404)
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the refused setup link request was not audited");
 }
 
 /// Authentication short circuits still use the common error correlation layers,

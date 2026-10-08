@@ -94,19 +94,19 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
         piqueld_core::observability::DiagnosticCode::DockerUnavailable,
         "Docker became unreachable".into(),
     );
-    store
-        .record_diagnostic(&diagnostic, None, Some(&op.environment_id))
-        .await
-        .unwrap();
     let failure = Diagnostic::new(
         new_id("diagnostic"),
         piqueld_core::observability::DiagnosticCode::ServiceUpdateFailed,
         "Service failed".into(),
     );
-    store
-        .record_diagnostic(&failure, None, Some(&op.environment_id))
-        .await
-        .unwrap();
+    for diagnostic in [&diagnostic, &failure] {
+        let daemon = Attribution::default();
+        let environment = Some(&op.environment_id);
+        store
+            .record_diagnostic(diagnostic, None, environment, daemon)
+            .await
+            .unwrap();
+    }
     // Application history, including its environments', goes with the application.
     let (MutationResponse::Deleted(deleted), _) = store
         .accept(
@@ -384,7 +384,7 @@ async fn open_daemon_incidents_remain_manually_retryable() {
         "Daemon failure".into(),
     );
     store
-        .record_diagnostic(&diagnostic, None, None)
+        .record_diagnostic(&diagnostic, None, None, Attribution::default())
         .await
         .unwrap();
     store.process_notifications().await.unwrap();
@@ -918,7 +918,10 @@ async fn visibility_limits_history_builds_and_analytics() {
         "docker_unavailable",
         "down".into(),
     );
-    store.record_diagnostic(&daemon, None, None).await.unwrap();
+    store
+        .record_diagnostic(&daemon, None, None, Attribution::default())
+        .await
+        .unwrap();
     let blog = Scope::one(ids[0].clone());
     let only_blog = |event: &piqueld_core::Event| {
         event.scope == EventScope::Application && event.application_id.as_ref() == Some(&ids[0])
