@@ -22,9 +22,10 @@
 //!
 //! In tunnel mode, Cloudflare terminates TLS and `cloudflared` forwards public
 //! routes to the `tunnel` server, which therefore has no certificates and no
-//! redirects. It refuses every peer outside the edge network, so only
-//! `cloudflared` reaches it, and takes the client address from the
-//! `Cf-Connecting-IP` header it sets.
+//! redirects. It refuses every peer outside the edge network, whose only
+//! other member, the apps node, forwards only to the private listener, and
+//! takes the client address from the `Cf-Connecting-IP` header `cloudflared`
+//! sets.
 //!
 //! Known hosts redirect HTTP to HTTPS, then either proxy to their Swarm service's
 //! internal HTTP port or answer with their configured redirect. Caddy

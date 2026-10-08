@@ -354,6 +354,9 @@ impl Ingress {
         // Health messages name only the failed stage. Error details, which may
         // include Docker/Caddy response bodies, stay in daemon logs.
         let mut stage = "read deployed routing configuration";
+        // Whether the gateway converged (or stopped), even if cloudflared did
+        // not: the private listener depends only on the gateway.
+        let mut gateway = false;
         let result: Result<()> = async {
             let table = self.store.routing_table().await?;
             if self.enabled {
@@ -370,19 +373,23 @@ impl Ingress {
                 self.configure_gateway(&accepted, &networks).await?;
                 stage = "record applied routes";
                 self.store.acknowledge_routes(&accepted).await?;
+                gateway = true;
                 stage = "run cloudflared for the Cloudflare Tunnel";
                 self.ensure_tunnel().await?;
             } else {
+                stage = "remove the Cloudflare Tunnel credentials";
+                self.remove_tunnel_credentials().await?;
                 stage = "stop the disabled Caddy gateway";
                 self.stop_gateway().await?;
                 stage = "record withdrawn routes";
                 self.store.acknowledge_routes(&table).await?;
+                gateway = true;
             }
             anyhow::Ok(())
         }
         .await
         .context(stage);
-        let private = self.private_status(result.is_ok()).await;
+        let private = self.private_status(gateway).await;
         let public = self.public_status().await;
         // In tunnel mode, public routes are unreachable while it is down.
         let disconnected =

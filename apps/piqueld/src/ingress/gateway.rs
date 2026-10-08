@@ -577,7 +577,8 @@ impl Ingress {
     /// the rollback configuration commits a started replacement, so failing to
     /// clean up the old container never reverts a serving gateway.
     /// Defers replacement while retained routes lack verified networks, allowing
-    /// the running gateway to keep its attachments and accept other route changes.
+    /// the running gateway to keep its attachments and accept other route changes,
+    /// unless the replacement switches between direct and tunnel mode.
     pub(super) async fn replace_gateway(
         &self,
         table: &RoutingTable,
@@ -588,11 +589,21 @@ impl Ingress {
             Self::proxies(routes)
                 && !networks.contains(&DockerNetworkName::for_ingress(id).to_string())
         }) {
+            let Some(container) = self
+                .container()
+                .await?
+                .filter(|container| container["State"]["Running"] == true)
+            else {
+                anyhow::bail!(
+                    "cannot replace gateway: retained routes for application {id} lack a verified network and the old gateway is not running"
+                );
+            };
+            // The old container cannot serve the other mode's listeners: it
+            // would keep ports 80/443 open in tunnel mode, or lack them in
+            // direct mode.
             ensure!(
-                self.container()
-                    .await?
-                    .is_some_and(|container| container["State"]["Running"] == true),
-                "cannot replace gateway: retained routes for application {id} lack a verified network and the old gateway is not running"
+                Self::publishes_ports(&container) == self.tunnel.is_none(),
+                "cannot switch between direct and tunnel ingress: retained routes for application {id} lack a verified network; repair it or withdraw its routes"
             );
             tracing::warn!(environment_id=%id,
                 "deferring gateway replacement until retained route networks are repaired or routes are withdrawn");
@@ -734,6 +745,13 @@ impl Ingress {
             )
             .await?;
         Ok(())
+    }
+
+    /// Whether an inspected gateway publishes host ports, as in direct mode.
+    fn publishes_ports(container: &Value) -> bool {
+        container["HostConfig"]["PortBindings"]
+            .as_object()
+            .is_some_and(|bindings| !bindings.is_empty())
     }
 
     /// Finishes or reverts a replacement interrupted by cancellation or a crash.

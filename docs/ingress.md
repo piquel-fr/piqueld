@@ -213,12 +213,17 @@ credentials_file = "cloudflared-tunnel.json"   # $CREDENTIALS_DIRECTORY/cloudfla
 The file is read at startup like other `_file` settings and must hold the tunnel's
 `AccountTag`, `TunnelSecret` and `TunnelID`. piqueld writes it, mode 0600, to
 `<data_dir>/ingress/tunnel/credentials.json` for the container, and deletes that
-copy once the tunnel is disabled.
+copy whenever `cloudflared` is not meant to run: once the tunnel or ingress is
+disabled.
 
 With the tunnel enabled, every public route is served through it, and the gateway
 publishes no host port: ports 80 and 443 are closed. Switching modes changes the
 gateway's container spec, so it is replaced like any other gateway upgrade, with a
-brief interruption. Private routes stay on the tailnet.
+brief interruption. Unlike other upgrades, a mode switch is not deferred while an
+application's network is broken: the old gateway cannot serve the other mode's
+listeners, so ingress reports the failure, keeps the old mode, and switches once
+the network is repaired or its routes are withdrawn. Private routes stay on the
+tailnet.
 
 ### `cloudflared`
 
@@ -244,9 +249,11 @@ run. It has no certificate and no HTTP → HTTPS redirect, since Cloudflare
 terminates TLS: enable "Always Use HTTPS" for the zone on Cloudflare.
 
 Application networks are attached to the gateway, so the tunnel listener refuses
-every peer outside the edge network: only `cloudflared` reaches it. The client
-address comes from `Cf-Connecting-IP`, which is therefore only trusted from the
-edge network. Backends receive it in `X-Forwarded-For`, and `X-Forwarded-Proto` is
+every peer outside the edge network. Only containers piqueld manages join that
+network: `cloudflared`, and the apps tailnet node when private ingress is
+enabled, which forwards only to the private listener. The host can also reach the
+edge network, like the private listener. The client address comes from
+`Cf-Connecting-IP`, which is therefore only trusted from the edge network. Backends receive it in `X-Forwarded-For`, and `X-Forwarded-Proto` is
 `https`. `PIQUELD_INGRESS_PROXIES` is unchanged: backends still receive requests
 from the gateway.
 

@@ -1,7 +1,7 @@
 //! Tunnel mode: `cloudflared`'s configuration and container, and the gateway's
 //! tunnel listener. The harness test emulates `cloudflared` with a container
 //! on the edge network, since a real tunnel needs Cloudflare.
-use super::{Scenario, dns01::CURL_IMAGE};
+use super::{FailingEngine, Scenario, dns01::CURL_IMAGE};
 use crate::{
     config::{Credential, TunnelConfig, TunnelCredentials},
     ingress::Ingress,
@@ -169,6 +169,79 @@ async fn the_tunnel_listener_serves_only_public_routes_to_edge_peers() {
         })
         .unwrap();
     assert!(private.get("headers").is_none());
+}
+
+/// Whether `ingress` may replace a running direct-mode gateway while an
+/// application's retained routes lack a verified network.
+async fn defers_replacing_a_direct_gateway(tunnel: Option<&TunnelConfig>) -> anyhow::Result<()> {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("docker.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+    let container = json!({
+        "Config":{"Labels":{
+            "io.piqueld.managed":"true","io.piqueld.instance":store.instance_id(),"io.piqueld.ingress":"true"
+        }},
+        "State":{"Running":true},
+        "HostConfig":{"PortBindings":{"443/tcp":[{"HostIp":"","HostPort":"443"}]}}
+    });
+    let engine = axum::Router::new().fallback(move || async move { axum::Json(container) });
+    let server = tokio::spawn(async move { axum::serve(listener, engine).await });
+    let mut ingress = Ingress::new(true, &socket, directory.path(), store).unwrap();
+    if let Some(tunnel) = tunnel {
+        ingress = ingress.with_tunnel(tunnel);
+    }
+    let routes = super::application("one", "www.example.com", "body")
+        .to_manifest()
+        .validate()
+        .unwrap()
+        .spec()
+        .routes
+        .clone();
+    let table = [(EnvironmentId::parse("env-broken").unwrap(), routes)].into();
+    let result = ingress
+        .replace_gateway(
+            &table,
+            &std::collections::BTreeSet::new(),
+            &ingress.container_spec(),
+        )
+        .await;
+    server.abort();
+    result
+}
+
+#[tokio::test]
+async fn a_deferred_replacement_never_switches_modes() {
+    defers_replacing_a_direct_gateway(None).await.unwrap();
+    // The old gateway would keep ports 80/443 open in tunnel mode.
+    let error = defers_replacing_a_direct_gateway(Some(&tunnel("c2VjcmV0")))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("cannot switch between direct and tunnel"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn disabled_ingress_removes_the_tunnel_credentials_even_if_docker_fails() {
+    let engine = FailingEngine::start().await;
+    let directory = engine.directory.path();
+    let credentials = directory.join("ingress/tunnel/credentials.json");
+    std::fs::create_dir_all(credentials.parent().unwrap()).unwrap();
+    std::fs::write(&credentials, "{}").unwrap();
+    let disabled = Ingress::new(
+        false,
+        &directory.join("docker.sock"),
+        directory,
+        Arc::clone(&engine.store),
+    )
+    .unwrap()
+    .with_tunnel(&tunnel("c2VjcmV0"));
+    disabled.synchronize().await.unwrap_err();
+    assert!(!credentials.exists());
 }
 
 #[tokio::test]

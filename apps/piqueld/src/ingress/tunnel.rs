@@ -108,20 +108,13 @@ impl Ingress {
     }
 
     /// Ensures a running `cloudflared` matching the current spec. While the
-    /// tunnel is disabled, removes a leftover container and its credentials.
+    /// tunnel is disabled, removes its credentials and a leftover container.
     /// Runs after the gateway, whose edge network it joins.
     pub(super) async fn ensure_tunnel(&self) -> Result<()> {
         let name = self.tunnel_name();
         let Some(credentials) = &self.tunnel else {
-            self.remove_stale_container(&name).await?;
-            return match tokio::fs::remove_file(self.tunnel_directory().join("credentials.json"))
-                .await
-            {
-                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                    Err(error).context("remove the disabled tunnel's credentials")
-                }
-                _ => Ok(()),
-            };
+            self.remove_tunnel_credentials().await?;
+            return self.remove_stale_container(&name).await;
         };
         self.ensure_container(
             &name,
@@ -130,6 +123,17 @@ impl Ingress {
             self.prepare_tunnel(credentials),
         )
         .await
+    }
+
+    /// Removes the credentials written for `cloudflared`, whenever it is not
+    /// meant to run.
+    pub(super) async fn remove_tunnel_credentials(&self) -> Result<()> {
+        match tokio::fs::remove_file(self.tunnel_directory().join("credentials.json")).await {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                Err(error).context("remove the tunnel credentials written for cloudflared")
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Writes the tunnel's configuration and credentials, and pulls its image.
