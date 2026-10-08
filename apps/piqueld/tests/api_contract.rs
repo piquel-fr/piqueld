@@ -5098,11 +5098,6 @@ async fn the_host_operator_acts_without_a_token_over_the_unix_socket() {
         let status = as_peer(router, Request::get(me), uid, None).await.0;
         assert_eq!(status, 401, "{uid:?}");
     }
-    let bearer = format!("Bearer {:x<43}", "contract-admin");
-    let request = Request::get(me).header(header::AUTHORIZATION, bearer);
-    let (_, body, _) = as_peer(&unix, request, Some(operator), None).await;
-    assert_eq!(body["user"]["username"], "contract-admin");
-
     let issue = "/api/v1/auth/sign-in-link";
     for (router, uid) in [(&unix, Some(stranger)), (&web, Some(operator))] {
         assert_eq!(
@@ -5139,6 +5134,9 @@ async fn the_host_operator_acts_without_a_token_over_the_unix_socket() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["operator"]["uid"].as_u64(), Some(u64::from(operator)));
 
+    let foreign = Request::post(issue).header(header::ORIGIN, "https://attacker.example");
+    assert_eq!(as_peer(&unix, foreign, Some(operator), None).await.0, 403);
+
     // Issuing the link and signing in with it are audited, in the background,
     // as the operator.
     let operator = Some(HostOperator { uid: operator });
@@ -5152,14 +5150,70 @@ async fn the_host_operator_acts_without_a_token_over_the_unix_socket() {
                 event.action == action && event.status == 200 && event.operator == operator
             })
         };
+        // Refusals before authentication, like a cross-site request, too.
+        let refused = page.items.iter().any(|event| {
+            event.action == "POST /api/v1/auth/sign-in-link"
+                && event.status == 403
+                && event.operator == operator
+        });
         if by_operator("POST /api/v1/auth/sign-in-link")
             && by_operator("POST /api/v1/auth/login/operator")
+            && refused
         {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     panic!("the host operator's requests were not audited as the operator");
+}
+
+/// Over the Unix socket, a credential the host operator presents keeps its
+/// meaning: the scheme is case-insensitive, an unusable credential never
+/// falls back to the operator, and only the token-less operator gets a
+/// sign-in link.
+#[tokio::test]
+async fn credentials_presented_by_the_host_operator_keep_their_meaning() {
+    use axum::http::header;
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp).await;
+    let store = Store::open(temp.path().join("state.db")).await.unwrap();
+    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let operator = rustix::process::geteuid().as_raw();
+    let unix = api_router(state, auth);
+    let me = "/api/v1/auth/me";
+    let token = format!("{:x<43}", "contract-admin");
+    for scheme in ["Bearer", "bearer"] {
+        let bearer = format!("{scheme} {token}");
+        let request = Request::get(me).header(header::AUTHORIZATION, bearer);
+        let (_, body, _) = as_peer(&unix, request, Some(operator), None).await;
+        assert_eq!(body["user"]["username"], "contract-admin", "{scheme}");
+    }
+    for unusable in ["Basic dXNlcjpwYXNz", "Bearer pqd_unknown"] {
+        let request = Request::get(me).header(header::AUTHORIZATION, unusable);
+        let status = as_peer(&unix, request, Some(operator), None).await.0;
+        assert_eq!(status, 401, "{unusable}");
+    }
+    // So does a session cookie, even in a later `Cookie` header.
+    let cookies = |request: axum::http::request::Builder| {
+        request
+            .header(header::COOKIE, "other=one")
+            .header(header::COOKIE, "__Host-piqueld_session=pqd_unknown")
+    };
+    let status = as_peer(&unix, cookies(Request::get(me)), Some(operator), None)
+        .await
+        .0;
+    assert_eq!(status, 401);
+    // Even one that cannot be parsed.
+    let raw = header::HeaderValue::from_bytes(b"other=\xff; __Host-piqueld_session=x").unwrap();
+    let request = Request::get(me).header(header::COOKIE, raw);
+    assert_eq!(as_peer(&unix, request, Some(operator), None).await.0, 401);
+    let issue = Request::post("/api/v1/auth/sign-in-link")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    assert_eq!(as_peer(&unix, issue, Some(operator), None).await.0, 404);
+    // A cookie-authenticated write without the site's origin is refused
+    // outright, rather than issuing a link.
+    let issue = cookies(Request::post("/api/v1/auth/sign-in-link"));
+    assert_eq!(as_peer(&unix, issue, Some(operator), None).await.0, 403);
 }
 
 /// A fixed tailnet: `100.64.0.1` is Alice's laptop, `100.64.0.2` a CI runner,

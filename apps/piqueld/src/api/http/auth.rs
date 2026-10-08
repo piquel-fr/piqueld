@@ -86,17 +86,17 @@ impl From<AuthError> for ApiError {
     }
 }
 
-/// Reads one cookie value from the `Cookie` header.
+/// Reads one cookie value from the `Cookie` headers, all of them.
 ///
 /// ```text
 /// "a=1; piqueld_session=abc" + "piqueld_session" -> Some("abc")
 /// ```
 fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
         .find_map(|entry| {
             let (key, value) = entry.trim().split_once('=')?;
             (key == name).then_some(value)
@@ -149,20 +149,27 @@ async fn authenticate(
 ///    send the configured origin.
 /// 4. Refuses tokens bound to a tailnet identity unless the request came
 ///    from a matching tailnet peer (401 `tailnet_binding_mismatch`).
-/// 5. Without any credential, a Unix socket request from root or the
-///    daemon's own user acts as the host operator (see `UnixPeer`).
+/// 5. Without any `Authorization` or `Cookie` header, a Unix socket request
+///    from root or the daemon's own user acts as the host operator (see
+///    `UnixPeer`), also in refusals before this. Any such header, even one
+///    that is unusable or cannot be parsed, rules it out.
 /// 6. Inserts the resolved `Identity` as an extension, on the request for
 ///    handlers and on the response for outer layers. Missing or invalid
 ///    credentials leave it out; the route's access requirement then decides
 ///    whether the request needs one (see `access::enforce`).
 async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
-    let bearer = request
-        .headers()
-        .get(header::AUTHORIZATION)
+    let authorization = request.headers().get(header::AUTHORIZATION);
+    // The scheme is case-insensitive (RFC 9110).
+    let bearer = authorization
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
+        .and_then(|v| v.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|(_, token)| token);
     let session = cookie(request.headers(), &auth.cookie_name("piqueld_session"));
     let secret = bearer.or(session);
+    let operator = (authorization.is_none() && !request.headers().contains_key(header::COOKIE))
+        .then(|| super::UnixPeer::host_operator(request.extensions()))
+        .flatten();
     if request.method() == Method::POST
         && matches!(
             request.uri().path(),
@@ -180,7 +187,7 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
             response
                 .headers_mut()
                 .insert(header::RETRY_AFTER, header::HeaderValue::from_static("60"));
-            return refused(auth, secret, response).await;
+            return refused(auth, secret, operator, response).await;
         }
     }
     let uses_cookie = bearer.is_none() && session.is_some();
@@ -206,17 +213,15 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
             "Request origin does not match the configured website",
         )
         .into_response();
-        return refused(auth, secret, response).await;
+        return refused(auth, secret, operator, response).await;
     }
-    let mut identity = None;
+    let mut identity = operator.map(|operator| Identity::operator(operator, None));
     if let Some(secret) = secret {
         match auth.authenticate(secret).await {
             Ok(resolved) => identity = Some(resolved),
             Err(AuthError::Unauthorized) => {}
             Err(error) => return ApiError::from(error).into_response(),
         }
-    } else if let Some(operator) = super::UnixPeer::host_operator(request.extensions()) {
-        identity = Some(Identity::operator(operator, None));
     }
     // A bound token works only from a matching tailnet peer, checked with a
     // fresh lookup rather than the cached one used to describe the request.
@@ -321,11 +326,20 @@ impl<S: Send + Sync> axum::extract::OptionalFromRequestParts<S> for TailnetSourc
 /// Attaches a valid caller's identity to a refusal made before
 /// authentication, so the audit trail names it, without refreshing its
 /// credential: a refused request must not keep a session alive.
-async fn refused(auth: &Auth, secret: Option<&str>, mut response: Response) -> Response {
+async fn refused(
+    auth: &Auth,
+    secret: Option<&str>,
+    operator: Option<HostOperator>,
+    mut response: Response,
+) -> Response {
     if let Some(secret) = secret
         && let Ok((identity, _)) = auth.identify(secret).await
     {
         response.extensions_mut().insert(identity);
+    } else if let Some(operator) = operator {
+        response
+            .extensions_mut()
+            .insert(Identity::operator(operator, None));
     }
     response
 }
@@ -442,21 +456,25 @@ pub(super) async fn recover_admin(
 /// Issues a one-time host operator sign-in link.
 ///
 /// Public, but only over the Unix socket and only to the host operator, like
-/// `authRecoverAdmin`; anyone else gets 404. The link works once within ten
-/// minutes and signs a browser in as the host operator, with `admin` on every
+/// `authRecoverAdmin`, and only without a credential, which keeps its
+/// meaning; anyone else gets 404. The link works once within ten minutes and
+/// signs a browser in as the host operator, with `admin` on every
 /// application, for 12 hours. Issuing it raises a `security` notification.
 #[utoipa::path(post,path="/api/v1/auth/sign-in-link",operation_id="authSignInLink",responses((status=200,body=OperatorLink),(status=404,response=inline(super::openapi::ApiErrorResponse))))]
 pub(super) async fn sign_in_link(
     Extension(auth): Extension<Auth>,
-    OperatorPeer(operator): OperatorPeer,
+    identity: Option<Extension<Identity>>,
 ) -> Result<Json<OperatorLink>, ApiError> {
+    let operator = identity
+        .and_then(|Extension(identity)| identity.socket_operator())
+        .ok_or_else(hidden)?;
     Ok(Json(auth.sign_in_link(operator).await?))
 }
 /// Redeems a host operator sign-in link.
 ///
 /// Public. Signs the browser in as the host operator with a 12-hour session
 /// cookie. Used, expired, and unknown links fail with 401.
-#[utoipa::path(post,path="/api/v1/auth/login/operator",operation_id="authOperatorSignIn",request_body=OperatorSignIn,responses((status=200,body=Session)))]
+#[utoipa::path(post,path="/api/v1/auth/login/operator",operation_id="authOperatorSignIn",request_body=OperatorSignIn,responses((status=200,body=Session),(status=401,response=inline(super::openapi::ApiErrorResponse))))]
 pub(super) async fn operator_sign_in(
     Extension(auth): Extension<Auth>,
     Json(input): Json<OperatorSignIn>,

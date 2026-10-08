@@ -110,7 +110,8 @@ the [host operator](authentication.md#the-host-operator) for 12 hours, without
 an account. The dashboard then shows "Host operator" as the signed-in user and
 hides actions that need an account: adding passkeys, creating tokens,
 invitation and enrollment links, and CLI login approval. Accounts with
-`accounts:manage` see live host operator sessions on the Accounts page and can
+`accounts:manage` see live host operator sessions on the Accounts page; since
+those sessions act with `admin` on everything, only accounts holding that can
 revoke them.
 The Audit page shows the [audit trail](observability.md#audit-trail), naming the
 application or environment each request addressed, and each

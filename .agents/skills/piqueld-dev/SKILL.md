@@ -46,7 +46,8 @@ device logins do not.
 - **CLI:** `just ctl <args>` runs this worktree's `piquelctl` against the
   instance's socket.
 - **Signing in:** `just ctl` needs no login: it acts as the host operator,
-  with full access. For the browser, run `just ctl sign-in-link` and open the
+  with full access, unless `PIQUELD_TOKEN` or a saved login selects an
+  account. For the browser, run `just ctl sign-in-link` and open the
   printed link in the preview; it works once within 10 minutes, and the
   session lasts 12 hours, across restarts. Only test account features
   (passkeys, tokens, invitations, enrollment links, CLI login approval) need

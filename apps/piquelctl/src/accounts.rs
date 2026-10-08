@@ -235,8 +235,10 @@ impl AccountCommand {
                 let directory = client.auth_directory().await?;
                 let names = Names::load(client).await;
                 console.emit(&AccountsReport {
-                    accounts: &directory.users,
-                    operator_sessions: &directory.operator_sessions,
+                    list: AccountList {
+                        accounts: &directory.users,
+                        operator_sessions: &directory.operator_sessions,
+                    },
                     names: &names,
                 })
             }
@@ -262,11 +264,13 @@ impl AccountCommand {
                     .await?;
                 let names = Names::load(client).await;
                 console.emit(&AccountsReport {
-                    accounts: &[Account {
-                        user: target.user,
-                        grants,
-                    }],
-                    operator_sessions: &[],
+                    list: AccountList {
+                        accounts: &[Account {
+                            user: target.user,
+                            grants,
+                        }],
+                        operator_sessions: &[],
+                    },
                     names: &names,
                 })
             }
@@ -383,27 +387,32 @@ impl Report for SessionReport {
     }
 }
 
-/// Accounts with their grants; human output also lists live host operator
-/// sessions, which are not accounts (revoke one with `token revoke`).
-struct AccountsReport<'a> {
+/// Accounts with their grants, and live host operator sessions, which are
+/// not accounts (revoke one with `token revoke`).
+#[derive(Serialize)]
+struct AccountList<'a> {
     accounts: &'a [Account],
     operator_sessions: &'a [OperatorSessionView],
+}
+/// An [`AccountList`], with application names for human output.
+struct AccountsReport<'a> {
+    list: AccountList<'a>,
     names: &'a Names,
 }
-impl Report for AccountsReport<'_> {
-    type Json = [Account];
-    fn json(&self) -> &[Account] {
-        self.accounts
+impl<'a> Report for AccountsReport<'a> {
+    type Json = AccountList<'a>;
+    fn json(&self) -> &AccountList<'a> {
+        &self.list
     }
     fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        for account in self.accounts {
+        for account in self.list.accounts {
             out.line(format_args!(
                 "{} ({})",
                 account.user.username, account.user.id
             ))?;
             self.names.render(&account.grants, out)?;
         }
-        for session in self.operator_sessions {
+        for session in self.list.operator_sessions {
             out.line(format_args!(
                 "{} browser session {} (admin, expires {})",
                 session.operator, session.id, session.expires_at

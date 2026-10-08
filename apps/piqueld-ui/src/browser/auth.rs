@@ -374,10 +374,28 @@ pub(super) fn Gate() -> impl IntoView {
 }
 
 /// Modal overlay shown when the session expires; signing in again clears
-/// `expired` without remounting the dashboard.
+/// `expired` without remounting the dashboard. The host operator, which has
+/// no passkey, signs in with a new link in another tab and then continues
+/// here, keeping unsaved edits.
 #[component]
 fn SessionExpired(state: AuthState) -> impl IntoView {
     let feedback = Feedback::new();
+    let operator = state.current.with_untracked(|session| {
+        session
+            .as_ref()
+            .is_some_and(|session| matches!(session.principal, Principal::Operator(_)))
+    });
+    let resume = move |_| {
+        feedback.run(async move {
+            let session = Client::browser()
+                .auth_me()
+                .await
+                .map_err(|_| "Still signed out; sign in first, then continue.".to_owned())?;
+            state.current.set(Some(session));
+            state.expired.set(false);
+            Ok((String::new(), String::new()))
+        });
+    };
     view! {
         <div
             class="auth-overlay"
@@ -389,7 +407,17 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
                 {brand()} <h2 id="session-expired-title">"Your session has expired"</h2>
                 <p class="hint">
                     "Sign in to continue. Unsaved edits are still here; retry any action that failed after signing in."
-                </p> {feedback.view()} <div class="form-actions">
+                </p>
+                {operator
+                    .then(|| {
+                        view! {
+                            <p class="hint">
+                                "As the host operator, open a new link from "
+                                <code>"piquelctl sign-in-link"</code>
+                                " in another tab, then continue here."
+                            </p>
+                        }
+                    })} {feedback.view()} <div class="form-actions">
                     <button
                         type="button"
                         class="btn btn-primary"
@@ -407,6 +435,14 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
                     >
                         {icon(Icon::Key)}
                         "Sign in with a passkey"
+                    </button>
+                    <button
+                        type="button"
+                        class="btn"
+                        disabled={move || feedback.busy.get()}
+                        on:click={resume}
+                    >
+                        "Continue"
                     </button>
                     <Logout />
                 </div>
@@ -957,9 +993,11 @@ fn InvitationDialog(opened: RwSignal<bool>, feedback: Feedback) -> impl IntoView
 }
 
 /// Live host operator browser sessions, opened with `piquelctl sign-in-link`.
-/// Renders nothing when there are none.
+/// Renders nothing when there are none. A session acts with `admin` on
+/// everything, so only callers holding that may revoke one.
 #[component]
 fn OperatorSessions(directory: Directory, feedback: Feedback) -> impl IntoView {
+    let revoke = super::access::can(piqueld_client::access::Permission::Admin);
     let sessions = directory.operator_sessions;
     (!sessions.is_empty()).then(|| {
         let rows = sessions
@@ -975,18 +1013,23 @@ fn OperatorSessions(directory: Directory, feedback: Feedback) -> impl IntoView {
                             <a class="btn btn-ghost btn-sm" href={activity}>
                                 "Activity"
                             </a>
-                            <button
-                                type="button"
-                                class="btn btn-ghost btn-sm"
-                                on:click={move |_| {
-                                    feedback
-                                        .manage(Manage::RevokeCredential {
-                                            id: id.clone(),
-                                        });
-                                }}
-                            >
-                                "Revoke"
-                            </button>
+                            <Show when={move || revoke.get()}>
+                                <button
+                                    type="button"
+                                    class="btn btn-ghost btn-sm"
+                                    on:click={
+                                        let id = id.clone();
+                                        move |_| {
+                                            feedback
+                                                .manage(Manage::RevokeCredential {
+                                                    id: id.clone(),
+                                                });
+                                        }
+                                    }
+                                >
+                                    "Revoke"
+                                </button>
+                            </Show>
                         </td>
                     </tr>
                 }

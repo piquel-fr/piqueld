@@ -104,6 +104,18 @@ impl Identity {
             Credential::Operator { session, .. } => session.as_deref(),
         }
     }
+    /// The host operator acting over the Unix socket without any credential;
+    /// `None` for accounts and operator browser sessions.
+    #[must_use]
+    pub const fn socket_operator(&self) -> Option<HostOperator> {
+        match &self.credential {
+            Credential::Operator {
+                operator,
+                session: None,
+            } => Some(*operator),
+            _ => None,
+        }
+    }
     /// Class of the credential: host operator sessions are browser sessions.
     #[must_use]
     pub const fn kind(&self) -> Option<CredentialKind> {

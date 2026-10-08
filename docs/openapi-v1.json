@@ -17995,6 +17995,16 @@
             },
             "description": ""
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
           "403": {
             "content": {
               "application/json": {
@@ -18328,7 +18338,7 @@
     },
     "/api/v1/auth/sign-in-link": {
       "post": {
-        "description": "Public, but only over the Unix socket and only to the host operator, like\n`authRecoverAdmin`; anyone else gets 404. The link works once within ten\nminutes and signs a browser in as the host operator, with `admin` on every\napplication, for 12 hours. Issuing it raises a `security` notification.",
+        "description": "Public, but only over the Unix socket and only to the host operator, like\n`authRecoverAdmin`, and only without a credential, which keeps its\nmeaning; anyone else gets 404. The link works once within ten minutes and\nsigns a browser in as the host operator, with `admin` on every\napplication, for 12 hours. Issuing it raises a `security` notification.",
         "operationId": "authSignInLink",
         "responses": {
           "200": {

@@ -129,7 +129,8 @@ sign in with their own account. Over TCP or the tailnet, nobody is.
 
 **Using the CLI without signing in.** On the daemon host, `piquelctl` run by
 root or the daemon's user acts as the host operator, with `admin` on every
-application, whenever it sends no token:
+application, whenever it sends no credential at all (no `Authorization` or
+`Cookie` header, even an unusable one):
 
 ```console
 $ sudo piquelctl whoami

@@ -5464,6 +5464,9 @@ impl Client {
         let response = result?;
         match response.status().as_u16() {
             200u16 => crate::client::decode_response(response).await,
+            401u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -5842,8 +5845,9 @@ impl Client {
     /*Issues a one-time host operator sign-in link
 
     Public, but only over the Unix socket and only to the host operator, like
-    `authRecoverAdmin`; anyone else gets 404. The link works once within ten
-    minutes and signs a browser in as the host operator, with `admin` on every
+    `authRecoverAdmin`, and only without a credential, which keeps its
+    meaning; anyone else gets 404. The link works once within ten minutes and
+    signs a browser in as the host operator, with `admin` on every
     application, for 12 hours. Issuing it raises a `security` notification.
 
     Sends a `POST` request to `/api/v1/auth/sign-in-link`
