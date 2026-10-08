@@ -1645,9 +1645,11 @@ impl Client {
     The body is the raw value (`application/octet-stream`, 1–512000 bytes).
     `X-Expected-Generation` must be 0 to create a secret, or its current
     generation to replace it; a mismatch fails with 409. Running services keep
-    their value until the next deployment. Supplying `environments` or
-    `previews` replaces the access list; a new secret otherwise allows every
-    environment and no previews, and an existing one keeps its list. Names the
+    their value until the next deployment. Supplying `environments` (`all`, or
+    environment IDs) replaces the access list, with `previews` (default
+    `false`); `previews` alone fails with 400. Without them, a new secret
+    allows every environment and no previews, and an existing one keeps its
+    list. Names the
     saved manifest or an environment's last fetched one declares as generated
     secrets fail with 422 `manifest_validation_failed` and `secret_name_conflict`
     in `details.errors`. The response carries metadata only.
@@ -1657,9 +1659,10 @@ impl Client {
     Arguments:
     - `id`
     - `name`
-    - `environments`: Comma-separated IDs of the environments that may mount the secret;
-    every environment when omitted.
-    - `previews`: Whether previews may mount the secret.
+    - `environments`: The environments that may mount the secret: `all`, or comma-separated
+    environment IDs (empty for none). Supplying it replaces the access list.
+    - `previews`: Whether previews may mount the secret; only with `environments`, and
+    `false` when omitted.
     - `x_expected_generation`
     - `body`
     */

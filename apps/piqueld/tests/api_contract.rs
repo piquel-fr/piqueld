@@ -5631,6 +5631,70 @@ async fn assert_secret_history(client: &Client, application_id: &str) {
     );
 }
 
+/// Rotating a stored secret with only `previews` is refused rather than
+/// resetting its environments to every environment; `environments=all` sets
+/// that explicitly.
+#[tokio::test]
+async fn stored_secret_access_queries_never_widen_environments_implicitly() {
+    use piqueld_core::api::{EnvironmentAccess, SecretAccess};
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let api = router(state(&temp).await, FakeAuth);
+    let server = tokio::spawn(serve(listener, api.clone()).into_future());
+    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let app = create_and_inspect(&client, &manifest()).await;
+    let none = SecretAccess {
+        environments: EnvironmentAccess::Only([].into()),
+        previews: false,
+    };
+    client
+        .put_stored_secret(
+            &app.environment_id,
+            "token",
+            0,
+            b"one".to_vec(),
+            Some(&none),
+        )
+        .await
+        .unwrap();
+    let put = |query: &str| {
+        let request = Request::builder()
+            .method("PUT")
+            .uri(format!(
+                "/api/v1/applications/{}/secrets/token?{query}",
+                app.environment_id
+            ))
+            .header("host", "localhost")
+            .header("content-type", "application/octet-stream")
+            .header("x-expected-generation", "1")
+            .body(Body::from("two"))
+            .unwrap();
+        api.clone().oneshot(request)
+    };
+    let response = put("previews=true").await.unwrap();
+    assert_eq!(response.status(), 400);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["code"], "query_invalid");
+    let stored = client.stored_secrets(&app.environment_id).await.unwrap();
+    assert_eq!(
+        (stored[0].metadata.generation, &stored[0].access),
+        (1, &none)
+    );
+    let response = put("environments=all&previews=true").await.unwrap();
+    assert_eq!(response.status(), 200);
+    let stored = client.stored_secrets(&app.environment_id).await.unwrap();
+    assert_eq!(
+        stored[0].access,
+        SecretAccess {
+            environments: EnvironmentAccess::All,
+            previews: true
+        }
+    );
+    server.abort();
+}
+
 #[tokio::test]
 async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
     use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};

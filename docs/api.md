@@ -423,8 +423,10 @@ belong to their environment. Secret endpoints expose metadata only:
   `previews` is stored for previews, which do not exist yet.
 - `PUT /api/v1/applications/{id}/secrets/{name}` accepts an `application/octet-stream`
   value of 1–512000 bytes. `X-Expected-Generation: 0` creates; a current generation
-  replaces. The `environments` (comma-separated environment IDs) and `previews`
-  query parameters replace the access list; without them a new secret allows every
+  replaces. The `environments` query parameter (`all`, or comma-separated
+  environment IDs; empty for none) replaces the access list, together with
+  `previews` (default `false`). `previews` alone returns 400 `query_invalid`, so
+  it never resets the environments. Without them a new secret allows every
   environment and no previews, and an existing one keeps its list. Names the saved
   manifest or an environment's last fetched one declares in `spec.secrets` return
   422 `manifest_validation_failed` with `secret_name_conflict` in `details.errors`. Each store

@@ -1,8 +1,7 @@
 //! Secret metadata and write-only secret values: generated secrets per
 //! environment, and each application's store of manually set secrets.
 use crate::{
-    Client, ClientError, EnvironmentAccess, EnvironmentId, SecretAccess, SecretMetadata,
-    StoredSecret, client::generated_result,
+    Client, ClientError, SecretAccess, SecretMetadata, StoredSecret, client::generated_result,
 };
 impl Client {
     /// Recovers from a lost master key by discarding every stored and generated value.
@@ -48,15 +47,7 @@ impl Client {
         value: Vec<u8>,
         access: Option<&SecretAccess>,
     ) -> Result<StoredSecret, ClientError> {
-        let environments = access.and_then(|access| match &access.environments {
-            EnvironmentAccess::All => None,
-            EnvironmentAccess::Only(ids) => Some(
-                ids.iter()
-                    .map(EnvironmentId::as_str)
-                    .collect::<Vec<_>>()
-                    .join(","),
-            ),
-        });
+        let environments = access.map(|access| access.environments.to_query());
         generated_result(
             self.generated
                 .put_application_secret(

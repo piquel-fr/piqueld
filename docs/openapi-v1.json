@@ -11576,7 +11576,7 @@
         "x-piqueld-access": "secrets:write"
       },
       "put": {
-        "description": "The body is the raw value (`application/octet-stream`, 1–512000 bytes).\n`X-Expected-Generation` must be 0 to create a secret, or its current\ngeneration to replace it; a mismatch fails with 409. Running services keep\ntheir value until the next deployment. Supplying `environments` or\n`previews` replaces the access list; a new secret otherwise allows every\nenvironment and no previews, and an existing one keeps its list. Names the\nsaved manifest or an environment's last fetched one declares as generated\nsecrets fail with 422 `manifest_validation_failed` and `secret_name_conflict`\nin `details.errors`. The response carries metadata only.",
+        "description": "The body is the raw value (`application/octet-stream`, 1–512000 bytes).\n`X-Expected-Generation` must be 0 to create a secret, or its current\ngeneration to replace it; a mismatch fails with 409. Running services keep\ntheir value until the next deployment. Supplying `environments` (`all`, or\nenvironment IDs) replaces the access list, with `previews` (default\n`false`); `previews` alone fails with 400. Without them, a new secret\nallows every environment and no previews, and an existing one keeps its\nlist. Names the\nsaved manifest or an environment's last fetched one declares as generated\nsecrets fail with 422 `manifest_validation_failed` and `secret_name_conflict`\nin `details.errors`. The response carries metadata only.",
         "operationId": "putApplicationSecret",
         "parameters": [
           {
@@ -11605,7 +11605,7 @@
             }
           },
           {
-            "description": "Comma-separated IDs of the environments that may mount the secret;\nevery environment when omitted.",
+            "description": "The environments that may mount the secret: `all`, or comma-separated\nenvironment IDs (empty for none). Supplying it replaces the access list.",
             "in": "query",
             "name": "environments",
             "required": false,
@@ -11614,7 +11614,7 @@
             }
           },
           {
-            "description": "Whether previews may mount the secret.",
+            "description": "Whether previews may mount the secret; only with `environments`, and\n`false` when omitted.",
             "in": "query",
             "name": "previews",
             "required": false,

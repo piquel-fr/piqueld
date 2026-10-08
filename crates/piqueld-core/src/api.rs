@@ -693,6 +693,49 @@ pub enum EnvironmentAccess {
     Only(BTreeSet<EnvironmentId>),
 }
 
+impl EnvironmentAccess {
+    /// Query value for `All`. Environment IDs are at least 8 characters, so
+    /// it never names one.
+    const ALL_QUERY: &str = "all";
+
+    /// Encodes the list as one query parameter: `all`, or comma-separated
+    /// environment IDs (empty for none).
+    #[must_use]
+    pub fn to_query(&self) -> String {
+        match self {
+            Self::All => Self::ALL_QUERY.to_owned(),
+            Self::Only(ids) => ids
+                .iter()
+                .map(EnvironmentId::as_str)
+                .collect::<Vec<_>>()
+                .join(","),
+        }
+    }
+
+    /// Decodes [`Self::to_query`]'s encoding.
+    ///
+    /// ```
+    /// use piqueld_core::api::EnvironmentAccess;
+    /// for access in ["all", "", "env-00000001,env-00000002"] {
+    ///     assert_eq!(EnvironmentAccess::from_query(access).unwrap().to_query(), access);
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns the error for a malformed environment ID.
+    pub fn from_query(value: &str) -> Result<Self, crate::EnvironmentIdError> {
+        if value == Self::ALL_QUERY {
+            return Ok(Self::All);
+        }
+        value
+            .split(',')
+            .filter(|id| !id.is_empty())
+            .map(EnvironmentId::parse)
+            .collect::<Result<_, _>>()
+            .map(Self::Only)
+    }
+}
+
 /// Who may mount a secret from an application's store. The default is every
 /// environment and no previews.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]

@@ -121,30 +121,30 @@ pub(super) async fn list_stored(
 #[serde(default, deny_unknown_fields)]
 #[into_params(parameter_in = Query)]
 pub(super) struct AccessQuery {
-    /// Comma-separated IDs of the environments that may mount the secret;
-    /// every environment when omitted.
+    /// The environments that may mount the secret: `all`, or comma-separated
+    /// environment IDs (empty for none). Supplying it replaces the access list.
     environments: Option<String>,
-    /// Whether previews may mount the secret.
+    /// Whether previews may mount the secret; only with `environments`, and
+    /// `false` when omitted.
     previews: Option<bool>,
 }
 
 impl AccessQuery {
-    /// The access list, when the query sets one.
+    /// The access list, when the query sets one. `previews` alone is refused,
+    /// so it cannot silently reset the environments to every environment.
     fn access(self) -> Result<Option<SecretAccess>, ApiError> {
-        if self.environments.is_none() && self.previews.is_none() {
-            return Ok(None);
-        }
-        let environments = match self.environments {
-            None => EnvironmentAccess::All,
-            Some(ids) => EnvironmentAccess::Only(
-                ids.split(',')
-                    .filter(|id| !id.is_empty())
-                    .map(|id| EnvironmentId::parse(id).map_err(ApiError::from))
-                    .collect::<Result<_, _>>()?,
-            ),
+        let Some(environments) = self.environments else {
+            return match self.previews {
+                None => Ok(None),
+                Some(_) => Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "query_invalid",
+                    "previews requires environments; use the access endpoint to change previews alone",
+                )),
+            };
         };
         Ok(Some(SecretAccess {
-            environments,
+            environments: EnvironmentAccess::from_query(&environments)?,
             previews: self.previews.unwrap_or_default(),
         }))
     }
@@ -155,9 +155,11 @@ impl AccessQuery {
 /// The body is the raw value (`application/octet-stream`, 1–512000 bytes).
 /// `X-Expected-Generation` must be 0 to create a secret, or its current
 /// generation to replace it; a mismatch fails with 409. Running services keep
-/// their value until the next deployment. Supplying `environments` or
-/// `previews` replaces the access list; a new secret otherwise allows every
-/// environment and no previews, and an existing one keeps its list. Names the
+/// their value until the next deployment. Supplying `environments` (`all`, or
+/// environment IDs) replaces the access list, with `previews` (default
+/// `false`); `previews` alone fails with 400. Without them, a new secret
+/// allows every environment and no previews, and an existing one keeps its
+/// list. Names the
 /// saved manifest or an environment's last fetched one declares as generated
 /// secrets fail with 422 `manifest_validation_failed` and `secret_name_conflict`
 /// in `details.errors`. The response carries metadata only.
@@ -176,7 +178,7 @@ pub(super) async fn put_stored(
             ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "query_invalid",
-                "environments must list environment IDs; previews must be true or false",
+                "environments must be all or environment IDs; previews must be true or false",
             )
         })?
         .0
