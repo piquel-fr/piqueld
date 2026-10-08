@@ -9,8 +9,8 @@ use piqueld_client::{
     Client,
     access::{GlobalPermission, Grants, Permission},
     auth::{
-        Account, Ceremony, CeremonyFinish, DeviceRequest, Directory, Manage, RegistrationStart,
-        Session, User,
+        Account, Ceremony, CeremonyFinish, DeviceRequest, Directory, Manage, Principal,
+        RegistrationStart, Session,
     },
 };
 use wasm_bindgen::prelude::*;
@@ -105,22 +105,28 @@ enum Invite {
     Account(String),
     /// `#enroll=`: adds a passkey to an existing account.
     Enrollment(String),
+    /// `#operator=`: signs the browser in as the host operator.
+    Operator(String),
 }
 impl Invite {
     fn secret(&self) -> String {
         match self {
-            Self::Account(secret) | Self::Enrollment(secret) => secret.clone(),
+            Self::Account(secret) | Self::Enrollment(secret) | Self::Operator(secret) => {
+                secret.clone()
+            }
         }
     }
 }
-/// Reads an invitation or enrollment secret once and removes it from the
-/// address bar and session history, so it is not left behind if registration
-/// is abandoned.
+/// Reads an invitation, enrollment, or host operator sign-in secret once and
+/// removes it from the address bar and session history, so it is not left
+/// behind if the page is abandoned.
 fn take_invitation() -> Option<Invite> {
     let window = web_sys::window()?;
     let fragment = window.location().hash().ok()?;
     let invite = if let Some(secret) = fragment.strip_prefix("#invite=") {
         Invite::Account(secret.to_owned())
+    } else if let Some(secret) = fragment.strip_prefix("#operator=") {
+        Invite::Operator(secret.to_owned())
     } else {
         Invite::Enrollment(fragment.strip_prefix("#enroll=")?.to_owned())
     };
@@ -287,10 +293,23 @@ pub(super) fn session() -> RwSignal<Option<Session>> {
         .current
 }
 
-/// The signed-in account, for chrome that shows who is working.
-pub(super) fn auth_user() -> Signal<Option<User>> {
+/// Who is signed in, for chrome that shows who is working.
+pub(super) fn signed_in() -> Signal<Option<Principal>> {
     let session = session();
-    Signal::derive(move || session.get().map(|session| session.user))
+    Signal::derive(move || session.get().map(|session| session.principal))
+}
+
+/// Whether an account, rather than the host operator, is signed in. Only
+/// accounts own passkeys and tokens or issue links.
+fn account_session() -> Signal<bool> {
+    let session = session();
+    Signal::derive(move || {
+        session.with(|session| {
+            session
+                .as_ref()
+                .is_some_and(|s| s.principal.user().is_some())
+        })
+    })
 }
 
 fn brand() -> AnyView {
@@ -355,10 +374,28 @@ pub(super) fn Gate() -> impl IntoView {
 }
 
 /// Modal overlay shown when the session expires; signing in again clears
-/// `expired` without remounting the dashboard.
+/// `expired` without remounting the dashboard. The host operator, which has
+/// no passkey, signs in with a new link in another tab and then continues
+/// here, keeping unsaved edits.
 #[component]
 fn SessionExpired(state: AuthState) -> impl IntoView {
     let feedback = Feedback::new();
+    let operator = state.current.with_untracked(|session| {
+        session
+            .as_ref()
+            .is_some_and(|session| matches!(session.principal, Principal::Operator(_)))
+    });
+    let resume = move |_| {
+        feedback.run(async move {
+            let session = Client::browser()
+                .auth_me()
+                .await
+                .map_err(|_| "Still signed out; sign in first, then continue.".to_owned())?;
+            state.current.set(Some(session));
+            state.expired.set(false);
+            Ok((String::new(), String::new()))
+        });
+    };
     view! {
         <div
             class="auth-overlay"
@@ -370,7 +407,17 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
                 {brand()} <h2 id="session-expired-title">"Your session has expired"</h2>
                 <p class="hint">
                     "Sign in to continue. Unsaved edits are still here; retry any action that failed after signing in."
-                </p> {feedback.view()} <div class="form-actions">
+                </p>
+                {operator
+                    .then(|| {
+                        view! {
+                            <p class="hint">
+                                "As the host operator, open a new link from "
+                                <code>"piquelctl sign-in-link"</code>
+                                " in another tab, then continue here."
+                            </p>
+                        }
+                    })} {feedback.view()} <div class="form-actions">
                     <button
                         type="button"
                         class="btn btn-primary"
@@ -388,6 +435,14 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
                     >
                         {icon(Icon::Key)}
                         "Sign in with a passkey"
+                    </button>
+                    <button
+                        type="button"
+                        class="btn"
+                        disabled={move || feedback.busy.get()}
+                        on:click={resume}
+                    >
+                        "Continue"
                     </button>
                     <Logout />
                 </div>
@@ -419,9 +474,10 @@ pub(super) fn AuthPage() -> impl IntoView {
     move || state.pending()
 }
 
-/// Authentication page body. Chooses between invitation registration, passkey
-/// enrollment, first-run setup instructions, passkey sign-in, CLI device
-/// approval (`#device` fragment) and a signed-in landing view.
+/// Authentication page body. Chooses between host operator sign-in,
+/// invitation registration, passkey enrollment, first-run setup instructions,
+/// passkey sign-in, CLI device approval (`#device` fragment) and a signed-in
+/// landing view.
 #[component]
 fn SignIn(
     initialized: bool,
@@ -436,10 +492,43 @@ fn SignIn(
     let display_name = RwSignal::new(String::new());
     let name = RwSignal::new("My passkey".to_owned());
     let signed_in = current.is_some();
+    let operator = current
+        .as_ref()
+        .is_some_and(|session| session.principal.user().is_none());
     let who = current
-        .map(|session| session.user.username)
+        .map(|session| session.principal.name().to_owned())
         .unwrap_or_default();
-    let content = if let Some(Invite::Enrollment(secret)) = &invitation {
+    let content = if let Some(Invite::Operator(secret)) = &invitation {
+        let secret = secret.clone();
+        view! {
+            <h2>"Sign in as the host operator"</h2>
+            <p class="hint">
+                "This one-time link from " <code>"piquelctl sign-in-link"</code>
+                " signs this browser in as the daemon host's operator, with full access, for 12 hours. It is not an account and has no passkeys."
+            </p>
+            <div class="form-actions">
+                <button
+                    type="button"
+                    class="btn btn-primary"
+                    on:click={move |_| {
+                        let secret = secret.clone();
+                        feedback
+                            .run(async move {
+                                Client::browser()
+                                    .auth_operator_sign_in(&secret)
+                                    .await
+                                    .map_err(|e| e.to_string())?;
+                                navigate("/dashboard/");
+                                Ok((String::new(), String::new()))
+                            });
+                    }}
+                >
+                    "Sign in as host operator"
+                </button>
+            </div>
+        }
+        .into_any()
+    } else if let Some(Invite::Enrollment(secret)) = &invitation {
         let secret = secret.clone();
         view! {
             <h2>"Add a passkey"</h2>
@@ -556,6 +645,18 @@ fn SignIn(
                     {icon(Icon::Key)}
                     "Sign in with a passkey"
                 </button>
+            </div>
+        }
+        .into_any()
+    } else if device && operator {
+        view! {
+            <h2>"Connect piquelctl"</h2>
+            {notice(
+                Tone::Warn,
+                "The host operator cannot approve CLI logins, which sign the CLI in as an account. Sign in with an account instead, or run piquelctl on the daemon host as root or the daemon's user, which needs no login.",
+            )}
+            <div class="form-actions">
+                <Logout />
             </div>
         }
         .into_any()
@@ -769,13 +870,15 @@ pub(super) fn Logout(#[prop(optional)] compact: bool) -> impl IntoView {
 }
 
 /// Account administration page. Loads the visible directory (reloading after
-/// each successful action) and renders each account plus pending invitations.
-/// Without `accounts:manage`, only the caller's own account is listed.
+/// each successful action) and renders each account plus pending invitations
+/// and host operator sessions. Without `accounts:manage`, only the caller's
+/// own account is listed.
 #[component]
 pub(super) fn AccountsPage() -> impl IntoView {
     let feedback = Feedback::new();
     let directory = RwSignal::new(None::<Directory>);
     let manage = can(Permission::Global(GlobalPermission::AccountsManage));
+    let account = account_session();
     let inviting = RwSignal::new(false);
     Effect::new(move |_| {
         feedback.revision.get();
@@ -791,7 +894,7 @@ pub(super) fn AccountsPage() -> impl IntoView {
             title="Accounts"
             description="Grants decide what each account and its tokens may do. Managing another account requires accounts:manage and every grant that account holds."
         >
-            <Show when={move || manage.get()}>
+            <Show when={move || manage.get() && account.get()}>
                 <button
                     type="button"
                     class="btn btn-primary"
@@ -837,6 +940,10 @@ pub(super) fn AccountsPage() -> impl IntoView {
                                         .get()
                                         .then(|| {
                                             view! {
+                                                <OperatorSessions
+                                                    directory={data.clone()}
+                                                    feedback={feedback}
+                                                />
                                                 <Invitations directory={data} feedback={feedback} />
                                             }
                                         })}
@@ -883,6 +990,74 @@ fn InvitationDialog(opened: RwSignal<bool>, feedback: Feedback) -> impl IntoView
             </div>
         </super::ui::Modal>
     }
+}
+
+/// Live host operator browser sessions, opened with `piquelctl sign-in-link`.
+/// Renders nothing when there are none. A session acts with `admin` on
+/// everything, so only callers holding that may revoke one.
+#[component]
+fn OperatorSessions(directory: Directory, feedback: Feedback) -> impl IntoView {
+    let revoke = super::access::can(piqueld_client::access::Permission::Admin);
+    let sessions = directory.operator_sessions;
+    (!sessions.is_empty()).then(|| {
+        let rows = sessions
+            .into_iter()
+            .map(|session| {
+                let id = session.id;
+                let activity = format!("/dashboard/audit?credential={id}");
+                view! {
+                    <tr>
+                        <td>{session.operator.to_string()}</td>
+                        <td class="muted">{when(session.expires_at * 1000)}</td>
+                        <td class="actions">
+                            <a class="btn btn-ghost btn-sm" href={activity}>
+                                "Activity"
+                            </a>
+                            <Show when={move || revoke.get()}>
+                                <button
+                                    type="button"
+                                    class="btn btn-ghost btn-sm"
+                                    on:click={
+                                        let id = id.clone();
+                                        move |_| {
+                                            feedback
+                                                .manage(Manage::RevokeCredential {
+                                                    id: id.clone(),
+                                                });
+                                        }
+                                    }
+                                >
+                                    "Revoke"
+                                </button>
+                            </Show>
+                        </td>
+                    </tr>
+                }
+            })
+            .collect_view();
+        view! {
+            <section class="card card-flush">
+                <header>
+                    <div>
+                        <h2>"Host operator sessions"</h2>
+                        <p>
+                            "Browsers signed in with piquelctl sign-in-link act as the daemon host's operator, with admin on everything, for 12 hours."
+                        </p>
+                    </div>
+                </header>
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>"Operator"</th>
+                            <th>"Expires"</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>{rows}</tbody>
+                </table>
+            </section>
+        }
+    })
 }
 
 #[component]
@@ -961,13 +1136,18 @@ fn Invitations(directory: Directory, feedback: Feedback) -> impl IntoView {
 
 /// Management card for one account: profile, grants, passkeys, sessions and
 /// API tokens, and deletion. Passkeys and tokens are only created for the
-/// signed-in account itself; others receive an enrollment link instead.
+/// signed-in account itself; others receive an enrollment link instead,
+/// which the host operator, not being an account, cannot issue.
 #[component]
 fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl IntoView {
     let user = account.user;
-    let own = super::auth::session()
-        .get_untracked()
-        .is_some_and(|session| session.user.id == user.id);
+    let own = session().get_untracked().is_some_and(|session| {
+        session
+            .principal
+            .user()
+            .is_some_and(|signed_in| signed_in.id == user.id)
+    });
+    let issuer = account_session().get_untracked();
     let manage = can(Permission::Global(GlobalPermission::AccountsManage));
     let id = StoredValue::new(user.id.clone());
     let username = RwSignal::new(user.username);
@@ -1171,6 +1351,13 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
                                 "Add passkey"
                             </button>
                         </div>
+                    }
+                        .into_any()
+                } else if !issuer {
+                    view! {
+                        <p class="hint">
+                            "Only the account owner can add passkeys. An account with accounts:manage can send them a single-use enrollment link."
+                        </p>
                     }
                         .into_any()
                 } else {

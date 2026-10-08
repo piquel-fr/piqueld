@@ -98,6 +98,11 @@ pub(crate) enum Command {
     /// the daemon host: only root or the daemon's user may use it (Unix
     /// socket only).
     RecoverAdmin,
+    /// Print a one-time link that signs a browser in as the host operator,
+    /// with full access, for 12 hours. Run it on the daemon host as root or
+    /// the daemon's user (Unix socket only); the link works once within 10
+    /// minutes.
+    SignInLink,
     /// Print the first-account setup link (Unix socket only).
     SetupLink {
         /// Also open the link in the default browser.

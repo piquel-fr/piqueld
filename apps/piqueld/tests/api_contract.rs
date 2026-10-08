@@ -30,13 +30,15 @@ struct FakeAuth;
 impl Authenticator for FakeAuth {
     fn guard<S: Clone + Send + Sync + 'static>(self, router: axum::Router<S>) -> axum::Router<S> {
         router.layer(axum::Extension(piqueld::auth::Identity {
-            user: piqueld_core::auth::User {
+            credential: piqueld::auth::Credential::Account {
+                user: piqueld_core::auth::User {
+                    id: "contract-admin".into(),
+                    username: "admin".into(),
+                    display_name: String::new(),
+                },
                 id: "contract-admin".into(),
-                username: "admin".into(),
-                display_name: String::new(),
+                kind: piqueld::store::CredentialKind::Token,
             },
-            credential_id: "contract-admin".into(),
-            kind: piqueld::store::CredentialKind::Token,
             grants: piqueld_core::access::Grants::admin(),
             scoped: false,
             tailnet: None,
@@ -4301,6 +4303,8 @@ async fn every_documented_operation_requires_authentication() {
         "/api/v1/auth/status",
         "/api/v1/auth/setup-link",
         "/api/v1/auth/recovery",
+        "/api/v1/auth/sign-in-link",
+        "/api/v1/auth/login/operator",
         "/api/v1/auth/register/start",
         "/api/v1/auth/register/finish",
         "/api/v1/auth/login/start",
@@ -4977,11 +4981,44 @@ async fn setup_link_is_served_only_over_the_unix_socket() {
     panic!("the refused setup link request was not audited");
 }
 
+/// Sends `request` to `router` as if from a Unix socket peer running as
+/// `uid` (TCP routers ignore it), with an optional JSON `body`. Returns the
+/// status, the JSON response body, and any `Set-Cookie` value.
+async fn as_peer(
+    router: &axum::Router,
+    request: axum::http::request::Builder,
+    uid: Option<u32>,
+    body: Option<serde_json::Value>,
+) -> (u16, serde_json::Value, Option<String>) {
+    use axum::http::header;
+    let request = request.header(header::HOST, "localhost");
+    let mut request = match body {
+        Some(body) => request
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string())),
+        None => request.body(Body::empty()),
+    }
+    .unwrap();
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(piqueld::api::http::UnixPeer {
+            uid,
+        }));
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status().as_u16();
+    let cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .map(|value| value.to_str().unwrap().to_owned());
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body = serde_json::from_slice(&body).unwrap_or_default();
+    (status, body, cookie)
+}
+
 /// Admin recovery is served only over the Unix socket, only to root or the
 /// daemon's own user, and only once setup has completed.
 #[tokio::test]
 async fn admin_recovery_requires_the_host_operator_over_the_unix_socket() {
-    use piqueld::api::http::UnixPeer;
     let temp = TempDir::new().unwrap();
     let state = state(&temp).await;
     let database = temp.path().join("state.db");
@@ -4992,20 +5029,9 @@ async fn admin_recovery_requires_the_host_operator_over_the_unix_socket() {
     let unix = api_router(state.clone(), auth.clone());
     let web = web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth);
     let recover = async |router: &axum::Router, uid: Option<u32>| {
-        let mut request = Request::post("/api/v1/auth/recovery")
-            .header("host", "localhost")
-            .body(Body::empty())
-            .unwrap();
-        request
-            .extensions_mut()
-            .insert(axum::extract::ConnectInfo(UnixPeer { uid }));
-        let response = router.clone().oneshot(request).await.unwrap();
-        let status = response.status().as_u16();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        (
-            status,
-            serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default(),
-        )
+        let (status, body, _) =
+            as_peer(router, Request::post("/api/v1/auth/recovery"), uid, None).await;
+        (status, body)
     };
     assert_eq!(
         recover(&unix, Some(operator)).await.0,
@@ -5038,6 +5064,156 @@ async fn admin_recovery_requires_the_host_operator_over_the_unix_socket() {
             .unwrap()
             .contains("/dashboard/auth#invite=")
     );
+}
+
+/// Over the Unix socket, root and the daemon's own user act as the host
+/// operator without a token; anyone else, like a member of the socket's
+/// group, still needs one, and a presented token keeps its meaning. Only the
+/// operator gets a sign-in link, which signs one browser in, once. The audit
+/// trail names the operator.
+#[tokio::test]
+async fn the_host_operator_acts_without_a_token_over_the_unix_socket() {
+    use axum::http::header;
+    use piqueld_core::{audit::AuditFilter, auth::HostOperator};
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp).await;
+    let store = Store::open(temp.path().join("state.db")).await.unwrap();
+    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let operator = rustix::process::geteuid().as_raw();
+    let stranger = if operator == 0 { 1 } else { operator + 1 };
+    let unix = api_router(state.clone(), auth.clone());
+    let web = web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth);
+    let me = "/api/v1/auth/me";
+    for uid in [operator, 0] {
+        let (status, body, _) = as_peer(&unix, Request::get(me), Some(uid), None).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["operator"]["uid"].as_u64(), Some(u64::from(uid)));
+        assert_eq!(body["grants"][0]["permission"], "admin");
+    }
+    for (router, uid) in [
+        (&unix, Some(stranger)),
+        (&unix, None),
+        (&web, Some(operator)),
+    ] {
+        let status = as_peer(router, Request::get(me), uid, None).await.0;
+        assert_eq!(status, 401, "{uid:?}");
+    }
+    let issue = "/api/v1/auth/sign-in-link";
+    for (router, uid) in [(&unix, Some(stranger)), (&web, Some(operator))] {
+        assert_eq!(
+            as_peer(router, Request::post(issue), uid, None).await.0,
+            404
+        );
+    }
+    let (status, link, _) = as_peer(&unix, Request::post(issue), Some(operator), None).await;
+    assert_eq!(status, 200, "{link}");
+    let secret = link["url"]
+        .as_str()
+        .unwrap()
+        .split_once("#operator=")
+        .unwrap()
+        .1;
+    let login = || {
+        Request::post("/api/v1/auth/login/operator")
+            .header(header::ORIGIN, "https://piqueld.example")
+    };
+    let redeem = Some(serde_json::json!({ "secret": secret }));
+    let (status, body, cookie) = as_peer(&web, login(), None, redeem.clone()).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["operator"]["uid"].as_u64(), Some(u64::from(operator)));
+    let cookie = cookie.unwrap();
+    assert!(cookie.contains("Max-Age=43200"), "{cookie}");
+    assert_eq!(
+        as_peer(&web, login(), None, redeem).await.0,
+        401,
+        "single use"
+    );
+    let session = cookie.split(';').next().unwrap();
+    let request = Request::get(me).header(header::COOKIE, session);
+    let (status, body, _) = as_peer(&web, request, None, None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["operator"]["uid"].as_u64(), Some(u64::from(operator)));
+
+    let foreign = Request::post(issue).header(header::ORIGIN, "https://attacker.example");
+    assert_eq!(as_peer(&unix, foreign, Some(operator), None).await.0, 403);
+
+    // Issuing the link and signing in with it are audited, in the background,
+    // as the operator.
+    let operator = Some(HostOperator { uid: operator });
+    for _ in 0..100 {
+        let page = state
+            .audit_events(&AuditFilter::default(), None, 50)
+            .await
+            .unwrap();
+        let by_operator = |action: &str| {
+            page.items.iter().any(|event| {
+                event.action == action && event.status == 200 && event.operator == operator
+            })
+        };
+        // Refusals before authentication, like a cross-site request, too.
+        let refused = page.items.iter().any(|event| {
+            event.action == "POST /api/v1/auth/sign-in-link"
+                && event.status == 403
+                && event.operator == operator
+        });
+        if by_operator("POST /api/v1/auth/sign-in-link")
+            && by_operator("POST /api/v1/auth/login/operator")
+            && refused
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the host operator's requests were not audited as the operator");
+}
+
+/// Over the Unix socket, a credential the host operator presents keeps its
+/// meaning: the scheme is case-insensitive, an unusable credential never
+/// falls back to the operator, and only the token-less operator gets a
+/// sign-in link.
+#[tokio::test]
+async fn credentials_presented_by_the_host_operator_keep_their_meaning() {
+    use axum::http::header;
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp).await;
+    let store = Store::open(temp.path().join("state.db")).await.unwrap();
+    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let operator = rustix::process::geteuid().as_raw();
+    let unix = api_router(state, auth);
+    let me = "/api/v1/auth/me";
+    let token = format!("{:x<43}", "contract-admin");
+    for scheme in ["Bearer", "bearer"] {
+        let bearer = format!("{scheme} {token}");
+        let request = Request::get(me).header(header::AUTHORIZATION, bearer);
+        let (_, body, _) = as_peer(&unix, request, Some(operator), None).await;
+        assert_eq!(body["user"]["username"], "contract-admin", "{scheme}");
+    }
+    for unusable in ["Basic dXNlcjpwYXNz", "Bearer pqd_unknown"] {
+        let request = Request::get(me).header(header::AUTHORIZATION, unusable);
+        let status = as_peer(&unix, request, Some(operator), None).await.0;
+        assert_eq!(status, 401, "{unusable}");
+    }
+    // So does a session cookie, even in a later `Cookie` header.
+    let cookies = |request: axum::http::request::Builder| {
+        request
+            .header(header::COOKIE, "other=one")
+            .header(header::COOKIE, "__Host-piqueld_session=pqd_unknown")
+    };
+    let status = as_peer(&unix, cookies(Request::get(me)), Some(operator), None)
+        .await
+        .0;
+    assert_eq!(status, 401);
+    // Even one that cannot be parsed.
+    let raw = header::HeaderValue::from_bytes(b"other=\xff; __Host-piqueld_session=x").unwrap();
+    let request = Request::get(me).header(header::COOKIE, raw);
+    assert_eq!(as_peer(&unix, request, Some(operator), None).await.0, 401);
+    let issue = Request::post("/api/v1/auth/sign-in-link")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    assert_eq!(as_peer(&unix, issue, Some(operator), None).await.0, 404);
+    // A cookie-authenticated write without the site's origin is refused
+    // outright, rather than issuing a link.
+    let issue = cookies(Request::post("/api/v1/auth/sign-in-link"));
+    assert_eq!(as_peer(&unix, issue, Some(operator), None).await.0, 403);
 }
 
 /// A fixed tailnet: `100.64.0.1` is Alice's laptop, `100.64.0.2` a CI runner,

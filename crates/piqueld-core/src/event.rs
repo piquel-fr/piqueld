@@ -54,6 +54,9 @@ pub struct Event {
     /// Credential that authenticated that request.
     #[serde(default)]
     pub actor_credential_id: Option<String>,
+    /// The host operator, when it made that request instead of an account.
+    #[serde(default)]
+    pub actor_operator: Option<crate::auth::HostOperator>,
     /// Safe, independently readable failure details.
     #[serde(default)]
     pub diagnostic: Option<crate::observability::Diagnostic>,

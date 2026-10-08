@@ -111,9 +111,7 @@ pub(super) async fn retry_delivery(
     Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    state
-        .retry_notification(crate::api::Actor::Account(identity.caller()), &id)
-        .await?;
+    state.retry_notification(identity.actor(), &id).await?;
     Ok(ok(true))
 }
 #[derive(Default, serde::Deserialize, utoipa::IntoParams)]
@@ -159,17 +157,24 @@ pub(super) async fn audit(
         outcome: query.outcome,
     };
     if !identity.grants.has_global(GlobalPermission::AuditRead) {
-        let other = |requested: &Option<String>, own: &str| {
-            requested.as_ref().is_some_and(|value| value != own)
+        // Only accounts lack `audit:read`; the host operator holds `admin`.
+        // Scoped credentials, like API tokens, see only their own requests.
+        let own = identity.user().map(|user| user.id.clone());
+        let credential = identity
+            .scoped
+            .then(|| identity.credential_id().map(str::to_owned))
+            .flatten();
+        let other = |requested: &Option<String>, own: &Option<String>| {
+            requested.is_some() && requested != own
         };
-        if other(&filter.user_id, &identity.user.id)
-            || identity.scoped && other(&filter.credential_id, &identity.credential_id)
+        if other(&filter.user_id, &own)
+            || credential.is_some() && other(&filter.credential_id, &credential)
         {
             return Err(Denied::Missing(Permission::Global(GlobalPermission::AuditRead)).into());
         }
-        filter.user_id = Some(identity.user.id.clone());
-        if identity.scoped {
-            filter.credential_id = Some(identity.credential_id.clone());
+        filter.user_id = own;
+        if credential.is_some() {
+            filter.credential_id = credential;
         }
     }
     Ok(ok(state

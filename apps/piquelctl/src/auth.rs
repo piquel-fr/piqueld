@@ -4,7 +4,10 @@ use crate::{
     error::{CliError, ErrorKind, Result},
     output::{Console, HumanWriter, Report},
 };
-use piqueld_client::{Client, auth::User};
+use piqueld_client::{
+    Client,
+    auth::{OperatorLink, User},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -296,11 +299,32 @@ pub(crate) async fn setup_link(
 pub(crate) async fn recover_admin(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     require_socket(cli, "recover-admin")?;
     let link = client.auth_recover_admin().await?;
-    console.warning(
+    operator_link(
+        console,
+        link,
         "this link creates a new administrator account and works once within 24 hours; \
          open it in a browser and register a passkey. It was recorded as a security event, \
          which notifies administrators when security notifications are enabled.",
-    )?;
+    )
+}
+/// Prints a one-time link that signs a browser in as the host operator. Like
+/// `recover-admin`, the daemon serves it only over its Unix socket to root or
+/// its own user.
+pub(crate) async fn sign_in_link(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
+    require_socket(cli, "sign-in-link")?;
+    let link = client.auth_sign_in_link().await?;
+    operator_link(
+        console,
+        link,
+        "this link signs a browser in as the host operator, with full access, for 12 hours; \
+         it works once within 10 minutes. It was recorded as a security event, \
+         which notifies administrators when security notifications are enabled.",
+    )
+}
+/// Prints a link issued to the host operator after `warning` about what it
+/// grants.
+fn operator_link(console: &mut Console, link: OperatorLink, warning: &str) -> Result<()> {
+    console.warning(warning)?;
     console.emit(&LinkReport {
         url: link.url.clone(),
         link,

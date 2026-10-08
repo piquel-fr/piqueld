@@ -155,8 +155,8 @@ existing account receives `admin` on every application, so access is unchanged
 until reduced; see [authorization](authorization.md#upgrading). Grants on an
 application cover each of its environments and are removed with it. Request
 receipts record the account that made the request. Receipts from before the
-upgrade have no account, so retrying an API or CLI request across the upgrade
-answers 409 `request_id_conflict`.
+upgrade have no account, so retrying an account's request across the upgrade
+answers 409 `request_id_conflict`; the host operator still replays them.
 
 `0016_scoped_tokens.sql` marks credentials limited to their own grants. Existing
 API tokens become scoped with `admin` on every application, so they keep their
@@ -174,6 +174,11 @@ builds cannot be linked and are dropped.
 
 `0019_tailnet.sql` stores the tailnet user or tag a token is bound to and the
 tailnet identity behind each audited request.
+
+`0020_host_operator.sql` stores host operator sign-in links and the browser
+sessions they open, and records the host operator's Unix user on audited
+requests, operations, events, and running actions. The trigger copying an
+operation's actor onto its events now copies it too.
 
 ## Upgrade and rollback
 

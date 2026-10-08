@@ -10,6 +10,7 @@ use axum::{
     routing::get,
 };
 use piqueld_core::api::{ApplyApplicationRequest, Envelope, ErrorBody};
+use piqueld_core::auth::HostOperator;
 use piqueld_core::{ApplicationIdError, EnvironmentIdError, EnvironmentNameError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -481,6 +482,20 @@ pub struct UnixPeer {
     pub uid: Option<u32>,
 }
 
+impl UnixPeer {
+    /// The host operator behind a request: a Unix socket peer that is root
+    /// or the daemon's own user. Members of the socket's group are not.
+    fn host_operator(extensions: &axum::http::Extensions) -> Option<HostOperator> {
+        extensions.get::<UnixSocket>()?;
+        let axum::extract::ConnectInfo(peer) =
+            extensions.get::<axum::extract::ConnectInfo<Self>>()?;
+        let daemon = rustix::process::geteuid().as_raw();
+        peer.uid
+            .filter(|uid| *uid == 0 || *uid == daemon)
+            .map(|uid| HostOperator { uid })
+    }
+}
+
 impl
     axum::extract::connect_info::Connected<
         axum::serve::IncomingStream<'_, tokio::net::UnixListener>,
@@ -630,11 +645,13 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(public!(auth::status))
         .routes(public!(auth::setup_link))
         .routes(public!(auth::recover_admin))
+        .routes(public!(auth::sign_in_link))
         .routes(authenticated!(auth::me))
         .routes(public!(auth::register_start))
         .routes(public!(auth::register_finish))
         .routes(public!(auth::login_start))
         .routes(public!(auth::login_finish))
+        .routes(public!(auth::operator_sign_in))
         .routes(authenticated!(auth::logout))
         .routes(authenticated!(auth::directory))
         .routes(authenticated!(auth::manage))
@@ -756,9 +773,7 @@ async fn bind_error_request_id(
         .get::<piqueld_core::observability::Diagnostic>()
         .cloned();
     let identity = parts.extensions.get::<crate::auth::Identity>();
-    let actor = identity.map_or(crate::store::Actor::Daemon, |identity| {
-        crate::store::Actor::Account(identity.caller())
-    });
+    let actor = identity.map_or(crate::store::Actor::Daemon, crate::auth::Identity::actor);
     state
         .record_failure(
             parts.status,

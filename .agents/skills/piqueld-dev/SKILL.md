@@ -45,9 +45,14 @@ device logins do not.
   work: use `localhost`, never `127.0.0.1`.
 - **CLI:** `just ctl <args>` runs this worktree's `piquelctl` against the
   instance's socket.
-- **First account:** a new instance has none. Run `just ctl setup-link`, open
-  the link in the preview, and ask the user to register a passkey; agents
-  cannot create passkeys.
+- **Signing in:** `just ctl` needs no login: it acts as the host operator,
+  with full access, unless `PIQUELD_TOKEN` or a saved login selects an
+  account. For the browser, run `just ctl sign-in-link` and open the
+  printed link in the preview; it works once within 10 minutes, and the
+  session lasts 12 hours, across restarts. Only test account features
+  (passkeys, tokens, invitations, enrollment links, CLI login approval) need
+  an account: open the link from `just ctl setup-link` and ask the user to
+  register a passkey; agents cannot create passkeys.
 - **State and logs:** `just dev status` prints the instance's files.
   `output.log` has the latest build and the daemon's fatal errors;
   `daemon.log` has its logs as JSON lines.

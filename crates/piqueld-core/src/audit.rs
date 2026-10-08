@@ -74,6 +74,26 @@ pub struct AuditEvent {
     pub environment_id: Option<String>,
     /// Permission a refused request lacked.
     pub permission: Option<String>,
+    /// The host operator, when it made the request instead of an account.
+    #[serde(default)]
+    pub operator: Option<crate::auth::HostOperator>,
+}
+
+impl AuditEvent {
+    /// Who made the request: the host operator, the account's name (or ID),
+    /// or `anonymous`.
+    #[must_use]
+    pub fn who(&self) -> String {
+        self.operator.map_or_else(
+            || {
+                self.username
+                    .clone()
+                    .or_else(|| self.user_id.clone())
+                    .unwrap_or_else(|| "anonymous".into())
+            },
+            |operator| operator.to_string(),
+        )
+    }
 }
 
 impl AuditEvent {

@@ -2,7 +2,14 @@ use super::*;
 use crate::api::http::Authenticator as _;
 use crate::store::{Invitation, Lockout, NewPasskey, PasskeyOwner, StoreError};
 use piqueld_core::access::{Denied, GlobalPermission, Grants, Permission, Preset, Scope};
-use piqueld_core::auth::{Manage, RecoveryLink, User};
+use piqueld_core::auth::{HostOperator, Manage, OperatorLink, User};
+
+impl Identity {
+    /// The account behind an identity a test signed in as.
+    fn account(&self) -> &User {
+        self.user().expect("an account identity")
+    }
+}
 
 struct Fixture {
     auth: Auth,
@@ -58,7 +65,7 @@ impl Fixture {
             .unwrap()
             .users
             .into_iter()
-            .find(|account| account.user.id == identity.user.id)
+            .find(|account| account.user.id == identity.account().id)
             .unwrap()
     }
 
@@ -74,7 +81,7 @@ impl Fixture {
         assert!(
             store
                 .add_passkey(
-                    PasskeyOwner::Existing(owner.caller(), &owner.user.id),
+                    PasskeyOwner::Existing(owner.caller().unwrap(), &owner.account().id),
                     passkey,
                 )
                 .await
@@ -120,7 +127,7 @@ async fn sessions_expire_revoke_and_survive_restart_without_storing_secrets() {
         )
         .await;
     let identity = f.auth.authenticate(&token).await.unwrap();
-    assert_eq!(identity.user.id, id);
+    assert_eq!(identity.account().id, id);
     assert_eq!(identity.grants, Grants::admin());
     // Only the hash is stored, so the secret itself finds nothing.
     assert!(
@@ -177,7 +184,7 @@ async fn accounts_manage_themselves_and_last_admin_deletion_is_atomic() {
         .manage(
             &bob,
             Manage::UpdateUser {
-                user_id: bob.user.id.clone(),
+                user_id: bob.account().id.clone(),
                 username: "robert".into(),
                 display_name: "Bob".into(),
             },
@@ -195,13 +202,13 @@ async fn accounts_manage_themselves_and_last_admin_deletion_is_atomic() {
     };
     assert!(
         f.auth
-            .registration_start(input(&bob.user.id), "binding", Some(&alice))
+            .registration_start(input(&bob.account().id), "binding", Some(&alice))
             .await
             .is_err()
     );
     assert!(
         f.auth
-            .registration_start(input(&alice.user.id), "binding", Some(&alice))
+            .registration_start(input(&alice.account().id), "binding", Some(&alice))
             .await
             .is_ok()
     );
@@ -223,9 +230,9 @@ async fn accounts_manage_themselves_and_last_admin_deletion_is_atomic() {
             .authenticate(made.token.as_ref().unwrap())
             .await
             .unwrap()
-            .user
+            .account()
             .id,
-        bob.user.id
+        bob.account().id
     );
     f.passkey(&alice).await;
     f.passkey(&bob).await;
@@ -233,13 +240,13 @@ async fn accounts_manage_themselves_and_last_admin_deletion_is_atomic() {
         f.auth.manage(
             &alice,
             Manage::DeleteUser {
-                user_id: bob.user.id.clone()
+                user_id: bob.account().id.clone()
             }
         ),
         f.auth.manage(
             &alice,
             Manage::DeleteUser {
-                user_id: alice.user.id.clone()
+                user_id: alice.account().id.clone()
             }
         )
     );
@@ -261,8 +268,8 @@ async fn managers_change_only_accounts_and_grants_they_cover() {
         .identity("viewer", &Preset::ReadOnly.grants(&Scope::All))
         .await;
     let rename = |user: &Identity| Manage::UpdateUser {
-        user_id: user.user.id.clone(),
-        username: format!("{}-renamed", user.user.username),
+        user_id: user.account().id.clone(),
+        username: format!("{}-renamed", user.account().username),
         display_name: String::new(),
     };
     assert_eq!(
@@ -278,7 +285,7 @@ async fn managers_change_only_accounts_and_grants_they_cover() {
         .manage(
             &lead,
             Manage::SetGrants {
-                user_id: viewer.user.id.clone(),
+                user_id: viewer.account().id.clone(),
                 grants: developer(),
             },
         )
@@ -297,7 +304,7 @@ async fn managers_change_only_accounts_and_grants_they_cover() {
                     .manage(
                         &lead,
                         Manage::SetGrants {
-                            user_id: dev.user.id.clone(),
+                            user_id: dev.account().id.clone(),
                             grants: more.clone(),
                         },
                     )
@@ -317,7 +324,7 @@ async fn managers_change_only_accounts_and_grants_they_cover() {
     // Without `accounts:manage`, the directory shows only the caller.
     let directory = f.auth.directory(&dev).await.unwrap();
     assert_eq!(directory.users.len(), 1);
-    assert_eq!(directory.users[0].user.id, dev.user.id);
+    assert_eq!(directory.users[0].user.id, dev.account().id);
     assert_eq!(f.auth.directory(&lead).await.unwrap().users.len(), 4);
 }
 
@@ -370,7 +377,7 @@ async fn invitations_carry_grants_and_enrollment_targets_an_account() {
         .manage(
             &admin,
             Manage::CreateEnrollment {
-                user_id: bob.user.id.clone(),
+                user_id: bob.account().id.clone(),
             },
         )
         .await
@@ -380,7 +387,7 @@ async fn invitations_carry_grants_and_enrollment_targets_an_account() {
     let secret = link.split_once("#enroll=").unwrap().1;
     assert!(matches!(
         f.auth.invitation(secret).await.unwrap(),
-        Some(Invitation::Enrollment(user)) if user.id == bob.user.id
+        Some(Invitation::Enrollment(user)) if user.id == bob.account().id
     ));
     // Enrollment links add a passkey only to their own account.
     let (_, session) = Auth::browser_session().unwrap();
@@ -402,7 +409,7 @@ async fn invitations_carry_grants_and_enrollment_targets_an_account() {
                 .manage(
                     &bob,
                     Manage::CreateEnrollment {
-                        user_id: admin.user.id.clone(),
+                        user_id: admin.account().id.clone(),
                     },
                 )
                 .await
@@ -421,7 +428,7 @@ async fn changes_use_the_callers_current_grants() {
     // Alice authenticated as an administrator, then was demoted.
     let alice = f.identity("alice", &Grants::admin()).await;
     let set = |grants: Grants| Manage::SetGrants {
-        user_id: alice.user.id.clone(),
+        user_id: alice.account().id.clone(),
         grants,
     };
     f.auth.manage(&root, set(developer())).await.unwrap();
@@ -446,7 +453,7 @@ async fn changes_use_the_callers_current_grants() {
         .manage(
             &root,
             Manage::RevokeAll {
-                user_id: alice.user.id.clone(),
+                user_id: alice.account().id.clone(),
             },
         )
         .await
@@ -456,7 +463,7 @@ async fn changes_use_the_callers_current_grants() {
             .manage(
                 &alice,
                 Manage::UpdateUser {
-                    user_id: alice.user.id.clone(),
+                    user_id: alice.account().id.clone(),
                     username: "alice".into(),
                     display_name: "Revoked".into(),
                 },
@@ -470,7 +477,7 @@ async fn changes_use_the_callers_current_grants() {
         name: "Key",
         credential: "{}",
     };
-    let owner = PasskeyOwner::Existing(alice.caller(), &alice.user.id);
+    let owner = PasskeyOwner::Existing(alice.caller().unwrap(), &alice.account().id);
     assert!(matches!(
         f.auth.0.store.add_passkey(owner, passkey).await,
         Err(StoreError::CredentialRevoked)
@@ -518,7 +525,7 @@ async fn links_are_revalidated_when_redeemed_and_revoked() {
             .manage(
                 &lead,
                 Manage::CreateEnrollment {
-                    user_id: dev.user.id.clone(),
+                    user_id: dev.account().id.clone(),
                 },
             )
             .await
@@ -541,7 +548,7 @@ async fn links_are_revalidated_when_redeemed_and_revoked() {
         .manage(
             &admin,
             Manage::CreateEnrollment {
-                user_id: admin.user.id.clone(),
+                user_id: admin.account().id.clone(),
             },
         )
         .await
@@ -550,7 +557,7 @@ async fn links_are_revalidated_when_redeemed_and_revoked() {
     let admin_link = directory
         .invitations
         .iter()
-        .find(|link| link.user_id.as_deref() == Some(admin.user.id.as_str()))
+        .find(|link| link.user_id.as_deref() == Some(admin.account().id.as_str()))
         .unwrap()
         .id
         .clone();
@@ -564,7 +571,7 @@ async fn links_are_revalidated_when_redeemed_and_revoked() {
     );
     // Dev is promoted beyond the lead, then the lead loses accounts:manage.
     let set = |user: &Identity, grants: Grants| Manage::SetGrants {
-        user_id: user.user.id.clone(),
+        user_id: user.account().id.clone(),
         grants,
     };
     f.auth
@@ -580,7 +587,7 @@ async fn links_are_revalidated_when_redeemed_and_revoked() {
         username: "carol".into(),
         display_name: String::new(),
     };
-    for (user, secret) in [(&dev.user, &enroll), (&carol, &invite)] {
+    for (user, secret) in [(dev.account(), &enroll), (&carol, &invite)] {
         let (_, session) = Auth::browser_session().unwrap();
         let redeem = PasskeyOwner::Redeem {
             user,
@@ -633,7 +640,7 @@ async fn tokens_act_within_their_grants_and_cannot_create_credentials() {
         .manage(
             &root,
             Manage::SetGrants {
-                user_id: alice.user.id.clone(),
+                user_id: alice.account().id.clone(),
                 grants: read_only.clone(),
             },
         )
@@ -647,7 +654,7 @@ async fn tokens_act_within_their_grants_and_cannot_create_credentials() {
     for command in [
         token(Grants::default()),
         Manage::CreateEnrollment {
-            user_id: alice.user.id.clone(),
+            user_id: alice.account().id.clone(),
         },
         Manage::CreateInvitation {
             grants: Grants::default(),
@@ -660,7 +667,7 @@ async fn tokens_act_within_their_grants_and_cannot_create_credentials() {
         name: "Key",
         credential: "{}",
     };
-    let owner = PasskeyOwner::Existing(ci.caller(), &alice.user.id);
+    let owner = PasskeyOwner::Existing(ci.caller().unwrap(), &alice.account().id);
     assert!(matches!(
         f.auth.0.store.add_passkey(owner, passkey).await,
         Err(StoreError::Denied(Denied::Scoped))
@@ -672,7 +679,7 @@ async fn tokens_act_within_their_grants_and_cannot_create_credentials() {
     ));
     // Nor can it change its own account, which needs no permission, but it
     // can revoke itself.
-    let own = || alice.user.id.clone();
+    let own = || alice.account().id.clone();
     for command in [
         Manage::UpdateUser {
             user_id: own(),
@@ -723,7 +730,7 @@ async fn scoped_credentials_follow_their_owner_and_never_widen() {
         .manage(
             &root,
             Manage::SetGrants {
-                user_id: alice.user.id.clone(),
+                user_id: alice.account().id.clone(),
                 grants: developer(),
             },
         )
@@ -735,7 +742,7 @@ async fn scoped_credentials_follow_their_owner_and_never_widen() {
                 .manage(
                     &ops,
                     Manage::RevokeAll {
-                        user_id: bob.user.id.clone(),
+                        user_id: bob.account().id.clone(),
                     },
                 )
                 .await
@@ -751,7 +758,7 @@ async fn scoped_credentials_follow_their_owner_and_never_widen() {
     f.auth
         .0
         .store
-        .insert_credential(&root.user.id, &credential)
+        .insert_credential(&root.account().id, &credential)
         .await
         .unwrap();
     let limited = f.auth.authenticate(&secret).await.unwrap();
@@ -773,7 +780,7 @@ async fn scoped_credentials_follow_their_owner_and_never_widen() {
     let token = f.auth.authenticate(&root_secret).await.unwrap();
     for scoped in [&limited, &token] {
         let grant = Manage::SetGrants {
-            user_id: bob.user.id.clone(),
+            user_id: bob.account().id.clone(),
             grants: read_only.clone(),
         };
         assert_eq!(denied(f.auth.manage(scoped, grant).await), Denied::Scoped);
@@ -784,7 +791,7 @@ async fn scoped_credentials_follow_their_owner_and_never_widen() {
     f.auth
         .0
         .store
-        .insert_credential(&alice.user.id, &credential)
+        .insert_credential(&alice.account().id, &credential)
         .await
         .unwrap();
     let nothing = f.auth.authenticate(&secret).await.unwrap();
@@ -829,7 +836,7 @@ async fn token_lifetimes_are_bounded_and_legacy_secrets_authenticate() {
         f.auth
             .0
             .store
-            .insert_credential(&alice.user.id, &credential)
+            .insert_credential(&alice.account().id, &credential)
             .await
             .unwrap();
         assert_eq!(
@@ -890,7 +897,7 @@ async fn device_logins_can_request_limited_sessions() {
         .manage(
             &root,
             Manage::SetGrants {
-                user_id: alice.user.id.clone(),
+                user_id: alice.account().id.clone(),
                 grants: Preset::Deploy.grants(&Scope::All),
             },
         )
@@ -928,7 +935,7 @@ async fn deleting_an_issuer_invalidates_its_invitations_and_credentials() {
         .manage(
             &bob,
             Manage::DeleteUser {
-                user_id: alice.user.id.clone(),
+                user_id: alice.account().id.clone(),
             },
         )
         .await
@@ -946,10 +953,10 @@ async fn changes_keep_an_admin_with_a_passkey() {
     for command in [
         Manage::RemovePasskey { id: key.clone() },
         Manage::DeleteUser {
-            user_id: alice.user.id.clone(),
+            user_id: alice.account().id.clone(),
         },
         Manage::SetGrants {
-            user_id: alice.user.id.clone(),
+            user_id: alice.account().id.clone(),
             grants: developer(),
         },
     ] {
@@ -968,7 +975,7 @@ async fn changes_keep_an_admin_with_a_passkey() {
         .manage(
             &alice,
             Manage::DeleteUser {
-                user_id: bob.user.id.clone(),
+                user_id: bob.account().id.clone(),
             },
         )
         .await
@@ -986,7 +993,7 @@ async fn concurrent_passkey_and_account_deletions_keep_one_admin() {
         let bob_key = f.passkey(&bob).await;
         let second = if delete_account {
             Manage::DeleteUser {
-                user_id: bob.user.id.clone(),
+                user_id: bob.account().id.clone(),
             }
         } else {
             Manage::RemovePasskey { id: bob_key }
@@ -1464,14 +1471,15 @@ async fn security_events(auth: &Auth) -> Vec<(String, String)> {
 #[tokio::test]
 async fn recovery_links_create_one_administrator_and_raise_security_events() {
     let f = Fixture::new().await;
+    let root = HostOperator { uid: 0 };
     assert!(matches!(
-        f.auth.recover_admin("uid 0").await,
+        f.auth.recover_admin(root).await,
         Err(AuthError::SetupPending)
     ));
     let admin = f.identity("admin", &Grants::admin()).await;
-    let secret = |link: &RecoveryLink| link.url.split_once("#invite=").unwrap().1.to_owned();
-    let replaced = secret(&f.auth.recover_admin("uid 0").await.unwrap());
-    let current = secret(&f.auth.recover_admin("uid 0").await.unwrap());
+    let secret = |link: &OperatorLink| link.url.split_once("#invite=").unwrap().1.to_owned();
+    let replaced = secret(&f.auth.recover_admin(root).await.unwrap());
+    let current = secret(&f.auth.recover_admin(root).await.unwrap());
     assert!(f.auth.invitation(&replaced).await.unwrap().is_none());
     assert!(matches!(
         f.auth.invitation(&current).await.unwrap(),
@@ -1514,6 +1522,69 @@ async fn recovery_links_create_one_administrator_and_raise_security_events() {
     );
 }
 
+/// A host operator sign-in link works once and only until it expires, even
+/// before setup, and opens a browser session as the operator, not an
+/// account. Issuing one raises a security event attributed to the operator.
+/// The session may change accounts but not issue links, and ends on logout.
+#[tokio::test]
+async fn operator_sign_in_links_work_once_and_act_as_the_operator() {
+    let f = Fixture::new().await;
+    let operator = HostOperator { uid: 1000 };
+    let secret = |link: &OperatorLink| link.url.split_once("#operator=").unwrap().1.to_owned();
+    let expired = secret(&f.auth.sign_in_link(operator).await.unwrap());
+    f.auth.0.store.expire_operator_sessions().await;
+    let unusable = f.auth.operator_sign_in(&expired).await;
+    assert!(matches!(unusable, Err(AuthError::Unauthorized)));
+    let link = secret(&f.auth.sign_in_link(operator).await.unwrap());
+    let (signed_in, token) = f.auth.operator_sign_in(&link).await.unwrap();
+    assert_eq!(signed_in, operator);
+    let again = f.auth.operator_sign_in(&link).await;
+    assert!(matches!(again, Err(AuthError::Unauthorized)));
+    let identity = f.auth.authenticate(&token).await.unwrap();
+    assert!(identity.user().is_none());
+    assert_eq!(identity.grants, Grants::admin());
+
+    let admin = f.identity("admin", &Grants::admin()).await;
+    f.passkey(&admin).await;
+    let bob = f.identity("bob", &developer()).await;
+    let demote = Manage::SetGrants {
+        user_id: bob.account().id.clone(),
+        grants: Grants::default(),
+    };
+    f.auth.manage(&identity, demote).await.unwrap();
+    assert!(f.reload(&bob).await.grants.is_empty());
+    let invite = Manage::CreateInvitation {
+        grants: Grants::default(),
+    };
+    let refused = f.auth.manage(&identity, invite).await;
+    assert!(matches!(refused, Err(AuthError::Invalid(_))));
+    assert_eq!(
+        f.auth
+            .directory(&identity)
+            .await
+            .unwrap()
+            .operator_sessions
+            .len(),
+        1
+    );
+    f.auth.logout(&identity).await.unwrap();
+    assert!(f.auth.authenticate(&token).await.is_err());
+
+    let filter = piqueld_core::observability::EventFilter::default();
+    let visible = crate::store::Visibility::ALL;
+    let events = f.auth.0.store.filtered_events(&filter, &visible, None, 100);
+    let issued = events
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .filter(|event| event.kind == "operator_sign_in_issued")
+        .map(|event| (event.message.unwrap(), event.actor_operator))
+        .collect::<Vec<_>>();
+    let message = "A host operator sign-in link was issued over the Unix socket to uid 1000";
+    assert_eq!(issued, vec![(message.to_owned(), Some(operator)); 2]);
+}
+
 /// Granting `admin` everywhere and creating a never-expiring or `admin`
 /// token raise security events; ordinary changes do not.
 #[tokio::test]
@@ -1523,7 +1594,7 @@ async fn privileged_grants_and_tokens_raise_security_events() {
     f.passkey(&admin).await;
     let bob = f.identity("bob", &developer()).await;
     for grants in [developer(), Grants::admin()] {
-        let user_id = bob.user.id.clone();
+        let user_id = bob.account().id.clone();
         let change = Manage::SetGrants { user_id, grants };
         f.auth.manage(&admin, change).await.unwrap();
     }

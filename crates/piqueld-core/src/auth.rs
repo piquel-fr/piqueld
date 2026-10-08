@@ -13,11 +13,56 @@ pub struct User {
     /// Optional human-readable name (empty when unset).
     pub display_name: String,
 }
-/// The signed-in account and what the current credential may do.
+/// The host operator: root or the daemon's own Unix user, identified by the
+/// kernel over the daemon's Unix socket. It already controls the daemon's
+/// database and keys, so piqueld lets it act as an administrator without an
+/// account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct HostOperator {
+    /// Unix user ID: 0 for root, otherwise the daemon's own user.
+    pub uid: u32,
+}
+impl std::fmt::Display for HostOperator {
+    /// `host operator (uid 1000)`
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "host operator (uid {})", self.uid)
+    }
+}
+/// Who a request acts as, serialized as a `user` or an `operator` field.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Principal {
+    /// A piqueld account.
+    User(User),
+    /// The host operator, which is not an account.
+    Operator(HostOperator),
+}
+impl Principal {
+    /// The account, unless this is the host operator.
+    #[must_use]
+    pub const fn user(&self) -> Option<&User> {
+        match self {
+            Self::User(user) => Some(user),
+            Self::Operator(_) => None,
+        }
+    }
+    /// Name to show for who is signed in: the display name, else the
+    /// username, or `Host operator`.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::User(user) if user.display_name.is_empty() => &user.username,
+            Self::User(user) => &user.display_name,
+            Self::Operator(_) => "Host operator",
+        }
+    }
+}
+/// Who is signed in and what the current credential may do.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Session {
-    /// Signed-in account.
-    pub user: User,
+    /// Signed-in account (`user`), or the host operator (`operator`).
+    #[serde(flatten)]
+    pub principal: Principal,
     /// Effective grants of the credential used for this request.
     pub grants: Grants,
     /// Whether the credential is limited to its own grants, like an API
@@ -46,14 +91,20 @@ pub struct SetupLink {
     /// Dashboard URL carrying the single-use setup secret.
     pub url: String,
 }
-/// One-time admin recovery link, issued only over the daemon's Unix socket
-/// to root or the daemon's own user.
+/// One-time link issued only over the daemon's Unix socket to the host
+/// operator: an admin recovery link or a host operator sign-in link.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct RecoveryLink {
-    /// Dashboard URL that registers a new account with `admin`.
+pub struct OperatorLink {
+    /// Dashboard URL carrying the link's secret.
     pub url: String,
     /// Unix seconds after which the link no longer works.
     pub expires_at: i64,
+}
+/// Redeems a host operator sign-in link.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct OperatorSignIn {
+    /// Secret from the link's `#operator=` fragment.
+    pub secret: String,
 }
 /// Passkey registration: a new account redeeming an invitation or setup
 /// secret, an existing account redeeming an enrollment link, or a signed-in
@@ -119,6 +170,16 @@ pub struct CredentialView {
     /// Tailnet user or tag this token is bound to, if any.
     pub tailnet: Option<crate::tailnet::TailnetBinding>,
 }
+/// A live host operator browser session, opened with a sign-in link.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct OperatorSessionView {
+    /// Revocation identifier, like a credential's.
+    pub id: String,
+    /// The Unix user that issued the sign-in link.
+    pub operator: HostOperator,
+    /// Absolute expiry, as Unix seconds.
+    pub expires_at: i64,
+}
 /// Pending invitation metadata. Its secret is returned only at creation.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct InvitationView {
@@ -146,6 +207,9 @@ pub struct Directory {
     pub credentials: Vec<CredentialView>,
     /// Unexpired invitations.
     pub invitations: Vec<InvitationView>,
+    /// Live host operator browser sessions; empty without `accounts:manage`.
+    #[serde(default)]
+    pub operator_sessions: Vec<OperatorSessionView>,
 }
 /// Account management commands.
 ///
@@ -183,7 +247,7 @@ pub enum Manage {
         /// New label.
         name: String,
     },
-    /// Revoke a session or API token.
+    /// Revoke a session, API token, or host operator session.
     RevokeCredential {
         /// Credential identifier.
         id: String,

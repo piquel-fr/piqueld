@@ -315,7 +315,7 @@ pub(super) async fn accept_mutation(
     let request_id = super::optional_header(headers, "idempotency-key")?;
     match state
         .accept(
-            crate::api::Actor::Account(identity.caller()),
+            identity.actor(),
             mutation,
             expected,
             force,

@@ -6,9 +6,12 @@
 //! Changes to an account take the [`Caller`], whose authority over the account
 //! is checked against both sides' current grants inside the same transaction.
 use super::access::{Authority, Caller, Holder};
-use super::{Attribution, Store, StoreError, now_secs};
+use super::{Actor, Attribution, Store, StoreError, now_secs};
 use piqueld_core::access::{GlobalPermission, Grants, Permission};
-use piqueld_core::auth::{Account, CredentialView, Directory, InvitationView, PasskeyView, User};
+use piqueld_core::auth::{
+    Account, CredentialView, Directory, HostOperator, InvitationView, OperatorSessionView,
+    PasskeyView, User,
+};
 use piqueld_core::tailnet::TailnetBinding;
 
 /// Parses a stored tailnet binding.
@@ -239,12 +242,13 @@ impl Store {
     }
 
     /// Replaces the admin recovery link with one for `hash`, valid until
-    /// `expires_at`, and records who asked for it as a security event.
+    /// `expires_at`, and records that `operator` asked for it as a security
+    /// event.
     pub(crate) async fn create_recovery(
         &self,
         hash: &str,
         expires_at: i64,
-        requester: &str,
+        operator: HostOperator,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         sqlx::query!(
@@ -256,11 +260,128 @@ impl Store {
         .execute(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        let message =
-            format!("An admin recovery link was issued over the Unix socket to {requester}");
         let issued = super::SecurityEvent::RecoveryIssued;
-        Self::security_event_on(&mut tx, issued, &message, Attribution::default()).await?;
+        Self::operator_link_event_on(&mut tx, issued, "An admin recovery link", operator).await?;
         tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Records that `operator` was issued a link, e.g. `An admin recovery
+    /// link`, as a security event attributed to it.
+    async fn operator_link_event_on(
+        db: &mut SqliteConnection,
+        event: super::SecurityEvent,
+        link: &str,
+        operator: HostOperator,
+    ) -> Result<(), StoreError> {
+        let message = format!(
+            "{link} was issued over the Unix socket to uid {}",
+            operator.uid
+        );
+        let actor = Actor::Operator {
+            operator,
+            session: None,
+        };
+        Self::security_event_on(db, event, &message, actor.attribution()).await
+    }
+
+    /// Stores a host operator sign-in link for `hash`, valid until
+    /// `expires_at`, and records that `operator` asked for it as a security
+    /// event. Expired links and sessions are removed.
+    pub(crate) async fn create_operator_link(
+        &self,
+        id: &str,
+        hash: &str,
+        expires_at: i64,
+        operator: HostOperator,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let now = now_secs();
+        sqlx::query!(
+            "DELETE FROM auth_operator_sessions WHERE expires_at<=?1",
+            now
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        sqlx::query!(
+            "INSERT INTO auth_operator_sessions(id,secret_hash,uid,expires_at) VALUES(?1,?2,?3,?4)",
+            id,
+            hash,
+            operator.uid,
+            expires_at
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::constraint)?;
+        let issued = super::SecurityEvent::OperatorSignInIssued;
+        Self::operator_link_event_on(&mut tx, issued, "A host operator sign-in link", operator)
+            .await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Redeems the live sign-in link `link_hash` as a host operator browser
+    /// session with secret hash `session_hash`, valid until `expires_at`.
+    /// Returns the session's ID and operator, or `None` when the link was
+    /// already used, has expired, or never existed.
+    pub(crate) async fn redeem_operator_link(
+        &self,
+        link_hash: &str,
+        session_hash: &str,
+        expires_at: i64,
+    ) -> Result<Option<(String, HostOperator)>, StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let now = now_secs();
+        let row = sqlx::query!(
+            r#"UPDATE auth_operator_sessions SET secret_hash=?2,redeemed=1,expires_at=?3
+            WHERE secret_hash=?1 AND redeemed=0 AND expires_at>?4 RETURNING id AS "id!",uid"#,
+            link_hash,
+            session_hash,
+            expires_at,
+            now
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StoreError::constraint)?;
+        tx.commit().await.map_err(StoreError::database)?;
+        row.map(|row| Ok((row.id, Self::host_operator(row.uid)?)))
+            .transpose()
+    }
+
+    /// The live host operator session with secret hash `hash`: its ID and
+    /// operator.
+    pub(crate) async fn operator_session(
+        &self,
+        hash: &str,
+    ) -> Result<Option<(String, HostOperator)>, StoreError> {
+        let now = now_secs();
+        let row = sqlx::query!(
+            r#"SELECT id AS "id!",uid FROM auth_operator_sessions WHERE secret_hash=?1 AND redeemed=1 AND expires_at>?2"#,
+            hash,
+            now
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        row.map(|row| Ok((row.id, Self::host_operator(row.uid)?)))
+            .transpose()
+    }
+
+    /// Whether a host operator link or session with this ID exists.
+    async fn operator_session_on(db: &mut SqliteConnection, id: &str) -> Result<bool, StoreError> {
+        sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM auth_operator_sessions WHERE id=?1) AS "exists!: bool""#,
+            id
+        )
+        .fetch_one(db)
+        .await
+        .map_err(StoreError::database)
+    }
+
+    /// The host operator with a stored Unix user ID.
+    pub(super) fn host_operator(uid: i64) -> Result<HostOperator, StoreError> {
+        Ok(HostOperator {
+            uid: u32::try_from(uid).map_err(StoreError::corrupt)?,
+        })
     }
 
     /// Describes the open setup secret, admin recovery link, or live
@@ -436,6 +557,7 @@ impl Store {
             let issuer = Attribution {
                 user_id: Some(&invitation.issuer_id),
                 credential_id: None,
+                operator: None,
             };
             let how = "by invitation";
             Self::replace_user_grants_on(db, &user.id, &grants, issuer, how).await?;
@@ -603,11 +725,13 @@ impl Store {
         Ok(Some(user))
     }
 
-    /// Deletes one credential if `caller` may change its owner; unknown IDs are
-    /// ignored. A credential may always revoke itself, even a scoped one.
+    /// Deletes one credential if `actor` may change its owner, or one host
+    /// operator session if `actor` could manage an administrator, as that
+    /// session acts with `admin`. A credential may always revoke itself, even
+    /// a scoped one. Unknown IDs are ignored.
     pub(crate) async fn revoke_credential(
         &self,
-        caller: Caller<'_>,
+        actor: Actor<'_>,
         id: &str,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
@@ -616,10 +740,22 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         if let Some(owner) = owner {
-            if id != caller.credential_id {
-                Self::check_account_on(&mut tx, caller, &owner).await?;
+            let own = matches!(actor, Actor::Account(caller) if caller.credential_id == id);
+            if !own {
+                Self::check_account_on(&mut tx, actor, &owner).await?;
             }
             sqlx::query!("DELETE FROM auth_credentials WHERE id=?1", id)
+                .execute(&mut *tx)
+                .await
+                .map_err(StoreError::database)?;
+        } else if Self::operator_session_on(&mut tx, id).await? {
+            if let Some(caller) = actor.load(&mut tx).await? {
+                caller
+                    .grants
+                    .may_change_account(false, &Grants::admin())
+                    .map_err(StoreError::Denied)?;
+            }
+            sqlx::query!("DELETE FROM auth_operator_sessions WHERE id=?1", id)
                 .execute(&mut *tx)
                 .await
                 .map_err(StoreError::database)?;
@@ -630,11 +766,11 @@ impl Store {
     /// Deletes every credential of an account, signing it out everywhere.
     pub(crate) async fn revoke_credentials(
         &self,
-        caller: Caller<'_>,
+        actor: Actor<'_>,
         user_id: &str,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        Self::check_account_on(&mut tx, caller, user_id).await?;
+        Self::check_account_on(&mut tx, actor, user_id).await?;
         sqlx::query!("DELETE FROM auth_credentials WHERE user_id=?1", user_id)
             .execute(&mut *tx)
             .await
@@ -643,8 +779,8 @@ impl Store {
     }
 
     /// Every account with its grants, passkey, live credential, and live
-    /// invitation, read in one snapshot. Secrets and their hashes are never
-    /// included.
+    /// invitation, and every live host operator session, read in one
+    /// snapshot. Secrets and their hashes are never included.
     pub(crate) async fn auth_directory(&self) -> Result<Directory, StoreError> {
         let now = now_secs();
         let idle = now - SESSION_IDLE_SECS;
@@ -712,12 +848,30 @@ impl Store {
                 grants,
             });
         }
+        let rows = sqlx::query!(
+            r#"SELECT id AS "id!",uid,expires_at FROM auth_operator_sessions WHERE redeemed=1 AND expires_at>?1 ORDER BY expires_at"#,
+            now
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let operator_sessions = rows
+            .into_iter()
+            .map(|row| {
+                Ok(OperatorSessionView {
+                    id: row.id,
+                    operator: Self::host_operator(row.uid)?,
+                    expires_at: row.expires_at,
+                })
+            })
+            .collect::<Result<_, StoreError>>()?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(Directory {
             users: accounts,
             passkeys,
             credentials,
             invitations,
+            operator_sessions,
         })
     }
 
@@ -725,13 +879,13 @@ impl Store {
     /// `AlreadyExists`.
     pub(crate) async fn update_user(
         &self,
-        caller: Caller<'_>,
+        actor: Actor<'_>,
         id: &str,
         username: &str,
         display_name: &str,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        Self::check_account_on(&mut tx, caller, id).await?;
+        Self::check_account_on(&mut tx, actor, id).await?;
         sqlx::query!(
             "UPDATE auth_users SET username=?1,display_name=?2 WHERE id=?3",
             username,
@@ -746,9 +900,9 @@ impl Store {
 
     /// Deletes an account with its passkeys, credentials, grants, and
     /// invitations. Refuses to leave no administrator able to sign in.
-    pub(crate) async fn delete_user(&self, caller: Caller<'_>, id: &str) -> Result<(), StoreError> {
+    pub(crate) async fn delete_user(&self, actor: Actor<'_>, id: &str) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        Self::check_account_on(&mut tx, caller, id).await?;
+        Self::check_account_on(&mut tx, actor, id).await?;
         sqlx::query!("DELETE FROM auth_users WHERE id=?1", id)
             .execute(&mut *tx)
             .await
@@ -757,11 +911,11 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)
     }
 
-    /// Checks that `caller` may change the account owning a passkey. Unknown
+    /// Checks that `actor` may change the account owning a passkey. Unknown
     /// passkeys are `NotFound`.
     async fn check_passkey_owner_on(
         db: &mut SqliteConnection,
-        caller: Caller<'_>,
+        actor: Actor<'_>,
         id: &str,
     ) -> Result<(), StoreError> {
         let owner = sqlx::query_scalar!("SELECT user_id FROM auth_passkeys WHERE id=?1", id)
@@ -769,18 +923,18 @@ impl Store {
             .await
             .map_err(StoreError::database)?
             .ok_or(StoreError::NotFound)?;
-        Self::check_account_on(db, caller, &owner).await?;
+        Self::check_account_on(db, actor, &owner).await?;
         Ok(())
     }
 
     /// Deletes one passkey, refusing to leave no administrator able to sign in.
     pub(crate) async fn remove_passkey(
         &self,
-        caller: Caller<'_>,
+        actor: Actor<'_>,
         id: &str,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        Self::check_passkey_owner_on(&mut tx, caller, id).await?;
+        Self::check_passkey_owner_on(&mut tx, actor, id).await?;
         sqlx::query!("DELETE FROM auth_passkeys WHERE id=?1", id)
             .execute(&mut *tx)
             .await
@@ -792,12 +946,12 @@ impl Store {
     /// Changes a passkey's label.
     pub(crate) async fn rename_passkey(
         &self,
-        caller: Caller<'_>,
+        actor: Actor<'_>,
         id: &str,
         name: &str,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        Self::check_passkey_owner_on(&mut tx, caller, id).await?;
+        Self::check_passkey_owner_on(&mut tx, actor, id).await?;
         sqlx::query!("UPDATE auth_passkeys SET name=?1 WHERE id=?2", name, id)
             .execute(&mut *tx)
             .await
@@ -842,9 +996,11 @@ impl Store {
         user_id: &str,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let authority = Self::check_account_on(&mut tx, caller, user_id).await?;
-        authority.require_unscoped()?;
-        Self::insert_invitation_on(&mut tx, invitation, &authority.user_id, Some(user_id)).await?;
+        let account = Actor::Account(caller);
+        if let Some(authority) = Self::check_account_on(&mut tx, account, user_id).await? {
+            authority.require_unscoped()?;
+        }
+        Self::insert_invitation_on(&mut tx, invitation, caller.user_id, Some(user_id)).await?;
         tx.commit().await.map_err(StoreError::database)
     }
 
@@ -870,11 +1026,11 @@ impl Store {
         Ok(())
     }
 
-    /// Deletes an unused invitation if `caller` could have created it: it may
+    /// Deletes an unused invitation if `actor` could have created it: it may
     /// change the enrollment target, or hand out the invitation's grants.
     pub(crate) async fn revoke_invitation(
         &self,
-        caller: Caller<'_>,
+        actor: Actor<'_>,
         id: &str,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
@@ -885,12 +1041,13 @@ impl Store {
         match target {
             None => return Ok(()),
             Some(Some(user_id)) => {
-                Self::check_account_on(&mut tx, caller, &user_id).await?;
+                Self::check_account_on(&mut tx, actor, &user_id).await?;
             }
             Some(None) => {
-                let authority = caller.load(&mut tx).await?;
-                let grants = Holder::Invitation(id).grants(&mut tx).await?;
-                Self::may_invite(&authority.grants, &grants)?;
+                if let Some(authority) = actor.load(&mut tx).await? {
+                    let grants = Holder::Invitation(id).grants(&mut tx).await?;
+                    Self::may_invite(&authority.grants, &grants)?;
+                }
             }
         }
         sqlx::query!("DELETE FROM auth_invitations WHERE id=?1", id)
@@ -928,10 +1085,7 @@ impl Store {
         .execute(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        let actor = Attribution {
-            user_id: Some(&authority.user_id),
-            credential_id: Some(caller.credential_id),
-        };
+        let actor = Actor::Account(caller).attribution();
         Self::check_token_on(&mut tx, credential, actor).await?;
         tx.commit().await.map_err(StoreError::database)
     }
@@ -974,6 +1128,17 @@ impl Store {
         self.write_one(sqlx::query!(
             "UPDATE auth_credentials SET last_used_at=?1",
             last_used
+        ))
+        .await
+        .unwrap();
+    }
+
+    /// Makes every host operator link and session expire now.
+    pub(crate) async fn expire_operator_sessions(&self) {
+        let now = now_secs();
+        self.write_one(sqlx::query!(
+            "UPDATE auth_operator_sessions SET expires_at=?1",
+            now
         ))
         .await
         .unwrap();

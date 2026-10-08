@@ -78,8 +78,8 @@ and the account directory. Routine reads, such as dashboard polling of
 application and environment views (whose saved configuration `apps:read`
 already allows) and CLI logins still awaiting approval, appear only in daemon
 logs. Records are written in the background so requests never wait for them;
-at most 1,024 wait at once, of which anonymous requests may hold only half, and
-on shutdown the daemon waits up to 10 seconds for pending records and logs any
+at most 1,024 wait at once, of which anonymous requests (made by neither an
+account nor the host operator) may hold only half, and on shutdown the daemon waits up to 10 seconds for pending records and logs any
 it loses. Each record keeps the action
 (method and route template), outcome (`allowed`, `denied`, or `failed`), status,
 account, credential and its kind, whether the credential was limited, the
@@ -88,7 +88,10 @@ the tailnet user or tags and device, such as `alice@example.com on laptop`),
 request ID, addressed application or environment (with the environment's
 application, when the request was allowed or lacked a permission there, so a
 refusal never reveals who owns an environment hidden from its caller), and the
-permission a refusal lacked. Bodies are never recorded. Records copy the account and
+permission a refusal lacked. Requests by the
+[host operator](authentication.md#the-host-operator) have no account; they
+record `operator` with its Unix user ID instead, shown as
+`host operator (uid 0)`, and its browser session as the credential, if any. Bodies are never recorded. Records copy the account and
 credential, so they outlive both, and application deletion keeps them.
 
 `GET /api/v1/audit` lists the trail newest first, filtered by `user_id`,
@@ -106,8 +109,10 @@ after the request; each action keeps the actor it started under, even if
 someone else restarts the operation meanwhile. Events written directly by a request carry them too: secret
 writes and deletions (including the deletion's runtime action, even when a
 restart interrupts it), environment changes, the start and end of commands
-run with `app exec`, secret key recovery, and diagnostics for failed requests. Events show them as `actor_user_id` and `actor_credential_id`;
-both are empty for the daemon's own work.
+run with `app exec`, secret key recovery, and diagnostics for failed requests. Events show them as `actor_user_id` and `actor_credential_id`, or,
+for the host operator, `actor_operator` with its Unix user ID and its browser
+session (if any) as `actor_credential_id`; all are empty for the daemon's own
+work.
 
 The metrics listener exports `piqueld_access_denied_total`, the number of
 refused API requests since the daemon started.
@@ -149,6 +154,7 @@ daemon, as daemon history events that each notify immediately:
 | `admin_granted` | An account receives `admin` on every application: by an account change, an invitation, first-account setup, or an admin recovery link |
 | `privileged_token_created` | An API token is created without expiry or with `admin` |
 | `admin_recovery_issued` | `piquelctl recover-admin` issued a recovery link; see [authentication](authentication.md#recovering-administrator-access) |
+| `operator_sign_in_issued` | `piquelctl sign-in-link` issued a link that signs a browser in as the host operator; see [authentication](authentication.md#the-host-operator) |
 | `access_denial_burst` | 20 requests from one address and account are refused within a minute; at most once every 10 minutes per address and account while it continues |
 | `credential_new_address` | A session, CLI login, or token already used elsewhere is used from a new network address (IPv6 by /64) |
 | `secret_key_recovered` | The secrets master key was recovered, discarding stored values |

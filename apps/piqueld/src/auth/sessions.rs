@@ -1,19 +1,23 @@
-//! Durable opaque sessions and short-lived, explicitly approved device logins.
+//! Durable opaque sessions, host operator sessions, and short-lived,
+//! explicitly approved device logins.
 use super::{Auth, AuthError, CredentialKind, DAY, MAX_PENDING, Result, now_secs};
+use crate::store::{Actor, Caller};
 use piqueld_core::access::{Denied, Grants};
-use piqueld_core::auth::{DeviceRequest, DeviceStart, DeviceToken, User};
+use piqueld_core::auth::{
+    DeviceRequest, DeviceStart, DeviceToken, HostOperator, OperatorLink, Principal, Session, User,
+};
 use std::collections::HashMap;
 
-/// The authenticated caller, the credential (session, token, or CLI login)
-/// that proved it, and what that credential may do.
+/// Seconds a host operator sign-in link stays redeemable.
+const OPERATOR_LINK_LIFETIME: i64 = 600;
+/// Seconds a host operator browser session lasts.
+pub(crate) const OPERATOR_SESSION_LIFETIME: i64 = 12 * 3600;
+
+/// The authenticated caller, what proved it, and what it may do.
 #[derive(Clone)]
 pub struct Identity {
-    /// Signed-in account.
-    pub user: User,
-    /// Credential that authenticated the request.
-    pub credential_id: String,
-    /// Class of that credential.
-    pub kind: crate::store::CredentialKind,
+    /// Who is acting and how it authenticated.
+    pub credential: Credential,
     /// Effective grants, read when the request was authenticated.
     pub grants: Grants,
     /// Whether the credential is limited to its own grants, like an API
@@ -23,13 +27,130 @@ pub struct Identity {
     pub tailnet: Option<piqueld_core::tailnet::TailnetBinding>,
 }
 
+/// What authenticated a request.
+#[derive(Clone)]
+pub enum Credential {
+    /// One of an account's credentials: a session, CLI login, or token.
+    Account {
+        /// The account.
+        user: User,
+        /// Credential ID.
+        id: String,
+        /// Class of that credential.
+        kind: CredentialKind,
+    },
+    /// The host operator: the kernel's peer credentials on a token-less Unix
+    /// socket request, or a browser `session` opened with a sign-in link.
+    Operator {
+        /// Unix user acting.
+        operator: HostOperator,
+        /// Browser session ID, if any.
+        session: Option<String>,
+    },
+}
+
 impl Identity {
+    /// The host operator with `admin` on every application, through a
+    /// browser `session` or (without one) the Unix socket.
+    #[must_use]
+    pub fn operator(operator: HostOperator, session: Option<String>) -> Self {
+        Self {
+            credential: Credential::Operator { operator, session },
+            grants: Grants::admin(),
+            scoped: false,
+            tailnet: None,
+        }
+    }
+    /// Who is acting, as clients see it.
+    #[must_use]
+    pub fn principal(&self) -> Principal {
+        match &self.credential {
+            Credential::Account { user, .. } => Principal::User(user.clone()),
+            Credential::Operator { operator, .. } => Principal::Operator(*operator),
+        }
+    }
+    /// Who is signed in and what it may do, as `GET /auth/me` reports it.
+    #[must_use]
+    pub fn session(&self) -> Session {
+        Session {
+            principal: self.principal(),
+            grants: self.grants.clone(),
+            scoped: self.scoped,
+        }
+    }
+    /// The signed-in account; `None` for the host operator.
+    #[must_use]
+    pub const fn user(&self) -> Option<&User> {
+        match &self.credential {
+            Credential::Account { user, .. } => Some(user),
+            Credential::Operator { .. } => None,
+        }
+    }
+    /// Who is acting, as history messages name it: the account's username
+    /// or `host operator (uid N)`.
+    #[must_use]
+    pub fn who(&self) -> String {
+        match &self.credential {
+            Credential::Account { user, .. } => user.username.clone(),
+            Credential::Operator { operator, .. } => operator.to_string(),
+        }
+    }
+    /// The credential or host operator session that authenticated the
+    /// request; `None` for the host operator over the Unix socket.
+    #[must_use]
+    pub fn credential_id(&self) -> Option<&str> {
+        match &self.credential {
+            Credential::Account { id, .. } => Some(id),
+            Credential::Operator { session, .. } => session.as_deref(),
+        }
+    }
+    /// The host operator acting over the Unix socket without any credential;
+    /// `None` for accounts and operator browser sessions.
+    #[must_use]
+    pub const fn socket_operator(&self) -> Option<HostOperator> {
+        match &self.credential {
+            Credential::Operator {
+                operator,
+                session: None,
+            } => Some(*operator),
+            _ => None,
+        }
+    }
+    /// Class of the credential: host operator sessions are browser sessions.
+    #[must_use]
+    pub const fn kind(&self) -> Option<CredentialKind> {
+        match &self.credential {
+            Credential::Account { kind, .. } => Some(*kind),
+            Credential::Operator { session, .. } if session.is_some() => {
+                Some(CredentialKind::Browser)
+            }
+            Credential::Operator { .. } => None,
+        }
+    }
     /// This caller, for changes that re-read its grants in their transaction.
     #[must_use]
-    pub fn caller(&self) -> crate::store::Caller<'_> {
-        crate::store::Caller {
-            credential_id: &self.credential_id,
-            user_id: &self.user.id,
+    pub fn actor(&self) -> Actor<'_> {
+        match &self.credential {
+            Credential::Account { user, id, .. } => Actor::Account(Caller {
+                credential_id: id,
+                user_id: &user.id,
+            }),
+            Credential::Operator { operator, session } => Actor::Operator {
+                operator: *operator,
+                session: session.as_deref(),
+            },
+        }
+    }
+    /// This caller as an account, for actions that create something owned
+    /// by or issued from an account.
+    /// # Errors
+    /// Returns [`AuthError::Invalid`] for the host operator.
+    pub fn caller(&self) -> Result<Caller<'_>> {
+        match self.actor() {
+            Actor::Account(caller) => Ok(caller),
+            _ => Err(AuthError::Invalid(
+                "the host operator is not an account; sign in with an account to do this",
+            )),
         }
     }
 }
@@ -51,58 +172,98 @@ pub(super) struct Device {
     grants: Option<Grants>,
 }
 impl Auth {
-    /// Resolves a bearer or cookie secret to its live credential and owner.
+    /// Resolves a bearer or cookie secret to its live credential and owner,
+    /// or to a host operator session.
     ///
     /// Secrets that are neither 43 characters (issued before the prefix) nor
     /// `pqd_` followed by 43 are rejected without a database lookup.
-    /// The credential's last-used time is refreshed at most once per minute.
+    /// An account credential's last-used time is refreshed at most once per
+    /// minute.
     pub(crate) async fn authenticate(&self, secret: &str) -> Result<Identity> {
         let (identity, last_used_at) = self.identify(secret).await?;
         // Keep ordinary requests read-only. A refresh queues with reconciliation
         // writers and rechecks validity after waiting, so revocation still wins.
-        if last_used_at <= now_secs() - 60
-            && !self
-                .0
-                .store
-                .touch_credential(&identity.credential_id)
-                .await?
+        if let Credential::Account { id, .. } = &identity.credential
+            && last_used_at <= now_secs() - 60
+            && !self.0.store.touch_credential(id).await?
         {
             return Err(AuthError::Unauthorized);
         }
         Ok(identity)
     }
     /// Resolves a live credential's secret to its caller and when it was last
-    /// used, without refreshing it. Refused requests use this directly, so
-    /// they are attributed without keeping a session alive.
+    /// used (now for host operator sessions, which have no idle timeout),
+    /// without refreshing it. Refused requests use this directly, so they are
+    /// attributed without keeping a session alive.
     pub(crate) async fn identify(&self, secret: &str) -> Result<(Identity, i64)> {
         let prefixed = secret.starts_with(super::CREDENTIAL_PREFIX)
             && secret.len() == super::CREDENTIAL_PREFIX.len() + 43;
         if secret.len() != 43 && !prefixed {
             return Err(AuthError::Unauthorized);
         }
-        let owner = self
-            .0
-            .store
-            .credential_owner(&Self::hash(secret))
-            .await?
-            .ok_or(AuthError::Unauthorized)?;
+        let hash = Self::hash(secret);
+        let Some(owner) = self.0.store.credential_owner(&hash).await? else {
+            let (session, operator) = self
+                .0
+                .store
+                .operator_session(&hash)
+                .await?
+                .ok_or(AuthError::Unauthorized)?;
+            return Ok((Identity::operator(operator, Some(session)), now_secs()));
+        };
         let identity = Identity {
-            user: owner.user,
-            credential_id: owner.credential_id,
-            kind: owner.kind,
+            credential: Credential::Account {
+                user: owner.user,
+                id: owner.credential_id,
+                kind: owner.kind,
+            },
             grants: owner.grants,
             scoped: owner.scoped,
             tailnet: owner.tailnet,
         };
         Ok((identity, owner.last_used_at))
     }
-    /// Revokes the credential used for the current request.
+    /// Revokes the credential or host operator session used for the current
+    /// request; the host operator over the Unix socket has none.
     pub(crate) async fn logout(&self, identity: &Identity) -> Result<()> {
-        Ok(self
+        if let Some(id) = identity.credential_id() {
+            self.0.store.revoke_credential(identity.actor(), id).await?;
+        }
+        Ok(())
+    }
+    /// Issues a one-time link that signs a browser in as `operator`, valid
+    /// for ten minutes, and raises a security event. Only its secret's hash
+    /// is stored.
+    pub(crate) async fn sign_in_link(&self, operator: HostOperator) -> Result<OperatorLink> {
+        let secret = Self::secret()?;
+        let expires_at = now_secs() + OPERATOR_LINK_LIFETIME;
+        self.0
+            .store
+            .create_operator_link(&Self::id(), &Self::hash(&secret), expires_at, operator)
+            .await?;
+        tracing::warn!(uid = operator.uid, "issued a host operator sign-in link");
+        Ok(OperatorLink {
+            url: self.link("operator", &secret),
+            expires_at,
+        })
+    }
+    /// Redeems a host operator sign-in link, returning the operator and the
+    /// secret of its new browser session. Used, expired, and unknown links
+    /// are unauthorized.
+    pub(crate) async fn operator_sign_in(&self, secret: &str) -> Result<(HostOperator, String)> {
+        let token = format!("{}{}", super::CREDENTIAL_PREFIX, Self::secret()?);
+        let expires_at = now_secs() + OPERATOR_SESSION_LIFETIME;
+        let (_, operator) = self
             .0
             .store
-            .revoke_credential(identity.caller(), &identity.credential_id)
-            .await?)
+            .redeem_operator_link(&Self::hash(secret), &Self::hash(&token), expires_at)
+            .await?
+            .ok_or(AuthError::Unauthorized)?;
+        tracing::info!(
+            uid = operator.uid,
+            "host operator signed in to the dashboard"
+        );
+        Ok((operator, token))
     }
     /// Starts a CLI device login valid for ten minutes.
     ///
@@ -186,9 +347,10 @@ impl Auth {
         })
     }
     /// Marks a pending device login as approved by the caller's credential,
-    /// which must have its account's full access and hold any requested
-    /// grants. Both are checked again when the session is issued.
+    /// which must belong to an account, have its full access, and hold any
+    /// requested grants. Both are checked again when the session is issued.
     pub(crate) async fn device_approve(&self, code: &str, identity: &Identity) -> Result<()> {
+        let caller = identity.caller()?;
         if identity.scoped {
             return Err(Denied::Scoped.into());
         }
@@ -197,10 +359,9 @@ impl Auth {
         if let Some(grants) = &device.grants {
             identity.grants.may_grant(grants)?;
         }
-        device.approved_by = Some((identity.credential_id.clone(), identity.user.id.clone()));
+        device.approved_by = Some((caller.credential_id.to_owned(), caller.user_id.to_owned()));
         tracing::info!(
-            user_id = %identity.user.id,
-            username = %identity.user.username,
+            user_id = %caller.user_id,
             requester = %device
                 .requester
                 .map_or_else(|| "unix-socket".to_owned(), |address| address.to_string()),

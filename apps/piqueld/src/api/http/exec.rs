@@ -82,10 +82,8 @@ pub(super) async fn exec(
                         return Err(binding_mismatch());
                     }
                 }
-                let caller = crate::api::Actor::Account(identity.caller());
-                let session = state
-                    .exec(caller, &id, &request, &identity.user.username)
-                    .await?;
+                let caller = identity.actor();
+                let session = state.exec(caller, &id, &request, &identity.who()).await?;
                 Ok(relay(session, reader, &mut writer).await)
             }
             .await;
@@ -105,7 +103,7 @@ pub(super) async fn exec(
                         body.request_id = request_id;
                     }
                     let diagnostic = error.diagnostic.map(|diagnostic| *diagnostic);
-                    let caller = crate::api::Actor::Account(identity.caller());
+                    let caller = identity.actor();
                     state
                         .record_failure(
                             error.status,

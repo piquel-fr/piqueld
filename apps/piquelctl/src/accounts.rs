@@ -15,7 +15,7 @@ use piqueld_client::{
     ApplicationId, Client, Page,
     access::{Grant, Grants, Permission, Preset, Scope},
     audit::{AuditEvent, AuditFilter, AuditLink, AuditOutcome, AuditVerification},
-    auth::{Account, CredentialView, Directory, Manage, Session},
+    auth::{Account, CredentialView, Directory, Manage, OperatorSessionView, Principal, Session},
     tailnet::TailnetBinding,
 };
 use serde::Serialize;
@@ -204,10 +204,11 @@ impl TokenCommand {
                 let me = client.auth_me().await?;
                 let directory = client.auth_directory().await?;
                 let names = Names::load(client).await;
+                let own = me.principal.user().map(|user| user.id.as_str());
                 let credentials = directory
                     .credentials
                     .into_iter()
-                    .filter(|credential| credential.user_id == me.user.id)
+                    .filter(|credential| Some(credential.user_id.as_str()) == own)
                     .collect::<Vec<_>>();
                 console.emit(&CredentialsReport { credentials, names })
             }
@@ -234,7 +235,10 @@ impl AccountCommand {
                 let directory = client.auth_directory().await?;
                 let names = Names::load(client).await;
                 console.emit(&AccountsReport {
-                    accounts: &directory.users,
+                    list: AccountList {
+                        accounts: &directory.users,
+                        operator_sessions: &directory.operator_sessions,
+                    },
                     names: &names,
                 })
             }
@@ -260,10 +264,13 @@ impl AccountCommand {
                     .await?;
                 let names = Names::load(client).await;
                 console.emit(&AccountsReport {
-                    accounts: &[Account {
-                        user: target.user,
-                        grants,
-                    }],
+                    list: AccountList {
+                        accounts: &[Account {
+                            user: target.user,
+                            grants,
+                        }],
+                        operator_sessions: &[],
+                    },
                     names: &names,
                 })
             }
@@ -365,34 +372,51 @@ impl Report for SessionReport {
         &self.session
     }
     fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        let user = &self.session.user;
         let limited = if self.session.scoped {
             ", limited credential"
         } else {
             ""
         };
-        out.line(format_args!("{} ({}{limited})", user.username, user.id))?;
+        match &self.session.principal {
+            Principal::User(user) => {
+                out.line(format_args!("{} ({}{limited})", user.username, user.id))?;
+            }
+            Principal::Operator(operator) => out.line(operator)?,
+        }
         self.names.render(&self.session.grants, out)
     }
 }
 
-/// Accounts with their grants.
-struct AccountsReport<'a> {
+/// Accounts with their grants, and live host operator sessions, which are
+/// not accounts (revoke one with `token revoke`).
+#[derive(Serialize)]
+struct AccountList<'a> {
     accounts: &'a [Account],
+    operator_sessions: &'a [OperatorSessionView],
+}
+/// An [`AccountList`], with application names for human output.
+struct AccountsReport<'a> {
+    list: AccountList<'a>,
     names: &'a Names,
 }
-impl Report for AccountsReport<'_> {
-    type Json = [Account];
-    fn json(&self) -> &[Account] {
-        self.accounts
+impl<'a> Report for AccountsReport<'a> {
+    type Json = AccountList<'a>;
+    fn json(&self) -> &AccountList<'a> {
+        &self.list
     }
     fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        for account in self.accounts {
+        for account in self.list.accounts {
             out.line(format_args!(
                 "{} ({})",
                 account.user.username, account.user.id
             ))?;
             self.names.render(&account.grants, out)?;
+        }
+        for session in self.list.operator_sessions {
+            out.line(format_args!(
+                "{} browser session {} (admin, expires {})",
+                session.operator, session.id, session.expires_at
+            ))?;
         }
         Ok(())
     }
@@ -526,11 +550,7 @@ impl Report for AuditReport {
     }
     fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
         for event in &self.0.items {
-            let who = event
-                .username
-                .as_deref()
-                .or(event.user_id.as_deref())
-                .unwrap_or("anonymous");
+            let who = event.who();
             let credential = event
                 .credential_kind
                 .as_deref()
@@ -654,6 +674,7 @@ mod tests {
             passkeys: Vec::new(),
             credentials: Vec::new(),
             invitations: Vec::new(),
+            operator_sessions: Vec::new(),
         };
         assert_eq!(find(&directory, "user-1").unwrap().user.username, "Bob");
         assert_eq!(find(&directory, "bob").unwrap().user.id, "user-1");

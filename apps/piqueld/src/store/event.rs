@@ -239,10 +239,11 @@ impl Store {
         let app = application.map(EnvironmentId::as_str);
         let json = serde_json::to_string(&diagnostic).map_err(StoreError::corrupt)?;
         let now = now_ms();
+        let operator = actor.operator_uid();
         sqlx::query!(
             "INSERT INTO events(scope,application_id,environment_id,kind,message,error_code,diagnostic_id,
-            diagnostic_json,request_id,created_at_ms,actor_user_id,actor_credential_id)
-            SELECT ?1,(SELECT application_id FROM environments WHERE id=?2),?2,'diagnostic',?3,?4,?5,?6,?7,?8,?9,?10
+            diagnostic_json,request_id,created_at_ms,actor_user_id,actor_credential_id,actor_operator_uid)
+            SELECT ?1,(SELECT application_id FROM environments WHERE id=?2),?2,'diagnostic',?3,?4,?5,?6,?7,?8,?9,?10,?11
             WHERE ?1='daemon' OR EXISTS(SELECT 1
             FROM environments
             WHERE id=?2)",
@@ -256,6 +257,7 @@ impl Store {
             now,
             actor.user_id,
             actor.credential_id,
+            operator,
         )
         .execute(&self.pool)
         .await
@@ -281,10 +283,11 @@ impl Store {
         let _writer = self.writers.lock().await;
         let (application, environment) = (application.as_str(), environment.as_str());
         let now = now_ms();
+        let operator = actor.operator_uid();
         sqlx::query!(
             "INSERT INTO events(application_id,environment_id,kind,message,resource,created_at_ms,
-            actor_user_id,actor_credential_id)
-            SELECT ?1,?2,?3,?4,?5,?6,?7,?8 WHERE EXISTS(SELECT 1 FROM applications WHERE id=?1)",
+            actor_user_id,actor_credential_id,actor_operator_uid)
+            SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9 WHERE EXISTS(SELECT 1 FROM applications WHERE id=?1)",
             application,
             environment,
             kind,
@@ -293,6 +296,7 @@ impl Store {
             now,
             actor.user_id,
             actor.credential_id,
+            operator,
         )
         .execute(&self.pool)
         .await
@@ -432,6 +436,7 @@ struct EventRow {
     diagnostic_json: Option<String>,
     actor_user_id: Option<String>,
     actor_credential_id: Option<String>,
+    actor_operator_uid: Option<i64>,
 }
 
 impl EventRow {
@@ -448,7 +453,8 @@ impl EventRow {
         let mut query = QueryBuilder::new(
             "SELECT id, application_id, environment_id, operation_id, generation, attempt, kind, message, error_code, \
              phase, resource, created_at_ms, scope, action_id, retry, retry_delay_ms, duration_ms, \
-             request_id, diagnostic_json, actor_user_id, actor_credential_id FROM events WHERE id",
+             request_id, diagnostic_json, actor_user_id, actor_credential_id, actor_operator_uid \
+             FROM events WHERE id",
         );
         query
             .push(if filter.descending { " < " } else { " > " })
@@ -563,6 +569,10 @@ impl EventRow {
             request_id: self.request_id,
             actor_user_id: self.actor_user_id,
             actor_credential_id: self.actor_credential_id,
+            actor_operator: self
+                .actor_operator_uid
+                .map(Store::host_operator)
+                .transpose()?,
             diagnostic: self
                 .diagnostic_json
                 .map(|json| serde_json::from_str(&json))

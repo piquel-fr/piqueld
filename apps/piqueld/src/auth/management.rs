@@ -8,20 +8,22 @@
 use super::{Auth, AuthError, CredentialKind, DAY, Identity, Result, now_secs};
 use crate::store::NewInvitation;
 use piqueld_core::access::GlobalPermission;
-use piqueld_core::auth::{Directory, Manage, Managed, RecoveryLink};
+use piqueld_core::auth::{Directory, HostOperator, Manage, Managed, OperatorLink};
 impl Auth {
-    /// Lists the accounts `viewer` may see: every account and invitation with
-    /// `accounts:manage`, otherwise only its own account.
+    /// Lists the accounts `viewer` may see: every account, invitation, and
+    /// host operator session with `accounts:manage`, otherwise only its own
+    /// account.
     pub(crate) async fn directory(&self, viewer: &Identity) -> Result<Directory> {
         let mut directory = self.0.store.auth_directory().await?;
         if !viewer.grants.has_global(GlobalPermission::AccountsManage) {
-            let own = |user_id: &String| *user_id == viewer.user.id;
+            let own = |user_id: &String| viewer.user().is_some_and(|user| user.id == *user_id);
             directory.users.retain(|account| own(&account.user.id));
             directory.passkeys.retain(|passkey| own(&passkey.user_id));
             directory
                 .credentials
                 .retain(|credential| own(&credential.user_id));
             directory.invitations.clear();
+            directory.operator_sessions.clear();
         }
         Ok(directory)
     }
@@ -30,10 +32,11 @@ impl Auth {
     ///
     /// Invitation and enrollment links expire after a day and return their
     /// dashboard URL; API tokens return their secret once. Both secrets are
-    /// only stored hashed.
+    /// only stored hashed. The host operator may make every change except
+    /// those creating links or tokens, which need an issuing account.
     pub(crate) async fn manage(&self, actor: &Identity, command: Manage) -> Result<Managed> {
         let store = &self.0.store;
-        let caller = actor.caller();
+        let by = actor.actor();
         let mut result = Managed::default();
         let action = format!("{command:?}");
         match command {
@@ -44,37 +47,37 @@ impl Auth {
             } => {
                 Self::validate_profile(&username, &display_name)?;
                 store
-                    .update_user(caller, &user_id, &username, &display_name)
+                    .update_user(by, &user_id, &username, &display_name)
                     .await?;
             }
-            Manage::DeleteUser { user_id } => store.delete_user(caller, &user_id).await?,
-            Manage::RemovePasskey { id } => store.remove_passkey(caller, &id).await?,
+            Manage::DeleteUser { user_id } => store.delete_user(by, &user_id).await?,
+            Manage::RemovePasskey { id } => store.remove_passkey(by, &id).await?,
             Manage::RenamePasskey { id, name } => {
                 if name.is_empty() || name.len() > 200 {
                     return Err(AuthError::Invalid("passkey name must contain 1–200 bytes"));
                 }
-                store.rename_passkey(caller, &id, &name).await?;
+                store.rename_passkey(by, &id, &name).await?;
             }
-            Manage::RevokeCredential { id } => store.revoke_credential(caller, &id).await?,
-            Manage::RevokeAll { user_id } => store.revoke_credentials(caller, &user_id).await?,
+            Manage::RevokeCredential { id } => store.revoke_credential(by, &id).await?,
+            Manage::RevokeAll { user_id } => store.revoke_credentials(by, &user_id).await?,
             Manage::SetGrants { user_id, grants } => {
-                store.set_user_grants(caller, &user_id, &grants).await?;
+                store.set_user_grants(by, &user_id, &grants).await?;
             }
             Manage::CreateInvitation { grants } => {
                 let (secret, invitation) = Self::new_invitation()?;
                 store
-                    .create_invitation(caller, &invitation, &grants)
+                    .create_invitation(actor.caller()?, &invitation, &grants)
                     .await?;
                 result.invitation_url = Some(self.link("invite", &secret));
             }
             Manage::CreateEnrollment { user_id } => {
                 let (secret, invitation) = Self::new_invitation()?;
                 store
-                    .create_enrollment(caller, &invitation, &user_id)
+                    .create_enrollment(actor.caller()?, &invitation, &user_id)
                     .await?;
                 result.invitation_url = Some(self.link("enroll", &secret));
             }
-            Manage::RevokeInvitation { id } => store.revoke_invitation(caller, &id).await?,
+            Manage::RevokeInvitation { id } => store.revoke_invitation(by, &id).await?,
             Manage::CreateToken {
                 grants,
                 name,
@@ -102,23 +105,22 @@ impl Auth {
                 let (token, credential) =
                     Self::new_credential(CredentialKind::Token, &name, expires, Some(&grants))?;
                 store
-                    .create_token(caller, &credential, tailnet.as_ref())
+                    .create_token(actor.caller()?, &credential, tailnet.as_ref())
                     .await?;
                 result.token = Some(token);
             }
         }
         tracing::info!(
-            actor = %actor.user.id,
+            actor = ?actor.principal(),
             action,
             "account management action applied"
         );
         Ok(result)
     }
-    /// Issues the one-time admin recovery link for `requester`, a local user
-    /// the caller has verified as root or the daemon's own user. It is valid
+    /// Issues the one-time admin recovery link for `operator`. It is valid
     /// for a day, replaces any earlier link, and registers a new account with
     /// `admin` on every application.
-    pub(crate) async fn recover_admin(&self, requester: &str) -> Result<RecoveryLink> {
+    pub(crate) async fn recover_admin(&self, operator: HostOperator) -> Result<OperatorLink> {
         if !self.0.store.auth_initialized().await? {
             return Err(AuthError::SetupPending);
         }
@@ -126,10 +128,10 @@ impl Auth {
         let expires_at = now_secs() + DAY;
         self.0
             .store
-            .create_recovery(&Self::hash(&secret), expires_at, requester)
+            .create_recovery(&Self::hash(&secret), expires_at, operator)
             .await?;
-        tracing::warn!(requester, "issued an admin recovery link");
-        Ok(RecoveryLink {
+        tracing::warn!(uid = operator.uid, "issued an admin recovery link");
+        Ok(OperatorLink {
             url: self.link("invite", &secret),
             expires_at,
         })

@@ -1002,6 +1002,7 @@ fn refused(peer: &str) -> NewAuditEvent {
         application_id: None,
         environment_id: None,
         permission: None,
+        operator: None,
     }
 }
 
@@ -1082,6 +1083,42 @@ async fn refusal_bursts_and_new_addresses_notify_as_security() {
     );
 }
 
+/// On the Unix socket, refusals by the host operator and by anonymous
+/// callers share no account and no address, yet count separately.
+#[tokio::test]
+async fn operator_and_anonymous_refusals_burst_separately() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let socket = |uid: Option<u32>| {
+        let mut event = refused("unused");
+        event.peer = None;
+        event.operator = uid.map(|uid| piqueld_core::auth::HostOperator { uid });
+        event
+    };
+    let bursts = async || {
+        let messages = "SELECT message FROM events WHERE kind='access_denial_burst' ORDER BY id";
+        sqlx::query_scalar::<_, String>(messages)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap()
+    };
+    for uid in std::iter::repeat_n(None, 19).chain([Some(0)]) {
+        store.record_audit(&socket(uid)).await.unwrap();
+    }
+    assert_eq!(bursts().await, Vec::<String>::new());
+    // Each reaches the threshold on its own, and the cooldown is separate too.
+    for uid in std::iter::once(None).chain(std::iter::repeat_n(Some(0), 19)) {
+        store.record_audit(&socket(uid)).await.unwrap();
+    }
+    let messages = bursts().await;
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert!(messages[0].contains("an anonymous caller"), "{messages:?}");
+    assert!(
+        messages[1].contains("host operator (uid 0)"),
+        "{messages:?}"
+    );
+}
+
 /// The audit chain detects edited, renumbered, inserted, and removed records,
 /// and pruning keeps it verifiable without ever erasing a broken part.
 #[tokio::test]
@@ -1092,8 +1129,10 @@ async fn the_audit_chain_detects_alteration_and_survives_pruning() {
     let now = now_ms();
     for (peer, at) in [("a", 0), ("b", 0), ("c", now), ("d", now)] {
         let mut event = refused(peer);
-        // Tailnet identities, recorded only on some requests, are linked too.
+        // Tailnet identities and the host operator, recorded only on some
+        // requests, are linked too.
         event.tailnet = (peer == "d").then(|| "tag:ci on runner".into());
+        event.operator = (peer == "d").then_some(piqueld_core::auth::HostOperator { uid: 1000 });
         store.record_audit_at(&event, at).await.unwrap();
     }
     let intact = store.verify_audit().await.unwrap();
@@ -1106,6 +1145,11 @@ async fn the_audit_chain_detects_alteration_and_survives_pruning() {
         .unwrap();
     assert_eq!(store.verify_audit().await.unwrap().broken_at, Some(d_id));
     let restore = "UPDATE audit_events SET tailnet='tag:ci on runner' WHERE peer='d'";
+    sqlx::query(restore).execute(&store.pool).await.unwrap();
+    let operator = "UPDATE audit_events SET operator_uid=0 WHERE peer='d'";
+    sqlx::query(operator).execute(&store.pool).await.unwrap();
+    assert_eq!(store.verify_audit().await.unwrap().broken_at, Some(d_id));
+    let restore = "UPDATE audit_events SET operator_uid=1000 WHERE peer='d'";
     sqlx::query(restore).execute(&store.pool).await.unwrap();
     let run = async |sql: &str| {
         sqlx::query(sql).execute(&store.pool).await.unwrap();

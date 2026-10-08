@@ -4,7 +4,8 @@ mod ceremonies;
 mod management;
 mod sessions;
 mod throttle;
-pub use sessions::Identity;
+pub(crate) use sessions::OPERATOR_SESSION_LIFETIME;
+pub use sessions::{Credential, Identity};
 pub(crate) use throttle::bucket as network;
 #[cfg(test)]
 mod tests;

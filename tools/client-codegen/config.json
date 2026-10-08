@@ -81,9 +81,14 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::audit::AuditVerification>"
     },
     {
-      "schema": "RecoveryLink",
-      "name": "RecoveryLink",
-      "rustType": "piqueld_core::auth::RecoveryLink"
+      "schema": "OperatorLink",
+      "name": "OperatorLink",
+      "rustType": "piqueld_core::auth::OperatorLink"
+    },
+    {
+      "schema": "OperatorSignIn",
+      "name": "OperatorSignIn",
+      "rustType": "piqueld_core::auth::OperatorSignIn"
     },
     {
       "schema": "Envelope_Page_Event",

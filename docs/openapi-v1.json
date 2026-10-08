@@ -747,6 +747,25 @@
             "format": "int64",
             "type": "integer"
           },
+          "operator": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/HostOperator"
+                  }
+                ],
+                "description": "The host operator, when it made the request instead of an account."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "outcome": {
             "$ref": "#/components/schemas/AuditOutcome",
             "description": "Whether the request was allowed."
@@ -2182,6 +2201,13 @@
             },
             "type": "array"
           },
+          "operator_sessions": {
+            "description": "Live host operator browser sessions; empty without `accounts:manage`.",
+            "items": {
+              "$ref": "#/components/schemas/OperatorSessionView"
+            },
+            "type": "array"
+          },
           "passkeys": {
             "description": "Enrolled passkeys.",
             "items": {
@@ -2993,6 +3019,25 @@
                 "nullable": true,
                 "type": "string"
               },
+              "actor_operator": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/HostOperator"
+                      }
+                    ],
+                    "description": "The host operator, when it made that request instead of an account."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
               "actor_user_id": {
                 "description": "Account whose API request caused this event, including runtime actions\nof the operation it requested.",
                 "nullable": true,
@@ -3403,6 +3448,25 @@
                       "format": "int64",
                       "type": "integer"
                     },
+                    "operator": {
+                      "oneOf": [
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/components/schemas/HostOperator"
+                            }
+                          ],
+                          "description": "The host operator, when it made the request instead of an account."
+                        },
+                        {
+                          "enum": [
+                            null
+                          ],
+                          "nullable": true,
+                          "type": "string"
+                        }
+                      ]
+                    },
                     "outcome": {
                       "$ref": "#/components/schemas/AuditOutcome",
                       "description": "Whether the request was allowed."
@@ -3707,6 +3771,25 @@
                       "description": "Credential that authenticated that request.",
                       "nullable": true,
                       "type": "string"
+                    },
+                    "actor_operator": {
+                      "oneOf": [
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/components/schemas/HostOperator"
+                            }
+                          ],
+                          "description": "The host operator, when it made that request instead of an account."
+                        },
+                        {
+                          "enum": [
+                            null
+                          ],
+                          "nullable": true,
+                          "type": "string"
+                        }
+                      ]
                     },
                     "actor_user_id": {
                       "description": "Account whose API request caused this event, including runtime actions\nof the operation it requested.",
@@ -4786,6 +4869,25 @@
             "nullable": true,
             "type": "string"
           },
+          "actor_operator": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/HostOperator"
+                  }
+                ],
+                "description": "The host operator, when it made that request instead of an account."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "actor_user_id": {
             "description": "Account whose API request caused this event, including runtime actions\nof the operation it requested.",
             "nullable": true,
@@ -5179,6 +5281,21 @@
         ],
         "type": "object"
       },
+      "HostOperator": {
+        "description": "The host operator: root or the daemon's own Unix user, identified by the\nkernel over the daemon's Unix socket. It already controls the daemon's\ndatabase and keys, so piqueld lets it act as an administrator without an\naccount.",
+        "properties": {
+          "uid": {
+            "description": "Unix user ID: 0 for root, otherwise the daemon's own user.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "uid"
+        ],
+        "type": "object"
+      },
       "Hostname": {
         "description": "Canonical ASCII public DNS hostname; Unicode domains use their IDNA form.",
         "type": "string"
@@ -5463,7 +5580,7 @@
             "type": "object"
           },
           {
-            "description": "Revoke a session or API token.",
+            "description": "Revoke a session, API token, or host operator session.",
             "properties": {
               "action": {
                 "enum": [
@@ -6070,6 +6187,62 @@
         ],
         "type": "string"
       },
+      "OperatorLink": {
+        "description": "One-time link issued only over the daemon's Unix socket to the host\noperator: an admin recovery link or a host operator sign-in link.",
+        "properties": {
+          "expires_at": {
+            "description": "Unix seconds after which the link no longer works.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "url": {
+            "description": "Dashboard URL carrying the link's secret.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "OperatorSessionView": {
+        "description": "A live host operator browser session, opened with a sign-in link.",
+        "properties": {
+          "expires_at": {
+            "description": "Absolute expiry, as Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "description": "Revocation identifier, like a credential's.",
+            "type": "string"
+          },
+          "operator": {
+            "$ref": "#/components/schemas/HostOperator",
+            "description": "The Unix user that issued the sign-in link."
+          }
+        },
+        "required": [
+          "id",
+          "operator",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "OperatorSignIn": {
+        "description": "Redeems a host operator sign-in link.",
+        "properties": {
+          "secret": {
+            "description": "Secret from the link's `#operator=` fragment.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "secret"
+        ],
+        "type": "object"
+      },
       "OptionalStringValue": {
         "additionalProperties": false,
         "properties": {
@@ -6276,6 +6449,37 @@
         ],
         "type": "object"
       },
+      "Principal": {
+        "description": "Who a request acts as, serialized as a `user` or an `operator` field.",
+        "oneOf": [
+          {
+            "description": "A piqueld account.",
+            "properties": {
+              "user": {
+                "$ref": "#/components/schemas/User",
+                "description": "A piqueld account."
+              }
+            },
+            "required": [
+              "user"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The host operator, which is not an account.",
+            "properties": {
+              "operator": {
+                "$ref": "#/components/schemas/HostOperator",
+                "description": "The host operator, which is not an account."
+              }
+            },
+            "required": [
+              "operator"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "ReadinessStatus": {
         "description": "Deployment prerequisites. Configuration APIs remain available when false.",
         "properties": {
@@ -6305,25 +6509,6 @@
           "database",
           "docker",
           "swarm"
-        ],
-        "type": "object"
-      },
-      "RecoveryLink": {
-        "description": "One-time admin recovery link, issued only over the daemon's Unix socket\nto root or the daemon's own user.",
-        "properties": {
-          "expires_at": {
-            "description": "Unix seconds after which the link no longer works.",
-            "format": "int64",
-            "type": "integer"
-          },
-          "url": {
-            "description": "Dashboard URL that registers a new account with `admin`.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "url",
-          "expires_at"
         ],
         "type": "object"
       },
@@ -7262,27 +7447,30 @@
         "type": "object"
       },
       "Session": {
-        "description": "The signed-in account and what the current credential may do.",
-        "properties": {
-          "grants": {
-            "$ref": "#/components/schemas/Grants",
-            "description": "Effective grants of the credential used for this request."
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Principal",
+            "description": "Signed-in account (`user`), or the host operator (`operator`)."
           },
-          "scoped": {
-            "description": "Whether the credential is limited to its own grants, like an API\ntoken; such credentials cannot create credentials.",
-            "type": "boolean"
-          },
-          "user": {
-            "$ref": "#/components/schemas/User",
-            "description": "Signed-in account."
+          {
+            "properties": {
+              "grants": {
+                "$ref": "#/components/schemas/Grants",
+                "description": "Effective grants of the credential used for this request."
+              },
+              "scoped": {
+                "description": "Whether the credential is limited to its own grants, like an API\ntoken; such credentials cannot create credentials.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "grants",
+              "scoped"
+            ],
+            "type": "object"
           }
-        },
-        "required": [
-          "user",
-          "grants",
-          "scoped"
         ],
-        "type": "object"
+        "description": "Who is signed in and what the current credential may do."
       },
       "SetupLink": {
         "description": "First-account setup link, served only over the daemon's Unix socket.",
@@ -17782,6 +17970,57 @@
         "x-piqueld-access": "public"
       }
     },
+    "/api/v1/auth/login/operator": {
+      "post": {
+        "description": "Public. Signs the browser in as the host operator with a 12-hour session\ncookie. Used, expired, and unknown links fail with 401.",
+        "operationId": "authOperatorSignIn",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorSignIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          }
+        },
+        "security": [],
+        "summary": "Redeems a host operator sign-in link.",
+        "x-piqueld-access": "public"
+      }
+    },
     "/api/v1/auth/login/start": {
       "post": {
         "description": "Public. Usernameless: any discoverable passkey for this site may answer.\nSets a short-lived ceremony cookie that the finish request must present.\nRate limited per client address (429 with `Retry-After`).",
@@ -17885,6 +18124,7 @@
     },
     "/api/v1/auth/me": {
       "get": {
+        "description": "Token-less requests over the Unix socket from root or the daemon's own\nuser act as the host operator.",
         "operationId": "authMe",
         "responses": {
           "200": {
@@ -17908,20 +18148,20 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "summary": "Gets the signed-in user and what the current credential may do.",
+        "summary": "Gets who is signed in and what the current credential may do.",
         "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/auth/recovery": {
       "post": {
-        "description": "Public, but only over the Unix socket and only to root or the daemon's own\nuser, identified by the kernel (`SO_PEERCRED`); anyone else gets 404. The\nlink is valid for 24 hours, replaces any earlier one, and registers a new\naccount with `admin` on every application. Issuing it raises a `security`\nnotification.",
+        "description": "Public, but only over the Unix socket and only to the host operator: root\nor the daemon's own user, identified by the kernel (`SO_PEERCRED`); anyone\nelse gets 404. The link is valid for 24 hours, replaces any earlier one,\nand registers a new account with `admin` on every application. Issuing it\nraises a `security` notification.",
         "operationId": "authRecoverAdmin",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RecoveryLink"
+                  "$ref": "#/components/schemas/OperatorLink"
                 }
               }
             },
@@ -18093,6 +18333,47 @@
         },
         "security": [],
         "summary": "Gets the first-account setup link.",
+        "x-piqueld-access": "public"
+      }
+    },
+    "/api/v1/auth/sign-in-link": {
+      "post": {
+        "description": "Public, but only over the Unix socket and only to the host operator, like\n`authRecoverAdmin`, and only without a credential, which keeps its\nmeaning; anyone else gets 404. The link works once within ten minutes and\nsigns a browser in as the host operator, with `admin` on every\napplication, for 12 hours. Issuing it raises a `security` notification.",
+        "operationId": "authSignInLink",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorLink"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "security": [],
+        "summary": "Issues a one-time host operator sign-in link.",
         "x-piqueld-access": "public"
       }
     },

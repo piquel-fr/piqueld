@@ -105,7 +105,8 @@ impl Store {
         // History records the logical name and version, never the value.
         let message = format!("Stored secret version {generation}");
         let by = actor.attribution();
-        sqlx::query!("INSERT INTO events(application_id,environment_id,kind,message,resource,created_at_ms,actor_user_id,actor_credential_id) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'secret_saved',?2,?3,?4,?5,?6)",id,message,name,now,by.user_id,by.credential_id).execute(&mut *tx).await.map_err(StoreError::database)?;
+        let operator = by.operator_uid();
+        sqlx::query!("INSERT INTO events(application_id,environment_id,kind,message,resource,created_at_ms,actor_user_id,actor_credential_id,actor_operator_uid) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'secret_saved',?2,?3,?4,?5,?6,?7)",id,message,name,now,by.user_id,by.credential_id,operator).execute(&mut *tx).await.map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(SecretMetadata {
             name: name.into(),

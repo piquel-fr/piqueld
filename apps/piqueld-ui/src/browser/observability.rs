@@ -945,6 +945,7 @@ pub(super) fn AuditPage() -> impl IntoView {
                                                         AuditOutcome::Failed => Tone::Warn,
                                                     };
                                                     let target = event.target();
+                                                    let who = event.who();
                                                     let missing = event
                                                         .permission
                                                         .map(|permission| format!(" (requires {permission})"));
@@ -961,12 +962,7 @@ pub(super) fn AuditPage() -> impl IntoView {
                                                                         view! { <div class="muted">{target}</div> }
                                                                     })}
                                                             </td>
-                                                            <td>
-                                                                {event
-                                                                    .username
-                                                                    .or(event.user_id)
-                                                                    .unwrap_or_else(|| "anonymous".into())}
-                                                            </td>
+                                                            <td>{who}</td>
                                                             <td class="muted" title={event.credential_id.clone()}>
                                                                 {event.credential_kind.unwrap_or_default()}
                                                                 {event

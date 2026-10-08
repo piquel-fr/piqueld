@@ -89,12 +89,10 @@ impl Auth {
         }
         let (user, invitation) = if let Some(id) = input.user_id {
             let caller = caller.ok_or(AuthError::Unauthorized)?;
-            if caller.user.id != id {
-                return Err(AuthError::Invalid(
-                    "passkeys can only be added to your own account; create an enrollment link for others",
-                ));
-            }
-            (caller.user.clone(), None)
+            let own = caller.user().filter(|user| user.id == id).ok_or(AuthError::Invalid(
+                "passkeys can only be added to your own account; create an enrollment link for others",
+            ))?;
+            (own.clone(), None)
         } else {
             let secret = input.invitation.ok_or(AuthError::Unauthorized)?;
             let user = match self.invitation(&secret).await? {
@@ -165,7 +163,8 @@ impl Auth {
         else {
             return Err(AuthError::Unauthorized);
         };
-        if invitation.is_none() && caller.is_none_or(|caller| caller.user.id != user.id) {
+        let own = caller.and_then(Identity::user);
+        if invitation.is_none() && own.is_none_or(|own| own.id != user.id) {
             return Err(AuthError::Unauthorized);
         }
         let response = serde_json::from_value(input.credential)
@@ -189,7 +188,7 @@ impl Auth {
             };
             (owner, Some(token))
         } else {
-            let caller = caller.ok_or(AuthError::Unauthorized)?.caller();
+            let caller = caller.ok_or(AuthError::Unauthorized)?.caller()?;
             (PasskeyOwner::Existing(caller, &user.id), None)
         };
         if !self.0.store.add_passkey(owner, passkey).await? {

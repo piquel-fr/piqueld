@@ -10,11 +10,10 @@ When you are done making changes, make sure these commands run without errors:
 
 ## Testing
 
-Skills in `.agents/skills` (linked from `.claude/skills`) describe the testing
-workflow: `piqueld-dev` runs this worktree's isolated development instance
-(`just dev`, see `docs/development.md`) on its own localhost port,
-`piqueld-e2e` exercises a change through the manifest, CLI, and dashboard
-preview, and `piqueld-verify` selects focused automated checks.
+The `piqueld-dev` skill in `.agents/skills` (linked from `.claude/skills`)
+runs this worktree's isolated development instance (`just dev`, see
+`docs/development.md`) on its own localhost port, for testing changes through
+the manifest, CLI, and dashboard preview.
 
 ## Commits & Pull Requests
 

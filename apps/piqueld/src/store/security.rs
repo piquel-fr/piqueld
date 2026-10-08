@@ -17,6 +17,8 @@ pub(crate) enum SecurityEvent {
     DenialBurst,
     /// An admin recovery link was issued over the Unix socket.
     RecoveryIssued,
+    /// A host operator sign-in link was issued over the Unix socket.
+    OperatorSignInIssued,
     /// A credential was used from an address it had not used before.
     NewAddress,
     /// The secret master key was recovered, discarding stored values.
@@ -24,11 +26,12 @@ pub(crate) enum SecurityEvent {
 }
 
 impl SecurityEvent {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::AdminGranted,
         Self::PrivilegedToken,
         Self::DenialBurst,
         Self::RecoveryIssued,
+        Self::OperatorSignInIssued,
         Self::NewAddress,
         Self::SecretKeyRecovered,
     ];
@@ -40,6 +43,7 @@ impl SecurityEvent {
             Self::PrivilegedToken => "privileged_token_created",
             Self::DenialBurst => "access_denial_burst",
             Self::RecoveryIssued => "admin_recovery_issued",
+            Self::OperatorSignInIssued => "operator_sign_in_issued",
             Self::NewAddress => "credential_new_address",
             Self::SecretKeyRecovered => "secret_key_recovered",
         }
@@ -68,14 +72,16 @@ impl Store {
     ) -> Result<(), StoreError> {
         let kind = event.kind();
         let now = now_ms();
+        let operator = actor.operator_uid();
         sqlx::query!(
-            "INSERT INTO events(scope,kind,message,created_at_ms,actor_user_id,actor_credential_id)
-            VALUES('daemon',?1,?2,?3,?4,?5)",
+            "INSERT INTO events(scope,kind,message,created_at_ms,actor_user_id,actor_credential_id,actor_operator_uid)
+            VALUES('daemon',?1,?2,?3,?4,?5,?6)",
             kind,
             message,
             now,
             actor.user_id,
             actor.credential_id,
+            operator,
         )
         .execute(db)
         .await
@@ -155,13 +161,17 @@ impl Store {
         // Runs under the writer lock on every refusal, so it stays bounded:
         // the cooldown only reads this address and account's recent bursts
         // (`security_denial_bursts`, which needs the kind spelled out), and
-        // the count stops at the threshold (`audit_refusals`).
+        // the count stops at the threshold (`audit_refusals`). The host
+        // operator, which has no account, is told apart from anonymous
+        // callers by its Unix user.
+        let operator = actor.operator_uid();
         let burst = sqlx::query_scalar!(
             r#"SELECT NOT EXISTS(SELECT 1 FROM events
                 WHERE kind='access_denial_burst' AND resource IS ?2 AND actor_user_id IS ?3
-                AND created_at_ms>=?5)
+                AND actor_operator_uid IS ?6 AND created_at_ms>=?5)
             AND (SELECT COUNT(*) FROM (SELECT 1 FROM audit_events
-                WHERE outcome='denied' AND user_id IS ?3 AND peer IS ?2 AND created_at_ms>=?1
+                WHERE outcome='denied' AND user_id IS ?3 AND peer IS ?2
+                AND operator_uid IS ?6 AND created_at_ms>=?1
                 LIMIT ?4)) >= ?4
             AS "burst!: bool""#,
             window,
@@ -169,6 +179,7 @@ impl Store {
             actor.user_id,
             DENIAL_BURST,
             cooldown,
+            operator,
         )
         .fetch_one(&mut *db)
         .await
@@ -179,7 +190,13 @@ impl Store {
         let message = format!(
             "{DENIAL_BURST} requests refused within a minute from {} as {}",
             peer.unwrap_or("the Unix socket"),
-            username.unwrap_or("an anonymous caller"),
+            username.map_or_else(
+                || actor.operator.map_or_else(
+                    || "an anonymous caller".to_owned(),
+                    |operator| operator.to_string()
+                ),
+                str::to_owned,
+            ),
         );
         Self::security_event_on(db, SecurityEvent::DenialBurst, &message, actor).await?;
         sqlx::query!(
@@ -235,6 +252,7 @@ impl Store {
                 let actor = Attribution {
                     user_id: Some(user_id),
                     credential_id: Some(credential_id),
+                    operator: None,
                 };
                 Self::security_event_on(&mut tx, SecurityEvent::NewAddress, &message, actor)
                     .await?;
