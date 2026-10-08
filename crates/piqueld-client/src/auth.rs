@@ -70,11 +70,19 @@ impl Client {
     pub async fn auth_manage(&self, input: &Manage) -> Result<Managed, ClientError> {
         crate::client::generated_result(self.generated.auth_manage(input).await).await
     }
-    /// Starts a browser-assisted CLI login.
+    /// Starts a browser-assisted CLI login, limited to `grants` when set.
     /// # Errors
     /// Returns transport, decoding, or API failures.
-    pub async fn auth_device_start(&self) -> Result<DeviceStart, ClientError> {
-        crate::client::generated_result(self.generated.auth_device_start().await).await
+    pub async fn auth_device_start(
+        &self,
+        grants: Option<piqueld_core::access::Grants>,
+    ) -> Result<DeviceStart, ClientError> {
+        crate::client::generated_result(
+            self.generated
+                .auth_device_start(&DeviceStartRequest { grants })
+                .await,
+        )
+        .await
     }
     /// Polls for the one-time result of a device login.
     /// # Errors

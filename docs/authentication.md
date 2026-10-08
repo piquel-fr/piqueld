@@ -154,17 +154,18 @@ and removes its local copy.
 Credential updates use a persistent sibling `.lock` file to serialize concurrent
 CLI processes. Do not delete that lock file while CLI commands are running.
 
-Create named automation tokens for your own account on the Accounts page. The raw
-token appears only once; the daemon stores only its hash. Supply it using
-`PIQUELD_TOKEN`, which takes precedence over saved credentials. Tokens act with
-their account's current grants. Logging out with `PIQUELD_TOKEN` revokes that token and leaves saved logins
+Create named automation tokens for your own account on the Accounts page or with
+`piquelctl token create`. The raw token, starting with `pqd_`, appears only once;
+the daemon stores only its hash. Supply it using `PIQUELD_TOKEN`, which takes
+precedence over saved credentials. Tokens act with their own grants within their
+account's current access; see [authorization](authorization.md#api-tokens). Logging out with `PIQUELD_TOKEN` revokes that token and leaves saved logins
 alone. Do not put token values into connection profiles or Nix configuration.
 
 | Credential | Expiry |
 | --- | --- |
 | Browser session | 24 hours without API use, or 7 days total |
 | CLI session | 30 days; repeat browser login afterward |
-| Automation token | 90 days by default; custom days or no expiry |
+| Automation token | 90 days by default; custom days or no expiry, within `auth.max_token_days` |
 
 Browser sessions use HTTP-only, SameSite=Strict cookies. For HTTPS origins they
 are also Secure and use the `__Host-` name prefix, so applications on sibling

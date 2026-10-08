@@ -158,6 +158,10 @@ receipts record the account that made the request. Receipts from before the
 upgrade have no account, so retrying an API or CLI request across the upgrade
 answers 409 `request_id_conflict`.
 
+`0016_scoped_tokens.sql` marks credentials limited to their own grants. Existing
+API tokens become scoped with `admin` on every application, so they keep their
+account's full access, but they can no longer create credentials.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

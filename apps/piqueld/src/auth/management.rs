@@ -75,15 +75,22 @@ impl Auth {
                 result.invitation_url = Some(self.link("enroll", &secret));
             }
             Manage::RevokeInvitation { id } => store.revoke_invitation(caller, &id).await?,
-            Manage::CreateToken { name, days } => {
+            Manage::CreateToken { grants, name, days } => {
                 if name.is_empty() || name.len() > 200 || days == Some(0) {
                     return Err(AuthError::Invalid(
                         "token requires a name and a positive lifetime (or no expiry)",
                     ));
                 }
+                if let Some(limit) = self.0.max_token_days
+                    && days.is_none_or(|days| days > limit)
+                {
+                    return Err(AuthError::Invalid(
+                        "token lifetime exceeds this installation's auth.max_token_days",
+                    ));
+                }
                 let expires = days.map(|days| now_secs() + i64::from(days) * DAY);
                 let (token, credential) =
-                    Self::new_credential(CredentialKind::Token, &name, expires)?;
+                    Self::new_credential(CredentialKind::Token, &name, expires, Some(&grants))?;
                 store.create_token(caller, &credential).await?;
                 result.token = Some(token);
             }

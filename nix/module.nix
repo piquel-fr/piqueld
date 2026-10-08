@@ -97,6 +97,11 @@ in
             default = null;
             description = "Canonical HTTPS website origin for passkeys; HTTP localhost is allowed for development. Defaults to the tailnet node's HTTPS URL when tailscale.enabled is set, otherwise http://localhost:7845.";
           };
+          auth.max_token_days = lib.mkOption {
+            type = lib.types.nullOr (lib.types.ints.between 1 4294967295);
+            default = null;
+            description = "Longest lifetime of new API tokens in days. Null allows any lifetime, including tokens that never expire.";
+          };
           tailscale.enabled = lib.mkOption {
             type = lib.types.bool;
             default = false;

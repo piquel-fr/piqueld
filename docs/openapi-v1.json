@@ -1087,6 +1087,25 @@
             "nullable": true,
             "type": "integer"
           },
+          "grants": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Grants"
+                  }
+                ],
+                "description": "Grants this credential is limited to, within its account's current\naccess; absent when it acts with the account's full access."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "id": {
             "description": "Revocation identifier, never a bearer secret.",
             "type": "string"
@@ -1716,6 +1735,25 @@
             "minimum": 0,
             "type": "integer"
           },
+          "grants": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Grants"
+                  }
+                ],
+                "description": "Grants the session is limited to; absent for the approver's full access."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "requester": {
             "description": "Network address the daemon observed when the login started. Absent for\nrequests made over the Unix socket.",
             "nullable": true,
@@ -1746,6 +1784,25 @@
             "minimum": 0,
             "type": "integer"
           },
+          "grants": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Grants"
+                  }
+                ],
+                "description": "Grants the session will be limited to, as requested. Daemons older\nthan limited logins omit it, so clients can tell they ignored a limit."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "interval": {
             "description": "Minimum polling interval, in seconds.",
             "format": "int32",
@@ -1773,6 +1830,31 @@
           "expires_in",
           "interval"
         ],
+        "type": "object"
+      },
+      "DeviceStartRequest": {
+        "description": "Optional limits for a CLI device login.",
+        "properties": {
+          "grants": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Grants"
+                  }
+                ],
+                "description": "Grants the issued CLI session is limited to; absent for the approving\naccount's full access."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          }
+        },
         "type": "object"
       },
       "DeviceToken": {
@@ -5091,7 +5173,7 @@
             "type": "object"
           },
           {
-            "description": "Create an automation token for the caller's own account; callers supply\n90 days for the default.",
+            "description": "Create an automation token for the caller's own account; callers supply\n90 days for the default. The token acts with `grants`, limited by the\naccount's current access, and cannot create credentials itself.",
             "properties": {
               "action": {
                 "enum": [
@@ -5106,12 +5188,17 @@
                 "nullable": true,
                 "type": "integer"
               },
+              "grants": {
+                "$ref": "#/components/schemas/Grants",
+                "description": "Grants the token is limited to; the caller must hold them."
+              },
               "name": {
                 "description": "Token label.",
                 "type": "string"
               }
             },
             "required": [
+              "grants",
               "name",
               "action"
             ],
@@ -6726,6 +6813,10 @@
             "$ref": "#/components/schemas/Grants",
             "description": "Effective grants of the credential used for this request."
           },
+          "scoped": {
+            "description": "Whether the credential is limited to its own grants, like an API\ntoken; such credentials cannot create credentials.",
+            "type": "boolean"
+          },
           "user": {
             "$ref": "#/components/schemas/User",
             "description": "Signed-in account."
@@ -6733,7 +6824,8 @@
         },
         "required": [
           "user",
-          "grants"
+          "grants",
+          "scoped"
         ],
         "type": "object"
       },
@@ -16962,8 +17054,18 @@
     },
     "/api/v1/auth/device/start": {
       "post": {
-        "description": "Public. Returns a device code to poll with and a user code to approve in a\nsigned-in browser. Rate limited per client address (429 with `Retry-After`).",
+        "description": "Public. Returns a device code to poll with and a user code to approve in a\nsigned-in browser. A JSON body, which may be omitted, limits the issued session to\n`grants`, which the approver must hold, and is echoed back so clients can\ntell the limit applies. Pending logins are kept in memory, so bodies over\n16 KiB answer 413. Rate limited per client address (429 with `Retry-After`).",
         "operationId": "authDeviceStart",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceStartRequest"
+              }
+            }
+          },
+          "required": false
+        },
         "responses": {
           "200": {
             "content": {
@@ -16984,6 +17086,16 @@
               }
             },
             "description": "TCP authority or browser origin is not trusted"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
           }
         },
         "security": [],

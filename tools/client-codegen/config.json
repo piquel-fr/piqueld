@@ -321,6 +321,11 @@
       "rustType": "piqueld_core::auth::User"
     },
     {
+      "schema": "DeviceStartRequest",
+      "name": "DeviceStartRequest",
+      "rustType": "piqueld_core::auth::DeviceStartRequest"
+    },
+    {
       "schema": "Session",
       "name": "Session",
       "rustType": "piqueld_core::auth::Session"

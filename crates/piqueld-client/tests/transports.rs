@@ -564,7 +564,7 @@ async fn remote_http_rejects_credentials_before_sending() {
             .apply_application_toml_with_preconditions("name = 'test'", None, None, false, false)
             .await
             .unwrap_err(),
-        anonymous.auth_device_start().await.unwrap_err(),
+        anonymous.auth_device_start(None).await.unwrap_err(),
         anonymous
             .auth_device_poll("device-secret")
             .await

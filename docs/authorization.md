@@ -64,7 +64,8 @@ the new application, every application permission (and `admin`) it holds on
 some but not all applications, so it can work on what it created without
 gaining any new kind of ability. Permissions it already holds everywhere need
 nothing new. Creating and deploying in one step also requires `apps:deploy`
-somewhere.
+somewhere. Applications created through an API token or a limited CLI login
+give no creator grants, since those credentials hand out no lasting access.
 
 ## Managing accounts
 
@@ -118,13 +119,52 @@ piquelctl account enroll bob
 piquelctl account list
 ```
 
+## API tokens
+
+An API token acts with its own grants, limited on every request by its
+account's current access: demoting the account demotes its tokens. Tokens are
+created for your own account only, with grants you hold. Token secrets start
+with `pqd_`, so secret scanners can find leaked ones.
+
+Credentials with limited access (API tokens and CLI logins that asked for less
+access) cannot create credentials or hand out access: no tokens, passkeys,
+invitations, enrollment links, CLI login approvals, or grants for other
+accounts. They also cannot change their own account, which needs no
+permission, though they can revoke themselves. A leaked token can therefore
+never outlive or exceed its own limits.
+
+```console
+piquelctl token create ci --preset deploy --app blog --days 30
+piquelctl token create reader --permission apps:read --no-expiry
+piquelctl token list
+piquelctl token revoke <id>
+```
+
+`auth.max_token_days` limits the lifetime of new tokens; see
+[configuration](configuration.md#authentication-origin). Deleting an
+application removes grants on it; tokens left without any grant are revoked.
+
+A CLI login can ask for less than your access with the same options;
+`--app` takes application IDs there, since names cannot be looked up before
+signing in. The approval page shows the requested access, and the approver
+must hold it. The request is limited to 16 KiB, which fits a preset on a few
+dozen applications; beyond that, ask for every application instead of listing them:
+
+```console
+piquelctl login --preset read-only
+```
+
+Daemons older than these limits would ignore them and issue full access, so
+`piquelctl` checks that the daemon supports them before asking for a limited
+token or login.
+
 ## Upgrading
 
 The first account created during setup receives `admin` on every application.
 Upgrading an existing installation gives every existing account `admin` on
 every application, so access is unchanged until you reduce it, including
-`apps:exec`. Existing tokens
-keep acting with their account's access. Invitations created before the
+`apps:exec`. Existing tokens keep acting with their account's full access, but
+like every token they can no longer create credentials. Invitations created before the
 upgrade create accounts without access; grant it after they register.
 
 Grants are evaluated on every request, so changes take effect immediately for

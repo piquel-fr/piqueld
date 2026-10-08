@@ -212,6 +212,16 @@ otherwise. Remote passkey login requires HTTPS even over Tailscale. See
 [authentication](authentication.md) for reverse-proxy setup, the private
 first-account link, invitations, and credential lifetimes.
 
+`auth.max_token_days` limits the lifetime of new API tokens. Unset (the default)
+allows any lifetime, including tokens that never expire; with a limit, tokens must
+expire within it. Existing tokens are unaffected. See
+[authorization](authorization.md#api-tokens).
+
+```toml
+[auth]
+max_token_days = 90
+```
+
 ## Credential files
 
 Settings that carry credentials, such as webhook `url`, also accept a `_file`

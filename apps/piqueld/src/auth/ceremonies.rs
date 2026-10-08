@@ -209,6 +209,7 @@ impl Auth {
             CredentialKind::Browser,
             "Browser",
             Some(now_secs() + 7 * DAY),
+            None,
         )
     }
     /// Starts a usernameless login: no allowed credentials are listed, so the

@@ -28,15 +28,16 @@ pub(super) fn can(permission: Permission) -> Signal<bool> {
     Signal::derive(move || grants.with(|grants| grants.require(permission).is_ok()))
 }
 
-/// Application name for an ID from the dashboard's application list, or the ID.
+/// Application name for an ID from the dashboard's application list, or the
+/// ID outside the dashboard (e.g. on the CLI approval page).
 fn application_name(id: &ApplicationId) -> String {
-    super::dashboard_context()
-        .signals
-        .applications
-        .with_untracked(|rows| {
-            rows.iter()
-                .find(|row| row.application.id == *id)
-                .map(|row| row.application.name.to_string())
+    use_context::<super::DashboardContext>()
+        .and_then(|context| {
+            context.signals.applications.with_untracked(|rows| {
+                rows.iter()
+                    .find(|row| row.application.id == *id)
+                    .map(|row| row.application.name.to_string())
+            })
         })
         .unwrap_or_else(|| id.to_string())
 }
@@ -88,9 +89,15 @@ fn build(permissions: &BTreeSet<Permission>, scope: &Scope) -> Grants {
 }
 
 /// Edits grants into `value`, starting from `initial`. `value` keeps
-/// `initial` until the selection changes.
+/// `initial` until the selection changes. With `limit`, the result is
+/// clamped to it, e.g. a token to its owner's access, and the effective
+/// selection is shown.
 #[component]
-pub(super) fn GrantEditor(initial: Grants, value: RwSignal<Grants>) -> impl IntoView {
+pub(super) fn GrantEditor(
+    initial: Grants,
+    value: RwSignal<Grants>,
+    #[prop(optional)] limit: Option<Grants>,
+) -> impl IntoView {
     let list = initial.to_list();
     let scopes: BTreeSet<_> = list
         .iter()
@@ -115,11 +122,16 @@ pub(super) fn GrantEditor(initial: Grants, value: RwSignal<Grants>) -> impl Into
             Scope::Only(applications.get())
         }
     };
-    value.set(initial);
+    let clamped = limit.is_some();
+    let clamp = move |grants: Grants| match &limit {
+        Some(limit) => grants.intersection(limit),
+        None => grants,
+    };
+    value.set(clamp(initial));
     Effect::new(move |previous: Option<()>| {
-        let grants = build(&permissions.get(), &scope());
+        let selected = build(&permissions.get(), &scope());
         if previous.is_some() {
-            value.set(grants);
+            value.set(clamp(selected));
         }
     });
     let rows = super::dashboard_context().signals.applications;
@@ -130,6 +142,15 @@ pub(super) fn GrantEditor(initial: Grants, value: RwSignal<Grants>) -> impl Into
     };
     view! {
         <div class="stack-sm">
+            {clamped
+                .then(|| {
+                    view! {
+                        <div class="field">
+                            <span>"Effective access"</span>
+                            {move || summary(&value.get())}
+                        </div>
+                    }
+                })}
             {mixed
                 .then(|| {
                     notice(

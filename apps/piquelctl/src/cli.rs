@@ -71,7 +71,11 @@ pub(crate) struct AuthArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// Sign in with a passkey through the browser (also works over SSH).
-    Login,
+    /// Grant options limit the session; `--app` takes application IDs here.
+    Login {
+        #[command(flatten)]
+        limit: crate::accounts::GrantArgs,
+    },
     /// Revoke the current credential and remove its local copy.
     Logout,
     /// Show the authenticated account and what the current credential may do.
@@ -80,6 +84,11 @@ pub(crate) enum Command {
     Account {
         #[command(subcommand)]
         command: crate::accounts::AccountCommand,
+    },
+    /// Create, list, and revoke API tokens for your account.
+    Token {
+        #[command(subcommand)]
+        command: crate::accounts::TokenCommand,
     },
     /// Print the first-account setup link (Unix socket only).
     SetupLink {

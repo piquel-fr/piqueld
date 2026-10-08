@@ -5159,13 +5159,17 @@ impl Client {
     /*Starts a device sign-in for a command-line client
 
     Public. Returns a device code to poll with and a user code to approve in a
-    signed-in browser. Rate limited per client address (429 with `Retry-After`).
+    signed-in browser. A JSON body, which may be omitted, limits the issued session to
+    `grants`, which the approver must hold, and is echoed back so clients can
+    tell the limit applies. Pending logins are kept in memory, so bodies over
+    16 KiB answer 413. Rate limited per client address (429 with `Retry-After`).
 
     Sends a `POST` request to `/api/v1/auth/device/start`
 
     */
     pub async fn auth_device_start<'a>(
         &'a self,
+        body: &'a piqueld_core::auth::DeviceStartRequest,
     ) -> Result<ResponseValue<piqueld_core::auth::DeviceStart>, Error<piqueld_core::api::ErrorBody>>
     {
         let url = format!("{}/api/v1/auth/device/start", self.baseurl,);
@@ -5182,6 +5186,7 @@ impl Client {
                 ::reqwest::header::ACCEPT,
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
+            .json(&body)
             .headers(header_map)
             .build()?;
         let info = OperationInfo {
@@ -5194,6 +5199,9 @@ impl Client {
         match response.status().as_u16() {
             200u16 => crate::client::decode_response(response).await,
             403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             _ => Err(Error::UnexpectedResponse(response)),

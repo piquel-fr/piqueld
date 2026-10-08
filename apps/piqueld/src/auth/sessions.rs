@@ -1,6 +1,6 @@
 //! Durable opaque sessions and short-lived, explicitly approved device logins.
 use super::{Auth, AuthError, CredentialKind, DAY, MAX_PENDING, Result, now_secs};
-use piqueld_core::access::Grants;
+use piqueld_core::access::{Denied, Grants};
 use piqueld_core::auth::{DeviceRequest, DeviceStart, DeviceToken, User};
 use std::collections::HashMap;
 
@@ -14,6 +14,9 @@ pub struct Identity {
     pub credential_id: String,
     /// Effective grants, read when the request was authenticated.
     pub grants: Grants,
+    /// Whether the credential is limited to its own grants, like an API
+    /// token; such credentials cannot create credentials.
+    pub scoped: bool,
 }
 
 impl Identity {
@@ -37,14 +40,20 @@ pub(super) struct Device {
     pub(super) next_poll: i64,
     /// Credential ID of the approving session; the issued token belongs to its owner.
     approved_by: Option<String>,
+    /// Grants the issued CLI session is limited to; `None` for the approver's
+    /// full access.
+    grants: Option<Grants>,
 }
 impl Auth {
     /// Resolves a bearer or cookie secret to its live credential and owner.
     ///
-    /// Secrets that are not 43 characters are rejected without a database lookup.
+    /// Secrets that are neither 43 characters (issued before the prefix) nor
+    /// `pqd_` followed by 43 are rejected without a database lookup.
     /// The credential's last-used time is refreshed at most once per minute.
     pub(crate) async fn authenticate(&self, secret: &str) -> Result<Identity> {
-        if secret.len() != 43 {
+        let prefixed = secret.starts_with(super::CREDENTIAL_PREFIX)
+            && secret.len() == super::CREDENTIAL_PREFIX.len() + 43;
+        if secret.len() != 43 && !prefixed {
             return Err(AuthError::Unauthorized);
         }
         let owner = self
@@ -64,6 +73,7 @@ impl Auth {
             user: owner.user,
             credential_id: owner.credential_id,
             grants: owner.grants,
+            scoped: owner.scoped,
         })
     }
     /// Revokes the credential used for the current request.
@@ -78,10 +88,12 @@ impl Auth {
     ///
     /// Returns a secret device code for the CLI to poll with and a unique,
     /// unambiguous user code (no `I`, `O`, `0`, or `1`) for the user to approve in
-    /// the dashboard. Only the device code's hash is kept.
+    /// the dashboard. Only the device code's hash is kept. With `grants`, the
+    /// issued session is limited to them.
     pub(crate) async fn device_start(
         &self,
         requester: Option<std::net::IpAddr>,
+        grants: Option<Grants>,
     ) -> Result<DeviceStart> {
         let mut devices = self.0.devices.lock().await;
         devices.retain(|_, device| device.expires > now_secs());
@@ -112,6 +124,7 @@ impl Auth {
                 expires: now + 600,
                 next_poll: 0,
                 approved_by: None,
+                grants: grants.clone(),
             },
         );
         Ok(DeviceStart {
@@ -121,6 +134,7 @@ impl Auth {
             expires_in: 600,
             interval: 5,
             requester: requester.map(|address| address.to_string()),
+            grants,
         })
     }
     /// Finds a live, unapproved request by the code the user typed.
@@ -148,12 +162,21 @@ impl Auth {
             requester: device.requester.map(|address| address.to_string()),
             age: u32::try_from(now - device.created).unwrap_or(0),
             expires_in: u32::try_from(device.expires - now).unwrap_or(0),
+            grants: device.grants.clone(),
         })
     }
-    /// Marks a pending device login as approved by the caller's credential.
+    /// Marks a pending device login as approved by the caller's credential,
+    /// which must have its account's full access and hold any requested
+    /// grants. Both are checked again when the session is issued.
     pub(crate) async fn device_approve(&self, code: &str, identity: &Identity) -> Result<()> {
+        if identity.scoped {
+            return Err(Denied::Scoped.into());
+        }
         let mut devices = self.0.devices.lock().await;
         let device = Self::pending_device(&mut devices, code)?;
+        if let Some(grants) = &device.grants {
+            identity.grants.may_grant(grants)?;
+        }
         device.approved_by = Some(identity.credential_id.clone());
         tracing::info!(
             user_id = %identity.user.id,
@@ -195,12 +218,20 @@ impl Auth {
                 user: None,
             });
         };
-        let (token, credential) =
-            Self::new_credential(CredentialKind::Cli, "piquelctl", Some(now + 30 * DAY))?;
+        let grants = device.grants.clone();
+        let (token, credential) = Self::new_credential(
+            CredentialKind::Cli,
+            "piquelctl",
+            Some(now + 30 * DAY),
+            grants.as_ref(),
+        )?;
+        let approver = crate::store::Caller {
+            credential_id: &approved_by,
+        };
         let user = self
             .0
             .store
-            .issue_for_credential_owner(&approved_by, &credential)
+            .issue_for_credential_owner(approver, &credential)
             .await?
             .ok_or(AuthError::Unauthorized)?;
         devices.remove(&key);

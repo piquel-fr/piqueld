@@ -102,7 +102,7 @@ services.piqueld.settings.tailscale = {
 [the tailnet node](configuration.md#tailnet-node) for details.
 
 `settings` declares typed options for `server.listen_mode`, `server.port`,
-`server.allowed_hosts`, `auth.public_url`, `tailscale.enabled`,
+`server.allowed_hosts`, `auth.public_url`, `auth.max_token_days`, `tailscale.enabled`,
 `tailscale.hostname`, `tailscale.auth_key_file`, `docker.socket`,
 `docker.auto_initialize_swarm`, `ingress.enabled`, `ingress.acme.directory`,
 `ingress.acme.email`, `dns.providers`, all three `reconciliation`

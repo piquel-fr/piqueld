@@ -114,6 +114,12 @@ impl DaemonConfig {
             crate::auth::Auth::validate_origin(public_url)
                 .map_err(|error| ConfigError::Invalid(error.to_string()))?;
         }
+        if self.auth.max_token_days == Some(0) {
+            return Err(ConfigError::Invalid(
+                "auth.max_token_days must be at least 1; omit it to allow tokens without expiry"
+                    .into(),
+            ));
+        }
         self.tailscale.validate()?;
         self.ingress.acme.validate()?;
         absolute_file("docker.socket", &self.docker.socket)?;
@@ -162,13 +168,16 @@ impl DaemonConfig {
     }
 }
 
-/// Canonical website origin.
+/// Canonical website origin and credential limits.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct AuthConfig {
     /// HTTPS origin, or HTTP localhost for development. Defaults to the
     /// tailnet node's HTTPS URL when it is enabled, otherwise localhost.
     pub public_url: Option<String>,
+    /// Longest lifetime of new API tokens in days; unset allows tokens that
+    /// never expire.
+    pub max_token_days: Option<u32>,
 }
 
 impl DaemonConfig {
@@ -610,25 +619,6 @@ impl DaemonConfig {
                     ),
                 ],
             ),
-            (
-                "Retention",
-                vec![
-                    ("Deployment history", "Until application deletion".into()),
-                    (
-                        "Other finished operations (days)",
-                        self.retention.finished_operation_days.to_string(),
-                    ),
-                    ("Events (days)", self.retention.event_days.to_string()),
-                    (
-                        "Build output (days)",
-                        self.build_history.log_retention_days.to_string(),
-                    ),
-                    (
-                        "Build output limit (bytes)",
-                        self.build_history.log_max_bytes.to_string(),
-                    ),
-                ],
-            ),
         ]
         .into_iter()
         .map(|(group, values)| {
@@ -641,10 +631,43 @@ impl DaemonConfig {
             )
         })
         .collect();
+        groups.insert("Retention".into(), self.retention_view());
+        groups.insert("Authentication".into(), self.auth_view());
         groups.insert("Tailscale".into(), self.tailscale_view());
         groups.extend(self.dns_view().map(|view| ("DNS providers".into(), view)));
         groups.insert("Observability".into(), self.observability_view());
         piqueld_core::api::HostConfiguration { groups }
+    }
+    /// Builds the `Retention` group.
+    fn retention_view(&self) -> std::collections::BTreeMap<String, String> {
+        let (retention, builds) = (&self.retention, &self.build_history);
+        std::collections::BTreeMap::from([
+            (
+                "Deployment history".into(),
+                "Until application deletion".into(),
+            ),
+            (
+                "Other finished operations (days)".into(),
+                retention.finished_operation_days.to_string(),
+            ),
+            ("Events (days)".into(), retention.event_days.to_string()),
+            (
+                "Build output (days)".into(),
+                builds.log_retention_days.to_string(),
+            ),
+            (
+                "Build output limit (bytes)".into(),
+                builds.log_max_bytes.to_string(),
+            ),
+        ])
+    }
+    /// Builds the `Authentication` group.
+    fn auth_view(&self) -> std::collections::BTreeMap<String, String> {
+        let days = self.auth.max_token_days;
+        std::collections::BTreeMap::from([(
+            "Longest token lifetime (days)".into(),
+            days.map_or_else(|| "unlimited".into(), |days| days.to_string()),
+        )])
     }
     /// Builds the `Tailscale` group. The auth key appears only as its file.
     fn tailscale_view(&self) -> std::collections::BTreeMap<String, String> {

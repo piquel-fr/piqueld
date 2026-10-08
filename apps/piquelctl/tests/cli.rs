@@ -62,6 +62,16 @@ impl Reply {
         }
     }
 
+    /// Replies with `data` as the whole body, as authentication endpoints do.
+    fn bare(data: &Value) -> Self {
+        Self {
+            status: "200 OK",
+            content_type: "application/json",
+            body: serde_json::to_vec(data).expect("JSON response"),
+            drop_connection: false,
+        }
+    }
+
     fn accepted(data: Value) -> Self {
         let data = serde_json::to_value(data).expect("JSON value");
         Self {
@@ -2363,4 +2373,57 @@ fn plan_compares_with_the_named_environment() {
         "app-notes-01"
     );
     let _ = server.finish();
+}
+
+/// Daemons older than limited credentials ignore requested grants and issue
+/// the account's full access, so the CLI refuses before asking them for any.
+#[test]
+fn limited_credentials_are_never_requested_from_older_daemons() {
+    let server = start_server(false, 3, |request| {
+        match (request.method.as_str(), request.path.as_str()) {
+            // An older session has no `scoped` field.
+            ("GET", "/api/v1/auth/me") => {
+                let user = json!({"id": "alice", "username": "alice", "display_name": ""});
+                Reply::bare(&json!({"user": user, "grants": [{"permission": "admin"}]}))
+            }
+            ("GET", "/api/v1/auth/status") => Reply::bare(&json!({
+                "initialized": true,
+                "public_url": "http://localhost:7845"
+            })),
+            // An older daemon ignores the body and echoes no grants.
+            ("POST", "/api/v1/auth/device/start") => Reply::bare(&json!({
+                "device_code": "device",
+                "user_code": "ABCD-EFGH",
+                "verification_uri": "http://localhost:7845/dashboard/auth#device",
+                "expires_in": 600,
+                "interval": 5,
+                "requester": null
+            })),
+            other => panic!("unexpected request {other:?}"),
+        }
+    });
+    let token = run(
+        &server,
+        &["token", "create", "ci", "--permission", "apps:read"],
+    );
+    assert!(!token.status.success());
+    let stderr = String::from_utf8_lossy(&token.stderr);
+    assert!(stderr.contains("predates limited tokens"), "{stderr}");
+    let login = run(&server, &["login", "--permission", "apps:read"]);
+    assert!(!login.status.success());
+    let stderr = String::from_utf8_lossy(&login.stderr);
+    assert!(stderr.contains("predates limited logins"), "{stderr}");
+    let paths: Vec<_> = server
+        .finish()
+        .into_iter()
+        .map(|request| request.path)
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "/api/v1/auth/me",
+            "/api/v1/auth/status",
+            "/api/v1/auth/device/start"
+        ]
+    );
 }

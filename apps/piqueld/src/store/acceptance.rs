@@ -41,7 +41,8 @@ impl Store {
     /// 3. With `force`, drops the generation and identity preconditions.
     /// 4. Executes the mutation against the current application or environment,
     ///    refusing manifest changes to repository-managed applications, and
-    ///    gives an account that created an application its matching grants there.
+    ///    gives an account that created an application through an unscoped
+    ///    credential its matching grants there.
     /// 5. Stores the replay receipt for 24 hours and commits through hostname
     ///    reservation checks of every affected environment.
     ///
@@ -59,7 +60,7 @@ impl Store {
         let fingerprint = Self::mutation_fingerprint(&mutation, expected_generation, force)?;
         let legacy = Self::legacy_fingerprint(&mutation, expected_generation, force)?;
         let caller = actor.load(&mut tx).await?;
-        let owner = caller.as_ref().map(|(user_id, _)| user_id.as_str());
+        let owner = caller.as_ref().map(|authority| authority.user_id.as_str());
         let replay = Self::replay_on(
             &mut tx,
             request_id,
@@ -70,8 +71,9 @@ impl Store {
         .await;
         let replaying = matches!(replay, Ok(Some(_)));
         let creating = match &caller {
-            Some((_, grants)) => {
-                Self::authorize_mutation_on(&mut tx, grants, &mutation, replaying).await?
+            Some(authority) => {
+                Self::authorize_mutation_on(&mut tx, &authority.grants, &mutation, replaying)
+                    .await?
             }
             None => false,
         };
@@ -90,15 +92,19 @@ impl Store {
             }
         }
         let accepted = Self::execute_mutation(&mut tx, mutation, expected_generation, now).await?;
+        // Scoped credentials hand out no lasting access, so an application
+        // they create gives their account no creator grants.
         if creating
-            && let Some((user_id, grants)) = &caller
+            && let Some(authority) = caller.as_ref().filter(|authority| !authority.scoped)
             && let MutationResponse::Saved(saved) = &accepted.response
         {
             let id =
                 ApplicationId::parse(saved.application_id.as_str()).map_err(StoreError::corrupt)?;
-            let creator = grants.for_created_application(&id);
+            let creator = authority.grants.for_created_application(&id);
             if !creator.is_empty() {
-                Holder::User(user_id).extend(&mut tx, &creator).await?;
+                Holder::User(&authority.user_id)
+                    .extend(&mut tx, &creator)
+                    .await?;
             }
         }
         if let Some(request_id) = request_id {
