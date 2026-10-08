@@ -362,10 +362,6 @@ impl Audit {
             .map(|(_, id)| id.clone())
     }
 
-    /// Records the request when it was refused, wrote state, signed someone
-    /// in, ran a command, or read sensitive data (logs, configuration,
-    /// manifests, the account directory), and counts refusals. Recording happens in the background
-    /// (see `ApplicationService::record_audit`); the response never waits.
     /// The request's ID, matching `x-request-id` and daemon logs.
     pub(super) fn request_id(&self) -> Option<&str> {
         self.request_id.as_deref()
@@ -390,6 +386,11 @@ impl Audit {
         self.record(state, answer);
     }
 
+    /// Records the request when it was refused, wrote state, signed someone
+    /// in, ran a command, or read sensitive data (logs, the daemon
+    /// configuration, manifest downloads, the account directory), and counts
+    /// refusals. Recording happens in the background (see
+    /// `ApplicationService::record_audit`); the response never waits.
     fn record(self, state: &super::ApiState, answer: Answer) {
         let Answer {
             tailnet,

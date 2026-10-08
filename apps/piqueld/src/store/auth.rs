@@ -16,7 +16,9 @@ fn binding(stored: Option<String>) -> Result<Option<TailnetBinding>, StoreError>
     stored
         .map(TailnetBinding::try_from)
         .transpose()
-        .map_err(|_| StoreError::Corrupt)
+        .map_err(|reason| {
+            StoreError::CorruptSource(format!("auth_credentials.tailnet: {reason}").into())
+        })
 }
 use sqlx::{Sqlite, SqliteConnection, query::Query, sqlite::SqliteArguments};
 use std::fmt;
