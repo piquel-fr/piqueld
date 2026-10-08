@@ -4,6 +4,7 @@ mod environments;
 mod jobs;
 mod logs;
 mod navigation;
+mod releases;
 mod routes;
 mod secrets;
 mod services;
@@ -35,7 +36,7 @@ use secrets::{EnvironmentSecrets, SecretFileSettings};
 use settings::{MetadataSettings, NewService, RepositorySettings, VolumeSettings};
 use std::collections::BTreeSet;
 
-const APPLICATION_TABS: [&str; 11] = [
+const APPLICATION_TABS: [&str; 12] = [
     "Overview",
     "Environments",
     "Services",
@@ -45,6 +46,7 @@ const APPLICATION_TABS: [&str; 11] = [
     "Volumes",
     "Jobs",
     "Secrets",
+    "Releases",
     "Builds",
     "Events",
 ];
@@ -71,10 +73,13 @@ impl Page {
         }
     }
 
-    /// The initial tab: `?deployment=` opens deployments, `?tab=` names a tab.
+    /// The initial tab: `?deployment=` opens deployments, `?release=`
+    /// releases, and `?tab=` names a tab.
     fn initial_tab(&self, query: &leptos_router::params::ParamsMap) -> &'static str {
         let requested = if query.get("deployment").is_some() {
             Some("deployments".to_owned())
+        } else if query.get("release").is_some() {
+            Some("releases".to_owned())
         } else {
             query.get("tab")
         };
@@ -668,6 +673,9 @@ fn ApplicationSections() -> impl IntoView {
             <environments::EnvironmentList />
         </div>
         <ApplicationSettings />
+        <Show when={move || context.tab.get() == "Releases"}>
+            <releases::ReleaseHistory application={context.id()} />
+        </Show>
         <Show when={move || context.tab.get() == "Builds"}>
             <super::builds::BuildHistory application={context.id()} />
         </Show>

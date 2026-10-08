@@ -20,11 +20,13 @@ pub use names::{
 pub mod operation;
 pub mod planner;
 mod preview;
+pub mod release;
+pub use release::{BuildFingerprint, BuildInputs, Release};
 pub mod resource;
 
 pub use identity::{
-    ApplicationId, ApplicationIdError, EnvironmentId, EnvironmentIdError, ResourceKind,
-    docker_resource_name, docker_resource_readable_prefix,
+    ApplicationId, ApplicationIdError, EnvironmentId, EnvironmentIdError, ReleaseId,
+    ReleaseIdError, ResourceKind, docker_resource_name, docker_resource_readable_prefix,
 };
 pub use manifest::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationSpec, HealthCheck, Metadata, Mount,
@@ -40,8 +42,8 @@ pub use resource::{
     DesiredService, DesiredVolume, InstanceId, InstanceIdError, ObservedApplication,
     ObservedNetwork, ObservedService, ObservedTask, ObservedVolume, Ownership, OwnershipState,
     ResolutionRequirement, ResolutionSet, ResolvedApplication, ResolvedSource, Sha256Digest,
-    Sha256DigestError, TaskDiagnostic, TaskState, compile_application, image_repository,
-    preview_resolution, valid_logical_name,
+    Sha256DigestError, TaskDiagnostic, TaskState, compile_application, compile_release,
+    image_repository, preview_resolution, valid_logical_name,
 };
 
 pub use operation::{ApplicationState, Operation, OperationKind, OperationState};

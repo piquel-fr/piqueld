@@ -60,6 +60,16 @@ impl EnvironmentSource {
         }
     }
 
+    /// Whether a successful preparation records a release. Only environments
+    /// that build their own source do; previews will not, since they are
+    /// never promoted.
+    #[must_use]
+    pub const fn records_releases(&self) -> bool {
+        match self {
+            Self::Saved | Self::Branch(_) => true,
+        }
+    }
+
     /// The branch this environment follows, if repository-backed.
     #[must_use]
     pub const fn branch(&self) -> Option<&TrackedBranch> {

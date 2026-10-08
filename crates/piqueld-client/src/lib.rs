@@ -42,7 +42,7 @@ mod secrets;
 pub use applications::{
     AcceptedOperation, ApplicationSummary, ApplicationView, ApplyApplicationRequest,
     DeletedApplication, DeploymentView, DiagnosticView, ListApplicationsOptions,
-    MAX_APPLICATION_PAGE_SIZE, ObservedApplicationView, ObservedServiceView, PlanView,
+    MAX_APPLICATION_PAGE_SIZE, ObservedApplicationView, ObservedServiceView, PlanView, ReleaseView,
     RenameApplicationRequest, RenamedApplication, SavedApplication,
 };
 pub use client::Client;
@@ -60,8 +60,9 @@ pub use piqueld_core::manifest::{
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{
-    ApplicationId, ApplicationName, EnvironmentId, ServiceName, TomlDiagnostic,
-    ValidatedApplication, ValidationError, ValidationErrors,
+    ApplicationId, ApplicationName, BuildFingerprint, BuildInputs, EnvironmentId, Release,
+    ReleaseId, ResolvedSource, ServiceName, TomlDiagnostic, ValidatedApplication, ValidationError,
+    ValidationErrors,
 };
 pub use piqueld_core::{
     ApplicationState, Convergence, Event, Operation, OperationKind, OperationState,

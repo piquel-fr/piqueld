@@ -48,6 +48,7 @@ piquelctl app reconcile <name-or-id>
 piquelctl app deploy <name-or-id>
 piquelctl app rename <name-or-id> <new-name>
 piquelctl app secret <name-or-id> list|set|access|delete
+piquelctl app releases <name-or-id> [--cursor <cursor>]
 piquelctl env list <app>
 piquelctl env create <app> <name> [--branch <branch> [--commit <sha>]]
 piquelctl env branch <app> <env> <branch> [--commit <sha>]
@@ -96,6 +97,17 @@ or the new name, since renaming would change which block applies: remove the
 block, rename, then add it back under the new name. `env show` lists each
 variable's value in that manifest, or that it has none, and says when a
 repository-backed environment has fetched nothing yet.
+
+Each successful deployment of an environment records an immutable **release**:
+the manifest it deployed (and its commit when repository-backed), each
+service's image (a registry digest, or the local image ID and commit of a Git
+build), and the build inputs those images came from. Releases belong to the
+application, so deleting an environment keeps them, and environments that
+prepared the same content share one release. `app releases` lists them newest
+first, twenty per page, with each service's image and provenance; `--json`
+adds the manifest and build inputs. `env show` reports the release the
+environment's current target runs (`none` for deployments prepared before
+releases existed).
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit
 HTTP or HTTPS origin such as `http://127.0.0.1:7845/`; the two transport options are
@@ -146,6 +158,7 @@ written to stderr, so stdout remains valid JSON.
 | `app plan` | `PlanView` |
 | `app create` / `app rename` / field edits | `SavedApplication`; `--deploy` uses the same output as `app apply --deploy` |
 | `app manifest` | Saved TOML as a JSON string |
+| `app releases` | `{ "items": [ReleaseView], "next_cursor": string or null }` |
 | `app apply` | `SavedApplication` with null `operation_id` |
 | `app apply --deploy --no-wait` | `SavedApplication` with a deployment operation ID |
 | `app apply --deploy` | `{ "saved": SavedApplication, "outcome": OperationState, "operation": Operation }` |

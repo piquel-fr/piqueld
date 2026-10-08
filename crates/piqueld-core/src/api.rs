@@ -8,8 +8,8 @@ use crate::manifest::{
     VariableValue,
 };
 use crate::{
-    ApplicationId, ApplicationState, Convergence, EnvironmentId, EnvironmentName,
-    EnvironmentSource, NormalizedApplication, Operation, Plan,
+    ApplicationId, ApplicationState, BuildFingerprint, Convergence, EnvironmentId, EnvironmentName,
+    EnvironmentSource, NormalizedApplication, Operation, Plan, Release, ReleaseId, Sha256Digest,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -324,6 +324,10 @@ pub struct EnvironmentDetailView {
     pub observed: ObservedApplicationView,
     /// Most recent durable operation, when one exists.
     pub latest_operation: Option<Operation>,
+    /// The release the current runtime target runs; absent before a
+    /// deployment was prepared, and for deployments that recorded none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<ReleaseId>,
     /// Bounded diagnostics from status, runtime, and the latest operation.
     pub diagnostics: Vec<DiagnosticView>,
 }
@@ -427,12 +431,35 @@ pub struct DeploymentView {
     /// deployment, e.g. `manifest_connection_ignored`.
     #[serde(default)]
     pub warnings: Vec<DiagnosticView>,
+    /// The release its prepared target runs; absent until prepared, and for
+    /// deployments that recorded none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<ReleaseId>,
     /// First successful convergence, retained during later drift repair.
     pub succeeded_at_ms: Option<i64>,
     /// Whether this is the currently promoted runtime target.
     pub current_target: bool,
     /// Whether this is the most recent deployment to converge successfully.
     pub last_successful: bool,
+}
+
+/// An immutable release of an application, recorded by a successful
+/// preparation in one of its tracking environments. Environments whose
+/// deployments prepared the same content share it.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct ReleaseView {
+    /// Stable release identifier.
+    pub id: ReleaseId,
+    /// Owning application.
+    pub application_id: ApplicationId,
+    /// Hash of its content, unique within the application.
+    pub content_hash: Sha256Digest,
+    /// When it was first recorded, in Unix milliseconds.
+    pub created_at_ms: i64,
+    /// Its manifest, commit, and each service's provenance and image.
+    pub release: Release,
+    /// The build inputs each service's image was prepared from.
+    pub fingerprint: BuildFingerprint,
 }
 
 /// Effective host settings loaded by the daemon; no mutation endpoint exists.

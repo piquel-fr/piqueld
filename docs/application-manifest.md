@@ -187,6 +187,15 @@ secret mount `name`, and the build inputs `image`, `dockerfile`, `context`, buil
 fields, mount and secret targets, `spec.secrets` declarations, Git repository
 settings and `spec.manifest`.
 
+The build inputs are baked into images, so each deployment's
+[release](piquelctl.md#commands) fingerprints their rendered values. Rendering a
+release for another environment reuses its images and requires every build
+input to render the same there; a build argument such as
+`VITE_ORIGIN = "https://${{ vars.domain }}"` makes the release incompatible
+(`release_incompatible`) with environments whose `domain` differs. Keep
+per-environment values in runtime fields, like `environment`, when the images
+should be shared.
+
 A field that is exactly one reference, like `replicas = "${{ vars.web_replicas }}"`,
 takes the variable's own value, which must have the field's type: strings are
 never parsed into numbers. Any other text containing a reference renders to a

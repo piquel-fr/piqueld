@@ -5,8 +5,8 @@ use piqueld_client::{
     AcceptedOperation, ActionReason, ActionRisk, ApplicationLogs, ApplicationSummary,
     ApplicationView, BuildLogPage, BuildRecord, DeletedApplication, DnsStatus,
     EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event,
-    MountedSecret, Operation, OperationState, Page, PlanView, SavedApplication, SecretMetadata,
-    Source, StoredSecret, SystemStatus,
+    MountedSecret, Operation, OperationState, Page, PlanView, ReleaseView, ResolvedSource,
+    SavedApplication, SecretMetadata, Source, StoredSecret, SystemStatus,
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
 use serde::Serialize;
@@ -417,6 +417,13 @@ report!(EnvironmentShowReport<'_>, self, out, {
     if let (EnvironmentSource::Branch(_), None) = (&environment.source, manifest) {
         out.label("Manifest", "not fetched yet; deploy to fetch it")?;
     }
+    out.label(
+        "Release",
+        self.detail
+            .release
+            .as_ref()
+            .map_or("none", piqueld_client::ReleaseId::as_str),
+    )?;
     out.label("Configuration revision", application.generation)?;
     out.label(
         "Resolved revision",
@@ -471,6 +478,56 @@ report!(BuildLogPage, self, out, {
         .collect::<String>();
     out.log_text(&piqueld_client::LogRecord::clean_message(&text))
 });
+
+// Each release with where its manifest came from and each service's image.
+report!(Page<ReleaseView>, self, out, {
+    if self.items.is_empty() {
+        out.line("No releases.")?;
+    }
+    for release in &self.items {
+        out.line(format_args!(
+            "{}  {}  created {}",
+            release.id,
+            release.release.commit().map_or_else(
+                || "saved manifest".to_owned(),
+                |commit| format!("commit {commit}")
+            ),
+            release.created_at_ms
+        ))?;
+        for (service, source) in release.release.sources() {
+            out.label(
+                &format!("  {service}"),
+                match source {
+                    ResolvedSource::Image {
+                        requested,
+                        digest_reference,
+                    } => format!("{digest_reference} (pulled {requested})"),
+                    ResolvedSource::Git {
+                        requested,
+                        commit,
+                        image_id,
+                        ..
+                    } => format!(
+                        "{image_id} (built from {} at {commit})",
+                        repository(requested)
+                    ),
+                },
+            )?;
+        }
+    }
+    if let Some(cursor) = &self.next_cursor {
+        out.label("Next cursor", cursor)?;
+    }
+    Ok(())
+});
+
+/// The repository a Git source builds from.
+fn repository(source: &piqueld_client::ValidatedSource) -> String {
+    match source {
+        piqueld_client::ValidatedSource::Git { repository, .. } => repository.to_string(),
+        piqueld_client::ValidatedSource::Image { image } => image.clone(),
+    }
+}
 
 report!(Page<BuildRecord>, self, out, {
     for build in &self.items {

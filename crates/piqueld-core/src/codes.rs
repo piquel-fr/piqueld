@@ -137,6 +137,9 @@ pub const SECRET_NAME_CONFLICT: &str = "secret_name_conflict";
 pub const SOURCE_UNRESOLVED: &str = "source_unresolved";
 /// Resolved source does not immutably match the requested service source.
 pub const SOURCE_RESOLUTION_MISMATCH: &str = "source_resolution_mismatch";
+/// A release's manifest renders a build input differently for another
+/// environment than for the release, so its images do not apply there.
+pub const RELEASE_INCOMPATIBLE: &str = "release_incompatible";
 
 /// Same-name runtime resource is not owned by this application.
 pub const UNOWNED_NAME_COLLISION: &str = "unowned_name_collision";

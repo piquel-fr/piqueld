@@ -405,6 +405,7 @@ pub(super) fn merge_history(
 /// lazily the first time their tab is opened.
 #[component]
 pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
+    let application = editor().id();
     let initial = deployment.get_untracked();
     let op = initial.operation;
     let selected = leptos_router::hooks::use_query_map()
@@ -464,7 +465,20 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
                     tab.get() != "Details"
                 }}>
                     {move || {
-                        let op = deployment.get().operation;
+                        let DeploymentView { operation: op, release, .. } = deployment.get();
+                        let release = release
+                            .map(|release| {
+                                let href = format!(
+                                    "/dashboard/applications/{application}?release={release}",
+                                );
+                                view! {
+                                    <leptos_router::components::A href={href}>
+                                        <code>{release.to_string()}</code>
+                                    </leptos_router::components::A>
+                                }
+                                    .into_any()
+                            })
+                            .unwrap_or_else(|| "Not recorded".into_any());
                         view! {
                             <div class="stack-sm">
                                 <dl class="kv">
@@ -472,6 +486,8 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
                                     <dd>
                                         <code>{op.id}</code>
                                     </dd>
+                                    <dt>"Release"</dt>
+                                    <dd>{release}</dd>
                                     <dt>"Kind"</dt>
                                     <dd>{op.kind.as_str()}</dd>
                                     <dt>"Generation"</dt>

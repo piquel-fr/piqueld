@@ -68,11 +68,12 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/applications/{id}/environments` | Add an environment: `{ "name": "staging", "branch": "main", "commit": null, "expected_generation": 3 }`; `branch` defaults to the one `spec.manifest` names and requires a repository-backed application |
 | PUT | `/api/v1/environments/{id}/branch` | Follow another branch, or pin or unpin a commit, without redeploying: `{ "branch": "release", "commit": null, "expected_generation": 3 }` |
 | GET | `/api/v1/environments/{id}` | Environment metadata |
-| GET | `/api/v1/environments/{id}/detail` | Environment, application intent, resolved generation, observed runtime, operation, diagnostics |
+| GET | `/api/v1/environments/{id}/detail` | Environment, application intent, resolved generation, current release, observed runtime, operation, diagnostics |
 | GET | `/api/v1/environments/{id}/status` | Intent progress and separate runtime health |
 | POST | `/api/v1/environments/{id}/deploy` | Deploy the environment from its source with fresh source resolution; supersede pending work. `branch=NAME` or `commit=SHA` fetches a repository-backed manifest from that revision instead of the environment's branch, for this deployment only |
 | GET | `/api/v1/environments/{id}/deployments` | Deployment snapshots, newest first, three per page |
 | GET | `/api/v1/environments/{id}/deployments/{deployment}/attempts` | Retained outcomes, newest first, 100 per page |
+| GET | `/api/v1/applications/{id}/releases` | The application's releases, newest first, twenty per page |
 | POST | `/api/v1/environments/{id}/rename` | Rename an environment without redeployment: `{ "name": "...", "expected_generation": 3 }` |
 | DELETE | `/api/v1/environments/{id}` | Request deletion of one environment; no body |
 | POST | `/api/v1/environments/{id}/reconcile` | Retry the latest operation with its saved inputs once it has ended or failed; an operation still in progress is returned unchanged |
@@ -213,6 +214,33 @@ attempt outcomes remain indefinitely until environment deletion. The deployments
 response distinguishes `current_target`, `last_successful`, and mutable operation
 progress; last successful does not imply automatic rollback after a failed rollout.
 History endpoints accept `cursor` for subsequent pages.
+
+Each successful preparation in an environment that builds its own source (one
+deploying the saved manifest or following a branch) records an immutable
+release, and the deployment's `release` names it. A `ReleaseView` holds the
+captured manifest with references unresolved (`release.template`), the commit it
+was read from when repository-backed (`release.commit`), each service's
+provenance and image (`release.sources`: the registry digest of an image pulled
+by reference, or the commit and local image ID of a Git build), and
+`fingerprint`, each service's rendered build inputs by field: `source.image`,
+or `source.repository`, `source.commit`, `source.build.dockerfile`,
+`source.build.context`, `source.build.args.<NAME>`, and `source.build.target`.
+`content_hash` covers the manifest's specification, its commit, and every
+source; preparations of one application with the same hash share one release,
+so environments running the same content name the same release. Releases
+belong to the application: deleting an environment keeps them, and they are
+removed with the application. `EnvironmentDetailView.release` names the release
+the environment's current target runs. A recorded digest does not guarantee
+the image still exists on the host. Deployments prepared before releases
+existed record theirs when the daemon first starts after upgrading.
+
+A release can be rendered for another environment of its application without
+rebuilding: its own manifest renders with that environment's variables, and
+every build input must render exactly as in its fingerprint. Otherwise the
+release is incompatible there (`release_incompatible`, naming each field, e.g.
+`web.source.build.args.VITE_ORIGIN`), typically because a build argument bakes
+in one environment's domain. Promotion uses this; until then no endpoint
+deploys a release.
 
 Mutation endpoints accept an optional `Idempotency-Key` (1–128 ASCII letters,
 digits, `-`, `_`, `.`, or `:`). The CLI generates one UUID per command and reuses

@@ -131,6 +131,28 @@ fn detail_view(
                                 },
                             )}
                     </dd>
+                    <dt>"Release"</dt>
+                    <dd>
+                        {detail
+                            .release
+                            .as_ref()
+                            .map_or_else(
+                                || "None".into_any(),
+                                |release| {
+                                    let release = release.to_string();
+                                    let href = format!(
+                                        "/dashboard/applications/{}?release={release}",
+                                        app.application.id(),
+                                    );
+                                    view! {
+                                        <leptos_router::components::A href={href}>
+                                            <code>{release}</code>
+                                        </leptos_router::components::A>
+                                    }
+                                        .into_any()
+                                },
+                            )}
+                    </dd>
                     <dt>"Generation"</dt>
                     <dd>
                         {format!(

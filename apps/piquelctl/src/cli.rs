@@ -244,6 +244,15 @@ pub(crate) enum AppCommand {
         /// Application name or stable ID.
         name_or_id: String,
     },
+    /// List the application's immutable releases, newest first: what each
+    /// successful preparation in a tracking environment deployed.
+    Releases {
+        /// Application name or stable ID.
+        name_or_id: String,
+        /// Continue after a cursor returned by the previous page.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
 }
 
 #[derive(Debug, Args)]

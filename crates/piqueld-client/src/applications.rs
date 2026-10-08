@@ -1,7 +1,7 @@
 pub use piqueld_core::api::{
     AcceptedOperation, ApplicationSummary, ApplicationView, ApplyApplicationRequest,
     DeletedApplication, DeploymentView, DiagnosticView, MAX_APPLICATION_PAGE_SIZE,
-    ObservedApplicationView, ObservedServiceView, PlanView, RenameApplicationRequest,
+    ObservedApplicationView, ObservedServiceView, PlanView, ReleaseView, RenameApplicationRequest,
     RenamedApplication, SavedApplication,
 };
 
@@ -301,6 +301,19 @@ impl Client {
 }
 
 impl Client {
+    /// Lists an application's releases newest first, twenty per page.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn releases(
+        &self,
+        id: &str,
+        cursor: Option<&str>,
+    ) -> Result<Page<ReleaseView>, ClientError> {
+        generated_result(self.generated.list_releases(id, cursor).await)
+            .await
+            .map(|response| response.data)
+    }
+
     /// Downloads the saved application manifest as TOML.
     /// # Errors
     /// Returns transport, API, or UTF-8 decoding errors.

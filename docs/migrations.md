@@ -204,6 +204,16 @@ The encryption context binds a value to its owner, so on its first start with a
 usable master key the daemon re-encrypts moved values for their application in
 one transaction. Until then they remain readable in their former context.
 
+`0022_releases.sql` adds immutable releases. Each successful preparation in an
+environment that builds its own source records what it deployed: the captured
+manifest, the commit it was read from, and each service's source and image.
+Releases belong to the application, so deleting an environment keeps them;
+preparations with the same content hash share one. Deployments gain
+`release_id`. A release's content hash needs the daemon, so on its first start
+after upgrading it records releases for deployments already prepared, oldest
+first, sharing them the same way; deployments that never finished preparing
+have none.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

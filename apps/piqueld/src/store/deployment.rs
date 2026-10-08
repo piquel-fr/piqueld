@@ -15,6 +15,7 @@ struct DeploymentRow {
     variables_json: String,
     warnings_json: String,
     succeeded_at_ms: Option<i64>,
+    release_id: Option<String>,
 }
 
 /// A deployment's captured inputs.
@@ -149,7 +150,7 @@ impl Store {
     pub(crate) async fn deployment_snapshot(&self, id: &str) -> Result<Snapshot, StoreError> {
         sqlx::query_as!(
             DeploymentRow,
-            r#"SELECT id AS "id!",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms FROM deployments WHERE id=?1"#,
+            r#"SELECT id AS "id!",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id FROM deployments WHERE id=?1"#,
             id
         )
         .fetch_optional(&self.pool)
@@ -211,7 +212,7 @@ impl Store {
         let mut rows = if let Some(before) = before {
             sqlx::query_as!(
                 DeploymentRow,
-                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms FROM deployments
+                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id FROM deployments
                  WHERE environment_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
                 app_id,
                 before,
@@ -222,7 +223,7 @@ impl Store {
         } else {
             sqlx::query_as!(
                 DeploymentRow,
-                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms FROM deployments
+                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id FROM deployments
                  WHERE environment_id=?1 ORDER BY id DESC LIMIT ?2",
                 app_id,
                 limit_sql
@@ -241,6 +242,10 @@ impl Store {
         let mut items = Vec::with_capacity(rows.len());
         for row in rows {
             let snapshot = row.snapshot()?;
+            let release = row
+                .release_id
+                .map(|id| piqueld_core::ReleaseId::parse(id).map_err(StoreError::corrupt))
+                .transpose()?;
             let (application, variables) = snapshot.rendering.map_or_else(
                 || (None, BTreeMap::new()),
                 |rendering| (Some(rendering.application), rendering.values),
@@ -251,6 +256,7 @@ impl Store {
                 variables,
                 application,
                 warnings: snapshot.warnings,
+                release,
                 succeeded_at_ms: row.succeeded_at_ms,
                 current_target: current.as_ref() == Some(&row.id),
                 last_successful: successful.as_ref() == Some(&row.id),

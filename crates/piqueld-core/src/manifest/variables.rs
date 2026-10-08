@@ -498,7 +498,7 @@ pub(super) enum Slot<'a> {
 
 /// A type a [`Typed`] field holds, described in type errors instead of
 /// serde's message, which repeats the whole rendered value.
-pub(super) trait Expected: DeserializeOwned {
+pub(super) trait Expected: DeserializeOwned + Serialize {
     /// What the field accepts, e.g. `an integer from 0 to 65535`.
     const EXPECTED: &'static str;
 }
@@ -525,6 +525,8 @@ pub(super) trait TypedSlot {
     /// Replaces the value with `value` decoded as the field's type, or
     /// returns what the field accepts.
     fn set(&mut self, value: serde_json::Value) -> Result<(), &'static str>;
+    /// The literal value as JSON text, unless it references variables.
+    fn literal(&self) -> Option<String>;
 }
 
 impl<T: Expected> TypedSlot for Typed<T> {
@@ -539,6 +541,12 @@ impl<T: Expected> TypedSlot for Typed<T> {
         *self = Self::Literal(serde_json::from_value(value).map_err(|_| T::EXPECTED)?);
         Ok(())
     }
+
+    fn literal(&self) -> Option<String> {
+        Typed::literal(self).map(|value| {
+            serde_json::to_string(value).expect("manifest values serialize infallibly")
+        })
+    }
 }
 
 impl Slot<'_> {
@@ -547,6 +555,14 @@ impl Slot<'_> {
         match self {
             Self::Text(template) => Some(template),
             Self::Typed(typed) => typed.template(),
+        }
+    }
+
+    /// The value as text, unless it references variables.
+    fn literal(&self) -> Option<String> {
+        match self {
+            Self::Text(template) => template.as_literal(),
+            Self::Typed(typed) => typed.literal(),
         }
     }
 }
@@ -602,6 +618,54 @@ impl super::HealthCheck {
     }
 }
 
+impl super::Source {
+    /// Visits the build inputs that may reference variables; `base` is the
+    /// source's field path. Release fingerprints read the same list.
+    fn visit_values(&mut self, base: &str, visit: &mut impl FnMut(&str, Slot<'_>)) {
+        match self {
+            Self::Image { image } => visit(&format!("{base}.image"), Slot::Text(image)),
+            Self::Git {
+                build:
+                    super::Build::Docker {
+                        dockerfile,
+                        context,
+                        args,
+                        target,
+                    },
+                ..
+            } => {
+                let build = format!("{base}.build");
+                visit(&format!("{build}.dockerfile"), Slot::Text(dockerfile));
+                visit(&format!("{build}.context"), Slot::Text(context));
+                for (key, value) in args {
+                    visit(
+                        &format!("{build}.args.{}", path_key(key)),
+                        Slot::Text(value),
+                    );
+                }
+                if let Some(target) = target {
+                    visit(&format!("{build}.target"), Slot::Text(target));
+                }
+            }
+        }
+    }
+}
+
+impl super::ValidatedSource {
+    /// The rendered value of every build input [`super::Source`] lets
+    /// reference variables, keyed by field path from `source`, e.g.
+    /// `source.build.args.VITE_ORIGIN`.
+    pub(crate) fn rendered_inputs(&self) -> BTreeMap<String, String> {
+        let mut inputs = BTreeMap::new();
+        self.to_input().visit_values("source", &mut |path, slot| {
+            if let Some(value) = slot.literal() {
+                inputs.insert(path.to_owned(), value);
+            }
+        });
+        inputs
+    }
+}
+
 impl ApplicationSpec {
     /// Visits every value that may reference variables, with its field path.
     /// This is the one list of fields that accept `${{ }}`; any other string
@@ -609,34 +673,9 @@ impl ApplicationSpec {
     pub(super) fn visit_values(&mut self, visit: &mut impl FnMut(&str, Slot<'_>)) {
         for (index, service) in self.services.iter_mut().enumerate() {
             let base = format!("spec.services[{index}]");
-            match &mut service.source {
-                super::Source::Image { image } => {
-                    visit(&format!("{base}.source.image"), Slot::Text(image));
-                }
-                super::Source::Git {
-                    build:
-                        super::Build::Docker {
-                            dockerfile,
-                            context,
-                            args,
-                            target,
-                        },
-                    ..
-                } => {
-                    let build = format!("{base}.source.build");
-                    visit(&format!("{build}.dockerfile"), Slot::Text(dockerfile));
-                    visit(&format!("{build}.context"), Slot::Text(context));
-                    for (key, value) in args {
-                        visit(
-                            &format!("{build}.args.{}", path_key(key)),
-                            Slot::Text(value),
-                        );
-                    }
-                    if let Some(target) = target {
-                        visit(&format!("{build}.target"), Slot::Text(target));
-                    }
-                }
-            }
+            service
+                .source
+                .visit_values(&format!("{base}.source"), visit);
             visit(
                 &format!("{base}.replicas"),
                 Slot::Typed(&mut service.replicas),

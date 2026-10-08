@@ -61,6 +61,11 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::api::BuildRecord>>"
     },
     {
+      "schema": "Envelope_Page_ReleaseView",
+      "name": "EnvelopePageReleaseView",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::api::ReleaseView>>"
+    },
+    {
       "schema": "Envelope_Page_DeploymentView",
       "name": "EnvelopePageDeploymentView",
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::api::DeploymentView>>"

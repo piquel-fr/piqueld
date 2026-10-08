@@ -4,7 +4,9 @@ use super::{ApplicationError, ApplicationService};
 use crate::store::StoreError;
 use piqueld_core::{
     ApplicationId, EnvironmentId, Event, Operation,
-    api::{ApplicationLogs, BuildLogPage, BuildRecord, DeploymentView, LogStream, Page},
+    api::{
+        ApplicationLogs, BuildLogPage, BuildRecord, DeploymentView, LogStream, Page, ReleaseView,
+    },
 };
 
 /// Saved configuration rendered for download or export.
@@ -44,6 +46,17 @@ impl ApplicationService {
         cursor: Option<&str>,
     ) -> Result<Page<DeploymentView>, ApplicationError> {
         Ok(self.store.deployments(id, cursor, 3).await?)
+    }
+
+    /// Lists an application's releases, newest first, twenty per page.
+    /// # Errors
+    /// Returns pagination, absence, or storage errors.
+    pub async fn releases(
+        &self,
+        id: &ApplicationId,
+        cursor: Option<&str>,
+    ) -> Result<Page<ReleaseView>, ApplicationError> {
+        Ok(self.store.releases(id, cursor, 20).await?)
     }
 
     /// Lists retained attempts for a deployment owned by this environment.
