@@ -96,11 +96,24 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await page.getByRole('button', { name: 'New environment', exact: true }).click();
   const creator = page.getByRole('dialog', { name: 'Create environment' });
   await creator.getByLabel('Environment name', { exact: true }).fill('staging');
-  const conflict = page.waitForResponse(response => response.request().method() === 'POST' && /\/environments(?:\?|$)/.test(response.url()));
+  // Read the refusal as it passes through, since the browser need not keep
+  // its body once the dashboard has handled it.
+  let conflict: { status: number; body: unknown } | undefined;
+  const creation = /\/environments(?:\?|$)/;
+  await page.route(creation, async route => {
+    if (route.request().method() !== 'POST') {
+      return route.fallback();
+    }
+    const response = await route.fetch();
+    conflict = { status: response.status(), body: await response.json() };
+    await route.fulfill({ response });
+  });
   await creator.getByRole('button', { name: 'Create environment', exact: true }).click();
-  const response = await conflict;
-  expect(response.status()).toBe(409);
-  expect(await response.json()).toMatchObject({ code: 'hostname_conflict', details: { hostname: 'shop.example.com', environment: 'production' } });
+  await expect.poll(() => conflict).toMatchObject({
+    status: 409,
+    body: { code: 'hostname_conflict', details: { hostname: 'shop.example.com', environment: 'production' } },
+  });
+  await page.unroute(creation);
   await expect(creator).toContainText('is reserved by environment production of this application');
   await expect(creator).toContainText('give each environment its own hostname');
   await creator.getByRole('button', { name: 'Close dialog' }).click();
