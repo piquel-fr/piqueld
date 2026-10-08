@@ -377,10 +377,13 @@ impl Ingress {
                 stage = "run cloudflared for the Cloudflare Tunnel";
                 self.ensure_tunnel().await?;
             } else {
-                stage = "remove the Cloudflare Tunnel credentials";
-                self.remove_tunnel_credentials().await?;
                 stage = "stop the disabled Caddy gateway";
-                self.stop_gateway().await?;
+                // Each is attempted even if the other fails.
+                let stopped = self.stop_gateway().await;
+                let removed = self.remove_tunnel_credentials().await;
+                stopped?;
+                stage = "remove the Cloudflare Tunnel credentials";
+                removed?;
                 stage = "record withdrawn routes";
                 self.store.acknowledge_routes(&table).await?;
                 gateway = true;

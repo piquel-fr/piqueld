@@ -108,13 +108,14 @@ impl Ingress {
     }
 
     /// Ensures a running `cloudflared` matching the current spec. While the
-    /// tunnel is disabled, removes its credentials and a leftover container.
+    /// tunnel is disabled, removes a leftover container and its credentials.
     /// Runs after the gateway, whose edge network it joins.
     pub(super) async fn ensure_tunnel(&self) -> Result<()> {
         let name = self.tunnel_name();
         let Some(credentials) = &self.tunnel else {
-            self.remove_tunnel_credentials().await?;
-            return self.remove_stale_container(&name).await;
+            // Each is attempted even if the other fails.
+            let removed = self.remove_stale_container(&name).await;
+            return removed.and(self.remove_tunnel_credentials().await);
         };
         self.ensure_container(
             &name,

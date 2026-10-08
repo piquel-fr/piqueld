@@ -245,6 +245,42 @@ async fn disabled_ingress_removes_the_tunnel_credentials_even_if_docker_fails() 
 }
 
 #[tokio::test]
+async fn disabled_ingress_stops_containers_even_if_the_credentials_remain() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("docker.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let inspected = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let engine = axum::Router::new().fallback({
+        let inspected = Arc::clone(&inspected);
+        move |uri: axum::http::Uri| async move {
+            inspected.lock().unwrap().push(uri.path().to_owned());
+            axum::http::StatusCode::NOT_FOUND
+        }
+    });
+    let server = tokio::spawn(async move { axum::serve(listener, engine).await });
+    // A directory where the credentials file belongs cannot be removed.
+    std::fs::create_dir_all(directory.path().join("ingress/tunnel/credentials.json/x")).unwrap();
+    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+    let disabled = Ingress::new(false, &socket, directory.path(), store)
+        .unwrap()
+        .with_tunnel(&tunnel("c2VjcmV0"));
+    let error = disabled.synchronize().await.unwrap_err();
+    server.abort();
+    assert!(
+        format!("{error:#}").contains("remove the Cloudflare Tunnel credentials"),
+        "{error:#}"
+    );
+    let gateway = format!("/containers/{}/json", disabled.name);
+    assert!(
+        inspected
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|path| path.ends_with(&gateway))
+    );
+}
+
+#[tokio::test]
 #[ignore = "requires the isolated Docker harness with loopback test ports"]
 async fn ingress_caddy_tunnel() {
     use futures_util::FutureExt;
