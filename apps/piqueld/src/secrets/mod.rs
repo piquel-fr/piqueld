@@ -6,6 +6,7 @@ use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
     aead::{Aead, AeadCore, KeyInit, OsRng, Payload},
 };
+use piqueld_core::{ApplicationId, EnvironmentId};
 use std::{
     fs::File,
     io::{Read, Write},
@@ -39,6 +40,31 @@ impl KeyFailure {
             Self::NotPrivate => "Secret master key: not a private file owned by the daemon user",
             Self::InvalidLength => "Secret master key: invalid length",
             Self::AuthenticationFailed => "Secret master key: does not authenticate stored values",
+        }
+    }
+}
+
+/// What a ciphertext belongs to. Its encryption context binds the owner, so a
+/// value cannot be moved to another owner. A `production` environment shares
+/// its application's ID, so the two stores use distinct contexts.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SecretOwner<'a> {
+    /// An environment's generated secret.
+    Environment(&'a EnvironmentId),
+    /// A secret in an application's store.
+    Application(&'a ApplicationId),
+    /// The verifier proving the master key matches the database.
+    KeyVerifier,
+}
+
+impl<'a> SecretOwner<'a> {
+    /// Context version and owner ID. Environment and verifier contexts
+    /// predate application stores and are unchanged.
+    fn context(self) -> (&'static str, &'a str) {
+        match self {
+            Self::Environment(id) => ("piqueld-secret-v1", id.as_str()),
+            Self::Application(id) => ("piqueld-application-secret-v1", id.as_str()),
+            Self::KeyVerifier => ("piqueld-secret-v1", "piqueld"),
         }
     }
 }
@@ -125,25 +151,27 @@ impl SecretCipher {
             .sync_all()
             .context("sync secret key directory")
     }
-    /// Associated data binding a ciphertext to its application, secret name, and
+    /// Associated data binding a ciphertext to its owner, secret name, and
     /// generation, so a value cannot be moved to another secret or version.
     ///
     /// ```text
-    /// piqueld-secret-v1\0<application>\0<name>\0<generation>
+    /// piqueld-secret-v1\0<environment>\0<name>\0<generation>
+    /// piqueld-application-secret-v1\0<application>\0<name>\0<generation>
     /// ```
-    fn context(application: &str, name: &str, generation: i64) -> Vec<u8> {
-        format!("piqueld-secret-v1\0{application}\0{name}\0{generation}").into_bytes()
+    fn context(owner: SecretOwner<'_>, name: &str, generation: i64) -> Vec<u8> {
+        let (version, owner) = owner.context();
+        format!("{version}\0{owner}\0{name}\0{generation}").into_bytes()
     }
     /// Encrypts one secret value under a fresh random nonce.
     pub(crate) fn encrypt(
         &self,
-        application: &str,
+        owner: SecretOwner<'_>,
         name: &str,
         generation: i64,
         plaintext: &[u8],
     ) -> anyhow::Result<Envelope> {
         let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
-        let aad = Self::context(application, name, generation);
+        let aad = Self::context(owner, name, generation);
         let ciphertext = self
             .0
             .encrypt(
@@ -163,7 +191,7 @@ impl SecretCipher {
     /// or identity does not match. The plaintext is zeroized on drop.
     pub(crate) fn decrypt(
         &self,
-        application: &str,
+        owner: SecretOwner<'_>,
         name: &str,
         generation: i64,
         envelope: &Envelope,
@@ -171,7 +199,7 @@ impl SecretCipher {
         if envelope.nonce.len() != 24 {
             anyhow::bail!("invalid encrypted secret nonce");
         }
-        let aad = Self::context(application, name, generation);
+        let aad = Self::context(owner, name, generation);
         let plaintext = self
             .0
             .decrypt(
@@ -195,26 +223,34 @@ mod tests {
         let path = directory.path().join("secrets.key");
         let cipher = SecretCipher::load(&path, false).unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        let (environment, other) = (
+            EnvironmentId::parse("app-aaaaaaaa").unwrap(),
+            EnvironmentId::parse("app-bbbbbbbb").unwrap(),
+        );
+        // A production environment shares its application's ID.
+        let application = ApplicationId::parse("app-aaaaaaaa").unwrap();
+        let owner = SecretOwner::Environment(&environment);
         let mut encrypted = cipher
-            .encrypt("app-a", "token", 1, b"sensitive value")
+            .encrypt(owner, "token", 1, b"sensitive value")
             .unwrap();
         assert_ne!(encrypted.ciphertext, b"sensitive value");
         assert_eq!(
             cipher
-                .decrypt("app-a", "token", 1, &encrypted)
+                .decrypt(owner, "token", 1, &encrypted)
                 .unwrap()
                 .as_slice(),
             b"sensitive value"
         );
-        for (app, name, generation) in [
-            ("app-b", "token", 1),
-            ("app-a", "other", 1),
-            ("app-a", "token", 2),
+        for (owner, name, generation) in [
+            (SecretOwner::Environment(&other), "token", 1),
+            (SecretOwner::Application(&application), "token", 1),
+            (owner, "other", 1),
+            (owner, "token", 2),
         ] {
-            assert!(cipher.decrypt(app, name, generation, &encrypted).is_err());
+            assert!(cipher.decrypt(owner, name, generation, &encrypted).is_err());
         }
         encrypted.ciphertext[0] ^= 1;
-        assert!(cipher.decrypt("app-a", "token", 1, &encrypted).is_err());
+        assert!(cipher.decrypt(owner, "token", 1, &encrypted).is_err());
         std::fs::remove_file(&path).unwrap();
         assert!(SecretCipher::load(&path, true).is_err());
         assert!(

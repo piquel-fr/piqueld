@@ -17,7 +17,7 @@ pub use exec::ExecSession;
 pub use history::ManifestExport;
 use piqueld_core::{
     ApplicationId, EnvironmentId, EnvironmentName, TrackedBranch,
-    api::SecretMetadata,
+    api::{SecretAccess, SecretMetadata, StoredSecret},
     manifest::{ApplicationTemplate, ValidatedTemplate},
 };
 use std::sync::Arc;
@@ -291,7 +291,7 @@ impl ApplicationService {
         Ok(self.store.recover_secret_key(actor).await?)
     }
 
-    /// Lists secret metadata without exposing stored values.
+    /// Lists an environment's generated secrets without exposing their values.
     ///
     /// # Errors
     /// Returns a storage error when the environment or its metadata cannot be read.
@@ -302,32 +302,74 @@ impl ApplicationService {
         Ok(self.store.secrets(environment).await?)
     }
 
-    /// Stores a new secret version after checking the inspected generation.
+    /// Lists an application's stored secrets and their access, never values.
+    ///
+    /// # Errors
+    /// Returns a storage error when the application or its metadata cannot be read.
+    pub async fn stored_secrets(
+        &self,
+        application: &ApplicationId,
+    ) -> Result<Vec<StoredSecret>, ApplicationError> {
+        Ok(self.store.stored_secrets(application).await?)
+    }
+
+    /// Stores a new version of an application's secret after checking the
+    /// inspected generation; `access` replaces its access list.
     ///
     /// # Errors
     /// Returns a validation, generation conflict, or storage error.
-    pub async fn put_secret(
+    pub async fn put_stored_secret(
+        &self,
+        actor: Actor<'_>,
+        application: &ApplicationId,
+        name: &str,
+        expected_generation: i64,
+        value: Vec<u8>,
+        access: Option<&SecretAccess>,
+    ) -> Result<StoredSecret, ApplicationError> {
+        Ok(self
+            .store
+            .put_stored_secret(actor, application, name, expected_generation, value, access)
+            .await?)
+    }
+
+    /// Replaces the access list of an application's secret.
+    ///
+    /// # Errors
+    /// Returns absence, unknown environments, or storage errors.
+    pub async fn set_secret_access(
+        &self,
+        actor: Actor<'_>,
+        application: &ApplicationId,
+        name: &str,
+        access: &SecretAccess,
+    ) -> Result<StoredSecret, ApplicationError> {
+        Ok(self
+            .store
+            .set_secret_access(actor, application, name, access)
+            .await?)
+    }
+
+    /// Generates a new version of an environment's generated secret after
+    /// checking the inspected generation; see `Store::regenerate_secret`.
+    ///
+    /// # Errors
+    /// Returns absence, generation conflict, or storage errors.
+    pub async fn regenerate_secret(
         &self,
         actor: Actor<'_>,
         environment: &EnvironmentId,
         name: &str,
         expected_generation: i64,
-        value: Vec<u8>,
     ) -> Result<SecretMetadata, ApplicationError> {
         Ok(self
             .store
-            .put_secret(actor, environment, name, expected_generation, value)
+            .regenerate_secret(actor, environment, name, expected_generation)
             .await?)
     }
 
-    /// Removes an unreferenced secret and all of its runtime versions.
-    ///
-    /// 1. Reserves the secret for deletion (checking generation and references).
-    /// 2. Journals a `remove_secrets` action and removes the Swarm secret versions.
-    /// 3. Records the action outcome, then deletes the stored rows.
-    ///
-    /// A failed runtime cleanup leaves the reservation in place, so retrying the
-    /// deletion resumes it (see `secret_deleting`).
+    /// Removes an unreferenced generated secret and all of its runtime versions.
+    /// See `remove_secret_versions`.
     ///
     /// # Errors
     /// Returns when the secret is referenced or storage or runtime cleanup fails.
@@ -342,33 +384,73 @@ impl ApplicationService {
             .store
             .begin_secret_deletion(actor, environment, name, expected_generation)
             .await?;
-        let journal = self
-            .store
-            .begin_application_action(
-                actor.attribution(),
-                environment,
-                "remove_secrets",
-                Some(name),
-            )
-            .await?;
-        let result = match self.store.action_request(&journal, 1).await {
-            Ok(()) => {
-                self.runtime
-                    .remove_secrets(environment, &deletion.versions)
-                    .await
-            }
-            Err(error) => Err(error.into()),
-        };
-        self.store
-            .finish_action(
-                &journal,
-                result.as_ref().err().map(BoundaryError::diagnostic),
-            )
-            .await?;
-        result?;
+        self.remove_secret_versions(actor, name, &deletion).await?;
         self.store
             .finish_secret_deletion(actor.attribution(), environment, name, &deletion.id)
             .await?;
+        Ok(())
+    }
+
+    /// Removes an application's secret that no environment uses, and every
+    /// environment's Docker secrets for it. See `remove_secret_versions`.
+    ///
+    /// # Errors
+    /// Returns when the secret is referenced or storage or runtime cleanup fails.
+    pub async fn delete_stored_secret(
+        &self,
+        actor: Actor<'_>,
+        application: &ApplicationId,
+        name: &str,
+        expected_generation: i64,
+    ) -> Result<(), ApplicationError> {
+        let deletion = self
+            .store
+            .begin_stored_secret_deletion(actor, application, name, expected_generation)
+            .await?;
+        self.remove_secret_versions(actor, name, &deletion).await?;
+        self.store
+            .finish_stored_secret_deletion(actor.attribution(), application, name, &deletion.id)
+            .await?;
+        Ok(())
+    }
+
+    /// Removes the Docker secrets of a reserved deletion, environment by
+    /// environment:
+    ///
+    /// 1. Journals a `remove_secrets` action by `actor` and removes the Swarm
+    ///    secret versions.
+    /// 2. Records the action outcome.
+    ///
+    /// A failed runtime cleanup leaves the reservation in place, so retrying the
+    /// deletion resumes it (see `secret_deleting`).
+    async fn remove_secret_versions(
+        &self,
+        actor: Actor<'_>,
+        name: &str,
+        deletion: &crate::store::SecretDeletion,
+    ) -> Result<(), ApplicationError> {
+        for (environment, versions) in &deletion.versions {
+            let journal = self
+                .store
+                .begin_application_action(
+                    actor.attribution(),
+                    environment,
+                    "remove_secrets",
+                    Some(name),
+                )
+                .await?;
+            let result = match self.store.action_request(&journal, 1).await {
+                Ok(()) => self.runtime.remove_secrets(environment, versions).await,
+                Err(error) => Err(error.into()),
+            };
+            self.store
+                .finish_action(
+                    &journal,
+                    result.as_ref().err().map(BoundaryError::diagnostic),
+                )
+                .await?;
+            result?;
+        }
         Ok(())
     }
 

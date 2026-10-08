@@ -801,7 +801,10 @@ fn validate_services(
             .collect::<BTreeSet<_>>();
         for (index, secret) in service.secrets.iter().enumerate() {
             let path = format!("{base}.secrets[{index}]");
-            validate_name(&secret.name, &format!("{path}.name"), errors);
+            // Names that reference variables are validated once rendered.
+            if let Some(name) = secret.name.as_literal() {
+                validate_name(&name, &format!("{path}.name"), errors);
+            }
             validate_absolute_path(&secret.target, &format!("{path}.target"), errors);
             if !secret.target.starts_with("/run/secrets/") || !targets.insert(&secret.target) {
                 error(

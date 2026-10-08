@@ -1,5 +1,5 @@
 //! Authenticate the database's key before accepting any new ciphertext.
-use super::{Envelope, SecretCipher, Store, StoreError};
+use super::{Envelope, SecretCipher, SecretOwner, Store, StoreError};
 use piqueld_core::api::SecretKeyRecovery;
 
 impl Store {
@@ -22,7 +22,7 @@ impl Store {
         if let Some(row) = verification {
             cipher
                 .decrypt(
-                    "piqueld",
+                    SecretOwner::KeyVerifier,
                     "key-verification",
                     1,
                     &Envelope {
@@ -33,7 +33,12 @@ impl Store {
                 .map_err(StoreError::SecretSource)?;
         } else {
             let envelope = cipher
-                .encrypt("piqueld", "key-verification", 1, b"piqueld-secret-key-v1")
+                .encrypt(
+                    SecretOwner::KeyVerifier,
+                    "key-verification",
+                    1,
+                    b"piqueld-secret-key-v1",
+                )
                 .map_err(StoreError::SecretSource)?;
             sqlx::query!(
                 "INSERT INTO secret_key_verification(singleton,nonce,ciphertext) VALUES(1,?1,?2)",
@@ -67,16 +72,27 @@ impl Store {
             Err(StoreError::SecretSource(_)) => {}
             Err(error) => return Err(error),
         }
-        let usage = sqlx::query!("SELECT COUNT(*) AS versions, COUNT(DISTINCT environment_id) AS applications, COUNT(DISTINCT environment_id||char(0)||name) AS secrets FROM secret_versions WHERE available=1")
+        let usage = sqlx::query!("SELECT COUNT(*) AS versions, COUNT(DISTINCT environment_id) AS environments, COUNT(DISTINCT environment_id||char(0)||name) AS secrets FROM secret_versions WHERE available=1")
+            .fetch_one(&mut *tx).await.map_err(StoreError::database)?;
+        let stored = sqlx::query!("SELECT COUNT(*) AS versions, COUNT(DISTINCT application_id) AS applications, COUNT(DISTINCT application_id||char(0)||name) AS secrets FROM application_secret_versions WHERE available=1")
             .fetch_one(&mut *tx).await.map_err(StoreError::database)?;
         let now = super::now_ms();
         let by = actor.attribution();
-        // Each affected application's history explains why its values need replacing.
         let operator = by.operator_uid();
+        // Each affected environment's and application's history explains why
+        // its values need replacing.
         sqlx::query!("INSERT INTO events(application_id,environment_id,kind,message,created_at_ms,actor_user_id,actor_credential_id,actor_operator_uid) SELECT (SELECT application_id FROM environments WHERE id=secret_versions.environment_id),environment_id,'secret_values_discarded','Secret key recovery discarded '||COUNT(*)||' stored values; store replacements, then deploy',?1,?2,?3,?4 FROM secret_versions WHERE available=1 GROUP BY environment_id",now,by.user_id,by.credential_id,operator)
+            .execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!("INSERT INTO events(application_id,kind,message,created_at_ms,actor_user_id,actor_credential_id,actor_operator_uid) SELECT application_id,'secret_values_discarded','Secret key recovery discarded '||COUNT(*)||' stored values; store replacements, then deploy',?1,?2,?3,?4 FROM application_secret_versions WHERE available=1 GROUP BY application_id",now,by.user_id,by.credential_id,operator)
             .execute(&mut *tx).await.map_err(StoreError::database)?;
         sqlx::query!(
             "UPDATE secret_versions SET available=0,nonce=X'',ciphertext=X'' WHERE available=1"
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        sqlx::query!(
+            "UPDATE application_secret_versions SET available=0,nonce=X'',ciphertext=X'',moved_from=NULL WHERE available=1"
         )
         .execute(&mut *tx)
         .await
@@ -85,18 +101,20 @@ impl Store {
             .execute(&mut *tx)
             .await
             .map_err(StoreError::database)?;
+        let discarded = usage.versions + stored.versions;
         let message = format!(
-            "Recovered the secret master key; discarded {} values across {} applications",
-            usage.versions, usage.applications
+            "Recovered the secret master key; discarded {discarded} values across {} environments and {} applications",
+            usage.environments, stored.applications
         );
         let recovered = crate::store::SecurityEvent::SecretKeyRecovered;
         Self::security_event_on(&mut tx, recovered, &message, by).await?;
         tx.commit().await.map_err(StoreError::database)?;
         SecretCipher::retire(&self.secret_key_path, now).map_err(StoreError::SecretSource)?;
         Ok(SecretKeyRecovery {
-            affected_environments: usage.applications,
-            affected_secrets: usage.secrets,
-            discarded_versions: usage.versions,
+            affected_environments: usage.environments,
+            affected_applications: stored.applications,
+            affected_secrets: usage.secrets + stored.secrets,
+            discarded_versions: discarded,
         })
     }
 }

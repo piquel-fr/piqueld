@@ -306,10 +306,6 @@ fn plain_names_paths_and_keys_reject_even_escaped_references() {
         ("/spec/jobs/0/name", "spec.jobs[0].name"),
         ("/spec/secrets/0/name", "spec.secrets[0].name"),
         (
-            "/spec/services/0/secrets/0/name",
-            "spec.services[0].secrets[0].name",
-        ),
-        (
             "/spec/services/0/secrets/0/target",
             "spec.services[0].secrets[0].target",
         ),

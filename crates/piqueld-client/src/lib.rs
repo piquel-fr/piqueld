@@ -54,9 +54,9 @@ pub use piqueld_core::manifest::{
     ApplicationManifest, ApplicationSpec, ApplicationTemplate, Build, EnvironmentConfig,
     GitRepository, HealthCheck, Job, JobRun, ManifestRepository, ManifestRevision, Metadata, Mount,
     Redirect, RedirectStatus, RepositoryManifest, ResourceLimits, Rollout, RolloutOrder,
-    RolloutOrderSource, Route, RouteTarget, SecretMount, Service, Source, SourceRepository,
-    Template, Typed, ValidatedBuild, ValidatedRollout, ValidatedSource, Variable, VariableValue,
-    Visibility, Volume,
+    RolloutOrderSource, Route, RouteTarget, SecretMount, SecretSource, Service, Source,
+    SourceRepository, Template, Typed, ValidatedBuild, ValidatedRollout, ValidatedSource, Variable,
+    VariableValue, Visibility, Volume,
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{
@@ -73,7 +73,8 @@ use thiserror::Error;
 
 pub use piqueld_core::api::{
     API_PREFIX, ApplicationLogs, BuildLogChunk, BuildLogPage, BuildRecord, BuildState, Envelope,
-    ErrorBody, LogRecord, LogStream, Page, SecretKeyRecovery, SecretMetadata,
+    EnvironmentAccess, ErrorBody, LogRecord, LogStream, MountedSecret, Page, SecretAccess,
+    SecretKeyRecovery, SecretMetadata, StoredSecret,
 };
 
 /// Validates a TOML application manifest and returns its editable name.

@@ -4,13 +4,14 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::manifest::{
-    ApplicationManifest, ApplicationTemplate, RolloutOrder, RolloutOrderSource, VariableValue,
+    ApplicationManifest, ApplicationTemplate, RolloutOrder, RolloutOrderSource, SecretSource,
+    VariableValue,
 };
 use crate::{
     ApplicationId, ApplicationState, Convergence, EnvironmentId, EnvironmentName,
     EnvironmentSource, NormalizedApplication, Operation, Plan,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Versioned prefix used by all API endpoints.
 pub const API_PREFIX: &str = "/api/v1";
@@ -666,7 +667,7 @@ mod log_tests {
 /// Metadata only: secret values are never returned.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct SecretMetadata {
-    /// Environment-scoped logical name.
+    /// Logical name.
     pub name: String,
     /// Current version, used for optimistic writes.
     pub generation: i64,
@@ -680,11 +681,200 @@ pub struct SecretMetadata {
     pub unavailable: bool,
 }
 
+/// The environments that may mount a stored secret.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentAccess {
+    /// Every environment of the application, including ones created later.
+    #[default]
+    All,
+    /// Only these environments, by ID: renaming one keeps its access, and
+    /// deleting one removes it from the list.
+    Only(BTreeSet<EnvironmentId>),
+}
+
+impl EnvironmentAccess {
+    /// Query value for `All`. Environment IDs are at least 8 characters, so
+    /// it never names one.
+    const ALL_QUERY: &str = "all";
+
+    /// Encodes the list as one query parameter: `all`, or comma-separated
+    /// environment IDs (empty for none).
+    #[must_use]
+    pub fn to_query(&self) -> String {
+        match self {
+            Self::All => Self::ALL_QUERY.to_owned(),
+            Self::Only(ids) => ids
+                .iter()
+                .map(EnvironmentId::as_str)
+                .collect::<Vec<_>>()
+                .join(","),
+        }
+    }
+
+    /// Decodes [`Self::to_query`]'s encoding.
+    ///
+    /// ```
+    /// use piqueld_core::api::EnvironmentAccess;
+    /// for access in ["all", "", "env-00000001,env-00000002"] {
+    ///     assert_eq!(EnvironmentAccess::from_query(access).unwrap().to_query(), access);
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns the error for a malformed environment ID.
+    pub fn from_query(value: &str) -> Result<Self, crate::EnvironmentIdError> {
+        if value == Self::ALL_QUERY {
+            return Ok(Self::All);
+        }
+        value
+            .split(',')
+            .filter(|id| !id.is_empty())
+            .map(EnvironmentId::parse)
+            .collect::<Result<_, _>>()
+            .map(Self::Only)
+    }
+}
+
+/// Who may mount a secret from an application's store. The default is every
+/// environment and no previews.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretAccess {
+    /// Environments that may mount the secret.
+    pub environments: EnvironmentAccess,
+    /// Whether previews may mount the secret. Stored for previews, which do
+    /// not exist yet.
+    #[serde(default)]
+    pub previews: bool,
+}
+
+impl SecretAccess {
+    /// Whether `environment` may mount the secret.
+    #[must_use]
+    pub fn allows(&self, environment: &EnvironmentId) -> bool {
+        match &self.environments {
+            EnvironmentAccess::All => true,
+            EnvironmentAccess::Only(allowed) => allowed.contains(environment),
+        }
+    }
+
+    /// The access in words, naming environments by their current name:
+    /// `every environment`, `production, staging and previews`, `no environment`.
+    #[must_use]
+    pub fn describe(&self, environments: &[EnvironmentView]) -> String {
+        let named = match &self.environments {
+            EnvironmentAccess::All => "every environment".to_owned(),
+            EnvironmentAccess::Only(allowed) if allowed.is_empty() => "no environment".to_owned(),
+            EnvironmentAccess::Only(allowed) => allowed
+                .iter()
+                .map(|id| {
+                    environments
+                        .iter()
+                        .find(|environment| environment.id == *id)
+                        .map_or_else(
+                            || id.to_string(),
+                            |environment| environment.name.to_string(),
+                        )
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
+        if self.previews {
+            format!("{named} and previews")
+        } else {
+            named
+        }
+    }
+}
+
+/// A manually set secret in an application's store: its metadata and access,
+/// never its value.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct StoredSecret {
+    /// Version metadata.
+    #[serde(flatten)]
+    pub metadata: SecretMetadata,
+    /// Who may mount the secret.
+    pub access: SecretAccess,
+}
+
+/// Where the value of a secret an environment mounts comes from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MountedSecret {
+    /// Generated for the environment, because `spec.secrets` declares it.
+    Generated,
+    /// The application store's secret, which the environment may mount.
+    Stored {
+        /// Current version.
+        generation: i64,
+    },
+    /// Neither declared nor set in the application store: deploying fails.
+    Missing,
+    /// The application store's secret, whose access list excludes the
+    /// environment: deploying fails with `secret_access_denied`.
+    Denied,
+    /// The application store's secret, whose current value key recovery
+    /// discarded: deploying fails with `secret_unavailable` until it is replaced.
+    Unavailable,
+}
+
+impl MountedSecret {
+    /// Each secret `template`, the manifest `environment` deploys, mounts
+    /// there, given the application's `stored` secrets.
+    #[must_use]
+    pub fn list(
+        template: &ApplicationTemplate,
+        environment: &EnvironmentView,
+        stored: &[StoredSecret],
+    ) -> Vec<(String, Self)> {
+        template
+            .mounted_secrets(&environment.name)
+            .into_iter()
+            .map(|(name, source)| {
+                let mounted = match source {
+                    SecretSource::Generated => Self::Generated,
+                    SecretSource::Stored => {
+                        match stored.iter().find(|secret| secret.metadata.name == name) {
+                            None => Self::Missing,
+                            Some(secret) if !secret.access.allows(&environment.id) => Self::Denied,
+                            Some(secret) if secret.metadata.unavailable => Self::Unavailable,
+                            Some(secret) => Self::Stored {
+                                generation: secret.metadata.generation,
+                            },
+                        }
+                    }
+                };
+                (name, mounted)
+            })
+            .collect()
+    }
+}
+
+impl std::fmt::Display for MountedSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Generated => formatter.write_str("generated for this environment"),
+            Self::Stored { generation } => {
+                write!(formatter, "application store, version {generation}")
+            }
+            Self::Missing => formatter.write_str("not set in the application store"),
+            Self::Denied => formatter.write_str("application store, not allowed here"),
+            Self::Unavailable => {
+                formatter.write_str("application store, value discarded; replace it")
+            }
+        }
+    }
+}
+
 /// Metadata-only result of lost-key recovery. Never rotates application credentials.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct SecretKeyRecovery {
-    /// Environments whose stored values were discarded.
+    /// Environments whose generated values were discarded.
     pub affected_environments: i64,
+    /// Applications whose stored values were discarded.
+    #[serde(default)]
+    pub affected_applications: i64,
     /// Logical secrets whose stored values were discarded.
     pub affected_secrets: i64,
     /// Stored versions discarded; already unavailable versions are excluded.
@@ -838,7 +1028,10 @@ pub struct RouteStatus {
 
 #[cfg(test)]
 mod environment_tests {
-    use super::{ApplicationView, EnvironmentView};
+    use super::{
+        ApplicationView, EnvironmentAccess, EnvironmentView, MountedSecret, SecretAccess,
+        SecretMetadata, StoredSecret,
+    };
     use crate::{ApplicationId, EnvironmentId, EnvironmentName, EnvironmentSource};
 
     fn environment(id: &str, name: &str) -> EnvironmentView {
@@ -881,6 +1074,59 @@ mod environment_tests {
         assert_eq!(
             view.environment("production").unwrap().id.as_str(),
             "app-notes-01"
+        );
+    }
+
+    /// Each mounted secret reports what its next deployment would find, so
+    /// failures show before deploying.
+    #[test]
+    fn mounted_secrets_report_what_deploying_would_find() {
+        let manifest = crate::manifest::parse_template_toml(
+            r"api_version='piqueld.dev/v1alpha1'
+kind='Application'
+[metadata]
+name='notes'
+[[spec.services]]
+name='web'
+source={type='image',image='nginx:alpine'}
+secrets=[{name='session',target='/run/secrets/1'},{name='stripe',target='/run/secrets/2'},{name='other',target='/run/secrets/3'},{name='discarded',target='/run/secrets/4'},{name='unset',target='/run/secrets/5'}]
+[[spec.secrets]]
+name='session'
+generate={type='random',bytes=16}
+",
+        )
+        .unwrap()
+        .normalize(ApplicationId::parse("app-notes-01").unwrap());
+        let production = environment("app-notes-01", "production");
+        let stored = |name: &str, environments, unavailable| StoredSecret {
+            access: SecretAccess {
+                environments,
+                previews: false,
+            },
+            metadata: SecretMetadata {
+                name: name.into(),
+                generation: 3,
+                updated_at_ms: 1,
+                deleting: false,
+                unavailable,
+            },
+        };
+        let others =
+            EnvironmentAccess::Only([EnvironmentId::parse("env-staging-01").unwrap()].into());
+        let stored = [
+            stored("stripe", EnvironmentAccess::All, false),
+            stored("other", others, false),
+            stored("discarded", EnvironmentAccess::All, true),
+        ];
+        assert_eq!(
+            MountedSecret::list(&manifest, &production, &stored),
+            [
+                ("discarded".into(), MountedSecret::Unavailable),
+                ("other".into(), MountedSecret::Denied),
+                ("session".into(), MountedSecret::Generated),
+                ("stripe".into(), MountedSecret::Stored { generation: 3 }),
+                ("unset".into(), MountedSecret::Missing),
+            ]
         );
     }
 }

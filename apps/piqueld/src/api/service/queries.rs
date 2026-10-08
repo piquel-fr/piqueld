@@ -158,9 +158,11 @@ impl ApplicationService {
     /// since apply deploys none of them. A new application renders for its
     /// first environment. An `environment` of another application is
     /// `NotFound`. `[spec.environments.<name>]` blocks naming no environment
-    /// are warnings.
+    /// are warnings. Like a deployment, the rendering fails with
+    /// `secret_access_denied` when it mounts a stored secret the environment
+    /// may not use.
     /// # Errors
-    /// Returns precondition, rendering, storage, or runtime errors.
+    /// Returns precondition, rendering, secret access, storage, or runtime errors.
     /// # Panics
     /// Panics if the built-in preview application ID is invalid.
     pub async fn plan(
@@ -320,7 +322,9 @@ impl ApplicationService {
     /// Images are not resolved, so the desired state is only compiled when no
     /// references need resolution; otherwise the plan lists them as unresolved.
     /// New environments still require a reachable runtime. Configuration values
-    /// are redacted from the returned plan.
+    /// are redacted from the returned plan. Like a deployment, an existing
+    /// environment fails with `secret_access_denied` when `app` mounts a
+    /// stored secret it may not use.
     async fn preview_plan(
         &self,
         app: &NormalizedApplication,
@@ -328,6 +332,9 @@ impl ApplicationService {
         current: Option<&StoredEnvironment>,
     ) -> Result<piqueld_core::Plan, ApplicationError> {
         let observed = if let Some(current) = current {
+            self.store
+                .check_secret_access(&current.environment, app)
+                .await?;
             self.runtime.observe(current).await?
         } else {
             self.runtime.check_available().await?;

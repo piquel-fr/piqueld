@@ -116,6 +116,8 @@ impl Store {
     /// disconnecting. Records `application_applied` when either changed;
     /// neither advances the application revision, since repository-backed
     /// configuration cannot be edited.
+    /// Fails with `secret_name_conflict` when the application's store now holds
+    /// a name the fetched manifest declares.
     /// Called in the same transaction that saves the fully prepared runtime target.
     pub(super) async fn accept_deployment_on(
         tx: &mut Transaction<'_, Sqlite>,
@@ -137,6 +139,14 @@ impl Store {
             .await?
             .ok_or(StoreError::NotFound)?
             .application;
+        // A secret stored since the manifest was fetched may now share a name
+        // with one of its declarations.
+        Self::check_declared_against_store_on(
+            tx,
+            application.id().as_str(),
+            &fetched.spec().secrets,
+        )
+        .await?;
         // A retry may accept a manifest fetched before a rename.
         let fetched = fetched.with_name(application.metadata().name.clone());
         let manifest = fetched.canonical_json().map_err(StoreError::corrupt)?;
@@ -181,6 +191,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::Actor::Daemon;
     use crate::api::{Mutation, MutationResponse};
     use piqueld_core::{ApplicationId, EnvironmentId, InstanceId, OperationState, ResolutionSet};
 
@@ -535,5 +546,94 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    /// Saves the repository-backed application `notes` (see `connection`).
+    async fn saved_connection(store: &Store) -> ApplicationId {
+        let (MutationResponse::Saved(saved), _) = store
+            .accept(
+                Daemon,
+                Mutation::Save {
+                    application: Box::new(connection()),
+                    expected_application_id: None,
+                    deploy: false,
+                },
+                Some(0),
+                false,
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("saved")
+        };
+        ApplicationId::parse(&saved.application_id).unwrap()
+    }
+
+    /// A manifest with the image service `web` that declares the generated
+    /// secret `token` when `declared`.
+    fn token_spec(declared: bool) -> String {
+        let secret = "[[spec.secrets]]\nname='token'\n[spec.secrets.generate]\ntype='random'\nbytes=16\nencoding='hex'\n";
+        format!(
+            "{}[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'",
+            if declared { secret } else { "" }
+        )
+    }
+
+    /// A secret stored after a manifest was fetched but before it is accepted
+    /// may not share a name with one of its declarations.
+    #[tokio::test]
+    async fn accepting_a_fetched_manifest_rejects_declarations_stored_meanwhile() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let application = saved_connection(&store).await;
+        let production = EnvironmentId::default_for(&application);
+        let (op, target) = fetched(&store, &production, &token_spec(true)).await;
+        // The saved manifest does not declare `token` yet, so storing it succeeds.
+        store
+            .put_stored_secret(Daemon, &application, "token", 0, b"value".to_vec(), None)
+            .await
+            .unwrap();
+        let Err(StoreError::Validation(errors)) = store.save_prepared(&op, &target).await else {
+            panic!("secret name conflict expected")
+        };
+        assert_eq!(errors.0[0].code, piqueld_core::codes::SECRET_NAME_CONFLICT);
+        assert!(store.get(&production).await.unwrap().manifest().is_none());
+    }
+
+    /// A name an environment's last fetched manifest declares cannot be
+    /// stored, even once another environment's fetch replaced the saved one.
+    #[tokio::test]
+    async fn fetched_declarations_of_every_environment_reserve_their_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let application = saved_connection(&store).await;
+        let (MutationResponse::Environment(staging), _) = store
+            .accept(
+                Daemon,
+                Mutation::CreateEnvironment {
+                    application: application.clone(),
+                    name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
+                    branch: Some(piqueld_core::TrackedBranch::new("release".into(), None).unwrap()),
+                },
+                None,
+                true,
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("environment")
+        };
+        let production = EnvironmentId::default_for(&application);
+        fetch(&store, &production, &token_spec(true)).await;
+        fetch(&store, &staging.id, &token_spec(false)).await;
+        let Err(StoreError::Validation(errors)) = store
+            .put_stored_secret(Daemon, &application, "token", 0, b"value".to_vec(), None)
+            .await
+        else {
+            panic!("secret name conflict expected")
+        };
+        assert_eq!(errors.0[0].code, piqueld_core::codes::SECRET_NAME_CONFLICT);
     }
 }

@@ -649,6 +649,12 @@ impl ApplicationSpec {
             }
             texts(&format!("{base}.command"), &mut service.command, visit);
             texts(&format!("{base}.arguments"), &mut service.arguments, visit);
+            for (secret_index, secret) in service.secrets.iter_mut().enumerate() {
+                visit(
+                    &format!("{base}.secrets[{secret_index}].name"),
+                    Slot::Text(&mut secret.name),
+                );
+            }
             if let Some(healthcheck) = &mut service.healthcheck {
                 healthcheck.visit_values(&format!("{base}.healthcheck"), visit);
             }

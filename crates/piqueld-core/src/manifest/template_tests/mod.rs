@@ -131,6 +131,9 @@ memory_bytes = 67108864
 [spec.services.rollout]
 order = "stop-first"
 monitor_seconds = 20
+[[spec.services.secrets]]
+name = "token"
+target = "/run/secrets/token"
 [[spec.services]]
 name = "b-build"
 command = ["server"]
@@ -219,6 +222,10 @@ const FIELDS: &[(&str, &str)] = &[
     (
         "/spec/services/0/rollout/monitor_seconds",
         "spec.services[0].rollout.monitor_seconds",
+    ),
+    (
+        "/spec/services/0/secrets/0/name",
+        "spec.services[0].secrets[0].name",
     ),
     (
         "/spec/services/1/source/build/dockerfile",

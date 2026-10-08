@@ -51,19 +51,28 @@ impl Store {
     /// operation, so nothing is deployed until requested. New applications get a
     /// `production` environment that starts as `not_deployed`. Returns
     /// `IllegalTransition` while deletion is pending, `AlreadyExists` for a taken
-    /// name, and `SecretDeleting` for manifests that reference secrets being deleted.
+    /// name, `SecretDeleting` for manifests that reference secrets being deleted,
+    /// and `secret_name_conflict` for declared secrets the application stores.
     pub(super) async fn save_configuration_on(
         tx: &mut Transaction<'_, Sqlite>,
         app: &ApplicationTemplate,
         expected: Option<u64>,
     ) -> Result<SavedApplication, StoreError> {
+        let id = app.id().as_str();
+        let mounted = app
+            .spec()
+            .services
+            .iter()
+            .flat_map(|service| &service.secrets)
+            .filter_map(|secret| secret.name.as_literal())
+            .collect::<Vec<_>>();
         Self::check_secret_references(
             tx,
-            &app.spec().mounted_secret_names(),
+            &mounted.iter().map(String::as_str).collect(),
             super::secret::SecretScope::Application(app.id()),
         )
         .await?;
-        let id = app.id().as_str();
+        Self::check_declared_against_store_on(tx, id, &app.spec().secrets).await?;
         let previous = Self::generation_on(tx, id, expected).await?;
         let generation = previous.checked_add(1).ok_or(StoreError::InvalidInput)?;
         let json = serde_json::to_string(app).map_err(StoreError::corrupt)?;
@@ -89,8 +98,9 @@ impl Store {
     /// [`super::StoredEnvironment::candidate`]) as operation `id`'s deployment
     /// record, rendered for that environment, together with the values its
     /// references resolved to, so retries never read variables again. A
-    /// reference without a value fails the request. Repository-backed
-    /// manifests are rendered once fetched, when their revision is known.
+    /// reference without a value, or a stored secret the environment may not
+    /// mount (`SecretAccessDenied`), fails the request. Repository-backed
+    /// manifests are rendered and checked once fetched, when their revision is known.
     /// The deployment row shares the operation's ID.
     pub(super) async fn capture_deployment(
         tx: &mut Transaction<'_, Sqlite>,
@@ -104,7 +114,10 @@ impl Store {
         let rendering = if template.spec().manifest.is_some() {
             None
         } else {
-            Some(environment.render(&template, id)?)
+            let rendering = environment.render(&template, id)?;
+            Self::check_secret_access_on(tx, &environment.environment, &rendering.application)
+                .await?;
+            Some(rendering)
         };
         let (manifest, variables) = Self::snapshot_json(rendering.as_ref())?;
         let template = template.canonical_json().map_err(StoreError::corrupt)?;

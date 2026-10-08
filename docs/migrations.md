@@ -180,6 +180,30 @@ sessions they open, and records the host operator's Unix user on audited
 requests, operations, events, and running actions. The trigger copying an
 operation's actor onto its events now copies it too.
 
+`0021_application_secret_store.sql` moves manually set secrets into one store
+per application, where each lists the environments that may mount it. A name is
+either generated or stored per application, so when environments disagree about a
+name (one set it manually, another's manifest declares it), the first environment
+that uses it decides: `production`, else the oldest. An environment uses a name
+when it holds a value for it or the manifest it deploys declares it in
+`spec.secrets`: the saved one, or for an environment following a branch only the
+last one fetched from it (none before its first fetch). The deciding environment's secret is generated,
+and stays with it, when its manifest declares the name or a retained deployment
+both declares and pins it; otherwise it is manual and moves, with access limited
+to that environment, so no other environment gains access by upgrading. Deleting
+a secret drops its pins, so a name set manually after its generated value was
+deleted counts as manual. An environment that disagrees with the deciding one
+needs a change before its next deployment: if it declares a name that moved, it
+fails with `secret_name_conflict` until its manifest renames the declaration; if
+it set a name the deciding environment generates, that value is missing until it
+mounts another stored name through a variable. Same-named secrets of other environments
+stay with them, keeping their deployments' pins, until deleted. Moved versions
+keep their Docker secret names, and their deployment pins move with them, so
+running services and retries resolve the same values and nothing is redeployed.
+The encryption context binds a value to its owner, so on its first start with a
+usable master key the daemon re-encrypts moved values for their application in
+one transaction. Until then they remain readable in their former context.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

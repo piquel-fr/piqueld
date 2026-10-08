@@ -801,13 +801,13 @@ impl Scenario {
         let completed = std::sync::atomic::AtomicBool::new(false);
         tokio::join!(
             async {
-                deploy(
+                Box::pin(deploy(
                     &self.store,
                     &self.controller,
                     changed.validate().unwrap().normalize(
                         piqueld_core::ApplicationId::parse(self.first.as_str()).unwrap(),
                     ),
-                )
+                ))
                 .await;
                 completed.store(true, std::sync::atomic::Ordering::SeqCst);
             },

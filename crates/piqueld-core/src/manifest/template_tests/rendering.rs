@@ -246,6 +246,7 @@ fn visit_values_covers_all_present_slots_and_skips_absent_options() {
     expected.sort();
     assert_eq!(paths, expected);
     for service in &mut spec.services {
+        service.secrets.clear();
         service.command.clear();
         service.arguments.clear();
         service.environment.clear();
@@ -670,5 +671,81 @@ port = 3000
             ("admin.staging.piquel.fr".into(), Visibility::Private),
             ("staging.piquel.fr".into(), Visibility::Private),
         ]
+    );
+}
+
+#[test]
+fn secret_mount_names_select_each_environments_secret_and_resolve_once_rendered() {
+    let mut manifest = template(VARIABLES).to_manifest();
+    manifest
+        .spec
+        .variables
+        .insert("stripe_key".into(), Variable::String("stripe-dev".into()));
+    manifest
+        .spec
+        .environments
+        .get_mut("production")
+        .unwrap()
+        .variables
+        .insert("stripe_key".into(), Variable::String("stripe-prod".into()));
+    manifest.spec.services[0].secrets = vec![
+        SecretMount {
+            name: "${{ vars.stripe_key }}".into(),
+            target: "/run/secrets/stripe".into(),
+        },
+        SecretMount {
+            name: "session".into(),
+            target: "/run/secrets/session".into(),
+        },
+    ];
+    manifest.spec.secrets = serde_json::from_value(json!([
+        {"name":"session", "generate":{"type":"random", "bytes":32}}
+    ]))
+    .unwrap();
+    let template = manifest
+        .clone()
+        .validate_template()
+        .unwrap()
+        .normalize(id());
+    for (environment, stripe) in [("staging", "stripe-dev"), ("production", "stripe-prod")] {
+        let rendering = render(&template, environment).unwrap();
+        assert_eq!(
+            rendering.application.spec().mounted_secrets(),
+            [
+                (stripe, SecretSource::Stored),
+                ("session", SecretSource::Generated)
+            ]
+            .into_iter()
+            .collect(),
+            "{environment}"
+        );
+        assert_eq!(
+            template.mounted_secrets(&super::environment(environment)),
+            [
+                (stripe.to_owned(), SecretSource::Stored),
+                ("session".to_owned(), SecretSource::Generated)
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    // A rendered name is validated like a literal one, at the mount's path.
+    manifest
+        .spec
+        .variables
+        .insert("stripe_key".into(), Variable::String("Not A Name".into()));
+    let template = manifest.validate_template().unwrap().normalize(id());
+    let path = format!(
+        "spec.services[0].secrets[{}].name",
+        template.spec().services[0]
+            .secrets
+            .iter()
+            .position(|secret| secret.name.as_str().contains("vars"))
+            .unwrap()
+    );
+    assert_eq!(
+        codes_and_paths(&render(&template, "staging").unwrap_err()),
+        [(codes::NAME_INVALID, path.as_str())]
     );
 }

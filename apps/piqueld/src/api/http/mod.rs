@@ -169,13 +169,22 @@ impl ApiError {
             StoreError::SecretQuota => Self::new(
                 StatusCode::CONFLICT,
                 "secret_quota_exceeded",
-                "Secret storage quota exceeded (1000 versions or 100 MiB per environment); delete unused secrets to free space",
+                "Secret storage quota exceeded (1000 versions or 100 MiB per environment or application store); delete unused secrets to free space",
             ),
             StoreError::SecretReferenced => Self::new(
                 StatusCode::CONFLICT,
                 "secret_referenced",
                 "Secret is still referenced by application configuration or a deployment",
             ),
+            ref error @ StoreError::SecretAccessDenied {
+                ref environment,
+                ref secret,
+            } => Self::new(
+                StatusCode::CONFLICT,
+                "secret_access_denied",
+                error.to_string(),
+            )
+            .details(json!({"environment": environment, "secret": secret})),
             other => unreachable!("non-secret storage error: {other}"),
         }
     }
@@ -223,7 +232,8 @@ impl From<StoreError> for ApiError {
             | StoreError::SecretSource(_)
             | StoreError::SecretDeleting
             | StoreError::SecretQuota
-            | StoreError::SecretReferenced) => Self::from_secret_error(error),
+            | StoreError::SecretReferenced
+            | StoreError::SecretAccessDenied { .. }) => Self::from_secret_error(error),
             StoreError::HostnameConflict { hostname } => Self::new(
                 StatusCode::CONFLICT,
                 "hostname_conflict",
@@ -698,7 +708,11 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Read) => operations::get))
         .routes(granted!(Global(SystemOperate) => secrets::recover_key))
         .routes(granted!(App(Read) => secrets::list))
-        .routes(granted!(App(SecretsWrite) => secrets::put, secrets::delete))
+        .routes(granted!(App(SecretsWrite) => secrets::delete))
+        .routes(granted!(App(SecretsWrite) => secrets::regenerate))
+        .routes(granted!(App(Read) => secrets::list_stored))
+        .routes(granted!(App(SecretsWrite) => secrets::put_stored, secrets::delete_stored))
+        .routes(granted!(App(SecretsWrite) => secrets::set_access))
 }
 
 /// Middleware that runs the request inside a `request_context` span and

@@ -1585,6 +1585,298 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Lists an application's stored secrets and who may mount them
+
+    Returns metadata only; secret values are write-only and never returned.
+
+    Sends a `GET` request to `/api/v1/applications/{id}/secrets`
+
+    */
+    pub async fn application_secrets<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<Vec<piqueld_core::api::StoredSecret>>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/secrets",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "application_secrets",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Creates or replaces a value in an application's secret store
+
+    The body is the raw value (`application/octet-stream`, 1–512000 bytes).
+    `X-Expected-Generation` must be 0 to create a secret, or its current
+    generation to replace it; a mismatch fails with 409. Running services keep
+    their value until the next deployment. Supplying `environments` (`all`, or
+    environment IDs) replaces the access list, with `previews` (default
+    `false`); `previews` alone fails with 400. Without them, a new secret
+    allows every environment and no previews, and an existing one keeps its
+    list. Names the
+    saved manifest or an environment's last fetched one declares as generated
+    secrets fail with 422 `manifest_validation_failed` and `secret_name_conflict`
+    in `details.errors`. The response carries metadata only.
+
+    Sends a `PUT` request to `/api/v1/applications/{id}/secrets/{name}`
+
+    Arguments:
+    - `id`
+    - `name`
+    - `environments`: The environments that may mount the secret: `all`, or comma-separated
+    environment IDs (empty for none). Supplying it replaces the access list.
+    - `previews`: Whether previews may mount the secret; only with `environments`, and
+    `false` when omitted.
+    - `x_expected_generation`
+    - `body`
+    */
+    pub async fn put_application_secret<'a, B: Into<reqwest::Body>>(
+        &'a self,
+        id: &'a str,
+        name: &'a str,
+        environments: Option<&'a str>,
+        previews: Option<bool>,
+        x_expected_generation: i64,
+        body: B,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::StoredSecret>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/secrets/{}",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&name.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        header_map.append(
+            "X-Expected-Generation",
+            x_expected_generation.to_string().try_into()?,
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .header(
+                ::reqwest::header::CONTENT_TYPE,
+                ::reqwest::header::HeaderValue::from_static("application/octet-stream"),
+            )
+            .body(body)
+            .query(&progenitor_client::QueryParam::new(
+                "environments",
+                &environments,
+            ))
+            .query(&progenitor_client::QueryParam::new("previews", &previews))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "put_application_secret",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Deletes a stored secret and every environment's Docker secrets for it
+
+    Fails with 409 while any environment's configuration or deployment still
+    references it. If cleanup is interrupted, retrying the deletion finishes it.
+
+    Sends a `DELETE` request to `/api/v1/applications/{id}/secrets/{name}`
+
+    */
+    pub async fn delete_application_secret<'a>(
+        &'a self,
+        id: &'a str,
+        name: &'a str,
+        x_expected_generation: i64,
+    ) -> Result<ResponseValue<piqueld_core::api::Envelope<bool>>, Error<piqueld_core::api::ErrorBody>>
+    {
+        let url = format!(
+            "{}/api/v1/applications/{}/secrets/{}",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&name.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        header_map.append(
+            "X-Expected-Generation",
+            x_expected_generation.to_string().try_into()?,
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "delete_application_secret",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Replaces which environments, and whether previews, may mount a stored secret
+
+    Environments are listed by ID and must belong to the application. A
+    narrower list fails later deployments that mount the secret with
+    `secret_access_denied`; running deployments keep their pinned versions.
+
+    Sends a `PUT` request to `/api/v1/applications/{id}/secrets/{name}/access`
+
+    */
+    pub async fn set_secret_access<'a>(
+        &'a self,
+        id: &'a str,
+        name: &'a str,
+        body: &'a piqueld_core::api::SecretAccess,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::StoredSecret>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/secrets/{}/access",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&name.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_secret_access",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Sends a `POST` request to `/api/v1/applications/{id}/services`
 
     Arguments:
@@ -6977,7 +7269,7 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Lists an environment's secrets
+    /*Lists an environment's generated secrets
 
     Returns metadata only; secret values are write-only and never returned.
 
@@ -7032,84 +7324,7 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Creates or replaces a secret value
-
-    The body is the raw value (`application/octet-stream`, 1–512000 bytes).
-    `X-Expected-Generation` must be 0 to create a secret, or its current
-    generation to replace it; a mismatch fails with 409. Running services keep
-    their value until the next deployment. The response carries metadata only.
-
-    Sends a `PUT` request to `/api/v1/environments/{id}/secrets/{name}`
-
-    */
-    pub async fn put_environment_secret<'a, B: Into<reqwest::Body>>(
-        &'a self,
-        id: &'a str,
-        name: &'a str,
-        x_expected_generation: i64,
-        body: B,
-    ) -> Result<
-        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SecretMetadata>>,
-        Error<piqueld_core::api::ErrorBody>,
-    > {
-        let url = format!(
-            "{}/api/v1/environments/{}/secrets/{}",
-            self.baseurl,
-            encode_path(&id.to_string()),
-            encode_path(&name.to_string()),
-        );
-        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
-        header_map.append(
-            ::reqwest::header::HeaderName::from_static("api-version"),
-            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
-        );
-        header_map.append(
-            "X-Expected-Generation",
-            x_expected_generation.to_string().try_into()?,
-        );
-        #[allow(unused_mut)]
-        let mut request = self
-            .client
-            .put(url)
-            .header(
-                ::reqwest::header::ACCEPT,
-                ::reqwest::header::HeaderValue::from_static("application/json"),
-            )
-            .header(
-                ::reqwest::header::CONTENT_TYPE,
-                ::reqwest::header::HeaderValue::from_static("application/octet-stream"),
-            )
-            .body(body)
-            .headers(header_map)
-            .build()?;
-        let info = OperationInfo {
-            operation_id: "put_environment_secret",
-        };
-        self.pre(&mut request, &info).await?;
-        let result = self.exec(request, &info).await;
-        self.post(&result, &info).await?;
-        let response = result?;
-        match response.status().as_u16() {
-            200u16 => crate::client::decode_response(response).await,
-            400u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            403u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            404u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            409u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            503u16 => Err(Error::ErrorResponse(
-                crate::client::decode_response(response).await?,
-            )),
-            _ => Err(Error::UnexpectedResponse(response)),
-        }
-    }
-    /*Deletes a secret
+    /*Deletes a generated secret, so a later deployment generates a new value
 
     Fails with 409 while the configuration or a deployment still references it.
     If cleanup is interrupted, retrying the deletion finishes it.
@@ -7151,6 +7366,77 @@ impl Client {
             .build()?;
         let info = OperationInfo {
             operation_id: "delete_environment_secret",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Generates a new version of a generated secret from its declaration
+
+    `X-Expected-Generation` must be the current generation; a mismatch fails
+    with 409. Rotates the value, or replaces one discarded by key recovery.
+    Running services keep their version until the next deployment. The
+    response carries metadata only.
+
+    Sends a `POST` request to `/api/v1/environments/{id}/secrets/{name}/regenerate`
+
+    */
+    pub async fn regenerate_environment_secret<'a>(
+        &'a self,
+        id: &'a str,
+        name: &'a str,
+        x_expected_generation: i64,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SecretMetadata>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/secrets/{}/regenerate",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&name.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        header_map.append(
+            "X-Expected-Generation",
+            x_expected_generation.to_string().try_into()?,
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "regenerate_environment_secret",
         };
         self.pre(&mut request, &info).await?;
         let result = self.exec(request, &info).await;

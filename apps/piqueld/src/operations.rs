@@ -27,6 +27,9 @@ pub enum OperationError {
         /// Logical names only, never values.
         names: String,
     },
+    /// The environment mounts a stored secret its access list excludes.
+    #[error("{0}")]
+    SecretAccessDenied(#[source] crate::store::StoreError),
     /// Repository input could not be located or decoded.
     #[error("{}", if *.not_found { "manifest not found" } else { "repository manifest is invalid or its application name does not match" })]
     ManifestInput {
@@ -126,6 +129,7 @@ impl OperationError {
             Self::Journal(_) => DiagnosticCode::JournalUnavailable,
             Self::SecretStorageUnavailable(_) => DiagnosticCode::SecretStorageUnavailable,
             Self::SecretUnavailable { .. } => DiagnosticCode::SecretUnavailable,
+            Self::SecretAccessDenied(_) => DiagnosticCode::SecretAccessDenied,
             Self::ManifestInput {
                 not_found: true, ..
             }
@@ -224,6 +228,9 @@ impl From<crate::store::StoreError> for OperationError {
             }
             crate::store::StoreError::SecretUnavailable { names } => {
                 Self::SecretUnavailable { names }
+            }
+            error @ crate::store::StoreError::SecretAccessDenied { .. } => {
+                Self::SecretAccessDenied(error)
             }
             error @ (crate::store::StoreError::HostnameConflict { .. }
             | crate::store::StoreError::SharedHostnameConflict { .. }) => {

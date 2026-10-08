@@ -130,6 +130,8 @@ pub const VARIABLE_VALUE_EXCESSIVE: &str = "variable_value_excessive";
 pub const ENVIRONMENT_BLOCK_UNKNOWN: &str = "environment_block_unknown";
 /// Manifest that must be literal still references variables.
 pub const VARIABLE_UNRESOLVED: &str = "variable_unresolved";
+/// A declared secret is also set in the application's secret store.
+pub const SECRET_NAME_CONFLICT: &str = "secret_name_conflict";
 
 /// Service source has no immutable resolution yet.
 pub const SOURCE_UNRESOLVED: &str = "source_unresolved";

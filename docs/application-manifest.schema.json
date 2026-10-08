@@ -58,7 +58,7 @@
         },
         "secrets": {
           "default": [],
-          "description": "Application secrets whose values piqueld generates once.",
+          "description": "Secrets whose values piqueld generates once per environment.",
           "items": {
             "$ref": "#/definitions/SecretDeclaration"
           },
@@ -522,14 +522,14 @@
     },
     "SecretDeclaration": {
       "additionalProperties": false,
-      "description": "An application secret whose value piqueld generates when a deployment first\nneeds it. A stored value, generated or set manually, is never replaced.",
+      "description": "A secret whose value piqueld generates for each environment when one of\nits deployments first needs it. A generated value is never replaced, and\nnever shared with another environment.",
       "properties": {
         "generate": {
           "$ref": "#/definitions/SecretGenerator",
           "description": "How the value is generated."
         },
         "name": {
-          "description": "Application-scoped logical secret name.",
+          "description": "Logical secret name; it cannot reference variables.",
           "type": "string"
         }
       },
@@ -602,11 +602,11 @@
     },
     "SecretMount": {
       "additionalProperties": false,
-      "description": "A logical application secret exposed only as a container file.",
+      "description": "A secret exposed only as a container file. The name selects the\nenvironment's generated secret when `spec.secrets` declares it, and the\napplication's store of manually set secrets otherwise.",
       "properties": {
         "name": {
-          "description": "Application-scoped logical secret name.",
-          "type": "string"
+          "$ref": "#/definitions/Template",
+          "description": "Logical secret name. It may reference variables, so each environment\ncan mount its own stored secret, e.g. `${{ vars.stripe_key }}`."
         },
         "target": {
           "description": "Absolute normalized destination under /run/secrets.",
@@ -696,7 +696,7 @@
           "description": "Optional rollout order and monitor window."
         },
         "secrets": {
-          "description": "Application-scoped secrets mounted as files.",
+          "description": "Secrets mounted as files.",
           "items": {
             "$ref": "#/definitions/SecretMount"
           },

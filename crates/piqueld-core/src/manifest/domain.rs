@@ -206,9 +206,9 @@ pub struct ValidatedService {
     pub arguments: Vec<String>,
     /// Persistent volume mounts.
     pub mounts: Vec<ValidatedMount>,
-    /// Application-scoped secret file mounts.
+    /// Secret file mounts.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub secrets: Vec<input::SecretMount>,
+    pub secrets: Vec<ValidatedSecretMount>,
     /// Optional container health check.
     pub healthcheck: Option<ValidatedHealthCheck>,
     /// Optional CPU and memory limits.
@@ -220,6 +220,25 @@ pub struct ValidatedService {
     /// Rollout settings. Omitted when default so existing specification hashes stay stable.
     #[serde(skip_serializing_if = "ValidatedRollout::is_default")]
     pub rollout: ValidatedRollout,
+}
+
+/// A rendered secret file mount.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
+pub struct ValidatedSecretMount {
+    /// Logical secret name.
+    pub name: String,
+    /// Absolute normalized destination under /run/secrets.
+    pub target: String,
+}
+
+/// Where a mounted secret's value comes from.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretSource {
+    /// Generated for each environment, because `spec.secrets` declares it.
+    Generated,
+    /// Set manually in the application's secret store, subject to its access list.
+    Stored,
 }
 
 /// Validated named volume.
@@ -510,13 +529,33 @@ impl ValidatedSpec {
         })
     }
 
-    /// Names of the application secrets that at least one service mounts.
+    /// Names of the secrets that at least one service mounts.
     #[must_use]
     pub fn mounted_secret_names(&self) -> BTreeSet<&str> {
         self.services
             .iter()
             .flat_map(|service| service.secrets.iter().map(|secret| secret.name.as_str()))
             .collect()
+    }
+
+    /// Each mounted secret and where its value comes from: generated when
+    /// `spec.secrets` declares it, stored otherwise.
+    #[must_use]
+    pub fn mounted_secrets(&self) -> BTreeMap<&str, SecretSource> {
+        self.mounted_secret_names()
+            .into_iter()
+            .map(|name| (name, self.secret_source(name)))
+            .collect()
+    }
+
+    /// Where the value of the secret `name` comes from.
+    #[must_use]
+    pub fn secret_source(&self, name: &str) -> SecretSource {
+        if self.secrets.iter().any(|secret| secret.name == name) {
+            SecretSource::Generated
+        } else {
+            SecretSource::Stored
+        }
     }
 
     /// Converts back to the editable input shape used for export and plans.
@@ -601,7 +640,19 @@ impl ValidatedService {
                 .collect::<Result<_, ValidationErrors>>()?,
             command: Template::into_texts(value.command, &format!("{base}.command"))?,
             arguments: Template::into_texts(value.arguments, &format!("{base}.arguments"))?,
-            secrets: value.secrets,
+            secrets: value
+                .secrets
+                .into_iter()
+                .enumerate()
+                .map(|(secret_index, secret)| {
+                    Ok(ValidatedSecretMount {
+                        name: secret
+                            .name
+                            .into_text(|| format!("{base}.secrets[{secret_index}].name"))?,
+                        target: secret.target,
+                    })
+                })
+                .collect::<Result<_, ValidationErrors>>()?,
             mounts: value
                 .mounts
                 .into_iter()
@@ -687,7 +738,14 @@ impl ValidatedService {
                 .iter()
                 .map(|value| Template::literal(value))
                 .collect(),
-            secrets: self.secrets.clone(),
+            secrets: self
+                .secrets
+                .iter()
+                .map(|secret| input::SecretMount {
+                    name: Template::literal(&secret.name),
+                    target: secret.target.clone(),
+                })
+                .collect(),
             mounts: self
                 .mounts
                 .iter()
