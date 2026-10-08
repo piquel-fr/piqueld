@@ -15,9 +15,10 @@ pub(crate) struct Heads {
 }
 
 impl Heads {
-    /// Longest a listing may take before it counts as failed. Its process
-    /// group, Git's transport and credential helpers included, is then killed.
-    const TIMEOUT: Duration = Duration::from_secs(30);
+    /// Longest a listing may take before it counts as failed, well within a
+    /// client's 30-second request budget so it still gets `unknown` branch
+    /// states. Its process group, Git's helpers included, is then killed.
+    const TIMEOUT: Duration = Duration::from_secs(10);
     /// Most output a listing may produce: tens of thousands of branches.
     const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 

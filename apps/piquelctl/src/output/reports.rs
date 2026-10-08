@@ -515,7 +515,8 @@ report!(CreatedPreviewReport<'_>, self, out, {
     }
 });
 
-/// `preview prune` result: the previews whose deletion was accepted.
+/// `preview prune` result: the previews whose deletion was accepted, with
+/// their operations, since `--no-wait` reports before they finish.
 impl Report for Vec<DeletedPreview> {
     type Json = [DeletedPreview];
     fn json(&self) -> &Self::Json {
@@ -527,10 +528,11 @@ impl Report for Vec<DeletedPreview> {
         }
         for deleted in self {
             out.line(format_args!(
-                "Deleted preview {} of branch {} ({}) and its volumes",
+                "Deleting preview {} of branch {} ({}) with its volumes: operation {}",
                 deleted.preview.name,
                 preview_branch(&deleted.preview),
-                deleted.preview.id
+                deleted.preview.id,
+                deleted.operation.operation_id
             ))?;
         }
         Ok(())
