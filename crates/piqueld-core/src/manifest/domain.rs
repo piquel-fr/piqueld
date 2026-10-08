@@ -533,6 +533,7 @@ impl ValidatedSpec {
             secrets: self.secrets.clone(),
             variables: std::collections::BTreeMap::new(),
             environments: std::collections::BTreeMap::new(),
+            previews: input::PreviewConfig::default(),
             services: self
                 .services
                 .iter()

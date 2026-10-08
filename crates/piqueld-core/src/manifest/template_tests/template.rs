@@ -308,6 +308,7 @@ fn saved_hostnames_skip_missing_invalid_and_deployment_only_values() {
     manifest.spec.environments.insert(
         "staging".into(),
         EnvironmentConfig {
+            visibility: Visibility::Public,
             variables: std::collections::BTreeMap::from([(
                 "missing".into(),
                 Variable::String("stage.example.com".into()),
@@ -324,6 +325,7 @@ fn saved_hostnames_skip_missing_invalid_and_deployment_only_values() {
     ]
     .map(|hostname| Route {
         hostname: hostname.into(),
+        visibility: Visibility::Private,
         service: Some("web".into()),
         port: Some(80),
         redirect: None,

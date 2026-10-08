@@ -220,9 +220,12 @@ pub(crate) fn build_client(cli: &Cli) -> Result<Client> {
 /// Reports daemon status together with the transport that was used.
 async fn status(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     let status = client.system_status().await?;
+    // Listener health is best effort: status must work while readiness fails.
+    let readiness = client.system_readiness().await.ok();
     console.emit(&StatusReport {
         status: &status,
         transport: &transport_description(cli),
+        ingress: readiness.as_ref().map(|readiness| &readiness.ingress),
     })
 }
 

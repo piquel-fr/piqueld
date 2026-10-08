@@ -3305,6 +3305,63 @@ async fn direct_service_validates_log_bounds_and_deployment_ownership() {
 }
 
 #[tokio::test]
+async fn environment_visibility_edits_cap_routes_in_the_saved_manifest() {
+    use piqueld_core::{
+        edit::{ApplicationEdit, EditOptions},
+        manifest::Visibility,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let id = &saved.application_id;
+    let set = |visibility, generation| {
+        let client = &api.client;
+        async move {
+            client
+                .edit_application(
+                    id,
+                    &ApplicationEdit::EnvironmentVisibility {
+                        environment: "production".into(),
+                        visibility,
+                    },
+                    &EditOptions {
+                        expected_generation: Some(generation),
+                        ..EditOptions::default()
+                    },
+                )
+                .await
+                .unwrap()
+        }
+    };
+    set(Visibility::Private, 1).await;
+    let manifest = api
+        .client
+        .application(id)
+        .await
+        .unwrap()
+        .application
+        .to_manifest();
+    assert_eq!(
+        manifest.spec.environments["production"].visibility,
+        Visibility::Private
+    );
+    // Back to the default, the block configures nothing and disappears.
+    set(Visibility::Public, 2).await;
+    let manifest = api
+        .client
+        .application(id)
+        .await
+        .unwrap()
+        .application
+        .to_manifest();
+    assert!(manifest.spec.environments.is_empty());
+}
+
+#[tokio::test]
 async fn route_field_edits_follow_service_renames_and_removals() {
     use piqueld_client::{
         Route,
@@ -3318,7 +3375,12 @@ async fn route_field_edits_follow_service_renames_and_removals() {
         .await
         .unwrap();
     let id = &saved.application_id;
-    let route = Route::service("notes.example.com".into(), "web".into(), 3000);
+    let route = Route::service(
+        "notes.example.com".into(),
+        piqueld_core::manifest::Visibility::Public,
+        "web".into(),
+        3000,
+    );
     let options = |generation| EditOptions {
         expected_generation: Some(generation),
         ..EditOptions::default()
@@ -6253,6 +6315,7 @@ async fn previews_render_variables_for_the_selected_environment() {
     let production = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
     let level = |value: &str| EnvironmentConfig {
         variables: [("level".into(), Variable::String(value.into()))].into(),
+        ..EnvironmentConfig::default()
     };
     let mut manifest = manifest();
     manifest.spec.services[0]

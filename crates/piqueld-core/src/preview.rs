@@ -46,6 +46,8 @@ impl ManifestChange {
     /// volumes.data                          -> "present (retained if removed)"
     /// variables.domain                      -> "example.com"
     /// environments.staging.variables.domain -> "staging.example.com"
+    /// environments.staging.visibility       -> "private"
+    /// previews.visibility                   -> "public"
     /// ```
     fn fields(spec: &ApplicationSpec) -> BTreeMap<String, Value> {
         let Ok(Value::Object(mut spec)) = serde_json::to_value(spec) else {
@@ -95,6 +97,12 @@ impl ManifestChange {
         }
         if let Value::Object(environments) = take("environments") {
             for (environment, config) in environments {
+                if let Some(visibility) = config.get("visibility") {
+                    fields.insert(
+                        format!("environments.{environment}.visibility"),
+                        visibility.clone(),
+                    );
+                }
                 if let Some(Value::Object(variables)) = config.get("variables") {
                     for (name, value) in variables {
                         fields.insert(
@@ -103,6 +111,11 @@ impl ManifestChange {
                         );
                     }
                 }
+            }
+        }
+        if let Value::Object(previews) = take("previews") {
+            for (key, value) in previews {
+                fields.insert(format!("previews.{key}"), value);
             }
         }
         fields

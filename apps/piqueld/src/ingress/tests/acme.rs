@@ -18,7 +18,7 @@ impl Scenario {
                 .clone();
             table.get_mut(&self.first).unwrap().push(route);
         }
-        let mut configuration = self.gateway.configuration(&table);
+        let mut configuration = self.gateway.configuration(&table).await.unwrap();
         configuration["apps"]["http"]["servers"]["acme"] = json!({
             "listen":["127.0.0.1:9072"], "tls_connection_policies":[{}],
             "routes":[{"match":[{"host":["127.0.0.1"]}], "handle":[{"handler":"acme_server", "lifetime":300_000_000_000_u64,

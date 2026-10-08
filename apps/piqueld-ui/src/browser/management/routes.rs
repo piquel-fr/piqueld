@@ -1,14 +1,15 @@
-//! Application-owned public route editing and independent HTTPS readiness.
+//! Application-owned route editing and independent HTTPS readiness.
 use super::super::ui::{Icon, Tone, badge, empty, icon, notice, remove_button};
 use super::{dirty_group, editor, save_actions};
 use leptos::prelude::*;
-use piqueld_client::{Redirect, RedirectStatus, Route, edit::ApplicationEdit};
+use piqueld_client::{Redirect, RedirectStatus, Route, Visibility, edit::ApplicationEdit};
 
 /// One editable route row. Both destinations keep their fields so switching
 /// between them does not discard typed values.
 #[derive(Clone, PartialEq)]
 struct RouteDraft {
     hostname: String,
+    visibility: Visibility,
     redirect: bool,
     service: String,
     port: String,
@@ -21,6 +22,7 @@ impl Default for RouteDraft {
     fn default() -> Self {
         Self {
             hostname: String::new(),
+            visibility: Visibility::Private,
             redirect: false,
             service: String::new(),
             port: "3000".into(),
@@ -46,6 +48,7 @@ impl RouteDraft {
                 .map_err(|_| "Redirect status must be 301, 302, 303, 307, or 308")?;
             Ok(Route::redirect(
                 self.hostname,
+                self.visibility,
                 Redirect {
                     to: self.to.into(),
                     status,
@@ -57,7 +60,12 @@ impl RouteDraft {
                 .port
                 .parse()
                 .map_err(|_| "Route port must be between 1 and 65535")?;
-            Ok(Route::service(self.hostname, self.service, port))
+            Ok(Route::service(
+                self.hostname,
+                self.visibility,
+                self.service,
+                port,
+            ))
         }
     }
 }
@@ -66,6 +74,7 @@ impl From<Route> for RouteDraft {
     fn from(route: Route) -> Self {
         let mut draft = Self {
             hostname: route.hostname.to_string(),
+            visibility: route.visibility,
             service: route.service.unwrap_or_default(),
             ..Self::default()
         };
@@ -109,7 +118,7 @@ const fn route_tone(state: &str) -> Tone {
     }
 }
 
-/// Public route editor. Rows are drafted as [`RouteDraft`] text and re-synced
+/// Route editor. Rows are drafted as [`RouteDraft`] text and re-synced
 /// from saved configuration only while there are no local edits. Saving
 /// validates numbers and replaces all routes. Also lists this application's
 /// deployed routes and their ingress state from the dashboard readiness signal.
@@ -176,9 +185,9 @@ pub(super) fn RouteSettings() -> impl IntoView {
             <section class="card">
                 <header>
                     <div>
-                        <h3>"Public routes"</h3>
+                        <h3>"Routes"</h3>
                         <p>
-                            "Point each hostname’s DNS at this server; HTTPS certificates are managed automatically. Routes are public, so your application must handle authentication. Redirects are answered by the gateway and need no service. Save, then deploy to activate changes."
+                            "Public routes are reachable from the internet: point their DNS at this server, and their certificates are managed automatically. Private routes, the default, are reachable only from the tailnet on the same hostname: point their DNS at the apps node’s tailnet addresses, and their certificates come from a DNS provider. An environment’s visibility can make its routes private. Redirects are answered by the gateway and need no service. Save, then deploy to activate changes."
                         </p>
                     </div>
                 </header>
@@ -190,7 +199,18 @@ pub(super) fn RouteSettings() -> impl IntoView {
                             .map(|_| {
                                 notice(
                                     Tone::Info,
-                                    "Ingress is disabled in the daemon configuration. Routes can still be saved and deployed; they become public when ingress is enabled.",
+                                    "Ingress is disabled in the daemon configuration. Routes can still be saved and deployed; they are served once ingress is enabled.",
+                                )
+                            })
+                    }}
+                    {move || {
+                        readiness
+                            .get()
+                            .filter(|status| status.ingress.enabled && !status.ingress.private.enabled)
+                            .map(|_| {
+                                notice(
+                                    Tone::Info,
+                                    "Private ingress is disabled in the daemon configuration ([ingress.private]). Private routes can still be saved and deployed; they are served on the tailnet once it is enabled.",
                                 )
                             })
                     }} <fieldset disabled={move || context.blocked()}>
@@ -211,6 +231,20 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                         edit(draft, index, |r| r.hostname = event_target_value(&event));
                                                     }}
                                                 />
+                                            </label>
+                                            <label class="field" style="max-width:130px">
+                                                <span>"Visibility"</span>
+                                                <select
+                                                    prop:value={move || field(draft, index, |r| r.visibility).to_string()}
+                                                    on:change={move |event| {
+                                                        if let Ok(visibility) = event_target_value(&event).parse() {
+                                                            edit(draft, index, |r| r.visibility = visibility);
+                                                        }
+                                                    }}
+                                                >
+                                                    <option value="private">"Private"</option>
+                                                    <option value="public">"Public"</option>
+                                                </select>
                                             </label>
                                             <label class="field" style="max-width:140px">
                                                 <span>"Destination"</span>
@@ -360,7 +394,9 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                         <tr>
                                             <th>"Hostname"</th>
                                             <th>"Environment"</th>
+                                            <th>"Visibility"</th>
                                             <th>"Destination"</th>
+                                            <th>"DNS records"</th>
                                             <th>"State"</th>
                                             <th>"Details"</th>
                                         </tr>
@@ -375,8 +411,12 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                             <strong>{route.hostname}</strong>
                                                         </td>
                                                         <td>{environment}</td>
+                                                        <td>{route.visibility.to_string()}</td>
                                                         <td>
                                                             <code>{route.target.to_string()}</code>
+                                                        </td>
+                                                        <td>
+                                                            <code>{route.dns.to_string()}</code>
                                                         </td>
                                                         <td>
                                                             {badge(route_tone(&route.state), route.state.clone())}

@@ -1,14 +1,15 @@
 //! Manages this installation's Caddy gateway container in Docker: creating and
 //! starting it, connecting application networks, and loading the routes built by
 //! `configuration`. Replacements keep the old container and configuration for
-//! recovery if startup fails. Disabling ingress removes the managed containers
-//! but keeps certificates and configuration on disk.
+//! recovery if startup fails. Disabling ingress removes the managed containers,
+//! including the apps tailnet node (`node`), but keeps certificates,
+//! configuration and node state on disk.
 //!
 //! Each change is one daemon-scoped journal action (`ingress_*` phases). Methods
 //! decide from reads before opening an action, so steady-state passes record no
 //! history. Helpers taking a [`Journaled`] run inside their caller's action.
 
-use super::{CADDY_IMAGE, Ingress, wire::Journaled};
+use super::{CADDY_IMAGE, Ingress, node::PRIVATE_HTTPS_PORT, wire::Journaled};
 use crate::store::ingress::RoutingTable;
 use anyhow::{Context, Result, ensure};
 use futures_util::TryStreamExt;
@@ -25,14 +26,15 @@ use std::{
     time::Duration,
 };
 
-/// Marks the gateway container and its egress network.
+/// Marks the gateway container, the apps node, and their egress network.
 const GATEWAY_LABEL: &str = "io.piqueld.ingress";
 /// SHA-256 of the managed container spec; a mismatch triggers replacement.
-const CONFIGURATION_LABEL: &str = "io.piqueld.ingress-configuration";
+pub(super) const CONFIGURATION_LABEL: &str = "io.piqueld.ingress-configuration";
 
 impl Ingress {
-    /// Ownership labels applied to the gateway container and egress network.
-    fn labels(&self) -> Value {
+    /// Ownership labels applied to the gateway container, the apps node, and
+    /// the egress network.
+    pub(super) fn labels(&self) -> Value {
         json!({MANAGED_LABEL:"true",INSTANCE_LABEL:self.instance_id,GATEWAY_LABEL:"true"})
     }
 
@@ -54,7 +56,7 @@ impl Ingress {
     }
 
     /// Inspects a container by name, verifying ownership when it exists.
-    async fn named_container(&self, name: &str) -> Result<Option<Value>> {
+    pub(super) async fn named_container(&self, name: &str) -> Result<Option<Value>> {
         let container = self
             .docker
             .inspect(&format!("/containers/{name}/json"))
@@ -65,14 +67,16 @@ impl Ingress {
         Ok(container)
     }
 
-    /// Removes the serving, `-previous`, and `-next` gateway containers in a single
-    /// action when ingress is disabled. Records nothing if none exist.
+    /// Removes the serving, `-previous`, and `-next` gateway containers and the
+    /// apps node in a single action when ingress is disabled. Records nothing
+    /// if none exist.
     pub(super) async fn stop_gateway(&self) -> Result<()> {
         let mut existing = Vec::new();
         for name in [
             self.name.clone(),
             format!("{}-previous", self.name),
             format!("{}-next", self.name),
+            self.node_name(),
         ] {
             if self.named_container(&name).await?.is_some() {
                 existing.push(name);
@@ -93,7 +97,7 @@ impl Ingress {
     }
 
     /// Removes a leftover container in its own action; used for best-effort cleanup.
-    async fn remove_stale_container(&self, name: &str) -> Result<()> {
+    pub(super) async fn remove_stale_container(&self, name: &str) -> Result<()> {
         if self.named_container(name).await?.is_none() {
             return Ok(());
         }
@@ -103,7 +107,7 @@ impl Ingress {
     }
 
     /// Force-removes a container by name if it exists.
-    async fn remove_container(&self, journal: &Journaled<'_>, name: &str) -> Result<()> {
+    pub(super) async fn remove_container(&self, journal: &Journaled<'_>, name: &str) -> Result<()> {
         if let Some(container) = self.named_container(name).await? {
             // Removing the container also removes its restart policy. Persistent
             // data and config are host directories retained across disablement.
@@ -148,6 +152,45 @@ impl Ingress {
             "Docker Engine 28+ with API 1.48+ is required for ingress network gateway priority"
         );
         Ok(())
+    }
+
+    /// The subnets of the edge network: the only peers whose PROXY headers the
+    /// private listener accepts. The apps node is one of them; application
+    /// networks, also attached to the gateway, are not.
+    pub(super) async fn edge_subnets(&self) -> Result<Vec<String>> {
+        let network = self
+            .docker
+            .inspect(&format!("/networks/{}", self.name))
+            .await?
+            .context("gateway edge network is not ready")?;
+        let subnets: Vec<String> = network["IPAM"]["Config"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|config| config["Subnet"].as_str().map(str::to_owned))
+            .collect();
+        ensure!(!subnets.is_empty(), "gateway edge network has no subnet");
+        Ok(subnets)
+    }
+
+    /// Where the daemon reaches the private listener: the gateway's address on
+    /// the edge network, which the host routes to.
+    pub(super) async fn private_listener(&self) -> Result<std::net::SocketAddr> {
+        #[cfg(test)]
+        if let Some(port) = self.private_port {
+            return Ok(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
+        }
+        let container = self
+            .container()
+            .await?
+            .context("gateway container is not running")?;
+        let address: std::net::IpAddr =
+            container["NetworkSettings"]["Networks"][&self.name]["IPAddress"]
+                .as_str()
+                .context("gateway has no edge network address")?
+                .parse()
+                .context("decode the gateway's edge network address")?;
+        Ok(std::net::SocketAddr::new(address, PRIVATE_HTTPS_PORT))
     }
 
     /// Ensures the gateway's own non-internal bridge network (named like the
@@ -217,7 +260,7 @@ impl Ingress {
                     tracing::error!(environment_id=%id, network=%name, error=?error,
                         "preserving accepted destinations; other applications can still update");
                     let mut accepted = self.store.applied_routes(id).await?;
-                    accepted.retain(|old| routes.iter().any(|new| new.hostname == old.hostname));
+                    accepted.retain(|old| routes.iter().any(|new| new.same_listener(old)));
                     *routes = accepted;
                     failures.insert(id.clone(), format!("{error:#}"));
                 }
@@ -254,7 +297,8 @@ impl Ingress {
     /// Builds the hardened Caddy container spec: runs as the daemon's user with a
     /// read-only root, only `NET_BIND_SERVICE`, host-bound ports 80/443, and data,
     /// config, and control directories bind-mounted from the ingress directory.
-    /// The spec's own hash is stored in `CONFIGURATION_LABEL` to detect drift.
+    /// The private listener's ports are never published. The spec's own hash is
+    /// stored in `CONFIGURATION_LABEL` to detect drift.
     pub(super) fn container_spec(&self) -> Value {
         let uid = rustix::process::geteuid().as_raw();
         let gid = rustix::process::getegid().as_raw();
@@ -283,12 +327,24 @@ impl Ingress {
         if !self.extra_hosts.is_empty() {
             spec["HostConfig"]["ExtraHosts"] = json!(self.extra_hosts);
         }
+        // Tests outside the engine reach the private listener on a published port.
+        #[cfg(test)]
+        if self.private_port.is_some() {
+            spec["ExposedPorts"]["8443/tcp"] = json!({});
+            spec["HostConfig"]["PortBindings"]["8443/tcp"] =
+                json!([{"HostIp":"","HostPort":"8443"}]);
+        }
+        Self::label_hash(&mut spec);
+        spec
+    }
+
+    /// Stores the SHA-256 of a container spec in its `CONFIGURATION_LABEL`.
+    pub(super) fn label_hash(spec: &mut Value) {
         let hash = format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&spec).expect("JSON serializes"))
         );
         spec["Labels"][CONFIGURATION_LABEL] = hash.into();
-        spec
     }
 
     /// Ensures a running gateway matching the current container spec.
@@ -327,14 +383,7 @@ impl Ingress {
             crate::prepare_data_dir(directory).await?;
         }
         self.ensure_edge_network().await?;
-        if self
-            .docker
-            .inspect(&format!("/images/{CADDY_IMAGE}/json"))
-            .await?
-            .is_none()
-        {
-            self.pull_image().await?;
-        }
+        self.ensure_image(CADDY_IMAGE).await?;
         if current.as_ref().is_some_and(|container| {
             container["Config"]["Labels"][CONFIGURATION_LABEL]
                 != spec["Labels"][CONFIGURATION_LABEL]
@@ -353,17 +402,30 @@ impl Ingress {
         journal.finish(result).await
     }
 
-    /// Pulls the pinned Caddy image in its own action, bounded to three minutes.
-    async fn pull_image(&self) -> Result<()> {
+    /// Pulls a pinned image unless Docker already has it.
+    pub(super) async fn ensure_image(&self, image: &str) -> Result<()> {
+        if self
+            .docker
+            .inspect(&format!("/images/{image}/json"))
+            .await?
+            .is_none()
+        {
+            self.pull_image(image).await?;
+        }
+        Ok(())
+    }
+
+    /// Pulls a pinned image in its own action, bounded to three minutes.
+    async fn pull_image(&self, image: &str) -> Result<()> {
         use bollard::query_parameters::CreateImageOptionsBuilder;
-        let journal = self.journal("ingress_pull_image", CADDY_IMAGE).await?;
+        let journal = self.journal("ingress_pull_image", image).await?;
         let result = async {
             journal.request().await?;
             tokio::time::timeout(Duration::from_mins(3), async {
                 let mut pull = self.images.create_image(
                     Some(
                         CreateImageOptionsBuilder::default()
-                            .from_image(CADDY_IMAGE)
+                            .from_image(image)
                             .build(),
                     ),
                     None,
@@ -371,20 +433,20 @@ impl Ingress {
                 );
                 while let Some(event) = pull.try_next().await? {
                     if let Some(error) = event.error {
-                        anyhow::bail!("pull Caddy image: {error}");
+                        anyhow::bail!("pull {image}: {error}");
                     }
                 }
                 Ok::<_, anyhow::Error>(())
             })
             .await
-            .context("pull Caddy image timed out")?
+            .with_context(|| format!("pull {image} timed out"))?
         }
         .await;
         journal.finish(result).await
     }
 
     /// Creates a container with the given name and spec without starting it.
-    async fn create_container(
+    pub(super) async fn create_container(
         &self,
         journal: &Journaled<'_>,
         name: &str,
@@ -514,7 +576,7 @@ impl Ingress {
         spec: &Value,
         table: &RoutingTable,
     ) -> Result<()> {
-        self.write_configuration("candidate.json", &self.configuration(table))
+        self.write_configuration("candidate.json", &self.configuration(table).await?)
             .await?;
         let mut validation = spec.clone();
         validation["Cmd"] = json!([
@@ -644,7 +706,7 @@ impl Ingress {
     async fn start_gateway(&self, journal: &Journaled<'_>, table: &RoutingTable) -> Result<()> {
         // A restarted gateway must never briefly resume routes that were removed
         // by deployments while ingress was disabled.
-        self.write_configuration("autosave.json", &self.configuration(table))
+        self.write_configuration("autosave.json", &self.configuration(table).await?)
             .await?;
         self.start_container(journal).await
     }
@@ -678,12 +740,21 @@ impl Ingress {
 
     /// Verifies an existing container with a matching spec hash still has the
     /// managed image, user, command, host security settings, port bindings, and
-    /// storage environment, rather than trusting the hash label alone.
-    fn check_container_configuration(current: &Value, spec: &Value) -> Result<()> {
+    /// environment, rather than trusting the hash label alone. Settings the spec
+    /// leaves unset must be empty, as Docker reports them `null`, `[]` or `{}`.
+    pub(super) fn check_container_configuration(current: &Value, spec: &Value) -> Result<()> {
+        fn same(current: &Value, spec: &Value) -> bool {
+            let empty = |value: &Value| {
+                value.is_null()
+                    || value.as_array().is_some_and(Vec::is_empty)
+                    || value.as_object().is_some_and(serde_json::Map::is_empty)
+            };
+            current == spec || (empty(current) && empty(spec))
+        }
         for field in ["Image", "User", "Cmd"] {
             ensure!(
                 current["Config"][field] == spec[field],
-                "gateway container {field} conflicts with managed configuration"
+                "managed container {field} conflicts with managed configuration"
             );
         }
         for field in [
@@ -701,34 +772,37 @@ impl Ingress {
             if field == "RestartPolicy" {
                 ensure!(
                     current["HostConfig"][field]["Name"] == "unless-stopped",
-                    "gateway restart policy conflicts"
+                    "managed container restart policy conflicts"
                 );
             } else {
                 ensure!(
-                    current["HostConfig"][field] == spec["HostConfig"][field],
-                    "gateway host configuration {field} conflicts"
+                    same(&current["HostConfig"][field], &spec["HostConfig"][field]),
+                    "managed container host configuration {field} conflicts"
                 );
             }
         }
         ensure!(
-            current["HostConfig"]["PortBindings"] == spec["HostConfig"]["PortBindings"],
-            "gateway public port bindings conflict"
+            same(
+                &current["HostConfig"]["PortBindings"],
+                &spec["HostConfig"]["PortBindings"]
+            ),
+            "managed container port bindings conflict"
         );
         let environment = current["Config"]["Env"]
             .as_array()
-            .context("gateway environment is absent")?;
+            .context("managed container environment is absent")?;
         for expected in spec["Env"]
             .as_array()
             .context("managed environment is absent")?
         {
             ensure!(
                 environment.contains(expected),
-                "gateway storage environment conflicts"
+                "managed container environment conflicts"
             );
         }
         ensure!(
             current["HostConfig"]["Privileged"] != true,
-            "gateway must not be privileged"
+            "managed containers must not be privileged"
         );
         Ok(())
     }
@@ -781,7 +855,7 @@ impl Ingress {
             .container()
             .await?
             .context("gateway container disappeared")?;
-        let desired = self.configuration(table);
+        let desired = self.configuration(table).await?;
         let reload = self.caddy.get("/config/").await? != desired;
         // Keep existing attachments for unavailable apps whose routes were retained.
         let retained: BTreeSet<_> = table
@@ -832,26 +906,34 @@ impl Ingress {
         journal.finish(result).await
     }
 
-    /// Forwards Caddy log lines emitted since the previous relay into daemon logs
-    /// (at most 100 per pass).
+    /// Forwards Caddy log lines emitted since the previous relay into daemon
+    /// logs, and the apps node's at debug level since `tailscaled` is verbose
+    /// (at most 100 lines per container and pass).
     pub(super) async fn relay_logs(&self) -> Result<()> {
-        if !self.enabled || self.container().await?.is_none() {
+        if !self.enabled {
             return Ok(());
         }
         let mut since = self.logs_since.lock().await;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
-        for line in self
-            .container_logs(
-                &self.name,
-                &format!("tail=100&since={}&until={now}", *since),
-            )
-            .await?
-        {
-            tracing::info!(gateway=%self.name,caddy=%line,"Caddy diagnostic");
+        for name in [self.name.clone(), self.node_name()] {
+            if self.named_container(&name).await?.is_none() {
+                continue;
+            }
+            let from = since.get(&name).copied().unwrap_or(0);
+            let lines = self
+                .container_logs(&name, &format!("tail=100&since={from}&until={now}"))
+                .await?;
+            for line in lines {
+                if name == self.name {
+                    tracing::info!(gateway=%name,caddy=%line,"Caddy diagnostic");
+                } else {
+                    tracing::debug!(node=%name,tailscale=%line,"apps tailnet node diagnostic");
+                }
+            }
+            since.insert(name, now);
         }
-        *since = now;
         Ok(())
     }
 

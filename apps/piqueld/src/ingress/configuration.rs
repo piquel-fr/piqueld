@@ -2,38 +2,101 @@
 //! it through Caddy's private Unix admin socket and persists it as the gateway's
 //! autosave configuration for independent container restarts.
 //!
+//! Each visibility has its own listener, with its own route list:
+//!
+//! | Server | Listens on | Serves |
+//! | --- | --- | --- |
+//! | `public`, `public_http` | `:443`, `:80` (published) | public routes |
+//! | `private`, `private_http` | `:8443`, `:8081` (not published) | private routes |
+//!
+//! A hostname appears only on its own listener, and each HTTPS server's TLS
+//! policy accepts only its own hostnames, so a forged Host or SNI for a
+//! private route on the public listener gets no certificate and a 404. The
+//! private servers exist only while private ingress is enabled; they accept
+//! connections only from the edge network, with a PROXY header from the apps
+//! node, and never fall back to the public listener.
+//!
 //! Known hosts redirect HTTP to HTTPS, then either proxy to their Swarm service's
 //! internal HTTP port or answer with their configured redirect. Caddy
-//! obtains/renews certificates for those hosts automatically, except for hosts
-//! served with DNS-01 certificates, which are loaded as PEM and skipped by
-//! automatic HTTPS. Explicit redirects keep unknown HTTP hosts on the final 404
-//! handler.
+//! obtains/renews certificates for public hosts automatically. Private hosts use
+//! the DNS-01 certificates piqueld loads as PEM, so automatic HTTPS is off on
+//! the private servers. Explicit redirects keep unknown HTTP hosts on the final
+//! 404 handler.
 
-use super::Ingress;
+use super::{
+    Ingress,
+    node::{PRIVATE_HTTP_PORT, PRIVATE_HTTPS_PORT},
+};
 use crate::store::ingress::RoutingTable;
-use piqueld_core::{DockerServiceName, manifest::RouteTarget};
+use anyhow::Result;
+use piqueld_core::{
+    DockerServiceName,
+    manifest::{RouteTarget, Visibility},
+};
 use serde_json::{Value, json};
 
+/// The routes of one listener, as Caddy route objects.
+#[derive(Default)]
+struct Listener {
+    /// HTTPS routes: each host's probe endpoint and destination.
+    https: Vec<Value>,
+    /// HTTP routes redirecting each host to HTTPS.
+    redirects: Vec<Value>,
+    /// Hostnames, which the TLS connection policy accepts as SNI.
+    hosts: Vec<String>,
+}
+
 impl Ingress {
-    /// Produces the complete replacement configuration. Exact-host routes enable
-    /// automatic TLS without on-demand certificate issuance for arbitrary hosts.
+    /// The complete replacement configuration for `table`, with the private
+    /// listener trusting PROXY headers from the edge network's subnets.
+    pub(super) async fn configuration(&self, table: &RoutingTable) -> Result<Value> {
+        let proxies = match &self.node {
+            Some(_) => Some(self.edge_subnets().await?),
+            None => None,
+        };
+        // Tests outside the engine reach the published private listener from
+        // an address outside the edge network.
+        #[cfg(test)]
+        let proxies = proxies.map(|mut proxies| {
+            if self.private_port.is_some() {
+                proxies.push("0.0.0.0/0".into());
+            }
+            proxies
+        });
+        Ok(self.build_configuration(table, proxies.as_deref()))
+    }
+
+    /// Produces the configuration. Private routes are served only when
+    /// `proxies` gives the private listener's trusted PROXY sources. Exact-host
+    /// routes enable automatic TLS without on-demand certificate issuance for
+    /// arbitrary hosts.
     ///
-    /// Each route yields a probe handler, a reverse proxy, and an HTTP redirect;
-    /// both servers end with a 404 fallback.
+    /// Each route yields a probe handler, a reverse proxy, and an HTTP redirect
+    /// on its listener; every server ends with a 404 fallback.
     ///
     /// ```text
     /// app.example.com -> reverse_proxy <swarm service name>:<port>
     /// http://app.example.com/x -> 308 https://app.example.com/x
     /// ```
-    pub(super) fn configuration(&self, table: &RoutingTable) -> Value {
-        let mut https = Vec::new();
-        let mut redirects = Vec::new();
+    pub(super) fn build_configuration(
+        &self,
+        table: &RoutingTable,
+        proxies: Option<&[String]>,
+    ) -> Value {
+        let mut public = Listener::default();
+        let mut private = Listener::default();
         for (id, routes) in table {
             for route in routes {
+                let listener = match route.visibility {
+                    Visibility::Public => &mut public,
+                    Visibility::Private if proxies.is_some() => &mut private,
+                    Visibility::Private => continue,
+                };
                 let host = route.hostname.as_str();
+                listener.hosts.push(host.to_owned());
                 // A bounded, side-effect-free endpoint lets the daemon distinguish
                 // this gateway from a different server behind an incorrect DNS record.
-                https.push(json!({"match":[{"host":[host],"path":["/.well-known/piqueld-ingress"]}],"handle":[{"handler":"static_response","body":self.instance_id}],"terminal":true}));
+                listener.https.push(json!({"match":[{"host":[host],"path":["/.well-known/piqueld-ingress"]}],"handle":[{"handler":"static_response","body":self.instance_id}],"terminal":true}));
                 let handler = match &route.target {
                     RouteTarget::Service { service, port } => json!({
                         "handler":"reverse_proxy",
@@ -47,31 +110,37 @@ impl Ingress {
                         "headers":{"Location":[redirect.location()]}
                     }),
                 };
-                https.push(json!({"match":[{"host":[host]}],"handle":[handler],"terminal":true}));
-                redirects.push(json!({"match":[{"host":[host]}],"handle":[{"handler":"static_response","status_code":308,"headers":{"Location":["https://{http.request.host}{http.request.uri}"]}}],"terminal":true}));
+                listener
+                    .https
+                    .push(json!({"match":[{"host":[host]}],"handle":[handler],"terminal":true}));
+                listener.redirects.push(json!({"match":[{"host":[host]}],"handle":[{"handler":"static_response","status_code":308,"headers":{"Location":["https://{http.request.host}{http.request.uri}"]}}],"terminal":true}));
             }
         }
-        let not_found =
-            json!({"handle":[{"handler":"static_response","status_code":404}],"terminal":true});
-        https.push(not_found.clone());
-        redirects.push(not_found);
         // The Unix admin endpoint is private to the daemon. Strict SNI matching
         // prevents a TLS connection for one hostname from selecting another host.
-        let (pems, mut covered) = self.certificates.loaded();
-        covered.extend(Self::dns01_hostnames(table));
+        let mut servers = json!({
+            "public":public.https_server(&[":443".into()]),
+            "public_http":{"listen":[":80"],"routes":public.http_routes()}
+        });
+        if let Some(proxies) = proxies {
+            // Peers outside the edge network are refused, so neither
+            // applications nor a missing PROXY header can reach private routes.
+            let wrapper =
+                json!({"wrapper":"proxy_protocol","allow":proxies,"fallback_policy":"reject"});
+            let mut https = private.https_server(&[format!(":{PRIVATE_HTTPS_PORT}")]);
+            https["listener_wrappers"] = json!([wrapper, {"wrapper":"tls"}]);
+            https["automatic_https"] = json!({"disable":true});
+            servers["private"] = https;
+            servers["private_http"] = json!({
+                "listen":[format!(":{PRIVATE_HTTP_PORT}")],"listener_wrappers":[wrapper],
+                "routes":private.http_routes(),"automatic_https":{"disable":true}
+            });
+        }
         let mut configuration = json!({
             "admin":{"listen":"unix//control/admin.sock"},
-            "apps":{"http":{"servers":{
-                "https":{"protocols":["h1","h2"],"listen":[":443"],"routes":https,"strict_sni_host":true,
-                    "tls_connection_policies":[{}],"automatic_https":{"disable_redirects":true}},
-                "http":{"listen":[":80"],"routes":redirects}
-            }}}
+            "apps":{"http":{"servers":servers}}
         });
-        // Caddy never attempts HTTP-01 or TLS-ALPN-01 for DNS-01 hostnames.
-        if !covered.is_empty() {
-            configuration["apps"]["http"]["servers"]["https"]["automatic_https"]["skip"] =
-                json!(covered);
-        }
+        let pems = self.certificates.loaded();
         if !pems.is_empty() {
             configuration["apps"]["tls"]["certificates"]["load_pem"] = pems
                 .into_iter()
@@ -83,5 +152,30 @@ impl Ingress {
             configuration["apps"]["tls"]["automation"] = json!({"policies":[{"issuers":[issuer]}]});
         }
         configuration
+    }
+}
+
+impl Listener {
+    /// An HTTPS server on `listen` that completes TLS only for this listener's
+    /// hostnames, even with no hostnames at all.
+    fn https_server(&self, listen: &[String]) -> Value {
+        let mut routes = self.https.clone();
+        routes.push(Self::not_found());
+        json!({
+            "protocols":["h1","h2"],"listen":listen,"routes":routes,"strict_sni_host":true,
+            "tls_connection_policies":[{"match":{"sni":self.hosts}}],
+            "automatic_https":{"disable_redirects":true}
+        })
+    }
+
+    /// This listener's HTTP → HTTPS redirects, then the 404 fallback.
+    fn http_routes(&self) -> Vec<Value> {
+        let mut routes = self.redirects.clone();
+        routes.push(Self::not_found());
+        routes
+    }
+
+    fn not_found() -> Value {
+        json!({"handle":[{"handler":"static_response","status_code":404}],"terminal":true})
     }
 }

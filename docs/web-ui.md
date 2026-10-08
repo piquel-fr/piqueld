@@ -63,8 +63,11 @@ rollout, with one row per command element; saving replaces only the job list.
 Jobs inherit the referenced service's startup dependencies, which start or
 update and become healthy first. Other services wait for all jobs to succeed;
 dependency changes remain if a job fails. The Routes tab
-edits public hostnames, each pointing at a service port or a redirect, and shows each deployed route's HTTPS readiness and
-diagnostics in every environment. Saving routes updates only the route field;
+edits hostnames, each pointing at a service port or a redirect with a public or
+private visibility, and shows each deployed route's effective visibility, the DNS
+records its hostname needs, HTTPS readiness and diagnostics in every environment.
+Each environment's Overview sets its visibility ceiling, and system status shows
+the private listener with the apps tailnet node's name and addresses. Saving routes updates only the route field;
 Deploy activates the change. Services lists saved services, with their observed
 health merged in when the application has one environment. The Secrets tab
 edits each service's secret file references; values are set on environment

@@ -36,6 +36,16 @@ auto_initialize_swarm = true
 # Requires Docker 28+ and free public ports 80/443. Restart to apply.
 enabled = false
 
+# Private routes, served to the tailnet through a second tailnet node, the apps
+# node: a Tailscale container beside the gateway, named
+# piqueld-apps.<tailnet>.ts.net. Its state lives in <data_dir>/ingress/tailscale.
+# Without an auth key, the daemon logs a login URL. Private routes need DNS-01
+# certificates, so configure [[dns.providers]] for their zones. Restart to apply.
+[ingress.private]
+enabled = false
+hostname = "piqueld-apps"
+# auth_key_file = "/tmp/piqueld-dev-ts-apps-auth-key"
+
 # ACME account for certificates piqueld issues itself through DNS-01.
 [ingress.acme]
 directory = "https://acme-v02.api.letsencrypt.org/directory"

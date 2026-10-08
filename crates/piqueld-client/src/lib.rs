@@ -56,7 +56,7 @@ pub use piqueld_core::manifest::{
     Redirect, RedirectStatus, RepositoryManifest, ResourceLimits, Rollout, RolloutOrder,
     RolloutOrderSource, Route, RouteTarget, SecretMount, Service, Source, SourceRepository,
     Template, Typed, ValidatedBuild, ValidatedRollout, ValidatedSource, Variable, VariableValue,
-    Volume,
+    Visibility, Volume,
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{

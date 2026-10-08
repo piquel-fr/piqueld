@@ -195,8 +195,10 @@ impl Store {
         Ok(())
     }
 
-    /// Persists a ready cutover, or withdraws removed hostnames while retaining
-    /// existing destinations until their replacements are ready.
+    /// Persists a ready cutover, or withdraws removed routes while retaining
+    /// existing destinations until their replacements are ready. A route whose
+    /// visibility changes counts as removed, so it leaves its old listener as
+    /// the deployment starts and joins the new one once backends are ready.
     /// When `operation_id` is given, fails with `StoreError::IllegalTransition`
     /// unless it is the application's latest operation and still running, so a
     /// superseded deployment cannot publish stale routes.
@@ -232,7 +234,7 @@ impl Store {
         if ready {
             desired = routes.to_vec();
         } else {
-            desired.retain(|old| routes.iter().any(|new| new.hostname == old.hostname));
+            desired.retain(|old| routes.iter().any(|new| new.same_listener(old)));
         }
         let json = serde_json::to_string(&desired).map_err(StoreError::corrupt)?;
         sqlx::query!("INSERT INTO environment_routes(environment_id,desired_json) VALUES(?1,?2) ON CONFLICT(environment_id) DO UPDATE SET desired_json=excluded.desired_json",id,json)
@@ -725,5 +727,30 @@ mod tests {
             store.routing_table().await.unwrap()[&id],
             [] as [piqueld_core::manifest::ValidatedRoute; 0]
         );
+    }
+
+    #[tokio::test]
+    async fn changing_visibility_withdraws_the_route_until_backends_are_ready() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let input = app("one", Some("site.example.com"));
+        let saved = save(&store, input.clone(), false).await.unwrap();
+        let id = EnvironmentId::parse(saved.application_id).unwrap();
+        let mut public = input.spec().routes.clone();
+        public[0].visibility = piqueld_core::manifest::Visibility::Public;
+        store.stage_routes(&id, &public, true, None).await.unwrap();
+        // Public -> private leaves the public listener as the deployment
+        // starts; the private route joins once backends are ready.
+        let private = input.spec().routes.clone();
+        store
+            .stage_routes(&id, &private, false, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.routing_table().await.unwrap()[&id],
+            [] as [piqueld_core::manifest::ValidatedRoute; 0]
+        );
+        store.stage_routes(&id, &private, true, None).await.unwrap();
+        assert_eq!(store.routing_table().await.unwrap()[&id], private);
     }
 }

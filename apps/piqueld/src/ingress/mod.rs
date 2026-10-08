@@ -1,11 +1,14 @@
-//! Installation-owned Caddy gateway, independent of the daemon's process lifetime.
+//! Installation-owned Caddy gateway, independent of the daemon's process
+//! lifetime. Public routes are served on its published listener; private
+//! routes on a private listener that only the apps tailnet node reaches.
 mod certificates;
 mod configuration;
 mod gateway;
+mod node;
 mod wire;
 
 use crate::{
-    config::{AcmeConfig, DnsConfig},
+    config::{AcmeConfig, DnsConfig, PrivateIngressConfig},
     dns::Dns,
     store::{Store, ingress::RoutingTable, now_ms},
 };
@@ -13,11 +16,13 @@ use anyhow::{Context, Result};
 use certificates::Certificates;
 use futures_util::{StreamExt, stream};
 use piqueld_core::{
-    api::{IngressStatus, RouteStatus},
-    manifest::{Hostname, ValidatedRoute},
+    EnvironmentId,
+    api::{DnsRecords, IngressStatus, PrivateIngressStatus, RouteStatus},
+    manifest::{Hostname, ValidatedRoute, Visibility},
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -30,6 +35,8 @@ use wire::UnixApi;
 /// Version released with piqueld; upgrades deliberately replace the gateway.
 pub const CADDY_IMAGE: &str =
     "caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b";
+/// Version of the apps tailnet node released with piqueld; upgrades replace it.
+pub const TAILSCALE_IMAGE: &str = "tailscale/tailscale:v1.102.5@sha256:c507f3a2a6ab1cabd8d809b98edeb41edbd5c3fb6ad9632ffd098b4c7d0b4065";
 
 /// Serializes gateway configuration, lifecycle, and durable route projection.
 pub struct Ingress {
@@ -58,14 +65,21 @@ pub struct Ingress {
     /// periodic repair pass, which the daemon makes on its own.
     requester: Mutex<Option<String>>,
     health: RwLock<IngressStatus>,
-    /// Unix timestamp (seconds) up to which Caddy logs were already relayed.
-    logs_since: Mutex<u64>,
+    /// Unix timestamp (seconds) up to which each container's logs were relayed.
+    logs_since: Mutex<BTreeMap<String, u64>>,
     /// DNS providers and the DNS-01 certificates loaded into Caddy.
     certificates: Certificates,
+    /// The apps tailnet node, while `[ingress.private]` is enabled.
+    node: Option<node::Node>,
     #[cfg(test)]
     issuer: Option<serde_json::Value>,
     #[cfg(test)]
     extra_hosts: Vec<String>,
+    /// Publishes the private listener on the engine's port 8443, trusts PROXY
+    /// headers from anywhere, and probes it on this loopback port, so tests
+    /// outside the engine can reach it.
+    #[cfg(test)]
+    private_port: Option<u16>,
 }
 
 impl Ingress {
@@ -101,11 +115,7 @@ impl Ingress {
                 request_timeout.as_secs(),
                 bollard::API_DEFAULT_VERSION,
             )?,
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(5))
-                .redirect(reqwest::redirect::Policy::none())
-                .no_proxy()
-                .build()?,
+            client: Self::probe_client().build()?,
             store,
             update: Mutex::new(()),
             requester: Mutex::new(None),
@@ -113,15 +123,36 @@ impl Ingress {
                 enabled,
                 healthy: false,
                 message: "Waiting for gateway reconciliation".into(),
+                private: PrivateIngressStatus::default(),
                 routes: Vec::new(),
             }),
-            logs_since: Mutex::new(0),
+            logs_since: Mutex::default(),
             certificates,
+            node: None,
             #[cfg(test)]
             issuer: None,
             #[cfg(test)]
             extra_hosts: Vec::new(),
+            #[cfg(test)]
+            private_port: None,
         })
+    }
+
+    /// Serves private routes through the apps tailnet node when
+    /// `[ingress.private]` enables it.
+    #[must_use]
+    pub fn with_private(mut self, config: &PrivateIngressConfig) -> Self {
+        self.node = node::Node::new(config, &self.directory);
+        self
+    }
+
+    /// HTTPS client settings for route probes: bounded, and never following
+    /// redirects or proxies.
+    fn probe_client() -> reqwest::ClientBuilder {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
     }
 
     /// Configures DNS providers and the ACME account for DNS-01 certificates.
@@ -150,8 +181,9 @@ impl Ingress {
 
     /// Applies one application's deployment boundary under the gateway writer lock.
     /// Stages the routes, then synchronizes the gateway unless backends are not
-    /// ready yet and no hostname is being withdrawn. Fails for this application's
-    /// own network failures, not for other applications'.
+    /// ready yet and no route is being withdrawn. A route whose visibility
+    /// changes is withdrawn from its old listener like a removal. Fails for
+    /// this application's own network failures, not for other applications'.
     pub(crate) async fn apply(
         &self,
         operation: &piqueld_core::Operation,
@@ -170,7 +202,7 @@ impl Ingress {
         if !ready
             && previous
                 .iter()
-                .all(|old| routes.iter().any(|new| new.hostname == old.hostname))
+                .all(|old| routes.iter().any(|new| new.same_listener(old)))
         {
             return Ok(());
         }
@@ -187,9 +219,18 @@ impl Ingress {
     }
 
     /// Hostnames served with DNS-01 certificates instead of Caddy's automatic
-    /// HTTPS. Only private routes (#164) need them, and no route is private yet.
-    fn dns01_hostnames(_table: &RoutingTable) -> BTreeSet<Hostname> {
-        BTreeSet::new()
+    /// HTTPS: private routes, which a public CA cannot reach, while private
+    /// ingress is enabled.
+    fn dns01_hostnames(&self, table: &RoutingTable) -> BTreeSet<Hostname> {
+        if self.node.is_none() {
+            return BTreeSet::new();
+        }
+        table
+            .values()
+            .flatten()
+            .filter(|route| route.visibility == Visibility::Private)
+            .map(|route| route.hostname.clone())
+            .collect()
     }
 
     /// Every minute, issues and renews the DNS-01 certificates deployed routes
@@ -201,7 +242,7 @@ impl Ingress {
             tokio::select! { ()=cancellation.cancelled()=>return, _=tick.tick()=>{} }
             let desired = if self.enabled {
                 match self.store.routing_table().await {
-                    Ok(table) => Self::dns01_hostnames(&table),
+                    Ok(table) => self.dns01_hostnames(&table),
                     Err(error) => {
                         tracing::warn!(error=?error, "could not read routes needing certificates");
                         continue;
@@ -239,7 +280,7 @@ impl Ingress {
         }
     }
 
-    /// Every 15s, refreshes route status by probing public HTTPS for acknowledged routes.
+    /// Every 15s, refreshes route status by probing HTTPS for acknowledged routes.
     async fn run_probes(&self, cancellation: &CancellationToken) {
         let mut tick = tokio::time::interval(Duration::from_secs(15));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -258,10 +299,12 @@ impl Ingress {
     /// Converges the gateway with the durable routing table and updates health.
     ///
     /// When enabled: verifies ingress networks, ensures the gateway container,
-    /// applies routes and attachments, then acknowledges the applied table. When
-    /// disabled: stops the gateway and acknowledges the withdrawal. Callers must
-    /// hold the writer lock. Network failures degrade health; they fail the call
-    /// only for `application` (or for any application when `None`).
+    /// applies routes and attachments, acknowledges the applied table, then
+    /// ensures the apps node. When disabled: stops the gateway and the node and
+    /// acknowledges the withdrawal. Callers must hold the writer lock. Network
+    /// failures degrade health; they fail the call only for `application` (or
+    /// for any application when `None`). Node failures degrade only the
+    /// private listener's health.
     async fn synchronize_for(
         &self,
         application: Option<&piqueld_core::EnvironmentId>,
@@ -292,6 +335,7 @@ impl Ingress {
         }
         .await
         .context(stage);
+        let private = self.private_status(result.is_ok()).await;
         let healthy = result.is_ok() && failures.is_empty();
         // Health transitions become history, and sustained failures notify
         // administrators, like other daemon dependencies.
@@ -304,6 +348,7 @@ impl Ingress {
         }
         let mut health = self.health.write().await;
         health.healthy = healthy;
+        health.private = private;
         health.message = match &result {
             Ok(()) if !failures.is_empty() => format!(
                 "Ingress degraded: {} application network(s) unavailable. See daemon logs for details.",
@@ -312,7 +357,7 @@ impl Ingress {
             Ok(()) if self.enabled => {
                 "Caddy is running and routing configuration is applied".into()
             }
-            Ok(()) => "Ingress is disabled in daemon TOML; public listeners are stopped".into(),
+            Ok(()) => "Ingress is disabled in daemon TOML; its listeners are stopped".into(),
             Err(error) => {
                 tracing::error!(error=?error, "managed ingress is unhealthy");
                 format!("Ingress unavailable: could not {stage}. See daemon logs for details.")
@@ -327,6 +372,39 @@ impl Ingress {
         Ok(())
     }
 
+    /// The private listener's health: whether private ingress is enabled, and
+    /// the apps node's state once the gateway is up. Ensures the node, or
+    /// removes a leftover one while private ingress is disabled. Callers hold
+    /// the writer lock.
+    async fn private_status(&self, gateway: bool) -> PrivateIngressStatus {
+        let unavailable = |message: &str| PrivateIngressStatus {
+            enabled: self.node.is_some(),
+            message: message.into(),
+            ..PrivateIngressStatus::default()
+        };
+        if !self.enabled {
+            return unavailable("Ingress is disabled in daemon TOML; the apps node is stopped");
+        }
+        if !gateway {
+            return unavailable(
+                "The gateway is unavailable, and with it the private listener. See ingress health",
+            );
+        }
+        if let Err(error) = self.ensure_node().await {
+            tracing::error!(error=?error, "apps tailnet node is unavailable");
+            return unavailable(
+                "Apps node unavailable: could not run its container. See daemon logs for details.",
+            );
+        }
+        let Some(node) = &self.node else {
+            return unavailable("Private ingress is disabled in daemon TOML ([ingress.private])");
+        };
+        self.node_status(node).await.unwrap_or_else(|error| {
+            tracing::warn!(error=?error, "apps tailnet node status is unavailable");
+            unavailable("Apps node starting: its LocalAPI did not answer yet. See daemon logs if this persists.")
+        })
+    }
+
     /// Recomputes per-route status, probing up to four routes concurrently. When
     /// ingress is enabled, only routes the gateway has acknowledged are probed and
     /// the rest stay pending; when disabled, routes report disabled (or failed while
@@ -335,37 +413,34 @@ impl Ingress {
         let Ok(table) = self.store.routing_table().await else {
             return;
         };
-        let healthy = self.health.read().await.healthy;
+        let (healthy, private) = {
+            let health = self.health.read().await;
+            (health.healthy, health.private.clone())
+        };
         let routes: Vec<_> = table
             .into_iter()
             .flat_map(|(id, routes)| routes.into_iter().map(move |route| (id.clone(), route)))
             .collect();
-        let mut probes = stream::iter(routes).map(|(id,route)| async move {
-            let mut status = RouteStatus {
-                environment_id: id.to_string(), hostname: route.hostname.to_string(), target: route.target.clone(),
-                state: "disabled".into(), message: "Ingress is disabled in daemon configuration".into(),
-            };
-            if !self.enabled && !healthy {
-                status.state = "failed".into();
-                status.message = "Gateway shutdown is not confirmed; public routing may still be active. See ingress health".into();
-            }
-            if self.enabled {
-                status.state = "pending".into();
-                status.message = "Waiting for the gateway configuration to be applied".into();
-                // A broken app must not hide verified readiness for unrelated
-                // routes. Only probe destinations acknowledged by the gateway.
-                if self.store.applied_routes(&id).await.is_ok_and(|applied| applied.contains(&route)) {
-                    match self.probe_https(route.hostname.as_str()).await {
-                        Ok(()) => { status.state="ready".into(); status.message="DNS and trusted HTTPS verified from this daemon; backend health is reported separately".into(); }
-                        Err(error) => {
-                            tracing::debug!(hostname=%route.hostname,error=?error,"public HTTPS is not ready");
-                            status.message="Public HTTPS is not verified yet. Check DNS A/AAAA records, inbound ports 80/443, and Caddy certificate diagnostics in daemon logs".into();
-                        }
-                    }
+        let private = &private;
+        let mut probes = stream::iter(routes)
+            .map(|(id, route)| async move {
+                let (state, message) = self.route_state(&id, &route, healthy, private).await;
+                RouteStatus {
+                    environment_id: id.to_string(),
+                    hostname: route.hostname.to_string(),
+                    visibility: route.visibility,
+                    dns: match route.visibility {
+                        Visibility::Public => DnsRecords::ServerAddresses,
+                        Visibility::Private => DnsRecords::TailnetAddresses {
+                            addresses: private.addresses.clone(),
+                        },
+                    },
+                    target: route.target,
+                    state: state.into(),
+                    message,
                 }
-            }
-            status
-        }).buffer_unordered(4);
+            })
+            .buffer_unordered(4);
         let mut statuses = Vec::new();
         while let Some(status) = probes.next().await {
             statuses.push(status);
@@ -374,16 +449,111 @@ impl Ingress {
         self.health.write().await.routes = statuses;
     }
 
-    /// Verifies DNS and trusted TLS by fetching the gateway's probe endpoint and
-    /// requiring this instance's identity (at most 256 bytes) as the body.
+    /// One route's state and message. Private routes are disabled without
+    /// private ingress, fail without a certificate, and wait for the apps node.
+    async fn route_state(
+        &self,
+        id: &EnvironmentId,
+        route: &ValidatedRoute,
+        healthy: bool,
+        private: &PrivateIngressStatus,
+    ) -> (&'static str, String) {
+        if !self.enabled {
+            return if healthy {
+                (
+                    "disabled",
+                    "Ingress is disabled in daemon configuration".into(),
+                )
+            } else {
+                ("failed", "Gateway shutdown is not confirmed; routing may still be active. See ingress health".into())
+            };
+        }
+        let is_private = route.visibility == Visibility::Private;
+        if is_private {
+            if self.node.is_none() {
+                return ("disabled", "Private ingress is disabled in daemon TOML ([ingress.private]), so this private route is not served".into());
+            }
+            if let Some(problem) = self.certificates.problem(&route.hostname) {
+                return ("failed", format!("No DNS-01 certificate: {problem}"));
+            }
+        }
+        // A broken app must not hide verified readiness for unrelated
+        // routes. Only probe destinations acknowledged by the gateway.
+        if !self
+            .store
+            .applied_routes(id)
+            .await
+            .is_ok_and(|applied| applied.contains(route))
+        {
+            return (
+                "pending",
+                "Waiting for the gateway configuration to be applied".into(),
+            );
+        }
+        if is_private && !private.healthy {
+            return ("pending", private.message.clone());
+        }
+        let result = if is_private {
+            self.probe_private(&route.hostname, &private.addresses)
+                .await
+        } else {
+            self.probe_https(&self.client, &format!("https://{}", route.hostname))
+                .await
+        };
+        match result {
+            Ok(()) if is_private => ("ready", "DNS points at the apps node and the private listener serves trusted HTTPS; the tailnet hop and backend health are reported separately".into()),
+            Ok(()) => ("ready", "DNS and trusted HTTPS verified from this daemon; backend health is reported separately".into()),
+            Err(error) => {
+                tracing::debug!(hostname=%route.hostname, visibility=%route.visibility, error=?error, "HTTPS is not ready");
+                let message = if is_private {
+                    "Private HTTPS is not verified yet. Check that DNS A/AAAA records point at the apps node's tailnet addresses, and DNS-01 certificate diagnostics in daemon logs"
+                } else {
+                    "Public HTTPS is not verified yet. Check DNS A/AAAA records, inbound ports 80/443, and Caddy certificate diagnostics in daemon logs"
+                };
+                ("pending", message.into())
+            }
+        }
+    }
+
+    /// Verifies a private route without crossing the tailnet:
+    ///
+    /// 1. Public DNS must answer exactly the apps node's tailnet addresses.
+    /// 2. The private listener, reached over the edge network with the
+    ///    hostname as SNI, must serve a trusted certificate and this
+    ///    installation's probe endpoint. The edge network is trusted with or
+    ///    without a PROXY header, so a plain TLS client suffices.
+    async fn probe_private(&self, hostname: &Hostname, addresses: &[String]) -> Result<()> {
+        let expected: BTreeSet<IpAddr> = addresses
+            .iter()
+            .filter_map(|address| address.parse().ok())
+            .collect();
+        let resolved: BTreeSet<IpAddr> = tokio::net::lookup_host((hostname.as_str(), 443))
+            .await
+            .with_context(|| format!("resolve {hostname}"))?
+            .map(|address| address.ip())
+            .collect();
+        anyhow::ensure!(
+            !expected.is_empty() && resolved == expected,
+            "DNS answers {resolved:?} instead of the apps node's addresses {expected:?}"
+        );
+        let listener = self.private_listener().await?;
+        let client = Self::probe_client()
+            .resolve(hostname.as_str(), listener)
+            .build()?;
+        self.probe_https(&client, &format!("https://{hostname}:{}", listener.port()))
+            .await
+    }
+
+    /// Verifies DNS and trusted TLS by fetching the gateway's probe endpoint at
+    /// `origin` and requiring this instance's identity (at most 256 bytes) as
+    /// the body.
     ///
     /// ```text
     /// GET https://<hostname>/.well-known/piqueld-ingress  ->  200 "<instance_id>"
     /// ```
-    async fn probe_https(&self, hostname: &str) -> Result<()> {
-        let response = self
-            .client
-            .get(format!("https://{hostname}/.well-known/piqueld-ingress"))
+    async fn probe_https(&self, client: &reqwest::Client, origin: &str) -> Result<()> {
+        let response = client
+            .get(format!("{origin}/.well-known/piqueld-ingress"))
             .send()
             .await?;
         anyhow::ensure!(

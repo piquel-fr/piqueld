@@ -12,6 +12,7 @@ let
   ];
   withoutNulls = lib.filterAttrsRecursive (_: value: value != null);
   tailscale = cfg.settings.tailscale;
+  privateIngress = cfg.settings.ingress.private;
   destinations = cfg.settings.notifications.destinations;
   # `_file` settings name host files. systemd copies each into the unit's
   # private $CREDENTIALS_DIRECTORY, so the files may stay root-only, and the
@@ -43,6 +44,9 @@ let
       }
       // lib.optionalAttrs (tailscale.auth_key_file != null) {
         tailscale.auth_key_file = "ts-auth-key";
+      }
+      // lib.optionalAttrs (privateIngress.auth_key_file != null) {
+        ingress.private.auth_key_file = "ts-apps-auth-key";
       }
     )
   );
@@ -142,6 +146,22 @@ in
             type = lib.types.nullOr lib.types.str;
             default = null;
             description = "Optional ACME account contact for expiry and policy notices from the CA.";
+          };
+          ingress.private.enabled = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Serve private routes to the tailnet through a second tailnet node, run as a container beside the gateway. Private routes need DNS-01 certificates through dns.providers. Restart piqueld to apply.";
+          };
+          ingress.private.hostname = lib.mkOption {
+            type = lib.types.strMatching "[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
+            default = "piqueld-apps";
+            description = "Apps node name, which becomes <hostname>.<tailnet>.ts.net. Must differ from tailscale.hostname.";
+          };
+          ingress.private.auth_key_file = lib.mkOption {
+            # A string, not a path, so the secret is never copied into the Nix store.
+            type = lib.types.nullOr (lib.types.strMatching "/.+");
+            default = null;
+            description = "Host file with a Tailscale auth key for the apps node's first login, such as an agenix secret, passed to piqueld as a systemd credential. Without one, the daemon logs the node's login URL.";
           };
           dns.providers = lib.mkOption {
             type = lib.types.listOf (
@@ -392,6 +412,9 @@ in
         ExecStart = "${cfg.package}/bin/piqueld --config ${configuration}";
         LoadCredential =
           lib.optional (tailscale.auth_key_file != null) "ts-auth-key:${tailscale.auth_key_file}"
+          ++ lib.optional (
+            privateIngress.auth_key_file != null
+          ) "ts-apps-auth-key:${privateIngress.auth_key_file}"
           ++ lib.concatLists (
             lib.imap0 (
               index: destination:

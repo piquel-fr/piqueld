@@ -1,7 +1,7 @@
 //! Public manifest input and export shapes, before semantic validation.
 
 use super::variables::{Template, Typed};
-use super::{APPLICATION_API_VERSION, APPLICATION_KIND};
+use super::{APPLICATION_API_VERSION, APPLICATION_KIND, Visibility};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -81,7 +81,7 @@ pub struct ApplicationSpec {
     pub services: Vec<Service>,
     /// Declared named volumes.
     pub volumes: Vec<Volume>,
-    /// Exact public HTTP routes, activated on deployment.
+    /// Exact-hostname HTTP routes, activated on deployment.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<Route>,
     /// Application secrets whose values piqueld generates once.
@@ -97,6 +97,9 @@ pub struct ApplicationSpec {
     /// Configuration for each environment, selected by environment name.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub environments: BTreeMap<String, EnvironmentConfig>,
+    /// Configuration shared by every preview.
+    #[serde(skip_serializing_if = "PreviewConfig::is_default")]
+    pub previews: PreviewConfig,
 }
 
 impl ApplicationSpec {
@@ -108,16 +111,68 @@ impl ApplicationSpec {
             .flat_map(|service| service.secrets.iter().map(|secret| secret.name.as_str()))
             .collect()
     }
+
+    /// Sets `environment`'s visibility ceiling, dropping its block when left
+    /// at its defaults, since such a block configures nothing.
+    pub fn set_environment_visibility(&mut self, environment: &str, visibility: Visibility) {
+        let config = self.environments.entry(environment.to_owned()).or_default();
+        config.visibility = visibility;
+        if *config == EnvironmentConfig::default() {
+            self.environments.remove(environment);
+        }
+    }
+
+    /// Caps every route at `environment`'s visibility ceiling, as rendering
+    /// for that environment does. Unconfigured environments restrict nothing.
+    pub(super) fn cap_visibility(&mut self, environment: &str) {
+        let ceiling = self
+            .environments
+            .get(environment)
+            .map_or(Visibility::Public, |config| config.visibility);
+        for route in &mut self.routes {
+            route.visibility = route.visibility.capped(ceiling);
+        }
+    }
 }
 
 /// Configuration of one environment, `[spec.environments.<name>]`.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct EnvironmentConfig {
+    /// The strictest visibility this environment's routes get. The default,
+    /// `public`, restricts nothing; `private` keeps every route on the tailnet.
+    #[serde(skip_serializing_if = "Visibility::is_public")]
+    pub visibility: Visibility,
     /// This environment's values: each overrides the `[spec.variables]` default
     /// of the same name, or declares a variable without a default.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub variables: BTreeMap<String, Variable>,
+}
+
+impl Default for EnvironmentConfig {
+    fn default() -> Self {
+        Self {
+            visibility: Visibility::Public,
+            variables: BTreeMap::new(),
+        }
+    }
+}
+
+/// Configuration shared by previews, `[spec.previews]`.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct PreviewConfig {
+    /// The strictest visibility preview routes get; `private` by default, so
+    /// previews publish routes only with an explicit `public`.
+    pub visibility: Visibility,
+}
+
+impl PreviewConfig {
+    /// Whether every setting has its default, so exports can omit the block.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// A declared variable value: a string, integer, or boolean. Strings may
@@ -548,13 +603,17 @@ pub enum SecretEncoding {
     Base64url,
 }
 
-/// Public HTTP route input, validated independently of ingress enablement.
+/// HTTP route input, validated independently of ingress enablement.
 /// A route sets either `service` and `port`, or `redirect`.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
     /// Exact public DNS hostname.
     pub hostname: Template,
+    /// Who may connect; `private` (tailnet only) by default. Its environment's
+    /// ceiling can make it stricter, never looser.
+    #[serde(default)]
+    pub visibility: Visibility,
     /// Logical service in this application.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
@@ -570,9 +629,10 @@ pub struct Route {
 impl Route {
     /// A route proxying `hostname` to a service's internal HTTP port.
     #[must_use]
-    pub fn service(hostname: String, service: String, port: u16) -> Self {
+    pub fn service(hostname: String, visibility: Visibility, service: String, port: u16) -> Self {
         Self {
             hostname: hostname.into(),
+            visibility,
             service: Some(service),
             port: Some(port),
             redirect: None,
@@ -581,9 +641,10 @@ impl Route {
 
     /// A route redirecting `hostname` without reaching a service.
     #[must_use]
-    pub fn redirect(hostname: String, redirect: Redirect) -> Self {
+    pub fn redirect(hostname: String, visibility: Visibility, redirect: Redirect) -> Self {
         Self {
             hostname: hostname.into(),
+            visibility,
             service: None,
             port: None,
             redirect: Some(redirect),

@@ -84,6 +84,81 @@ impl RedirectUrl {
     }
 }
 
+/// Invalid visibility input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("visibility must be public or private")]
+pub struct VisibilityError;
+
+/// Who may connect to a route: everyone, or only tailnet devices. It says
+/// nothing about how traffic arrives; the installation decides that.
+///
+/// Variants are ordered from least to most restrictive, so the stricter of
+/// two visibilities is their maximum.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Deserialize,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    /// Reachable from the internet.
+    Public,
+    /// Reachable only from the tailnet, on the same hostname.
+    #[default]
+    Private,
+}
+
+impl Visibility {
+    /// This visibility capped by an environment or preview `ceiling`: the
+    /// stricter of the two. A route can only become stricter.
+    ///
+    /// ```text
+    /// public  capped by private -> private
+    /// private capped by public  -> private
+    /// ```
+    #[must_use]
+    pub fn capped(self, ceiling: Self) -> Self {
+        self.max(ceiling)
+    }
+
+    /// Whether this is [`Self::Public`].
+    #[must_use]
+    pub const fn is_public(&self) -> bool {
+        matches!(self, Self::Public)
+    }
+}
+
+/// `public` or `private`, as written in manifests.
+impl fmt::Display for Visibility {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Public => "public",
+            Self::Private => "private",
+        })
+    }
+}
+
+impl std::str::FromStr for Visibility {
+    type Err = VisibilityError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text {
+            "public" => Ok(Self::Public),
+            "private" => Ok(Self::Private),
+            _ => Err(VisibilityError),
+        }
+    }
+}
+
 /// Invalid redirect status input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("redirect status must be 301, 302, 303, 307, or 308")]
@@ -229,12 +304,24 @@ impl fmt::Display for RouteTarget {
 pub struct ValidatedRoute {
     /// Exact canonical public hostname.
     pub hostname: Hostname,
+    /// Effective visibility: the route's own, capped by its environment's
+    /// ceiling when the manifest was rendered.
+    #[serde(default)]
+    pub visibility: Visibility,
     /// Backend service or redirect.
     #[serde(flatten)]
     pub target: RouteTarget,
 }
 
 impl ValidatedRoute {
+    /// Whether `other` serves the same hostname on the same listener. A route
+    /// that no longer matches any new route is withdrawn, so changing its
+    /// visibility withdraws it like a removal.
+    #[must_use]
+    pub fn same_listener(&self, other: &Self) -> bool {
+        self.hostname == other.hostname && self.visibility == other.visibility
+    }
+
     /// Converts input already checked by manifest validation.
     pub(super) fn from_input(route: input::Route, index: usize) -> Result<Self, ValidationErrors> {
         let path = format!("spec.routes[{index}]");
@@ -267,6 +354,7 @@ impl ValidatedRoute {
         };
         Ok(Self {
             hostname: Hostname::parse(literal(route.hostname)?).map_err(|e| invalid(&e))?,
+            visibility: route.visibility,
             target: fields.try_into().map_err(|e| invalid(&e))?,
         })
     }
@@ -289,6 +377,7 @@ impl ValidatedRoute {
         };
         input::Route {
             hostname: Template::literal(self.hostname.as_str()),
+            visibility: self.visibility,
             service,
             port,
             redirect,
@@ -367,7 +456,7 @@ mod tests {
         let route = &app.spec().routes[0];
         assert_eq!(
             serde_json::to_value(route).unwrap(),
-            serde_json::json!({"hostname":"www.example.com","redirect":{"to":"https://example.com/","status":308,"preserve_path":true}})
+            serde_json::json!({"hostname":"www.example.com","visibility":"private","redirect":{"to":"https://example.com/","status":308,"preserve_path":true}})
         );
         let RouteTarget::Redirect { redirect: target } = &route.target else {
             panic!("redirect route")
@@ -461,6 +550,8 @@ mod tests {
                 "{route}"
             );
             route["environment_id"] = "test-app".into();
+            route["visibility"] = "private".into();
+            route["dns"] = serde_json::json!({"type":"server_addresses"});
             route["state"] = "ready".into();
             route["message"] = "".into();
             assert!(

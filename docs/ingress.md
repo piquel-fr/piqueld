@@ -1,8 +1,9 @@
 # Managed HTTP ingress
 
 Piqueld manages one Caddy gateway for a single-node installation used by one trusted
-person or team. Applications own exact-host routes; the installation owns public
-listeners and certificate storage. Apps must implement their own authentication.
+person or team. Applications own exact-host routes; the installation owns the
+listeners and certificate storage. Routes are public (the internet) or private (the
+tailnet only, the default). Apps must implement their own authentication.
 
 ## Enable and expose an application
 
@@ -27,7 +28,11 @@ Add a route to an application manifest and deploy it:
 hostname = "notes.example.com"
 service = "web"
 port = 3000
+visibility = "public"
 ```
+
+Routes without `visibility` are private; see
+[public and private routes](#public-and-private-routes).
 
 A route can instead redirect its hostname, for example `www` to the apex domain.
 Caddy answers redirects itself; they need no service and get certificates the
@@ -37,6 +42,7 @@ same way:
 [[spec.routes]]
 hostname = "www.notes.example.com"
 redirect = { to = "https://notes.example.com" }
+visibility = "public"
 ```
 
 The dashboard's Routes tab supports the same save/deploy lifecycle. Removing a
@@ -50,16 +56,134 @@ The backend serves plain HTTP on its internal port. WebSockets and streaming are
 supported. Wildcards, path rewriting/routing, tunnels, arbitrary TCP/UDP, and
 HTTPS backends are outside this release.
 
+## Public and private routes
+
+`visibility` says who may connect to a route, not how traffic arrives:
+
+- `public`: anyone on the internet, through the published ports 80 and 443.
+- `private` (default): only devices on the tailnet, on the same hostname. Off the
+  tailnet, connections simply fail.
+
+Environments and previews cap their routes' visibility. A route's effective
+visibility is the stricter of its own and its ceiling, so a ceiling can make a
+route private but never public:
+
+```toml
+[spec.variables]
+domain = "piquel.fr"
+
+[spec.environments.staging]
+visibility = "private"              # environments default to "public"
+
+[spec.environments.staging.variables]
+domain = "staging.piquel.fr"
+
+[spec.previews]
+visibility = "private"              # the default for previews
+
+[[spec.routes]]
+hostname = "${{ vars.domain }}"
+service = "web"
+port = 3000
+visibility = "public"
+
+[[spec.routes]]
+hostname = "admin.${{ vars.domain }}"
+service = "admin"
+port = 3000
+```
+
+| Environment | Hostname | Reachable from |
+| --- | --- | --- |
+| production | `piquel.fr` | internet |
+| production | `admin.piquel.fr` | tailnet |
+| staging | `staging.piquel.fr`, `admin.staging.piquel.fr` | tailnet |
+
+The effective visibility is computed when a deployment renders the manifest and is
+stored with its deployed routes. Changing it is a route change: public → private
+withdraws the route from the public listener as the deployment starts, like a
+removal, and private → public publishes it once backends are ready, like an
+addition. Hostname reservations ignore visibility.
+
+`piquelctl app route add|redirect ... --visibility public|private`,
+`piquelctl app route visibility <app> <hostname> <public|private>` and
+`piquelctl env visibility <app> <env> <public|private>` edit the saved manifest;
+the dashboard has a visibility selector per route in the Routes tab and the
+ceiling in each environment's Overview.
+
+### Listeners
+
+Caddy runs one server per listener, each with its own routes:
+
+| Server | Listens on | Serves |
+| --- | --- | --- |
+| `public` | host `:80` and `:443` (published) | public routes |
+| `private` | `:8443` HTTPS and `:8081` HTTP → HTTPS (not published) | private routes |
+
+A hostname appears only on its own listener, and each listener's TLS policy
+completes handshakes only for its own hostnames. A forged Host header for a
+private route on the public listener therefore receives a 404, and a forged SNI
+no certificate. The private listener accepts connections only from the gateway's
+edge network, through a PROXY protocol header, and rejects every other peer,
+including application networks. Both listeners serve the probe endpoint. If
+private ingress fails, private routes are unavailable; they never fall back to the
+public listener.
+
+### The apps tailnet node
+
+Private traffic arrives through a second tailnet node, separate from the daemon's
+own `[tailscale]` node: that one terminates TLS itself and must not depend on
+Docker, while application traffic passes through to Caddy with its TLS intact. A
+separate node also gets its own ACLs and tags. Enable it in daemon TOML and
+restart piqueld:
+
+```toml
+[ingress.private]
+enabled = true
+hostname = "piqueld-apps"            # piqueld-apps.<tailnet>.ts.net
+auth_key_file = "ts-apps-auth-key"   # $CREDENTIALS_DIRECTORY/ts-apps-auth-key
+```
+
+While it is disabled, private routes report `disabled` and are not served.
+
+The node is a pinned `tailscale/tailscale` container (version and digest, like
+Caddy's) on the gateway's edge network only, with userspace networking. It runs as
+the daemon's UID/GID with no capabilities, a read-only root and `unless-stopped`,
+and keeps running across daemon restarts. Its serve configuration, owned by
+piqueld, forwards tailnet TCP 443 to `<gateway>:8443` and TCP 80 to
+`<gateway>:8081` with a PROXY v2 header, so backends see each tailnet client's
+address in `X-Forwarded-For`. Its state lives in `<data_dir>/ingress/tailscale`;
+include it in backups to keep the node's identity.
+
+The auth key is only needed for the first login; later starts reuse the node
+state. Without one, the daemon logs the node's login URL and status reports that
+it needs login. Its lifecycle shares the gateway's: `ingress_start_tailnet`
+journal actions, drift detection by spec hash, and removal when ingress is
+disabled.
+
+### DNS for private routes
+
+DNS records are created manually. Each private hostname needs A and AAAA records
+pointing at the apps node's tailnet addresses, which status and `piquelctl app
+route list` show. A wildcard per environment (for example `staging.piquel.fr`
+plus `*.staging.piquel.fr`) means new routes need no DNS change. Names are not
+secret: they appear in public DNS and certificate transparency logs; only
+reachability is restricted. Some routers' DNS-rebinding protection drops answers
+in `100.64.0.0/10`; allowlist the domain on the router, or use Tailscale split DNS.
+
+Private routes get their certificates through [DNS-01](#dns-01-certificates). A
+private hostname outside every configured provider zone reports `failed` with that
+cause.
+
 ## DNS-01 certificates
 
-Hostnames that a public CA cannot reach, such as private routes on the tailnet
-(#164), get certificates through ACME DNS-01 instead of Caddy's automatic HTTPS.
-piqueld obtains them itself through the [DNS providers](configuration.md#dns-providers)
-in daemon TOML and loads them into stock Caddy through its admin API
-(`tls.certificates.load_pem`). Their hostnames are excluded from Caddy's automatic
-HTTPS, so Caddy never attempts HTTP-01 for them. DNS credentials stay in the
-daemon, so a compromised gateway cannot take over a domain. Public routes keep
-Caddy's automatic HTTPS; no route uses DNS-01 until private routes land.
+Private routes, which a public CA cannot reach, get certificates through ACME
+DNS-01 instead of Caddy's automatic HTTPS. piqueld obtains them itself through the
+[DNS providers](configuration.md#dns-providers) in daemon TOML and loads them into
+stock Caddy through its admin API (`tls.certificates.load_pem`). Automatic HTTPS
+is off on the private listener, so Caddy never attempts HTTP-01 for them. DNS
+credentials stay in the daemon, so a compromised gateway cannot take over a
+domain. Public routes keep Caddy's automatic HTTPS.
 
 A hostname is covered by the wildcard of its parent domain when that parent is
 the provider's zone or lies inside it, and by its exact name otherwise:
@@ -108,8 +232,9 @@ passkey origin or set cookies for it. Saving or deploying such a route fails wit
 unpublished and are logged at startup. Ingress owns ports 80/443, so the website's
 HTTPS reverse proxy must listen on a different address or host.
 
-Only Caddy publishes ports. HTTP redirects to HTTPS for known hosts; unknown HTTP
-hosts receive 404 and unknown TLS names receive no automatically issued certificate.
+Only Caddy publishes ports, and only the public listener's. HTTP redirects to
+HTTPS for known hosts; unknown HTTP hosts receive 404 and unknown TLS names
+receive no certificate.
 Each environment's exposed services share a dedicated ingress overlay with Caddy;
 environments with only redirect routes have none.
 Environment ingress networks are separate from each other and from private backend
@@ -161,7 +286,11 @@ System status displays ingress alongside Docker health; effective Settings remai
 read-only. Caddy startup/port/configuration failures leave the daemon available.
 Detailed causes and Caddy certificate diagnostics are logged by piqueld. Core
 readiness (`ready`) continues to describe database/Docker/Swarm; ingress has its own
-`enabled`, `healthy`, `message`, and `routes` fields under system readiness.
+`enabled`, `healthy`, `message`, `private`, and `routes` fields under system
+readiness. `healthy` covers the gateway and its public listener; `private` reports
+the private listener separately: the apps node's login state, `MagicDNS` name and
+tailnet addresses. A broken node degrades only private routes. Each route reports
+its effective `visibility` and the `dns` records its hostname needs.
 
 Every gateway change (network, image pull, start, replacement, recovery, route
 reload, stop) is a daemon-scoped journal action with an `ingress_*` phase, so it
@@ -171,9 +300,13 @@ diagnostics. With `daemon_failures` notifications enabled, a gateway that stays
 unhealthy past the failure threshold notifies, and its recovery follows; see
 [observability](observability.md).
 
-Deployed route status is separate from application health. A `ready` route means
-an HTTPS request from the daemon validated a publicly trusted certificate and reached
-this gateway at `/.well-known/piqueld-ingress`. This small reserved endpoint returns
+Deployed route status is separate from application health. A `ready` public route
+means an HTTPS request from the daemon validated a publicly trusted certificate and
+reached this gateway at `/.well-known/piqueld-ingress`. A `ready` private route
+means public DNS answers exactly the apps node's tailnet addresses, the node is
+logged in, and the private listener, reached over the edge network with the
+hostname as SNI, served a trusted certificate and this endpoint. The tailnet hop
+itself is not probed end to end. This small reserved endpoint returns
 the installation ID and never invokes the application. It is not a backend health
 check or proof of reachability from every external network. DNS, firewall, NAT
 loopback, or pending certificate issuance can keep a route `pending`; inspect A/AAAA
@@ -212,7 +345,13 @@ test certificates and randomly allocated loopback host ports. It covers routing,
 redirects, unknown-host rejection, network separation, gateway replacement failure
 and recovery, unrelated deployments during a stalled gateway update, withdrawals
 with a broken app network, a backend cutover held behind a failing health check,
-and forwarded client addresses arriving from the injected ingress range.
+and forwarded client addresses arriving from the injected ingress range. With
+Pebble-issued DNS-01 certificates, it checks that each listener serves only its
+own routes (a forged Host or SNI for a private route on the public listener gets a
+404 and no certificate), that a public → private change withdraws the route from
+the public listener, that the PROXY v2 client address reaches backends in
+`X-Forwarded-For`, and that the apps node container runs hardened and reports its
+state.
 Distinct backend responses establish that requests actually switch destinations.
 
 Persistent HTTP/1, HTTP/2, WebSocket and SSE connections are exercised across reloads.
@@ -229,3 +368,11 @@ reserved `/.well-known/piqueld-ingress` endpoint returns this installation's ID.
 Check both IPv4 and IPv6 when publishing both records. Keep certificate issuance and
 renewal diagnostics under observation. Public CA validation requires a real domain
 and reachable ports; the isolated suite cannot establish those deployment conditions.
+
+The apps node needs a real tailnet, so CI does not run it. Before relying on private
+routes, enable `[ingress.private]`, deploy a disposable private route, and point its
+A/AAAA records at the node's addresses. From a tailnet device, the route must answer
+over trusted HTTPS, `http://` must redirect, and the backend must see the device's
+tailnet address in `X-Forwarded-For`. From a device off the tailnet, connecting must
+fail, and the same hostname on the server's public address must answer 404 without
+a certificate.

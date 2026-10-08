@@ -2,7 +2,7 @@
 use crate::manifest::{
     ApplicationManifest, Build, EnvironmentConfig, GitRepository, HealthCheck, Job, Mount,
     RepositoryManifest, ResourceLimits, Rollout, Route, SecretMount, Service, Source,
-    SourceRepository, Template, Typed, Variable, Volume,
+    SourceRepository, Template, Typed, Variable, Visibility, Volume,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -46,6 +46,7 @@ value_request! {
     RoutesValue: Vec<Route>;
     JobsValue: Vec<Job>;
     RepositoryValue: Option<RepositoryManifest>;
+    VisibilityValue: Visibility;
 }
 
 /// Source and scaling settings saved together by the dashboard form.
@@ -102,6 +103,13 @@ pub enum ApplicationEdit {
     RemoveVolume(String),
     /// Replace every variable value.
     Variables(Variables),
+    /// Set the visibility ceiling of one environment's routes.
+    EnvironmentVisibility {
+        /// Environment name, as in `[spec.environments.<name>]`.
+        environment: String,
+        /// The strictest visibility its routes get; `public` restricts nothing.
+        visibility: Visibility,
+    },
 }
 
 /// Every variable value of an application, replaced together.
@@ -345,6 +353,12 @@ impl ApplicationEdit {
                 manifest.spec.volumes.remove(index);
             }
             Self::Variables(variables) => variables.apply(&mut manifest.spec),
+            Self::EnvironmentVisibility {
+                environment,
+                visibility,
+            } => manifest
+                .spec
+                .set_environment_visibility(&environment, visibility),
         }
         Ok(())
     }
@@ -612,6 +626,7 @@ mod tests {
         };
         ApplicationEdit::Routes(vec![Route::service(
             "app.example.com".into(),
+            crate::manifest::Visibility::Public,
             "web".into(),
             3000,
         )])

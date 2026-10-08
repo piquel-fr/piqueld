@@ -357,10 +357,24 @@ fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
         stdout.writer(),
         Capture::default().writer(),
     );
+    let ingress = piqueld_client::system::IngressStatus {
+        enabled: true,
+        healthy: true,
+        message: "Caddy is running".into(),
+        private: piqueld_client::system::PrivateIngressStatus {
+            enabled: true,
+            healthy: false,
+            state: "NeedsLogin".into(),
+            message: "The apps node needs login".into(),
+            ..Default::default()
+        },
+        routes: Vec::new(),
+    };
     console
         .emit(&crate::output::reports::StatusReport {
             status: &status,
             transport: "unix",
+            ingress: Some(&ingress),
         })
         .unwrap();
     // `dns refresh` prints the same lines without the daemon header.
@@ -375,7 +389,68 @@ fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
         "ovh (healthy): piquel.fr",
         "*.piquel.fr for admin.piquel.fr (expires at Unix ms 1)",
         "ovh create TXT record in zone piquel.fr: HTTP 403",
+        "Public listener: healthy: Caddy is running",
+        "Private listener: apps node not joined (NeedsLogin, no tailnet addresses)",
+        "Private listener problem: The apps node needs login",
     ] {
         assert!(text.contains(expected), "{text}");
     }
+}
+
+#[test]
+fn route_list_shows_visibility_dns_records_and_unready_causes() {
+    use crate::output::reports::RouteRow;
+    use piqueld_client::{
+        RouteTarget, Visibility,
+        system::{DnsRecords, RouteStatus},
+    };
+    let route = |hostname: &str, visibility, dns, state: &str| RouteRow {
+        environment: "staging".into(),
+        route: RouteStatus {
+            environment_id: "env-1".into(),
+            hostname: hostname.into(),
+            visibility,
+            dns,
+            target: serde_json::from_value::<RouteTarget>(
+                serde_json::json!({"service":"web","port":3000}),
+            )
+            .unwrap(),
+            state: state.into(),
+            message: "Waiting for the gateway configuration to be applied".into(),
+        },
+    };
+    let rows = vec![
+        route(
+            "admin.example.com",
+            Visibility::Private,
+            DnsRecords::TailnetAddresses {
+                addresses: vec!["100.64.0.1".into(), "fd7a:115c:a1e0::1".into()],
+            },
+            "pending",
+        ),
+        route(
+            "example.com",
+            Visibility::Public,
+            DnsRecords::ServerAddresses,
+            "ready",
+        ),
+    ];
+    let stdout = Capture::default();
+    let mut console = Console::with_writers(
+        false,
+        false,
+        false,
+        stdout.writer(),
+        Capture::default().writer(),
+    );
+    console.emit(&rows).unwrap();
+    let text = stdout.text();
+    for expected in [
+        "admin.example.com  staging  private  pending  web:3000  A/AAAA -> 100.64.0.1, fd7a:115c:a1e0::1",
+        "  Waiting for the gateway configuration to be applied",
+        "example.com  staging  public  ready  web:3000  A/AAAA -> this server's public addresses",
+    ] {
+        assert!(text.contains(expected), "{text}");
+    }
+    assert_eq!(text.matches("Waiting for").count(), 1, "{text}");
 }

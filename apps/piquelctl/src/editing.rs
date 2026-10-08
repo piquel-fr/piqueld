@@ -3,16 +3,25 @@ use crate::{
     cli::{Cli, CreateArgs, DeploymentArgs},
     commands::{resolve_application, wait_for_operation},
     error::{CliError, ErrorKind, Result},
-    output::{Console, reports::SavedDeploymentReport},
+    output::{
+        Console,
+        reports::{RouteRow, SavedDeploymentReport},
+    },
     support::{confirm, retry_transport},
 };
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, builder::TypedValueParser};
 use piqueld_client::{
     ApplicationView, Build, Client, GitRepository, HealthCheck, Job, JobRun, Mount, Redirect,
     RedirectStatus, RepositoryManifest, Rollout, RolloutOrder, Route, SavedApplication, Service,
-    Source, SourceRepository, Template, Typed, Variable, Volume,
+    Source, SourceRepository, Template, Typed, Variable, Visibility, Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit, Variables},
 };
+
+/// Parses `public` or `private`, listing both in help and completions.
+pub(crate) fn visibility() -> impl TypedValueParser<Value = Visibility> {
+    clap::builder::PossibleValuesParser::new(["public", "private"])
+        .map(|value| value.parse().expect("every listed value parses"))
+}
 
 // Flags shared by every edit: deployment, generation precondition, and confirmation.
 // Flattened `Args` structs use `//`: their doc comments would override the `about`
@@ -358,6 +367,10 @@ pub(crate) struct AddRouteArgs {
     service: String,
     /// Internal HTTP port.
     port: u16,
+    /// Who may connect: everyone, or only tailnet devices. The environment's
+    /// ceiling can make it stricter.
+    #[arg(long, default_value = "private", value_parser = visibility())]
+    visibility: Visibility,
 }
 #[derive(Debug, Args)]
 pub(crate) struct RedirectRouteArgs {
@@ -371,13 +384,33 @@ pub(crate) struct RedirectRouteArgs {
     /// Drop the request path and query instead of appending them to the destination.
     #[arg(long)]
     no_preserve_path: bool,
+    /// Who may connect: everyone, or only tailnet devices.
+    #[arg(long, default_value = "private", value_parser = visibility())]
+    visibility: Visibility,
+}
+#[derive(Debug, Args)]
+pub(crate) struct RouteVisibilityArgs {
+    #[command(flatten)]
+    target: RouteTarget,
+    /// `public` or `private` (tailnet only).
+    #[arg(value_parser = visibility())]
+    visibility: Visibility,
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum RouteCommand {
+    /// List an application's deployed routes: visibility, the DNS records
+    /// their hostnames need, and their state.
+    List {
+        /// Application name or stable ID.
+        app: String,
+    },
     /// Add an HTTPS route to an application.
     Add(AddRouteArgs),
     /// Add an HTTPS route the gateway answers with a redirect.
     Redirect(RedirectRouteArgs),
+    /// Change who may connect to a route. Changing it withdraws the route from
+    /// its old listener as the next deployment starts.
+    Visibility(RouteVisibilityArgs),
     /// Remove an HTTPS route by hostname.
     Remove(RouteTarget),
 }
@@ -745,9 +778,10 @@ impl VolumeCommand {
     }
 }
 impl RouteCommand {
-    /// Edits routes client-side and saves the whole list: loads the application,
-    /// appends or removes (by normalized hostname) a route, then saves against the
-    /// same loaded generation. Removing an unknown hostname is an input error.
+    /// Lists deployed routes, or edits routes client-side and saves the whole
+    /// list: loads the application, appends a route or changes or removes one
+    /// (by normalized hostname), then saves against the same loaded generation.
+    /// Changing or removing an unknown hostname is an input error.
     pub(crate) async fn run(
         &self,
         cli: &Cli,
@@ -755,40 +789,55 @@ impl RouteCommand {
         console: &mut Console,
     ) -> Result<()> {
         let target = match self {
+            Self::List { app } => return list_routes(client, console, app).await,
             Self::Add(args) => &args.target,
             Self::Redirect(args) => &args.target,
+            Self::Visibility(args) => &args.target,
             Self::Remove(target) => target,
         };
         let current = resolve_application(client, &target.app).await?;
         let mut routes = current.application.to_manifest().spec.routes;
+        // Literal hostnames are saved canonically; references as written.
+        let hostname = if Template::mentions_reference(&target.hostname) {
+            target.hostname.clone()
+        } else {
+            target.hostname.trim_end_matches('.').to_ascii_lowercase()
+        };
+        let not_found = || {
+            CliError::new(
+                ErrorKind::Input,
+                format!("route {:?} was not found", target.hostname),
+            )
+        };
         match self {
+            Self::List { .. } => unreachable!("listing returned above"),
             Self::Add(args) => routes.push(Route::service(
                 target.hostname.clone(),
+                args.visibility,
                 args.service.clone(),
                 args.port,
             )),
             Self::Redirect(args) => routes.push(Route::redirect(
                 target.hostname.clone(),
+                args.visibility,
                 Redirect {
                     to: args.to.clone(),
                     status: args.status,
                     preserve_path: !args.no_preserve_path,
                 },
             )),
+            Self::Visibility(args) => {
+                routes
+                    .iter_mut()
+                    .find(|route| route.hostname.as_str() == hostname)
+                    .ok_or_else(not_found)?
+                    .visibility = args.visibility;
+            }
             Self::Remove(_) => {
                 let count = routes.len();
-                // Literal hostnames are saved canonically; references as written.
-                let hostname = if Template::mentions_reference(&target.hostname) {
-                    target.hostname.clone()
-                } else {
-                    target.hostname.trim_end_matches('.').to_ascii_lowercase()
-                };
                 routes.retain(|route| route.hostname.as_str() != hostname);
                 if routes.len() == count {
-                    return Err(CliError::new(
-                        ErrorKind::Input,
-                        format!("route {:?} was not found", target.hostname),
-                    ));
+                    return Err(not_found());
                 }
             }
         }
@@ -917,10 +966,30 @@ pub(crate) async fn save(
     save_loaded(cli, client, console, current, flags, edit).await
 }
 
+/// Lists the deployed routes of every environment of `app`, from the
+/// daemon's ingress status.
+async fn list_routes(client: &Client, console: &mut Console, app: &str) -> Result<()> {
+    let application = resolve_application(client, app).await?;
+    let readiness = client.system_readiness().await?;
+    let rows: Vec<_> = readiness
+        .ingress
+        .routes
+        .into_iter()
+        .filter_map(|route| {
+            let environment = application.environment(&route.environment_id)?;
+            Some(RouteRow {
+                environment: environment.name.to_string(),
+                route,
+            })
+        })
+        .collect();
+    console.emit(&rows)
+}
+
 /// Confirms and saves `edit` for an already loaded application. Unless `--force`,
 /// the save requires `--expected-generation` or, by default, the loaded generation,
 /// so concurrent edits are rejected instead of overwritten.
-async fn save_loaded(
+pub(crate) async fn save_loaded(
     cli: &Cli,
     client: &Client,
     console: &mut Console,

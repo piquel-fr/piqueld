@@ -41,10 +41,18 @@ pub async fn run(workspace: &Workspace) -> Result<ExitCode> {
     result
 }
 
-/// Ports the ingress tests reach on random loopback ports: Caddy's HTTP and
-/// HTTPS, then Pebble's ACME API and challtestsrv's DNS (TCP) and management
-/// API, run inside the engine by the DNS-01 certificate test.
-const PUBLISHED: [&str; 5] = ["80/tcp", "443/tcp", "14000/tcp", "8053/tcp", "8055/tcp"];
+/// Ports the ingress tests reach on random loopback ports: Caddy's HTTP,
+/// HTTPS and private HTTPS listeners, then Pebble's ACME API and
+/// challtestsrv's DNS (TCP) and management API, run inside the engine by the
+/// DNS-01 certificate test.
+const PUBLISHED: [&str; 6] = [
+    "80/tcp",
+    "443/tcp",
+    "8443/tcp",
+    "14000/tcp",
+    "8053/tcp",
+    "8055/tcp",
+];
 
 /// An engine with its socket, and the daemon's data, in `runtime`, publishing
 /// [`PUBLISHED`].
@@ -138,6 +146,7 @@ async fn test(
             .env("PIQUELD_DOCKER_DATA_DIR", runtime)
             .env("PIQUELD_INGRESS_HTTP_PORT", port("80/tcp")?)
             .env("PIQUELD_INGRESS_HTTPS_PORT", port("443/tcp")?)
+            .env("PIQUELD_INGRESS_PRIVATE_PORT", port("8443/tcp")?)
             .env("PIQUELD_PEBBLE_PORT", port("14000/tcp")?)
             .env("PIQUELD_CHALLTESTSRV_DNS_PORT", port("8053/tcp")?)
             .env("PIQUELD_CHALLTESTSRV_API_PORT", port("8055/tcp")?),

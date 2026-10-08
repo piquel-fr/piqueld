@@ -15,7 +15,7 @@ use piqueld_core::{
 use serde_json::json;
 
 fn application(name: &str, host: &str, body: &str) -> NormalizedApplication {
-    piqueld_core::parse_toml(&format!("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[[spec.services]]\nname='web'\ncommand=['caddy']\narguments=['respond','--listen',':8080','--body','{body}']\n[spec.services.source]\ntype='image'\nimage='{CADDY_IMAGE}'\n[[spec.routes]]\nhostname='{host}'\nservice='web'\nport=8080")).unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap())
+    piqueld_core::parse_toml(&format!("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[[spec.services]]\nname='web'\ncommand=['caddy']\narguments=['respond','--listen',':8080','--body','{body}']\n[spec.services.source]\ntype='image'\nimage='{CADDY_IMAGE}'\n[[spec.routes]]\nhostname='{host}'\nvisibility='public'\nservice='web'\nport=8080")).unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap())
 }
 
 async fn request_deployment(store: &Store, app: NormalizedApplication) -> (EnvironmentId, String) {
@@ -106,6 +106,12 @@ impl Scenario {
             "http-acme.example.test:127.0.0.1".into(),
             "alpn-acme.example.test:127.0.0.1".into(),
         ];
+        gateway.private_port = Some(
+            std::env::var("PIQUELD_INGRESS_PRIVATE_PORT")
+                .unwrap()
+                .parse()
+                .unwrap(),
+        );
         let gateway = Arc::new(gateway);
         let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store))
             .with_ingress(Arc::clone(&gateway));
@@ -238,7 +244,7 @@ impl Scenario {
     /// A service-less application's redirect is answered by Caddy itself, so
     /// the application has no ingress network.
     async fn redirect_without_backend(&self) {
-        let app = piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='www'\n[[spec.routes]]\nhostname='www.example.test'\nredirect={to='https://one.example.test/base/'}").unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap());
+        let app = piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='www'\n[[spec.routes]]\nhostname='www.example.test'\nvisibility='public'\nredirect={to='https://one.example.test/base/'}").unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap());
         let id = deploy(&self.store, &self.controller, app).await;
         let response = self
             .client
@@ -595,6 +601,7 @@ impl Scenario {
         .unwrap();
         upgraded.issuer = self.gateway.issuer.clone();
         upgraded.extra_hosts = self.gateway.extra_hosts.clone();
+        upgraded.private_port = self.gateway.private_port;
         upgraded
             .extra_hosts
             .push("upgrade.example.test:127.0.0.1".into());
@@ -1144,4 +1151,122 @@ async fn ingress_caddy_dns01_certificates() {
     if let Err(panic) = result {
         std::panic::resume_unwind(panic);
     }
+}
+
+/// An ingress with private ingress enabled whose Docker Engine is never called.
+async fn private_ingress(directory: &tempfile::TempDir) -> Ingress {
+    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+    // Docker clients require the socket file to exist; nothing listens on it.
+    let socket = directory.path().join("docker.sock");
+    drop(tokio::net::UnixListener::bind(&socket).unwrap());
+    Ingress::new(true, &socket, directory.path(), store)
+        .unwrap()
+        .with_private(&crate::config::PrivateIngressConfig {
+            enabled: true,
+            ..Default::default()
+        })
+}
+
+#[tokio::test]
+async fn each_listener_serves_only_its_own_routes() {
+    let directory = tempfile::tempdir().unwrap();
+    let ingress = private_ingress(&directory).await;
+    let routes = |visibility: &str, host: &str| {
+        let mut manifest = application("one", host, "body").to_manifest();
+        manifest.spec.routes[0].visibility = visibility.parse().unwrap();
+        manifest.validate().unwrap().spec().routes.clone()
+    };
+    let table: crate::store::ingress::RoutingTable = [
+        (
+            EnvironmentId::parse("env-public").unwrap(),
+            routes("public", "www.example.com"),
+        ),
+        (
+            EnvironmentId::parse("env-private").unwrap(),
+            routes("private", "admin.example.com"),
+        ),
+    ]
+    .into();
+    let hosts = |server: &serde_json::Value| {
+        server["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|route| route["match"][0]["host"][0].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let edge = ["172.20.0.0/16".to_owned()];
+    let configuration = ingress.build_configuration(&table, Some(&edge));
+    let servers = &configuration["apps"]["http"]["servers"];
+    for (https, http, host) in [
+        ("public", "public_http", "www.example.com"),
+        ("private", "private_http", "admin.example.com"),
+    ] {
+        assert_eq!(hosts(&servers[https]), [host.to_owned()].into(), "{https}");
+        assert_eq!(hosts(&servers[http]), [host.to_owned()].into(), "{http}");
+        // No other hostname completes TLS on this listener.
+        assert_eq!(
+            servers[https]["tls_connection_policies"],
+            json!([{"match":{"sni":[host]}}])
+        );
+    }
+    assert_eq!(servers["public"]["listen"], json!([":443"]));
+    assert_eq!(servers["private"]["listen"], json!([":8443"]));
+    let wrapper = json!({"wrapper":"proxy_protocol","allow":edge,"fallback_policy":"reject"});
+    assert_eq!(
+        servers["private"]["listener_wrappers"],
+        json!([wrapper, {"wrapper":"tls"}])
+    );
+    assert_eq!(
+        servers["private_http"]["listener_wrappers"],
+        json!([wrapper])
+    );
+    // Private certificates come from DNS-01 only.
+    assert_eq!(
+        servers["private"]["automatic_https"],
+        json!({"disable":true})
+    );
+
+    // Without private ingress, private routes are served nowhere, never on
+    // the public listener.
+    let configuration = ingress.build_configuration(&table, None);
+    let servers = configuration["apps"]["http"]["servers"]
+        .as_object()
+        .unwrap();
+    assert_eq!(
+        servers.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["public", "public_http"]
+    );
+    assert_eq!(
+        hosts(&servers["public"]),
+        ["www.example.com".to_owned()].into()
+    );
+}
+
+#[tokio::test]
+async fn the_apps_node_forwards_to_the_private_listener_without_privileges() {
+    let directory = tempfile::tempdir().unwrap();
+    let ingress = private_ingress(&directory).await;
+    let gateway = &ingress.name;
+    assert_eq!(
+        ingress.serve_configuration(),
+        json!({"TCP":{
+            "443":{"TCPForward":format!("{gateway}:8443"),"ProxyProtocol":2},
+            "80":{"TCPForward":format!("{gateway}:8081"),"ProxyProtocol":2}
+        }})
+    );
+    let spec = ingress.node_spec(ingress.node.as_ref().unwrap());
+    assert_eq!(spec["HostConfig"]["NetworkMode"], json!(gateway));
+    assert_eq!(spec["HostConfig"]["CapDrop"], json!(["ALL"]));
+    assert_eq!(spec["HostConfig"]["ReadonlyRootfs"], true);
+    assert!(spec["HostConfig"].get("PortBindings").is_none());
+    let environment = spec["Env"].as_array().unwrap();
+    assert!(environment.contains(&json!("TS_USERSPACE=true")));
+    assert!(environment.contains(&json!("TS_HOSTNAME=piqueld-apps")));
+    // Without an auth key, the node logs in interactively.
+    assert!(
+        !environment
+            .iter()
+            .any(|value| value.as_str().unwrap().starts_with("TS_AUTHKEY"))
+    );
 }

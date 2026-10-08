@@ -534,6 +534,7 @@ impl Store {
             ApplicationEdit::Routes(_) => "routes",
             ApplicationEdit::Jobs(_) => "jobs",
             ApplicationEdit::Variables(_) => "variables",
+            ApplicationEdit::EnvironmentVisibility { .. } => "environments",
         };
         let resource = match &edit {
             ApplicationEdit::Service { name, .. } | ApplicationEdit::RemoveService(name) => {
