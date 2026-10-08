@@ -229,6 +229,8 @@ pub struct ApplicationService {
     audit_backlog: Arc<tokio::sync::Semaphore>,
     /// The share of `audit_backlog` anonymous records may hold.
     anonymous_backlog: Arc<tokio::sync::Semaphore>,
+    /// Credential and network pairs already noted (see `observe_address`).
+    known_addresses: Arc<observability::KnownAddresses>,
 }
 
 /// Audit records allowed to wait for the writer at once.
@@ -248,6 +250,7 @@ impl ApplicationService {
             denials: Arc::default(),
             audit_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG)),
             anonymous_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG / 2)),
+            known_addresses: Arc::default(),
         }
     }
 

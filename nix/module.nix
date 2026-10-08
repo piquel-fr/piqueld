@@ -299,6 +299,11 @@ in
             default = true;
             description = "Notify on shared dependency and internal daemon failures.";
           };
+          notifications.security = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Notify on security-relevant access changes and activity, such as new administrators, privileged tokens, and bursts of refused requests.";
+          };
           notifications.recovery = lib.mkOption {
             type = lib.types.bool;
             default = true;

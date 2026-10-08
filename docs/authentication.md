@@ -3,7 +3,8 @@
 piqueld uses passkeys for browser login. What each account may do is decided by
 its grants; see [authorization](authorization.md). The first account administers
 the installation, and accounts with `accounts:manage` manage accounts whose access
-they hold themselves. There is no account recovery flow.
+they hold themselves. If every administrator loses access, the host's operator
+can [recover administrator access](#recovering-administrator-access).
 
 ## Upgrading an existing installation
 
@@ -105,8 +106,62 @@ Deleting an account revokes everything belonging to it. Self-deletion is support
 Removing a passkey, deleting an account, or changing grants is rejected if no
 account would keep `admin` on every application together with a passkey. This
 protects stored credentials, not access to the authenticators themselves: if every
-administrator loses their passkeys and all sessions/tokens become unusable, there
-is no supported recovery mechanism.
+administrator loses their passkeys and all sessions/tokens become unusable, see
+[recovering administrator access](#recovering-administrator-access).
+
+## Recovering administrator access
+
+When no administrator can sign in (every passkey is lost and every session and
+token has expired or been revoked), the host's operator can create a new
+administrator account. On the daemon host, run:
+
+```console
+sudo piquelctl recover-admin
+```
+
+It prints a link. Open it in a browser, choose a username, and register a
+passkey: the new account receives `admin` on every application. Then sign in
+and repair access: revoke the lost credentials, remove passkeys that are gone,
+and delete the recovery account if it is no longer needed.
+
+**Who may use it.** Recovery assumes that whoever controls the host already
+controls piqueld: they can read and replace its database, its secret key, and
+the Docker engine it drives. So the only check is that the request comes from
+that operator:
+
+- It is served only over the daemon's Unix socket. Over TCP or the tailnet, the
+  endpoint answers 404, like the setup link.
+- The daemon asks the kernel which user is on the other end of the socket
+  connection (`SO_PEERCRED`) and accepts only **root** or the **user the daemon
+  runs as**. Members of the socket's group, who may otherwise use the socket
+  with their own credentials, cannot recover access. The check cannot be
+  satisfied by anything the client sends.
+- It is refused with 409 `setup_pending` before the first account exists; use
+  `piquelctl setup-link` then.
+
+**What the link does.**
+
+- It works once, for 24 hours. Issuing a new one replaces the previous link.
+- It creates a new account and never changes existing ones, so a compromised
+  administrator is not silently restored.
+- Only a hash of its secret is stored; the link itself is printed once and
+  never logged.
+
+**How it is recorded.** Issuing a link and redeeming it each raise a
+[`security` notification](observability.md#security-notifications) to
+administrators ("An admin recovery link was issued over the Unix socket to uid
+0", then "… became an administrator by an admin recovery link"). Both appear in
+daemon history, the request appears in the [audit trail](observability.md#audit-trail),
+and the daemon logs a warning. An unexpected recovery notification means
+someone with root on the host is acting; treat it as a host compromise.
+
+**Troubleshooting.**
+
+- *404 Not found*: the command did not reach the Unix socket as root or the
+  daemon's user. Run it with `sudo` on the daemon host and without `--url`. If
+  the daemon runs in a container or user namespace, the user must match from
+  the daemon's point of view.
+- *`--url` is refused*: recovery is never served over the network.
 
 ## CLI and automation
 

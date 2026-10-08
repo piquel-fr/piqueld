@@ -46,6 +46,15 @@ pub struct SetupLink {
     /// Dashboard URL carrying the single-use setup secret.
     pub url: String,
 }
+/// One-time admin recovery link, issued only over the daemon's Unix socket
+/// to root or the daemon's own user.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct RecoveryLink {
+    /// Dashboard URL that registers a new account with `admin`.
+    pub url: String,
+    /// Unix seconds after which the link no longer works.
+    pub expires_at: i64,
+}
 /// Passkey registration: a new account redeeming an invitation or setup
 /// secret, an existing account redeeming an enrollment link, or a signed-in
 /// account adding a passkey to itself.

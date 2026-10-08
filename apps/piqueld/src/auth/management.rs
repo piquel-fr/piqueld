@@ -8,7 +8,7 @@
 use super::{Auth, AuthError, CredentialKind, DAY, Identity, Result, now_secs};
 use crate::store::NewInvitation;
 use piqueld_core::access::GlobalPermission;
-use piqueld_core::auth::{Directory, Manage, Managed};
+use piqueld_core::auth::{Directory, Manage, Managed, RecoveryLink};
 impl Auth {
     /// Lists the accounts `viewer` may see: every account and invitation with
     /// `accounts:manage`, otherwise only its own account.
@@ -101,6 +101,26 @@ impl Auth {
             "account management action applied"
         );
         Ok(result)
+    }
+    /// Issues the one-time admin recovery link for `requester`, a local user
+    /// the caller has verified as root or the daemon's own user. It is valid
+    /// for a day, replaces any earlier link, and registers a new account with
+    /// `admin` on every application.
+    pub(crate) async fn recover_admin(&self, requester: &str) -> Result<RecoveryLink> {
+        if !self.0.store.auth_initialized().await? {
+            return Err(AuthError::SetupPending);
+        }
+        let secret = Self::secret()?;
+        let expires_at = now_secs() + DAY;
+        self.0
+            .store
+            .create_recovery(&Self::hash(&secret), expires_at, requester)
+            .await?;
+        tracing::warn!(requester, "issued an admin recovery link");
+        Ok(RecoveryLink {
+            url: self.link("invite", &secret),
+            expires_at,
+        })
     }
     /// Generates a day-long invitation, returning its secret.
     fn new_invitation() -> Result<(String, NewInvitation)> {

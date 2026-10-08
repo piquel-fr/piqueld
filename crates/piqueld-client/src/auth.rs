@@ -15,6 +15,13 @@ impl Client {
     pub async fn auth_setup_link(&self) -> Result<SetupLink, ClientError> {
         crate::client::generated_result(self.generated.auth_setup_link().await).await
     }
+    /// Issues a one-time admin recovery link. Only the daemon's Unix socket
+    /// serves it, and only to root or the daemon's own user.
+    /// # Errors
+    /// Returns setup-pending, transport, decoding, or API failures.
+    pub async fn auth_recover_admin(&self) -> Result<RecoveryLink, ClientError> {
+        crate::client::generated_result(self.generated.auth_recover_admin().await).await
+    }
     /// Returns the signed-in account and what the current credential may do.
     /// # Errors
     /// Returns authentication, transport, decoding, or API failures.

@@ -285,7 +285,7 @@ pub(super) async fn audit(
         owner: PathOwner::find(matched.as_ref(), params),
         peer: extensions
             .get::<ConnectInfo<SocketAddr>>()
-            .map(|ConnectInfo(peer)| peer.ip().to_string()),
+            .map(|ConnectInfo(peer)| peer.ip()),
         request_id: extensions
             .get::<RequestId>()
             .and_then(|id| id.header_value().to_str().ok().map(str::to_owned)),
@@ -302,6 +302,9 @@ pub(super) async fn audit(
             .get::<SignedIn>()
             .map(|SignedIn(user)| user.clone()),
     };
+    if let (Some(identity), Some(peer)) = (&answer.identity, audit.peer) {
+        state.observe_address(&identity.credential_id, &identity.user.id, peer);
+    }
     audit.record(&state, answer);
     response
 }
@@ -331,7 +334,7 @@ pub(super) struct Audit {
     method: Method,
     /// Application or environment the route names.
     owner: Option<(PathOwner, String)>,
-    peer: Option<String>,
+    peer: Option<std::net::IpAddr>,
     request_id: Option<String>,
 }
 
@@ -426,7 +429,7 @@ impl Audit {
             credential_id: credential.map(|identity| identity.credential_id.clone()),
             credential_kind: credential.map(|identity| identity.kind.as_str()),
             scoped: credential.map(|identity| identity.scoped),
-            peer: self.peer,
+            peer: self.peer.map(|peer| peer.to_string()),
             request_id: self.request_id,
             application_id,
             environment_id,

@@ -80,6 +80,7 @@ deployment_failures = true
 service_degradation = true
 daemon_failures = true
 recovery = true
+security = true
 failure_threshold_seconds = 120
 retry_window_seconds = 86400
 # URLs can contain credentials: use `url_file` instead of `url` to keep them

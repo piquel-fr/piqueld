@@ -797,6 +797,25 @@
         ],
         "type": "object"
       },
+      "AuditLink": {
+        "description": "One record's place in the audit chain.",
+        "properties": {
+          "id": {
+            "description": "Record ID.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "link": {
+            "description": "Its link, in lowercase hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "link"
+        ],
+        "type": "object"
+      },
       "AuditOutcome": {
         "description": "Whether an audited request was allowed.",
         "enum": [
@@ -805,6 +824,65 @@
           "failed"
         ],
         "type": "string"
+      },
+      "AuditVerification": {
+        "description": "Result of checking the audit trail's hash chain.\n\nRecords have consecutive IDs, and each stores a SHA-256 link over its\npredecessor's link and its own ID and fields, so editing, inserting,\nrenumbering, or removing a record breaks the chain from there on. The\nchain cannot tell who wrote it, so someone able to write the database\ncould rewrite it whole or move its `anchor`: keep `anchor` and `head`\nelsewhere and compare them later to detect that, including removed newest\nrecords.",
+        "properties": {
+          "anchor": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/AuditLink"
+                  }
+                ],
+                "description": "The newest pruned record, which the oldest retained one extends;\nabsent when nothing was pruned."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "broken_at": {
+            "description": "First record whose ID or link does not match, if the chain is broken.\nThe change may also be a removal or insertion just before it.",
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "checked": {
+            "description": "Records whose links were checked.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "head": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/AuditLink"
+                  }
+                ],
+                "description": "The newest verified record; when the chain is broken, the last one\nverified before `broken_at`."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "required": [
+          "checked"
+        ],
+        "type": "object"
       },
       "AuthStatus": {
         "description": "Public initialization state and canonical browser origin.",
@@ -2284,6 +2362,74 @@
               "created_at_ms",
               "updated_at_ms",
               "environments"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_AuditVerification": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Result of checking the audit trail's hash chain.\n\nRecords have consecutive IDs, and each stores a SHA-256 link over its\npredecessor's link and its own ID and fields, so editing, inserting,\nrenumbering, or removing a record breaks the chain from there on. The\nchain cannot tell who wrote it, so someone able to write the database\ncould rewrite it whole or move its `anchor`: keep `anchor` and `head`\nelsewhere and compare them later to detect that, including removed newest\nrecords.",
+            "properties": {
+              "anchor": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/AuditLink"
+                      }
+                    ],
+                    "description": "The newest pruned record, which the oldest retained one extends;\nabsent when nothing was pruned."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
+              "broken_at": {
+                "description": "First record whose ID or link does not match, if the chain is broken.\nThe change may also be a removal or insertion just before it.",
+                "format": "int64",
+                "nullable": true,
+                "type": "integer"
+              },
+              "checked": {
+                "description": "Records whose links were checked.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "head": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/AuditLink"
+                      }
+                    ],
+                    "description": "The newest verified record; when the chain is broken, the last one\nverified before `broken_at`."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "checked"
             ],
             "type": "object"
           }
@@ -5613,7 +5759,8 @@
           "deployment_failures",
           "service_degradation",
           "daemon_failures",
-          "recovery"
+          "recovery",
+          "security"
         ],
         "type": "string"
       },
@@ -6110,6 +6257,25 @@
           "database",
           "docker",
           "swarm"
+        ],
+        "type": "object"
+      },
+      "RecoveryLink": {
+        "description": "One-time admin recovery link, issued only over the daemon's Unix socket\nto root or the daemon's own user.",
+        "properties": {
+          "expires_at": {
+            "description": "Unix seconds after which the link no longer works.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "url": {
+            "description": "Dashboard URL that registers a new account with `admin`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "expires_at"
         ],
         "type": "object"
       },
@@ -17280,6 +17446,46 @@
         "x-piqueld-access": "authenticated"
       }
     },
+    "/api/v1/audit/verify": {
+      "get": {
+        "description": "Recomputes every retained record's link. `broken_at` names the first\nrecord that was edited, inserted, or follows a removed one. Removing the\nnewest records leaves a valid chain, so compare `head` with a value kept\nelsewhere.",
+        "operationId": "verifyAudit",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AuditVerification"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Verifies the audit trail's hash chain.",
+        "x-piqueld-access": "audit:read"
+      }
+    },
     "/api/v1/auth/device/approve": {
       "post": {
         "description": "The device's next poll receives a token for the signed-in user.",
@@ -17651,6 +17857,57 @@
         },
         "summary": "Gets the signed-in user and what the current credential may do.",
         "x-piqueld-access": "authenticated"
+      }
+    },
+    "/api/v1/auth/recovery": {
+      "post": {
+        "description": "Public, but only over the Unix socket and only to root or the daemon's own\nuser, identified by the kernel (`SO_PEERCRED`); anyone else gets 404. The\nlink is valid for 24 hours, replaces any earlier one, and registers a new\naccount with `admin` on every application. Issuing it raises a `security`\nnotification.",
+        "operationId": "authRecoverAdmin",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryLink"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "security": [],
+        "summary": "Issues a one-time admin recovery link.",
+        "x-piqueld-access": "public"
       }
     },
     "/api/v1/auth/register/finish": {

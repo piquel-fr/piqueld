@@ -29,6 +29,8 @@ pub struct NotificationConfig {
     pub daemon_failures: bool,
     /// Notify when an alerted condition clears.
     pub recovery: bool,
+    /// Notify on security-relevant access changes and activity.
+    pub security: bool,
     /// Sustained failure observation threshold.
     pub failure_threshold_seconds: u64,
     /// Maximum automatic delivery retry window.
@@ -45,6 +47,7 @@ impl Default for NotificationConfig {
             service_degradation: true,
             daemon_failures: true,
             recovery: true,
+            security: true,
             failure_threshold_seconds: 120,
             retry_window_seconds: 86_400,
             destinations: Vec::new(),
@@ -103,6 +106,7 @@ impl NotificationConfig {
                 NotificationCategory::ServiceDegradation => self.service_degradation,
                 NotificationCategory::DaemonFailures => self.daemon_failures,
                 NotificationCategory::Recovery => self.recovery,
+                NotificationCategory::Security => self.security,
             }
     }
     /// Lists the categories that would currently notify; empty when disabled.
@@ -113,6 +117,7 @@ impl NotificationConfig {
             NotificationCategory::ServiceDegradation,
             NotificationCategory::DaemonFailures,
             NotificationCategory::Recovery,
+            NotificationCategory::Security,
         ]
         .into_iter()
         .filter(|category| self.category_enabled(*category))

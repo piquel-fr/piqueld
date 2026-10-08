@@ -282,8 +282,12 @@ fn spawn_unix_api(
     tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
-            axum::serve(listener, piqueld::api::http::api_router(state, auth))
-                .with_graceful_shutdown(async move { shutdown.cancelled().await }),
+            axum::serve(
+                listener,
+                piqueld::api::http::api_router(state, auth)
+                    .into_make_service_with_connect_info::<piqueld::api::http::UnixPeer>(),
+            )
+            .with_graceful_shutdown(async move { shutdown.cancelled().await }),
         );
         tokio::pin!(serve);
         // Same shutdown-only grace as the TCP API.

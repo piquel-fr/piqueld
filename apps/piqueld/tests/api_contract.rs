@@ -4299,6 +4299,7 @@ async fn every_documented_operation_requires_authentication() {
     const PUBLIC: &[&str] = &[
         "/api/v1/auth/status",
         "/api/v1/auth/setup-link",
+        "/api/v1/auth/recovery",
         "/api/v1/auth/register/start",
         "/api/v1/auth/register/finish",
         "/api/v1/auth/login/start",
@@ -4761,6 +4762,27 @@ async fn own_audit_trails_reveal_nothing_hidden() {
     assert_eq!(f.call(token, "GET", account, none).await.0, 403);
 }
 
+/// The trail's hash chain verifies intact, and checking it needs `audit:read`.
+#[tokio::test]
+async fn verifying_the_audit_chain_needs_audit_read() {
+    let f = GrantFixture::new().await;
+    let none = serde_json::Value::Null;
+    let deploy = format!("/api/v1/environments/{}/deploy?force=true", f.blog);
+    assert_eq!(
+        f.call(&f.deployer, "POST", &deploy, none.clone()).await.0,
+        202
+    );
+    f.audit(&f.auditor, "/api/v1/audit", 1).await;
+    let verify = "/api/v1/audit/verify";
+    let (status, body) = f.call(&f.auditor, "GET", verify, none.clone()).await;
+    assert_eq!(
+        (status, &body["data"]["broken_at"]),
+        (200, &serde_json::Value::Null)
+    );
+    assert_eq!(body["data"]["checked"], 1);
+    assert_eq!(f.call(&f.deployer, "GET", verify, none).await.0, 403);
+}
+
 /// A command refused when it starts, after its connection was authorized
 /// and audited as allowed, is audited and counted as a refusal too.
 #[tokio::test]
@@ -4952,6 +4974,69 @@ async fn setup_link_is_served_only_over_the_unix_socket() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     panic!("the refused setup link request was not audited");
+}
+
+/// Admin recovery is served only over the Unix socket, only to root or the
+/// daemon's own user, and only once setup has completed.
+#[tokio::test]
+async fn admin_recovery_requires_the_host_operator_over_the_unix_socket() {
+    use piqueld::api::http::UnixPeer;
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp).await;
+    let database = temp.path().join("state.db");
+    let store = Store::open(&database).await.unwrap();
+    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let operator = rustix::process::geteuid().as_raw();
+    let stranger = if operator == 0 { 1 } else { operator + 1 };
+    let unix = api_router(state.clone(), auth.clone());
+    let web = web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth);
+    let recover = async |router: &axum::Router, uid: Option<u32>| {
+        let mut request = Request::post("/api/v1/auth/recovery")
+            .header("host", "localhost")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(UnixPeer { uid }));
+        let response = router.clone().oneshot(request).await.unwrap();
+        let status = response.status().as_u16();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default(),
+        )
+    };
+    assert_eq!(
+        recover(&unix, Some(operator)).await.0,
+        409,
+        "setup is still open"
+    );
+    seed_account(&database, "admin", &[("admin", None)]).await;
+    let mut connection = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!(
+        "sqlite:{}",
+        database.display()
+    ))
+    .await
+    .unwrap();
+    sqlx::query("UPDATE auth_setup SET initialized=1")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    for (router, uid) in [
+        (&unix, None),
+        (&unix, Some(stranger)),
+        (&web, Some(operator)),
+    ] {
+        assert_eq!(recover(router, uid).await.0, 404, "{uid:?}");
+    }
+    let (status, body) = recover(&unix, Some(operator)).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body["url"]
+            .as_str()
+            .unwrap()
+            .contains("/dashboard/auth#invite=")
+    );
 }
 
 /// Authentication short circuits still use the common error correlation layers,

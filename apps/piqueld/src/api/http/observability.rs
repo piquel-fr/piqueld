@@ -9,7 +9,7 @@ use piqueld_core::{
     Event,
     access::{AppPermission, Denied, GlobalPermission, Permission},
     api::{Envelope, Page},
-    audit::{AuditEvent, AuditFilter, AuditOutcome},
+    audit::{AuditEvent, AuditFilter, AuditOutcome, AuditVerification},
     observability::{DaemonStats, DeploymentAnalytics, NotificationDelivery},
 };
 
@@ -175,6 +175,18 @@ pub(super) async fn audit(
     Ok(ok(state
         .audit_events(&filter, query.cursor.as_deref(), query.limit.unwrap_or(50))
         .await?))
+}
+/// Verifies the audit trail's hash chain.
+///
+/// Recomputes every retained record's link. `broken_at` names the first
+/// record that was edited, inserted, or follows a removed one. Removing the
+/// newest records leaves a valid chain, so compare `head` with a value kept
+/// elsewhere.
+#[utoipa::path(get,path="/api/v1/audit/verify",operation_id="verifyAudit",responses((status=200,body=Envelope<AuditVerification>),(status=403,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn verify_audit(
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(ok(state.verify_audit().await?))
 }
 
 impl ApiError {

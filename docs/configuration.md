@@ -61,6 +61,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `retention.audit_days` | `365` (`0` disables audit trail pruning) |
 | `metrics.listen` | `[]` (metrics-only listener disabled) |
 | `notifications.enabled` | `false` |
+| `notifications.security` | `true` ([security notifications](observability.md#security-notifications); like every category, sent only when `notifications.enabled`) |
 | `retention.finished_operation_days` | `10` (`0` disables pruning; terminal operations older than the cutoff are pruned during each reconciliation cycle) |
 
 Reconciliation intervals and timeouts are bounded to `1..=86400` seconds.

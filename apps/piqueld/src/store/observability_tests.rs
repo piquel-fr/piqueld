@@ -984,3 +984,161 @@ async fn visibility_limits_history_builds_and_analytics() {
     assert_eq!(analytics(Scope::All, false).await, (2, false));
     assert_eq!(analytics(Scope::All, true).await, (2, true));
 }
+
+/// A refused request from `peer`, as the audit middleware records it.
+fn refused(peer: &str) -> NewAuditEvent {
+    NewAuditEvent {
+        action: "GET /api/v1/applications/{id}".into(),
+        outcome: piqueld_core::audit::AuditOutcome::Denied,
+        status: 404,
+        user_id: None,
+        username: None,
+        credential_id: None,
+        credential_kind: None,
+        scoped: None,
+        peer: Some(peer.into()),
+        request_id: None,
+        application_id: None,
+        environment_id: None,
+        permission: None,
+    }
+}
+
+/// A refusal burst and a credential appearing on a new address each raise
+/// one security event, delivered as a `security` notification; a first
+/// address and further refusals within the burst cooldown do not. Failed
+/// security deliveries can be retried.
+#[tokio::test]
+async fn refusal_bursts_and_new_addresses_notify_as_security() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = notifications();
+    let store = Store::open(temp.path().join("db"))
+        .await
+        .unwrap()
+        .with_observability(&config);
+    store.configure_deliveries().await.unwrap();
+    // A sustained burst alerts once per cooldown, then again once it passes.
+    for _ in 0..25 {
+        store.record_audit(&refused("203.0.113.9")).await.unwrap();
+    }
+    let rearm =
+        "UPDATE events SET created_at_ms=created_at_ms-660000 WHERE kind='access_denial_burst'";
+    sqlx::query(rearm).execute(&store.pool).await.unwrap();
+    store.record_audit(&refused("203.0.113.9")).await.unwrap();
+    let user = piqueld_core::auth::User {
+        id: "alice".into(),
+        username: "alice".into(),
+        display_name: String::new(),
+    };
+    store
+        .seed_auth_user(&user, &piqueld_core::access::Grants::admin())
+        .await;
+    let credential = NewCredential {
+        id: "laptop".into(),
+        secret_hash: "hash".into(),
+        kind: CredentialKind::Cli,
+        name: "piquelctl",
+        expires_at: None,
+        grants: None,
+    };
+    store
+        .insert_credential(&user.id, &credential)
+        .await
+        .unwrap();
+    for address in ["192.0.2.1", "192.0.2.1", "198.51.100.7"] {
+        let note = store.note_credential_address("laptop", "alice", address);
+        note.await.unwrap();
+    }
+    store.process_notifications().await.unwrap();
+    let deliveries = store.deliveries(None, 10).await.unwrap().items;
+    // Security deliveries open no incident, yet stay manually retryable.
+    let failed = &deliveries[0].id;
+    let fail = "UPDATE notification_deliveries SET state='failed' WHERE id=?1";
+    sqlx::query(fail)
+        .bind(failed)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store
+        .retry_delivery(crate::api::Actor::Daemon, failed)
+        .await
+        .unwrap();
+    let mut notified = Vec::new();
+    for delivery in deliveries {
+        assert_eq!(delivery.category, NotificationCategory::Security);
+        let event = store.event(delivery.event_id).await.unwrap();
+        notified.push(event.message.unwrap_or_default());
+    }
+    notified.sort();
+    let burst = "20 requests refused within a minute from 203.0.113.9 as an anonymous caller";
+    assert_eq!(
+        notified,
+        [
+            burst,
+            burst,
+            "alice's cli \"piquelctl\" was used from a new address: 198.51.100.7",
+        ]
+    );
+}
+
+/// The audit chain detects edited, renumbered, inserted, and removed records,
+/// and pruning keeps it verifiable without ever erasing a broken part.
+#[tokio::test]
+async fn the_audit_chain_detects_alteration_and_survives_pruning() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(temp.path().join("db")).await.unwrap();
+    store.audit_days = 1;
+    let now = now_ms();
+    for (peer, at) in [("a", 0), ("b", 0), ("c", now), ("d", now)] {
+        store.record_audit_at(&refused(peer), at).await.unwrap();
+    }
+    let intact = store.verify_audit().await.unwrap();
+    assert_eq!((intact.checked, intact.broken_at), (4, None));
+    let run = async |sql: &str| {
+        sqlx::query(sql).execute(&store.pool).await.unwrap();
+        store.verify_audit().await.unwrap()
+    };
+    // A broken part is never pruned away.
+    let edited = run("UPDATE audit_events SET status=200 WHERE peer='b'").await;
+    assert_eq!(edited.broken_at, Some(2));
+    store.prune_audit().await.unwrap();
+    assert_eq!(store.verify_audit().await.unwrap(), edited);
+    run("UPDATE audit_events SET status=404 WHERE peer='b'").await;
+    // Pruning the two oldest keeps the newest pruned one as the anchor.
+    store.prune_audit().await.unwrap();
+    let pruned = store.verify_audit().await.unwrap();
+    assert_eq!((pruned.checked, pruned.broken_at), (2, None));
+    assert_eq!(pruned.anchor.unwrap().id, 2);
+    assert_eq!(pruned.head, intact.head);
+    let edited = run("UPDATE audit_events SET environment_id='env-other' WHERE peer='c'").await;
+    assert_eq!(edited.broken_at, Some(3));
+    run("UPDATE audit_events SET environment_id=NULL WHERE peer='c'").await;
+    let renumbered = run("UPDATE audit_events SET id=9223372036854775807 WHERE peer='d'").await;
+    assert_eq!(renumbered.broken_at, Some(i64::MAX));
+    // Nothing can follow the highest possible ID, rather than wrapping around.
+    assert!(matches!(
+        store.record_audit(&refused("e")).await,
+        Err(StoreError::Corrupt)
+    ));
+    run("UPDATE audit_events SET id=4 WHERE peer='d'").await;
+    for id in [-5, i64::MIN] {
+        let forged = format!(
+            "INSERT INTO audit_events(id,created_at_ms,action,outcome,status) \
+            VALUES({id},0,'forged','allowed',200)"
+        );
+        assert_eq!(run(&forged).await.broken_at, Some(id));
+        // Pruning keeps the forged record as evidence.
+        store.prune_audit().await.unwrap();
+        assert_eq!(store.verify_audit().await.unwrap().broken_at, Some(id));
+        run(&format!("DELETE FROM audit_events WHERE id={id}")).await;
+    }
+    // The anchor is stored whole or not at all.
+    let half = sqlx::query("UPDATE audit_chain SET pruned_link=NULL");
+    assert!(half.execute(&store.pool).await.is_err());
+    let removed = run("DELETE FROM audit_events WHERE peer='c'").await;
+    assert_eq!(
+        removed.broken_at,
+        Some(4),
+        "removing breaks the next record"
+    );
+}

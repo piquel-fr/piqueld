@@ -410,7 +410,11 @@ to ask for a limited session; see [authorization](authorization.md).
 `piquelctl audit` reads the [audit trail](observability.md#audit-trail), one line
 per request with the application or environment it addressed, filtered
 by `--user` (a username, or any account ID, including a deleted account's),
-`--credential`, and `--outcome`. Saved credentials are separate
+`--credential`, and `--outcome`; `piquelctl audit verify` checks its
+[hash chain](observability.md#tamper-evidence). When no administrator can sign
+in, `sudo piquelctl recover-admin` on the daemon host prints a one-time link
+that creates a new administrator; see
+[recovering administrator access](authentication.md#recovering-administrator-access). Saved credentials are separate
 from profiles. `PIQUELD_TOKEN` supplies an automation token; `--account` selects
 a saved account. See [authentication](authentication.md) for details.
 

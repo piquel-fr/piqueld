@@ -328,13 +328,19 @@ impl Store {
         grants: &Grants,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
+        let caller_credential = caller.credential_id;
         let caller = Self::check_account_on(&mut tx, caller, user_id).await?;
         caller.require_unscoped()?;
         caller
             .grants
             .may_grant(grants)
             .map_err(StoreError::Denied)?;
-        Holder::User(user_id).replace(&mut tx, grants).await?;
+        let actor = Attribution {
+            user_id: Some(&caller.user_id),
+            credential_id: Some(caller_credential),
+        };
+        Self::replace_user_grants_on(&mut tx, user_id, grants, actor, "by an account change")
+            .await?;
         Self::require_an_admin(&mut tx).await?;
         tx.commit().await.map_err(StoreError::database)
     }

@@ -877,6 +877,7 @@ pub(super) fn AuditPage() -> impl IntoView {
     let query = use_query_map();
     let cursor = RwSignal::new(None::<String>);
     let outcome = RwSignal::new(None::<AuditOutcome>);
+    let verified = RwSignal::new(None::<(Tone, String)>);
     let data = LocalResource::new(move || {
         let filter = AuditFilter {
             credential_id: query.with(|query| query.get("credential")),
@@ -896,6 +897,7 @@ pub(super) fn AuditPage() -> impl IntoView {
             title="Audit"
             description="Refused requests, changes, and reads of logs, configuration, and accounts. Without audit:read, only your own account's requests are shown."
         >
+            <AuditVerify result={verified} />
             <label class="field">
                 <span>"Outcome"</span>
                 <select on:change={move |event| {
@@ -910,6 +912,7 @@ pub(super) fn AuditPage() -> impl IntoView {
             </label>
         </PageHeader>
         <div class="stack">
+            {move || verified.get().map(|(tone, message)| notice(tone, message))}
             {move || match data.get() {
                 None => empty("Loading audit trail…"),
                 Some(Err(e)) => notice(Tone::Bad, e),
@@ -1004,5 +1007,58 @@ pub(super) fn AuditPage() -> impl IntoView {
                 }
             }}
         </div>
+    }
+}
+
+/// "Verify integrity" for `audit:read` holders: checks the audit trail's hash
+/// chain and sets `result` to whether any record was altered, with the anchor
+/// and newest record to keep elsewhere.
+#[component]
+fn AuditVerify(result: RwSignal<Option<(Tone, String)>>) -> impl IntoView {
+    use piqueld_client::access::{GlobalPermission, Permission};
+    let allowed = super::access::can(Permission::Global(GlobalPermission::AuditRead));
+    let busy = RwSignal::new(false);
+    let verify = move |_| {
+        busy.set(true);
+        spawn_local(async move {
+            result.set(Some(match Client::browser().verify_audit().await {
+                Ok(check) => {
+                    let link = |link: &Option<piqueld_client::audit::AuditLink>| {
+                        link.as_ref().map_or_else(
+                            || "none".to_owned(),
+                            |link| format!("record {} ({})", link.id, link.link),
+                        )
+                    };
+                    match check.broken_at {
+                        Some(id) => (
+                            Tone::Bad,
+                            format!(
+                                "Altered: record {id} does not match; it, or a record just before it, was edited, inserted, or removed. Last verified: {}.",
+                                link(&check.head)
+                            ),
+                        ),
+                        None => (
+                            Tone::Ok,
+                            format!(
+                                "Intact: {} records. Pruned through: {}. Newest: {}.",
+                                check.checked,
+                                link(&check.anchor),
+                                link(&check.head),
+                            ),
+                        ),
+                    }
+                }
+                Err(problem) => (Tone::Bad, client_error_message(&problem)),
+            }));
+            busy.set(false);
+        });
+    };
+    view! {
+        <Show when={move || allowed.get()}>
+            <button type="button" class="btn" disabled={move || busy.get()} on:click={verify}>
+                {icon(Icon::Refresh)}
+                "Verify integrity"
+            </button>
+        </Show>
     }
 }

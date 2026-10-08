@@ -166,6 +166,12 @@ account's full access, but they can no longer create credentials.
 history, and records the account and credential behind operations and their
 events. A trigger copies an operation's actor onto every event about it.
 
+`0018_security.sql` links audit records into a hash chain, records which
+network addresses each credential was used from, and stores the single
+outstanding admin recovery link. Releases apply it together with
+`0017_audit.sql`, so the trail is still empty; records written by pre-release
+builds cannot be linked and are dropped.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

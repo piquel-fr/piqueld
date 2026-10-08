@@ -110,6 +110,47 @@ both are empty for the daemon's own work.
 The metrics listener exports `piqueld_access_denied_total`, the number of
 refused API requests since the daemon started.
 
+### Tamper evidence
+
+Audit records have consecutive IDs, and each stores a link: the SHA-256 of the
+previous record's link and its own ID and fields. Editing, inserting,
+renumbering, or removing a record breaks the chain from there on.
+`piquelctl audit verify`, the dashboard's **Verify integrity** button, and
+`GET /api/v1/audit/verify` (all requiring `audit:read`) recompute the chain and
+report the first record that does not match (the change may also be a removal
+or insertion just before it). The command fails when the chain is broken.
+
+```console
+$ piquelctl audit verify
+Chain: intact
+Records checked: 1834
+Pruned through: 1203 9a40…
+Newest: 3037 6f1c…
+```
+
+Pruning by `retention.audit_days` removes the oldest records only while the
+chain through them verifies, so it never erases evidence of tampering; the
+newest pruned record becomes the anchor the remaining chain extends. The chain
+detects changes to the database, but cannot tell who wrote it: someone who
+controls the host could rewrite the whole trail, remove the newest records, or
+prune more and move the anchor. Keep the reported anchor and newest record
+somewhere piqueld cannot change, such as a ticket or a scheduled job's log, and
+compare them later to detect that.
+
+### Security notifications
+
+The `security` notification category reports changes to who can access the
+daemon, as daemon history events that each notify immediately:
+
+| Event | When |
+| --- | --- |
+| `admin_granted` | An account receives `admin` on every application: by an account change, an invitation, first-account setup, or an admin recovery link |
+| `privileged_token_created` | An API token is created without expiry or with `admin` |
+| `admin_recovery_issued` | `piquelctl recover-admin` issued a recovery link; see [authentication](authentication.md#recovering-administrator-access) |
+| `access_denial_burst` | 20 requests from one address and account are refused within a minute; at most once every 10 minutes per address and account while it continues |
+| `credential_new_address` | A session, CLI login, or token already used elsewhere is used from a new network address (IPv6 by /64) |
+| `secret_key_recovered` | The secrets master key was recovered, discarding stored values |
+
 ## Ownership and retention
 
 `scope` determines ownership, independently of a contextual `environment_id`:
@@ -192,6 +233,7 @@ deployment_failures = true
 service_degradation = true
 daemon_failures = true
 recovery = true
+security = true # access changes; see "Security notifications"
 failure_threshold_seconds = 120
 retry_window_seconds = 86400
 

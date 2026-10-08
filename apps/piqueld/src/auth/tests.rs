@@ -2,7 +2,7 @@ use super::*;
 use crate::api::http::Authenticator as _;
 use crate::store::{Invitation, Lockout, NewPasskey, PasskeyOwner, StoreError};
 use piqueld_core::access::{Denied, GlobalPermission, Grants, Permission, Preset, Scope};
-use piqueld_core::auth::{Manage, User};
+use piqueld_core::auth::{Manage, RecoveryLink, User};
 
 struct Fixture {
     auth: Auth,
@@ -1428,5 +1428,114 @@ async fn device_inspection_reports_the_requester_until_approval() {
             .unwrap()
             .requester
             .is_none()
+    );
+}
+
+/// Security events in daemon history, oldest first, as `(kind, message)`.
+async fn security_events(auth: &Auth) -> Vec<(String, String)> {
+    let filter = piqueld_core::observability::EventFilter {
+        scope: Some(piqueld_core::observability::EventScope::Daemon),
+        ..Default::default()
+    };
+    let visible = crate::store::Visibility::ALL;
+    let events = auth.0.store.filtered_events(&filter, &visible, None, 100);
+    events
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .filter(|event| crate::store::SecurityEvent::parse(&event.kind).is_some())
+        .map(|event| (event.kind, event.message.unwrap_or_default()))
+        .collect()
+}
+
+/// An admin recovery link needs a claimed installation, replaces any earlier
+/// one, creates exactly one administrator, and raises security events.
+#[tokio::test]
+async fn recovery_links_create_one_administrator_and_raise_security_events() {
+    let f = Fixture::new().await;
+    assert!(matches!(
+        f.auth.recover_admin("uid 0").await,
+        Err(AuthError::SetupPending)
+    ));
+    let admin = f.identity("admin", &Grants::admin()).await;
+    let secret = |link: &RecoveryLink| link.url.split_once("#invite=").unwrap().1.to_owned();
+    let replaced = secret(&f.auth.recover_admin("uid 0").await.unwrap());
+    let current = secret(&f.auth.recover_admin("uid 0").await.unwrap());
+    assert!(f.auth.invitation(&replaced).await.unwrap().is_none());
+    assert!(matches!(
+        f.auth.invitation(&current).await.unwrap(),
+        Some(Invitation::Account)
+    ));
+    let carol = User {
+        id: Auth::id(),
+        username: "carol".into(),
+        display_name: String::new(),
+    };
+    for (id, redeemed) in [("carol-key", true), ("again-key", false)] {
+        let (_, session) = Auth::browser_session().unwrap();
+        let redeem = PasskeyOwner::Redeem {
+            user: &carol,
+            invitation_hash: &Auth::hash(&current),
+            session,
+        };
+        let passkey = NewPasskey {
+            id,
+            name: "Key",
+            credential: "{}",
+        };
+        let result = f.auth.0.store.add_passkey(redeem, passkey).await;
+        assert_eq!(result.unwrap(), redeemed);
+    }
+    let directory = f.auth.directory(&admin).await.unwrap();
+    let recovered = directory.users.iter().find(|a| a.user.id == carol.id);
+    assert_eq!(recovered.unwrap().grants, Grants::admin());
+    let issued = "An admin recovery link was issued over the Unix socket to uid 0";
+    assert_eq!(
+        security_events(&f.auth).await,
+        [
+            ("admin_recovery_issued".into(), issued.into()),
+            ("admin_recovery_issued".into(), issued.into()),
+            (
+                "admin_granted".into(),
+                "carol became an administrator by an admin recovery link".into()
+            ),
+        ]
+    );
+}
+
+/// Granting `admin` everywhere and creating a never-expiring or `admin`
+/// token raise security events; ordinary changes do not.
+#[tokio::test]
+async fn privileged_grants_and_tokens_raise_security_events() {
+    let f = Fixture::new().await;
+    let admin = f.identity("admin", &Grants::admin()).await;
+    f.passkey(&admin).await;
+    let bob = f.identity("bob", &developer()).await;
+    for grants in [developer(), Grants::admin()] {
+        let user_id = bob.user.id.clone();
+        let change = Manage::SetGrants { user_id, grants };
+        f.auth.manage(&admin, change).await.unwrap();
+    }
+    for (name, days) in [("ci", Some(30)), ("forever", None)] {
+        let token = Manage::CreateToken {
+            grants: developer(),
+            name: name.into(),
+            days,
+        };
+        f.auth.manage(&admin, token).await.unwrap();
+    }
+    assert_eq!(
+        security_events(&f.auth).await,
+        [
+            (
+                "admin_granted".into(),
+                "bob became an administrator by an account change".into()
+            ),
+            (
+                "privileged_token_created".into(),
+                "admin created API token \"forever\" with no expiry".into()
+            ),
+        ]
     );
 }

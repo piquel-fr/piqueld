@@ -55,8 +55,9 @@ impl Throttle {
 }
 
 /// Groups IPv6 peers by /64, the smallest prefix normally assigned to one
-/// client, so rotating addresses within it cannot multiply the allowance.
-fn bucket(peer: IpAddr) -> IpAddr {
+/// client, so rotating addresses within it cannot multiply the allowance or
+/// look like a new network.
+pub(crate) fn bucket(peer: IpAddr) -> IpAddr {
     match peer {
         IpAddr::V4(_) => peer,
         IpAddr::V6(address) => address.to_ipv4_mapped().map_or_else(

@@ -94,7 +94,8 @@ as creating it.
 
 At least one account must keep `admin` on every application together with a
 passkey. Changes that would remove the last such account are refused with 409
-`account_lockout`.
+`account_lockout`. If every administrator still loses access, the host's
+operator can [recover it](authentication.md#recovering-administrator-access).
 
 Without `accounts:manage`, the account directory lists only the caller's own
 account.
