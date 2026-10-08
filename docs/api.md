@@ -483,9 +483,10 @@ key by discarding stored and generated values for **all applications and
 environments**. It returns 409
 `secret_key_usable` while the current key still works. Discarded versions are
 marked unavailable; metadata, running Docker services and their secrets are
-preserved. Supplying replacement values, or regenerating generated ones, creates
-new versions, and an explicit new deployment is required to adopt them. Deployments that need discarded values fail
-with `secret_unavailable` and the logical names. The response contains
+preserved. Supplying replacement stored values creates new versions, and an
+explicit new deployment is required to adopt them; that deployment also generates
+new values for discarded generated secrets it mounts. Deployments that need
+discarded stored values fail with `secret_unavailable` and the logical names. The response contains
 `affected_environments`, `affected_applications`, `affected_secrets` and
 `discarded_versions`; no key or
 secret value is returned. Repeating the request after a lost response returns

@@ -150,12 +150,13 @@ impl Store {
         }
     }
     /// Stores values for declared secrets that a service mounts and that have
-    /// none in the environment; unmounted declarations wait until a service
-    /// needs them. A generated value is never replaced, so deploys never
-    /// rotate it.
+    /// none in the environment, or only one key recovery discarded (which has
+    /// no value left to keep); unmounted declarations wait until a service
+    /// needs them. A generated value that still exists is never replaced, so
+    /// deploys never rotate it, and neither is one being deleted.
     /// Call before pinning, outside the writer lock: RSA generation takes time.
-    /// Each value is stored as generation 1 with `put_secret`; losing a race to
-    /// a concurrent write keeps the other value.
+    /// Each value is stored with `put_secret` against the generation read here;
+    /// losing a race to a concurrent write keeps the other value.
     ///
     /// # Errors
     /// Returns `SecretSource` when generation fails, and other `put_secret`
@@ -167,21 +168,29 @@ impl Store {
         app: &NormalizedApplication,
     ) -> Result<(), StoreError> {
         let id_str = id.as_str();
-        let existing = sqlx::query_scalar!(
-            "SELECT name FROM environment_secrets WHERE environment_id=?1",
+        let existing = sqlx::query!(
+            r#"SELECT s.name,s.generation,v.available OR s.deletion_id IS NOT NULL AS "kept!: bool" FROM environment_secrets s JOIN secret_versions v USING(environment_id,name,generation) WHERE s.environment_id=?1"#,
             id_str
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(StoreError::database)?;
+        .map_err(StoreError::database)?
+        .into_iter()
+        .map(|row| (row.name, (row.generation, row.kept)))
+        .collect::<BTreeMap<_, _>>();
         let mounted = app.spec().mounted_secret_names();
         for secret in &app.spec().secrets {
-            if existing.contains(&secret.name) || !mounted.contains(secret.name.as_str()) {
+            if !mounted.contains(secret.name.as_str()) {
                 continue;
             }
+            let expected = match existing.get(&secret.name) {
+                Some((_, true)) => continue,
+                Some((generation, false)) => *generation,
+                None => 0,
+            };
             let value = Self::generate_value(secret).await?;
             match self
-                .put_secret(super::Actor::Daemon, id, &secret.name, 0, value)
+                .put_secret(super::Actor::Daemon, id, &secret.name, expected, value)
                 .await
             {
                 // A value set concurrently wins over the generated one.

@@ -614,5 +614,5 @@ The command requires confirmation (`--yes` for automation), refuses while the
 current key still works, and reports affected environment, secret and version
 counts. Running Docker services are left alone. `app secret APP list` and
 `env secret APP list` mark discarded values as unavailable; set replacement
-values using the same names (`env secret APP regenerate` for generated ones),
-then Deploy explicitly.
+stored values using the same names, then Deploy explicitly, which also generates
+new values for discarded generated secrets.

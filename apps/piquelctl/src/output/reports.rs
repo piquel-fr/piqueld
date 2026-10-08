@@ -480,7 +480,7 @@ impl Report for Vec<SecretMetadata> {
                 secret.name,
                 secret.generation,
                 if secret.unavailable {
-                    "  value unavailable; replace value and deploy"
+                    "  value unavailable; the next deploy generates a new one"
                 } else {
                     ""
                 },

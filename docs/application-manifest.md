@@ -463,8 +463,9 @@ the secret, and it has no stored value. Declarations that no service mounts are
 not generated, so they never count against secret quotas. A value is never
 changed afterwards: later applies, deploys, and edits to the declaration keep
 it, so rotation stays explicit: `piquelctl env secret APP --env ENV regenerate NAME`
-generates a new version for the next deployment, also replacing a value
-discarded by key recovery. Removing a declaration retains the generated value.
+generates a new version for the next deployment. A value discarded by key
+recovery has nothing left to keep, so the next deployment that mounts it
+generates a new one. Removing a declaration retains the generated value.
 
 ## Startup dependencies
 

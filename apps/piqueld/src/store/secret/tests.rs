@@ -554,6 +554,37 @@ async fn mounted_declared_secrets_are_generated_once_until_regenerated() {
     ));
 }
 
+/// Key recovery leaves nothing of a generated value to keep, so the next
+/// deployment that mounts it generates a new one. That is the only way back
+/// when the manifest declaring it was never accepted, e.g. after a failed
+/// repository deployment, since `regenerate_secret` reads the accepted one.
+#[tokio::test]
+async fn deployments_replace_generated_values_discarded_by_key_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let accepted = ApplicationTemplate::from(&application());
+    let first = store.save_application(&accepted, None, None).await.unwrap();
+    let (app, env) = (with_generated_secret(&application()), &first.environment_id);
+    store.generate_secrets(env, &app).await.unwrap();
+    std::fs::write(temp.path().join("secrets.key"), [42; 32]).unwrap();
+    store.recover_secret_key(Daemon).await.unwrap();
+    assert!(store.secrets(env).await.unwrap()[0].unavailable);
+    assert!(matches!(
+        store.regenerate_secret(Daemon, env, "token", 1).await,
+        Err(StoreError::NotFound)
+    ));
+
+    let second = store
+        .save_application(&accepted, None, Some(1))
+        .await
+        .unwrap();
+    let pins = store.pin_secrets(&second, &app).await.unwrap();
+    let token = &store.secrets(env).await.unwrap()[0];
+    assert_eq!((token.generation, token.unavailable), (2, false));
+    let value = store.secret_plaintext(env, &pins["token"]).await.unwrap();
+    assert_eq!(value.len(), 32);
+}
+
 #[tokio::test]
 async fn sibling_environment_deletions_do_not_block_another_environments_deployment() {
     use crate::api::{Mutation, MutationResponse};
