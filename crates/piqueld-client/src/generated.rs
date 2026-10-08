@@ -7327,8 +7327,9 @@ impl Client {
     /*Check DNS providers now
 
     Lists every configured provider's zones immediately instead of at the next
-    hourly discovery, and returns the updated providers and certificates.
-    Credential files are only read at daemon startup.
+    hourly discovery, and returns the updated providers and certificates,
+    empty without `system:read` like [`status`]. Credential files are only
+    read at daemon startup.
 
     Sends a `POST` request to `/api/v1/system/dns/refresh`
 
@@ -7518,8 +7519,8 @@ impl Client {
     }
     /*Get daemon status
 
-    DNS providers and certificates are host configuration, naming every
-    application's routed hostnames, so they are empty without `system:read`.
+    DNS providers and certificates are empty without `system:read`; see
+    [`redact_dns`].
 
     Sends a `GET` request to `/api/v1/system/status`
 

@@ -56,7 +56,7 @@ when the complete normalized manifest is needed.
 | --- | --- | --- |
 | GET | `/api/v1/system/status` | Daemon status; DNS providers and certificates only with `system:read` |
 | GET | `/api/v1/system/configuration` | Effective read-only host settings |
-| POST | `/api/v1/system/dns/refresh` | Check DNS provider credentials and zones now (`system:operate`); returns `DnsStatus` |
+| POST | `/api/v1/system/dns/refresh` | Check DNS provider credentials and zones now (`system:operate`); returns `DnsStatus`, empty without `system:read` |
 | GET | `/api/v1/openapi.json` | Generated API schema |
 | GET | `/api/v1/applications` | Paginated application summaries (up to 100 per page) |
 | GET | `/api/v1/applications/{id}` | Full latest accepted application intent and its environments |

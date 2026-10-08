@@ -19751,7 +19751,7 @@
     },
     "/api/v1/system/dns/refresh": {
       "post": {
-        "description": "Lists every configured provider's zones immediately instead of at the next\nhourly discovery, and returns the updated providers and certificates.\nCredential files are only read at daemon startup.",
+        "description": "Lists every configured provider's zones immediately instead of at the next\nhourly discovery, and returns the updated providers and certificates,\nempty without `system:read` like [`status`]. Credential files are only\nread at daemon startup.",
         "operationId": "refreshDns",
         "responses": {
           "200": {
@@ -19911,7 +19911,7 @@
     },
     "/api/v1/system/status": {
       "get": {
-        "description": "DNS providers and certificates are host configuration, naming every\napplication's routed hostnames, so they are empty without `system:read`.",
+        "description": "DNS providers and certificates are empty without `system:read`; see\n[`redact_dns`].",
         "operationId": "systemStatus",
         "responses": {
           "200": {

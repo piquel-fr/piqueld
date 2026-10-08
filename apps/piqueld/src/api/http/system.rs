@@ -7,8 +7,8 @@ use super::{ApiState, ok};
 
 /// Gets daemon status.
 ///
-/// DNS providers and certificates are host configuration, naming every
-/// application's routed hostnames, so they are empty without `system:read`.
+/// DNS providers and certificates are empty without `system:read`; see
+/// [`redact_dns`].
 #[utoipa::path(
     get,
     path = "/api/v1/system/status",
@@ -23,17 +23,24 @@ pub(super) async fn status(
     Extension(identity): Extension<Identity>,
 ) -> impl IntoResponse {
     let mut status = state.system_status().await;
-    if !identity.grants.has_global(GlobalPermission::SystemRead) {
-        status.dns = DnsStatus::default();
-    }
+    redact_dns(&identity, &mut status.dns);
     ok(status)
+}
+
+/// Empties `dns` without `system:read`: providers and certificates are host
+/// configuration, naming every application's routed hostnames.
+fn redact_dns(identity: &Identity, dns: &mut DnsStatus) {
+    if !identity.grants.has_global(GlobalPermission::SystemRead) {
+        *dns = DnsStatus::default();
+    }
 }
 
 /// Checks DNS provider credentials now.
 ///
 /// Lists every configured provider's zones immediately instead of at the next
-/// hourly discovery, and returns the updated providers and certificates.
-/// Credential files are only read at daemon startup.
+/// hourly discovery, and returns the updated providers and certificates,
+/// empty without `system:read` like [`status`]. Credential files are only
+/// read at daemon startup.
 #[utoipa::path(
     post,
     path = "/api/v1/system/dns/refresh",
@@ -43,8 +50,13 @@ pub(super) async fn status(
         (status = 200, description = "Success", body = Envelope<DnsStatus>),
     )
 )]
-pub(super) async fn refresh_dns(State(state): State<ApiState>) -> impl IntoResponse {
-    ok(state.refresh_dns().await)
+pub(super) async fn refresh_dns(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
+) -> impl IntoResponse {
+    let mut dns = state.refresh_dns().await;
+    redact_dns(&identity, &mut dns);
+    ok(dns)
 }
 
 /// Static liveness body: `{"status":"ok"}`.
