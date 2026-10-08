@@ -15,35 +15,38 @@ pub(crate) struct Heads {
 }
 
 impl Heads {
-    /// Longest a listing may take before it counts as failed.
+    /// Longest a listing may take before it counts as failed. Its process
+    /// group, Git's transport and credential helpers included, is then killed.
     const TIMEOUT: Duration = Duration::from_secs(30);
+    /// Most output a listing may produce: tens of thousands of branches.
+    const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 
     /// Lists every branch of `url` with its head commit. Any repository,
     /// network, or authentication failure is an error, never an empty
     /// listing, so a branch only counts as gone when the repository answered.
     pub(crate) async fn list(url: &str) -> anyhow::Result<Self> {
+        let mut command = Checkout::command();
+        command.args(["ls-remote", "--heads", "--"]).arg(url);
         let output = tokio::time::timeout(
             Self::TIMEOUT,
-            Checkout::command()
-                .args(["ls-remote", "--heads", "--"])
-                .arg(url)
-                .stdin(std::process::Stdio::null())
-                .output(),
+            crate::command::LoggedCommand::output(
+                &mut command,
+                "list Git branches",
+                Self::OUTPUT_LIMIT,
+            ),
         )
         .await
         .context("git ls-remote timed out")?
-        .context("run git ls-remote")?;
-        if !output.status.success() {
-            // Git may echo the URL, credentials included; keep it in logs.
-            tracing::warn!(
-                status = %output.status,
-                stderr = %String::from_utf8_lossy(&output.stderr),
-                "git ls-remote failed"
-            );
-            bail!("git ls-remote failed ({})", output.status);
-        }
+        .map_err(|error| {
+            // Git may echo the URL, credentials included, so details stay in logs.
+            tracing::warn!(?error, "git ls-remote failed");
+            match error.downcast_ref::<crate::command::CommandFailure>() {
+                Some(failure) => anyhow::anyhow!("git ls-remote failed ({})", failure.status),
+                None => anyhow::anyhow!("git ls-remote could not run"),
+            }
+        })?;
         let mut heads = BTreeMap::new();
-        for line in String::from_utf8(output.stdout)
+        for line in String::from_utf8(output)
             .context("decode git ls-remote output")?
             .lines()
         {

@@ -197,7 +197,8 @@ async fn create(
 }
 
 /// Confirms and deletes a preview and its volumes. Waits until it is gone
-/// unless `--no-wait`.
+/// unless `--no-wait`, polling the environment endpoint, which unlike the
+/// preview one never reads the repository.
 async fn delete(
     cli: &Cli,
     client: &Client,
@@ -224,7 +225,7 @@ async fn delete(
     wait_for_deletion(
         console,
         client,
-        || client.preview(preview.id.as_str()),
+        || client.environment(preview.id.as_str()),
         std::slice::from_ref(&accepted.operation_id),
     )
     .await?;
@@ -295,7 +296,7 @@ async fn prune(
             wait_for_deletion(
                 console,
                 client,
-                || client.preview(deleted.preview.id.as_str()),
+                || client.environment(deleted.preview.id.as_str()),
                 std::slice::from_ref(&deleted.operation.operation_id),
             )
             .await?;
