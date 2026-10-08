@@ -997,6 +997,7 @@ fn refused(peer: &str) -> NewAuditEvent {
         credential_kind: None,
         scoped: None,
         peer: Some(peer.into()),
+        tailnet: None,
         request_id: None,
         application_id: None,
         environment_id: None,
@@ -1090,10 +1091,22 @@ async fn the_audit_chain_detects_alteration_and_survives_pruning() {
     store.audit_days = 1;
     let now = now_ms();
     for (peer, at) in [("a", 0), ("b", 0), ("c", now), ("d", now)] {
-        store.record_audit_at(&refused(peer), at).await.unwrap();
+        let mut event = refused(peer);
+        // Tailnet identities, recorded only on some requests, are linked too.
+        event.tailnet = (peer == "d").then(|| "tag:ci on runner".into());
+        store.record_audit_at(&event, at).await.unwrap();
     }
     let intact = store.verify_audit().await.unwrap();
     assert_eq!((intact.checked, intact.broken_at), (4, None));
+    let renamed = "UPDATE audit_events SET tailnet='tag:prod on runner' WHERE peer='d'";
+    sqlx::query(renamed).execute(&store.pool).await.unwrap();
+    let d_id: i64 = sqlx::query_scalar("SELECT id FROM audit_events WHERE peer='d'")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(store.verify_audit().await.unwrap().broken_at, Some(d_id));
+    let restore = "UPDATE audit_events SET tailnet='tag:ci on runner' WHERE peer='d'";
+    sqlx::query(restore).execute(&store.pool).await.unwrap();
     let run = async |sql: &str| {
         sqlx::query(sql).execute(&store.pool).await.unwrap();
         store.verify_audit().await.unwrap()

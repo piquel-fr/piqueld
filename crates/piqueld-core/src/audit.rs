@@ -62,6 +62,9 @@ pub struct AuditEvent {
     pub scoped: Option<bool>,
     /// Network address the daemon saw; absent over the Unix socket.
     pub peer: Option<String>,
+    /// Tailnet user or tags and node, for requests through the daemon's
+    /// tailnet node, e.g. `alice@example.com on laptop`.
+    pub tailnet: Option<String>,
     /// Request ID, matching `x-request-id` and daemon logs.
     pub request_id: Option<String>,
     /// Application the request addressed: by ID, or as the owner of the

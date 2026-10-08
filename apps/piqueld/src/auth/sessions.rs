@@ -19,6 +19,8 @@ pub struct Identity {
     /// Whether the credential is limited to its own grants, like an API
     /// token; such credentials cannot create credentials.
     pub scoped: bool,
+    /// Tailnet user or tag the credential is bound to, if any.
+    pub tailnet: Option<piqueld_core::tailnet::TailnetBinding>,
 }
 
 impl Identity {
@@ -90,6 +92,7 @@ impl Auth {
             kind: owner.kind,
             grants: owner.grants,
             scoped: owner.scoped,
+            tailnet: owner.tailnet,
         };
         Ok((identity, owner.last_used_at))
     }

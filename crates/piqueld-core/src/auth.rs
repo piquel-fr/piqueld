@@ -116,6 +116,8 @@ pub struct CredentialView {
     pub last_used_at: i64,
     /// Absolute expiry, as Unix seconds; absent for non-expiring tokens.
     pub expires_at: Option<i64>,
+    /// Tailnet user or tag this token is bound to, if any.
+    pub tailnet: Option<crate::tailnet::TailnetBinding>,
 }
 /// Pending invitation metadata. Its secret is returned only at creation.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -225,6 +227,10 @@ pub enum Manage {
         name: String,
         /// Lifetime in days; absent means no expiry.
         days: Option<u32>,
+        /// Tailnet user or tag the token is bound to; absent accepts it
+        /// from anywhere.
+        #[serde(default)]
+        tailnet: Option<crate::tailnet::TailnetBinding>,
     },
 }
 /// Management result. Secrets are disclosed only once.

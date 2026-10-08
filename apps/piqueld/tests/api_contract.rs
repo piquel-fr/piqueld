@@ -39,6 +39,7 @@ impl Authenticator for FakeAuth {
             kind: piqueld::store::CredentialKind::Token,
             grants: piqueld_core::access::Grants::admin(),
             scoped: false,
+            tailnet: None,
         }))
     }
 }
@@ -5037,6 +5038,236 @@ async fn admin_recovery_requires_the_host_operator_over_the_unix_socket() {
             .unwrap()
             .contains("/dashboard/auth#invite=")
     );
+}
+
+/// A fixed tailnet: `100.64.0.1` is Alice's laptop, `100.64.0.2` a CI runner,
+/// `100.64.0.3` a runner that just lost `tag:ci`, which only a cached (not
+/// fresh) lookup still reports, and `100.64.0.4` a runner that just left the
+/// tailnet, which only a cached lookup still finds.
+struct FakeTailnet;
+
+#[async_trait]
+impl piqueld::tailnet::TailnetLookup for FakeTailnet {
+    async fn whois(
+        &self,
+        peer: std::net::SocketAddr,
+        fresh: bool,
+    ) -> Option<piqueld_core::tailnet::TailnetPeer> {
+        let (login, node, tags) = match peer.ip().to_string().as_str() {
+            "100.64.0.1" => (Some("alice@example.com".into()), "laptop", Vec::new()),
+            "100.64.0.2" => (None, "runner", vec!["tag:ci".to_owned()]),
+            "100.64.0.3" if fresh => (None, "retired", vec!["tag:old".to_owned()]),
+            "100.64.0.3" => (None, "retired", vec!["tag:ci".to_owned()]),
+            "100.64.0.4" if fresh => return None,
+            "100.64.0.4" => (None, "vanished", vec!["tag:ci".to_owned()]),
+            _ => return None,
+        };
+        Some(piqueld_core::tailnet::TailnetPeer {
+            login,
+            node: node.into(),
+            tags,
+        })
+    }
+}
+
+/// A token bound to a tailnet tag works only through the tailnet node from a
+/// device carrying that tag right now; refusals name the tailnet peer in the
+/// audit trail.
+#[tokio::test]
+async fn tailnet_bound_tokens_work_only_from_matching_devices() {
+    use piqueld::auth::{Auth, TokenPolicy};
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp).await;
+    let database = temp.path().join("state.db");
+    let admin = seed_account(&database, "admin", &[("admin", None)]).await;
+    let store = Store::open(&database).await.unwrap();
+    let tokens = TokenPolicy {
+        max_days: None,
+        tailnet: true,
+    };
+    let auth = Auth::configured(&store, "https://piqueld.example", tokens).unwrap();
+    let unix = api_router(state.clone(), auth.clone());
+    let lookup: Arc<dyn piqueld::tailnet::TailnetLookup> = Arc::new(FakeTailnet);
+    let tailnet = web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth)
+        .layer(axum::Extension(lookup));
+    let create = piqueld_core::auth::Manage::CreateToken {
+        grants: piqueld_core::access::Grants::admin(),
+        name: "ci".into(),
+        days: Some(1),
+        tailnet: Some(piqueld_core::tailnet::TailnetBinding::parse("tag:ci").unwrap()),
+    };
+    let request = Request::post("/api/v1/auth/manage")
+        .header("authorization", format!("Bearer {admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&create).unwrap()))
+        .unwrap();
+    let response = unix.clone().oneshot(request).await.unwrap();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let managed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let token = managed["token"].as_str().expect("token").to_owned();
+    let me = async |router: &axum::Router, peer: Option<[u8; 4]>| {
+        let mut request = Request::get("/api/v1/auth/me")
+            .header("host", "localhost")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        if let Some(ip) = peer {
+            let address = std::net::SocketAddr::from((ip, 40_000));
+            request
+                .extensions_mut()
+                .insert(axum::extract::ConnectInfo(address));
+        }
+        router
+            .clone()
+            .oneshot(request)
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    };
+    assert_eq!(
+        me(&tailnet, Some([100, 64, 0, 2])).await,
+        200,
+        "the CI runner"
+    );
+    assert_eq!(
+        me(&tailnet, Some([100, 64, 0, 1])).await,
+        401,
+        "Alice's laptop"
+    );
+    let retagged = me(&tailnet, Some([100, 64, 0, 3])).await;
+    assert_eq!(retagged, 401, "a cached identity never authorizes");
+    let vanished = me(&tailnet, Some([100, 64, 0, 4])).await;
+    assert_eq!(vanished, 401, "nor stands in for a failed lookup");
+    assert_eq!(me(&unix, None).await, 401, "outside the tailnet");
+    let denied = piqueld_core::audit::AuditFilter {
+        outcome: Some(piqueld_core::audit::AuditOutcome::Denied),
+        ..Default::default()
+    };
+    // Records are written in the background; allow for a loaded machine.
+    for _ in 0..500 {
+        let page = state.audit_events(&denied, None, 10).await.unwrap();
+        // The vanished runner's refusal names no peer, not its cached one.
+        if page.items.len() >= 4 {
+            let from: std::collections::BTreeSet<_> =
+                page.items.into_iter().map(|event| event.tailnet).collect();
+            let described = ["alice@example.com on laptop", "tag:old on retired"];
+            let expected = std::iter::once(None)
+                .chain(described.map(|who| Some(who.to_owned())))
+                .collect();
+            assert_eq!(from, expected);
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the refused requests were not audited");
+}
+
+/// A runner whose tag is `tag:ci` when it connects, and `tag:old` on every
+/// later fresh lookup.
+struct Retagged(std::sync::atomic::AtomicUsize);
+
+#[async_trait]
+impl piqueld::tailnet::TailnetLookup for Retagged {
+    async fn whois(
+        &self,
+        _: std::net::SocketAddr,
+        fresh: bool,
+    ) -> Option<piqueld_core::tailnet::TailnetPeer> {
+        let lookups = if fresh {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        } else {
+            0
+        };
+        let tag = if lookups == 0 { "tag:ci" } else { "tag:old" };
+        Some(piqueld_core::tailnet::TailnetPeer {
+            login: None,
+            node: "runner".into(),
+            tags: vec![tag.to_owned()],
+        })
+    }
+}
+
+/// A bound token's binding is rechecked when a command arrives: a device
+/// retagged since the connection was authorized cannot start one, and the
+/// refusal is audited with the device as it is now.
+#[tokio::test]
+async fn tailnet_bindings_are_rechecked_when_a_command_starts() {
+    use piqueld::auth::{Auth, TokenPolicy};
+    use piqueld_client::exec::{ExecCommand, ExecOutput, ExecRequest};
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp).await;
+    let mutation =
+        piqueld::api::Mutation::save(manifest().validate_template().unwrap(), None, false);
+    let Ok(piqueld::api::MutationResponse::Saved(saved)) =
+        state.accept(Daemon, mutation, Some(0), false, None).await
+    else {
+        panic!("save response");
+    };
+    let database = temp.path().join("state.db");
+    let admin = seed_account(&database, "admin", &[("admin", None)]).await;
+    let store = Store::open(&database).await.unwrap();
+    let tokens = TokenPolicy {
+        max_days: None,
+        tailnet: true,
+    };
+    let auth = Auth::configured(&store, "https://piqueld.example", tokens).unwrap();
+    let create = piqueld_core::auth::Manage::CreateToken {
+        grants: piqueld_core::access::Grants::admin(),
+        name: "ci".into(),
+        days: Some(1),
+        tailnet: Some(piqueld_core::tailnet::TailnetBinding::parse("tag:ci").unwrap()),
+    };
+    let request = Request::post("/api/v1/auth/manage")
+        .header("authorization", format!("Bearer {admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&create).unwrap()))
+        .unwrap();
+    let unix = api_router(state.clone(), auth.clone());
+    let response = unix.oneshot(request).await.unwrap();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let managed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let token = managed["token"].as_str().expect("token").to_owned();
+    let lookup: Arc<dyn piqueld::tailnet::TailnetLookup> =
+        Arc::new(Retagged(std::sync::atomic::AtomicUsize::new(0)));
+    let tailnet = web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth)
+        .layer(axum::Extension(lookup));
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = tcp.local_addr().unwrap();
+    let service = tailnet.into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let server = tokio::spawn(serve(tcp, service).into_future());
+    let client = Client::tcp(&format!("http://{address}/"))
+        .unwrap()
+        .with_bearer(&token)
+        .unwrap();
+    let request = ExecRequest {
+        service: "web".parse().unwrap(),
+        command: ExecCommand::parse(vec!["true".into()]).unwrap(),
+        stdin: false,
+        tty: None,
+    };
+    // The default environment shares its application's ID.
+    let environment = saved.application_id.as_str();
+    let (mut output, _input) = client.exec(environment, &request).await.unwrap();
+    assert!(matches!(
+        output.next().await,
+        Ok(Some(ExecOutput::Failed { status: 401, error }))
+            if error.code == "tailnet_binding_mismatch"
+    ));
+    let denied = piqueld_core::audit::AuditFilter {
+        outcome: Some(piqueld_core::audit::AuditOutcome::Denied),
+        ..Default::default()
+    };
+    for _ in 0..500 {
+        let page = state.audit_events(&denied, None, 10).await.unwrap();
+        if let [event] = page.items.as_slice() {
+            assert_eq!(event.tailnet.as_deref(), Some("tag:old on runner"));
+            server.abort();
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the refused command was not audited");
 }
 
 /// Authentication short circuits still use the common error correlation layers,

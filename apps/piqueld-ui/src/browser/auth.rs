@@ -975,6 +975,7 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
     let passkey_name = RwSignal::new("New passkey".to_owned());
     let token_name = RwSignal::new(String::new());
     let days = RwSignal::new("90".to_owned());
+    let tailnet = RwSignal::new(String::new());
     // New tokens start read-only within the account's access.
     let token_grants = RwSignal::new(Grants::default());
     let token_initial = piqueld_client::access::Preset::ReadOnly
@@ -1006,20 +1007,27 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
     };
     let create_token = move |_| {
         let days = days.get_untracked();
-        let parsed = if days.is_empty() {
+        let days = if days.is_empty() {
             Ok(None)
         } else {
-            days.parse::<u32>().map(Some)
+            days.parse::<u32>()
+                .map(Some)
+                .map_err(|_| "Enter a positive number of days, or leave blank")
         };
-        match parsed {
-            Ok(days) => feedback.manage(Manage::CreateToken {
+        let tailnet = tailnet.get_untracked();
+        let tailnet = if tailnet.trim().is_empty() {
+            Ok(None)
+        } else {
+            piqueld_client::tailnet::TailnetBinding::parse(tailnet.trim()).map(Some)
+        };
+        match (days, tailnet) {
+            (Ok(days), Ok(tailnet)) => feedback.manage(Manage::CreateToken {
                 grants: token_grants.get_untracked(),
                 name: token_name.get_untracked(),
                 days,
+                tailnet,
             }),
-            Err(_) => feedback
-                .error
-                .set("Enter a positive number of days, or leave blank".into()),
+            (Err(problem), _) | (_, Err(problem)) => feedback.error.set(problem.into()),
         }
     };
     view! {
@@ -1243,6 +1251,15 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
                                                             || "Full account access".into_any(),
                                                             |grants| summary(&grants),
                                                         )}
+                                                    {credential
+                                                        .tailnet
+                                                        .map(|binding| {
+                                                            view! {
+                                                                <div class="muted">
+                                                                    {format!("Only from tailnet {binding}")}
+                                                                </div>
+                                                            }
+                                                        })}
                                                 </td>
                                                 <td class="muted">
                                                     {when(credential.last_used_at * 1000)}
@@ -1310,6 +1327,12 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
                                     on:input={move |e| days.set(event_target_value(&e))}
                                 />
                             </label>
+                            {text_input(
+                                "Tailnet user or tag (optional, e.g. tag:ci)",
+                                tailnet,
+                                String::clone,
+                                |v, s| *v = s,
+                            )}
                             <button type="button" class="btn" on:click={create_token}>
                                 "Create token"
                             </button>

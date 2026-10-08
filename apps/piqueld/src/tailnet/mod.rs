@@ -6,9 +6,11 @@
 
 mod node;
 mod proxy;
+mod whois;
 
 pub use node::{Node, NodeListener};
 pub use proxy::ProxyListener;
+pub use whois::{TailnetLookup, Whois};
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
@@ -22,6 +24,7 @@ use tokio::{
 const COMMAND_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// The `tailscale` CLI, pointed at the dedicated daemon's socket.
+#[derive(Clone)]
 struct Cli {
     socket: PathBuf,
 }

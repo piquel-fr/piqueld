@@ -75,13 +75,23 @@ impl Auth {
                 result.invitation_url = Some(self.link("enroll", &secret));
             }
             Manage::RevokeInvitation { id } => store.revoke_invitation(caller, &id).await?,
-            Manage::CreateToken { grants, name, days } => {
+            Manage::CreateToken {
+                grants,
+                name,
+                days,
+                tailnet,
+            } => {
                 if name.is_empty() || name.len() > 200 || days == Some(0) {
                     return Err(AuthError::Invalid(
                         "token requires a name and a positive lifetime (or no expiry)",
                     ));
                 }
-                if let Some(limit) = self.0.max_token_days
+                if tailnet.is_some() && !self.0.tokens.tailnet {
+                    return Err(AuthError::Invalid(
+                        "tailnet bindings need the daemon's tailnet node (tailscale.enabled)",
+                    ));
+                }
+                if let Some(limit) = self.0.tokens.max_days
                     && days.is_none_or(|days| days > limit)
                 {
                     return Err(AuthError::Invalid(
@@ -91,7 +101,9 @@ impl Auth {
                 let expires = days.map(|days| now_secs() + i64::from(days) * DAY);
                 let (token, credential) =
                     Self::new_credential(CredentialKind::Token, &name, expires, Some(&grants))?;
-                store.create_token(caller, &credential).await?;
+                store
+                    .create_token(caller, &credential, tailnet.as_ref())
+                    .await?;
                 result.token = Some(token);
             }
         }

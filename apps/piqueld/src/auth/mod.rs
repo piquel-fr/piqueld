@@ -83,9 +83,19 @@ struct Inner {
     throttle: Mutex<throttle::Throttle>,
     /// Link written by [`Auth::prepare_setup`] while the installation is unclaimed.
     setup_link: Mutex<Option<String>>,
-    /// Longest API token lifetime in days (`auth.max_token_days`); `None`
-    /// allows tokens that never expire.
-    max_token_days: Option<u32>,
+    /// What new API tokens may be.
+    tokens: TokenPolicy,
+}
+
+/// Limits on new API tokens, from daemon configuration.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TokenPolicy {
+    /// Longest lifetime in days (`auth.max_token_days`); `None` allows
+    /// tokens that never expire.
+    pub max_days: Option<u32>,
+    /// Whether the daemon runs a tailnet node (`tailscale.enabled`), without
+    /// which a token bound to a tailnet identity could never be used.
+    pub tailnet: bool,
 }
 
 impl Auth {
@@ -99,7 +109,11 @@ impl Auth {
         store: &crate::store::Store,
         config: &crate::config::DaemonConfig,
     ) -> anyhow::Result<Self> {
-        let auth = Self::configured(store, config.public_url(), config.auth.max_token_days)?;
+        let tokens = TokenPolicy {
+            max_days: config.auth.max_token_days,
+            tailnet: config.tailscale.enabled,
+        };
+        let auth = Self::configured(store, config.public_url(), tokens)?;
         let path = config.server.data_dir.join("setup-link");
         auth.prepare_setup(&path).await?;
         if auth.0.setup_link.lock().await.is_some() {
@@ -116,17 +130,17 @@ impl Auth {
     /// # Errors
     /// Rejects origins that `WebAuthn` cannot safely use.
     pub fn new(store: &crate::store::Store, public_url: &str) -> Result<Self> {
-        Self::configured(store, public_url, None)
+        Self::configured(store, public_url, TokenPolicy::default())
     }
 
-    /// Constructs the service for one exact browser origin, limiting API
-    /// tokens to `max_token_days` when set.
+    /// Constructs the service for one exact browser origin, limiting new API
+    /// tokens to `tokens`.
     /// # Errors
     /// Rejects origins that `WebAuthn` cannot safely use.
     pub fn configured(
         store: &crate::store::Store,
         public_url: &str,
-        max_token_days: Option<u32>,
+        tokens: TokenPolicy,
     ) -> Result<Self> {
         let origin = Self::validate_origin(public_url)?;
         let host = origin
@@ -150,7 +164,7 @@ impl Auth {
             devices: Mutex::new(HashMap::new()),
             throttle: Mutex::new(throttle::Throttle::default()),
             setup_link: Mutex::new(None),
-            max_token_days,
+            tokens,
         })))
     }
 

@@ -16,6 +16,7 @@ use piqueld_client::{
     access::{Grant, Grants, Permission, Preset, Scope},
     audit::{AuditEvent, AuditFilter, AuditLink, AuditOutcome, AuditVerification},
     auth::{Account, CredentialView, Directory, Manage, Session},
+    tailnet::TailnetBinding,
 };
 use serde::Serialize;
 use std::{collections::BTreeMap, io};
@@ -146,6 +147,10 @@ pub(crate) enum TokenCommand {
         /// Never expire (refused when the daemon limits token lifetimes).
         #[arg(long)]
         no_expiry: bool,
+        /// Accept the token only through the daemon's tailnet node, from a
+        /// device of this user (alice@example.com) or with this tag (tag:ci).
+        #[arg(long, value_parser = parse_tailnet)]
+        tailnet: Option<TailnetBinding>,
     },
     /// List your sessions and tokens.
     List,
@@ -165,6 +170,7 @@ impl TokenCommand {
                 grants,
                 days,
                 no_expiry,
+                tailnet,
             } => {
                 // Daemons older than scoped tokens would ignore `grants` and
                 // issue full access. Their sessions lack `scoped`, so this
@@ -185,6 +191,7 @@ impl TokenCommand {
                         grants,
                         name: name.clone(),
                         days: (!no_expiry).then_some(*days),
+                        tailnet: tailnet.clone(),
                     })
                     .await?;
                 let token = managed.token.ok_or_else(|| {
@@ -417,6 +424,10 @@ pub(crate) struct AuditArgs {
     limit: u16,
 }
 
+fn parse_tailnet(value: &str) -> std::result::Result<TailnetBinding, String> {
+    TailnetBinding::parse(value).map_err(str::to_owned)
+}
+
 fn parse_outcome(value: &str) -> std::result::Result<AuditOutcome, String> {
     AuditOutcome::parse(value).ok_or_else(|| "expected allowed, denied, or failed".into())
 }
@@ -533,8 +544,12 @@ impl Report for AuditReport {
             let target = event
                 .target()
                 .map_or_else(String::new, |target| format!(" on {target}"));
+            let tailnet = event
+                .tailnet
+                .as_deref()
+                .map_or_else(String::new, |who| format!(" ({who})"));
             out.line(format_args!(
-                "{}  {}  {} {}{target}  {who}{credential}  {}{missing}",
+                "{}  {}  {} {}{target}  {who}{credential}  {}{tailnet}{missing}",
                 event.created_at_ms,
                 event.outcome.as_str(),
                 event.status,
@@ -587,6 +602,9 @@ impl Report for CredentialsReport {
             match &credential.grants {
                 Some(grants) => self.names.render(grants, out)?,
                 None => out.line("  the account's full access")?,
+            }
+            if let Some(tailnet) = &credential.tailnet {
+                out.line(format_args!("  only from tailnet {tailnet}"))?;
             }
         }
         Ok(())

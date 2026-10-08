@@ -63,6 +63,8 @@ pub mod access;
 pub mod audit;
 /// Passkey authentication and account management contracts.
 pub mod auth;
+/// Tailnet identities and the token bindings they satisfy.
+pub mod tailnet;
 /// Credential-safe TOML parse diagnostics.
 pub mod toml_diagnostic;
 pub use toml_diagnostic::{TomlDiagnostic, TomlLocation};

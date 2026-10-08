@@ -83,10 +83,12 @@ on shutdown the daemon waits up to 10 seconds for pending records and logs any
 it loses. Each record keeps the action
 (method and route template), outcome (`allowed`, `denied`, or `failed`), status,
 account, credential and its kind, whether the credential was limited, the
-network address, request ID, addressed application or environment (with the
-environment's application, when the request was allowed or lacked a permission
-there, so a refusal never reveals who owns an environment hidden from its caller),
-and the permission a refusal lacked. Bodies are never recorded. Records copy the account and
+network address (and, through the [tailnet node](configuration.md#tailnet-node),
+the tailnet user or tags and device, such as `alice@example.com on laptop`),
+request ID, addressed application or environment (with the environment's
+application, when the request was allowed or lacked a permission there, so a
+refusal never reveals who owns an environment hidden from its caller), and the
+permission a refusal lacked. Bodies are never recorded. Records copy the account and
 credential, so they outlive both, and application deletion keeps them.
 
 `GET /api/v1/audit` lists the trail newest first, filtered by `user_id`,

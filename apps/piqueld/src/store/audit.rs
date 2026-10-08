@@ -13,7 +13,7 @@ use sqlx::{QueryBuilder, SqliteConnection};
 
 /// Columns read into [`AuditRow`].
 const COLUMNS: &str = "id,created_at_ms,action,outcome,status,user_id,username,credential_id,\
-    credential_kind,scoped,peer,request_id,application_id,environment_id,permission,link";
+    credential_kind,scoped,peer,request_id,application_id,environment_id,permission,link,tailnet";
 
 /// An audited request to record.
 pub(crate) struct NewAuditEvent {
@@ -27,6 +27,8 @@ pub(crate) struct NewAuditEvent {
     pub(crate) credential_kind: Option<&'static str>,
     pub(crate) scoped: Option<bool>,
     pub(crate) peer: Option<String>,
+    /// Tailnet identity of the peer (see `TailnetPeer::describe`).
+    pub(crate) tailnet: Option<String>,
     pub(crate) request_id: Option<String>,
     /// Application the route names by ID.
     pub(crate) application_id: Option<String>,
@@ -54,6 +56,7 @@ struct AuditRow {
     environment_id: Option<String>,
     permission: Option<String>,
     link: Option<String>,
+    tailnet: Option<String>,
 }
 
 impl NewAuditEvent {
@@ -76,13 +79,16 @@ impl NewAuditEvent {
             environment_id: self.environment_id.clone(),
             permission: self.permission.map(str::to_owned),
             link: None,
+            tailnet: self.tailnet.clone(),
         }
     }
 }
 
 impl AuditRow {
     /// This row's link after `previous`: lowercase hex SHA-256 of a JSON
-    /// array holding `previous` and every field, in column order.
+    /// array holding `previous` and every field, in column order. `tailnet`,
+    /// added later, is appended only when present, so links of earlier rows
+    /// stay valid.
     fn link_from(&self, previous: &str) -> Result<String, StoreError> {
         use sha2::{Digest, Sha256};
         let fields = (
@@ -103,7 +109,11 @@ impl AuditRow {
             &self.environment_id,
             &self.permission,
         );
-        let bytes = serde_json::to_vec(&fields).map_err(StoreError::corrupt)?;
+        let bytes = match &self.tailnet {
+            None => serde_json::to_vec(&fields),
+            Some(tailnet) => serde_json::to_vec(&(fields, tailnet)),
+        }
+        .map_err(StoreError::corrupt)?;
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
 
@@ -120,6 +130,7 @@ impl AuditRow {
             credential_kind: self.credential_kind,
             scoped: self.scoped,
             peer: self.peer,
+            tailnet: self.tailnet,
             request_id: self.request_id,
             application_id: self.application_id,
             environment_id: self.environment_id,
@@ -167,7 +178,7 @@ impl Store {
         }
         row.link = Some(row.link_from(&head.link)?);
         sqlx::query!(
-            "INSERT INTO audit_events(created_at_ms,action,outcome,status,user_id,username,credential_id,credential_kind,scoped,peer,request_id,application_id,environment_id,permission,link,id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            "INSERT INTO audit_events(created_at_ms,action,outcome,status,user_id,username,credential_id,credential_kind,scoped,peer,request_id,application_id,environment_id,permission,link,id,tailnet) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
             row.created_at_ms,
             row.action,
             row.outcome,
@@ -184,6 +195,7 @@ impl Store {
             row.permission,
             row.link,
             row.id,
+            row.tailnet,
         )
         .execute(&mut *tx)
         .await

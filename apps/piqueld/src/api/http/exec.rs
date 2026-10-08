@@ -1,5 +1,11 @@
 //! `WebSocket` connections streaming one-off commands. See `piqueld_core::exec`.
-use super::{ApiError, ApiPath, ApiState, access::Audit, decode_json, openapi::ApiErrorResponse};
+use super::{
+    ApiError, ApiPath, ApiState,
+    access::Audit,
+    auth::{FreshTailnet, TailnetSource, binding_mismatch},
+    decode_json,
+    openapi::ApiErrorResponse,
+};
 use crate::{api::ExecSession, auth::Identity, docker::ExecIo};
 use axum::{
     Extension,
@@ -20,7 +26,6 @@ use piqueld_core::{
 };
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
-use tower_http::request_id::RequestId;
 
 /// How long the daemon waits to deliver the final message and close.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -55,11 +60,12 @@ pub(super) async fn exec(
     ExecUpgrade(upgrade): ExecUpgrade,
     Extension(identity): Extension<Identity>,
     Extension(audit): Extension<Audit>,
-    request_id: Option<Extension<RequestId>>,
+    tailnet: Option<Extension<piqueld_core::tailnet::TailnetPeer>>,
+    source: Option<TailnetSource>,
 ) -> Result<Response, ApiError> {
+    let mut tailnet = tailnet.map(|Extension(peer)| peer);
     let id = EnvironmentId::parse(id)?;
-    let request_id =
-        request_id.and_then(|Extension(id)| id.header_value().to_str().ok().map(str::to_owned));
+    let request_id = audit.request_id().map(str::to_owned);
     Ok(upgrade
         .max_message_size(MAX_MESSAGE_BYTES)
         .on_failed_upgrade(|error| tracing::warn!(?error, "exec connection upgrade failed"))
@@ -67,6 +73,15 @@ pub(super) async fn exec(
             let (mut writer, mut reader) = socket.split();
             let result = async {
                 let request = read_request(&mut reader).await?;
+                // Like grants, a tailnet binding is rechecked once the command
+                // arrives, against the peer as it is now.
+                if let Some(fresh) = FreshTailnet::check(&identity, source.as_ref()).await {
+                    let matches = fresh.matches(&identity);
+                    tailnet = fresh.0;
+                    if !matches {
+                        return Err(binding_mismatch());
+                    }
+                }
                 let caller = crate::api::Actor::Account(identity.caller());
                 let session = state
                     .exec(caller, &id, &request, &identity.user.username)
@@ -79,10 +94,11 @@ pub(super) async fn exec(
                 None => None,
                 Some(Ok(code)) => Some(ExecOutput::Exit(code)),
                 Some(Err(error)) => {
-                    // Grants are rechecked once the command arrives, after
+                    // Access is rechecked once the command arrives, after
                     // the upgrade was audited as allowed.
                     if error.denied.is_some() || error.status == StatusCode::UNAUTHORIZED {
-                        audit.refused_later(&state, identity.clone(), &error);
+                        let tailnet = tailnet.as_ref();
+                        audit.refused_later(&state, identity.clone(), tailnet, &error);
                     }
                     let mut body = error.body();
                     if let Some(request_id) = request_id {

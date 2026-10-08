@@ -160,6 +160,27 @@ Daemons older than these limits would ignore them and issue full access, so
 `piquelctl` checks that the daemon supports them before asking for a limited
 token or login.
 
+### Tailnet-bound tokens
+
+With the daemon's [tailnet node](configuration.md#tailnet-node) enabled, a
+token can be bound to a tailnet user or tag. It is then accepted only through
+that node, from a device signed in as that user or carrying that tag, as
+reported by the node's `tailscaled` on every request (and again when an
+`app exec` command starts), so removing a tag or signing a device out takes
+effect immediately. Anywhere else, including the Unix socket,
+plain TCP listeners, and other tailnet devices, it is refused with 401
+`tailnet_binding_mismatch`, and the refusal is audited. A leaked CI token is
+then useless outside the tailnet's CI runners.
+
+```console
+piquelctl token create ci --preset deploy --app blog --tailnet tag:ci
+piquelctl token create laptop --preset read-only --tailnet alice@example.com
+```
+
+Tagged devices belong to no user, so a user binding never matches them; bind
+those tokens to a tag. Creating a bound token without the tailnet node is
+refused, since it could never be used.
+
 ## Upgrading
 
 The first account created during setup receives `admin` on every application.

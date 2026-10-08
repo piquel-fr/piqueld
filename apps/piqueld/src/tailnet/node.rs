@@ -199,6 +199,12 @@ impl Node {
         self.monitor.status.subscribe()
     }
 
+    /// Identifies peers connecting through this node.
+    #[must_use]
+    pub fn whois(&self) -> std::sync::Arc<super::Whois> {
+        std::sync::Arc::new(super::Whois::new(self.monitor.cli.clone()))
+    }
+
     /// The node's `MagicDNS` name, without the trailing dot.
     #[must_use]
     pub fn dns_name(&self) -> &str {

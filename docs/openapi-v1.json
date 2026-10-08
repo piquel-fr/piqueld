@@ -777,6 +777,11 @@
             "minimum": 0,
             "type": "integer"
           },
+          "tailnet": {
+            "description": "Tailnet user or tags and node, for requests through the daemon's\ntailnet node, e.g. `alice@example.com on laptop`.",
+            "nullable": true,
+            "type": "string"
+          },
           "user_id": {
             "description": "Account that made the request, or signed in by it.",
             "nullable": true,
@@ -1296,6 +1301,25 @@
           "name": {
             "description": "Human-readable label.",
             "type": "string"
+          },
+          "tailnet": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/TailnetBinding"
+                  }
+                ],
+                "description": "Tailnet user or tag this token is bound to, if any."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           },
           "user_id": {
             "description": "Account identifier.",
@@ -3408,6 +3432,11 @@
                       "format": "int32",
                       "minimum": 0,
                       "type": "integer"
+                    },
+                    "tailnet": {
+                      "description": "Tailnet user or tags and node, for requests through the daemon's\ntailnet node, e.g. `alice@example.com on laptop`.",
+                      "nullable": true,
+                      "type": "string"
                     },
                     "user_id": {
                       "description": "Account that made the request, or signed in by it.",
@@ -5581,6 +5610,25 @@
               "name": {
                 "description": "Token label.",
                 "type": "string"
+              },
+              "tailnet": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/TailnetBinding"
+                      }
+                    ],
+                    "description": "Tailnet user or tag the token is bound to; absent accepts it\nfrom anywhere."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
               }
             },
             "required": [
@@ -7393,6 +7441,11 @@
           "instance_id"
         ],
         "type": "object"
+      },
+      "TailnetBinding": {
+        "description": "The tailnet user or tag an API token is bound to: a login name such as\n`alice@example.com`, or a tag such as `tag:ci`. A bound token is accepted\nonly through the daemon's tailnet node, from a node signed in as that user\nor carrying that tag.",
+        "example": "tag:ci",
+        "type": "string"
       },
       "TailnetStatus": {
         "description": "Login and certificate state of the daemon's own tailnet node.",
