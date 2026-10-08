@@ -161,13 +161,17 @@ impl Store {
         // Runs under the writer lock on every refusal, so it stays bounded:
         // the cooldown only reads this address and account's recent bursts
         // (`security_denial_bursts`, which needs the kind spelled out), and
-        // the count stops at the threshold (`audit_refusals`).
+        // the count stops at the threshold (`audit_refusals`). The host
+        // operator, which has no account, is told apart from anonymous
+        // callers by its Unix user.
+        let operator = actor.operator_uid();
         let burst = sqlx::query_scalar!(
             r#"SELECT NOT EXISTS(SELECT 1 FROM events
                 WHERE kind='access_denial_burst' AND resource IS ?2 AND actor_user_id IS ?3
-                AND created_at_ms>=?5)
+                AND actor_operator_uid IS ?6 AND created_at_ms>=?5)
             AND (SELECT COUNT(*) FROM (SELECT 1 FROM audit_events
-                WHERE outcome='denied' AND user_id IS ?3 AND peer IS ?2 AND created_at_ms>=?1
+                WHERE outcome='denied' AND user_id IS ?3 AND peer IS ?2
+                AND operator_uid IS ?6 AND created_at_ms>=?1
                 LIMIT ?4)) >= ?4
             AS "burst!: bool""#,
             window,
@@ -175,6 +179,7 @@ impl Store {
             actor.user_id,
             DENIAL_BURST,
             cooldown,
+            operator,
         )
         .fetch_one(&mut *db)
         .await
@@ -185,7 +190,13 @@ impl Store {
         let message = format!(
             "{DENIAL_BURST} requests refused within a minute from {} as {}",
             peer.unwrap_or("the Unix socket"),
-            username.unwrap_or("an anonymous caller"),
+            username.map_or_else(
+                || actor.operator.map_or_else(
+                    || "an anonymous caller".to_owned(),
+                    |operator| operator.to_string()
+                ),
+                str::to_owned,
+            ),
         );
         Self::security_event_on(db, SecurityEvent::DenialBurst, &message, actor).await?;
         sqlx::query!(
