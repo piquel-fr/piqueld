@@ -84,7 +84,7 @@ pub struct ApplicationSpec {
     /// Exact-hostname HTTP routes, activated on deployment.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<Route>,
-    /// Application secrets whose values piqueld generates once.
+    /// Secrets whose values piqueld generates once per environment.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretDeclaration>,
     /// One-shot jobs, run in declared order at their deployment point.
@@ -103,15 +103,6 @@ pub struct ApplicationSpec {
 }
 
 impl ApplicationSpec {
-    /// Names of the application secrets that at least one service mounts.
-    #[must_use]
-    pub fn mounted_secret_names(&self) -> std::collections::BTreeSet<&str> {
-        self.services
-            .iter()
-            .flat_map(|service| service.secrets.iter().map(|secret| secret.name.as_str()))
-            .collect()
-    }
-
     /// Sets `environment`'s visibility ceiling, dropping its block when left
     /// at its defaults, since such a block configures nothing.
     pub fn set_environment_visibility(&mut self, environment: &str, visibility: Visibility) {
@@ -285,7 +276,7 @@ pub struct Service {
     /// Persistent volume mounts.
     #[serde(default)]
     pub mounts: Vec<Mount>,
-    /// Application-scoped secrets mounted as files.
+    /// Secrets mounted as files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretMount>,
     /// Optional container health check.
@@ -550,22 +541,26 @@ pub struct ResourceLimits {
     pub memory_bytes: Option<Typed<u64>>,
 }
 
-/// A logical application secret exposed only as a container file.
+/// A secret exposed only as a container file. The name selects the
+/// environment's generated secret when `spec.secrets` declares it, and the
+/// application's store of manually set secrets otherwise.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretMount {
-    /// Application-scoped logical secret name.
-    pub name: String,
+    /// Logical secret name. It may reference variables, so each environment
+    /// can mount its own stored secret, e.g. `${{ vars.stripe_key }}`.
+    pub name: Template,
     /// Absolute normalized destination under /run/secrets.
     pub target: String,
 }
 
-/// An application secret whose value piqueld generates when a deployment first
-/// needs it. A stored value, generated or set manually, is never replaced.
+/// A secret whose value piqueld generates for each environment when one of
+/// its deployments first needs it. A generated value is never replaced, and
+/// never shared with another environment.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretDeclaration {
-    /// Application-scoped logical secret name.
+    /// Logical secret name; it cannot reference variables.
     pub name: String,
     /// How the value is generated.
     pub generate: SecretGenerator,

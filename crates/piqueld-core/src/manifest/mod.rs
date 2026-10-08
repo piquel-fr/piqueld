@@ -11,7 +11,8 @@ pub mod template;
 mod template_tests;
 pub mod variables;
 pub use domain::{
-    HealthExecution, ValidatedBuild, ValidatedHealthCheck, ValidatedResourceLimits, ValidatedSource,
+    HealthExecution, SecretSource, ValidatedBuild, ValidatedHealthCheck, ValidatedResourceLimits,
+    ValidatedSecretMount, ValidatedSource,
 };
 pub use rollout::{Rollout, RolloutOrder, RolloutOrderSource, RolloutPolicy, ValidatedRollout};
 pub use routes::{

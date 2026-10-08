@@ -516,7 +516,7 @@
           },
           "secrets": {
             "default": [],
-            "description": "Application secrets whose values piqueld generates once.",
+            "description": "Secrets whose values piqueld generates once per environment.",
             "items": {
               "$ref": "#/components/schemas/SecretDeclaration"
             },
@@ -4422,8 +4422,13 @@
           "data": {
             "description": "Metadata-only result of lost-key recovery. Never rotates application credentials.",
             "properties": {
+              "affected_applications": {
+                "description": "Applications whose stored values were discarded.",
+                "format": "int64",
+                "type": "integer"
+              },
               "affected_environments": {
-                "description": "Environments whose stored values were discarded.",
+                "description": "Environments whose generated values were discarded.",
                 "format": "int64",
                 "type": "integer"
               },
@@ -4467,7 +4472,7 @@
                 "type": "integer"
               },
               "name": {
-                "description": "Environment-scoped logical name.",
+                "description": "Logical name.",
                 "type": "string"
               },
               "unavailable": {
@@ -4486,6 +4491,36 @@
               "updated_at_ms"
             ],
             "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_StoredSecret": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SecretMetadata",
+                "description": "Version metadata."
+              },
+              {
+                "properties": {
+                  "access": {
+                    "$ref": "#/components/schemas/SecretAccess",
+                    "description": "Who may mount the secret."
+                  }
+                },
+                "required": [
+                  "access"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "A manually set secret in an application's store: its metadata and access,\nnever its value."
           }
         },
         "required": [
@@ -4555,7 +4590,7 @@
                   "type": "integer"
                 },
                 "name": {
-                  "description": "Environment-scoped logical name.",
+                  "description": "Logical name.",
                   "type": "string"
                 },
                 "unavailable": {
@@ -4583,6 +4618,39 @@
         ],
         "type": "object"
       },
+      "Envelope_Vec_StoredSecret": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/SecretMetadata",
+                  "description": "Version metadata."
+                },
+                {
+                  "properties": {
+                    "access": {
+                      "$ref": "#/components/schemas/SecretAccess",
+                      "description": "Who may mount the secret."
+                    }
+                  },
+                  "required": [
+                    "access"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "description": "A manually set secret in an application's store: its metadata and access,\nnever its value."
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_bool": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -4594,6 +4662,35 @@
           "data"
         ],
         "type": "object"
+      },
+      "EnvironmentAccess": {
+        "description": "The environments that may mount a stored secret.",
+        "oneOf": [
+          {
+            "description": "Every environment of the application, including ones created later.",
+            "enum": [
+              "all"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Only these environments, by ID: renaming one keeps its access, and\ndeleting one removes it from the list.",
+            "properties": {
+              "only": {
+                "description": "Only these environments, by ID: renaming one keeps its access, and\ndeleting one removes it from the list.",
+                "items": {
+                  "$ref": "#/components/schemas/EnvironmentId"
+                },
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "only"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "EnvironmentBranchRequest": {
         "additionalProperties": false,
@@ -7206,16 +7303,34 @@
         ],
         "type": "object"
       },
+      "SecretAccess": {
+        "additionalProperties": false,
+        "description": "Who may mount a secret from an application's store. The default is every\nenvironment and no previews.",
+        "properties": {
+          "environments": {
+            "$ref": "#/components/schemas/EnvironmentAccess",
+            "description": "Environments that may mount the secret."
+          },
+          "previews": {
+            "description": "Whether previews may mount the secret. Stored for previews, which do\nnot exist yet.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "environments"
+        ],
+        "type": "object"
+      },
       "SecretDeclaration": {
         "additionalProperties": false,
-        "description": "An application secret whose value piqueld generates when a deployment first\nneeds it. A stored value, generated or set manually, is never replaced.",
+        "description": "A secret whose value piqueld generates for each environment when one of\nits deployments first needs it. A generated value is never replaced, and\nnever shared with another environment.",
         "properties": {
           "generate": {
             "$ref": "#/components/schemas/SecretGenerator",
             "description": "How the value is generated."
           },
           "name": {
-            "description": "Application-scoped logical secret name.",
+            "description": "Logical secret name; it cannot reference variables.",
             "type": "string"
           }
         },
@@ -7308,8 +7423,13 @@
       "SecretKeyRecovery": {
         "description": "Metadata-only result of lost-key recovery. Never rotates application credentials.",
         "properties": {
+          "affected_applications": {
+            "description": "Applications whose stored values were discarded.",
+            "format": "int64",
+            "type": "integer"
+          },
           "affected_environments": {
-            "description": "Environments whose stored values were discarded.",
+            "description": "Environments whose generated values were discarded.",
             "format": "int64",
             "type": "integer"
           },
@@ -7344,7 +7464,7 @@
             "type": "integer"
           },
           "name": {
-            "description": "Environment-scoped logical name.",
+            "description": "Logical name.",
             "type": "string"
           },
           "unavailable": {
@@ -7366,11 +7486,11 @@
       },
       "SecretMount": {
         "additionalProperties": false,
-        "description": "A logical application secret exposed only as a container file.",
+        "description": "A secret exposed only as a container file. The name selects the\nenvironment's generated secret when `spec.secrets` declares it, and the\napplication's store of manually set secrets otherwise.",
         "properties": {
           "name": {
-            "description": "Application-scoped logical secret name.",
-            "type": "string"
+            "$ref": "#/components/schemas/Template",
+            "description": "Logical secret name. It may reference variables, so each environment\ncan mount its own stored secret, e.g. `${{ vars.stripe_key }}`."
           },
           "target": {
             "description": "Absolute normalized destination under /run/secrets.",
@@ -7489,7 +7609,7 @@
             "description": "Optional rollout order and monitor window."
           },
           "secrets": {
-            "description": "Application-scoped secrets mounted as files.",
+            "description": "Secrets mounted as files.",
             "items": {
               "$ref": "#/components/schemas/SecretMount"
             },
@@ -7702,6 +7822,27 @@
           "value"
         ],
         "type": "object"
+      },
+      "StoredSecret": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SecretMetadata",
+            "description": "Version metadata."
+          },
+          {
+            "properties": {
+              "access": {
+                "$ref": "#/components/schemas/SecretAccess",
+                "description": "Who may mount the secret."
+              }
+            },
+            "required": [
+              "access"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "A manually set secret in an application's store: its metadata and access,\nnever its value."
       },
       "StringValue": {
         "additionalProperties": false,
@@ -8287,6 +8428,24 @@
         ],
         "description": "Validated, application-owned HTTP route; TLS terminates at the gateway."
       },
+      "ValidatedSecretMount": {
+        "description": "A rendered secret file mount.",
+        "properties": {
+          "name": {
+            "description": "Logical secret name.",
+            "type": "string"
+          },
+          "target": {
+            "description": "Absolute normalized destination under /run/secrets.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "target"
+        ],
+        "type": "object"
+      },
       "ValidatedService": {
         "description": "Validated application service.",
         "properties": {
@@ -8378,9 +8537,9 @@
             "description": "Rollout settings. Omitted when default so existing specification hashes stay stable."
           },
           "secrets": {
-            "description": "Application-scoped secret file mounts.",
+            "description": "Secret file mounts.",
             "items": {
-              "$ref": "#/components/schemas/SecretMount"
+              "$ref": "#/components/schemas/ValidatedSecretMount"
             },
             "type": "array"
           },
@@ -11258,6 +11417,395 @@
           }
         },
         "x-piqueld-access": "apps:write"
+      }
+    },
+    "/api/v1/applications/{id}/secrets": {
+      "get": {
+        "description": "Returns metadata only; secret values are write-only and never returned.",
+        "operationId": "applicationSecrets",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Vec_StoredSecret"
+                }
+              }
+            },
+            "description": "Stored secret metadata and access"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Lists an application's stored secrets and who may mount them.",
+        "x-piqueld-access": "apps:read"
+      }
+    },
+    "/api/v1/applications/{id}/secrets/{name}": {
+      "delete": {
+        "description": "Fails with 409 while any environment's configuration or deployment still\nreferences it. If cleanup is interrupted, retrying the deletion finishes it.",
+        "operationId": "deleteApplicationSecret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Expected-Generation",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_bool"
+                }
+              }
+            },
+            "description": "Secret deleted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Deletes a stored secret and every environment's Docker secrets for it.",
+        "x-piqueld-access": "secrets:write"
+      },
+      "put": {
+        "description": "The body is the raw value (`application/octet-stream`, 1–512000 bytes).\n`X-Expected-Generation` must be 0 to create a secret, or its current\ngeneration to replace it; a mismatch fails with 409. Running services keep\ntheir value until the next deployment. Supplying `environments` or\n`previews` replaces the access list; a new secret otherwise allows every\nenvironment and no previews, and an existing one keeps its list. Names the\nsaved manifest or an environment's last fetched one declares as generated\nsecrets fail with 422 `manifest_validation_failed` and `secret_name_conflict`\nin `details.errors`. The response carries metadata only.",
+        "operationId": "putApplicationSecret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Expected-Generation",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated IDs of the environments that may mount the secret;\nevery environment when omitted.",
+            "in": "query",
+            "name": "environments",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Whether previews may mount the secret.",
+            "in": "query",
+            "name": "previews",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_StoredSecret"
+                }
+              }
+            },
+            "description": "Updated metadata; no secret value"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Creates or replaces a value in an application's secret store.",
+        "x-piqueld-access": "secrets:write"
+      }
+    },
+    "/api/v1/applications/{id}/secrets/{name}/access": {
+      "put": {
+        "description": "Environments are listed by ID and must belong to the application. A\nnarrower list fails later deployments that mount the secret with\n`secret_access_denied`; running deployments keep their pinned versions.",
+        "operationId": "setSecretAccess",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretAccess"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_StoredSecret"
+                }
+              }
+            },
+            "description": "Updated metadata; no secret value"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Replaces which environments, and whether previews, may mount a stored secret.",
+        "x-piqueld-access": "secrets:write"
       }
     },
     "/api/v1/applications/{id}/services": {
@@ -20199,7 +20747,7 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Lists an environment's secrets.",
+        "summary": "Lists an environment's generated secrets.",
         "x-piqueld-access": "apps:read"
       }
     },
@@ -20296,12 +20844,14 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Deletes a secret.",
+        "summary": "Deletes a generated secret, so a later deployment generates a new value.",
         "x-piqueld-access": "secrets:write"
-      },
-      "put": {
-        "description": "The body is the raw value (`application/octet-stream`, 1–512000 bytes).\n`X-Expected-Generation` must be 0 to create a secret, or its current\ngeneration to replace it; a mismatch fails with 409. Running services keep\ntheir value until the next deployment. The response carries metadata only.",
-        "operationId": "putEnvironmentSecret",
+      }
+    },
+    "/api/v1/environments/{id}/secrets/{name}/regenerate": {
+      "post": {
+        "description": "`X-Expected-Generation` must be the current generation; a mismatch fails\nwith 409. Rotates the value, or replaces one discarded by key recovery.\nRunning services keep their version until the next deployment. The\nresponse carries metadata only.",
+        "operationId": "regenerateEnvironmentSecret",
         "parameters": [
           {
             "in": "path",
@@ -20329,17 +20879,6 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/octet-stream": {
-              "schema": {
-                "format": "binary",
-                "type": "string"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "200": {
             "content": {
@@ -20402,7 +20941,7 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Creates or replaces a secret value.",
+        "summary": "Generates a new version of a generated secret from its declaration.",
         "x-piqueld-access": "secrets:write"
       }
     },

@@ -78,6 +78,8 @@ diagnostic_codes! {
     SecretStorageUnavailable => "secret_storage_unavailable",
     /// Pinned secret values were discarded and need replacement.
     SecretUnavailable => "secret_unavailable",
+    /// An environment mounts a stored secret its access list excludes.
+    SecretAccessDenied => "secret_access_denied",
     /// A Docker request failed local validation.
     ValidationFailed => "validation_failed",
     /// The runtime plan cannot execute safely.
@@ -190,6 +192,11 @@ impl DiagnosticCode {
                 Application,
                 false,
                 "Supply replacement values for the listed secrets, then start a new deployment.",
+            ),
+            Self::SecretAccessDenied => (
+                Application,
+                false,
+                "Allow the environment in the secret's access list, or select another secret for it through a variable, then deploy again.",
             ),
             Self::ManifestNotFound
             | Self::ManifestInvalid

@@ -25,7 +25,8 @@ Clients poll for progress.
 
 An application owns the saved manifest and its configuration revision
 (`generation`). Its environments deploy that manifest; each owns its deployment
-history, operations, status, volumes, secrets, routes, and Docker network.
+history, operations, status, volumes, generated secrets, routes, and Docker
+network; manually set secrets live in the application's secret store.
 Environment IDs are the IDs Docker names, ownership labels, and history derive
 from. Applications that existed before environments have one environment named
 `production` that kept their ID; new applications get a `production`
@@ -411,19 +412,40 @@ Metadata survives operation pruning and is deleted with its environment.
 See [observability](observability.md) for diagnostic history, daemon statistics, analytics, metrics
 and webhook delivery configuration.
 
-Secrets belong to one environment; application-wide secrets arrive with #169.
-Secret endpoints expose metadata only:
+Manually set secrets live in one store per application; generated secrets
+belong to their environment. Secret endpoints expose metadata only:
 
-- `GET /api/v1/environments/{id}/secrets` lists names, current generations, update times, `deleting` and `unavailable` status.
-  Its unpaginated metadata array is returned directly in `data`, without `items` or `next_cursor`.
-- `PUT /api/v1/environments/{id}/secrets/{name}` accepts an `application/octet-stream`
+- `GET /api/v1/applications/{id}/secrets` lists the store's secrets: names,
+  current generations, update times, `deleting` and `unavailable` status, and
+  `access`. Access is `{ "environments": "all" | { "only": [environment IDs] },
+  "previews": bool }`. `all` covers environments created later; IDs keep a renamed
+  environment's access, and deleting an environment removes it from every list.
+  `previews` is stored for previews, which do not exist yet.
+- `PUT /api/v1/applications/{id}/secrets/{name}` accepts an `application/octet-stream`
   value of 1–512000 bytes. `X-Expected-Generation: 0` creates; a current generation
-  replaces. Each environment supports at most 100 logical secrets, 1,000 retained
-  values and 100 MiB of ciphertext. Discarded unavailable versions do not consume
-  this value quota. Exceeding the retained-version or byte quota
-  returns 409 `secret_quota_exceeded`; delete unused secrets to free space.
-- `DELETE` at the same path requires `X-Expected-Generation` and refuses references
-  in saved configuration, the current runnable deployment, or the active target.
+  replaces. The `environments` (comma-separated environment IDs) and `previews`
+  query parameters replace the access list; without them a new secret allows every
+  environment and no previews, and an existing one keeps its list. Names the saved
+  manifest or an environment's last fetched one declares in `spec.secrets` return
+  422 `manifest_validation_failed` with `secret_name_conflict` in `details.errors`. Each store
+  supports at most 100 logical secrets, 1,000 retained values and 100 MiB of
+  ciphertext. Discarded unavailable versions do not consume this value quota.
+  Exceeding the retained-version or byte quota returns 409 `secret_quota_exceeded`;
+  delete unused secrets to free space.
+- `PUT /api/v1/applications/{id}/secrets/{name}/access` replaces the access list
+  with a JSON `SecretAccess` body. Environments must belong to the application.
+  Narrowing it affects later deployments only.
+- `GET /api/v1/environments/{id}/secrets` lists an environment's generated secrets
+  with the same metadata, without `access`.
+  `POST /api/v1/environments/{id}/secrets/{name}/regenerate` with the current
+  `X-Expected-Generation` generates a new version from the saved manifest's
+  declaration (404 when it declares none), to rotate a value or replace one
+  discarded by key recovery; running deployments keep their pinned versions.
+  `DELETE` at `/api/v1/environments/{id}/secrets/{name}` discards a generated
+  value, so a later deployment generates a new one.
+- `DELETE` on either secret path requires `X-Expected-Generation` and refuses
+  references in saved configuration, the current runnable deployment, or the
+  active target of any environment that uses the secret.
   The captured deployment manifest protects references even before version pinning.
   Deletion reserves the secret, releases the database writer lock, then removes
   Docker versions before encrypted records. Partial failure or restart leaves
@@ -432,21 +454,37 @@ Secret endpoints expose metadata only:
   returns 409; missing or invalid key material returns 503 `secret_storage_unavailable`
   with a `details.diagnostic_id` for value-dependent work.
 
+Both lists are unpaginated arrays returned directly in `data`, without `items` or
+`next_cursor`.
+
+A service secret mount names a generated secret when `spec.secrets` declares the
+name, and a stored secret otherwise; mount names may reference variables and are
+resolved after rendering. A deployment checks access when it captures its inputs,
+before rollout: an environment that mounts a stored secret its access list excludes
+fails with 409 `secret_access_denied` and `details` `{ "environment": name,
+"secret": name }`. `POST /api/v1/applications/plan?environment=ID` returns the same error, so
+it surfaces before a deploy. A name both declared and stored fails with
+422 `manifest_validation_failed` with `secret_name_conflict` in `details.errors`.
+
 Values never appear in responses, manifests or deployment snapshots. Deployments
 pin immutable versions during effective-input preparation; retries preserve those
-pins. Earlier ciphertext versions remain until logical-secret or environment deletion.
+pins. Earlier ciphertext versions remain until logical-secret, environment or
+application deletion. Each environment that mounts a stored version gets its own
+Docker secret for it.
 
 Quota enforcement never evicts pinned versions. To retire a secret, save and deploy
 configuration without its references, then delete it. An existing database above
 the quota remains readable and deployable; new writes require freeing space.
 
 `POST /api/v1/system/secrets/recover-key` recovers from a lost or unusable master
-key by discarding stored values for **all environments**. It returns 409
+key by discarding stored and generated values for **all applications and
+environments**. It returns 409
 `secret_key_usable` while the current key still works. Discarded versions are
 marked unavailable; metadata, running Docker services and their secrets are
-preserved. Supplying replacement values creates new versions, and an explicit new
-deployment is required to adopt them. Deployments that need discarded values fail
+preserved. Supplying replacement values, or regenerating generated ones, creates
+new versions, and an explicit new deployment is required to adopt them. Deployments that need discarded values fail
 with `secret_unavailable` and the logical names. The response contains
-`affected_environments`, `affected_secrets` and `discarded_versions`; no key or
+`affected_environments`, `affected_applications`, `affected_secrets` and
+`discarded_versions`; no key or
 secret value is returned. Repeating the request after a lost response returns
 `secret_key_usable`, because no stored value then needs the old key.

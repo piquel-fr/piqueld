@@ -20,6 +20,7 @@ pub(crate) use audit::NewAuditEvent;
 pub use auth::{CredentialKind, Lockout};
 pub(crate) use auth::{Invitation, NewCredential, NewInvitation, NewPasskey, PasskeyOwner};
 pub(crate) use journal::JournalAction;
+pub(crate) use secret::SecretDeletion;
 pub(crate) use security::SecurityEvent;
 mod operation;
 mod repository;
@@ -83,6 +84,14 @@ pub enum StoreError {
         /// Logical names only, never values.
         names: String,
     },
+    /// An environment mounts a stored secret whose access list excludes it.
+    #[error("environment {environment} may not mount secret {secret}: its access list excludes it")]
+    SecretAccessDenied {
+        /// Environment being deployed or planned.
+        environment: EnvironmentName,
+        /// Logical secret name.
+        secret: String,
+    },
     /// Lost-key recovery was requested, but the current key still works.
     #[error("the secret master key still works; recovery would discard values needlessly")]
     SecretKeyUsable,
@@ -94,7 +103,7 @@ pub enum StoreError {
     SecretDeleting,
     /// Retained ciphertext is bounded without evicting deployment pins.
     #[error(
-        "secret storage quota exceeded (1000 versions or 100 MiB per environment); delete unused secrets to free space"
+        "secret storage quota exceeded (1000 versions or 100 MiB per environment or application store); delete unused secrets to free space"
     )]
     SecretQuota,
     /// A secret changed after the caller inspected its metadata.
@@ -448,6 +457,7 @@ impl Store {
     /// 3. Applies each pending migration in its own `BEGIN IMMEDIATE` transaction
     ///    (see `apply_migration`), so every committed version is reopenable.
     /// 4. Re-reads and validates the instance ID and recorded schema version.
+    /// 5. Re-encrypts secrets migration 0021 moved into application stores.
     ///
     /// # Errors
     /// Returns a sanitized storage or schema compatibility error.
@@ -509,7 +519,7 @@ impl Store {
         if metadata_version != SCHEMA_VERSION {
             return Err(StoreError::SchemaMismatch);
         }
-        Ok(Self {
+        let store = Self {
             pool,
             instance_id,
             build_history: crate::config::BuildHistoryConfig::default(),
@@ -522,7 +532,9 @@ impl Store {
             notifications: crate::config::NotificationConfig::default(),
             daemon_event_days: 0,
             audit_days: 0,
-        })
+        };
+        store.reencrypt_moved_secrets().await?;
+        Ok(store)
     }
 
     /// Applies one migration and records `version` in a single immediate

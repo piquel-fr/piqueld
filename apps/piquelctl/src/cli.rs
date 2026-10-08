@@ -111,7 +111,7 @@ pub(crate) enum Command {
     },
     /// List effective connection profile names and endpoints without contacting a daemon.
     Profiles,
-    /// Manage the encryption key for all application secrets on this daemon.
+    /// Manage the encryption key for all secrets on this daemon.
     Secrets {
         #[command(subcommand)]
         action: crate::secrets::KeyAction,
@@ -212,13 +212,10 @@ pub(crate) enum AppCommand {
     },
     /// Run a one-off command in a running task of a service, streaming its output.
     Exec(crate::exec::ExecArgs),
-    /// Manage environment-scoped secret values and metadata.
+    /// Manage the application's store of manually set secrets and their access lists.
     Secret {
         /// Application name or stable ID.
         application: String,
-        /// Environment name or stable ID; optional when the application has exactly one.
-        #[arg(long = "env", value_name = "ENV")]
-        environment: Option<String>,
         #[command(subcommand)]
         action: crate::secrets::SecretAction,
     },

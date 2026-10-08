@@ -13,8 +13,9 @@ The manifest is shared by the application's environments (for a
 repository-backed application, each environment reads it from its own
 branch), including services,
 replica counts, limits, volumes, routes, jobs, repository settings and secret
-file references. Each environment has its own secret values and deployed
-snapshot. Values that differ between environments, such as hostnames or replica
+file references. Manually set secret values live in one store per application,
+shared by the environments their access lists allow; generated secret values
+and the deployed snapshot belong to each environment. Values that differ between environments, such as hostnames or replica
 counts, come from [variables](#variables).
 
 ```toml
@@ -180,10 +181,11 @@ variables, but not other variables. System variables:
 
 References are allowed in values: service `environment` values, `command` and
 `arguments`, health check settings, `replicas`, resource limits, rollout `order`
-and `monitor_seconds`, route `hostname` and redirect `to`, job `command`, and the
-build inputs `image`, `dockerfile`, `context`, build argument values and
+and `monitor_seconds`, route `hostname` and redirect `to`, job `command`, service
+secret mount `name`, and the build inputs `image`, `dockerfile`, `context`, build argument values and
 `target`. They are rejected elsewhere, including names, table keys, `type`
-fields, mount and secret targets, Git repository settings and `spec.manifest`.
+fields, mount and secret targets, `spec.secrets` declarations, Git repository
+settings and `spec.manifest`.
 
 A field that is exactly one reference, like `replicas = "${{ vars.web_replicas }}"`,
 takes the variable's own value, which must have the field's type: strings are
@@ -396,8 +398,7 @@ Automatic synchronization and webhooks are not implemented.
 without changing the environment's branch. `self` sources build that revision
 too. Subsequent deploys fetch the environment's own branch again.
 
-Services can reference environment-scoped secrets as files; every environment
-of an application has its own values:
+Services mount secrets as files:
 
 ```toml
 [[spec.services.secrets]]
@@ -406,8 +407,39 @@ target = "/run/secrets/database-password"
 ```
 
 References contain names and paths, never values. A service supports up to 64
-secret mounts, with unique normalized paths under `/run/secrets`. Values are set
-separately, and must exist when effective deployment inputs are prepared.
+secret mounts, with unique normalized paths under `/run/secrets`. A name declared
+in `spec.secrets` is generated for each environment (see below). Any other name
+comes from the application's secret store, whose values are set with
+`piquelctl app secret` or the dashboard and must exist when a deployment captures
+its inputs. A name can't be both declared and stored: setting a stored value for
+a declared name, or saving a declaration for a stored name, fails validation
+with `secret_name_conflict`.
+
+Each stored secret lists who may mount it: every environment, including ones
+created later (the default), or only the listed ones, plus a flag for previews,
+which is kept for when previews exist. Lists hold environment IDs, so a renamed
+environment keeps its access and a deleted one drops out of every list. When a
+deployment captures its inputs, or `app plan --env` previews them, an environment
+that mounts a stored secret its list excludes fails with `secret_access_denied`,
+naming the environment and the secret. Narrowing a list doesn't affect running
+deployments, which keep their pinned versions.
+
+Mount names accept variables, so each environment can mount its own stored
+secret:
+
+```toml
+[[spec.services.secrets]]
+name = "${{ vars.stripe_key }}"
+target = "/run/secrets/stripe"
+
+[spec.environments.production.variables]
+stripe_key = "stripe-live"
+
+[spec.environments.staging.variables]
+stripe_key = "stripe-test"
+```
+
+Whether the name is generated or stored is decided on the rendered name.
 
 An application can declare secrets whose values piqueld generates, so a new
 application deploys in one `apply --deploy` step:
@@ -430,8 +462,9 @@ A value is generated when a deployment prepares its inputs, a service mounts
 the secret, and it has no stored value. Declarations that no service mounts are
 not generated, so they never count against secret quotas. A value is never
 changed afterwards: later applies, deploys, and edits to the declaration keep
-it. Values set manually with `piquelctl app secret [--env ENV]` are kept too, so rotation
-stays explicit. Removing a declaration retains the stored value.
+it, so rotation stays explicit: `piquelctl env secret APP --env ENV regenerate NAME`
+generates a new version for the next deployment, also replacing a value
+discarded by key recovery. Removing a declaration retains the generated value.
 
 ## Startup dependencies
 

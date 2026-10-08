@@ -24,12 +24,12 @@ added later: requests about an environment are checked on its application.
 | Permission | Scope | Allows |
 | --- | --- | --- |
 | `admin` | all or listed applications | On every application: everything, including installation-wide permissions. On listed applications: every application permission there |
-| `apps:read` | all or listed applications | Configuration, environments, status, deployments, operations, builds and job runs, and secret names |
+| `apps:read` | all or listed applications | Configuration, environments, status, deployments, operations, builds and job runs, and secret names and which environments may mount them |
 | `apps:write` | all or listed applications | Configuration edits, manifest apply, rename, and adding or renaming environments |
 | `apps:deploy` | all or listed applications | Deploy and reconcile environments |
 | `apps:delete` | all or listed applications | Delete the application or its environments |
 | `apps:exec` | all or listed applications | Run commands in running containers (`piquelctl app exec`), which reaches everything those containers can, including secret values |
-| `secrets:write` | all or listed applications | Store and delete secret values |
+| `secrets:write` | all or listed applications | Store, regenerate, and delete secret values, and choose which environments may mount a stored secret |
 | `logs:read` | all or listed applications | Runtime, build and job logs, which may contain sensitive output |
 | `events:read` | all or listed applications | Application history, diagnostics, and deployment analytics |
 | `apps:create` | installation | Create applications |

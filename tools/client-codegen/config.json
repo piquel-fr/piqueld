@@ -141,6 +141,31 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::SecretMetadata>"
     },
     {
+      "schema": "Envelope_Vec_StoredSecret",
+      "name": "EnvelopeVecStoredSecret",
+      "rustType": "piqueld_core::api::Envelope<Vec<piqueld_core::api::StoredSecret>>"
+    },
+    {
+      "schema": "Envelope_StoredSecret",
+      "name": "EnvelopeStoredSecret",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::StoredSecret>"
+    },
+    {
+      "schema": "StoredSecret",
+      "name": "StoredSecret",
+      "rustType": "piqueld_core::api::StoredSecret"
+    },
+    {
+      "schema": "SecretAccess",
+      "name": "SecretAccess",
+      "rustType": "piqueld_core::api::SecretAccess"
+    },
+    {
+      "schema": "EnvironmentAccess",
+      "name": "EnvironmentAccess",
+      "rustType": "piqueld_core::api::EnvironmentAccess"
+    },
+    {
       "schema": "Envelope_bool",
       "name": "EnvelopeBool",
       "rustType": "piqueld_core::api::Envelope<bool>"

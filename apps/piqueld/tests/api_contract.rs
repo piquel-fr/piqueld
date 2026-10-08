@@ -5601,10 +5601,11 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
     transaction.rollback().await.unwrap();
 }
 
-/// Secret lifecycle history names secrets and journals cleanup without values.
+/// Secret lifecycle history names secrets, never values. A stored secret no
+/// environment deployed has no Docker secrets to clean up.
 async fn assert_secret_history(client: &Client, application_id: &str) {
     let history = client
-        .events(None, Some(application_id), None, 100)
+        .events(Some(application_id), None, None, 100)
         .await
         .unwrap()
         .items;
@@ -5623,14 +5624,6 @@ async fn assert_secret_history(client: &Client, application_id: &str) {
         recorded("secret_deleted").resource.as_deref(),
         Some("token")
     );
-    let removal = history
-        .iter()
-        .find(|event| {
-            event.kind == "action_succeeded" && event.phase.as_deref() == Some("remove_secrets")
-        })
-        .expect("runtime cleanup is journaled");
-    assert_eq!(removal.resource.as_deref(), Some("token"));
-    assert!(removal.operation_id.is_none());
     assert!(
         !serde_json::to_string(&history)
             .unwrap()
@@ -5639,7 +5632,7 @@ async fn assert_secret_history(client: &Client, application_id: &str) {
 }
 
 #[tokio::test]
-async fn secret_api_is_application_scoped_write_only_and_versioned() {
+async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
     use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
     let temp = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -5653,7 +5646,7 @@ async fn secret_api_is_application_scoped_write_only_and_versioned() {
             Request::builder()
                 .method("PUT")
                 .uri(format!(
-                    "/api/v1/environments/{}/secrets/token",
+                    "/api/v1/applications/{}/secrets/token",
                     app.environment_id
                 ))
                 .header("host", "localhost")
@@ -5670,26 +5663,36 @@ async fn secret_api_is_application_scoped_write_only_and_versioned() {
     assert!(!raw.contains("private-token-value"));
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["data"]["generation"], 1);
-    assert_eq!(client.secrets(&app.environment_id).await.unwrap().len(), 1);
-    let reference = |secrets| ApplicationEdit::Service {
-        name: "web".into(),
-        edit: ServiceEdit::Secrets(secrets),
+    assert_eq!(body["data"]["access"]["environments"], "all");
+    assert_eq!(body["data"]["access"]["previews"], false);
+    assert_eq!(
+        client
+            .stored_secrets(&app.environment_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let (client_ref, id) = (&client, &app.environment_id);
+    let reference = |secrets, generation| async move {
+        let edit = ApplicationEdit::Service {
+            name: "web".into(),
+            edit: ServiceEdit::Secrets(secrets),
+        };
+        let options = EditOptions {
+            expected_generation: Some(generation),
+            ..EditOptions::default()
+        };
+        client_ref
+            .edit_application(id, &edit, &options)
+            .await
+            .unwrap()
     };
     let mount = piqueld_client::SecretMount {
         name: "token".into(),
         target: "/run/secrets/token".into(),
     };
-    let saved = client
-        .edit_application(
-            &app.environment_id,
-            &reference(vec![mount.clone()]),
-            &EditOptions {
-                expected_generation: Some(app.generation),
-                ..EditOptions::default()
-            },
-        )
-        .await
-        .unwrap();
+    let saved = reference(vec![mount.clone()], app.generation).await;
     assert_eq!(
         client
             .application(&app.environment_id)
@@ -5703,33 +5706,23 @@ async fn secret_api_is_application_scoped_write_only_and_versioned() {
         vec![mount]
     );
     assert!(matches!(
-        client.delete_secret(&app.environment_id, "token", 1).await,
+        client.delete_stored_secret(&app.environment_id, "token", 1).await,
         Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 409
     ));
-    client
-        .edit_application(
-            &app.environment_id,
-            &reference(Vec::new()),
-            &EditOptions {
-                expected_generation: Some(saved.generation),
-                ..EditOptions::default()
-            },
-        )
-        .await
-        .unwrap();
+    reference(Vec::new(), saved.generation).await;
     assert!(
-        matches!(client.put_secret(&app.environment_id,"token",0,b"stale".to_vec()).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==409)
+        matches!(client.put_stored_secret(&app.environment_id,"token",0,b"stale".to_vec(),None).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==409)
     );
     assert!(
-        matches!(client.secrets("app-absent").await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
+        matches!(client.stored_secrets("app-absent").await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
     );
     client
-        .delete_secret(&app.environment_id, "token", 1)
+        .delete_stored_secret(&app.environment_id, "token", 1)
         .await
         .unwrap();
     assert!(
         client
-            .secrets(&app.environment_id)
+            .stored_secrets(&app.environment_id)
             .await
             .unwrap()
             .is_empty()
@@ -5747,12 +5740,18 @@ async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
     let client = Client::tcp(&format!("http://{address}/")).unwrap();
     let app = create_and_inspect(&client, &manifest()).await;
     client
-        .put_secret(&app.environment_id, "token", 0, b"value".to_vec())
+        .put_stored_secret(&app.environment_id, "token", 0, b"value".to_vec(), None)
         .await
         .unwrap();
     std::fs::remove_file(temp.path().join("secrets.key")).unwrap();
     let error = client
-        .put_secret(&app.environment_id, "token", 1, b"replacement".to_vec())
+        .put_stored_secret(
+            &app.environment_id,
+            "token",
+            1,
+            b"replacement".to_vec(),
+            None,
+        )
         .await
         .unwrap_err();
     let piqueld_client::ClientError::Api { status, error, .. } = error else {
@@ -5798,7 +5797,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
         unavailable: std::sync::atomic::AtomicBool::new(true),
     });
     let service = ApiState::new(store.clone(), runtime.clone());
-    service
+    store
         .put_secret(Daemon, &environment, "token", 0, b"value".to_vec())
         .await
         .unwrap();
@@ -5812,7 +5811,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
         .unwrap();
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        service.put_secret(Daemon, &environment, "other", 0, b"unrelated".to_vec()),
+        store.put_secret(Daemon, &environment, "other", 0, b"unrelated".to_vec()),
     )
     .await
     .unwrap()
@@ -5899,12 +5898,13 @@ async fn secret_key_recovery_api_discards_values_only_for_an_unusable_key() {
         .await
         .unwrap();
     store
-        .put_secret(
+        .put_stored_secret(
             Daemon,
-            &piqueld_core::EnvironmentId::default_for(application.id()),
+            application.id(),
             "token",
             0,
             b"private-value".to_vec(),
+            None,
         )
         .await
         .unwrap();
@@ -5926,17 +5926,32 @@ async fn secret_key_recovery_api_discards_values_only_for_an_unusable_key() {
     assert!(
         matches!(client.recover_secret_key().await, Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 409)
     );
-    assert!(!client.secrets(application.id().as_str()).await.unwrap()[0].unavailable);
+    let unavailable = || async {
+        client
+            .stored_secrets(application.id().as_str())
+            .await
+            .unwrap()[0]
+            .metadata
+            .unavailable
+    };
+    assert!(!unavailable().await);
 
     std::fs::remove_file(temp.path().join("secrets.key")).unwrap();
     let recovery = client.recover_secret_key().await.unwrap();
     assert_eq!(recovery.discarded_versions, 1);
-    assert!(client.secrets(application.id().as_str()).await.unwrap()[0].unavailable);
+    assert_eq!(recovery.affected_applications, 1);
+    assert!(unavailable().await);
     client
-        .put_secret(application.id().as_str(), "token", 1, b"new-value".to_vec())
+        .put_stored_secret(
+            application.id().as_str(),
+            "token",
+            1,
+            b"new-value".to_vec(),
+            None,
+        )
         .await
         .unwrap();
-    assert!(!client.secrets(application.id().as_str()).await.unwrap()[0].unavailable);
+    assert!(!unavailable().await);
     server.abort();
 }
 
@@ -5949,7 +5964,7 @@ async fn invalid_path_parameters_return_correlated_json_errors() {
         (Method::GET, "/api/v1/diagnostics/%FF"),
         (Method::POST, "/api/v1/notifications/deliveries/%FF/retry"),
         (Method::GET, "/api/v1/environments/%FF/secrets"),
-        (Method::PUT, "/api/v1/environments/app-test/secrets/%FF"),
+        (Method::PUT, "/api/v1/applications/app-test/secrets/%FF"),
         (Method::DELETE, "/api/v1/environments/app-test/secrets/%FF"),
         (Method::GET, "/api/v1/applications/%FF"),
         (
@@ -6410,4 +6425,81 @@ async fn device_starts_echo_their_limits_and_refuse_large_bodies() {
         .unwrap();
     let response = router.clone().oneshot(streamed).await.unwrap();
     assert_eq!(response.status(), 413);
+}
+
+#[tokio::test]
+async fn deploys_and_previews_fail_when_an_environment_may_not_mount_a_stored_secret() {
+    use piqueld_core::api::{EnvironmentAccess, SecretAccess};
+    let temp = tempfile::tempdir().unwrap();
+    let service = state(&temp).await;
+    let (saved, staging) = two_environments(&service).await;
+    let production = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, router(service, FakeAuth)).into_future());
+    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let production_only = SecretAccess {
+        environments: EnvironmentAccess::Only([production.clone()].into()),
+        previews: false,
+    };
+    let stored = client
+        .put_stored_secret(
+            &saved.application_id,
+            "stripe-prod",
+            0,
+            b"live".to_vec(),
+            Some(&production_only),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stored.access, production_only);
+    let mut manifest = manifest();
+    manifest.spec.services[0]
+        .secrets
+        .push(piqueld_core::manifest::SecretMount {
+            name: "stripe-prod".into(),
+            target: "/run/secrets/stripe".into(),
+        });
+    let request = piqueld_client::ApplyApplicationRequest {
+        manifest,
+        expected_generation: Some(saved.generation),
+        expected_application_id: Some(saved.application_id.clone()),
+    };
+    let saved = client.apply_application(&request).await.unwrap();
+    let request = piqueld_client::ApplyApplicationRequest {
+        expected_generation: None,
+        ..request
+    };
+    let denied = |error: piqueld_client::ClientError| {
+        let piqueld_client::ClientError::Api { status, error, .. } = error else {
+            panic!("API error expected")
+        };
+        assert_eq!(status.as_u16(), 409);
+        assert_eq!(error.code, "secret_access_denied");
+        assert_eq!(
+            error.details,
+            serde_json::json!({"environment": "staging", "secret": "stripe-prod"})
+        );
+    };
+    denied(
+        client
+            .plan_application(&request, Some(staging.id.as_str()))
+            .await
+            .unwrap_err(),
+    );
+    denied(
+        client
+            .deploy_environment(staging.id.as_str(), saved.generation, None)
+            .await
+            .unwrap_err(),
+    );
+    client
+        .plan_application(&request, Some(production.as_str()))
+        .await
+        .unwrap();
+    client
+        .deploy_environment(production.as_str(), saved.generation, None)
+        .await
+        .unwrap();
+    server.abort();
 }

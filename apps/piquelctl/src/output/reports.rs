@@ -5,8 +5,8 @@ use piqueld_client::{
     AcceptedOperation, ActionReason, ActionRisk, ApplicationLogs, ApplicationSummary,
     ApplicationView, BuildLogPage, BuildRecord, DeletedApplication, DnsStatus,
     EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event,
-    Operation, OperationState, Page, PlanView, SavedApplication, SecretMetadata, Source,
-    SystemStatus,
+    MountedSecret, Operation, OperationState, Page, PlanView, SavedApplication, SecretMetadata,
+    Source, StoredSecret, SystemStatus,
     system::{IngressStatus, RouteStatus},
 };
 use serde::Serialize;
@@ -364,8 +364,12 @@ report!(ShowReport<'_>, self, out, {
 /// `env show` result: an environment's intent, the manifest it deploys, and
 /// its runtime state.
 #[derive(Serialize)]
-#[serde(transparent)]
-pub(crate) struct EnvironmentShowReport<'a>(pub(crate) &'a EnvironmentDetailView);
+pub(crate) struct EnvironmentShowReport<'a> {
+    #[serde(flatten)]
+    pub(crate) detail: &'a EnvironmentDetailView,
+    /// The application's stored secrets, to show where mounted secrets come from.
+    pub(crate) stored: &'a [StoredSecret],
+}
 report!(EnvironmentShowReport<'_>, self, out, {
     let EnvironmentDetailView {
         environment,
@@ -373,7 +377,7 @@ report!(EnvironmentShowReport<'_>, self, out, {
         manifest,
         status,
         ..
-    } = self.0;
+    } = self.detail;
     out.line(format_args!(
         "{} of {} ({})",
         environment.name,
@@ -405,6 +409,12 @@ report!(EnvironmentShowReport<'_>, self, out, {
             Some(value) => out.label("Variable", format_args!("{name} = {value}"))?,
             None => out.label("Variable", format_args!("{name} has no value"))?,
         }
+    }
+    let secrets = manifest
+        .iter()
+        .flat_map(|manifest| MountedSecret::list(manifest, environment, self.stored));
+    for (name, mounted) in secrets {
+        out.label("Secret", format_args!("{name}: {mounted}"))?;
     }
     Ok(())
 });
@@ -485,9 +495,63 @@ impl Report for Vec<SecretMetadata> {
     }
 }
 
+/// Stored secrets with their access, naming environments.
+pub(crate) struct StoredSecretsReport<'a> {
+    pub(crate) secrets: &'a [StoredSecret],
+    pub(crate) environments: &'a [EnvironmentView],
+}
+impl Report for StoredSecretsReport<'_> {
+    type Json = [StoredSecret];
+    fn json(&self) -> &Self::Json {
+        self.secrets
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        for secret in self.secrets {
+            let metadata = &secret.metadata;
+            out.line(format_args!(
+                "{}  generation {}  {}{}{}",
+                metadata.name,
+                metadata.generation,
+                secret.access.describe(self.environments),
+                if metadata.unavailable {
+                    "  value unavailable; replace value and deploy"
+                } else {
+                    ""
+                },
+                if metadata.deleting {
+                    "  deletion pending; retry delete"
+                } else {
+                    ""
+                }
+            ))?;
+        }
+        Ok(())
+    }
+}
+
+/// One stored secret after a change, naming the environments that may mount it.
+pub(crate) struct StoredSecretReport<'a> {
+    pub(crate) secret: &'a StoredSecret,
+    pub(crate) environments: &'a [EnvironmentView],
+}
+impl Report for StoredSecretReport<'_> {
+    type Json = StoredSecret;
+    fn json(&self) -> &Self::Json {
+        self.secret
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        out.line(format_args!(
+            "Saved {} generation {}, mountable by {}. Deploy to use it.",
+            self.secret.metadata.name,
+            self.secret.metadata.generation,
+            self.secret.access.describe(self.environments)
+        ))
+    }
+}
+
 report!(SecretMetadata, self, out, {
     out.line(format_args!(
-        "Saved {} generation {}. Deploy the application to use it.",
+        "Generated {} generation {}. Deploy the environment to use it.",
         self.name, self.generation
     ))
 });
@@ -859,8 +923,11 @@ impl Configuration {
 
 report!(piqueld_client::SecretKeyRecovery, self, out, {
     out.line(format_args!(
-        "Secret key recovered: {} values discarded across {} secrets in {} environments.",
-        self.discarded_versions, self.affected_secrets, self.affected_environments,
+        "Secret key recovered: {} values discarded across {} secrets in {} environments and {} applications.",
+        self.discarded_versions,
+        self.affected_secrets,
+        self.affected_environments,
+        self.affected_applications,
     ))?;
     out.line(
         "Running services keep their Docker secrets. Supply replacement values, then deploy.",

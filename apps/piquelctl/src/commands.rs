@@ -106,13 +106,8 @@ async fn app(
         AppCommand::Exec(_) => unreachable!("exec sessions run without the command timeout"),
         AppCommand::Secret {
             application,
-            environment,
             action,
-        } => {
-            action
-                .run(cli, client, console, application, environment.as_deref())
-                .await
-        }
+        } => action.run(cli, client, console, application).await,
         AppCommand::Validate { .. } => unreachable!("validation runs before connecting"),
         AppCommand::Plan(args) => plan_command(console, client, args).await,
         AppCommand::Apply(args) => apply(cli, client, console, args).await,

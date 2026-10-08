@@ -101,6 +101,16 @@ pub(crate) enum EnvCommand {
         #[command(flatten)]
         flags: OperationFlags,
     },
+    /// List or delete an environment's generated secrets.
+    Secret {
+        /// Application name or stable ID.
+        application: String,
+        /// Environment name or stable ID; optional when the application has exactly one.
+        #[arg(long = "env", value_name = "ENV")]
+        environment: Option<String>,
+        #[command(subcommand)]
+        action: crate::secrets::GeneratedSecretAction,
+    },
     /// Read a bounded snapshot of an environment's Docker logs.
     Logs {
         #[command(flatten)]
@@ -189,6 +199,15 @@ impl EnvCommand {
             }
             Self::Show(target) => show(client, console, target).await,
             Self::Visibility(args) => args.run(cli, client, console).await,
+            Self::Secret {
+                application,
+                environment,
+                action,
+            } => {
+                action
+                    .run(cli, client, console, application, environment.as_deref())
+                    .await
+            }
             Self::Rename {
                 application,
                 environment,
@@ -347,9 +366,15 @@ async fn set_branch(
 /// Shows one environment, the manifest it deploys, and its status, warning
 /// with any status message.
 async fn show(client: &Client, console: &mut Console, target: &EnvironmentArgs) -> Result<()> {
-    let (_, environment) = target.resolve(client).await?;
+    let (application, environment) = target.resolve(client).await?;
     let detail = client.environment_detail(environment.id.as_str()).await?;
-    console.emit(&EnvironmentShowReport(&detail))?;
+    let stored = client
+        .stored_secrets(application.application.id().as_str())
+        .await?;
+    console.emit(&EnvironmentShowReport {
+        detail: &detail,
+        stored: &stored,
+    })?;
     if let Some(message) = &detail.status.message {
         console.warning(message)?;
     }

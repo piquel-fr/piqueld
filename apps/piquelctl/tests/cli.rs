@@ -1327,7 +1327,7 @@ fn ctrl_c_ends_a_pending_secret_read_from_stdin() {
     let (listed, secrets_listed) = mpsc::channel();
     let server = start_server(false, 2, move |request| match request.path.as_str() {
         "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
-        "/api/v1/environments/app-notes-01/secrets" => {
+        "/api/v1/applications/app-notes-01/secrets" => {
             listed.send(()).expect("test is waiting");
             Reply::json(json!([]))
         }
@@ -2132,6 +2132,7 @@ fn secret_key_recovery_requires_confirmation() {
         assert_eq!(request.path, "/api/v1/system/secrets/recover-key");
         Reply::json(json!({
             "affected_environments": 2,
+            "affected_applications": 1,
             "affected_secrets": 3,
             "discarded_versions": 4,
         }))
@@ -2144,8 +2145,13 @@ fn secret_key_recovery_requires_confirmation() {
         "{}",
         String::from_utf8_lossy(&recovery.stderr)
     );
-    assert!(String::from_utf8_lossy(&recovery.stdout).contains("4 values discarded"));
-    assert!(String::from_utf8_lossy(&recovery.stderr).contains("ALL environments"));
+    assert!(
+        String::from_utf8_lossy(&recovery.stdout)
+            .contains("4 values discarded across 3 secrets in 2 environments and 1 applications")
+    );
+    assert!(
+        String::from_utf8_lossy(&recovery.stderr).contains("ALL applications and environments")
+    );
     assert_eq!(
         server.finish().len(),
         1,

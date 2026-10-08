@@ -89,10 +89,20 @@ impl LegacyApplication {
     async fn insert_secret(pool: &SqlitePool, key_path: &Path, id: &ApplicationId) -> Vec<u8> {
         let cipher = crate::secrets::SecretCipher::load(key_path, false).unwrap();
         let encrypted = cipher
-            .encrypt(id.as_str(), "token", 1, b"legacy secret")
+            .encrypt(
+                crate::secrets::SecretOwner::Environment(&EnvironmentId::default_for(id)),
+                "token",
+                1,
+                b"legacy secret",
+            )
             .unwrap();
         let verifier = cipher
-            .encrypt("piqueld", "key-verification", 1, b"piqueld-secret-key-v1")
+            .encrypt(
+                crate::secrets::SecretOwner::KeyVerifier,
+                "key-verification",
+                1,
+                b"piqueld-secret-key-v1",
+            )
             .unwrap();
         sqlx::query("INSERT INTO application_secrets(application_id,name,generation,updated_at_ms) VALUES(?1,'token',1,2)")
             .bind(id.as_str()).execute(pool).await.unwrap();
@@ -149,7 +159,13 @@ impl LegacyApplication {
         .await
         .unwrap();
         assert_eq!(owner, environment.as_str());
-        assert_eq!(store.secrets(environment).await.unwrap()[0].generation, 1);
+        // 0021 moves the manually set secret to the application store.
+        assert_eq!(
+            store.stored_secrets(&self.id).await.unwrap()[0]
+                .metadata
+                .generation,
+            1
+        );
         assert_eq!(
             &*store
                 .secret_plaintext(environment, secret_name)
@@ -161,15 +177,15 @@ impl LegacyApplication {
             store.pin_secrets(operation, &manifest).await.unwrap()["token"],
             secret_name
         );
-        let ciphertext: Vec<u8> =
-            sqlx::query_scalar("SELECT ciphertext FROM secret_versions WHERE swarm_name=?1")
-                .bind(secret_name)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
-        assert_eq!(
+        let ciphertext: Vec<u8> = sqlx::query_scalar(
+            "SELECT ciphertext FROM application_secret_versions WHERE moved_from IS NULL",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_ne!(
             ciphertext, self.ciphertext,
-            "upgrade leaves existing ciphertext untouched"
+            "opening the store re-encrypts moved values for their application"
         );
     }
 }

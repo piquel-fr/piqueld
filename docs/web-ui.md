@@ -31,8 +31,14 @@ of them, and creates new ones, including for an application with no
 environments. Clicking anywhere on an environment's row opens its own page,
 `/dashboard/applications/<app>/environments/<environment>`, with a breadcrumb
 back to the application. Its Overview shows the runtime status, the environment's
-source, and renames or deletes the environment; its other tabs are Deployments, Secrets (the
-environment's secret values), Logs, and Events. Deletion confirms the environment
+source, and renames or deletes the environment; its other tabs are Deployments,
+Secrets, Logs, and Events. The environment's Secrets tab lists each secret the
+manifest it deploys mounts and where the value comes from: generated for the
+environment, the application's secret store (with its version), missing from the
+store, or not allowed by the secret's access list, which would fail the next
+deploy with `secret_access_denied`. Below it, the environment's generated values
+can be regenerated for the next deployment, or deleted so a later deployment
+generates new ones. Deletion confirms the environment
 name, retains its Docker volumes, and leaves the application and other
 environments intact; **Retry deletion** resumes cleanup when needed. An
 environment page whose environment no longer exists says so rather than showing
@@ -70,8 +76,7 @@ Each environment's Overview sets its visibility ceiling, and system status shows
 the private listener with the apps tailnet node's name and addresses. Saving routes updates only the route field;
 Deploy activates the change. Services lists saved services, with their observed
 health merged in when the application has one environment. The Secrets tab
-edits each service's secret file references; values are set on environment
-pages. The Overview tab shows the application's identity, configuration
+holds the application's secret store and each service's secret file references. The Overview tab shows the application's identity, configuration
 revision, and environments, and the delete action. Builds and Events cover every
 environment, each linking to its environment, and include application-wide
 events such as edits and renames; a deleted environment's events remain until
@@ -123,8 +128,11 @@ tailnet user or tag; see [tailnet-bound tokens](authorization.md#tailnet-bound-t
 integrity** checks the trail's [hash chain](observability.md#tamper-evidence). Log display preferences persist in browser
 local storage. See [authentication](authentication.md).
 
-The **Secrets** tab lists names and versions, creates or replaces write-only text
-values, and deletes unreferenced secrets. Submitted values are cleared and cannot
+The application's **Secrets** tab lists the secret store's names, versions and
+who may mount each one, by environment name. It creates or replaces write-only
+text values, edits access (every environment, including ones created later, or
+the checked environments, plus a previews flag kept for when previews exist), and
+deletes secrets no environment uses. Submitted values are cleared and cannot
 be read back; use the CLI for binary secret files. If a write or deletion fails,
 further secret changes are disabled until metadata refresh succeeds. Metadata
 refresh and secret writes cannot overlap. Pending deletion is shown explicitly;

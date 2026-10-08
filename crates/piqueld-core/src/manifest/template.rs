@@ -5,8 +5,8 @@ use super::domain::{ValidatedMetadata, ValidatedSpec};
 use super::variables::{RenderContext, VariableValue};
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, ApplicationSpec, Hostname,
-    ManifestRevision, Metadata, NormalizedApplication, RepositoryManifest, ValidatedApplication,
-    ValidationError, ValidationErrors,
+    ManifestRevision, Metadata, NormalizedApplication, RepositoryManifest, SecretSource,
+    ValidatedApplication, ValidationError, ValidationErrors,
 };
 use crate::{ApplicationId, ApplicationName, EnvironmentName, codes};
 use serde::{Deserialize, Serialize};
@@ -261,6 +261,30 @@ impl ApplicationTemplate {
             &mut Vec::new(),
         );
         spec
+    }
+
+    /// The secrets `environment`'s saved configuration mounts and where each
+    /// value comes from. Names that only render when deploying are kept as
+    /// written.
+    #[must_use]
+    pub fn mounted_secrets(&self, environment: &EnvironmentName) -> BTreeMap<String, SecretSource> {
+        let spec = self.saved(environment);
+        spec.services
+            .iter()
+            .flat_map(|service| &service.secrets)
+            .map(|secret| {
+                let name = secret
+                    .name
+                    .as_literal()
+                    .unwrap_or_else(|| secret.name.to_string());
+                let source = if spec.secrets.iter().any(|declared| declared.name == name) {
+                    SecretSource::Generated
+                } else {
+                    SecretSource::Stored
+                };
+                (name, source)
+            })
+            .collect()
     }
 
     /// Each declared variable's value in `environment`'s saved configuration,

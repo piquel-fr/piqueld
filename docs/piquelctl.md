@@ -47,6 +47,7 @@ piquelctl operation <operation-id>
 piquelctl app reconcile <name-or-id>
 piquelctl app deploy <name-or-id>
 piquelctl app rename <name-or-id> <new-name>
+piquelctl app secret <name-or-id> list|set|access|delete
 piquelctl env list <app>
 piquelctl env create <app> <name> [--branch <branch> [--commit <sha>]]
 piquelctl env branch <app> <env> <branch> [--commit <sha>]
@@ -56,11 +57,12 @@ piquelctl env delete <app> <env>
 piquelctl env deploy <app> [<env>] [--branch <branch> | --commit <sha>]
 piquelctl env reconcile <app> [<env>]
 piquelctl env logs <app> [<env>] [--service <name>]
+piquelctl env secret <app> [--env <env>] list|regenerate|delete
 piquelctl events --application <application-id> --limit 50
 ```
 
 An application owns the saved manifest; its environments deploy it, each with its
-own deployments, status, volumes, secrets, routes, and network. Applications have
+own deployments, status, volumes, generated secrets, routes, and network. Applications have
 an environment named `production` from creation (existing applications were
 migrated to one that kept their ID). `env` commands select an environment by name
 or stable ID; `ENV` may be omitted only when the application has exactly one.
@@ -136,7 +138,7 @@ written to stderr, so stdout remains valid JSON.
 | `app list` | `{ "items": [{ "application": ApplicationSummary, "environments": [EnvironmentRow] }], "next_cursor": null }` |
 | `app show` | `{ "application": ApplicationView, "environments": [EnvironmentRow] }` |
 | `env list` | `[EnvironmentRow]`, where `EnvironmentRow` is `{ "environment": EnvironmentView, "status": EnvironmentStatusView or null }` |
-| `env show` | `EnvironmentDetailView` |
+| `env show` | `EnvironmentDetailView`, with `"stored": [StoredSecret]` |
 | `env create` / `env rename` / `env branch` | `EnvironmentView` |
 | `app logs` / `env logs` | `ApplicationLogs` |
 | `app validate` | `{ "application": string }` |
@@ -556,27 +558,53 @@ of one environment. `piquelctl builds logs ID [--before BYTE_OFFSET]` reads the 
 output page, or an older page before the supplied cursor. It prints the cursor
 for loading older output when available. Both support `--json`.
 
-Secrets belong to one environment (application-wide secrets come later) and are
-write-only. `--env ENV` selects the environment; it may be omitted when the
-application has exactly one:
+Manually set secrets live in the application's secret store and are
+write-only. Each lists the environments that may mount it, by default every
+environment, including ones created later, and no previews:
 
 ```sh
 piquelctl app secret notes list
 piquelctl app secret notes set database-password --file ./password --yes
-printf '%s' 'new-value' | piquelctl app secret notes set database-password --stdin --yes
+printf '%s' 'new-value' | piquelctl app secret notes set stripe-live --stdin --environments production --yes
+piquelctl app secret notes access stripe-live --environments production,staging --previews
+piquelctl app secret notes access stripe-live --all-environments --no-previews
 piquelctl app secret notes delete database-password --yes
 ```
+
+`list` shows each secret's version and who may mount it, naming environments.
+`--environments a,b` (names or IDs; `--environments ''` for none) or
+`--all-environments` sets the environments, and `--previews` or `--no-previews` the previews flag, which is
+kept for when previews exist. Unset flags keep the current access. Environments
+are stored by ID, so renaming one keeps its access and deleting one removes it.
+Deploying, or `app plan --env`, for an environment that mounts a secret it may
+not use fails with `secret_access_denied`.
 
 Prefer protected files or a secure stdin producer over literal shell values in
 real use. `--expected-generation` pins a write to inspected metadata; otherwise
 the CLI reads the current generation before confirming. `--json` returns only
 metadata. Replacement creates a new version for a later Deploy and does not
-change running deployments. Deletion refuses saved or runnable references.
-Manifests can declare secrets that piqueld generates when a deployment first mounts them instead;
-see [application manifests](application-manifest.md).
+change running deployments. Deletion refuses secrets that any environment's
+saved configuration or runnable deployment still uses.
+
+Manifests can declare secrets that piqueld generates for each environment when
+a deployment first mounts them instead; see
+[application manifests](application-manifest.md). They are listed, regenerated
+and deleted per environment. `regenerate` creates a new version for the next
+deployment, to rotate a value or replace one discarded by key recovery; running
+deployments keep theirs. `delete` removes an unused one:
+
+```sh
+piquelctl env secret notes --env staging list
+piquelctl env secret notes --env staging regenerate database-password --yes
+piquelctl env secret notes --env staging delete database-password --yes
+```
+
+`env show` lists each secret the environment mounts and where its value comes
+from: generated for the environment, the application store (with its version),
+missing, or not allowed by the secret's access list.
 
 If the daemon's `secrets.key` is lost and no backup exists, recover by discarding
-stored values across ALL environments:
+stored and generated values across ALL applications and environments:
 
 ```sh
 piquelctl secrets recover-key --yes
@@ -584,6 +612,7 @@ piquelctl secrets recover-key --yes
 
 The command requires confirmation (`--yes` for automation), refuses while the
 current key still works, and reports affected environment, secret and version
-counts. Running Docker services are left alone. `app secret APP list` marks
-discarded values as unavailable; set replacement values using the same names, then
-Deploy explicitly.
+counts. Running Docker services are left alone. `app secret APP list` and
+`env secret APP list` mark discarded values as unavailable; set replacement
+values using the same names (`env secret APP regenerate` for generated ones),
+then Deploy explicitly.

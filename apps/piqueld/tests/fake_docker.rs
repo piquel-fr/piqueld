@@ -912,14 +912,19 @@ impl EnvironmentHarness {
         };
         // Creating an environment bumps the application generation.
         let generation = saved.generation + 1;
-        for (id, value) in [
-            (&production, b"production token".to_vec()),
-            (&staging.id, b"staging token".to_vec()),
-        ] {
-            store
-                .put_secret(Daemon, id, "token", 0, value)
-                .await
-                .unwrap();
+        // One stored value; each environment mounts its own Docker copy.
+        store
+            .put_stored_secret(
+                Daemon,
+                harness.application.id(),
+                "token",
+                0,
+                b"shared token".to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        for id in [&production, &staging.id] {
             applications.deploy(id, Some(generation)).await.unwrap();
         }
         harness
@@ -1040,18 +1045,16 @@ async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
             .iter()
             .any(|event| event.environment_id.as_ref() == Some(staging))
     );
-    assert_eq!(store.secrets(production).await.unwrap()[0].generation, 1);
+    let stored = store
+        .stored_secrets(harness.application.id())
+        .await
+        .unwrap();
+    assert_eq!(stored[0].metadata.generation, 1);
     let values = harness.docker.secret_values.lock().await;
-    assert_eq!(values.len(), 1);
-    assert_eq!(values.values().next().unwrap(), b"production token");
-    assert_eq!(
-        store
-            .environments(harness.application.id())
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
+    assert_eq!(values.len(), 1, "only staging's copy is removed");
+    assert_eq!(values.values().next().unwrap(), b"shared token");
+    let environments = store.environments(harness.application.id()).await;
+    assert_eq!(environments.unwrap().len(), 1);
     assert_eq!(
         store
             .application(harness.application.id())
@@ -3171,9 +3174,10 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
         .await
         .unwrap();
     harness.finish(&first).await;
-    let (store, env) = (&harness.store, &first.environment_id);
+    let app = piqueld_core::ApplicationId::parse(first.environment_id.as_str()).unwrap();
+    let store = &harness.store;
     store
-        .put_secret(Daemon, env, "token", 0, b"version-one".to_vec())
+        .put_stored_secret(Daemon, &app, "token", 0, b"version-one".to_vec(), None)
         .await
         .unwrap();
     let mut input = manifest();
@@ -3195,7 +3199,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
         b"version-one"
     );
     store
-        .put_secret(Daemon, env, "token", 1, b"version-two".to_vec())
+        .put_stored_secret(Daemon, &app, "token", 1, b"version-two".to_vec(), None)
         .await
         .unwrap();
     harness
@@ -3244,18 +3248,11 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
             .runtime(Arc::new(tokio::sync::Notify::new())),
     );
     service
-        .delete_secret(Daemon, &first.environment_id, "token", 2)
+        .delete_stored_secret(Daemon, &app, "token", 2)
         .await
         .unwrap();
     assert!(harness.docker.secret_values.lock().await.is_empty());
-    assert!(
-        harness
-            .store
-            .secrets(&first.environment_id)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(harness.store.stored_secrets(&app).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -3324,7 +3321,14 @@ async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollou
     let id = &initial.environment_id;
     harness
         .store
-        .put_secret(Daemon, id, "token", 0, b"original".to_vec())
+        .put_stored_secret(
+            Daemon,
+            &piqueld_core::ApplicationId::parse(initial.environment_id.as_str()).unwrap(),
+            "token",
+            0,
+            b"original".to_vec(),
+            None,
+        )
         .await
         .unwrap();
     let mut input = manifest();
@@ -3358,7 +3362,14 @@ async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollou
 
     harness
         .store
-        .put_secret(Daemon, id, "token", 1, b"replacement".to_vec())
+        .put_stored_secret(
+            Daemon,
+            &piqueld_core::ApplicationId::parse(initial.environment_id.as_str()).unwrap(),
+            "token",
+            1,
+            b"replacement".to_vec(),
+            None,
+        )
         .await
         .unwrap();
     let replacement = applications.deploy(id, None).await.unwrap();
@@ -3386,7 +3397,14 @@ async fn missing_secret_key_fails_rollout_before_docker_mutation() {
     harness.finish(&first).await;
     harness
         .store
-        .put_secret(Daemon, &first.environment_id, "token", 0, b"value".to_vec())
+        .put_stored_secret(
+            Daemon,
+            &piqueld_core::ApplicationId::parse(first.environment_id.as_str()).unwrap(),
+            "token",
+            0,
+            b"value".to_vec(),
+            None,
+        )
         .await
         .unwrap();
     std::fs::remove_file(harness.database_path.with_file_name("secrets.key")).unwrap();

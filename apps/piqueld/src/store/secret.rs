@@ -1,12 +1,22 @@
-//! Environment-scoped encrypted values and durable deployment version pins.
+//! Encrypted secret values and durable deployment version pins.
+//!
+//! Generated secrets belong to one environment. Manually set secrets live in
+//! their application's store (see `stored`), and each environment that mounts
+//! one gets its own Docker secret per version.
 mod deletion;
+pub(crate) use deletion::SecretDeletion;
 pub(super) use deletion::SecretScope;
 mod key;
+mod stored;
 
 use super::{EnvironmentId, NormalizedApplication, Operation, Store, StoreError, now_ms};
-use crate::secrets::{Envelope, Generate, SecretCipher};
+use crate::secrets::{Envelope, Generate, SecretCipher, SecretOwner};
 use anyhow::Context;
-use piqueld_core::api::SecretMetadata;
+use piqueld_core::{
+    ApplicationId,
+    api::SecretMetadata,
+    manifest::{SecretDeclaration, SecretSource},
+};
 use std::collections::BTreeMap;
 use zeroize::Zeroizing;
 
@@ -15,7 +25,9 @@ impl Store {
     const SECRETS_WRITE: piqueld_core::access::AppPermission =
         piqueld_core::access::AppPermission::SecretsWrite;
 
-    /// Lists metadata without accessing the master key or decrypting values.
+    /// Lists an environment's generated secrets without accessing the master
+    /// key or decrypting values. Secrets set manually before application
+    /// stores existed may also remain here, until deleted.
     /// # Errors
     /// Returns application absence or database errors.
     pub async fn secrets(
@@ -36,7 +48,8 @@ impl Store {
             })
             .collect())
     }
-    /// Creates or replaces a logical secret. Rotation only affects a later deployment.
+    /// Stores a value for an environment's generated secret; deployments
+    /// generate them (see `generate_secrets`).
     /// `expected` is the current generation (zero to create). The value is
     /// encrypted into a new immutable version with its own Swarm secret name
     /// (`piqueld-secret-<uuid>`), subject to per-environment count and byte quotas.
@@ -55,13 +68,7 @@ impl Store {
         value: Vec<u8>,
     ) -> Result<SecretMetadata, StoreError> {
         let value = Zeroizing::new(value);
-        if !piqueld_core::resource::valid_logical_name(name)
-            || value.is_empty()
-            || value.len() > 500 * 1024
-            || expected < 0
-        {
-            return Err(StoreError::InvalidInput);
-        }
+        Self::check_secret_write(name, &value, expected)?;
         let _writer = self.writers.lock().await;
         let app = self.get(application).await?;
         if app.delete_intent() {
@@ -93,10 +100,17 @@ impl Store {
             }
         }
         let generation = current.checked_add(1).ok_or(StoreError::InvalidInput)?;
-        Self::check_secret_quota(&mut tx, id, value.len()).await?;
+        let usage = sqlx::query!("SELECT COUNT(*) AS versions, COALESCE(SUM(length(ciphertext)),0) AS bytes FROM secret_versions WHERE environment_id=?1 AND available=1",id)
+            .fetch_one(&mut *tx).await.map_err(StoreError::database)?;
+        Self::check_secret_quota(usage.versions, usage.bytes, value.len())?;
         let cipher = self.verified_secret_cipher(&mut tx).await?;
         let envelope = cipher
-            .encrypt(id, name, generation, &value)
+            .encrypt(
+                SecretOwner::Environment(application),
+                name,
+                generation,
+                &value,
+            )
             .map_err(StoreError::SecretSource)?;
         let now = now_ms();
         let swarm_name = format!("piqueld-secret-{}", uuid::Uuid::now_v7().simple());
@@ -116,6 +130,17 @@ impl Store {
             unavailable: false,
         })
     }
+    /// Validates a value written to either store, and the caller's expected generation.
+    fn check_secret_write(name: &str, value: &[u8], expected: i64) -> Result<(), StoreError> {
+        if !piqueld_core::resource::valid_logical_name(name)
+            || value.is_empty()
+            || value.len() > 500 * 1024
+            || expected < 0
+        {
+            return Err(StoreError::InvalidInput);
+        }
+        Ok(())
+    }
     /// Optimistic concurrency check against the secret's current generation.
     fn secret_version_matches(expected: i64, actual: i64) -> Result<(), StoreError> {
         if expected == actual {
@@ -125,8 +150,8 @@ impl Store {
         }
     }
     /// Stores values for declared secrets that a service mounts and that have
-    /// none; unmounted declarations wait until a service needs them. A stored
-    /// value, generated or set manually, is never replaced, so deploys never
+    /// none in the environment; unmounted declarations wait until a service
+    /// needs them. A generated value is never replaced, so deploys never
     /// rotate it.
     /// Call before pinning, outside the writer lock: RSA generation takes time.
     /// Each value is stored as generation 1 with `put_secret`; losing a race to
@@ -154,21 +179,9 @@ impl Store {
             if existing.contains(&secret.name) || !mounted.contains(secret.name.as_str()) {
                 continue;
             }
-            let generator = secret.generate.clone();
-            let mut value = tokio::task::spawn_blocking(move || generator.generate())
-                .await
-                .map_err(anyhow::Error::from)
-                .and_then(|value| value)
-                .with_context(|| format!("generate secret {}", secret.name))
-                .map_err(StoreError::SecretSource)?;
+            let value = Self::generate_value(secret).await?;
             match self
-                .put_secret(
-                    super::Actor::Daemon,
-                    id,
-                    &secret.name,
-                    0,
-                    std::mem::take(&mut *value),
-                )
+                .put_secret(super::Actor::Daemon, id, &secret.name, 0, value)
                 .await
             {
                 // A value set concurrently wins over the generated one.
@@ -178,6 +191,50 @@ impl Store {
         }
         Ok(())
     }
+    /// Generates a value for `secret` off the async runtime: RSA generation
+    /// takes time.
+    async fn generate_value(secret: &SecretDeclaration) -> Result<Vec<u8>, StoreError> {
+        let generator = secret.generate.clone();
+        let mut value = tokio::task::spawn_blocking(move || generator.generate())
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|value| value)
+            .with_context(|| format!("generate secret {}", secret.name))
+            .map_err(StoreError::SecretSource)?;
+        Ok(std::mem::take(&mut *value))
+    }
+
+    /// Generates a new version of an environment's generated secret from its
+    /// declaration in the saved manifest, to rotate it or to replace a value
+    /// discarded by key recovery. Running deployments keep their pinned
+    /// versions; the next deployment uses the new one. `expected` is the
+    /// current generation. `actor` needs `secrets:write` (see `put_secret`).
+    ///
+    /// # Errors
+    /// Returns `NotFound` when the environment's manifest declares no such secret, and
+    /// `put_secret` errors (refusal, version conflict, quotas, key or database errors).
+    pub async fn regenerate_secret(
+        &self,
+        actor: super::Actor<'_>,
+        id: &EnvironmentId,
+        name: &str,
+        expected: i64,
+    ) -> Result<SecretMetadata, StoreError> {
+        let environment = self.get(id).await?;
+        let secret = environment
+            .manifest()
+            .and_then(|manifest| {
+                manifest
+                    .spec()
+                    .secrets
+                    .iter()
+                    .find(|secret| secret.name == name)
+            })
+            .ok_or(StoreError::NotFound)?;
+        let value = Self::generate_value(secret).await?;
+        self.put_secret(actor, id, name, expected, value).await
+    }
+
     /// Generates values for mounted declared secrets that have none (see
     /// `generate_secrets`), then pins the secret versions a deployment uses in
     /// its own transaction; see `pin_secrets_on`.
@@ -195,10 +252,13 @@ impl Store {
         Ok(pins)
     }
     /// Returns the logical-to-Swarm secret names a deployment operation uses.
-    /// The first call pins the current generation of every referenced secret, so
-    /// retries deploy the same versions even after rotation; later calls reuse
-    /// the pins. Fails if a referenced secret is missing (`InvalidInput`), being
-    /// deleted, or had its value discarded by key recovery.
+    /// The first call checks the environment may mount every stored secret
+    /// (see `check_secret_access_on`), then pins the current generation of
+    /// every referenced secret, so retries deploy the same versions even after
+    /// rotation; later calls reuse the pins. A stored secret's version gets the
+    /// environment's own Docker secret the first time it is pinned there.
+    /// Fails if a referenced secret is missing (`InvalidInput`), being deleted,
+    /// or had its value discarded by key recovery.
     pub(super) async fn pin_secrets_on(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         operation: &Operation,
@@ -220,8 +280,22 @@ impl Store {
         .map_err(StoreError::database)?
         .is_some();
         if !prepared {
-            for name in app.spec().mounted_secret_names() {
-                let changed=sqlx::query!("INSERT INTO deployment_secret_pins(operation_id,environment_id,name,generation) SELECT ?1,environment_id,name,generation FROM environment_secrets WHERE environment_id=?2 AND name=?3",operation,id,name).execute(&mut **tx).await.map_err(StoreError::database)?.rows_affected();
+            let environment = Self::environment_on(tx, id)
+                .await?
+                .ok_or(StoreError::NotFound)?;
+            Self::check_secret_access_on(tx, &environment.environment, app).await?;
+            let application = environment.environment.application_id.as_str();
+            for (name, source) in app.spec().mounted_secrets() {
+                let changed = match source {
+                    SecretSource::Generated => sqlx::query!("INSERT INTO deployment_secret_pins(operation_id,environment_id,name,generation) SELECT ?1,environment_id,name,generation FROM environment_secrets WHERE environment_id=?2 AND name=?3",operation,id,name).execute(&mut **tx).await,
+                    SecretSource::Stored => {
+                        let swarm_name = format!("piqueld-secret-{}", uuid::Uuid::now_v7().simple());
+                        sqlx::query!("INSERT OR IGNORE INTO application_secret_copies(environment_id,application_id,name,generation,swarm_name) SELECT ?1,application_id,name,generation,?4 FROM application_secrets WHERE application_id=?2 AND name=?3",id,application,name,swarm_name).execute(&mut **tx).await.map_err(StoreError::database)?;
+                        sqlx::query!("INSERT INTO deployment_stored_secret_pins(operation_id,environment_id,name,generation) SELECT ?1,?2,name,generation FROM application_secrets WHERE application_id=?3 AND name=?4",operation,id,application,name).execute(&mut **tx).await
+                    }
+                }
+                .map_err(StoreError::database)?
+                .rows_affected();
                 if changed != 1 {
                     return Err(StoreError::InvalidInput);
                 }
@@ -234,7 +308,8 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         }
-        let rows=sqlx::query!("SELECT p.name,v.swarm_name,v.available FROM deployment_secret_pins p JOIN secret_versions v USING(environment_id,name,generation) WHERE p.operation_id=?1",operation).fetch_all(&mut **tx).await.map_err(StoreError::database)?;
+        let rows=sqlx::query!(r#"SELECT p.name AS "name!",v.swarm_name AS "swarm_name!",v.available AS "available!" FROM deployment_secret_pins p JOIN secret_versions v USING(environment_id,name,generation) WHERE p.operation_id=?1
+            UNION ALL SELECT p.name,c.swarm_name,v.available FROM deployment_stored_secret_pins p JOIN application_secret_copies c USING(environment_id,name,generation) JOIN application_secret_versions v ON v.application_id=c.application_id AND v.name=c.name AND v.generation=c.generation WHERE p.operation_id=?1"#,operation).fetch_all(&mut **tx).await.map_err(StoreError::database)?;
         let unavailable = rows
             .iter()
             .filter(|r| r.available == 0)
@@ -247,22 +322,40 @@ impl Store {
         }
         Ok(rows.into_iter().map(|r| (r.name, r.swarm_name)).collect())
     }
-    /// Decrypts one version by its Swarm secret name, for creating the runtime secret.
+    /// Decrypts one version by the Swarm secret name `environment` created it
+    /// under, for creating the runtime secret.
     pub(crate) async fn secret_plaintext(
         &self,
-        application: &EnvironmentId,
+        environment: &EnvironmentId,
         swarm_name: &str,
     ) -> Result<Zeroizing<Vec<u8>>, StoreError> {
-        let id = application.as_str();
-        let row=sqlx::query!("SELECT name,generation,nonce,ciphertext,available FROM secret_versions WHERE environment_id=?1 AND swarm_name=?2",id,swarm_name).fetch_optional(&self.pool).await.map_err(StoreError::database)?.ok_or(StoreError::NotFound)?;
+        let id = environment.as_str();
+        let row=sqlx::query!(r#"SELECT NULL AS "application_id?: String",name AS "name!",generation AS "generation!",nonce AS "nonce!",ciphertext AS "ciphertext!",available AS "available!",NULL AS "moved_from?: String" FROM secret_versions WHERE environment_id=?1 AND swarm_name=?2
+            UNION ALL SELECT v.application_id,v.name,v.generation,v.nonce,v.ciphertext,v.available,v.moved_from FROM application_secret_copies c JOIN application_secret_versions v ON v.application_id=c.application_id AND v.name=c.name AND v.generation=c.generation WHERE c.environment_id=?1 AND c.swarm_name=?2"#,id,swarm_name).fetch_optional(&self.pool).await.map_err(StoreError::database)?.ok_or(StoreError::NotFound)?;
         if row.available == 0 {
             return Err(StoreError::SecretUnavailable { names: row.name });
         }
+        // Values moved from an environment keep its context until re-encrypted.
+        let moved = row
+            .moved_from
+            .map(EnvironmentId::parse)
+            .transpose()
+            .map_err(StoreError::corrupt)?;
+        let application = row
+            .application_id
+            .map(ApplicationId::parse)
+            .transpose()
+            .map_err(StoreError::corrupt)?;
+        let owner = match (&moved, &application) {
+            (Some(moved), _) => SecretOwner::Environment(moved),
+            (None, Some(application)) => SecretOwner::Application(application),
+            (None, None) => SecretOwner::Environment(environment),
+        };
         let cipher =
             SecretCipher::load(&self.secret_key_path, true).map_err(StoreError::SecretSource)?;
         cipher
             .decrypt(
-                id,
+                owner,
                 &row.name,
                 row.generation,
                 &Envelope {
@@ -272,32 +365,27 @@ impl Store {
             )
             .map_err(StoreError::SecretSource)
     }
-    /// Swarm secret names of every stored version, used to clean up after environment deletion.
+    /// Swarm secret names of every version the environment created, generated
+    /// or stored, used to clean up after environment deletion.
     pub(crate) async fn secret_names(
         &self,
-        application: &EnvironmentId,
+        environment: &EnvironmentId,
     ) -> Result<Vec<String>, StoreError> {
-        let id = application.as_str();
+        let id = environment.as_str();
         sqlx::query_scalar!(
-            "SELECT swarm_name FROM secret_versions WHERE environment_id=?1",
+            r#"SELECT swarm_name AS "swarm_name!" FROM secret_versions WHERE environment_id=?1 UNION ALL SELECT swarm_name FROM application_secret_copies WHERE environment_id=?1"#,
             id
         )
         .fetch_all(&self.pool)
         .await
         .map_err(StoreError::database)
     }
-    /// Enforces the per-environment limits of 1000 available versions and
-    /// 100 MiB of ciphertext, including the incoming value.
-    async fn check_secret_quota(
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        id: &str,
-        incoming: usize,
-    ) -> Result<(), StoreError> {
-        let usage = sqlx::query!("SELECT COUNT(*) AS versions, COALESCE(SUM(length(ciphertext)),0) AS bytes FROM secret_versions WHERE environment_id=?1 AND available=1",id)
-            .fetch_one(&mut **tx).await.map_err(StoreError::database)?;
+    /// Enforces the per-store limits of 1000 available versions and 100 MiB
+    /// of ciphertext, given a store's current usage and the incoming value.
+    fn check_secret_quota(versions: i64, bytes: i64, incoming: usize) -> Result<(), StoreError> {
         // Include the 16-byte authentication tag in the persisted-byte limit.
-        if usage.versions >= 1000
-            || usage.bytes + i64::try_from(incoming + 16).map_err(StoreError::invalid_input)?
+        if versions >= 1000
+            || bytes + i64::try_from(incoming + 16).map_err(StoreError::invalid_input)?
                 > 100 * 1024 * 1024
         {
             return Err(StoreError::SecretQuota);

@@ -4,13 +4,14 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::manifest::{
-    ApplicationManifest, ApplicationTemplate, RolloutOrder, RolloutOrderSource, VariableValue,
+    ApplicationManifest, ApplicationTemplate, RolloutOrder, RolloutOrderSource, SecretSource,
+    VariableValue,
 };
 use crate::{
     ApplicationId, ApplicationState, Convergence, EnvironmentId, EnvironmentName,
     EnvironmentSource, NormalizedApplication, Operation, Plan,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Versioned prefix used by all API endpoints.
 pub const API_PREFIX: &str = "/api/v1";
@@ -666,7 +667,7 @@ mod log_tests {
 /// Metadata only: secret values are never returned.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct SecretMetadata {
-    /// Environment-scoped logical name.
+    /// Logical name.
     pub name: String,
     /// Current version, used for optimistic writes.
     pub generation: i64,
@@ -680,11 +681,150 @@ pub struct SecretMetadata {
     pub unavailable: bool,
 }
 
+/// The environments that may mount a stored secret.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentAccess {
+    /// Every environment of the application, including ones created later.
+    #[default]
+    All,
+    /// Only these environments, by ID: renaming one keeps its access, and
+    /// deleting one removes it from the list.
+    Only(BTreeSet<EnvironmentId>),
+}
+
+/// Who may mount a secret from an application's store. The default is every
+/// environment and no previews.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretAccess {
+    /// Environments that may mount the secret.
+    pub environments: EnvironmentAccess,
+    /// Whether previews may mount the secret. Stored for previews, which do
+    /// not exist yet.
+    #[serde(default)]
+    pub previews: bool,
+}
+
+impl SecretAccess {
+    /// Whether `environment` may mount the secret.
+    #[must_use]
+    pub fn allows(&self, environment: &EnvironmentId) -> bool {
+        match &self.environments {
+            EnvironmentAccess::All => true,
+            EnvironmentAccess::Only(allowed) => allowed.contains(environment),
+        }
+    }
+
+    /// The access in words, naming environments by their current name:
+    /// `every environment`, `production, staging and previews`, `no environment`.
+    #[must_use]
+    pub fn describe(&self, environments: &[EnvironmentView]) -> String {
+        let named = match &self.environments {
+            EnvironmentAccess::All => "every environment".to_owned(),
+            EnvironmentAccess::Only(allowed) if allowed.is_empty() => "no environment".to_owned(),
+            EnvironmentAccess::Only(allowed) => allowed
+                .iter()
+                .map(|id| {
+                    environments
+                        .iter()
+                        .find(|environment| environment.id == *id)
+                        .map_or_else(
+                            || id.to_string(),
+                            |environment| environment.name.to_string(),
+                        )
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
+        if self.previews {
+            format!("{named} and previews")
+        } else {
+            named
+        }
+    }
+}
+
+/// A manually set secret in an application's store: its metadata and access,
+/// never its value.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct StoredSecret {
+    /// Version metadata.
+    #[serde(flatten)]
+    pub metadata: SecretMetadata,
+    /// Who may mount the secret.
+    pub access: SecretAccess,
+}
+
+/// Where the value of a secret an environment mounts comes from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MountedSecret {
+    /// Generated for the environment, because `spec.secrets` declares it.
+    Generated,
+    /// The application store's secret, which the environment may mount.
+    Stored {
+        /// Current version.
+        generation: i64,
+    },
+    /// Neither declared nor set in the application store: deploying fails.
+    Missing,
+    /// The application store's secret, whose access list excludes the
+    /// environment: deploying fails with `secret_access_denied`.
+    Denied,
+}
+
+impl MountedSecret {
+    /// Each secret `environment`'s saved configuration mounts, given the
+    /// application's `stored` secrets.
+    #[must_use]
+    pub fn list(
+        template: &ApplicationTemplate,
+        environment: &EnvironmentView,
+        stored: &[StoredSecret],
+    ) -> Vec<(String, Self)> {
+        template
+            .mounted_secrets(&environment.name)
+            .into_iter()
+            .map(|(name, source)| {
+                let mounted = match source {
+                    SecretSource::Generated => Self::Generated,
+                    SecretSource::Stored => {
+                        match stored.iter().find(|secret| secret.metadata.name == name) {
+                            None => Self::Missing,
+                            Some(secret) if secret.access.allows(&environment.id) => Self::Stored {
+                                generation: secret.metadata.generation,
+                            },
+                            Some(_) => Self::Denied,
+                        }
+                    }
+                };
+                (name, mounted)
+            })
+            .collect()
+    }
+}
+
+impl std::fmt::Display for MountedSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Generated => formatter.write_str("generated for this environment"),
+            Self::Stored { generation } => {
+                write!(formatter, "application store, version {generation}")
+            }
+            Self::Missing => formatter.write_str("not set in the application store"),
+            Self::Denied => formatter.write_str("application store, not allowed here"),
+        }
+    }
+}
+
 /// Metadata-only result of lost-key recovery. Never rotates application credentials.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct SecretKeyRecovery {
-    /// Environments whose stored values were discarded.
+    /// Environments whose generated values were discarded.
     pub affected_environments: i64,
+    /// Applications whose stored values were discarded.
+    #[serde(default)]
+    pub affected_applications: i64,
     /// Logical secrets whose stored values were discarded.
     pub affected_secrets: i64,
     /// Stored versions discarded; already unavailable versions are excluded.
