@@ -297,7 +297,9 @@ readiness (`ready`) continues to describe database/Docker/Swarm; ingress has its
 readiness. `healthy` covers the gateway and its public listener; `private` reports
 the private listener separately: the apps node's login state, `MagicDNS` name and
 tailnet addresses. A broken node degrades only private routes. Each route reports
-its effective `visibility` and the `dns` records its hostname needs.
+its effective `visibility` and the `dns` records its hostname needs. `routes` lists
+only the routes of applications the caller can
+[read](authorization.md#what-callers-see).
 
 Every gateway change (network, image pull, start, replacement, recovery, route
 reload, stop) is a daemon-scoped journal action with an `ingress_*` phase, so it

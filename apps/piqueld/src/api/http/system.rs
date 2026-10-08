@@ -1,6 +1,6 @@
 use crate::auth::Identity;
 use axum::{Extension, extract::State, http::StatusCode, response::IntoResponse};
-use piqueld_core::access::GlobalPermission;
+use piqueld_core::access::{AppPermission, GlobalPermission};
 use piqueld_core::api::{DnsStatus, Envelope, SystemStatus};
 
 use super::{ApiState, ok};
@@ -88,11 +88,17 @@ pub(super) async fn configuration(
 /// Probes the database, Docker Engine, and the Swarm manager with bounded
 /// timeouts, and reports ingress status. The same body is returned in both
 /// cases; only the status code differs (200 when ready, 503 otherwise).
+/// Ingress routes are listed only for applications the caller can read.
 #[utoipa::path(get,path="/api/v1/system/readiness",operation_id="systemReadiness",
  responses((status=200,description="Deployment dependencies ready",body=Envelope<piqueld_core::api::ReadinessStatus>),
  (status=503,description="Deployment dependencies unavailable",body=Envelope<piqueld_core::api::ReadinessStatus>)))]
-pub(super) async fn readiness(State(state): State<ApiState>) -> impl IntoResponse {
-    let status = state.readiness().await;
+pub(super) async fn readiness(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
+) -> impl IntoResponse {
+    let status = state
+        .readiness(&identity.grants.app_scope(AppPermission::Read))
+        .await;
     (
         if status.ready {
             StatusCode::OK

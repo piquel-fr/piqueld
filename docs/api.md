@@ -381,7 +381,8 @@ carries the same structured envelope when they are not. Probes have bounded
 deadlines and do not initialize Swarm or repair resources. Docker being unavailable
 does not block configuration saves or history reads. `/health` remains a
 process-liveness endpoint. A separate `ingress` object reports gateway health and
-per-route public HTTPS readiness without affecting `ready`; see
+per-route HTTPS readiness, for applications the caller can read, without
+affecting `ready`; see
 [ingress](ingress.md#status-and-recovery). No registry checks are introduced.
 
 `GET /api/v1/builds` lists attempts newest first, with optional `application_id`,

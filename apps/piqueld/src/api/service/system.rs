@@ -1,6 +1,7 @@
 //! Daemon status and dependency probes.
 
 use super::{ApplicationError, ApplicationService};
+use piqueld_core::access::Scope;
 use piqueld_core::api::{
     DependencyStatus, DnsStatus, HostConfiguration, ReadinessStatus, SystemStatus,
 };
@@ -45,18 +46,32 @@ impl ApplicationService {
             .ok_or(ApplicationError::ConfigurationUnavailable)
     }
 
-    /// Probes storage, Docker, and Swarm using bounded deadlines.
-    pub async fn readiness(&self) -> ReadinessStatus {
+    /// Probes storage, Docker, and Swarm using bounded deadlines. Ingress
+    /// routes are limited to the environments of `readable` applications.
+    pub async fn readiness(&self, readable: &Scope) -> ReadinessStatus {
         let (database, runtime) = tokio::join!(
             tokio::time::timeout(Duration::from_secs(2), self.store.probe()),
             tokio::time::timeout(Duration::from_secs(6), self.runtime.readiness())
         );
         let database = database.is_ok_and(|result| result.is_ok());
         let (docker, swarm) = runtime.unwrap_or((false, false));
-        let ingress = match &self.ingress {
+        let mut ingress = match &self.ingress {
             Some(ingress) => ingress.status().await,
             None => piqueld_core::api::IngressStatus::default(),
         };
+        // Readiness reports storage outages instead of failing, so routes
+        // whose applications cannot be looked up are hidden.
+        ingress.routes = self
+            .store
+            .readable_routes(readable, ingress.routes)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    ?error,
+                    "could not limit ingress routes to readable applications"
+                );
+                Vec::new()
+            });
         ReadinessStatus {
             ingress,
             ready: database && docker && swarm,

@@ -7764,6 +7764,7 @@ impl Client {
     Probes the database, Docker Engine, and the Swarm manager with bounded
     timeouts, and reports ingress status. The same body is returned in both
     cases; only the status code differs (200 when ready, 503 otherwise).
+    Ingress routes are listed only for applications the caller can read.
 
     Sends a `GET` request to `/api/v1/system/readiness`
 

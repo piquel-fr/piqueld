@@ -25,7 +25,7 @@ impl ApplicationService {
         loop {
             tokio::select! {()=cancellation.cancelled()=>return,_=tick.tick()=>{}}
             let result = async {
-                let readiness = self.readiness().await;
+                let readiness = self.readiness(&piqueld_core::access::Scope::All).await;
                 let now = now_ms();
                 let docker_ready =
                     matches!(readiness.docker, piqueld_core::api::DependencyStatus::Ready);

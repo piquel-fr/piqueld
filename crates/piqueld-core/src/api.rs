@@ -704,7 +704,8 @@ pub struct IngressStatus {
     /// The private listener and the apps tailnet node carrying its traffic.
     #[serde(default)]
     pub private: PrivateIngressStatus,
-    /// Deployed routes and their latest independent HTTPS probes.
+    /// Deployed routes and their latest independent HTTPS probes, limited to
+    /// applications the caller can read.
     pub routes: Vec<RouteStatus>,
 }
 
@@ -722,8 +723,9 @@ pub struct PrivateIngressStatus {
     pub dns_name: Option<String>,
     /// The node's tailnet addresses, which private hostnames must resolve to.
     pub addresses: Vec<String>,
-    /// Safe diagnostic: the login URL while the node needs login, or the
-    /// failed step, with detailed causes in daemon logs.
+    /// Safe diagnostic: what to do while the node needs login (its login URL
+    /// is only logged), or the failed step, with detailed causes in daemon
+    /// logs.
     pub message: String,
 }
 
