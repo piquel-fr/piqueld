@@ -26,6 +26,8 @@ pub struct DaemonConfig {
     pub docker: DockerConfig,
     /// Installation-owned HTTP ingress. Read once at startup.
     pub ingress: IngressConfig,
+    /// DNS provider accounts used for DNS-01 certificates.
+    pub dns: DnsConfig,
     /// Reconciliation scheduling limits.
     pub reconciliation: ReconciliationConfig,
     /// Retention limits for terminal operation history.
@@ -113,6 +115,7 @@ impl DaemonConfig {
                 .map_err(|error| ConfigError::Invalid(error.to_string()))?;
         }
         self.tailscale.validate()?;
+        self.ingress.acme.validate()?;
         absolute_file("docker.socket", &self.docker.socket)?;
         for host in &self.server.allowed_hosts {
             if host.len() > 253
@@ -228,6 +231,58 @@ impl TailscaleConfig {
 pub struct IngressConfig {
     /// Start the managed Caddy gateway and expose deployed routes on ports 80/443.
     pub enabled: bool,
+    /// ACME account used for DNS-01 certificates.
+    pub acme: AcmeConfig,
+}
+
+/// The CA piqueld itself orders DNS-01 certificates from.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AcmeConfig {
+    /// ACME directory URL. Defaults to Let's Encrypt production.
+    pub directory: String,
+    /// Optional account contact for expiry and policy notices from the CA.
+    pub email: Option<String>,
+}
+
+impl Default for AcmeConfig {
+    fn default() -> Self {
+        Self {
+            directory: "https://acme-v02.api.letsencrypt.org/directory".into(),
+            email: None,
+        }
+    }
+}
+
+impl AcmeConfig {
+    /// Requires an HTTPS directory URL and an email address without whitespace.
+    fn validate(&self) -> Result<(), ConfigError> {
+        if url::Url::parse(&self.directory).map_or(true, |url| url.scheme() != "https") {
+            return Err(ConfigError::Invalid(
+                "ingress.acme.directory must be an HTTPS URL".into(),
+            ));
+        }
+        if self.email.as_ref().is_some_and(|email| {
+            email
+                .split_once('@')
+                .is_none_or(|(user, domain)| user.is_empty() || domain.is_empty())
+                || email.contains(char::is_whitespace)
+        }) {
+            return Err(ConfigError::Invalid(
+                "ingress.acme.email must be an email address".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// DNS provider accounts, used for DNS-01 certificates. Zones are discovered
+/// through each provider's API.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct DnsConfig {
+    /// Providers in configuration order.
+    pub providers: Vec<crate::dns::DnsProvider>,
 }
 
 /// Persistent build output policy; metadata remains until application deletion.
@@ -522,10 +577,21 @@ impl DaemonConfig {
             ),
             (
                 "Ingress",
-                vec![(
-                    "Enabled (restart required)",
-                    self.ingress.enabled.to_string(),
-                )],
+                vec![
+                    (
+                        "Enabled (restart required)",
+                        self.ingress.enabled.to_string(),
+                    ),
+                    ("ACME directory", self.ingress.acme.directory.clone()),
+                    (
+                        "ACME email",
+                        self.ingress
+                            .acme
+                            .email
+                            .clone()
+                            .unwrap_or_else(|| "none".into()),
+                    ),
+                ],
             ),
             (
                 "Reconciliation",
@@ -576,6 +642,7 @@ impl DaemonConfig {
         })
         .collect();
         groups.insert("Tailscale".into(), self.tailscale_view());
+        groups.extend(self.dns_view().map(|view| ("DNS providers".into(), view)));
         groups.insert("Observability".into(), self.observability_view());
         piqueld_core::api::HostConfiguration { groups }
     }
@@ -598,6 +665,37 @@ impl DaemonConfig {
             ),
             ("Public URL".into(), self.public_url().to_owned()),
         ])
+    }
+    /// Builds the `DNS providers` group, numbered in configuration order, or
+    /// none without providers. Credentials appear only as their files.
+    fn dns_view(&self) -> Option<std::collections::BTreeMap<String, String>> {
+        if self.dns.providers.is_empty() {
+            return None;
+        }
+        Some(
+            self.dns
+                .providers
+                .iter()
+                .enumerate()
+                .map(|(index, provider)| {
+                    let value = match provider {
+                        crate::dns::DnsProvider::Cloudflare(cloudflare) => {
+                            format!("API token {}", cloudflare.api_token())
+                        }
+                        crate::dns::DnsProvider::Ovh(ovh) => format!(
+                            "{}, application key {}, application secret {}, consumer key {}",
+                            ovh.endpoint,
+                            ovh.application_key,
+                            ovh.application_secret,
+                            ovh.consumer_key
+                        ),
+                        #[cfg(test)]
+                        crate::dns::DnsProvider::Challtestsrv(_) => "test server".into(),
+                    };
+                    (format!("{}. {}", index + 1, provider.kind()), value)
+                })
+                .collect(),
+        )
     }
     /// Builds the `Observability` group, listing notification destinations by name
     /// only so webhook URLs never reach the dashboard.

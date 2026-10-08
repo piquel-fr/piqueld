@@ -17,6 +17,11 @@ let
   # private $CREDENTIALS_DIRECTORY, so the files may stay root-only, and the
   # daemon resolves the credential name there.
   webhookCredential = index: "webhook-${toString index}";
+  providers = cfg.settings.dns.providers;
+  # Credential files of a DNS provider, by setting name.
+  dnsFiles =
+    provider: lib.filterAttrs (name: value: lib.hasSuffix "_file" name && value != null) provider;
+  dnsCredential = index: setting: "dns-${toString index}-${lib.removeSuffix "_file" setting}";
   configuration = (pkgs.formats.toml { }).generate "piqueld.toml" (
     lib.recursiveUpdate (withoutNulls cfg.settings) (
       {
@@ -29,6 +34,12 @@ let
             // lib.optionalAttrs (destination.url_file != null) { url_file = webhookCredential index; }
           )
         ) destinations;
+        dns.providers = lib.imap0 (
+          index: provider:
+          withoutNulls (
+            provider // lib.mapAttrs (setting: _: dnsCredential index setting) (dnsFiles provider)
+          )
+        ) providers;
       }
       // lib.optionalAttrs (tailscale.auth_key_file != null) {
         tailscale.auth_key_file = "ts-auth-key";
@@ -116,6 +127,59 @@ in
             type = lib.types.bool;
             default = false;
             description = "Manage a Caddy gateway on ports 80/443. Requires Docker 28+. Restart piqueld to apply; disabling stops public routing but retains route configuration and certificates.";
+          };
+          ingress.acme.directory = lib.mkOption {
+            type = lib.types.strMatching "https://.+";
+            default = "https://acme-v02.api.letsencrypt.org/directory";
+            description = "ACME directory piqueld orders DNS-01 certificates from.";
+          };
+          ingress.acme.email = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Optional ACME account contact for expiry and policy notices from the CA.";
+          };
+          dns.providers = lib.mkOption {
+            type = lib.types.listOf (
+              lib.types.submodule {
+                options =
+                  let
+                    # A string, not a path, so the secret is never copied into the Nix store.
+                    file =
+                      description:
+                      lib.mkOption {
+                        type = lib.types.nullOr (lib.types.strMatching "/.+");
+                        default = null;
+                        description = "${description}, such as an agenix secret, passed to piqueld as a systemd credential.";
+                      };
+                  in
+                  {
+                    kind = lib.mkOption {
+                      type = lib.types.enum [
+                        "cloudflare"
+                        "ovh"
+                      ];
+                      description = "Provider API.";
+                    };
+                    api_token_file = file "Cloudflare: host file with an API token scoped to Zone:Read and DNS:Edit";
+                    endpoint = lib.mkOption {
+                      type = lib.types.nullOr (
+                        lib.types.enum [
+                          "ovh-eu"
+                          "ovh-ca"
+                          "ovh-us"
+                        ]
+                      );
+                      default = null;
+                      description = "OVH: API region of the account.";
+                    };
+                    application_key_file = file "OVH: host file with the application key";
+                    application_secret_file = file "OVH: host file with the application secret";
+                    consumer_key_file = file "OVH: host file with the consumer key";
+                  };
+              }
+            );
+            default = [ ];
+            description = "DNS provider accounts piqueld uses for DNS-01 certificates. Cloudflare needs api_token_file; OVH needs endpoint and the three OVH files.";
           };
           reconciliation.scan_interval_seconds = lib.mkOption {
             type = lib.types.ints.between 1 86400;
@@ -270,6 +334,24 @@ in
         ) destinations;
         message = "services.piqueld.settings.notifications.destinations: each entry needs exactly one of url and url_file";
       }
+      {
+        assertion = lib.all (
+          provider:
+          let
+            ovh = [
+              provider.endpoint
+              provider.application_key_file
+              provider.application_secret_file
+              provider.consumer_key_file
+            ];
+          in
+          if provider.kind == "cloudflare" then
+            provider.api_token_file != null && lib.all (value: value == null) ovh
+          else
+            provider.api_token_file == null && lib.all (value: value != null) ovh
+        ) providers;
+        message = "services.piqueld.settings.dns.providers: cloudflare needs only api_token_file; ovh needs only endpoint, application_key_file, application_secret_file and consumer_key_file";
+      }
     ];
     users.groups.piqueld = { };
     users.users.piqueld = {
@@ -300,6 +382,12 @@ in
               index: destination:
               lib.optional (destination.url_file != null) "${webhookCredential index}:${destination.url_file}"
             ) destinations
+          )
+          ++ lib.concatLists (
+            lib.imap0 (
+              index: provider:
+              lib.mapAttrsToList (setting: path: "${dnsCredential index setting}:${path}") (dnsFiles provider)
+            ) providers
           );
         User = "piqueld";
         Group = "piqueld";

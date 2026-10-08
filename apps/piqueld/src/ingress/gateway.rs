@@ -630,14 +630,14 @@ impl Ingress {
             .await
     }
 
-    /// Atomically writes a JSON file under `config/caddy` via a temporary file
-    /// and rename.
+    /// Atomically writes a JSON file under `config/caddy`, readable only by the
+    /// daemon since it can hold DNS-01 private keys.
     async fn write_configuration(&self, file: &str, configuration: &Value) -> Result<()> {
-        let path = self.directory.join("config/caddy").join(file);
-        let temporary = path.with_extension("tmp");
-        tokio::fs::write(&temporary, serde_json::to_vec(configuration)?).await?;
-        tokio::fs::rename(&temporary, &path).await?;
-        Ok(())
+        super::certificates::write_private(
+            &self.directory.join("config/caddy").join(file),
+            &serde_json::to_vec(configuration)?,
+        )
+        .await
     }
 
     /// Writes the configuration for `table` as the autosave and starts the gateway.

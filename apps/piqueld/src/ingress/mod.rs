@@ -1,16 +1,23 @@
 //! Installation-owned Caddy gateway, independent of the daemon's process lifetime.
+mod certificates;
 mod configuration;
 mod gateway;
 mod wire;
 
-use crate::store::{Store, now_ms};
+use crate::{
+    config::{AcmeConfig, DnsConfig},
+    dns::Dns,
+    store::{Store, ingress::RoutingTable, now_ms},
+};
 use anyhow::{Context, Result};
+use certificates::Certificates;
 use futures_util::{StreamExt, stream};
 use piqueld_core::{
     api::{IngressStatus, RouteStatus},
-    manifest::ValidatedRoute,
+    manifest::{Hostname, ValidatedRoute},
 };
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -49,6 +56,8 @@ pub struct Ingress {
     health: RwLock<IngressStatus>,
     /// Unix timestamp (seconds) up to which Caddy logs were already relayed.
     logs_since: Mutex<u64>,
+    /// DNS providers and the DNS-01 certificates loaded into Caddy.
+    certificates: Certificates,
     #[cfg(test)]
     issuer: Option<serde_json::Value>,
     #[cfg(test)]
@@ -71,6 +80,11 @@ impl Ingress {
         // Local Docker and Caddy control requests share the daemon's request budget.
         // Deployment convergence still imposes its configured outer deadline.
         let request_timeout = crate::docker::DockerTimeout::Request.duration();
+        let certificates = Certificates::new(
+            Dns::new(Vec::new())?,
+            AcmeConfig::default(),
+            directory.clone(),
+        );
         Ok(Self {
             enabled,
             instance_id: store.instance_id().into(),
@@ -97,11 +111,25 @@ impl Ingress {
                 routes: Vec::new(),
             }),
             logs_since: Mutex::new(0),
+            certificates,
             #[cfg(test)]
             issuer: None,
             #[cfg(test)]
             extra_hosts: Vec::new(),
         })
+    }
+
+    /// Configures DNS providers and the ACME account for DNS-01 certificates.
+    ///
+    /// # Errors
+    /// Returns HTTP client initialization failures.
+    pub fn with_dns(mut self, dns: &DnsConfig, acme: &AcmeConfig) -> Result<Self> {
+        self.certificates = Certificates::new(
+            Dns::new(dns.providers.clone())?,
+            acme.clone(),
+            self.directory.clone(),
+        );
+        Ok(self)
     }
 
     /// Latest bounded background health snapshot; this never waits for Docker.
@@ -147,8 +175,40 @@ impl Ingress {
     pub async fn run(&self, cancellation: CancellationToken) {
         tokio::join!(
             self.run_gateway(&cancellation),
-            self.run_probes(&cancellation)
+            self.run_probes(&cancellation),
+            self.run_certificates(&cancellation)
         );
+    }
+
+    /// Hostnames served with DNS-01 certificates instead of Caddy's automatic
+    /// HTTPS. Only private routes (#164) need them, and no route is private yet.
+    fn dns01_hostnames(_table: &RoutingTable) -> BTreeSet<Hostname> {
+        BTreeSet::new()
+    }
+
+    /// Every minute, issues and renews the DNS-01 certificates deployed routes
+    /// need. The gateway loop loads new certificates into Caddy.
+    async fn run_certificates(&self, cancellation: &CancellationToken) {
+        let mut tick = tokio::time::interval(Duration::from_mins(1));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! { ()=cancellation.cancelled()=>return, _=tick.tick()=>{} }
+            let desired = if self.enabled {
+                match self.store.routing_table().await {
+                    Ok(table) => Self::dns01_hostnames(&table),
+                    Err(error) => {
+                        tracing::warn!(error=?error, "could not read routes needing certificates");
+                        continue;
+                    }
+                }
+            } else {
+                BTreeSet::new()
+            };
+            // Not dropped on shutdown: an order in progress deletes its TXT
+            // record and finishes its journal action first.
+            self.maintain_certificates(&desired, now_ms(), cancellation)
+                .await;
+        }
     }
 
     /// Every 10s, reconciles the gateway under the writer lock and relays Caddy

@@ -104,7 +104,8 @@ services.piqueld.settings.tailscale = {
 `settings` declares typed options for `server.listen_mode`, `server.port`,
 `server.allowed_hosts`, `auth.public_url`, `tailscale.enabled`,
 `tailscale.hostname`, `tailscale.auth_key_file`, `docker.socket`,
-`docker.auto_initialize_swarm`, `ingress.enabled`, all three `reconciliation`
+`docker.auto_initialize_swarm`, `ingress.enabled`, `ingress.acme.directory`,
+`ingress.acme.email`, `dns.providers`, all three `reconciliation`
 intervals/timeouts, the `retention` periods, both `build_history` limits,
 `metrics.listen`, `notifications.destinations`, and every `notifications` switch
 and timing, with the daemon's defaults. Reconciliation
@@ -126,10 +127,32 @@ services.piqueld.settings.notifications = {
 
 See [observability](observability.md) for delivery semantics.
 
+[DNS providers](configuration.md#dns-providers) take their credentials only as
+files:
+
+```nix
+services.piqueld.settings = {
+  ingress.acme.email = "admin@example.com"; # optional
+  dns.providers = [
+    {
+      kind = "cloudflare";
+      api_token_file = config.age.secrets.cloudflare-dns-token.path;
+    }
+    {
+      kind = "ovh";
+      endpoint = "ovh-eu";
+      application_key_file = config.age.secrets.ovh-application-key.path;
+      application_secret_file = config.age.secrets.ovh-application-secret.path;
+      consumer_key_file = config.age.secrets.ovh-consumer-key.path;
+    }
+  ];
+};
+```
+
 Settings enter the world-readable Nix store, so a destination's `url` has a
 `url_file` variant that takes a host path instead, such as an agenix or sops-nix
 secret; set exactly one of them. The Tailscale auth key is only accepted as
-`auth_key_file`. The module passes every `_file` path to systemd
+`auth_key_file`, and DNS provider credentials only as their `_file` settings. The module passes every `_file` path to systemd
 `LoadCredential=`: systemd reads the file as root and hands the service a
 private copy, so the secret can stay root-only. Restart piqueld after a secret
 changes.

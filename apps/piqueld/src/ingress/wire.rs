@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Method, Request, StatusCode, body::Bytes};
 use hyper_util::rt::TokioIo;
+use piqueld_core::observability::DiagnosticCode;
 use serde_json::Value;
 use std::{
     path::PathBuf,
@@ -49,6 +50,8 @@ impl ResponseError {
 pub(super) struct Journaled<'a> {
     store: &'a crate::store::Store,
     action: JournalAction,
+    /// Classification of a failed outcome.
+    code: DiagnosticCode,
     /// Number of requests committed so far; attempts are numbered from 1.
     requests: AtomicU32,
 }
@@ -67,7 +70,7 @@ impl Journaled<'_> {
         let diagnostic = result
             .as_ref()
             .err()
-            .map(OperationError::ingress_diagnostic);
+            .map(|error| OperationError::ingress_diagnostic(self.code, error));
         let recorded = self.store.finish_action(&self.action, diagnostic).await;
         match (result, recorded) {
             (Ok(value), Ok(())) => Ok(value),
@@ -87,9 +90,21 @@ impl super::Ingress {
     /// open an action only when a change is needed, so unchanged passes record
     /// no history.
     pub(super) async fn journal(&self, phase: &str, resource: &str) -> Result<Journaled<'_>> {
+        self.journal_as(DiagnosticCode::IngressUnavailable, phase, resource)
+            .await
+    }
+
+    /// Opens an action whose failure is classified as `code`.
+    pub(super) async fn journal_as(
+        &self,
+        code: DiagnosticCode,
+        phase: &str,
+        resource: &str,
+    ) -> Result<Journaled<'_>> {
         Ok(Journaled {
             store: &self.store,
             action: self.store.begin_action(None, phase, Some(resource)).await?,
+            code,
             requests: AtomicU32::new(0),
         })
     }

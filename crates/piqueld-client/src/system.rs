@@ -1,4 +1,7 @@
-pub use piqueld_core::api::{DependencyStatus, ReadinessStatus, SystemStatus};
+pub use piqueld_core::api::{
+    CertificateStatus, DependencyStatus, DnsProviderStatus, DnsStatus, ReadinessStatus,
+    SystemStatus, TailnetStatus,
+};
 
 use crate::{
     Client, ClientError,
@@ -12,6 +15,17 @@ impl Client {
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn system_status(&self) -> Result<SystemStatus, ClientError> {
         generated_result(self.generated.system_status().await)
+            .await
+            .map(|response| response.data)
+    }
+
+    /// Checks every DNS provider's credentials and zones now, returning the
+    /// updated providers and certificates.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    pub async fn refresh_dns(&self) -> Result<DnsStatus, ClientError> {
+        generated_result(self.generated.refresh_dns().await)
             .await
             .map(|response| response.data)
     }

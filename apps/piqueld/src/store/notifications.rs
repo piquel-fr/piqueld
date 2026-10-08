@@ -528,6 +528,7 @@ impl Store {
             (None, "docker_unavailable") => "Docker Engine".into(),
             (None, "swarm_manager_unavailable") => "Swarm manager".into(),
             (None, "ingress_unavailable") => "Managed ingress gateway".into(),
+            (None, "certificate_renewal_failed") => "DNS-01 certificate renewal".into(),
             _ => key.to_owned(),
         };
         let summary = if failed {

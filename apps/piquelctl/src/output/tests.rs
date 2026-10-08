@@ -324,3 +324,58 @@ fn terminal_progress_is_suspended_for_every_role_and_cleared_on_final_drop() {
         "abandoning a task does not invent an outcome"
     );
 }
+
+#[test]
+fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
+    use piqueld_client::{CertificateStatus, DnsProviderStatus, DnsStatus, SystemStatus};
+    let status = SystemStatus {
+        status: "running".into(),
+        api_version: "v1".into(),
+        daemon_version: "0.1.0".into(),
+        instance_id: "instance".into(),
+        tailscale: piqueld_client::TailnetStatus::default(),
+        dns: DnsStatus {
+            providers: vec![DnsProviderStatus {
+                kind: "ovh".into(),
+                zones: vec!["piquel.fr".into()],
+                healthy: true,
+                message: "Zones discovered".into(),
+            }],
+            certificates: vec![CertificateStatus {
+                name: "*.piquel.fr".into(),
+                hostnames: vec!["admin.piquel.fr".into()],
+                expires_at_ms: Some(1),
+                error: Some("ovh create TXT record in zone piquel.fr: HTTP 403".into()),
+            }],
+        },
+    };
+    let stdout = Capture::default();
+    let mut console = Console::with_writers(
+        false,
+        false,
+        false,
+        stdout.writer(),
+        Capture::default().writer(),
+    );
+    console
+        .emit(&crate::output::reports::StatusReport {
+            status: &status,
+            transport: "unix",
+        })
+        .unwrap();
+    // `dns refresh` prints the same lines without the daemon header.
+    console.emit(&status.dns).unwrap();
+    let text = stdout.text();
+    assert_eq!(
+        text.matches("ovh (healthy): piquel.fr").count(),
+        2,
+        "{text}"
+    );
+    for expected in [
+        "ovh (healthy): piquel.fr",
+        "*.piquel.fr for admin.piquel.fr (expires at Unix ms 1)",
+        "ovh create TXT record in zone piquel.fr: HTTP 403",
+    ] {
+        assert!(text.contains(expected), "{text}");
+    }
+}

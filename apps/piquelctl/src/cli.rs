@@ -91,6 +91,11 @@ pub(crate) enum Command {
     },
     /// Report daemon availability and version.
     Status,
+    /// Inspect the daemon's DNS providers.
+    Dns {
+        #[command(subcommand)]
+        command: DnsCommand,
+    },
     /// Create, inspect, edit, and deploy applications.
     App {
         #[command(subcommand)]
@@ -121,6 +126,13 @@ pub(crate) enum Command {
         #[arg(long,default_value_t=50,value_parser=clap::value_parser!(u16).range(1..=100))]
         limit: u16,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum DnsCommand {
+    /// Check every DNS provider's credentials and zones now instead of at the
+    /// next hourly discovery. Credential files are only read at daemon startup.
+    Refresh,
 }
 
 #[derive(Debug, Subcommand)]

@@ -2,11 +2,18 @@
 use super::ui::{
     Icon, PageHeader, Tone, badge, empty, health_badge, icon, metric, notice, operation_badge, when,
 };
-use super::{ApplicationRow, connection_label, dashboard_context, management, row_health};
+use super::{
+    ApplicationRow, client_error_message, connection_label, dashboard_context, management,
+    row_health,
+};
 use crate::state::{ApplicationHealth, ConnectionState, DataState};
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 use leptos_router::components::A;
-use piqueld_client::system::DependencyStatus;
+use piqueld_client::{
+    Client,
+    system::{CertificateStatus, DependencyStatus, DnsProviderStatus},
+};
 
 #[component]
 pub(super) fn Sidebar() -> impl IntoView {
@@ -162,12 +169,32 @@ pub(super) fn OverviewPage() -> impl IntoView {
 }
 
 /// Daemon connectivity and dependency readiness cards (database, Docker, Swarm,
-/// ingress), with a button that triggers a manual dashboard refresh.
+/// ingress), with a button that triggers a manual dashboard refresh and, when
+/// DNS providers are configured, one that checks their credentials now.
 #[component]
 pub(super) fn ReadinessPanel() -> impl IntoView {
     let context = dashboard_context();
     let signals = context.signals;
     let refresh = context.refresh;
+    let checking_dns = RwSignal::new(false);
+    let dns_error = RwSignal::new(None::<String>);
+    let check_dns = move |_| {
+        checking_dns.set(true);
+        spawn_local(async move {
+            match Client::browser().refresh_dns().await {
+                Ok(dns) => {
+                    dns_error.set(None);
+                    signals.system.update(|system| {
+                        if let Some(system) = system {
+                            system.dns = dns;
+                        }
+                    });
+                }
+                Err(error) => dns_error.set(Some(client_error_message(&error))),
+            }
+            checking_dns.set(false);
+        });
+    };
 
     view! {
         <section class="card" aria-labelledby="system-readiness-heading">
@@ -176,15 +203,39 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                     <h3 id="system-readiness-heading">"System status"</h3>
                     <p>"Daemon connectivity and the services required to deploy applications."</p>
                 </div>
-                <button
-                    type="button"
-                    class="btn btn-sm"
-                    disabled={move || signals.refreshing.get()}
-                    on:click={move |_| refresh.run(())}
-                >
-                    {icon(Icon::Refresh)}
-                    {move || if signals.refreshing.get() { "Refreshing…" } else { "Refresh" }}
-                </button>
+                <div class="btn-group">
+                    {move || {
+                        signals
+                            .system
+                            .with(|system| {
+                                system.as_ref().is_some_and(|system| !system.dns.providers.is_empty())
+                            })
+                            .then(|| {
+                                view! {
+                                    <button
+                                        type="button"
+                                        class="btn btn-sm"
+                                        disabled={move || checking_dns.get()}
+                                        on:click=check_dns
+                                    >
+                                        {icon(Icon::Key)}
+                                        {move || {
+                                            if checking_dns.get() { "Checking…" } else { "Check DNS providers" }
+                                        }}
+                                    </button>
+                                }
+                            })
+                    }}
+                    <button
+                        type="button"
+                        class="btn btn-sm"
+                        disabled={move || signals.refreshing.get()}
+                        on:click={move |_| refresh.run(())}
+                    >
+                        {icon(Icon::Refresh)}
+                        {move || if signals.refreshing.get() { "Refreshing…" } else { "Refresh" }}
+                    </button>
+                </div>
             </header>
             <div class="stack-sm" aria-live="polite">
                 {move || {
@@ -192,6 +243,11 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                         .readiness_error
                         .get()
                         .map(|error| notice(Tone::Bad, format!("Readiness check failed: {error}")))
+                }}
+                {move || {
+                    dns_error
+                        .get()
+                        .map(|error| notice(Tone::Bad, format!("DNS provider check failed: {error}")))
                 }}
                 <div class="status-grid">
                     {move || connection_readiness(signals.connection.get())}
@@ -204,6 +260,17 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                                 (Tone::Bad, "Unhealthy")
                             };
                             status_card("Tailnet node", tone, label, &tailnet.message)
+                        })
+                    }}
+                    {move || {
+                        signals.system.get().map(|system| {
+                            system
+                                .dns
+                                .providers
+                                .iter()
+                                .map(dns_provider_card)
+                                .chain(system.dns.certificates.iter().map(certificate_card))
+                                .collect_view()
                         })
                     }}
                     {move || {
@@ -231,6 +298,56 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
             </div>
         </section>
     }
+}
+
+/// Card for one DNS provider: its kind, discovered zones and health.
+fn dns_provider_card(provider: &DnsProviderStatus) -> AnyView {
+    let (tone, label) = if provider.healthy {
+        (Tone::Ok, "Ready")
+    } else {
+        (Tone::Bad, "Unhealthy")
+    };
+    let zones = if provider.zones.is_empty() {
+        "no zones".to_owned()
+    } else {
+        provider.zones.join(", ")
+    };
+    status_card(
+        "DNS provider",
+        tone,
+        label,
+        &format!("{}: {zones}. {}", provider.kind, provider.message),
+    )
+}
+
+/// Card for one DNS-01 certificate: its name, hostnames, expiry and last error.
+fn certificate_card(certificate: &CertificateStatus) -> AnyView {
+    let (tone, label) = match (&certificate.error, certificate.expires_at_ms) {
+        (Some(_), None) => (Tone::Bad, "Failed"),
+        (Some(_), Some(_)) => (Tone::Warn, "Renewal failing"),
+        (None, Some(_)) => (Tone::Ok, "Issued"),
+        (None, None) => (Tone::Pending, "Pending"),
+    };
+    let hostnames = if certificate.hostnames.is_empty() {
+        "no routes".to_owned()
+    } else {
+        certificate.hostnames.join(", ")
+    };
+    let expiry = certificate.expires_at_ms.map_or_else(
+        || "not issued yet".to_owned(),
+        |at| format!("expires {}", super::format::timestamp(at)),
+    );
+    let error = certificate
+        .error
+        .as_ref()
+        .map(|error| format!(" Last error: {error}"))
+        .unwrap_or_default();
+    status_card(
+        "Certificate",
+        tone,
+        label,
+        &format!("{} for {hostnames}, {expiry}.{error}", certificate.name),
+    )
 }
 
 /// Readiness card for the browser's connection to the daemon itself.

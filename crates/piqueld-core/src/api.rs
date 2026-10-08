@@ -341,6 +341,9 @@ pub struct SystemStatus {
     /// Dedicated tailnet node serving the website over HTTPS.
     #[serde(default)]
     pub tailscale: TailnetStatus,
+    /// DNS providers and the certificates issued through them with DNS-01.
+    #[serde(default)]
+    pub dns: DnsStatus,
 }
 
 /// A change to a manifest field. Environment and process values are redacted.
@@ -718,6 +721,42 @@ pub struct TailnetStatus {
     pub public_url_matches: bool,
     /// Safe diagnostic, with detailed causes in daemon logs.
     pub message: String,
+}
+
+/// DNS providers from daemon TOML and the DNS-01 certificates piqueld issues
+/// through them.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct DnsStatus {
+    /// Configured providers, in configuration order.
+    pub providers: Vec<DnsProviderStatus>,
+    /// Certificates that routes need, or that are kept until they expire.
+    pub certificates: Vec<CertificateStatus>,
+}
+
+/// Zone discovery state of one configured DNS provider.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct DnsProviderStatus {
+    /// Provider kind, such as `cloudflare` or `ovh`.
+    pub kind: String,
+    /// Zones discovered through the provider's API, including conflicting ones.
+    pub zones: Vec<String>,
+    /// The latest discovery succeeded and no zone is claimed by another provider.
+    pub healthy: bool,
+    /// Safe diagnostic: the discovery error or the conflicting zones.
+    pub message: String,
+}
+
+/// One certificate issued through DNS-01, which covers a single name.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct CertificateStatus {
+    /// Covered name: a wildcard such as `*.example.com`, or an exact hostname.
+    pub name: String,
+    /// Route hostnames served with it; empty once no route needs it.
+    pub hostnames: Vec<String>,
+    /// Expiry of the stored certificate, absent until one is issued.
+    pub expires_at_ms: Option<i64>,
+    /// Latest issuance or renewal failure, cleared by the next success.
+    pub error: Option<String>,
 }
 
 /// Public HTTPS readiness is separate from application rollout success.

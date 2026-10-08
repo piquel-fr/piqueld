@@ -41,8 +41,13 @@ pub async fn run(workspace: &Workspace) -> Result<ExitCode> {
     result
 }
 
-/// An engine with its socket, and the daemon's data, in `runtime`. Ingress
-/// tests reach its ports 80 and 443 on random loopback ports.
+/// Ports the ingress tests reach on random loopback ports: Caddy's HTTP and
+/// HTTPS, then Pebble's ACME API and challtestsrv's DNS (TCP) and management
+/// API, run inside the engine by the DNS-01 certificate test.
+const PUBLISHED: [&str; 5] = ["80/tcp", "443/tcp", "14000/tcp", "8053/tcp", "8055/tcp"];
+
+/// An engine with its socket, and the daemon's data, in `runtime`, publishing
+/// [`PUBLISHED`].
 #[allow(
     clippy::zero_sized_map_values,
     reason = "bollard's type for Docker's exposed ports"
@@ -63,10 +68,11 @@ fn dind(image: &str, runtime: &Path) -> ContainerCreateBody {
             "--storage-driver=vfs".to_owned(),
         ]),
         env: Some(vec!["DOCKER_TLS_CERTDIR=".to_owned()]),
-        exposed_ports: Some(HashMap::from([
-            ("80/tcp".to_owned(), HashMap::new()),
-            ("443/tcp".to_owned(), HashMap::new()),
-        ])),
+        exposed_ports: Some(
+            PUBLISHED
+                .map(|port| (port.to_owned(), HashMap::new()))
+                .into(),
+        ),
         host_config: Some(HostConfig {
             privileged: Some(true),
             // Pre-mount /tmp so the entrypoint does not hide the data bind.
@@ -78,10 +84,7 @@ fn dind(image: &str, runtime: &Path) -> ContainerCreateBody {
                 format!("{runtime}:{DIND_SOCKET_DIR}"),
                 format!("{runtime}:{runtime}"),
             ]),
-            port_bindings: Some(HashMap::from([
-                ("80/tcp".to_owned(), loopback()),
-                ("443/tcp".to_owned(), loopback()),
-            ])),
+            port_bindings: Some(PUBLISHED.map(|port| (port.to_owned(), loopback())).into()),
             ..HostConfig::default()
         }),
         ..ContainerCreateBody::default()
@@ -134,7 +137,10 @@ async fn test(
         nextest(&["--lib", "--no-capture", "-E", "test(ingress_caddy)"])
             .env("PIQUELD_DOCKER_DATA_DIR", runtime)
             .env("PIQUELD_INGRESS_HTTP_PORT", port("80/tcp")?)
-            .env("PIQUELD_INGRESS_HTTPS_PORT", port("443/tcp")?),
+            .env("PIQUELD_INGRESS_HTTPS_PORT", port("443/tcp")?)
+            .env("PIQUELD_PEBBLE_PORT", port("14000/tcp")?)
+            .env("PIQUELD_CHALLTESTSRV_DNS_PORT", port("8053/tcp")?)
+            .env("PIQUELD_CHALLTESTSRV_API_PORT", port("8055/tcp")?),
     )?
     .finish(limit, shutdown)
     .await?;

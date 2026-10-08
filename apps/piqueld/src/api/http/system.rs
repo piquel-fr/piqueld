@@ -1,5 +1,5 @@
 use axum::{extract::State, http::StatusCode, response::IntoResponse};
-use piqueld_core::api::{Envelope, SystemStatus};
+use piqueld_core::api::{DnsStatus, Envelope, SystemStatus};
 
 use super::{ApiState, ok};
 
@@ -13,7 +13,25 @@ use super::{ApiState, ok};
     )
 )]
 pub(super) async fn status(State(state): State<ApiState>) -> impl IntoResponse {
-    ok(state.system_status())
+    ok(state.system_status().await)
+}
+
+/// Checks DNS provider credentials now.
+///
+/// Lists every configured provider's zones immediately instead of at the next
+/// hourly discovery, and returns the updated providers and certificates.
+/// Credential files are only read at daemon startup.
+#[utoipa::path(
+    post,
+    path = "/api/v1/system/dns/refresh",
+    operation_id = "refreshDns",
+    summary = "Check DNS providers now",
+    responses(
+        (status = 200, description = "Success", body = Envelope<DnsStatus>),
+    )
+)]
+pub(super) async fn refresh_dns(State(state): State<ApiState>) -> impl IntoResponse {
+    ok(state.refresh_dns().await)
 }
 
 /// Static liveness body: `{"status":"ok"}`.

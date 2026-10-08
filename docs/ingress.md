@@ -16,7 +16,9 @@ enabled = true
 Docker Engine 28+ with API 1.48+ is required. Ports 80 and 443 must be free and
 reachable from the internet. Create an A record for the server's public IPv4
 address; add AAAA only if public IPv6 actually reaches the gateway. DNS changes
-are manual. Caddy obtains and renews certificates without DNS-provider credentials.
+are manual. Caddy obtains and renews certificates for public routes without
+DNS-provider credentials; see [DNS-01 certificates](#dns-01-certificates) for
+the rest.
 
 Add a route to an application manifest and deploy it:
 
@@ -47,6 +49,54 @@ until environments can override hostnames.
 The backend serves plain HTTP on its internal port. WebSockets and streaming are
 supported. Wildcards, path rewriting/routing, tunnels, arbitrary TCP/UDP, and
 HTTPS backends are outside this release.
+
+## DNS-01 certificates
+
+Hostnames that a public CA cannot reach, such as private routes on the tailnet
+(#164), get certificates through ACME DNS-01 instead of Caddy's automatic HTTPS.
+piqueld obtains them itself through the [DNS providers](configuration.md#dns-providers)
+in daemon TOML and loads them into stock Caddy through its admin API
+(`tls.certificates.load_pem`). Their hostnames are excluded from Caddy's automatic
+HTTPS, so Caddy never attempts HTTP-01 for them. DNS credentials stay in the
+daemon, so a compromised gateway cannot take over a domain. Public routes keep
+Caddy's automatic HTTPS; no route uses DNS-01 until private routes land.
+
+A hostname is covered by the wildcard of its parent domain when that parent is
+the provider's zone or lies inside it, and by its exact name otherwise:
+
+| Hostname | Certificate |
+| --- | --- |
+| `admin.piquel.fr` | `*.piquel.fr` |
+| `staging.piquel.fr` | `*.piquel.fr` (same certificate) |
+| `auth.staging.piquel.fr`, `admin.staging.piquel.fr` | `*.staging.piquel.fr` |
+| `piquel.fr` | `piquel.fr` (the parent `fr` is outside the zone) |
+
+All previews under `*.dev.piquel.fr` therefore share one certificate.
+
+To issue, piqueld creates the `_acme-challenge` TXT record and polls the zone's
+authoritative nameservers until each serves it, for up to 10 minutes because
+OVH propagation is slow. It then answers the challenge, finalizes the order, and
+deletes the TXT record, which it also deletes when issuance fails or the daemon
+shuts down mid-order. The ACME account key lives in `<data_dir>/ingress/acme/`
+and each certificate with its private key in one file,
+`<data_dir>/ingress/certificates/<name>.pem` (`_wildcard.<parent>.pem` for
+wildcards), all mode 0600; include both in backups. `[ingress.acme] directory` defaults to
+Let's Encrypt production.
+
+Certificates are checked every minute and renewed when less than a third of their
+lifetime remains. Failures retry with backoff, from 5 minutes up to 6 hours.
+Certificates that no route needs any more are not renewed, and are deleted once
+expired. A hostname outside every provider zone, or in a zone claimed by two
+providers, reports that as its certificate's error.
+
+Issuance, renewal and deletion are daemon-scoped journal actions with the
+`ingress_certificate_issue`, `ingress_certificate_renew` and
+`ingress_certificate_delete` phases, so they appear in Events. A failed attempt
+records a `certificate_renewal_failed` diagnostic. With `daemon_failures`
+notifications enabled, a certificate whose renewal keeps failing notifies once it
+is within 14 days of expiry. `piquelctl status` and the dashboard's system status
+show each provider with its kind, zones and health, and each certificate with its
+hostnames, expiry and last error.
 
 ## Traffic and isolation
 

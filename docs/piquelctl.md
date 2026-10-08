@@ -109,7 +109,11 @@ verify tailnet membership or add encryption with this flag. Prefer HTTPS, such a
 a daemon's [tailnet node](configuration.md#tailnet-node) at
 `https://piqueld.<tailnet>.ts.net`; loopback HTTP and Unix sockets need no opt-in.
 When the daemon runs a tailnet node, `status` also reports its login state,
-certificate expiry, and whether `auth.public_url` matches the node.
+certificate expiry, and whether `auth.public_url` matches the node. It also lists
+each [DNS provider](configuration.md#dns-providers) with its zones and health,
+and each DNS-01 certificate with its hostnames, expiry and last error.
+`piquelctl dns refresh` checks the providers' credentials and zones now instead
+of at the next hourly discovery, then prints the same DNS lines.
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer
@@ -128,6 +132,7 @@ written to stderr, so stdout remains valid JSON.
 | --- | --- |
 | `profiles` | `{ "profiles": [{ "name": string, "endpoint": string }] }` |
 | `status` | `SystemStatus` |
+| `dns refresh` | `DnsStatus` |
 | `app list` | `{ "items": [{ "application": ApplicationSummary, "environments": [EnvironmentRow] }], "next_cursor": null }` |
 | `app show` | `{ "application": ApplicationView, "environments": [EnvironmentRow] }` |
 | `env list` | `[EnvironmentRow]`, where `EnvironmentRow` is `{ "environment": EnvironmentView, "status": EnvironmentStatusView or null }` |

@@ -36,6 +36,24 @@ auto_initialize_swarm = true
 # Requires Docker 28+ and free public ports 80/443. Restart to apply.
 enabled = false
 
+# ACME account for certificates piqueld issues itself through DNS-01.
+[ingress.acme]
+directory = "https://acme-v02.api.letsencrypt.org/directory"
+# email = "admin@example.com"
+
+# DNS provider accounts used for DNS-01. Credentials are only read from files;
+# relative paths resolve against $CREDENTIALS_DIRECTORY.
+# [[dns.providers]]
+# kind = "cloudflare"
+# api_token_file = "/tmp/piqueld-dev-cloudflare-token" # Zone:Read and DNS:Edit
+#
+# [[dns.providers]]
+# kind = "ovh"
+# endpoint = "ovh-eu"
+# application_key_file = "/tmp/piqueld-dev-ovh-application-key"
+# application_secret_file = "/tmp/piqueld-dev-ovh-application-secret"
+# consumer_key_file = "/tmp/piqueld-dev-ovh-consumer-key"
+
 [reconciliation]
 scan_interval_seconds = 60
 prepare_timeout_seconds = 300

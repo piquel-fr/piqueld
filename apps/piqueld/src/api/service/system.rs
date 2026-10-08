@@ -1,13 +1,15 @@
 //! Daemon status and dependency probes.
 
 use super::{ApplicationError, ApplicationService};
-use piqueld_core::api::{DependencyStatus, HostConfiguration, ReadinessStatus, SystemStatus};
+use piqueld_core::api::{
+    DependencyStatus, DnsStatus, HostConfiguration, ReadinessStatus, SystemStatus,
+};
 use std::time::Duration;
 
 impl ApplicationService {
-    /// Returns daemon identity and version information.
-    #[must_use]
-    pub fn system_status(&self) -> SystemStatus {
+    /// Returns daemon identity and version information, with the tailnet node,
+    /// DNS providers and DNS-01 certificates.
+    pub async fn system_status(&self) -> SystemStatus {
         SystemStatus {
             status: "running".into(),
             api_version: "v1".into(),
@@ -18,6 +20,19 @@ impl ApplicationService {
                 .as_ref()
                 .map(|status| status.borrow().clone())
                 .unwrap_or_default(),
+            dns: match &self.ingress {
+                Some(ingress) => ingress.dns_status().await,
+                None => DnsStatus::default(),
+            },
+        }
+    }
+
+    /// Checks every DNS provider's credentials and zones now, returning the
+    /// updated providers and certificates.
+    pub async fn refresh_dns(&self) -> DnsStatus {
+        match &self.ingress {
+            Some(ingress) => ingress.refresh_dns().await,
+            None => DnsStatus::default(),
         }
     }
 
