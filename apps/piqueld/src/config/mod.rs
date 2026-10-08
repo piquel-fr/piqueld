@@ -642,7 +642,7 @@ impl DaemonConfig {
         })
         .collect();
         groups.insert("Tailscale".into(), self.tailscale_view());
-        groups.insert("DNS providers".into(), self.dns_view());
+        groups.extend(self.dns_view().map(|view| ("DNS providers".into(), view)));
         groups.insert("Observability".into(), self.observability_view());
         piqueld_core::api::HostConfiguration { groups }
     }
@@ -666,28 +666,36 @@ impl DaemonConfig {
             ("Public URL".into(), self.public_url().to_owned()),
         ])
     }
-    /// Builds the `DNS providers` group, numbered in configuration order.
-    /// Credentials appear only as their files.
-    fn dns_view(&self) -> std::collections::BTreeMap<String, String> {
-        self.dns
-            .providers
-            .iter()
-            .enumerate()
-            .map(|(index, provider)| {
-                let value = match provider {
-                    crate::dns::DnsProvider::Cloudflare(cloudflare) => {
-                        format!("API token {}", cloudflare.api_token())
-                    }
-                    crate::dns::DnsProvider::Ovh(ovh) => format!(
-                        "{}, application key {}, application secret {}, consumer key {}",
-                        ovh.endpoint, ovh.application_key, ovh.application_secret, ovh.consumer_key
-                    ),
-                    #[cfg(test)]
-                    crate::dns::DnsProvider::Challtestsrv(_) => "test server".into(),
-                };
-                (format!("{}. {}", index + 1, provider.kind()), value)
-            })
-            .collect()
+    /// Builds the `DNS providers` group, numbered in configuration order, or
+    /// none without providers. Credentials appear only as their files.
+    fn dns_view(&self) -> Option<std::collections::BTreeMap<String, String>> {
+        if self.dns.providers.is_empty() {
+            return None;
+        }
+        Some(
+            self.dns
+                .providers
+                .iter()
+                .enumerate()
+                .map(|(index, provider)| {
+                    let value = match provider {
+                        crate::dns::DnsProvider::Cloudflare(cloudflare) => {
+                            format!("API token {}", cloudflare.api_token())
+                        }
+                        crate::dns::DnsProvider::Ovh(ovh) => format!(
+                            "{}, application key {}, application secret {}, consumer key {}",
+                            ovh.endpoint,
+                            ovh.application_key,
+                            ovh.application_secret,
+                            ovh.consumer_key
+                        ),
+                        #[cfg(test)]
+                        crate::dns::DnsProvider::Challtestsrv(_) => "test server".into(),
+                    };
+                    (format!("{}. {}", index + 1, provider.kind()), value)
+                })
+                .collect(),
+        )
     }
     /// Builds the `Observability` group, listing notification destinations by name
     /// only so webhook URLs never reach the dashboard.

@@ -319,6 +319,11 @@ consumer_key_file = "ovh-consumer-key"
 
 The OVH consumer key needs `GET /domain/zone`, `GET /auth/time`, and `POST`,
 `DELETE` on `/domain/zone/*`. Zones are discovered through each provider's API at
-startup and hourly. A hostname belongs to the provider with the longest matching
+startup and hourly, which also checks the credentials; a failed discovery is
+retried every minute. To check now, for example after changing a token's
+permissions or adding a zone, run `piquelctl dns refresh`, press **Check DNS
+providers** in the dashboard's System status panel, or call
+`POST /api/v1/system/dns/refresh`. Replacing a credential file needs a restart.
+A hostname belongs to the provider with the longest matching
 zone; a zone claimed by two providers is a conflict and is not used. See
 [ingress](ingress.md#dns-01-certificates) for issuance and renewal.

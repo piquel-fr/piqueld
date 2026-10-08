@@ -1,7 +1,9 @@
 //! Daemon status and dependency probes.
 
 use super::{ApplicationError, ApplicationService};
-use piqueld_core::api::{DependencyStatus, HostConfiguration, ReadinessStatus, SystemStatus};
+use piqueld_core::api::{
+    DependencyStatus, DnsStatus, HostConfiguration, ReadinessStatus, SystemStatus,
+};
 use std::time::Duration;
 
 impl ApplicationService {
@@ -20,8 +22,17 @@ impl ApplicationService {
                 .unwrap_or_default(),
             dns: match &self.ingress {
                 Some(ingress) => ingress.dns_status().await,
-                None => piqueld_core::api::DnsStatus::default(),
+                None => DnsStatus::default(),
             },
+        }
+    }
+
+    /// Checks every DNS provider's credentials and zones now, returning the
+    /// updated providers and certificates.
+    pub async fn refresh_dns(&self) -> DnsStatus {
+        match &self.ingress {
+            Some(ingress) => ingress.refresh_dns().await,
+            None => DnsStatus::default(),
         }
     }
 

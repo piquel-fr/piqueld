@@ -3,9 +3,10 @@ use super::{HumanWriter, Report};
 use crate::profiles::ProfileSummary;
 use piqueld_client::{
     AcceptedOperation, ActionReason, ActionRisk, ApplicationLogs, ApplicationSummary,
-    ApplicationView, BuildLogPage, BuildRecord, DeletedApplication, EnvironmentDetailView,
-    EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event, Operation, OperationState,
-    Page, PlanView, SavedApplication, SecretMetadata, Source, SystemStatus,
+    ApplicationView, BuildLogPage, BuildRecord, DeletedApplication, DnsStatus,
+    EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event,
+    Operation, OperationState, Page, PlanView, SavedApplication, SecretMetadata, Source,
+    SystemStatus,
 };
 use serde::Serialize;
 use std::io;
@@ -57,51 +58,57 @@ impl Report for StatusReport<'_> {
                 out.label("Tailnet problem", &tailnet.message)?;
             }
         }
-        for provider in &s.dns.providers {
-            out.label(
-                "DNS provider",
-                format_args!(
-                    "{} ({}): {}",
-                    provider.kind,
-                    if provider.healthy {
-                        "healthy"
-                    } else {
-                        "unhealthy"
-                    },
-                    if provider.zones.is_empty() {
-                        "no zones".into()
-                    } else {
-                        provider.zones.join(", ")
-                    },
-                ),
-            )?;
-            if !provider.healthy {
-                out.label("DNS problem", &provider.message)?;
-            }
-        }
-        for certificate in &s.dns.certificates {
-            out.label(
-                "Certificate",
-                format_args!(
-                    "{} for {} (expires at Unix ms {})",
-                    certificate.name,
-                    if certificate.hostnames.is_empty() {
-                        "no routes".into()
-                    } else {
-                        certificate.hostnames.join(", ")
-                    },
-                    certificate
-                        .expires_at_ms
-                        .map_or_else(|| "never issued".into(), |at| at.to_string()),
-                ),
-            )?;
-            if let Some(error) = &certificate.error {
-                out.label("Certificate problem", error)?;
-            }
-        }
-        Ok(())
+        s.dns.render_human(out)
     }
 }
+
+// DNS providers with their zones and health, then DNS-01 certificates; shown
+// by `status` and `dns refresh`.
+report!(DnsStatus, self, out, {
+    for provider in &self.providers {
+        out.label(
+            "DNS provider",
+            format_args!(
+                "{} ({}): {}",
+                provider.kind,
+                if provider.healthy {
+                    "healthy"
+                } else {
+                    "unhealthy"
+                },
+                if provider.zones.is_empty() {
+                    "no zones".into()
+                } else {
+                    provider.zones.join(", ")
+                },
+            ),
+        )?;
+        if !provider.healthy {
+            out.label("DNS problem", &provider.message)?;
+        }
+    }
+    for certificate in &self.certificates {
+        out.label(
+            "Certificate",
+            format_args!(
+                "{} for {} (expires at Unix ms {})",
+                certificate.name,
+                if certificate.hostnames.is_empty() {
+                    "no routes".into()
+                } else {
+                    certificate.hostnames.join(", ")
+                },
+                certificate
+                    .expires_at_ms
+                    .map_or_else(|| "never issued".into(), |at| at.to_string()),
+            ),
+        )?;
+        if let Some(error) = &certificate.error {
+            out.label("Certificate problem", error)?;
+        }
+    }
+    Ok(())
+});
 
 /// Effective connection profiles, as a `NAME  ENDPOINT` table.
 #[derive(Serialize)]

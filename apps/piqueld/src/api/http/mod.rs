@@ -598,6 +598,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(system::status))
         .routes(routes!(system::readiness))
         .routes(routes!(system::configuration))
+        .routes(routes!(system::refresh_dns))
         .routes(routes!(openapi::openapi))
         .routes(routes!(applications::list))
         .routes(routes!(applications::apply))

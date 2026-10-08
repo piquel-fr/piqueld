@@ -23,7 +23,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, de::DeserializeOwned};
 use std::time::{Duration, Instant};
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 /// One DNS provider account, selected by `kind` in daemon TOML. Credentials
 /// are only accepted through `_file` settings.
@@ -227,8 +227,10 @@ pub struct Dns {
     http: reqwest::Client,
     /// One entry per provider, in configuration order.
     discovered: RwLock<Vec<Discovery>>,
-    /// When zones were last discovered, if ever.
-    refreshed: RwLock<Option<Instant>>,
+    /// When every provider's zones were last discovered, if ever. Held for a
+    /// whole discovery, so discoveries never overlap and an older one cannot
+    /// overwrite a newer result.
+    refreshed: Mutex<Option<Instant>>,
     /// Addresses of each nameserver queried for propagation instead of each
     /// zone's NS records.
     #[cfg(test)]
@@ -252,7 +254,7 @@ impl Dns {
                 .redirect(reqwest::redirect::Policy::none())
                 .no_proxy()
                 .build()?,
-            refreshed: RwLock::new(None),
+            refreshed: Mutex::new(None),
             #[cfg(test)]
             nameservers: None,
         })
@@ -269,17 +271,26 @@ impl Dns {
     }
 
     /// Rediscovers every provider's zones when they are older than an hour, or
-    /// when the previous discovery failed. Failures are kept per provider for
-    /// status, and their old zones stay in use.
+    /// when the previous discovery failed.
     pub async fn refresh(&self) {
-        if self
-            .refreshed
-            .read()
-            .await
-            .is_some_and(|at| at.elapsed() < Self::REFRESH)
-        {
+        let mut refreshed = self.refreshed.lock().await;
+        if refreshed.is_some_and(|at| at.elapsed() < Self::REFRESH) {
             return;
         }
+        self.discover_locked(&mut refreshed).await;
+    }
+
+    /// Lists every provider's zones now, which also checks their credentials.
+    /// Failures are kept per provider for status, and their old zones stay in
+    /// use. Credential files are only read at startup.
+    pub async fn discover(&self) {
+        self.discover_locked(&mut *self.refreshed.lock().await)
+            .await;
+    }
+
+    /// Discovers zones while holding `refreshed`. A failure clears it, so the
+    /// next [`Self::refresh`] retries instead of waiting out the hour.
+    async fn discover_locked(&self, refreshed: &mut Option<Instant>) {
         let mut discovered = Vec::with_capacity(self.providers.len());
         for provider in &self.providers {
             discovered.push(provider.zones(&self.http).await);
@@ -295,9 +306,7 @@ impl Dns {
                 }
             }
         }
-        if complete {
-            *self.refreshed.write().await = Some(Instant::now());
-        }
+        *refreshed = complete.then(Instant::now);
     }
 
     /// The provider (by index) and zone that own `hostname`.

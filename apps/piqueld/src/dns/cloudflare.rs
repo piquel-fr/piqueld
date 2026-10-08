@@ -188,6 +188,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn discovery_is_reused_for_an_hour_unless_forced_or_failed() {
+        const ZONES: &str = "/zones?per_page=50&page=1";
+        let working = Recorded::serve(vec![(
+            Method::GET,
+            ZONES,
+            200,
+            r#"{"success":true,"errors":[],"result":[{"id":"z1","name":"piquel.fr"}]}"#,
+        )])
+        .await;
+        let failing = Recorded::serve(vec![(Method::GET, ZONES, 500, "{}")]).await;
+        let mut dns = crate::dns::Dns::new(vec![provider(working.url.clone())]).unwrap();
+        dns.refresh().await;
+        dns.refresh().await;
+        assert_eq!(working.requests().await.len(), 1);
+        dns.discover().await;
+        assert_eq!(working.requests().await.len(), 1);
+        // A failed forced discovery keeps the zones, and the next hourly
+        // refresh retries at once instead of trusting the earlier success.
+        dns.providers[0] = provider(failing.url.clone());
+        dns.discover().await;
+        let status = &dns.status().await[0];
+        assert!(
+            !status.healthy && status.zones == ["piquel.fr"],
+            "{status:?}"
+        );
+        dns.providers[0] = provider(working.url.clone());
+        dns.refresh().await;
+        assert_eq!(working.requests().await.len(), 1);
+        assert!(dns.status().await[0].healthy);
+    }
+
+    #[tokio::test]
     async fn api_errors_name_the_provider_and_zone_but_not_the_token() {
         let recorded = Recorded::serve(vec![(Method::POST, "/zones/z1/dns_records", 403,
             r#"{"success":false,"errors":[{"code":10000,"message":"Authentication error"}],"result":null}"#)]).await;

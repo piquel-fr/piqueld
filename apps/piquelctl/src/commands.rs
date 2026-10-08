@@ -1,7 +1,8 @@
 //! Connected command implementations plus shared application lookup and operation waiting.
 use crate::{
     cli::{
-        AppCommand, ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs,
+        AppCommand, ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, DnsCommand, ManifestArgs,
+        OperationArgs,
     },
     environments,
     error::{CliError, ErrorKind, Result},
@@ -39,6 +40,9 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
         Command::Profiles => unreachable!("profiles are listed before connecting"),
         Command::Secrets { action } => action.run(cli, client, console).await,
         Command::Status => status(cli, client, console).await,
+        Command::Dns {
+            command: DnsCommand::Refresh,
+        } => refresh_dns(client, console).await,
         Command::App { command } => app(cli, client, console, command).await,
         Command::Env { command } => command.run(cli, client, console).await,
         Command::Builds(args) => match &args.command {
@@ -212,6 +216,16 @@ async fn status(cli: &Cli, client: &Client, console: &mut Console) -> Result<()>
         status: &status,
         transport: &transport_description(cli),
     })
+}
+
+/// Checks DNS provider credentials now and prints the updated providers and
+/// certificates.
+async fn refresh_dns(client: &Client, console: &mut Console) -> Result<()> {
+    let status = client.refresh_dns().await?;
+    if status.providers.is_empty() {
+        console.warning("no DNS providers are configured ([[dns.providers]] in daemon TOML)")?;
+    }
+    console.emit(&status)
 }
 
 /// Lists every application with its environments' statuses. Applications are

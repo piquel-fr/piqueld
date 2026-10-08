@@ -18,6 +18,17 @@ impl Client {
             .await
             .map(|response| response.data)
     }
+
+    /// Checks every DNS provider's credentials and zones now, returning the
+    /// updated providers and certificates.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    pub async fn refresh_dns(&self) -> Result<DnsStatus, ClientError> {
+        generated_result(self.generated.refresh_dns().await)
+            .await
+            .map(|response| response.data)
+    }
 }
 
 impl Client {

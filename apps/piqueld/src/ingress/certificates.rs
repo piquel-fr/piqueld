@@ -447,6 +447,13 @@ impl Ingress {
         }
     }
 
+    /// Checks every DNS provider's credentials and zones now instead of at
+    /// the next hourly discovery, then reports the result.
+    pub async fn refresh_dns(&self) -> DnsStatus {
+        self.certificates.dns.discover().await;
+        self.dns_status().await
+    }
+
     /// One maintenance pass over the certificates `desired` hostnames need:
     ///
     /// 1. Issues missing certificates and renews due ones (see
@@ -455,8 +462,9 @@ impl Ingress {
     /// 3. Raises `certificate_renewal_failed` while a needed certificate that
     ///    failed to renew expires within 14 days.
     ///
-    /// `cancellation` interrupts the order in progress, which still deletes its
-    /// TXT record, and stops the pass after it.
+    /// `cancellation` stops zone discovery, which can wait behind forced
+    /// discoveries, and interrupts the order in progress, which still deletes
+    /// its TXT record; the pass stops after it.
     pub(super) async fn maintain_certificates(
         &self,
         desired: &BTreeSet<Hostname>,
@@ -465,7 +473,14 @@ impl Ingress {
     ) {
         let certificates = &self.certificates;
         let started = std::time::Instant::now();
-        for due in certificates.due(desired, now_ms).await {
+        // Planning changes nothing until its awaits finish, so dropping it is safe.
+        let Some(due) = cancellation
+            .run_until_cancelled(certificates.due(desired, now_ms))
+            .await
+        else {
+            return;
+        };
+        for due in due {
             let phase = if due.renewal {
                 "ingress_certificate_renew"
             } else {

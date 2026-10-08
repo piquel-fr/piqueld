@@ -326,7 +326,7 @@ fn terminal_progress_is_suspended_for_every_role_and_cleared_on_final_drop() {
 }
 
 #[test]
-fn status_lists_dns_providers_and_certificate_failures() {
+fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
     use piqueld_client::{CertificateStatus, DnsProviderStatus, DnsStatus, SystemStatus};
     let status = SystemStatus {
         status: "running".into(),
@@ -363,7 +363,14 @@ fn status_lists_dns_providers_and_certificate_failures() {
             transport: "unix",
         })
         .unwrap();
+    // `dns refresh` prints the same lines without the daemon header.
+    console.emit(&status.dns).unwrap();
     let text = stdout.text();
+    assert_eq!(
+        text.matches("ovh (healthy): piquel.fr").count(),
+        2,
+        "{text}"
+    );
     for expected in [
         "ovh (healthy): piquel.fr",
         "*.piquel.fr for admin.piquel.fr (expires at Unix ms 1)",

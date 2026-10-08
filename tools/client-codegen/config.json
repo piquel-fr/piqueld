@@ -101,6 +101,11 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::SystemStatus>"
     },
     {
+      "schema": "Envelope_DnsStatus",
+      "name": "EnvelopeDnsStatus",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::DnsStatus>"
+    },
+    {
       "schema": "Envelope_Vec_SecretMetadata",
       "name": "EnvelopeVecSecretMetadata",
       "rustType": "piqueld_core::api::Envelope<Vec<piqueld_core::api::SecretMetadata>>"
