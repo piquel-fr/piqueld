@@ -1206,13 +1206,29 @@ async fn each_listener_serves_only_its_own_routes() {
         assert_eq!(hosts(&servers[http]), [host.to_owned()].into(), "{http}");
         // No other hostname completes TLS on this listener.
         assert_eq!(
-            servers[https]["tls_connection_policies"],
-            json!([{"match":{"sni":[host]}}])
+            servers[https]["tls_connection_policies"][0]["match"]["sni"],
+            json!([host])
         );
     }
+    // Applications reach the private listener over their networks, so only
+    // tailnet client addresses, set by edge peers' PROXY headers, complete TLS.
+    let tailnet = json!({"ranges":["100.64.0.0/10", "fd7a:115c:a1e0::/48"]});
+    assert_eq!(
+        servers["private"]["tls_connection_policies"][0]["match"]["remote_ip"],
+        tailnet
+    );
+    assert_eq!(
+        servers["private_http"]["routes"][0]["match"],
+        json!([{"not":[{"remote_ip":tailnet}]}])
+    );
+    assert!(
+        servers["public"]["tls_connection_policies"][0]["match"]
+            .get("remote_ip")
+            .is_none()
+    );
     assert_eq!(servers["public"]["listen"], json!([":443"]));
     assert_eq!(servers["private"]["listen"], json!([":8443"]));
-    let wrapper = json!({"wrapper":"proxy_protocol","allow":edge,"fallback_policy":"reject"});
+    let wrapper = json!({"wrapper":"proxy_protocol","allow":edge,"fallback_policy":"ignore"});
     assert_eq!(
         servers["private"]["listener_wrappers"],
         json!([wrapper, {"wrapper":"tls"}])
@@ -1268,5 +1284,36 @@ async fn the_apps_node_forwards_to_the_private_listener_without_privileges() {
         !environment
             .iter()
             .any(|value| value.as_str().unwrap().starts_with("TS_AUTHKEY"))
+    );
+    // A replaced auth key replaces the container, which reads it again.
+    let hash = |key: &str| {
+        let config = crate::config::PrivateIngressConfig {
+            enabled: true,
+            auth_key: Some(key.into()),
+            ..Default::default()
+        };
+        let node = node::Node::new(&config, &ingress.directory).unwrap();
+        ingress.node_spec(&node)["Labels"]["io.piqueld.ingress-configuration"].clone()
+    };
+    assert_ne!(hash("tskey-auth-old"), hash("tskey-auth-new"));
+    assert_ne!(
+        hash("tskey-auth-old"),
+        spec["Labels"]["io.piqueld.ingress-configuration"]
+    );
+}
+
+#[tokio::test]
+async fn disabled_private_ingress_is_unconfirmed_until_the_node_is_removed() {
+    let engine = FailingEngine::start().await;
+    engine.ingress.synchronize().await.unwrap_err();
+    // The gateway failed, but removing the node was still attempted.
+    let private = engine.ingress.status().await.private;
+    assert!(!private.enabled && !private.healthy);
+    assert!(
+        private
+            .message
+            .starts_with("Removing the apps node is not confirmed"),
+        "{}",
+        private.message
     );
 }

@@ -12,9 +12,12 @@
 //! A hostname appears only on its own listener, and each HTTPS server's TLS
 //! policy accepts only its own hostnames, so a forged Host or SNI for a
 //! private route on the public listener gets no certificate and a 404. The
-//! private servers exist only while private ingress is enabled; they accept
-//! connections only from the edge network, with a PROXY header from the apps
-//! node, and never fall back to the public listener.
+//! private servers exist only while private ingress is enabled, and never fall
+//! back to the public listener. Applications can connect to them too, since
+//! their networks are attached to the gateway, so the private servers serve
+//! only tailnet client addresses. Only edge network peers, the apps node among
+//! them, may set the client address with a PROXY header; anyone else's header
+//! is ignored and their own address is used.
 //!
 //! Known hosts redirect HTTP to HTTPS, then either proxy to their Swarm service's
 //! internal HTTP port or answer with their configured redirect. Caddy
@@ -25,7 +28,7 @@
 
 use super::{
     Ingress,
-    node::{PRIVATE_HTTP_PORT, PRIVATE_HTTPS_PORT},
+    node::{PRIVATE_HTTP_PORT, PRIVATE_HTTPS_PORT, TAILNET_RANGES},
 };
 use crate::store::ingress::RoutingTable;
 use anyhow::Result;
@@ -55,11 +58,12 @@ impl Ingress {
             None => None,
         };
         // Tests outside the engine reach the published private listener from
-        // an address outside the edge network.
+        // the host's Docker bridge, outside the edge network. Application
+        // networks, from Swarm's 10.0.0.0/8 pool, stay untrusted.
         #[cfg(test)]
         let proxies = proxies.map(|mut proxies| {
             if self.private_port.is_some() {
-                proxies.push("0.0.0.0/0".into());
+                proxies.push("172.16.0.0/12".into());
             }
             proxies
         });
@@ -123,17 +127,22 @@ impl Ingress {
             "public_http":{"listen":[":80"],"routes":public.http_routes()}
         });
         if let Some(proxies) = proxies {
-            // Peers outside the edge network are refused, so neither
-            // applications nor a missing PROXY header can reach private routes.
+            // Caddy's policies cannot refuse connections without a header, so
+            // headers from other peers are ignored, and only tailnet client
+            // addresses complete TLS or receive redirects.
             let wrapper =
-                json!({"wrapper":"proxy_protocol","allow":proxies,"fallback_policy":"reject"});
+                json!({"wrapper":"proxy_protocol","allow":proxies,"fallback_policy":"ignore"});
+            let tailnet = json!({"ranges":TAILNET_RANGES});
             let mut https = private.https_server(&[format!(":{PRIVATE_HTTPS_PORT}")]);
+            https["tls_connection_policies"][0]["match"]["remote_ip"] = tailnet.clone();
             https["listener_wrappers"] = json!([wrapper, {"wrapper":"tls"}]);
             https["automatic_https"] = json!({"disable":true});
             servers["private"] = https;
+            let mut redirects = private.http_routes();
+            redirects.insert(0, json!({"match":[{"not":[{"remote_ip":tailnet}]}],"handle":[{"handler":"static_response","abort":true}],"terminal":true}));
             servers["private_http"] = json!({
                 "listen":[format!(":{PRIVATE_HTTP_PORT}")],"listener_wrappers":[wrapper],
-                "routes":private.http_routes(),"automatic_https":{"disable":true}
+                "routes":redirects,"automatic_https":{"disable":true}
             });
         }
         let mut configuration = json!({

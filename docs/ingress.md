@@ -123,9 +123,13 @@ Caddy runs one server per listener, each with its own routes:
 A hostname appears only on its own listener, and each listener's TLS policy
 completes handshakes only for its own hostnames. A forged Host header for a
 private route on the public listener therefore receives a 404, and a forged SNI
-no certificate. The private listener accepts connections only from the gateway's
-edge network, through a PROXY protocol header, and rejects every other peer,
-including application networks. Both listeners serve the probe endpoint. If
+no certificate. Application networks are attached to the gateway, so applications
+can open connections to the private listener too; it therefore completes TLS (and
+answers HTTP) only for tailnet client addresses (`100.64.0.0/10`,
+`fd7a:115c:a1e0::/48`). Only peers on the gateway's edge network, such as the apps
+node, may set the client address with a PROXY protocol header; anyone else's
+header is ignored and their own address is used. Both listeners serve the probe
+endpoint. If
 private ingress fails, private routes are unavailable; they never fall back to the
 public listener.
 
@@ -304,8 +308,9 @@ Deployed route status is separate from application health. A `ready` public rout
 means an HTTPS request from the daemon validated a publicly trusted certificate and
 reached this gateway at `/.well-known/piqueld-ingress`. A `ready` private route
 means public DNS answers exactly the apps node's tailnet addresses, the node is
-logged in, and the private listener, reached over the edge network with the
-hostname as SNI, served a trusted certificate and this endpoint. The tailnet hop
+logged in, and the private listener, reached over the edge network with a PROXY
+header naming a tailnet client (`100.100.100.100`) and the hostname as SNI,
+served a trusted certificate and this endpoint. The tailnet hop
 itself is not probed end to end. This small reserved endpoint returns
 the installation ID and never invokes the application. It is not a backend health
 check or proof of reachability from every external network. DNS, firewall, NAT
@@ -350,8 +355,9 @@ Pebble-issued DNS-01 certificates, it checks that each listener serves only its
 own routes (a forged Host or SNI for a private route on the public listener gets a
 404 and no certificate), that a public → private change withdraws the route from
 the public listener, that the PROXY v2 client address reaches backends in
-`X-Forwarded-For`, and that the apps node container runs hardened and reports its
-state.
+`X-Forwarded-For`, that a container on an application's ingress network completes
+TLS for a private route neither directly nor with a forged PROXY header, and that
+the apps node container runs hardened and reports its state.
 Distinct backend responses establish that requests actually switch destinations.
 
 Persistent HTTP/1, HTTP/2, WebSocket and SSE connections are exercised across reloads.

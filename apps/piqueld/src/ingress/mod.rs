@@ -35,6 +35,9 @@ use wire::UnixApi;
 /// Version released with piqueld; upgrades deliberately replace the gateway.
 pub const CADDY_IMAGE: &str =
     "caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b";
+/// Tailnet client address private probes present, Tailscale's own service address.
+const PROBE_CLIENT: std::net::SocketAddrV4 =
+    std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(100, 100, 100, 100), 0);
 /// Version of the apps tailnet node released with piqueld; upgrades replace it.
 pub const TAILSCALE_IMAGE: &str = "tailscale/tailscale:v1.102.5@sha256:c507f3a2a6ab1cabd8d809b98edeb41edbd5c3fb6ad9632ffd098b4c7d0b4065";
 
@@ -76,8 +79,8 @@ pub struct Ingress {
     #[cfg(test)]
     extra_hosts: Vec<String>,
     /// Publishes the private listener on the engine's port 8443, trusts PROXY
-    /// headers from anywhere, and probes it on this loopback port, so tests
-    /// outside the engine can reach it.
+    /// headers from Docker bridges, and probes it on this loopback port, so
+    /// tests outside the engine can reach it.
     #[cfg(test)]
     private_port: Option<u16>,
 }
@@ -372,36 +375,54 @@ impl Ingress {
         Ok(())
     }
 
-    /// The private listener's health: whether private ingress is enabled, and
-    /// the apps node's state once the gateway is up. Ensures the node, or
-    /// removes a leftover one while private ingress is disabled. Callers hold
-    /// the writer lock.
+    /// The private listener's health once the gateway is up: the apps node's
+    /// state. Ensures the node. While private ingress is disabled, removes a
+    /// leftover node even when the gateway fails, and is healthy once none
+    /// runs. Callers hold the writer lock.
     async fn private_status(&self, gateway: bool) -> PrivateIngressStatus {
-        let unavailable = |message: &str| PrivateIngressStatus {
+        let status = |healthy: bool, message: &str| PrivateIngressStatus {
             enabled: self.node.is_some(),
+            healthy,
             message: message.into(),
             ..PrivateIngressStatus::default()
         };
         if !self.enabled {
-            return unavailable("Ingress is disabled in daemon TOML; the apps node is stopped");
+            return status(
+                false,
+                "Ingress is disabled in daemon TOML; the apps node is stopped",
+            );
         }
+        let Some(node) = &self.node else {
+            return match self.ensure_node().await {
+                Ok(()) => status(
+                    true,
+                    "Private ingress is disabled in daemon TOML ([ingress.private]); the apps node is stopped",
+                ),
+                Err(error) => {
+                    tracing::error!(error=?error, "the disabled apps tailnet node could not be removed");
+                    status(
+                        false,
+                        "Removing the apps node is not confirmed; private routes may still be reachable from the tailnet. See daemon logs for details.",
+                    )
+                }
+            };
+        };
         if !gateway {
-            return unavailable(
+            return status(
+                false,
                 "The gateway is unavailable, and with it the private listener. See ingress health",
             );
         }
         if let Err(error) = self.ensure_node().await {
             tracing::error!(error=?error, "apps tailnet node is unavailable");
-            return unavailable(
+            return status(
+                false,
                 "Apps node unavailable: could not run its container. See daemon logs for details.",
             );
         }
-        let Some(node) = &self.node else {
-            return unavailable("Private ingress is disabled in daemon TOML ([ingress.private])");
-        };
         self.node_status(node).await.unwrap_or_else(|error| {
             tracing::warn!(error=?error, "apps tailnet node status is unavailable");
-            unavailable("Apps node starting: its LocalAPI did not answer yet. See daemon logs if this persists.")
+            status(false, "Apps node starting: its LocalAPI did not answer yet. See daemon logs if this persists.")
         })
     }
 
@@ -471,7 +492,11 @@ impl Ingress {
         let is_private = route.visibility == Visibility::Private;
         if is_private {
             if self.node.is_none() {
-                return ("disabled", "Private ingress is disabled in daemon TOML ([ingress.private]), so this private route is not served".into());
+                return if private.healthy {
+                    ("disabled", "Private ingress is disabled in daemon TOML ([ingress.private]), so this private route is not served".into())
+                } else {
+                    ("failed", private.message.clone())
+                };
             }
             if let Some(problem) = self.certificates.problem(&route.hostname) {
                 return ("failed", format!("No DNS-01 certificate: {problem}"));
@@ -518,10 +543,9 @@ impl Ingress {
     /// Verifies a private route without crossing the tailnet:
     ///
     /// 1. Public DNS must answer exactly the apps node's tailnet addresses.
-    /// 2. The private listener, reached over the edge network with the
-    ///    hostname as SNI, must serve a trusted certificate and this
-    ///    installation's probe endpoint. The edge network is trusted with or
-    ///    without a PROXY header, so a plain TLS client suffices.
+    /// 2. The private listener, reached over the edge network with a PROXY
+    ///    header naming a tailnet client and the hostname as SNI, must serve
+    ///    a trusted certificate and this installation's probe endpoint.
     async fn probe_private(&self, hostname: &Hostname, addresses: &[String]) -> Result<()> {
         let expected: BTreeSet<IpAddr> = addresses
             .iter()
@@ -536,11 +560,13 @@ impl Ingress {
             !expected.is_empty() && resolved == expected,
             "DNS answers {resolved:?} instead of the apps node's addresses {expected:?}"
         );
-        let listener = self.private_listener().await?;
+        let (relay, _relay) = node::proxy_relay(self.private_listener().await?, PROBE_CLIENT)
+            .await
+            .context("start the private probe's PROXY relay")?;
         let client = Self::probe_client()
-            .resolve(hostname.as_str(), listener)
+            .resolve(hostname.as_str(), relay)
             .build()?;
-        self.probe_https(&client, &format!("https://{hostname}:{}", listener.port()))
+        self.probe_https(&client, &format!("https://{hostname}:{}", relay.port()))
             .await
     }
 

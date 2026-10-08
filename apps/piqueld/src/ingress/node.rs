@@ -33,11 +33,21 @@ use hyper::Method;
 use piqueld_core::api::PrivateIngressStatus;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{net::IpAddr, path::PathBuf};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    path::PathBuf,
+};
+use tokio::{net::TcpListener, task::JoinSet};
 
 /// Ports of the gateway's private listener, never published on the host.
 pub(super) const PRIVATE_HTTPS_PORT: u16 = 8443;
 pub(super) const PRIVATE_HTTP_PORT: u16 = 8081;
+/// Tailscale's address ranges. The private listener completes TLS only for
+/// clients in them, which only a PROXY header from the edge network can claim.
+pub(super) const TAILNET_RANGES: [&str; 2] = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"];
+/// Marks the node container with a fingerprint of its auth key, so a changed
+/// key replaces the container. Auth keys are random, so it reveals nothing.
+const AUTH_KEY_LABEL: &str = "io.piqueld.ingress-auth-key";
 
 /// The configured apps node.
 pub(super) struct Node {
@@ -136,14 +146,18 @@ impl Ingress {
             // every restart brings a new login URL.
             "TS_BOOT_TIMEOUT=24h".to_owned(),
         ];
-        if node.auth_key.is_some() {
+        let mut labels = self.labels();
+        if let Some(key) = &node.auth_key {
+            use sha2::{Digest, Sha256};
             environment.push("TS_AUTHKEY=file:/config/auth-key".to_owned());
+            let fingerprint = format!("{:x}", Sha256::digest(key.expose().as_bytes()));
+            labels[AUTH_KEY_LABEL] = fingerprint[..16].into();
         }
         let mut spec = json!({
             "Image":TAILSCALE_IMAGE,"User":format!("{uid}:{gid}"),
             "Cmd":["/usr/local/bin/containerboot"],
             "Env":environment,
-            "Labels":self.labels(),
+            "Labels":labels,
             "HostConfig":{
                 "Binds":binds,"RestartPolicy":{"Name":"unless-stopped"},
                 "ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],
@@ -269,4 +283,51 @@ impl Ingress {
                 .collect(),
         })
     }
+}
+
+/// A loopback relay that prefixes every connection to `target` with a PROXY v2
+/// header naming `client`, as the apps node does. It stops when the returned
+/// set is dropped.
+///
+/// ```text
+/// [signature: 12][0x21 PROXY][0x11 TCP over IPv4][length: 12]
+/// [client ip: 4][target ip: 4][client port: 2][target port: 2]
+/// ```
+pub(super) async fn proxy_relay(
+    target: SocketAddr,
+    client: SocketAddrV4,
+) -> std::io::Result<(SocketAddr, JoinSet<()>)> {
+    use tokio::io::AsyncWriteExt;
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let address = listener.local_addr()?;
+    let destination = match target.ip() {
+        IpAddr::V4(ip) => ip,
+        IpAddr::V6(_) => Ipv4Addr::UNSPECIFIED,
+    };
+    let mut header = b"\r\n\r\n\0\r\nQUIT\n\x21\x11\0\x0c".to_vec();
+    header.extend(client.ip().octets());
+    header.extend(destination.octets());
+    header.extend(client.port().to_be_bytes());
+    header.extend(target.port().to_be_bytes());
+    let mut relay = JoinSet::new();
+    relay.spawn(async move {
+        // Dropped with the relay, which aborts open connections.
+        let mut connections = JoinSet::new();
+        while let Ok((mut inbound, _)) = listener.accept().await {
+            while connections.try_join_next().is_some() {}
+            let header = header.clone();
+            connections.spawn(async move {
+                let result = async {
+                    let mut outbound = tokio::net::TcpStream::connect(target).await?;
+                    outbound.write_all(&header).await?;
+                    tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await
+                }
+                .await;
+                if let Err(error) = result {
+                    tracing::debug!(?error, %target, "PROXY relay connection ended");
+                }
+            });
+        }
+    });
+    Ok((address, relay))
 }
