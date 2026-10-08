@@ -74,7 +74,8 @@ edits hostnames, each pointing at a service port or a redirect with a public or
 private visibility, and shows each deployed route's effective visibility, the DNS
 records its hostname needs, HTTPS readiness and diagnostics in every environment.
 Each environment's Overview sets its visibility ceiling, and system status shows
-the private listener with the apps tailnet node's name and addresses. Saving routes updates only the route field;
+the Cloudflare Tunnel's ID and connections in tunnel mode, and the private listener
+with the apps tailnet node's name and addresses. Saving routes updates only the route field;
 Deploy activates the change. Services lists saved services, with their observed
 health merged in when the application has one environment. The Secrets tab
 holds the application's secret store and each service's secret file references. The Overview tab shows the application's identity, configuration

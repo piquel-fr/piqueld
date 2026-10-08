@@ -187,7 +187,7 @@ pub(super) fn RouteSettings() -> impl IntoView {
                     <div>
                         <h3>"Routes"</h3>
                         <p>
-                            "Public routes are reachable from the internet: point their DNS at this server, and their certificates are managed automatically. Private routes, the default, are reachable only from the tailnet on the same hostname: point their DNS at the apps node’s tailnet addresses, and their certificates come from a DNS provider. An environment’s visibility can make its routes private. Redirects are answered by the gateway and need no service. Save, then deploy to activate changes."
+                            "Public routes are reachable from the internet: point their DNS at this server (or, with a Cloudflare Tunnel, a proxied CNAME at the tunnel), and their certificates are managed automatically. Private routes, the default, are reachable only from the tailnet on the same hostname: point their DNS at the apps node’s tailnet addresses, and their certificates come from a DNS provider. An environment’s visibility can make its routes private. Redirects are answered by the gateway and need no service. Save, then deploy to activate changes."
                         </p>
                     </div>
                 </header>

@@ -3,8 +3,10 @@
 mod credential;
 mod listeners;
 mod observability;
+mod tunnel;
 pub use credential::{Credential, CredentialError, CredentialFile};
 pub use observability::{MetricsConfig, NotificationConfig, WebhookDestination, WebhookKind};
+pub use tunnel::{TunnelConfig, TunnelConfigError, TunnelCredentials};
 
 use piqueld_core::TomlDiagnostic;
 use serde::Deserialize;
@@ -251,12 +253,15 @@ fn dns_label(name: &str, value: &str) -> Result<(), ConfigError> {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct IngressConfig {
-    /// Start the managed Caddy gateway and expose public routes on ports 80/443.
+    /// Start the managed Caddy gateway and expose public routes on ports
+    /// 80/443, or through `tunnel`.
     pub enabled: bool,
     /// ACME account used for DNS-01 certificates.
     pub acme: AcmeConfig,
     /// The apps tailnet node, which serves private routes.
     pub private: PrivateIngressConfig,
+    /// The Cloudflare Tunnel that replaces ports 80/443 for public routes.
+    pub tunnel: TunnelConfig,
 }
 
 /// The apps tailnet node: a Tailscale container that carries private routes'
@@ -696,6 +701,7 @@ impl DaemonConfig {
         groups.insert("Authentication".into(), self.auth_view());
         groups.insert("Tailscale".into(), self.tailscale_view());
         groups.insert("Private ingress".into(), self.private_ingress_view());
+        groups.insert("Cloudflare Tunnel".into(), self.tunnel_view());
         groups.extend(self.dns_view().map(|view| ("DNS providers".into(), view)));
         groups.insert("Observability".into(), self.observability_view());
         piqueld_core::api::HostConfiguration { groups }
@@ -786,6 +792,26 @@ impl DaemonConfig {
                     .join("ingress/tailscale")
                     .display()
                     .to_string(),
+            ),
+        ])
+    }
+    /// Builds the `Cloudflare Tunnel` group. The credentials appear only as
+    /// their file.
+    fn tunnel_view(&self) -> std::collections::BTreeMap<String, String> {
+        let credentials = self.ingress.tunnel.credentials.as_ref();
+        std::collections::BTreeMap::from([
+            (
+                "Enabled (restart required)".into(),
+                credentials.is_some().to_string(),
+            ),
+            (
+                "Tunnel ID".into(),
+                credentials.map_or_else(|| "none".into(), |credentials| credentials.id.to_string()),
+            ),
+            (
+                "Credentials".into(),
+                credentials
+                    .map_or_else(|| "none".into(), |credentials| credentials.file.to_string()),
             ),
         ])
     }

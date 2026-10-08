@@ -1,6 +1,7 @@
 mod acme;
 mod dns01;
 mod traffic;
+mod tunnel;
 use super::*;
 use crate::{
     api::{Mutation, MutationResponse},
@@ -1095,7 +1096,7 @@ async fn ingress_caddy_routes_tls_network_changes_and_disable() {
         .with_max_level(tracing::Level::INFO)
         .try_init()
         .unwrap();
-    let scenario = Scenario::new().await;
+    let scenario = Box::pin(Scenario::new()).await;
     scenario.assert_public_routing().await;
     scenario.redirect_without_backend().await;
     scenario
@@ -1124,7 +1125,7 @@ async fn ingress_caddy_routes_tls_network_changes_and_disable() {
 async fn ingress_caddy_acme_challenges_and_renewal() {
     use futures_util::FutureExt;
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let scenario = Scenario::new().await;
+    let scenario = Box::pin(Scenario::new()).await;
     let result = std::panic::AssertUnwindSafe(scenario.acme_challenges_and_renewal())
         .catch_unwind()
         .await;
@@ -1142,10 +1143,9 @@ async fn ingress_caddy_acme_challenges_and_renewal() {
 async fn ingress_caddy_dns01_certificates() {
     use futures_util::FutureExt;
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let scenario = Scenario::new().await;
-    let result = std::panic::AssertUnwindSafe(scenario.dns01_certificates())
-        .catch_unwind()
-        .await;
+    let scenario = Box::pin(Scenario::new()).await;
+    let result =
+        Box::pin(std::panic::AssertUnwindSafe(scenario.dns01_certificates()).catch_unwind()).await;
     scenario.stop_pebble().await;
     scenario.gateway.stop_gateway().await.unwrap();
     if let Err(panic) = result {
@@ -1196,7 +1196,7 @@ async fn each_listener_serves_only_its_own_routes() {
             .collect::<std::collections::BTreeSet<_>>()
     };
     let edge = ["172.20.0.0/16".to_owned()];
-    let configuration = ingress.build_configuration(&table, Some(&edge));
+    let configuration = ingress.build_configuration(&table, Some(&edge), None);
     let servers = &configuration["apps"]["http"]["servers"];
     for (https, http, host) in [
         ("public", "public_http", "www.example.com"),
@@ -1245,7 +1245,7 @@ async fn each_listener_serves_only_its_own_routes() {
 
     // Without private ingress, private routes are served nowhere, never on
     // the public listener.
-    let configuration = ingress.build_configuration(&table, None);
+    let configuration = ingress.build_configuration(&table, None, None);
     let servers = configuration["apps"]["http"]["servers"]
         .as_object()
         .unwrap();

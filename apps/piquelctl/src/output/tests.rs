@@ -361,6 +361,11 @@ fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
         enabled: true,
         healthy: true,
         message: "Caddy is running".into(),
+        public: piqueld_client::system::PublicIngressStatus::Tunnel {
+            id: "6ff42ae2-765d-4adf-8112-31c55c1551ef".into(),
+            connections: 0,
+            message: "cloudflared is not connected to Cloudflare".into(),
+        },
         private: piqueld_client::system::PrivateIngressStatus {
             enabled: true,
             healthy: false,
@@ -390,6 +395,8 @@ fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
         "*.piquel.fr for admin.piquel.fr (expires at Unix ms 1)",
         "ovh create TXT record in zone piquel.fr: HTTP 403",
         "Public listener: healthy: Caddy is running",
+        "Public ingress: Cloudflare Tunnel 6ff42ae2-765d-4adf-8112-31c55c1551ef (0 edge connections)",
+        "Tunnel problem: cloudflared is not connected to Cloudflare",
         "Private listener: apps node not joined (NeedsLogin, no tailnet addresses)",
         "Private listener problem: The apps node needs login",
     ] {
@@ -434,6 +441,14 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
             DnsRecords::ServerAddresses,
             "ready",
         ),
+        route(
+            "www.example.com",
+            Visibility::Public,
+            DnsRecords::TunnelCname {
+                target: "6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.com".into(),
+            },
+            "ready",
+        ),
     ];
     let stdout = Capture::default();
     let mut console = Console::with_writers(
@@ -449,6 +464,7 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
         "admin.example.com  staging  private  pending  web:3000  A/AAAA -> 100.64.0.1, fd7a:115c:a1e0::1",
         "  Waiting for the gateway configuration to be applied",
         "example.com  staging  public  ready  web:3000  A/AAAA -> this server's public addresses",
+        "www.example.com  staging  public  ready  web:3000  CNAME (proxied) -> 6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.com",
     ] {
         assert!(text.contains(expected), "{text}");
     }

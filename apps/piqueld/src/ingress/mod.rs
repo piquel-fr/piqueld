@@ -1,14 +1,16 @@
 //! Installation-owned Caddy gateway, independent of the daemon's process
-//! lifetime. Public routes are served on its published listener; private
-//! routes on a private listener that only the apps tailnet node reaches.
+//! lifetime. Public routes are served on its published listener, or on a
+//! tunnel listener that only `cloudflared` reaches; private routes on a
+//! private listener that only the apps tailnet node reaches.
 mod certificates;
 mod configuration;
 mod gateway;
 mod node;
+mod tunnel;
 mod wire;
 
 use crate::{
-    config::{AcmeConfig, DnsConfig, PrivateIngressConfig},
+    config::{AcmeConfig, DnsConfig, PrivateIngressConfig, TunnelConfig, TunnelCredentials},
     dns::Dns,
     store::{Store, ingress::RoutingTable, now_ms},
 };
@@ -17,7 +19,7 @@ use certificates::Certificates;
 use futures_util::{StreamExt, stream};
 use piqueld_core::{
     EnvironmentId,
-    api::{DnsRecords, IngressStatus, PrivateIngressStatus, RouteStatus},
+    api::{DnsRecords, IngressStatus, PrivateIngressStatus, PublicIngressStatus, RouteStatus},
     manifest::{Hostname, ValidatedRoute, Visibility},
 };
 use std::{
@@ -40,6 +42,8 @@ const PROBE_CLIENT: std::net::SocketAddrV4 =
     std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(100, 100, 100, 100), 0);
 /// Version of the apps tailnet node released with piqueld; upgrades replace it.
 pub const TAILSCALE_IMAGE: &str = "tailscale/tailscale:v1.102.5@sha256:c507f3a2a6ab1cabd8d809b98edeb41edbd5c3fb6ad9632ffd098b4c7d0b4065";
+/// Version of `cloudflared` released with piqueld; upgrades replace it.
+pub const CLOUDFLARED_IMAGE: &str = "cloudflare/cloudflared:2026.10.0@sha256:9b49eed8f62806d5d45ddf59ecefb5710429598ea6d3fcccd2af938f621b2b07";
 
 /// Serializes gateway configuration, lifecycle, and durable route projection.
 pub struct Ingress {
@@ -74,6 +78,9 @@ pub struct Ingress {
     certificates: Certificates,
     /// The apps tailnet node, while `[ingress.private]` is enabled.
     node: Option<node::Node>,
+    /// The Cloudflare Tunnel serving public routes instead of ports 80/443,
+    /// while `[ingress.tunnel]` is enabled.
+    tunnel: Option<TunnelCredentials>,
     /// Set once Swarm's address pools are verified outside the tailnet ranges.
     tailnet_pools: tokio::sync::OnceCell<()>,
     #[cfg(test)]
@@ -128,12 +135,14 @@ impl Ingress {
                 enabled,
                 healthy: false,
                 message: "Waiting for gateway reconciliation".into(),
+                public: PublicIngressStatus::default(),
                 private: PrivateIngressStatus::default(),
                 routes: Vec::new(),
             }),
             logs_since: Mutex::default(),
             certificates,
             node: None,
+            tunnel: None,
             tailnet_pools: tokio::sync::OnceCell::new(),
             #[cfg(test)]
             issuer: None,
@@ -144,11 +153,36 @@ impl Ingress {
         })
     }
 
+    /// The ingress `config` describes: its listeners, DNS providers and ACME
+    /// account.
+    ///
+    /// # Errors
+    /// Returns invalid local client configuration errors.
+    pub fn from_config(config: &crate::config::DaemonConfig, store: Arc<Store>) -> Result<Self> {
+        Ok(Self::new(
+            config.ingress.enabled,
+            &config.docker.socket,
+            &config.server.data_dir,
+            store,
+        )?
+        .with_dns(&config.dns, &config.ingress.acme)?
+        .with_private(&config.ingress.private)
+        .with_tunnel(&config.ingress.tunnel))
+    }
+
     /// Serves private routes through the apps tailnet node when
     /// `[ingress.private]` enables it.
     #[must_use]
     pub fn with_private(mut self, config: &PrivateIngressConfig) -> Self {
         self.node = node::Node::new(config, &self.directory);
+        self
+    }
+
+    /// Serves public routes through a Cloudflare Tunnel, instead of ports
+    /// 80/443, when `[ingress.tunnel]` enables it.
+    #[must_use]
+    pub fn with_tunnel(mut self, config: &TunnelConfig) -> Self {
+        self.tunnel.clone_from(&config.credentials);
         self
     }
 
@@ -306,11 +340,12 @@ impl Ingress {
     ///
     /// When enabled: verifies ingress networks, ensures the gateway container,
     /// applies routes and attachments, acknowledges the applied table, then
-    /// ensures the apps node. When disabled: stops the gateway and the node and
-    /// acknowledges the withdrawal. Callers must hold the writer lock. Network
-    /// failures degrade health; they fail the call only for `application` (or
-    /// for any application when `None`). Node failures degrade only the
-    /// private listener's health.
+    /// ensures `cloudflared` and the apps node. When disabled: stops the
+    /// gateway, `cloudflared` and the node and acknowledges the withdrawal.
+    /// Callers must hold the writer lock. Network failures degrade health;
+    /// they fail the call only for `application` (or for any application when
+    /// `None`). A disconnected tunnel degrades health without failing the
+    /// call. Node failures degrade only the private listener's health.
     async fn synchronize_for(
         &self,
         application: Option<&piqueld_core::EnvironmentId>,
@@ -325,12 +360,18 @@ impl Ingress {
                 stage = "verify application ingress networks";
                 let (accepted, networks, rejected) = self.prepare_routes(&table).await?;
                 failures = rejected;
-                stage = "prepare the Caddy gateway (requires free ports 80/443 and Docker 28+)";
+                stage = if self.tunnel.is_some() {
+                    "prepare the Caddy gateway (requires Docker 28+)"
+                } else {
+                    "prepare the Caddy gateway (requires free ports 80/443 and Docker 28+)"
+                };
                 self.ensure_gateway(&accepted, &networks).await?;
                 stage = "apply Caddy routes and network attachments";
                 self.configure_gateway(&accepted, &networks).await?;
                 stage = "record applied routes";
                 self.store.acknowledge_routes(&accepted).await?;
+                stage = "run cloudflared for the Cloudflare Tunnel";
+                self.ensure_tunnel().await?;
             } else {
                 stage = "stop the disabled Caddy gateway";
                 self.stop_gateway().await?;
@@ -342,7 +383,11 @@ impl Ingress {
         .await
         .context(stage);
         let private = self.private_status(result.is_ok()).await;
-        let healthy = result.is_ok() && failures.is_empty();
+        let public = self.public_status().await;
+        // In tunnel mode, public routes are unreachable while it is down.
+        let disconnected =
+            self.enabled && matches!(public, PublicIngressStatus::Tunnel { connections: 0, .. });
+        let healthy = result.is_ok() && failures.is_empty() && !disconnected;
         // Health transitions become history, and sustained failures notify
         // administrators, like other daemon dependencies.
         if let Err(error) = self
@@ -354,12 +399,14 @@ impl Ingress {
         }
         let mut health = self.health.write().await;
         health.healthy = healthy;
+        health.public = public;
         health.private = private;
         health.message = match &result {
             Ok(()) if !failures.is_empty() => format!(
                 "Ingress degraded: {} application network(s) unavailable. See daemon logs for details.",
                 failures.len()
             ),
+            Ok(()) if disconnected => "Caddy is running, but the Cloudflare Tunnel is not connected, so public routes are unreachable. See the tunnel's status".into(),
             Ok(()) if self.enabled => {
                 "Caddy is running and routing configuration is applied".into()
             }
@@ -471,9 +518,12 @@ impl Ingress {
                     environment_id: id.to_string(),
                     hostname: route.hostname.to_string(),
                     visibility: route.visibility,
-                    dns: match route.visibility {
-                        Visibility::Public => DnsRecords::ServerAddresses,
-                        Visibility::Private => DnsRecords::TailnetAddresses {
+                    dns: match (route.visibility, &self.tunnel) {
+                        (Visibility::Public, None) => DnsRecords::ServerAddresses,
+                        (Visibility::Public, Some(tunnel)) => DnsRecords::TunnelCname {
+                            target: tunnel.hostname(),
+                        },
+                        (Visibility::Private, _) => DnsRecords::TailnetAddresses {
                             addresses: private.addresses.clone(),
                         },
                     },
@@ -548,15 +598,16 @@ impl Ingress {
         };
         match result {
             Ok(()) if is_private => ("ready", "DNS points at the apps node and the private listener serves trusted HTTPS; the tailnet hop and backend health are reported separately".into()),
+            Ok(()) if self.tunnel.is_some() => ("ready", "DNS and trusted HTTPS through the Cloudflare Tunnel verified from this daemon; backend health is reported separately".into()),
             Ok(()) => ("ready", "DNS and trusted HTTPS verified from this daemon; backend health is reported separately".into()),
             Err(error) => {
                 tracing::debug!(hostname=%route.hostname, visibility=%route.visibility, error=?error, "HTTPS is not ready");
-                let message = if is_private {
-                    "Private HTTPS is not verified yet. Check that DNS A/AAAA records point at the apps node's tailnet addresses, and DNS-01 certificate diagnostics in daemon logs"
-                } else {
-                    "Public HTTPS is not verified yet. Check DNS A/AAAA records, inbound ports 80/443, and Caddy certificate diagnostics in daemon logs"
+                let message = match &self.tunnel {
+                    _ if is_private => "Private HTTPS is not verified yet. Check that DNS A/AAAA records point at the apps node's tailnet addresses, and DNS-01 certificate diagnostics in daemon logs".into(),
+                    Some(tunnel) => format!("Public HTTPS is not verified yet. Check the proxied CNAME record to {}, the tunnel's connection state, and daemon logs", tunnel.hostname()),
+                    None => "Public HTTPS is not verified yet. Check DNS A/AAAA records, inbound ports 80/443, and Caddy certificate diagnostics in daemon logs".into(),
                 };
-                ("pending", message.into())
+                ("pending", message)
             }
         }
     }

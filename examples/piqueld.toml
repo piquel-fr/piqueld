@@ -33,7 +33,8 @@ socket = "/var/run/docker.sock"
 auto_initialize_swarm = true
 
 [ingress]
-# Requires Docker 28+ and free public ports 80/443. Restart to apply.
+# Requires Docker 28+ and free public ports 80/443, unless [ingress.tunnel] is
+# enabled. Restart to apply.
 enabled = false
 
 # Private routes, served to the tailnet through a second tailnet node, the apps
@@ -45,6 +46,14 @@ enabled = false
 enabled = false
 hostname = "piqueld-apps"
 # auth_key_file = "/tmp/piqueld-dev-ts-apps-auth-key"
+
+# Public routes through a locally managed Cloudflare Tunnel instead of ports
+# 80/443, which are then closed. The credentials file comes from
+# `cloudflared tunnel create piqueld`. Each public hostname needs a proxied CNAME
+# to <tunnel-id>.cfargotunnel.com. Restart to apply.
+[ingress.tunnel]
+enabled = false
+# credentials_file = "/tmp/piqueld-dev-cloudflared-tunnel.json"
 
 # ACME account for certificates piqueld issues itself through DNS-01.
 [ingress.acme]

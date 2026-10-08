@@ -887,16 +887,40 @@ pub struct IngressStatus {
     /// Effective read-only daemon setting.
     pub enabled: bool,
     /// Whether the gateway has accepted its desired configuration (or is
-    /// stopped). Public routes depend only on this.
+    /// stopped), and in tunnel mode whether the tunnel is connected. Public
+    /// routes depend only on this.
     pub healthy: bool,
     /// Safe diagnostic, with detailed causes in daemon logs.
     pub message: String,
+    /// How public routes reach the gateway.
+    #[serde(default)]
+    pub public: PublicIngressStatus,
     /// The private listener and the apps tailnet node carrying its traffic.
     #[serde(default)]
     pub private: PrivateIngressStatus,
     /// Deployed routes and their latest independent HTTPS probes, limited to
     /// applications the caller can read.
     pub routes: Vec<RouteStatus>,
+}
+
+/// How public routes reach the gateway: `[ingress.tunnel]` selects the mode.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum PublicIngressStatus {
+    /// The gateway publishes ports 80 and 443 on the host.
+    #[default]
+    Direct,
+    /// `cloudflared` connects out to Cloudflare, which terminates TLS and
+    /// forwards to the gateway. No inbound port is open.
+    Tunnel {
+        /// Tunnel ID from its credentials file.
+        id: String,
+        /// Connections to Cloudflare's edge, from `cloudflared`'s `/ready`;
+        /// zero while the tunnel is disconnected.
+        connections: u32,
+        /// Safe diagnostic, with detailed causes in daemon logs.
+        message: String,
+    },
 }
 
 /// The gateway's private listener, reached through the apps tailnet node.
@@ -919,13 +943,18 @@ pub struct PrivateIngressStatus {
     pub message: String,
 }
 
-/// The A and AAAA records a route's hostname needs. piqueld does not create
-/// them; operators copy them to their DNS provider.
+/// The records a route's hostname needs. piqueld does not create them;
+/// operators copy them to their DNS provider.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DnsRecords {
-    /// Public routes: this server's public addresses.
+    /// Public routes: A/AAAA records to this server's public addresses.
     ServerAddresses,
+    /// Public routes in tunnel mode: a proxied CNAME record to the tunnel.
+    TunnelCname {
+        /// `<tunnel-id>.cfargotunnel.com`.
+        target: String,
+    },
     /// Private routes: the apps tailnet node's addresses, empty until it has
     /// joined the tailnet.
     TailnetAddresses {
@@ -934,13 +963,15 @@ pub enum DnsRecords {
     },
 }
 
-/// `A/AAAA -> this server's public addresses`, or the tailnet addresses.
+/// `A/AAAA -> this server's public addresses`, the tunnel's CNAME, or the
+/// tailnet addresses.
 impl std::fmt::Display for DnsRecords {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ServerAddresses => {
                 formatter.write_str("A/AAAA -> this server's public addresses")
             }
+            Self::TunnelCname { target } => write!(formatter, "CNAME (proxied) -> {target}"),
             Self::TailnetAddresses { addresses } if addresses.is_empty() => {
                 formatter.write_str("A/AAAA -> the apps node's tailnet addresses, once it joins")
             }

@@ -7,6 +7,7 @@
 //! | Server | Listens on | Serves |
 //! | --- | --- | --- |
 //! | `public`, `public_http` | `:443`, `:80` (published) | public routes |
+//! | `tunnel`, instead of `public` | `:8080` HTTP (not published) | public routes, from `cloudflared` |
 //! | `private`, `private_http` | `:8443`, `:8081` (not published) | private routes |
 //!
 //! A hostname appears only on its own listener, and each HTTPS server's TLS
@@ -19,6 +20,12 @@
 //! them, may set the client address with a PROXY header; anyone else's header
 //! is ignored and their own address is used.
 //!
+//! In tunnel mode, Cloudflare terminates TLS and `cloudflared` forwards public
+//! routes to the `tunnel` server, which therefore has no certificates and no
+//! redirects. It refuses every peer outside the edge network, so only
+//! `cloudflared` reaches it, and takes the client address from the
+//! `Cf-Connecting-IP` header it sets.
+//!
 //! Known hosts redirect HTTP to HTTPS, then either proxy to their Swarm service's
 //! internal HTTP port or answer with their configured redirect. Caddy
 //! obtains/renews certificates for public hosts automatically. Private hosts use
@@ -29,6 +36,7 @@
 use super::{
     Ingress,
     node::{PRIVATE_HTTP_PORT, PRIVATE_HTTPS_PORT, TAILNET_RANGES},
+    tunnel::TUNNEL_PORT,
 };
 use crate::store::ingress::RoutingTable;
 use anyhow::Result;
@@ -51,12 +59,18 @@ struct Listener {
 
 impl Ingress {
     /// The complete replacement configuration for `table`, with the private
-    /// listener trusting PROXY headers from the edge network's subnets. The
+    /// and tunnel listeners trusting only the edge network's subnets. The
     /// private listener is left out unless Swarm's address pools are verified
     /// outside the tailnet ranges.
     pub(super) async fn configuration(&self, table: &RoutingTable) -> Result<Value> {
+        let edge = if self.node.is_some() || self.tunnel.is_some() {
+            Some(self.edge_subnets().await?)
+        } else {
+            None
+        };
+        let tunnel = self.tunnel.as_ref().and(edge.clone());
         let proxies = match &self.node {
-            Some(_) if self.check_tailnet_pools().await.is_ok() => Some(self.edge_subnets().await?),
+            Some(_) if self.check_tailnet_pools().await.is_ok() => edge,
             _ => None,
         };
         // Tests outside the engine reach the published private listener from
@@ -69,11 +83,13 @@ impl Ingress {
             }
             proxies
         });
-        Ok(self.build_configuration(table, proxies.as_deref()))
+        Ok(self.build_configuration(table, proxies.as_deref(), tunnel.as_deref()))
     }
 
     /// Produces the configuration. Private routes are served only when
-    /// `proxies` gives the private listener's trusted PROXY sources. Exact-host
+    /// `proxies` gives the private listener's trusted PROXY sources. Public
+    /// routes are served on the tunnel listener, instead of ports 80/443, when
+    /// `tunnel` gives the edge subnets `cloudflared` connects from. Exact-host
     /// routes enable automatic TLS without on-demand certificate issuance for
     /// arbitrary hosts.
     ///
@@ -88,6 +104,7 @@ impl Ingress {
         &self,
         table: &RoutingTable,
         proxies: Option<&[String]>,
+        tunnel: Option<&[String]>,
     ) -> Value {
         let mut public = Listener::default();
         let mut private = Listener::default();
@@ -104,12 +121,23 @@ impl Ingress {
                 // this gateway from a different server behind an incorrect DNS record.
                 listener.https.push(json!({"match":[{"host":[host],"path":["/.well-known/piqueld-ingress"]}],"handle":[{"handler":"static_response","body":self.instance_id}],"terminal":true}));
                 let handler = match &route.target {
-                    RouteTarget::Service { service, port } => json!({
-                        "handler":"reverse_proxy",
-                        "upstreams":[{"dial":format!("{}:{port}", DockerServiceName::for_service(id,service))}],
-                        "transport":{"protocol":"http","versions":["1.1"]},
-                        "stream_close_delay":300_000_000_000_u64
-                    }),
+                    RouteTarget::Service { service, port } => {
+                        let mut proxy = json!({
+                            "handler":"reverse_proxy",
+                            "upstreams":[{"dial":format!("{}:{port}", DockerServiceName::for_service(id,service))}],
+                            "transport":{"protocol":"http","versions":["1.1"]},
+                            "stream_close_delay":300_000_000_000_u64
+                        });
+                        // Cloudflare terminated TLS, and the client address
+                        // comes from `Cf-Connecting-IP`, not the peer.
+                        if tunnel.is_some() && route.visibility == Visibility::Public {
+                            proxy["headers"] = json!({"request":{"set":{
+                                "X-Forwarded-For":["{http.vars.client_ip}"],
+                                "X-Forwarded-Proto":["https"]
+                            }}});
+                        }
+                        proxy
+                    }
                     RouteTarget::Redirect { redirect } => json!({
                         "handler":"static_response",
                         "status_code":u16::from(redirect.status),
@@ -124,10 +152,13 @@ impl Ingress {
         }
         // The Unix admin endpoint is private to the daemon. Strict SNI matching
         // prevents a TLS connection for one hostname from selecting another host.
-        let mut servers = json!({
-            "public":public.https_server(&[":443".into()]),
-            "public_http":{"listen":[":80"],"routes":public.http_routes()}
-        });
+        let mut servers = match tunnel {
+            None => json!({
+                "public":public.https_server(&[":443".into()]),
+                "public_http":{"listen":[":80"],"routes":public.http_routes()}
+            }),
+            Some(edge) => json!({"tunnel":public.tunnel_server(edge)}),
+        };
         if let Some(proxies) = proxies {
             // Caddy's policies cannot refuse connections without a header, so
             // headers from other peers are ignored, and only tailnet client
@@ -141,7 +172,7 @@ impl Ingress {
             https["automatic_https"] = json!({"disable":true});
             servers["private"] = https;
             let mut redirects = private.http_routes();
-            redirects.insert(0, json!({"match":[{"not":[{"remote_ip":tailnet}]}],"handle":[{"handler":"static_response","abort":true}],"terminal":true}));
+            redirects.insert(0, Listener::refuse_others(&tailnet));
             servers["private_http"] = json!({
                 "listen":[format!(":{PRIVATE_HTTP_PORT}")],"listener_wrappers":[wrapper],
                 "routes":redirects,"automatic_https":{"disable":true}
@@ -177,6 +208,26 @@ impl Listener {
             "tls_connection_policies":[{"match":{"sni":self.hosts}}],
             "automatic_https":{"disable_redirects":true}
         })
+    }
+
+    /// The plain HTTP server `cloudflared` forwards public routes to. Peers
+    /// outside `edge`, such as applications on networks attached to the
+    /// gateway, are refused, so only edge peers can set `Cf-Connecting-IP`.
+    fn tunnel_server(&self, edge: &[String]) -> Value {
+        let mut routes = vec![Self::refuse_others(&json!({"ranges":edge}))];
+        routes.extend(self.https.iter().cloned());
+        routes.push(Self::not_found());
+        json!({
+            "listen":[format!(":{TUNNEL_PORT}")],"routes":routes,
+            "automatic_https":{"disable":true},
+            "trusted_proxies":{"source":"static","ranges":edge},
+            "client_ip_headers":["Cf-Connecting-IP"]
+        })
+    }
+
+    /// Aborts connections whose peer is outside `remote_ip`'s ranges.
+    fn refuse_others(remote_ip: &Value) -> Value {
+        json!({"match":[{"not":[{"remote_ip":remote_ip}]}],"handle":[{"handler":"static_response","abort":true}],"terminal":true})
     }
 
     /// This listener's HTTP → HTTPS redirects, then the 404 fallback.

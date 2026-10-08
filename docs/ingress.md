@@ -3,7 +3,9 @@
 Piqueld manages one Caddy gateway for a single-node installation used by one trusted
 person or team. Applications own exact-host routes; the installation owns the
 listeners and certificate storage. Routes are public (the internet) or private (the
-tailnet only, the default). Apps must implement their own authentication.
+tailnet only, the default). Public routes arrive on ports 80 and 443, or through a
+[Cloudflare Tunnel](#cloudflare-tunnel) with no inbound port at all. Apps must
+implement their own authentication.
 
 ## Enable and expose an application
 
@@ -15,8 +17,9 @@ enabled = true
 ```
 
 Docker Engine 28+ with API 1.48+ is required. Ports 80 and 443 must be free and
-reachable from the internet. Create an A record for the server's public IPv4
-address; add AAAA only if public IPv6 actually reaches the gateway. DNS changes
+reachable from the internet, unless public routes go through a
+[Cloudflare Tunnel](#cloudflare-tunnel). Create an A record for the server's public
+IPv4 address; add AAAA only if public IPv6 actually reaches the gateway. DNS changes
 are manual. Caddy obtains and renews certificates for public routes without
 DNS-provider credentials; see [DNS-01 certificates](#dns-01-certificates) for
 the rest.
@@ -60,7 +63,8 @@ HTTPS backends are outside this release.
 
 `visibility` says who may connect to a route, not how traffic arrives:
 
-- `public`: anyone on the internet, through the published ports 80 and 443.
+- `public`: anyone on the internet, through the published ports 80 and 443 or the
+  Cloudflare Tunnel.
 - `private` (default): only devices on the tailnet, on the same hostname. Off the
   tailnet, connections simply fail.
 
@@ -118,6 +122,7 @@ Caddy runs one server per listener, each with its own routes:
 | Server | Listens on | Serves |
 | --- | --- | --- |
 | `public` | host `:80` and `:443` (published) | public routes |
+| `tunnel`, instead of `public` | `:8080` HTTP (not published) | public routes, from `cloudflared` |
 | `private` | `:8443` HTTPS and `:8081` HTTP → HTTPS (not published) | private routes |
 
 A hostname appears only on its own listener, and each listener's TLS policy
@@ -182,6 +187,101 @@ Private routes get their certificates through [DNS-01](#dns-01-certificates). A
 private hostname outside every configured provider zone reports `failed` with that
 cause.
 
+## Cloudflare Tunnel
+
+Direct ingress needs inbound ports 80 and 443, which is impossible behind NAT or
+CGNAT and exposes the host. Private routes already arrive over the tailnet, which
+connects outbound only. With a Cloudflare Tunnel, public routes connect outbound too,
+so the host needs no inbound port at all.
+
+Create a locally managed tunnel once, with `cloudflared` on any machine logged in
+to the Cloudflare account:
+
+```sh
+cloudflared tunnel login
+cloudflared tunnel create piqueld   # writes ~/.cloudflared/<tunnel-id>.json
+```
+
+Then point daemon TOML at the credentials file it wrote and restart piqueld:
+
+```toml
+[ingress.tunnel]
+enabled = true
+credentials_file = "cloudflared-tunnel.json"   # $CREDENTIALS_DIRECTORY/cloudflared-tunnel.json
+```
+
+The file is read at startup like other `_file` settings and must hold the tunnel's
+`AccountTag`, `TunnelSecret` and `TunnelID`. piqueld writes it, mode 0600, to
+`<data_dir>/ingress/tunnel/credentials.json` for the container, and deletes that
+copy once the tunnel is disabled.
+
+With the tunnel enabled, every public route is served through it, and the gateway
+publishes no host port: ports 80 and 443 are closed. Switching modes changes the
+gateway's container spec, so it is replaced like any other gateway upgrade, with a
+brief interruption. Private routes stay on the tailnet.
+
+### `cloudflared`
+
+piqueld runs a pinned `cloudflare/cloudflared` container (version and digest, like
+Caddy's) on the gateway's edge network only. It runs as the daemon's UID/GID with no
+capabilities, a read-only root and `unless-stopped`, and keeps running across daemon
+restarts. Its configuration and credentials are bind-mounted read-only. Its
+lifecycle shares the gateway's: `ingress_start_tunnel` journal actions, drift
+detection by spec hash (including a fingerprint of the credentials, so new
+credentials replace it), recovery, log relay, and removal when ingress or the tunnel
+is disabled.
+
+The tunnel is locally managed: piqueld generates `cloudflared`'s configuration
+with a single catch-all rule to `http://<gateway>:8080`, so adding or removing
+routes never touches Cloudflare. Hostnames the gateway does not know receive a 404
+from Caddy.
+
+### The tunnel listener
+
+Caddy's `tunnel` server listens for plain HTTP on `:8080`, unpublished, and serves
+public routes and their probe endpoint, nothing else; the `public` server does not
+run. It has no certificate and no HTTP → HTTPS redirect, since Cloudflare
+terminates TLS: enable "Always Use HTTPS" for the zone on Cloudflare.
+
+Application networks are attached to the gateway, so the tunnel listener refuses
+every peer outside the edge network: only `cloudflared` reaches it. The client
+address comes from `Cf-Connecting-IP`, which is therefore only trusted from the
+edge network. Backends receive it in `X-Forwarded-For`, and `X-Forwarded-Proto` is
+`https`. `PIQUELD_INGRESS_PROXIES` is unchanged: backends still receive requests
+from the gateway.
+
+### DNS for tunnel routes
+
+DNS records are created manually. Each public hostname needs a proxied (orange
+cloud) CNAME record to `<tunnel-id>.cfargotunnel.com`, which route status and
+`piquelctl app route list` show:
+
+```text
+notes.example.com.   CNAME   6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.com.   ; proxied
+```
+
+`cloudflared tunnel route dns piqueld notes.example.com` creates the same record.
+
+### Trade-offs
+
+- **Cloudflare sees all public traffic in plaintext.** It terminates TLS at its
+  edge. Inside the host, the `cloudflared` → Caddy hop runs only on the gateway's
+  edge network, so other applications cannot observe it.
+- **DNS hosting:** the zone must be hosted on Cloudflare; the registrar can stay
+  elsewhere.
+- **Certificate depth:** Universal SSL covers one label below the zone. Deeper
+  public names, such as `x.staging.example.com`, need Advanced Certificate Manager.
+- **HTTP → HTTPS** is handled by Cloudflare ("Always Use HTTPS"), not the gateway.
+
+### Status
+
+System status and `piquelctl status` show the ingress mode, the tunnel ID and its
+connections to Cloudflare's edge, which piqueld reads from `cloudflared`'s `/ready`
+metrics endpoint over the edge network. While the tunnel has no connection, ingress
+is unhealthy, since public routes are unreachable. The public HTTPS probe is
+unchanged: it reaches the probe endpoint through Cloudflare, and the installation ID
+proves that the tunnel reaches this gateway.
+
 ## DNS-01 certificates
 
 Private routes, which a public CA cannot reach, get certificates through ACME
@@ -236,12 +336,12 @@ target application services. The hostname of `auth.public_url` and its subdomain
 are reserved for the installation, so application code can never run on the
 passkey origin or set cookies for it. Saving or deploying such a route fails with
 `hostname_conflict`. Routes saved before that hostname was configured stay
-unpublished and are logged at startup. Ingress owns ports 80/443, so the website's
-HTTPS reverse proxy must listen on a different address or host.
+unpublished and are logged at startup. Without a tunnel, ingress owns ports 80/443,
+so the website's HTTPS reverse proxy must listen on a different address or host.
 
-Only Caddy publishes ports, and only the public listener's. HTTP redirects to
-HTTPS for known hosts; unknown HTTP hosts receive 404 and unknown TLS names
-receive no certificate.
+Only Caddy publishes ports, and only the public listener's; in tunnel mode, nothing
+does. HTTP redirects to HTTPS for known hosts; unknown HTTP hosts receive 404 and
+unknown TLS names receive no certificate.
 Each environment's exposed services share a dedicated ingress overlay with Caddy;
 environments with only redirect routes have none.
 Environment ingress networks are separate from each other and from private backend
@@ -293,8 +393,10 @@ System status displays ingress alongside Docker health; effective Settings remai
 read-only. Caddy startup/port/configuration failures leave the daemon available.
 Detailed causes and Caddy certificate diagnostics are logged by piqueld. Core
 readiness (`ready`) continues to describe database/Docker/Swarm; ingress has its own
-`enabled`, `healthy`, `message`, `private`, and `routes` fields under system
-readiness. `healthy` covers the gateway and its public listener; `private` reports
+`enabled`, `healthy`, `message`, `public`, `private`, and `routes` fields under system
+readiness. `healthy` covers the gateway and its public listener, including the
+tunnel's connection in tunnel mode; `public` reports the mode (`direct` or `tunnel`,
+with the tunnel ID and its edge connections); `private` reports
 the private listener separately: the apps node's login state, `MagicDNS` name and
 tailnet addresses. A broken node degrades only private routes. Each route reports
 its effective `visibility` and the `dns` records its hostname needs. `routes` lists
@@ -362,7 +464,12 @@ own routes (a forged Host or SNI for a private route on the public listener gets
 the public listener, that the PROXY v2 client address reaches backends in
 `X-Forwarded-For`, that a container on an application's ingress network completes
 TLS for a private route neither directly nor with a forged PROXY header, and that
-the apps node container runs hardened and reports its state.
+the apps node container runs hardened and reports its state. In tunnel mode, with
+a container on the edge network standing in for `cloudflared`, it checks that
+neither the gateway nor `cloudflared` publishes a port, that the tunnel listener
+serves public routes with `Cf-Connecting-IP` as the client address but not private
+ones, that a container on an application's network cannot reach it, and that
+returning to direct mode removes `cloudflared` and its credentials.
 Distinct backend responses establish that requests actually switch destinations.
 
 Persistent HTTP/1, HTTP/2, WebSocket and SSE connections are exercised across reloads.
@@ -387,3 +494,10 @@ over trusted HTTPS, `http://` must redirect, and the backend must see the device
 tailnet address in `X-Forwarded-For`. From a device off the tailnet, connecting must
 fail, and the same hostname on the server's public address must answer 404 without
 a certificate.
+
+A real tunnel needs Cloudflare, so CI does not run one either. Before relying on
+it, enable `[ingress.tunnel]`, deploy a disposable public route, and create its
+proxied CNAME. From the internet, the route must answer over HTTPS with the
+backend seeing the client's address in `X-Forwarded-For`, and status must show
+the tunnel connected. From outside, a port scan of the server must find ports 80
+and 443 closed.
