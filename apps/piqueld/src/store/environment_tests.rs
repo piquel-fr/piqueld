@@ -236,6 +236,7 @@ async fn existing_applications_become_one_production_environment_with_the_same_i
     // Deletion also removes receipts accepted before environments existed.
     let (api::MutationResponse::Deleted(deleted), _) = store
         .accept(
+            crate::store::Actor::Daemon,
             api::Mutation::DeleteApplication {
                 id: id.clone(),
                 environments: Vec::new(),

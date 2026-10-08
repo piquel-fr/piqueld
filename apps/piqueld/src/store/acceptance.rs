@@ -1,6 +1,8 @@
 //! Atomic acceptance: compare current intent, write the change and its replay receipt together.
-use super::{Operation, OperationKind, Store, StoreError, StoredApplication, now_ms};
+use super::access::Holder;
+use super::{Actor, Operation, OperationKind, Store, StoreError, StoredApplication, now_ms};
 use crate::api::{Mutation, MutationResponse};
+use piqueld_core::access::{Grants, Target};
 use piqueld_core::api::{AcceptedOperation, DeletedApplication, RenamedApplication};
 use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName};
 use sha2::{Digest, Sha256};
@@ -31,16 +33,22 @@ impl Store {
     /// `request_id` is a validated caller-supplied idempotency key, distinct from
     /// the server-generated operation ID (renames do not create an operation).
     ///
-    /// 1. Returns the stored response when `request_id` replays an identical request.
-    /// 2. With `force`, drops the generation and identity preconditions.
-    /// 3. Executes the mutation against the current application or environment,
-    ///    refusing manifest changes to repository-managed applications.
-    /// 4. Stores the replay receipt for 24 hours and commits through hostname
+    /// 1. Checks that `actor` may submit the mutation against the current
+    ///    application, before any replay. Replaying a save may also pass the
+    ///    check a creation passes, since it may have created that application.
+    /// 2. Returns the stored response when `request_id` replays an identical
+    ///    request from the same account.
+    /// 3. With `force`, drops the generation and identity preconditions.
+    /// 4. Executes the mutation against the current application or environment,
+    ///    refusing manifest changes to repository-managed applications, and
+    ///    gives an account that created an application its matching grants there.
+    /// 5. Stores the replay receipt for 24 hours and commits through hostname
     ///    reservation checks of every affected environment.
     ///
     /// The returned flag asks the controller to wake up; replays never wake it.
     pub(crate) async fn accept(
         &self,
+        actor: Actor<'_>,
         mut mutation: Mutation,
         mut expected_generation: Option<u64>,
         force: bool,
@@ -50,14 +58,24 @@ impl Store {
         let now = now_ms();
         let fingerprint = Self::mutation_fingerprint(&mutation, expected_generation, force)?;
         let legacy = Self::legacy_fingerprint(&mutation, expected_generation, force)?;
-        if let Some(response) = Self::replay_on(
+        let caller = actor.load(&mut tx).await?;
+        let owner = caller.as_ref().map(|(user_id, _)| user_id.as_str());
+        let replay = Self::replay_on(
             &mut tx,
             request_id,
+            owner,
             [Some(&fingerprint), legacy.as_ref()],
             now,
         )
-        .await?
-        {
+        .await;
+        let replaying = matches!(replay, Ok(Some(_)));
+        let creating = match &caller {
+            Some((_, grants)) => {
+                Self::authorize_mutation_on(&mut tx, grants, &mutation, replaying).await?
+            }
+            None => false,
+        };
+        if let Some(response) = replay? {
             return Ok((response, false));
         }
         // Replay the original acceptance before applying an override to current intent.
@@ -72,11 +90,22 @@ impl Store {
             }
         }
         let accepted = Self::execute_mutation(&mut tx, mutation, expected_generation, now).await?;
+        if creating
+            && let Some((user_id, grants)) = &caller
+            && let MutationResponse::Saved(saved) = &accepted.response
+        {
+            let id =
+                ApplicationId::parse(saved.application_id.as_str()).map_err(StoreError::corrupt)?;
+            let creator = grants.for_created_application(&id);
+            if !creator.is_empty() {
+                Holder::User(user_id).extend(&mut tx, &creator).await?;
+            }
+        }
         if let Some(request_id) = request_id {
             let response_json =
                 serde_json::to_string(&accepted.response).map_err(StoreError::corrupt)?;
             let expires = now.saturating_add(86_400_000);
-            sqlx::query!("INSERT INTO request_receipts(request_id,fingerprint,response_json,expires_at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(request_id) DO UPDATE SET fingerprint=excluded.fingerprint,response_json=excluded.response_json,expires_at_ms=excluded.expires_at_ms",request_id,fingerprint,response_json,expires)
+            sqlx::query!("INSERT INTO request_receipts(request_id,fingerprint,response_json,expires_at_ms,user_id) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(request_id) DO UPDATE SET fingerprint=excluded.fingerprint,response_json=excluded.response_json,expires_at_ms=excluded.expires_at_ms,user_id=excluded.user_id",request_id,fingerprint,response_json,expires,owner)
                 .execute(&mut *tx).await.map_err(StoreError::database)?;
         }
         Self::commit_environment_changes(
@@ -85,6 +114,51 @@ impl Store {
         )
         .await?;
         Ok((accepted.response, accepted.wake))
+    }
+
+    /// Checks that a caller holding `grants` may submit `mutation` against the
+    /// current application (see `Grants::require_change`), and returns whether
+    /// it creates one. Changes to an environment are checked on its application;
+    /// an unknown environment is hidden unless the caller could act on any.
+    /// When `replaying`, a save naming an existing application also passes with
+    /// the permissions that would create it, as that may be what it did.
+    async fn authorize_mutation_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        grants: &Grants,
+        mutation: &Mutation,
+        replaying: bool,
+    ) -> Result<bool, StoreError> {
+        let application = match mutation {
+            Mutation::Save { application, .. } => {
+                Self::application_id_by_name_on(tx, application.metadata().name.as_str()).await?
+            }
+            Mutation::Edit { id, .. }
+            | Mutation::Rename { id, .. }
+            | Mutation::DeleteApplication { id, .. }
+            | Mutation::CreateEnvironment {
+                application: id, ..
+            } => Some(id.clone()),
+            Mutation::RenameEnvironment { id, .. }
+            | Mutation::SetBranch { id, .. }
+            | Mutation::Deploy { id, .. }
+            | Mutation::Delete { id }
+            | Mutation::Reconcile { id } => Self::environment_application_on(tx, id).await?,
+        };
+        let target = match (&application, mutation) {
+            (None, Mutation::Save { .. }) => Target::New,
+            (Some(id), Mutation::Save { .. }) => Target::Named(id),
+            (Some(id), _) => Target::Id(id),
+            (None, _) => Target::Unknown,
+        };
+        let required = mutation.required();
+        match grants.require_change(required, target) {
+            Err(_) if replaying && matches!(target, Target::Named(_)) => {
+                grants.require_change(required, Target::New)
+            }
+            checked => checked,
+        }
+        .map_err(StoreError::Denied)?;
+        Ok(matches!(target, Target::New))
     }
 
     /// Hashes the full request (mutation, precondition, and `force`) so a reused
@@ -121,23 +195,27 @@ impl Store {
         Self::mutation_fingerprint(&legacy, expected_generation, force).map(Some)
     }
 
-    /// Returns the stored response for an unexpired receipt with one of the
-    /// request's `fingerprints`, `ReplayConflict` for a mismatched one, or
-    /// `None` without a receipt.
+    /// Returns the stored response for an unexpired receipt of `owner` (the
+    /// account, or `None` for the daemon) with one of the request's
+    /// `fingerprints`, `ReplayConflict` for another owner's or a mismatched
+    /// one, or `None` without a receipt.
     async fn replay_on(
         connection: &mut SqliteConnection,
         request_id: Option<&str>,
+        owner: Option<&str>,
         fingerprints: [Option<&String>; 2],
         now: i64,
     ) -> Result<Option<MutationResponse>, StoreError> {
         let Some(request_id) = request_id else {
             return Ok(None);
         };
-        let receipt = sqlx::query!("SELECT fingerprint,response_json FROM request_receipts WHERE request_id=?1 AND expires_at_ms>?2",request_id,now)
+        let receipt = sqlx::query!("SELECT fingerprint,response_json,user_id FROM request_receipts WHERE request_id=?1 AND expires_at_ms>?2",request_id,now)
             .fetch_optional(connection).await.map_err(StoreError::database)?;
         receipt
             .map(|receipt| {
-                if !fingerprints.contains(&Some(&receipt.fingerprint)) {
+                if receipt.user_id.as_deref() != owner
+                    || !fingerprints.contains(&Some(&receipt.fingerprint))
+                {
                     return Err(StoreError::ReplayConflict);
                 }
                 serde_json::from_str(&receipt.response_json).map_err(StoreError::corrupt)
@@ -639,7 +717,13 @@ mod tests {
             environments: Vec::new(),
         };
         let (MutationResponse::Operation(replayed), wake) = store
-            .accept(delete(), Some(3), false, Some("legacy-delete"))
+            .accept(
+                crate::store::Actor::Daemon,
+                delete(),
+                Some(3),
+                false,
+                Some("legacy-delete"),
+            )
             .await
             .unwrap()
         else {
@@ -650,7 +734,13 @@ mod tests {
         assert_eq!(replayed.environment_id, "app-legacy-01");
         assert!(matches!(
             store
-                .accept(delete(), Some(2), false, Some("legacy-delete"))
+                .accept(
+                    crate::store::Actor::Daemon,
+                    delete(),
+                    Some(2),
+                    false,
+                    Some("legacy-delete")
+                )
                 .await,
             Err(StoreError::ReplayConflict)
         ));
@@ -679,7 +769,13 @@ mod tests {
         ))
         .unwrap();
         let (MutationResponse::Saved(saved), _) = store
-            .accept(Mutation::save(template, None, false), Some(0), false, None)
+            .accept(
+                Actor::Daemon,
+                Mutation::save(template, None, false),
+                Some(0),
+                false,
+                None,
+            )
             .await
             .unwrap()
         else {
@@ -693,8 +789,10 @@ mod tests {
                 name: EnvironmentName::parse(name).unwrap(),
                 branch: None,
             };
-            let (MutationResponse::Environment(environment), _) =
-                store.accept(create, None, true, None).await.unwrap()
+            let (MutationResponse::Environment(environment), _) = store
+                .accept(Actor::Daemon, create, None, true, None)
+                .await
+                .unwrap()
             else {
                 panic!("environment response")
             };
@@ -722,13 +820,13 @@ mod tests {
             (&qa, "preview", "preview"),
         ] {
             assert!(matches!(
-                store.accept(rename(id, name), None, true, None).await,
+                store.accept(Actor::Daemon, rename(id, name), None, true, None).await,
                 Err(StoreError::EnvironmentConfigured { environment })
                     if environment.as_str() == configured
             ));
         }
         store
-            .accept(rename(&qa, "testing"), None, true, None)
+            .accept(Actor::Daemon, rename(&qa, "testing"), None, true, None)
             .await
             .unwrap();
     }
@@ -755,7 +853,10 @@ mod tests {
                     .execute(&store.pool)
                     .await
                     .unwrap();
-                store.accept(mutation, None, false, None).await.unwrap();
+                store
+                    .accept(Actor::Daemon, mutation, None, false, None)
+                    .await
+                    .unwrap();
                 let current = store.get(&id).await.unwrap();
                 current.environment.resolved_generation == Some(current.application.generation)
             };
@@ -785,12 +886,18 @@ mod tests {
         let (_, qa) = configured_environments(&store).await;
         let inspected = store.get(&qa).await.unwrap().application.generation;
         store
-            .accept(rename(&qa, "testing"), Some(inspected), false, None)
+            .accept(
+                Actor::Daemon,
+                rename(&qa, "testing"),
+                Some(inspected),
+                false,
+                None,
+            )
             .await
             .unwrap();
         for stale in [rename(&qa, "review"), Mutation::Delete { id: qa.clone() }] {
             assert!(matches!(
-                store.accept(stale, Some(inspected), false, None).await,
+                store.accept(Actor::Daemon, stale, Some(inspected), false, None).await,
                 Err(StoreError::GenerationConflict { expected, actual })
                     if expected == inspected && actual == inspected + 1
             ));

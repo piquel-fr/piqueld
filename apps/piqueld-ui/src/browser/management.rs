@@ -141,14 +141,15 @@ impl EditorContext {
                 .cloned()
         })
     }
-    /// Runtime actions require a loaded, live environment, including after deletion.
+    /// Runtime actions require a loaded, live environment, including after
+    /// deletion. Background refreshes of an already loaded detail keep them
+    /// enabled, so a click during a poll is never swallowed.
     fn environment_action_blocked(self) -> bool {
         let signals = self.dashboard.with_value(|d| d.signals);
         self.action_blocked()
             || self
                 .selected_environment()
                 .is_none_or(|env| env.delete_intent)
-            || signals.detail_loading.get()
             || signals.detail_error.get().is_some()
             || signals.detail.with(|detail| {
                 detail.as_ref().is_none_or(|detail| {
@@ -452,11 +453,16 @@ pub(super) fn CreateApplication() -> impl IntoView {
             busy.set(false);
         });
     };
+    let allowed = super::access::can(piqueld_client::access::Permission::Global(
+        piqueld_client::access::GlobalPermission::AppsCreate,
+    ));
     view! {
-        <button type="button" class="btn btn-primary" on:click={move |_| opened.set(true)}>
-            {icon(Icon::Plus)}
-            "New application"
-        </button>
+        <Show when={move || allowed.get()}>
+            <button type="button" class="btn btn-primary" on:click={move |_| opened.set(true)}>
+                {icon(Icon::Plus)}
+                "New application"
+            </button>
+        </Show>
         <Modal
             title="Create application"
             opened={opened}

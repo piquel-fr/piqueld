@@ -1,12 +1,17 @@
 //! Browser login gate and account management. The small JavaScript bridge only
 //! translates `WebAuthn` binary fields; all network/state handling stays in Rust.
+use super::access::{GrantEditor, can, summary};
 use super::ui::{Icon, PageHeader, Tone, badge, empty, icon, notice, text_input, when};
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use piqueld_client::{
     Client,
-    auth::{Ceremony, CeremonyFinish, DeviceRequest, Directory, Manage, RegistrationStart, User},
+    access::{GlobalPermission, Grants, Permission},
+    auth::{
+        Account, Ceremony, CeremonyFinish, DeviceRequest, Directory, Manage, RegistrationStart,
+        Session, User,
+    },
 };
 use wasm_bindgen::prelude::*;
 
@@ -77,14 +82,15 @@ async fn register(input: RegistrationStart) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-/// Signs in with a passkey, returning the authenticated user.
-async fn sign_in() -> Result<User, String> {
+/// Signs in with a passkey, returning the new session and its grants.
+async fn sign_in() -> Result<Session, String> {
     let client = Client::browser();
     let ceremony = client.auth_login_start().await.map_err(|e| e.to_string())?;
     client
         .auth_login_finish(&complete(ceremony, false).await?)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    client.auth_me().await.map_err(|e| e.to_string())
 }
 /// Performs a full page navigation to `path`.
 fn navigate(path: &str) {
@@ -92,20 +98,36 @@ fn navigate(path: &str) {
         let _ = window.location().set_href(path);
     }
 }
-/// Reads an invitation secret once and removes it from the address bar and
-/// session history, so it is not left behind if registration is abandoned.
-fn take_invitation() -> Option<String> {
+/// A secret link being redeemed on the sign-in page.
+#[derive(Clone)]
+enum Invite {
+    /// `#invite=`: creates an account, or the first one during setup.
+    Account(String),
+    /// `#enroll=`: adds a passkey to an existing account.
+    Enrollment(String),
+}
+impl Invite {
+    fn secret(&self) -> String {
+        match self {
+            Self::Account(secret) | Self::Enrollment(secret) => secret.clone(),
+        }
+    }
+}
+/// Reads an invitation or enrollment secret once and removes it from the
+/// address bar and session history, so it is not left behind if registration
+/// is abandoned.
+fn take_invitation() -> Option<Invite> {
     let window = web_sys::window()?;
-    let secret = window
-        .location()
-        .hash()
-        .ok()?
-        .strip_prefix("#invite=")?
-        .to_owned();
+    let fragment = window.location().hash().ok()?;
+    let invite = if let Some(secret) = fragment.strip_prefix("#invite=") {
+        Invite::Account(secret.to_owned())
+    } else {
+        Invite::Enrollment(fragment.strip_prefix("#enroll=")?.to_owned())
+    };
     if let (Ok(history), Ok(path)) = (window.history(), window.location().pathname()) {
         let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&path));
     }
-    Some(secret)
+    Some(invite)
 }
 /// Reloads the current page.
 fn reload() {
@@ -179,7 +201,7 @@ impl Feedback {
                     token,
                 )
             } else if let Some(url) = result.invitation_url {
-                ("Invitation link, valid for 24 hours.".into(), url)
+                ("Single-use link, valid for 24 hours.".into(), url)
             } else {
                 ("Saved.".into(), String::new())
             })
@@ -213,10 +235,10 @@ impl Feedback {
 struct AuthState {
     loaded: RwSignal<bool>,
     initialized: RwSignal<bool>,
-    current: RwSignal<Option<User>>,
+    current: RwSignal<Option<Session>>,
     error: RwSignal<String>,
     expired: RwSignal<bool>,
-    invitation: StoredValue<Option<String>>,
+    invitation: StoredValue<Option<Invite>>,
 }
 impl AuthState {
     /// View shown instead of the dashboard: connecting, a load error with retry,
@@ -258,11 +280,17 @@ impl AuthState {
     }
 }
 
-/// The signed-in account, for chrome that shows who is working.
-pub(super) fn auth_user() -> RwSignal<Option<User>> {
+/// The signed-in account and its grants.
+pub(super) fn session() -> RwSignal<Option<Session>> {
     use_context::<AuthState>()
         .expect("authentication gate")
         .current
+}
+
+/// The signed-in account, for chrome that shows who is working.
+pub(super) fn auth_user() -> Signal<Option<User>> {
+    let session = session();
+    Signal::derive(move || session.get().map(|session| session.user))
 }
 
 fn brand() -> AnyView {
@@ -284,7 +312,7 @@ pub(super) fn Gate() -> impl IntoView {
     let state = AuthState {
         loaded: RwSignal::new(false),
         initialized: RwSignal::new(false),
-        current: RwSignal::new(None::<User>),
+        current: RwSignal::new(None::<Session>),
         error: RwSignal::new(String::new()),
         expired: RwSignal::new(false),
         invitation: StoredValue::new(take_invitation()),
@@ -305,7 +333,7 @@ pub(super) fn Gate() -> impl IntoView {
             Ok(status) => {
                 state.initialized.set(status.initialized);
                 match client.auth_me().await {
-                    Ok(user) => state.current.set(Some(user)),
+                    Ok(session) => state.current.set(Some(session)),
                     Err(piqueld_client::ClientError::Api { status, .. })
                         if status.as_u16() == 401 => {}
                     Err(e) => state.error.set(e.to_string()),
@@ -351,8 +379,8 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
                         on:click={move |_| {
                             feedback
                                 .run(async move {
-                                    let user = sign_in().await?;
-                                    state.current.set(Some(user));
+                                    let session = sign_in().await?;
+                                    state.current.set(Some(session));
                                     state.expired.set(false);
                                     Ok((String::new(), String::new()))
                                 });
@@ -391,11 +419,15 @@ pub(super) fn AuthPage() -> impl IntoView {
     move || state.pending()
 }
 
-/// Authentication page body. Chooses between invitation registration, first-run
-/// setup instructions, passkey sign-in, CLI device approval (`#device` fragment)
-/// and a signed-in landing view.
+/// Authentication page body. Chooses between invitation registration, passkey
+/// enrollment, first-run setup instructions, passkey sign-in, CLI device
+/// approval (`#device` fragment) and a signed-in landing view.
 #[component]
-fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) -> impl IntoView {
+fn SignIn(
+    initialized: bool,
+    current: Option<Session>,
+    invitation: Option<Invite>,
+) -> impl IntoView {
     let feedback = Feedback::new();
     let device = web_sys::window()
         .and_then(|w| w.location().hash().ok())
@@ -403,10 +435,47 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
     let username = RwSignal::new(String::new());
     let display_name = RwSignal::new(String::new());
     let name = RwSignal::new("My passkey".to_owned());
-    let is_registration = invitation.is_some();
     let signed_in = current.is_some();
-    let who = current.map(|u| u.username).unwrap_or_default();
-    let content = if is_registration {
+    let who = current
+        .map(|session| session.user.username)
+        .unwrap_or_default();
+    let content = if let Some(Invite::Enrollment(secret)) = &invitation {
+        let secret = secret.clone();
+        view! {
+            <h2>"Add a passkey"</h2>
+            <p class="hint">
+                "This link adds a passkey to an existing piqueld account. Name the passkey and register it to sign in."
+            </p>
+            <div class="stack-sm">
+                {text_input("Passkey name", name, String::clone, |v, s| *v = s)}
+            </div>
+            <div class="form-actions">
+                <button
+                    type="button"
+                    class="btn btn-primary"
+                    on:click={move |_| {
+                        let input = RegistrationStart {
+                            invitation: Some(secret.clone()),
+                            user_id: None,
+                            username: String::new(),
+                            display_name: String::new(),
+                            passkey_name: name.get_untracked(),
+                        };
+                        feedback
+                            .run(async move {
+                                register(input).await?;
+                                navigate("/dashboard/");
+                                Ok((String::new(), String::new()))
+                            });
+                    }}
+                >
+                    {icon(Icon::Key)}
+                    "Register passkey"
+                </button>
+            </div>
+        }
+        .into_any()
+    } else if invitation.is_some() {
         view! {
             <h2>"Create your account"</h2>
             <p class="hint">
@@ -431,7 +500,7 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
                     class="btn btn-primary"
                     on:click={move |_| {
                         let input = RegistrationStart {
-                            invitation: invitation.clone(),
+                            invitation: invitation.as_ref().map(Invite::secret),
                             user_id: None,
                             username: username.get_untracked(),
                             display_name: display_name.get_untracked(),
@@ -689,12 +758,15 @@ pub(super) fn Logout(#[prop(optional)] compact: bool) -> impl IntoView {
     }
 }
 
-/// Account administration page. Loads the user directory (reloading after each
-/// successful action) and renders every account plus pending invitations.
+/// Account administration page. Loads the visible directory (reloading after
+/// each successful action) and renders each account plus pending invitations.
+/// Without `accounts:manage`, only the caller's own account is listed.
 #[component]
 pub(super) fn AccountsPage() -> impl IntoView {
     let feedback = Feedback::new();
     let directory = RwSignal::new(None::<Directory>);
+    let manage = can(Permission::Global(GlobalPermission::AccountsManage));
+    let inviting = RwSignal::new(false);
     Effect::new(move |_| {
         feedback.revision.get();
         spawn_local(async move {
@@ -707,18 +779,21 @@ pub(super) fn AccountsPage() -> impl IntoView {
     view! {
         <PageHeader
             title="Accounts"
-            description="Every account has the same capabilities. Invite people with single-use links and manage passkeys, sessions, and API tokens."
+            description="Grants decide what each account and its tokens may do. Managing another account requires accounts:manage and every grant that account holds."
         >
-            <button
-                type="button"
-                class="btn btn-primary"
-                disabled={move || feedback.busy.get()}
-                on:click={move |_| feedback.manage(Manage::CreateInvitation)}
-            >
-                {icon(Icon::Plus)}
-                "Create invitation"
-            </button>
+            <Show when={move || manage.get()}>
+                <button
+                    type="button"
+                    class="btn btn-primary"
+                    disabled={move || feedback.busy.get()}
+                    on:click={move |_| inviting.set(true)}
+                >
+                    {icon(Icon::Plus)}
+                    "Create invitation"
+                </button>
+            </Show>
         </PageHeader>
+        <InvitationDialog opened={inviting} feedback={feedback} />
         <div class="stack">
             {feedback.view()} <fieldset class="stack" disabled={move || feedback.busy.get()}>
                 {move || {
@@ -738,17 +813,23 @@ pub(super) fn AccountsPage() -> impl IntoView {
                                         .users
                                         .iter()
                                         .cloned()
-                                        .map(|user| {
+                                        .map(|account| {
                                             view! {
                                                 <Account
-                                                    user={user}
+                                                    account={account}
                                                     directory={data.clone()}
                                                     feedback={feedback}
                                                 />
                                             }
                                         })
                                         .collect_view()}
-                                    <Invitations directory={data} feedback={feedback} />
+                                    {manage
+                                        .get()
+                                        .then(|| {
+                                            view! {
+                                                <Invitations directory={data} feedback={feedback} />
+                                            }
+                                        })}
                                 }
                                     .into_any()
                             },
@@ -759,14 +840,49 @@ pub(super) fn AccountsPage() -> impl IntoView {
     }
 }
 
+/// Dialog choosing the grants of a new invitation.
+#[component]
+fn InvitationDialog(opened: RwSignal<bool>, feedback: Feedback) -> impl IntoView {
+    let grants = RwSignal::new(Grants::default());
+    view! {
+        <super::ui::Modal title="Create invitation" opened={opened} wide=true>
+            <p class="hint">
+                "The account created with this link receives these grants. You can only hand out access you hold."
+            </p>
+            {move || {
+                opened
+                    .get()
+                    .then(|| {
+                        view! { <GrantEditor initial={Grants::default()} value={grants} /> }
+                    })
+            }}
+            <div class="form-actions">
+                <button
+                    type="button"
+                    class="btn btn-primary"
+                    on:click={move |_| {
+                        opened.set(false);
+                        feedback
+                            .manage(Manage::CreateInvitation {
+                                grants: grants.get_untracked(),
+                            });
+                    }}
+                >
+                    "Create link"
+                </button>
+            </div>
+        </super::ui::Modal>
+    }
+}
+
 #[component]
 fn Invitations(directory: Directory, feedback: Feedback) -> impl IntoView {
     let users = directory.users;
-    let issuer = move |id: &str| {
+    let username = move |id: &str| {
         users
             .iter()
-            .find(|u| u.id == id)
-            .map_or_else(|| id.to_owned(), |u| u.username.clone())
+            .find(|account| account.user.id == id)
+            .map_or_else(|| id.to_owned(), |account| account.user.username.clone())
     };
     let pending = directory.invitations.is_empty();
     let rows = directory
@@ -774,9 +890,14 @@ fn Invitations(directory: Directory, feedback: Feedback) -> impl IntoView {
         .into_iter()
         .map(|invite| {
             let id = invite.id;
+            let purpose = invite.user_id.as_deref().map_or_else(
+                || summary(&invite.grants),
+                |user| format!("Add a passkey to {}", username(user)).into_any(),
+            );
             view! {
                 <tr>
-                    <td>{issuer(&invite.issuer_id)}</td>
+                    <td>{username(&invite.issuer_id)}</td>
+                    <td>{purpose}</td>
                     <td class="muted">{when(invite.expires_at * 1000)}</td>
                     <td class="actions">
                         <button
@@ -800,20 +921,21 @@ fn Invitations(directory: Directory, feedback: Feedback) -> impl IntoView {
         <section class="card card-flush">
             <header>
                 <div>
-                    <h2>"Pending invitations"</h2>
+                    <h2>"Pending links"</h2>
                     <p>
-                        "Links expire after 24 hours. The first person to complete registration chooses their own account details."
+                        "Invitation and enrollment links expire after 24 hours. Whoever completes an invitation first chooses the account details."
                     </p>
                 </div>
             </header>
             {if pending {
-                empty("No pending invitations.")
+                empty("No pending links.")
             } else {
                 view! {
                     <table class="table">
                         <thead>
                             <tr>
                                 <th>"Issued by"</th>
+                                <th>"Grants"</th>
                                 <th>"Expires"</th>
                                 <th></th>
                             </tr>
@@ -827,16 +949,25 @@ fn Invitations(directory: Directory, feedback: Feedback) -> impl IntoView {
     }
 }
 
-/// Management card for one user: profile, passkeys, sessions and API tokens,
-/// token creation and account deletion.
+/// Management card for one account: profile, grants, passkeys, sessions and
+/// API tokens, and deletion. Passkeys and tokens are only created for the
+/// signed-in account itself; others receive an enrollment link instead.
 #[component]
-fn Account(user: User, directory: Directory, feedback: Feedback) -> impl IntoView {
+fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl IntoView {
+    let user = account.user;
+    let own = super::auth::session()
+        .get_untracked()
+        .is_some_and(|session| session.user.id == user.id);
+    let manage = can(Permission::Global(GlobalPermission::AccountsManage));
     let id = StoredValue::new(user.id.clone());
     let username = RwSignal::new(user.username);
     let display_name = RwSignal::new(user.display_name);
     let passkey_name = RwSignal::new("New passkey".to_owned());
     let token_name = RwSignal::new(String::new());
     let days = RwSignal::new("90".to_owned());
+    let editing = RwSignal::new(false);
+    let grants = RwSignal::new(account.grants.clone());
+    let initial = StoredValue::new(account.grants.clone());
     let passkeys = directory
         .passkeys
         .into_iter()
@@ -867,7 +998,6 @@ fn Account(user: User, directory: Directory, feedback: Feedback) -> impl IntoVie
         };
         match parsed {
             Ok(days) => feedback.manage(Manage::CreateToken {
-                user_id: id.get_value(),
                 name: token_name.get_untracked(),
                 days,
             }),
@@ -918,6 +1048,39 @@ fn Account(user: User, directory: Directory, feedback: Feedback) -> impl IntoVie
             </div>
 
             <div class="section-header">
+                <h3>"Access"</h3>
+                <Show when={move || manage.get() && !editing.get()}>
+                    <button type="button" class="btn btn-sm" on:click={move |_| editing.set(true)}>
+                        "Edit grants"
+                    </button>
+                </Show>
+            </div>
+            <Show
+                when={move || editing.get()}
+                fallback={move || summary(&initial.get_value())}
+            >
+                <GrantEditor initial={initial.get_value()} value={grants} />
+                <div class="form-actions">
+                    <button
+                        type="button"
+                        class="btn btn-primary"
+                        on:click={move |_| {
+                            feedback
+                                .manage(Manage::SetGrants {
+                                    user_id: id.get_value(),
+                                    grants: grants.get_untracked(),
+                                });
+                        }}
+                    >
+                        "Save grants"
+                    </button>
+                    <button type="button" class="btn" on:click={move |_| editing.set(false)}>
+                        "Cancel"
+                    </button>
+                </div>
+            </Show>
+
+            <div class="section-header">
                 <h3>"Passkeys"</h3>
             </div>
             <div class="form-list">
@@ -958,30 +1121,57 @@ fn Account(user: User, directory: Directory, feedback: Feedback) -> impl IntoVie
                         }
                     })
                     .collect_view()}
-                <div class="form-row">
-                    {text_input("New passkey name", passkey_name, String::clone, |v, s| *v = s)}
-                    <button
-                        type="button"
-                        class="btn"
-                        on:click={move |_| {
-                            feedback
-                                .run(async move {
-                                    register(RegistrationStart {
-                                            invitation: None,
-                                            user_id: Some(id.get_value()),
-                                            username: String::new(),
-                                            display_name: String::new(),
-                                            passkey_name: passkey_name.get_untracked(),
-                                        })
-                                        .await?;
-                                    Ok(("Passkey added.".into(), String::new()))
-                                });
-                        }}
-                    >
-                        {icon(Icon::Key)}
-                        "Add passkey"
-                    </button>
-                </div>
+                {if own {
+                    view! {
+                        <div class="form-row">
+                            {text_input("New passkey name", passkey_name, String::clone, |v, s| *v = s)}
+                            <button
+                                type="button"
+                                class="btn"
+                                on:click={move |_| {
+                                    feedback
+                                        .run(async move {
+                                            register(RegistrationStart {
+                                                    invitation: None,
+                                                    user_id: Some(id.get_value()),
+                                                    username: String::new(),
+                                                    display_name: String::new(),
+                                                    passkey_name: passkey_name.get_untracked(),
+                                                })
+                                                .await?;
+                                            Ok(("Passkey added.".into(), String::new()))
+                                        });
+                                }}
+                            >
+                                {icon(Icon::Key)}
+                                "Add passkey"
+                            </button>
+                        </div>
+                    }
+                        .into_any()
+                } else {
+                    view! {
+                        <div class="form-row">
+                            <p class="hint">
+                                "Only the account owner can add passkeys. Send them a single-use enrollment link."
+                            </p>
+                            <button
+                                type="button"
+                                class="btn"
+                                on:click={move |_| {
+                                    feedback
+                                        .manage(Manage::CreateEnrollment {
+                                            user_id: id.get_value(),
+                                        });
+                                }}
+                            >
+                                {icon(Icon::Key)}
+                                "Create enrollment link"
+                            </button>
+                        </div>
+                    }
+                        .into_any()
+                }}
             </div>
 
             <div class="section-header">
@@ -1055,21 +1245,26 @@ fn Account(user: User, directory: Directory, feedback: Feedback) -> impl IntoVie
                         .into_any()
                 }}
             </div>
-            <div class="form-row" style="margin-top:14px">
-                {text_input("New token name", token_name, String::clone, |v, s| *v = s)}
-                <label class="field">
-                    <span>"Expires in days (blank: never)"</span>
-                    <input
-                        type="number"
-                        min="1"
-                        prop:value={days}
-                        on:input={move |e| days.set(event_target_value(&e))}
-                    />
-                </label>
-                <button type="button" class="btn" on:click={create_token}>
-                    "Create token"
-                </button>
-            </div>
+            {own
+                .then(|| {
+                    view! {
+                        <div class="form-row" style="margin-top:14px">
+                            {text_input("New token name", token_name, String::clone, |v, s| *v = s)}
+                            <label class="field">
+                                <span>"Expires in days (blank: never)"</span>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    prop:value={days}
+                                    on:input={move |e| days.set(event_target_value(&e))}
+                                />
+                            </label>
+                            <button type="button" class="btn" on:click={create_token}>
+                                "Create token"
+                            </button>
+                        </div>
+                    }
+                })}
         </section>
     }
 }

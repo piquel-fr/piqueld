@@ -21,6 +21,7 @@ fn application(name: &str, host: &str, body: &str) -> NormalizedApplication {
 async fn request_deployment(store: &Store, app: NormalizedApplication) -> (EnvironmentId, String) {
     let (MutationResponse::Saved(saved), _) = store
         .accept(
+            crate::api::Actor::Daemon,
             Mutation::Save {
                 application: Box::new(ApplicationTemplate::from(&app)),
                 expected_application_id: None,
@@ -548,6 +549,7 @@ impl Scenario {
         let (MutationResponse::Saved(saved), _) = self
             .store
             .accept(
+                crate::api::Actor::Daemon,
                 Mutation::Save {
                     application: Box::new(ApplicationTemplate::from(&app)),
                     expected_application_id: None,
@@ -1105,7 +1107,7 @@ async fn ingress_caddy_routes_tls_network_changes_and_disable() {
         .add_application_without_interrupting_traffic()
         .await;
     scenario.restart_without_daemon().await;
-    scenario.repoint_after_backend_convergence().await;
+    Box::pin(scenario.repoint_after_backend_convergence()).await;
     scenario.forwarded_client_addresses().await;
     scenario.disable_and_restore_deployed_routes().await;
 }

@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use axum::{body::Body, http::Request, serve};
 use http_body_util::BodyExt;
+use piqueld::api::Actor::Daemon;
 use piqueld::api::http::{
     ApiState, Authenticator, EmbeddedBundle, UiAssets, api_router, router, web_router,
 };
@@ -20,14 +21,23 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tower::ServiceExt;
 
-/// Admits every request, so contract tests exercise the API without signing in.
-/// Authentication itself is covered with the real passkey service below.
+/// Signs every request in as an administrator, so contract tests exercise the
+/// API without signing in. Authentication and authorization are covered with
+/// the real passkey service below.
 #[derive(Clone)]
 struct FakeAuth;
 
 impl Authenticator for FakeAuth {
     fn guard<S: Clone + Send + Sync + 'static>(self, router: axum::Router<S>) -> axum::Router<S> {
-        router
+        router.layer(axum::Extension(piqueld::auth::Identity {
+            user: piqueld_core::auth::User {
+                id: "contract-admin".into(),
+                username: "admin".into(),
+                display_name: String::new(),
+            },
+            credential_id: "contract-admin".into(),
+            grants: piqueld_core::access::Grants::admin(),
+        }))
     }
 }
 
@@ -226,6 +236,14 @@ async fn state(temp: &TempDir) -> ApiState {
             .await
             .expect("fresh database opens"),
     );
+    // `FakeAuth` signs requests in with this administrator's credential,
+    // which mutations re-read from the database.
+    seed_account(
+        &temp.path().join("state.db"),
+        "contract-admin",
+        &[("admin", None)],
+    )
+    .await;
     let instance = InstanceId::parse(store.instance_id().to_owned()).expect("valid instance ID");
     ApiState::new(
         Arc::clone(&store),
@@ -1784,6 +1802,12 @@ struct AcceptanceApi {
 impl AcceptanceApi {
     async fn start(temp: &TempDir) -> Self {
         let store = Arc::new(Store::open(temp.path().join("state.db")).await.unwrap());
+        seed_account(
+            &temp.path().join("state.db"),
+            "contract-admin",
+            &[("admin", None)],
+        )
+        .await;
         let instance = InstanceId::parse(store.instance_id()).unwrap();
         let runtime = Arc::new(FakeRuntime {
             cleanup_gate: None,
@@ -2780,6 +2804,97 @@ async fn application_log_snapshot_validates_bounds_and_preserves_task_identity()
     server.abort();
 }
 
+/// Exec rechecks the caller's grants when the command starts, so access lost
+/// after the connection was authorized cannot start one.
+#[tokio::test]
+async fn exec_rechecks_grants_when_the_command_starts() {
+    use piqueld::store::{Caller, StoreError};
+    use piqueld_core::access::Denied;
+    let temp = tempfile::tempdir().unwrap();
+    let state = state(&temp).await;
+    let mutation =
+        piqueld::api::Mutation::save(manifest().validate_template().unwrap(), None, false);
+    let Ok(piqueld::api::MutationResponse::Saved(saved)) =
+        state.accept(Daemon, mutation, Some(0), false, None).await
+    else {
+        panic!("save response");
+    };
+    let database = temp.path().join("state.db");
+    let grant = [("apps:exec", Some(saved.application_id.as_str()))];
+    seed_account(&database, "operator", &grant).await;
+    let environment = piqueld_core::EnvironmentId::parse(saved.application_id.as_str()).unwrap();
+    let request = piqueld_core::exec::ExecRequest {
+        service: "web".parse().unwrap(),
+        command: piqueld_core::exec::ExecCommand::parse(vec!["true".into()]).unwrap(),
+        stdin: false,
+        tty: None,
+    };
+    let caller = piqueld::api::Actor::Account(Caller {
+        credential_id: "operator",
+    });
+    assert!(
+        state
+            .exec(caller, &environment, &request, "operator")
+            .await
+            .is_ok()
+    );
+    let mut connection = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!(
+        "sqlite:{}",
+        database.display()
+    ))
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM auth_grants WHERE user_id='operator'")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    assert!(matches!(
+        state.exec(caller, &environment, &request, "operator").await,
+        Err(piqueld::api::ApplicationError::Store(StoreError::Denied(
+            Denied::Hidden
+        )))
+    ));
+}
+
+/// A request key replays only for the account that used it, so another caller
+/// reusing it cannot learn the outcome, e.g. of an application since renamed.
+/// A creator replays its creation even without `apps:write` on the application.
+#[tokio::test]
+async fn receipts_replay_only_for_their_account() {
+    use piqueld::api::{Actor, ApplicationError, Mutation};
+    use piqueld::store::{Caller, StoreError};
+    let temp = tempfile::tempdir().unwrap();
+    let state = state(&temp).await;
+    let database = temp.path().join("state.db");
+    seed_account(&database, "author", &[("apps:create", None)]).await;
+    let grants = [("apps:create", None), ("apps:write", None)];
+    seed_account(&database, "other", &grants).await;
+    let save = || Mutation::save(manifest().validate_template().unwrap(), None, false);
+    let author = Actor::Account(Caller {
+        credential_id: "author",
+    });
+    let other = Actor::Account(Caller {
+        credential_id: "other",
+    });
+    let original = state
+        .accept(author, save(), Some(0), false, Some("create-key"))
+        .await
+        .unwrap();
+    let replayed = state
+        .accept(author, save(), Some(0), false, Some("create-key"))
+        .await
+        .unwrap();
+    assert_eq!(format!("{replayed:?}"), format!("{original:?}"));
+    for caller in [other, Daemon] {
+        assert!(matches!(
+            state
+                .accept(caller, save(), Some(0), false, Some("create-key"))
+                .await,
+            Err(ApplicationError::Store(StoreError::ReplayConflict))
+        ));
+    }
+}
+
 #[tokio::test]
 async fn exec_streams_over_both_transports_and_records_history_without_the_command() {
     use futures_util::{SinkExt, StreamExt};
@@ -2927,8 +3042,13 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     let api = AcceptanceApi::start(&temp).await;
     let service = ApplicationService::new(api.store.clone(), api.runtime.clone());
     let request = AcceptanceApi::request();
+    // The same account as the HTTP client, since receipts replay only for theirs.
+    let caller = piqueld::api::Actor::Account(piqueld::store::Caller {
+        credential_id: "contract-admin",
+    });
     let MutationResponse::Saved(saved) = service
         .accept(
+            caller,
             Mutation::save(
                 request.manifest.clone().validate_template().unwrap(),
                 None,
@@ -2982,6 +3102,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
         .unwrap();
     let MutationResponse::Saved(replay) = service
         .accept(
+            caller,
             Mutation::save(
                 changed.manifest.validate_template().unwrap(),
                 changed.expected_application_id,
@@ -3025,13 +3146,13 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
         },
     ] {
         assert!(matches!(
-            service.accept(mutation, None, false, None).await,
+            service.accept(Daemon, mutation, None, false, None).await,
             Err(ApplicationError::PreconditionRequired)
         ));
     }
     assert!(
         service
-            .applications(None, None)
+            .applications(&piqueld_core::access::Scope::All, None, None)
             .await
             .unwrap()
             .items
@@ -3039,6 +3160,7 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
     );
     let MutationResponse::Saved(saved) = service
         .accept(
+            Daemon,
             Mutation::save(manifest.clone(), None, false),
             Some(0),
             false,
@@ -3052,6 +3174,7 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
     assert!(matches!(
         service
             .accept(
+                Daemon,
                 Mutation::save(manifest.clone(), None, false),
                 Some(saved.generation),
                 false,
@@ -3064,6 +3187,7 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
     assert!(matches!(
         service
             .accept(
+                Daemon,
                 Mutation::save(manifest.clone(), Some("wrong-application".into()), false),
                 Some(saved.generation),
                 false,
@@ -3076,11 +3200,17 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
     ));
     // An explicit override uses the same path for every transport.
     service
-        .accept(Mutation::save(manifest, None, true), None, true, None)
+        .accept(
+            Daemon,
+            Mutation::save(manifest, None, true),
+            None,
+            true,
+            None,
+        )
         .await
         .unwrap();
     service
-        .accept(Mutation::Reconcile { id }, None, false, None)
+        .accept(Daemon, Mutation::Reconcile { id }, None, false, None)
         .await
         .unwrap();
 }
@@ -3110,11 +3240,14 @@ async fn direct_service_validates_log_bounds_and_deployment_ownership() {
         ))
     ));
     assert!(matches!(
-        service.applications(None, Some(0)).await,
+        service
+            .applications(&piqueld_core::access::Scope::All, None, Some(0))
+            .await,
         Err(ApplicationError::InvalidPagination)
     ));
     let MutationResponse::Saved(saved) = service
         .accept(
+            Daemon,
             Mutation::save(manifest().validate_template().unwrap(), None, true),
             Some(0),
             false,
@@ -3909,6 +4042,7 @@ async fn field_edit_requires_an_explicit_value_and_revision() {
     let state = state(&temp).await;
     let saved = state
         .accept(
+            Daemon,
             piqueld::api::Mutation::save(manifest().validate_template().unwrap(), None, false),
             Some(0),
             false,
@@ -4220,6 +4354,236 @@ async fn every_documented_operation_requires_authentication() {
         }
     }
     assert!(checked > 60, "only {checked} operations were checked");
+}
+
+/// Seeds an account holding `grants` (permission, optional application ID)
+/// with a non-expiring token, returning the token. The account and credential
+/// share `name` as their ID; seeding an existing account again adds grants.
+async fn seed_account(
+    database: &std::path::Path,
+    name: &str,
+    grants: &[(&str, Option<&str>)],
+) -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    use sqlx::Connection as _;
+    let token = format!("{name:x<43}");
+    let hash = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(token.as_bytes()));
+    let mut connection = sqlx::SqliteConnection::connect(&format!("sqlite:{}", database.display()))
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT OR IGNORE INTO auth_users(id,username,display_name,created_at) VALUES(?1,?1,'',1)",
+    )
+    .bind(name)
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    sqlx::query("INSERT OR IGNORE INTO auth_credentials(id,user_id,secret_hash,kind,name,created_at,last_used_at) VALUES(?1,?1,?2,'token','test',1,4102444800)")
+        .bind(name)
+        .bind(hash)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    for (permission, application) in grants {
+        sqlx::query("INSERT INTO auth_grants(user_id,permission,application_id) VALUES(?1,?2,?3)")
+            .bind(name)
+            .bind(permission)
+            .bind(application)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+    token
+}
+
+/// Two applications, `blog` and `shop`, served by the real authenticator, with
+/// a `deployer` holding `apps:deploy` on `blog`, a `creator` holding
+/// `apps:create` plus `apps:write` on `blog`, and a `lead` holding only
+/// `accounts:manage`.
+struct GrantFixture {
+    _temp: TempDir,
+    router: axum::Router,
+    blog: String,
+    shop: String,
+    deployer: String,
+    creator: String,
+    lead: String,
+}
+
+impl GrantFixture {
+    async fn new() -> Self {
+        let temp = TempDir::new().unwrap();
+        let database = temp.path().join("state.db");
+        let state = state(&temp).await;
+        let mut ids = Vec::new();
+        for name in ["blog", "shop"] {
+            let mut input = manifest();
+            input.metadata.name = name.into();
+            let mutation =
+                piqueld::api::Mutation::save(input.validate_template().unwrap(), None, false);
+            let actor = Daemon;
+            let response = state.accept(actor, mutation, Some(0), false, None).await;
+            let Ok(piqueld::api::MutationResponse::Saved(saved)) = response else {
+                panic!("save response");
+            };
+            ids.push(saved.application_id);
+        }
+        let blog = Some(ids[0].as_str());
+        let deployer = seed_account(&database, "deployer", &[("apps:deploy", blog)]).await;
+        let creator = [("apps:create", None), ("apps:write", blog)];
+        let creator = seed_account(&database, "creator", &creator).await;
+        let lead = seed_account(&database, "lead", &[("accounts:manage", None)]).await;
+        let store = Store::open(&database).await.unwrap();
+        let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+        let [blog, shop] = <[String; 2]>::try_from(ids).unwrap();
+        Self {
+            _temp: temp,
+            router: api_router(state, auth),
+            blog,
+            shop,
+            deployer,
+            creator,
+            lead,
+        }
+    }
+
+    /// Sends a JSON request as `token`, returning the status and JSON body.
+    async fn call(
+        &self,
+        token: &str,
+        method: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = self.router.clone().oneshot(request).await.unwrap();
+        let status = response.status().as_u16();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap_or_default())
+    }
+}
+
+/// Hidden applications and their environments look absent; visible ones name
+/// the missing permission. Environments are checked on their application.
+/// Accounts without application grants list nothing rather than being refused.
+#[tokio::test]
+async fn grants_hide_applications_and_name_missing_permissions() {
+    let f = GrantFixture::new().await;
+    let none = serde_json::Value::Null;
+    for uri in ["/api/v1/applications", "/api/v1/builds"] {
+        let (status, body) = f.call(&f.lead, "GET", uri, none.clone()).await;
+        assert_eq!(status, 200, "{uri}");
+        assert_eq!(body["data"]["items"], serde_json::json!([]), "{uri}");
+    }
+    let (status, body) = f
+        .call(&f.deployer, "GET", "/api/v1/applications", none.clone())
+        .await;
+    assert_eq!(status, 200);
+    let listed: Vec<_> = body["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed, [f.blog.as_str()]);
+    for uri in [
+        format!("/api/v1/applications/{}", f.shop),
+        format!("/api/v1/environments/{}", f.shop),
+        format!("/api/v1/environments/{}/exec", f.shop),
+        "/api/v1/environments/env-unknown".to_owned(),
+    ] {
+        assert_eq!(
+            f.call(&f.deployer, "GET", &uri, none.clone()).await.0,
+            404,
+            "{uri}"
+        );
+    }
+    let deploy = format!("/api/v1/environments/{}/deploy?force=true", f.blog);
+    assert_eq!(
+        f.call(&f.deployer, "POST", &deploy, none.clone()).await.0,
+        202
+    );
+    let staging = serde_json::json!({"name": "staging"});
+    for (uri, method, body, permission) in [
+        (
+            format!("/api/v1/applications/{}?force=true", f.blog),
+            "DELETE",
+            none.clone(),
+            "apps:delete",
+        ),
+        (
+            format!("/api/v1/environments/{}?force=true", f.blog),
+            "DELETE",
+            none.clone(),
+            "apps:delete",
+        ),
+        (
+            format!("/api/v1/applications/{}/environments?force=true", f.blog),
+            "POST",
+            staging,
+            "apps:write",
+        ),
+        (
+            format!("/api/v1/environments/{}/exec", f.blog),
+            "GET",
+            none.clone(),
+            "apps:exec",
+        ),
+        (
+            "/api/v1/system/configuration".to_owned(),
+            "GET",
+            none.clone(),
+            "system:read",
+        ),
+    ] {
+        let (status, body) = f.call(&f.deployer, method, &uri, body).await;
+        assert_eq!(status, 403, "{method} {uri}");
+        assert_eq!(body["code"], "permission_denied");
+        assert_eq!(body["details"]["permission"], permission);
+    }
+}
+
+/// Creating requires `apps:create` and grants the creator matching access;
+/// saving an unreadable application by name is refused rather than absent.
+#[tokio::test]
+async fn creators_receive_matching_grants_on_new_applications() {
+    let f = GrantFixture::new().await;
+    let name = |value: &str| serde_json::json!({"value": value});
+    let (status, body) = f
+        .call(&f.creator, "POST", "/api/v1/applications", name("notes"))
+        .await;
+    assert_eq!(status, 200, "{body}");
+    let created = format!(
+        "/api/v1/applications/{}",
+        body["data"]["application_id"].as_str().unwrap()
+    );
+    let none = serde_json::Value::Null;
+    assert_eq!(f.call(&f.creator, "GET", &created, none).await.0, 200);
+    let mut input = manifest();
+    input.metadata.name = "shop".into();
+    let apply = serde_json::json!({"manifest": input});
+    let (status, body) = f
+        .call(
+            &f.creator,
+            "POST",
+            "/api/v1/applications/apply?force=true",
+            apply,
+        )
+        .await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["details"]["permission"], "apps:write");
+    let (status, _) = f
+        .call(&f.deployer, "POST", "/api/v1/applications", name("other"))
+        .await;
+    assert_eq!(status, 403);
 }
 
 /// Before the first account exists, only the Unix socket reveals the setup link.
@@ -4549,20 +4913,20 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
     });
     let service = ApiState::new(store.clone(), runtime.clone());
     service
-        .put_secret(&environment, "token", 0, b"value".to_vec())
+        .put_secret(Daemon, &environment, "token", 0, b"value".to_vec())
         .await
         .unwrap();
     let cleanup = {
         let service = service.clone();
         let id = environment.clone();
-        tokio::spawn(async move { service.delete_secret(&id, "token", 1).await })
+        tokio::spawn(async move { service.delete_secret(Daemon, &id, "token", 1).await })
     };
     tokio::time::timeout(std::time::Duration::from_secs(2), gate.started.notified())
         .await
         .unwrap();
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        service.put_secret(&environment, "other", 0, b"unrelated".to_vec()),
+        service.put_secret(Daemon, &environment, "other", 0, b"unrelated".to_vec()),
     )
     .await
     .unwrap()
@@ -4579,7 +4943,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
         deploy: false,
     };
     assert!(matches!(
-        service.accept(edit, Some(1), false, None).await,
+        service.accept(Daemon, edit, Some(1), false, None).await,
         Err(ApplicationError::Store(StoreError::SecretDeleting))
     ));
     gate.release.notify_one();
@@ -4593,6 +4957,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
                 kind: Some("action_failed".into()),
                 ..Default::default()
             },
+            &piqueld::store::Visibility::ALL,
             None,
             100,
         )
@@ -4623,7 +4988,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
         .store(false, std::sync::atomic::Ordering::Relaxed);
     gate.release.notify_one();
     service
-        .delete_secret(&environment, "token", 1)
+        .delete_secret(Daemon, &environment, "token", 1)
         .await
         .unwrap();
     assert_eq!(service.secrets(&environment).await.unwrap().len(), 1);
@@ -4633,6 +4998,12 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
 async fn secret_key_recovery_api_discards_values_only_for_an_unusable_key() {
     let temp = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+    seed_account(
+        &temp.path().join("db"),
+        "contract-admin",
+        &[("admin", None)],
+    )
+    .await;
     let application = manifest()
         .validate_template()
         .unwrap()
@@ -4643,6 +5014,7 @@ async fn secret_key_recovery_api_discards_values_only_for_an_unusable_key() {
         .unwrap();
     store
         .put_secret(
+            Daemon,
             &piqueld_core::EnvironmentId::default_for(application.id()),
             "token",
             0,
@@ -4738,6 +5110,7 @@ async fn two_environments(
     use piqueld::store::StoreError;
     let MutationResponse::Saved(mut saved) = service
         .accept(
+            Daemon,
             Mutation::save(manifest().validate_template().unwrap(), None, false),
             Some(0),
             false,
@@ -4755,7 +5128,13 @@ async fn two_environments(
         branch: None,
     };
     let MutationResponse::Environment(staging) = service
-        .accept(create("staging"), Some(saved.generation), false, None)
+        .accept(
+            Daemon,
+            create("staging"),
+            Some(saved.generation),
+            false,
+            None,
+        )
         .await
         .unwrap()
     else {
@@ -4765,7 +5144,13 @@ async fn two_environments(
     saved.generation += 1;
     assert!(matches!(
         service
-            .accept(create("staging"), Some(saved.generation), false, None)
+            .accept(
+                Daemon,
+                create("staging"),
+                Some(saved.generation),
+                false,
+                None
+            )
             .await,
         Err(ApplicationError::Store(StoreError::AlreadyExists))
     ));
@@ -4790,7 +5175,7 @@ async fn environments_deploy_independently_and_runtime_commands_never_pick_one()
     // Saving with a deployment never picks one of several environments.
     assert!(matches!(
         service
-            .accept(
+            .accept(Daemon,
                 Mutation::save(
                     manifest().validate_template().unwrap(),
                     Some(saved.application_id.clone()),
@@ -4807,6 +5192,7 @@ async fn environments_deploy_independently_and_runtime_commands_never_pick_one()
 
     let MutationResponse::Operation(deployed) = service
         .accept(
+            Daemon,
             Mutation::deploy(staging.id.clone()),
             Some(saved.generation),
             false,
@@ -4847,7 +5233,13 @@ async fn environments_deploy_independently_and_runtime_commands_never_pick_one()
     };
     assert!(matches!(
         service
-            .accept(delete(&["production"]), Some(saved.generation), false, None)
+            .accept(
+                Daemon,
+                delete(&["production"]),
+                Some(saved.generation),
+                false,
+                None
+            )
             .await,
         Err(ApplicationError::Store(
             StoreError::ConfirmationRequired { .. }
@@ -4855,6 +5247,7 @@ async fn environments_deploy_independently_and_runtime_commands_never_pick_one()
     ));
     let MutationResponse::Deleted(deleted) = service
         .accept(
+            Daemon,
             delete(&["staging", "production"]),
             Some(saved.generation),
             false,
@@ -4880,6 +5273,7 @@ async fn application_history_spans_its_environments() {
     let production = piqueld_core::EnvironmentId::default_for(&application);
     service
         .accept(
+            Daemon,
             Mutation::Rename {
                 id: application.clone(),
                 name: "renamed".into(),
@@ -4892,6 +5286,7 @@ async fn application_history_spans_its_environments() {
         .unwrap();
     service
         .accept(
+            Daemon,
             Mutation::deploy(production.clone()),
             Some(saved.generation + 1),
             false,
@@ -4903,7 +5298,7 @@ async fn application_history_spans_its_environments() {
         let service = service.clone();
         async move {
             service
-                .filtered_events(&filter, None, 100)
+                .filtered_events(&filter, &piqueld::store::Visibility::ALL, None, 100)
                 .await
                 .unwrap()
                 .items
@@ -4950,6 +5345,7 @@ async fn previews_compare_with_the_selected_environment() {
     let production = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
     service
         .accept(
+            Daemon,
             Mutation::deploy(staging.id.clone()),
             Some(saved.generation),
             false,
@@ -4962,6 +5358,7 @@ async fn previews_compare_with_the_selected_environment() {
         async move {
             service
                 .plan(
+                    &piqueld_core::access::Grants::admin(),
                     manifest().validate_template().unwrap(),
                     None,
                     None,
@@ -4995,6 +5392,7 @@ async fn previews_compare_with_the_selected_environment() {
     other.metadata.name = "other".into();
     service
         .accept(
+            Daemon,
             Mutation::save(other.validate_template().unwrap(), None, false),
             Some(0),
             false,
@@ -5002,7 +5400,11 @@ async fn previews_compare_with_the_selected_environment() {
         )
         .await
         .unwrap();
-    let foreign = service.applications(None, None).await.unwrap().items;
+    let foreign = service
+        .applications(&piqueld_core::access::Scope::All, None, None)
+        .await
+        .unwrap()
+        .items;
     let foreign = foreign
         .iter()
         .find(|application| application.name == "other")
@@ -5041,6 +5443,7 @@ async fn previews_render_variables_for_the_selected_environment() {
         async move {
             service
                 .plan(
+                    &piqueld_core::access::Grants::admin(),
                     manifest.validate_template().unwrap(),
                     None,
                     None,

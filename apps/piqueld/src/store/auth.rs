@@ -3,21 +3,25 @@
 //! Timestamps are Unix seconds. Callers pass only hashes of credential and
 //! invitation secrets, so this module never sees a usable secret. Writes queue
 //! behind the shared writer, and account changes refuse to lock everyone out.
+//! Changes to an account take the [`Caller`], whose authority over the account
+//! is checked against both sides' current grants inside the same transaction.
+use super::access::{Caller, Holder};
 use super::{Store, StoreError, now_secs};
-use piqueld_core::auth::{CredentialView, Directory, InvitationView, PasskeyView, User};
+use piqueld_core::access::{GlobalPermission, Grants, Permission};
+use piqueld_core::auth::{Account, CredentialView, Directory, InvitationView, PasskeyView, User};
 use sqlx::{Sqlite, SqliteConnection, query::Query, sqlite::SqliteArguments};
 use std::fmt;
 
 /// Browser sessions end after a day without use, even before they expire.
-const SESSION_IDLE_SECS: i64 = 86_400;
+pub(super) const SESSION_IDLE_SECS: i64 = 86_400;
 
-/// Account changes refused because nobody could sign in afterwards.
+/// Account changes refused because nobody could administer the installation
+/// afterwards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lockout {
-    /// Deleting the only account.
-    LastAccount,
-    /// Removing the only passkey, directly or with its account.
-    LastPasskey,
+    /// No account would hold `admin` on every application together with a
+    /// passkey to sign in with.
+    LastAdmin,
 }
 
 impl Lockout {
@@ -25,8 +29,9 @@ impl Lockout {
     #[must_use]
     pub const fn message(self) -> &'static str {
         match self {
-            Self::LastAccount => "the last account cannot be deleted",
-            Self::LastPasskey => "the last passkey cannot be removed",
+            Self::LastAdmin => {
+                "at least one account must keep admin on every application and a passkey"
+            }
         }
     }
 }
@@ -110,18 +115,42 @@ pub(crate) struct NewPasskey<'a> {
 
 /// Who a newly registered passkey belongs to.
 pub(crate) enum PasskeyOwner<'a> {
-    /// An existing account adds another passkey.
-    Existing(&'a str),
-    /// Registration creates the account, consuming the setup secret or an
-    /// invitation, and signs it in with `session`.
-    New {
-        /// Account to create.
+    /// A signed-in caller adds another passkey to its own account, named by
+    /// ID; refused unless the caller's credential still belongs to it.
+    Existing(Caller<'a>, &'a str),
+    /// Registration redeems the setup secret or an invitation, and signs the
+    /// account in with `session`. Account invitations create `user` with the
+    /// invitation's grants; the setup secret creates it as administrator.
+    /// Enrollment invitations add the passkey to their existing account
+    /// instead, ignoring `user`.
+    Redeem {
+        /// Account to create, for setup and account invitations.
         user: &'a User,
         /// Hash of the setup secret or invitation secret being redeemed.
         invitation_hash: &'a str,
-        /// Browser session opened for the new account.
+        /// Browser session opened for the account.
         session: NewCredential<'a>,
     },
+}
+
+/// What an unused setup secret or invitation will do once redeemed.
+pub(crate) enum Invitation {
+    /// Creates a new account: the first administrator for the setup secret,
+    /// otherwise with the invitation's grants.
+    Account,
+    /// Adds a passkey to this existing account.
+    Enrollment(User),
+}
+
+/// An invitation to store, by the hash of its secret. The caller creating it
+/// becomes its issuer.
+pub(crate) struct NewInvitation {
+    /// Revocation identifier.
+    pub(crate) id: String,
+    /// Hash of the secret in the shared link.
+    pub(crate) secret_hash: String,
+    /// Absolute expiry in Unix seconds.
+    pub(crate) expires_at: i64,
 }
 
 /// The account behind a live credential.
@@ -130,6 +159,8 @@ pub(crate) struct CredentialOwner {
     pub(crate) credential_id: String,
     /// Account that owns the credential.
     pub(crate) user: User,
+    /// The account's current grants.
+    pub(crate) grants: Grants,
     /// Last recorded use in Unix seconds, letting callers skip frequent refreshes.
     pub(crate) last_used_at: i64,
 }
@@ -171,29 +202,40 @@ impl Store {
         Ok(())
     }
 
-    /// Whether a hash matches the open setup secret or a live invitation.
-    pub(crate) async fn invitation_valid(&self, hash: &str) -> Result<bool, StoreError> {
+    /// Describes the open setup secret or live invitation matching a hash, or
+    /// `None` when there is none.
+    pub(crate) async fn invitation(&self, hash: &str) -> Result<Option<Invitation>, StoreError> {
         let now = now_secs();
-        sqlx::query_scalar!(
-            r#"SELECT (EXISTS(SELECT 1 FROM auth_setup WHERE initialized=0 AND secret_hash=?1) OR EXISTS(SELECT 1 FROM auth_invitations WHERE secret_hash=?1 AND expires_at>?2)) AS "valid!: bool""#,
-            hash,
-            now
+        let setup = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM auth_setup WHERE initialized=0 AND secret_hash=?1) AS "open!: bool""#,
+            hash
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(StoreError::database)
-    }
-
-    /// Reads one account by ID.
-    pub(crate) async fn auth_user(&self, id: &str) -> Result<Option<User>, StoreError> {
-        sqlx::query_as!(
-            User,
-            r#"SELECT id AS "id!",username,display_name FROM auth_users WHERE id=?1"#,
-            id
+        .map_err(StoreError::database)?;
+        if setup {
+            return Ok(Some(Invitation::Account));
+        }
+        let Some(row) = sqlx::query!(
+            r#"SELECT i.user_id,u.username AS "username?",u.display_name AS "display_name?" FROM auth_invitations i LEFT JOIN auth_users u ON u.id=i.user_id WHERE i.secret_hash=?1 AND i.expires_at>?2"#,
+            hash,
+            now
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(StoreError::database)
+        .map_err(StoreError::database)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(match (row.user_id, row.username, row.display_name) {
+            (Some(id), Some(username), Some(display_name)) => Invitation::Enrollment(User {
+                id,
+                username,
+                display_name,
+            }),
+            (None, ..) => Invitation::Account,
+            _ => return Err(StoreError::Corrupt),
+        }))
     }
 
     /// Serialized `WebAuthn` credentials registered to one account.
@@ -210,10 +252,11 @@ impl Store {
         .map_err(StoreError::database)
     }
 
-    /// Stores a registered passkey. For a new account this atomically consumes
-    /// the invitation, creates the account, and opens its session. Returns
-    /// `false` when the invitation was already used or has expired.
-    /// The setup secret is tried first; claiming it marks the installation initialized.
+    /// Stores a registered passkey. Redemption atomically consumes the setup
+    /// secret or invitation, creates or selects the account, and opens its
+    /// session. Returns `false` when the secret was already used or has
+    /// expired, when an enrollment invitation targets another account, or when
+    /// a signed-in caller adds a passkey to an account that is not its own.
     pub(crate) async fn add_passkey(
         &self,
         owner: PasskeyOwner<'_>,
@@ -222,44 +265,20 @@ impl Store {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_secs();
         let user_id = match &owner {
-            PasskeyOwner::Existing(user_id) => user_id,
-            PasskeyOwner::New {
+            PasskeyOwner::Existing(caller, user_id) => {
+                if caller.load(&mut tx).await?.0 != *user_id {
+                    return Ok(false);
+                }
+                *user_id
+            }
+            PasskeyOwner::Redeem {
                 user,
                 invitation_hash,
                 session,
             } => {
-                let setup = sqlx::query!(
-                    "UPDATE auth_setup SET initialized=1,secret_hash=NULL WHERE initialized=0 AND secret_hash=?1",
-                    invitation_hash
-                )
-                .execute(&mut *tx)
-                .await
-                .map_err(StoreError::database)?
-                .rows_affected();
-                if setup == 0 {
-                    let consumed = sqlx::query!(
-                        "DELETE FROM auth_invitations WHERE secret_hash=?1 AND expires_at>?2",
-                        invitation_hash,
-                        now
-                    )
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(StoreError::database)?
-                    .rows_affected();
-                    if consumed != 1 {
-                        return Ok(false);
-                    }
+                if !Self::redeem_on(&mut tx, user, invitation_hash, now).await? {
+                    return Ok(false);
                 }
-                sqlx::query!(
-                    "INSERT INTO auth_users(id,username,display_name,created_at) VALUES(?1,?2,?3,?4)",
-                    user.id,
-                    user.username,
-                    user.display_name,
-                    now
-                )
-                .execute(&mut *tx)
-                .await
-                .map_err(StoreError::constraint)?;
                 session.insert(&mut tx, &user.id).await?;
                 user.id.as_str()
             }
@@ -277,6 +296,88 @@ impl Store {
         .map_err(StoreError::constraint)?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(true)
+    }
+
+    /// Consumes the setup secret or a live invitation for `user`:
+    ///
+    /// 1. The setup secret closes initial setup and creates `user` with `admin`
+    ///    on every application.
+    /// 2. An account invitation creates `user` with the invitation's grants.
+    /// 3. An enrollment invitation must target `user`, which already exists.
+    ///
+    /// Invitations carry their issuer's authority, so they are only redeemed
+    /// while the issuer could still create them: grants may have changed on
+    /// either side since. Returns `false` when nothing matching is left to
+    /// redeem.
+    async fn redeem_on(
+        db: &mut SqliteConnection,
+        user: &User,
+        invitation_hash: &str,
+        now: i64,
+    ) -> Result<bool, StoreError> {
+        let setup = sqlx::query!(
+            "UPDATE auth_setup SET initialized=1,secret_hash=NULL WHERE initialized=0 AND secret_hash=?1",
+            invitation_hash
+        )
+        .execute(&mut *db)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        if setup == 1 {
+            Self::insert_user_on(db, user, now).await?;
+            Holder::User(&user.id).replace(db, &Grants::admin()).await?;
+            return Ok(true);
+        }
+        let Some(invitation) = sqlx::query!(
+            r#"SELECT id AS "id!",issuer_id,user_id FROM auth_invitations WHERE secret_hash=?1 AND expires_at>?2"#,
+            invitation_hash,
+            now
+        )
+        .fetch_optional(&mut *db)
+        .await
+        .map_err(StoreError::database)?
+        else {
+            return Ok(false);
+        };
+        let authority = Holder::User(&invitation.issuer_id).grants(&mut *db).await?;
+        if let Some(target) = invitation.user_id {
+            let grants = Holder::User(&target).grants(&mut *db).await?;
+            let own = invitation.issuer_id == target;
+            if target != user.id || authority.may_change_account(own, &grants).is_err() {
+                return Ok(false);
+            }
+        } else {
+            let grants = Holder::Invitation(&invitation.id).grants(&mut *db).await?;
+            if Self::may_invite(&authority, &grants).is_err() {
+                return Ok(false);
+            }
+            Self::insert_user_on(db, user, now).await?;
+            Holder::User(&user.id).replace(db, &grants).await?;
+        }
+        sqlx::query!("DELETE FROM auth_invitations WHERE id=?1", invitation.id)
+            .execute(&mut *db)
+            .await
+            .map_err(StoreError::database)?;
+        Ok(true)
+    }
+
+    /// Creates an account; a taken username maps to `AlreadyExists`.
+    async fn insert_user_on(
+        db: &mut SqliteConnection,
+        user: &User,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        sqlx::query!(
+            "INSERT INTO auth_users(id,username,display_name,created_at) VALUES(?1,?2,?3,?4)",
+            user.id,
+            user.username,
+            user.display_name,
+            now
+        )
+        .execute(db)
+        .await
+        .map_err(StoreError::constraint)?;
+        Ok(())
     }
 
     /// Verifies a passkey assertion and opens a browser session while holding
@@ -320,48 +421,61 @@ impl Store {
         }))
     }
 
-    /// Finds the account for a live credential by its secret hash. This is
-    /// read-only, so authenticating never waits for writers.
+    /// Finds the account for a live credential by its secret hash, with the
+    /// account's grants read from the same snapshot. This is read-only, so
+    /// authenticating never waits for writers.
     pub(crate) async fn credential_owner(
         &self,
         hash: &str,
     ) -> Result<Option<CredentialOwner>, StoreError> {
         let now = now_secs();
         let idle = now - SESSION_IDLE_SECS;
+        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let row = sqlx::query!(
             r#"SELECT c.id AS "credential_id!",c.last_used_at,u.id AS "id!",u.username,u.display_name FROM auth_credentials c JOIN auth_users u ON u.id=c.user_id WHERE c.secret_hash=?1 AND (c.expires_at IS NULL OR c.expires_at>?2) AND (c.kind!='browser' OR c.last_used_at>?3)"#,
             hash,
             now,
             idle
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        Ok(row.map(|row| CredentialOwner {
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let grants = Holder::User(&row.id).grants(&mut tx).await?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(Some(CredentialOwner {
             credential_id: row.credential_id,
             user: User {
                 id: row.id,
                 username: row.username,
                 display_name: row.display_name,
             },
+            grants,
             last_used_at: row.last_used_at,
         }))
     }
 
-    /// Records use of a live credential. It queues behind other writers, so a
-    /// revocation that lands first wins. Returns `false` when the credential
-    /// was revoked or expired in the meantime.
+    /// Records use of a live credential. It queues behind other writers and
+    /// judges liveness once it holds the writer lock, so a revocation or expiry
+    /// that lands while it waits wins. Returns `false` when the credential was
+    /// revoked or expired in the meantime.
     pub(crate) async fn touch_credential(&self, id: &str) -> Result<bool, StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_secs();
         let idle = now - SESSION_IDLE_SECS;
-        let rows = self
-            .write_one(sqlx::query!(
-                "UPDATE auth_credentials SET last_used_at=MAX(last_used_at,?1) WHERE id=?2 AND (expires_at IS NULL OR expires_at>?1) AND (kind!='browser' OR last_used_at>?3)",
-                now,
-                id,
-                idle
-            ))
-            .await?;
+        let rows = sqlx::query!(
+            "UPDATE auth_credentials SET last_used_at=MAX(last_used_at,?1) WHERE id=?2 AND (expires_at IS NULL OR expires_at>?1) AND (kind!='browser' OR last_used_at>?3)",
+            now,
+            id,
+            idle
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        tx.commit().await.map_err(StoreError::database)?;
         Ok(rows == 1)
     }
 
@@ -393,36 +507,46 @@ impl Store {
         Ok(Some(user))
     }
 
-    /// Stores a credential for an existing account.
-    pub(crate) async fn insert_credential(
+    /// Deletes one credential if `caller` may change its owner; unknown IDs are
+    /// ignored.
+    pub(crate) async fn revoke_credential(
         &self,
-        user_id: &str,
-        credential: &NewCredential<'_>,
+        caller: Caller<'_>,
+        id: &str,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        credential.insert(&mut tx, user_id).await?;
+        let owner = sqlx::query_scalar!("SELECT user_id FROM auth_credentials WHERE id=?1", id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        if let Some(owner) = owner {
+            Self::check_account_on(&mut tx, caller, &owner).await?;
+            sqlx::query!("DELETE FROM auth_credentials WHERE id=?1", id)
+                .execute(&mut *tx)
+                .await
+                .map_err(StoreError::database)?;
+        }
         tx.commit().await.map_err(StoreError::database)
     }
 
-    /// Deletes one credential; unknown IDs are ignored.
-    pub(crate) async fn revoke_credential(&self, id: &str) -> Result<(), StoreError> {
-        self.write_one(sqlx::query!("DELETE FROM auth_credentials WHERE id=?1", id))
-            .await?;
-        Ok(())
-    }
-
     /// Deletes every credential of an account, signing it out everywhere.
-    pub(crate) async fn revoke_credentials(&self, user_id: &str) -> Result<(), StoreError> {
-        self.write_one(sqlx::query!(
-            "DELETE FROM auth_credentials WHERE user_id=?1",
-            user_id
-        ))
-        .await?;
-        Ok(())
+    pub(crate) async fn revoke_credentials(
+        &self,
+        caller: Caller<'_>,
+        user_id: &str,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        Self::check_account_on(&mut tx, caller, user_id).await?;
+        sqlx::query!("DELETE FROM auth_credentials WHERE user_id=?1", user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)
     }
 
-    /// Every account, passkey, live credential, and live invitation, read in
-    /// one snapshot. Secrets and their hashes are never included.
+    /// Every account with its grants, passkey, live credential, and live
+    /// invitation, read in one snapshot. Secrets and their hashes are never
+    /// included.
     pub(crate) async fn auth_directory(&self) -> Result<Directory, StoreError> {
         let now = now_secs();
         let idle = now - SESSION_IDLE_SECS;
@@ -434,6 +558,11 @@ impl Store {
         .fetch_all(&mut *tx)
         .await
         .map_err(StoreError::database)?;
+        let mut accounts = Vec::with_capacity(users.len());
+        for user in users {
+            let grants = Holder::User(&user.id).grants(&mut tx).await?;
+            accounts.push(Account { user, grants });
+        }
         let passkeys = sqlx::query_as!(
             PasskeyView,
             r#"SELECT id AS "id!",user_id,name FROM auth_passkeys ORDER BY created_at"#
@@ -450,17 +579,27 @@ impl Store {
         .fetch_all(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        let invitations = sqlx::query_as!(
-            InvitationView,
-            r#"SELECT id AS "id!",issuer_id,expires_at FROM auth_invitations WHERE expires_at>?1 ORDER BY expires_at"#,
+        let rows = sqlx::query!(
+            r#"SELECT id AS "id!",issuer_id,user_id,expires_at FROM auth_invitations WHERE expires_at>?1 ORDER BY expires_at"#,
             now
         )
         .fetch_all(&mut *tx)
         .await
         .map_err(StoreError::database)?;
+        let mut invitations = Vec::with_capacity(rows.len());
+        for row in rows {
+            let grants = Holder::Invitation(&row.id).grants(&mut tx).await?;
+            invitations.push(InvitationView {
+                id: row.id,
+                issuer_id: row.issuer_id,
+                user_id: row.user_id,
+                expires_at: row.expires_at,
+                grants,
+            });
+        }
         tx.commit().await.map_err(StoreError::database)?;
         Ok(Directory {
-            users,
+            users: accounts,
             passkeys,
             credentials,
             invitations,
@@ -471,126 +610,221 @@ impl Store {
     /// `AlreadyExists`.
     pub(crate) async fn update_user(
         &self,
+        caller: Caller<'_>,
         id: &str,
         username: &str,
         display_name: &str,
     ) -> Result<(), StoreError> {
-        self.write_one(sqlx::query!(
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        Self::check_account_on(&mut tx, caller, id).await?;
+        sqlx::query!(
             "UPDATE auth_users SET username=?1,display_name=?2 WHERE id=?3",
             username,
             display_name,
             id
-        ))
-        .await?;
-        Ok(())
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::constraint)?;
+        tx.commit().await.map_err(StoreError::database)
     }
 
-    /// Deletes an account with its passkeys, credentials, and invitations.
-    /// Refuses to delete the last account, or an account whose deletion would leave
-    /// no passkeys.
-    pub(crate) async fn delete_user(&self, id: &str) -> Result<(), StoreError> {
+    /// Deletes an account with its passkeys, credentials, grants, and
+    /// invitations. Refuses to leave no administrator able to sign in.
+    pub(crate) async fn delete_user(&self, caller: Caller<'_>, id: &str) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let accounts = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!: i64" FROM auth_users"#)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(StoreError::database)?;
-        if accounts <= 1 {
-            return Err(Lockout::LastAccount.into());
-        }
+        Self::check_account_on(&mut tx, caller, id).await?;
         sqlx::query!("DELETE FROM auth_users WHERE id=?1", id)
             .execute(&mut *tx)
             .await
             .map_err(StoreError::database)?;
-        Self::require_a_passkey(&mut tx).await?;
+        Self::require_an_admin(&mut tx).await?;
         tx.commit().await.map_err(StoreError::database)
     }
 
-    /// Deletes one passkey unless it is the last one left.
-    pub(crate) async fn remove_passkey(&self, id: &str) -> Result<(), StoreError> {
+    /// Checks that `caller` may change the account owning a passkey. Unknown
+    /// passkeys are `NotFound`.
+    async fn check_passkey_owner_on(
+        db: &mut SqliteConnection,
+        caller: Caller<'_>,
+        id: &str,
+    ) -> Result<(), StoreError> {
+        let owner = sqlx::query_scalar!("SELECT user_id FROM auth_passkeys WHERE id=?1", id)
+            .fetch_optional(&mut *db)
+            .await
+            .map_err(StoreError::database)?
+            .ok_or(StoreError::NotFound)?;
+        Self::check_account_on(db, caller, &owner).await?;
+        Ok(())
+    }
+
+    /// Deletes one passkey, refusing to leave no administrator able to sign in.
+    pub(crate) async fn remove_passkey(
+        &self,
+        caller: Caller<'_>,
+        id: &str,
+    ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
+        Self::check_passkey_owner_on(&mut tx, caller, id).await?;
         sqlx::query!("DELETE FROM auth_passkeys WHERE id=?1", id)
             .execute(&mut *tx)
             .await
             .map_err(StoreError::database)?;
-        Self::require_a_passkey(&mut tx).await?;
+        Self::require_an_admin(&mut tx).await?;
         tx.commit().await.map_err(StoreError::database)
     }
 
-    /// Refuses a pending removal that would leave no passkey. The caller holds
-    /// the writer lock, so concurrent removals cannot both pass this check.
-    async fn require_a_passkey(db: &mut SqliteConnection) -> Result<(), StoreError> {
-        let exists =
-            sqlx::query_scalar!(r#"SELECT EXISTS(SELECT 1 FROM auth_passkeys) AS "exists!: bool""#)
-                .fetch_one(db)
-                .await
-                .map_err(StoreError::database)?;
-        if exists {
-            Ok(())
-        } else {
-            Err(Lockout::LastPasskey.into())
-        }
-    }
-
     /// Changes a passkey's label.
-    pub(crate) async fn rename_passkey(&self, id: &str, name: &str) -> Result<(), StoreError> {
-        self.write_one(sqlx::query!(
-            "UPDATE auth_passkeys SET name=?1 WHERE id=?2",
-            name,
-            id
-        ))
-        .await?;
-        Ok(())
+    pub(crate) async fn rename_passkey(
+        &self,
+        caller: Caller<'_>,
+        id: &str,
+        name: &str,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        Self::check_passkey_owner_on(&mut tx, caller, id).await?;
+        sqlx::query!("UPDATE auth_passkeys SET name=?1 WHERE id=?2", name, id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)
     }
 
-    /// Stores an invitation by its secret hash; `add_passkey` consumes it.
+    /// Stores an account invitation that gives the created account `grants`,
+    /// if `caller` may manage accounts and holds every grant. `add_passkey`
+    /// consumes it.
     pub(crate) async fn create_invitation(
         &self,
-        id: &str,
-        issuer_id: &str,
-        secret_hash: &str,
-        expires_at: i64,
+        caller: Caller<'_>,
+        invitation: &NewInvitation,
+        grants: &Grants,
     ) -> Result<(), StoreError> {
-        self.write_one(sqlx::query!(
-            "INSERT INTO auth_invitations(id,issuer_id,secret_hash,expires_at) VALUES(?1,?2,?3,?4)",
-            id,
-            issuer_id,
-            secret_hash,
-            expires_at
-        ))
-        .await?;
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let (issuer, authority) = caller.load(&mut tx).await?;
+        Self::may_invite(&authority, grants)?;
+        Self::insert_invitation_on(&mut tx, invitation, &issuer, None).await?;
+        Holder::Invitation(&invitation.id)
+            .replace(&mut tx, grants)
+            .await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Requires `accounts:manage` and every grant an invitation hands out.
+    fn may_invite(authority: &Grants, grants: &Grants) -> Result<(), StoreError> {
+        authority
+            .require(Permission::Global(GlobalPermission::AccountsManage))
+            .and_then(|()| authority.may_grant(grants))
+            .map_err(StoreError::Denied)
+    }
+
+    /// Stores an enrollment invitation that adds a passkey to `user_id`, if
+    /// `caller` may change that account.
+    pub(crate) async fn create_enrollment(
+        &self,
+        caller: Caller<'_>,
+        invitation: &NewInvitation,
+        user_id: &str,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let (issuer, _) = Self::check_account_on(&mut tx, caller, user_id).await?;
+        Self::insert_invitation_on(&mut tx, invitation, &issuer, Some(user_id)).await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Inserts an invitation row issued by `issuer`, targeting `user_id` for
+    /// enrollment.
+    async fn insert_invitation_on(
+        db: &mut SqliteConnection,
+        invitation: &NewInvitation,
+        issuer: &str,
+        user_id: Option<&str>,
+    ) -> Result<(), StoreError> {
+        sqlx::query!(
+            "INSERT INTO auth_invitations(id,issuer_id,secret_hash,expires_at,user_id) VALUES(?1,?2,?3,?4,?5)",
+            invitation.id,
+            issuer,
+            invitation.secret_hash,
+            invitation.expires_at,
+            user_id
+        )
+        .execute(db)
+        .await
+        .map_err(StoreError::constraint)?;
         Ok(())
     }
 
-    /// Deletes an unused invitation.
-    pub(crate) async fn revoke_invitation(&self, id: &str) -> Result<(), StoreError> {
-        self.write_one(sqlx::query!("DELETE FROM auth_invitations WHERE id=?1", id))
-            .await?;
-        Ok(())
+    /// Deletes an unused invitation if `caller` could have created it: it may
+    /// change the enrollment target, or hand out the invitation's grants.
+    pub(crate) async fn revoke_invitation(
+        &self,
+        caller: Caller<'_>,
+        id: &str,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let target = sqlx::query_scalar!("SELECT user_id FROM auth_invitations WHERE id=?1", id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        match target {
+            None => return Ok(()),
+            Some(Some(user_id)) => {
+                Self::check_account_on(&mut tx, caller, &user_id).await?;
+            }
+            Some(None) => {
+                let (_, authority) = caller.load(&mut tx).await?;
+                let grants = Holder::Invitation(id).grants(&mut tx).await?;
+                Self::may_invite(&authority, &grants)?;
+            }
+        }
+        sqlx::query!("DELETE FROM auth_invitations WHERE id=?1", id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Stores an API token for the caller's own account.
+    pub(crate) async fn create_token(
+        &self,
+        caller: Caller<'_>,
+        credential: &NewCredential<'_>,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let (user_id, _) = caller.load(&mut tx).await?;
+        credential.insert(&mut tx, &user_id).await?;
+        tx.commit().await.map_err(StoreError::database)
     }
 }
 
 /// Fixtures for authentication tests that need states no API produces.
 #[cfg(test)]
 impl Store {
-    /// Claims the installation for an account that has no passkey.
-    pub(crate) async fn seed_auth_user(&self, user: &User) {
+    /// Claims the installation for an account with `grants` and no passkey.
+    pub(crate) async fn seed_auth_user(&self, user: &User, grants: &Grants) {
         let (_writer, mut tx) = self.begin_immediate().await.unwrap();
-        let now = now_secs();
-        sqlx::query!(
-            "INSERT INTO auth_users(id,username,display_name,created_at) VALUES(?1,?2,?3,?4)",
-            user.id,
-            user.username,
-            user.display_name,
-            now
-        )
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+        Self::insert_user_on(&mut tx, user, now_secs())
+            .await
+            .unwrap();
+        Holder::User(&user.id)
+            .replace(&mut tx, grants)
+            .await
+            .unwrap();
         sqlx::query!("UPDATE auth_setup SET initialized=1,secret_hash=NULL")
             .execute(&mut *tx)
             .await
             .unwrap();
         tx.commit().await.unwrap();
+    }
+
+    /// Stores a credential for an existing account.
+    pub(crate) async fn insert_credential(
+        &self,
+        user_id: &str,
+        credential: &NewCredential<'_>,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        credential.insert(&mut tx, user_id).await?;
+        tx.commit().await.map_err(StoreError::database)
     }
 
     /// Makes every credential look unused since `secs` ago.
@@ -629,7 +863,7 @@ mod tests {
             username: "alice".into(),
             display_name: String::new(),
         };
-        store.seed_auth_user(&user).await;
+        store.seed_auth_user(&user, &Grants::admin()).await;
         let credential = NewCredential {
             id: "credential".into(),
             secret_hash: "hash".into(),
@@ -675,5 +909,41 @@ mod tests {
         drop(writer);
         assert!(!refresh.await.unwrap());
         assert!(store.credential_owner("hash").await.unwrap().is_none());
+    }
+
+    /// A refresh judges idle expiry when it gets the writer lock, so a session
+    /// that expires while the refresh waits is not revived.
+    #[tokio::test]
+    async fn refreshes_waiting_for_writers_respect_idle_expiry() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("state.db")).await.unwrap();
+        let user = User {
+            id: "alice".into(),
+            username: "alice".into(),
+            display_name: String::new(),
+        };
+        store.seed_auth_user(&user, &Grants::admin()).await;
+        let credential = NewCredential {
+            id: "credential".into(),
+            secret_hash: "hash".into(),
+            kind: CredentialKind::Browser,
+            name: "Browser",
+            expires_at: Some(now_secs() + SESSION_IDLE_SECS),
+        };
+        store
+            .insert_credential(&user.id, &credential)
+            .await
+            .unwrap();
+        // One second of idle time remains; the refresh waits two.
+        store.age_auth_credentials(SESSION_IDLE_SECS - 1).await;
+        let (writer, tx) = store.begin_immediate().await.unwrap();
+        let refresh = tokio::spawn({
+            let store = store.clone();
+            async move { store.touch_credential("credential").await }
+        });
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        tx.rollback().await.unwrap();
+        drop(writer);
+        assert!(!refresh.await.unwrap().unwrap());
     }
 }

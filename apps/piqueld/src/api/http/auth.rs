@@ -11,7 +11,7 @@ use axum::{
 };
 use piqueld_core::auth::{
     AuthStatus, Ceremony, CeremonyFinish, DeviceApprove, DevicePoll, DeviceRequest, DeviceStart,
-    DeviceToken, Directory, Manage, Managed, RegistrationStart, SetupLink, User,
+    DeviceToken, Directory, Manage, Managed, RegistrationStart, Session, SetupLink, User,
 };
 use std::net::SocketAddr;
 
@@ -65,6 +65,7 @@ impl From<AuthError> for ApiError {
                 "Account name or passkey is already registered",
             ),
             AuthError::Store(source) => source.into(),
+            AuthError::Denied(denied) => denied.into(),
             error => {
                 tracing::error!(error = ?error, "authentication operation failed");
                 Self::new(
@@ -93,21 +94,6 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
             (key == name).then_some(value)
         })
 }
-/// Returns whether an API path is reachable without credentials. Also used to
-/// clear `security` on these operations in the `OpenAPI` document.
-pub(super) fn is_public(path: &str) -> bool {
-    matches!(
-        path,
-        "/api/v1/auth/status"
-            | "/api/v1/auth/setup-link"
-            | "/api/v1/auth/register/start"
-            | "/api/v1/auth/register/finish"
-            | "/api/v1/auth/login/start"
-            | "/api/v1/auth/login/finish"
-            | "/api/v1/auth/device/start"
-            | "/api/v1/auth/device/poll"
-    )
-}
 /// Authentication middleware for API paths; other paths pass through. Every API
 /// response, including rejections, is marked `Cache-Control: no-store`.
 async fn authenticate(
@@ -132,10 +118,10 @@ async fn authenticate(
 /// 3. Blocks cross-site mutations and upgrades: any mismatched `Origin` is
 ///    rejected, and cookie-authenticated or bearer-less ceremony mutations must
 ///    send the configured origin.
-/// 4. Inserts the resolved `Identity` as an extension. Invalid credentials on
-///    public routes are ignored; missing or invalid ones elsewhere yield 401.
+/// 4. Inserts the resolved `Identity` as an extension. Missing or invalid
+///    credentials leave it out; the route's access requirement then decides
+///    whether the request needs one (see `access::enforce`).
 async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
-    let public = is_public(request.uri().path());
     if request.method() == Method::POST
         && matches!(
             request.uri().path(),
@@ -191,11 +177,9 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
             Ok(identity) => {
                 request.extensions_mut().insert(identity);
             }
-            Err(AuthError::Unauthorized) if public => {}
+            Err(AuthError::Unauthorized) => {}
             Err(error) => return ApiError::from(error).into_response(),
         }
-    } else if !public {
-        return ApiError::from(AuthError::Unauthorized).into_response();
     }
     next.run(request).await
 }
@@ -252,17 +236,21 @@ pub(super) async fn setup_link(
     }
     Ok(Json(auth.setup_link().await?))
 }
-/// Gets the signed-in user.
-#[utoipa::path(get,path="/api/v1/auth/me",operation_id="authMe",responses((status=200,body=User)))]
-pub(super) async fn me(Extension(identity): Extension<Identity>) -> Json<User> {
-    Json(identity.user)
+/// Gets the signed-in user and what the current credential may do.
+#[utoipa::path(get,path="/api/v1/auth/me",operation_id="authMe",responses((status=200,body=Session)))]
+pub(super) async fn me(Extension(identity): Extension<Identity>) -> Json<Session> {
+    Json(Session {
+        user: identity.user,
+        grants: identity.grants,
+    })
 }
 /// Starts passkey registration.
 ///
 /// Public. Registers a new account by redeeming an invitation or setup secret,
-/// or, when signed in, adds a passkey to an existing account. Sets a short-lived
-/// ceremony cookie that the finish request must present. Rate limited per
-/// client address (429 with `Retry-After`).
+/// adds a passkey to an existing account by redeeming an enrollment link, or,
+/// when signed in, adds a passkey to the caller's own account. Sets a
+/// short-lived ceremony cookie that the finish request must present. Rate
+/// limited per client address (429 with `Retry-After`).
 #[utoipa::path(post,path="/api/v1/auth/register/start",operation_id="authRegistrationStart",request_body=RegistrationStart,responses((status=200,body=Ceremony)))]
 pub(super) async fn register_start(
     Extension(auth): Extension<Auth>,
@@ -271,15 +259,20 @@ pub(super) async fn register_start(
 ) -> Result<Response, ApiError> {
     let binding = Auth::secret()?;
     let ceremony = auth
-        .registration_start(input, &binding, identity.is_some())
+        .registration_start(
+            input,
+            &binding,
+            identity.as_ref().map(|Extension(identity)| identity),
+        )
         .await?;
     Ok(challenge_response(&auth, ceremony, &binding))
 }
 /// Finishes passkey registration.
 ///
 /// Public. Verifies the passkey against the ceremony started in the same
-/// browser. New accounts are signed in with a session cookie; adding a passkey
-/// to an existing account is not.
+/// browser. Redeeming an invitation, setup, or enrollment secret signs the
+/// account in with a session cookie; a signed-in caller adding a passkey to
+/// itself gets none.
 #[utoipa::path(post,path="/api/v1/auth/register/finish",operation_id="authRegistrationFinish",request_body=CeremonyFinish,responses((status=200,body=User)))]
 pub(super) async fn register_finish(
     Extension(auth): Extension<Auth>,
@@ -288,7 +281,11 @@ pub(super) async fn register_finish(
     Json(input): Json<CeremonyFinish>,
 ) -> Result<Response, ApiError> {
     let (user, token) = auth
-        .registration_finish(input, binding(&auth, &headers)?, identity.is_some())
+        .registration_finish(
+            input,
+            binding(&auth, &headers)?,
+            identity.as_ref().map(|Extension(identity)| identity),
+        )
         .await?;
     Ok(session_response(&auth, user, token))
 }
@@ -323,7 +320,7 @@ pub(super) async fn logout(
     Extension(auth): Extension<Auth>,
     Extension(identity): Extension<Identity>,
 ) -> Result<Response, ApiError> {
-    auth.logout(&identity.credential_id).await?;
+    auth.logout(&identity).await?;
     Ok((
         [(header::SET_COOKIE, auth.cookie("piqueld_session", "", 0))],
         Json(Managed::default()),
@@ -331,20 +328,28 @@ pub(super) async fn logout(
         .into_response())
 }
 /// Lists accounts, passkeys, credentials, and open invitations.
+///
+/// With `accounts:manage`, lists every account and invitation; otherwise only
+/// the caller's own account.
 #[utoipa::path(get,path="/api/v1/auth/directory",operation_id="authDirectory",responses((status=200,body=Directory)))]
 pub(super) async fn directory(
     Extension(auth): Extension<Auth>,
+    Extension(identity): Extension<Identity>,
 ) -> Result<Json<Directory>, ApiError> {
-    Ok(Json(auth.directory().await?))
+    Ok(Json(auth.directory(&identity).await?))
 }
 /// Applies one account management action as the signed-in user.
+///
+/// Anyone may manage their own account. Changing other accounts requires
+/// `accounts:manage` and every grant the account holds; handing out grants
+/// requires holding them (403 `permission_denied` or `permission_exceeded`).
 #[utoipa::path(post,path="/api/v1/auth/manage",operation_id="authManage",request_body=Manage,responses((status=200,body=Managed)))]
 pub(super) async fn manage(
     Extension(auth): Extension<Auth>,
     Extension(identity): Extension<Identity>,
     Json(input): Json<Manage>,
 ) -> Result<Json<Managed>, ApiError> {
-    Ok(Json(auth.manage(&identity.user.id, input).await?))
+    Ok(Json(auth.manage(&identity, input).await?))
 }
 /// Starts a device sign-in for a command-line client.
 ///

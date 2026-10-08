@@ -191,6 +191,7 @@ mod tests {
         let initial = piqueld_core::manifest::parse_template_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='test'\n[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/app.git'\nbranch='main'").unwrap().normalize(ApplicationId::parse("test-app").unwrap());
         let (MutationResponse::Saved(saved), _) = store
             .accept(
+                crate::api::Actor::Daemon,
                 Mutation::Save {
                     application: Box::new(initial),
                     expected_application_id: None,
@@ -236,6 +237,7 @@ mod tests {
             .normalize(captured.id().clone());
         store
             .accept(
+                crate::api::Actor::Daemon,
                 Mutation::Save {
                     application: Box::new(edited.clone()),
                     expected_application_id: Some(op.environment_id.to_string()),
@@ -299,7 +301,13 @@ mod tests {
         spec: &str,
     ) -> (Operation, piqueld_core::ResolvedApplication) {
         let (MutationResponse::Operation(accepted), _) = store
-            .accept(Mutation::deploy(environment.clone()), None, true, None)
+            .accept(
+                crate::api::Actor::Daemon,
+                Mutation::deploy(environment.clone()),
+                None,
+                true,
+                None,
+            )
             .await
             .unwrap()
         else {
@@ -357,6 +365,7 @@ mod tests {
         let store = Store::open(directory.path().join("db")).await.unwrap();
         let (MutationResponse::Saved(saved), _) = store
             .accept(
+                crate::api::Actor::Daemon,
                 Mutation::Save {
                     application: Box::new(connection()),
                     expected_application_id: None,
@@ -398,7 +407,10 @@ mod tests {
             },
             repository(connection().spec().manifest.clone()),
         ] {
-            store.accept(mutation, None, true, None).await.unwrap();
+            store
+                .accept(crate::api::Actor::Daemon, mutation, None, true, None)
+                .await
+                .unwrap();
         }
         let op = store.retry_operation(&op).await.unwrap();
         store
@@ -430,6 +442,7 @@ mod tests {
         let store = Store::open(directory.path().join("db")).await.unwrap();
         let (MutationResponse::Saved(saved), _) = store
             .accept(
+                crate::api::Actor::Daemon,
                 Mutation::Save {
                     application: Box::new(connection()),
                     expected_application_id: None,
@@ -448,6 +461,7 @@ mod tests {
         let production = EnvironmentId::default_for(&application);
         let (MutationResponse::Environment(staging), _) = store
             .accept(
+                crate::api::Actor::Daemon,
                 Mutation::CreateEnvironment {
                     application,
                     name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
@@ -500,11 +514,25 @@ mod tests {
             name: piqueld_core::EnvironmentName::parse("qa").unwrap(),
         };
         assert!(matches!(
-            store.accept(rename(&production), None, true, None).await,
+            store
+                .accept(
+                    crate::api::Actor::Daemon,
+                    rename(&production),
+                    None,
+                    true,
+                    None
+                )
+                .await,
             Err(StoreError::EnvironmentConfigured { .. })
         ));
         store
-            .accept(rename(&staging.id), None, true, None)
+            .accept(
+                crate::api::Actor::Daemon,
+                rename(&staging.id),
+                None,
+                true,
+                None,
+            )
             .await
             .unwrap();
     }

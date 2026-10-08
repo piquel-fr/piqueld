@@ -3,7 +3,9 @@
 use super::applications::{ForceQuery, GenerationQuery, accept_mutation, request_body};
 use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
 use crate::api::Mutation;
+use crate::auth::Identity;
 use axum::{
+    Extension,
     body::Bytes,
     extract::{Query, State, rejection::BytesRejection},
     http::{HeaderMap, StatusCode},
@@ -47,6 +49,7 @@ fn environment_request<T: serde::de::DeserializeOwned>(
     (status=422,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn create(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
@@ -66,6 +69,7 @@ pub(super) async fn create(
     };
     accept_mutation(
         &state,
+        &identity,
         Mutation::CreateEnvironment {
             application: ApplicationId::parse(id)?,
             name: EnvironmentName::parse(request.name)?,
@@ -162,6 +166,7 @@ pub(super) async fn status(
     (status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn rename(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
@@ -170,6 +175,7 @@ pub(super) async fn rename(
     let request: EnvironmentRequest = environment_request(&headers, body)?;
     accept_mutation(
         &state,
+        &identity,
         Mutation::RenameEnvironment {
             id: EnvironmentId::parse(id)?,
             name: EnvironmentName::parse(request.name)?,
@@ -197,6 +203,7 @@ pub(super) async fn rename(
     (status=422,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn branch(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
@@ -205,6 +212,7 @@ pub(super) async fn branch(
     let request: EnvironmentBranchRequest = environment_request(&headers, body)?;
     accept_mutation(
         &state,
+        &identity,
         Mutation::SetBranch {
             id: EnvironmentId::parse(id)?,
             branch: TrackedBranch::new(request.branch, request.commit)?,
@@ -232,6 +240,7 @@ pub(super) async fn branch(
 )]
 pub(super) async fn delete(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
     query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
@@ -239,6 +248,7 @@ pub(super) async fn delete(
     let query = GenerationQuery::decode(query)?;
     accept_mutation(
         &state,
+        &identity,
         Mutation::Delete {
             id: EnvironmentId::parse(id)?,
         },
@@ -262,6 +272,7 @@ pub(super) async fn delete(
     (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn reconcile(
     State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
     query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
@@ -269,6 +280,7 @@ pub(super) async fn reconcile(
     let query = GenerationQuery::decode(query)?;
     accept_mutation(
         &state,
+        &identity,
         Mutation::Reconcile {
             id: EnvironmentId::parse(id)?,
         },

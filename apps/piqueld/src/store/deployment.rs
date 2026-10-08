@@ -283,6 +283,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::Actor::Daemon;
     use crate::api::{Mutation, MutationResponse};
     use piqueld_core::{ApplicationState, OperationState};
 
@@ -298,6 +299,7 @@ mod tests {
     async fn save(store: &Store, app: ApplicationTemplate, generation: u64) -> SavedApplication {
         let (MutationResponse::Saved(saved), wake) = store
             .accept(
+                Daemon,
                 Mutation::Save {
                     application: Box::new(app),
                     expected_application_id: None,
@@ -316,6 +318,29 @@ mod tests {
         saved
     }
 
+    /// Requests a deployment of `id`, returning it and whether the controller should wake.
+    async fn deploy(
+        store: &Store,
+        id: &EnvironmentId,
+        generation: u64,
+        key: Option<&str>,
+    ) -> (piqueld_core::api::AcceptedOperation, bool) {
+        let (MutationResponse::Operation(operation), wake) = store
+            .accept(
+                Daemon,
+                Mutation::deploy(id.clone()),
+                Some(generation),
+                false,
+                key,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("operation response")
+        };
+        (operation, wake)
+    }
+
     #[tokio::test]
     async fn save_and_deploy_accepts_saved_only_configuration_but_cannot_reverse_deletion() {
         let temp = tempfile::tempdir().unwrap();
@@ -325,6 +350,7 @@ mod tests {
         let application = store.get(&id).await.unwrap().application.application;
         let (MutationResponse::Saved(deployed), wake) = store
             .accept(
+                Daemon,
                 Mutation::Save {
                     application: Box::new(application.clone()),
                     expected_application_id: Some(saved.application_id.clone()),
@@ -351,6 +377,7 @@ mod tests {
         );
         let (MutationResponse::Deleted(deletion), _) = store
             .accept(
+                Daemon,
                 Mutation::DeleteApplication {
                     id: application.id().clone(),
                     environments: Vec::new(),
@@ -368,6 +395,7 @@ mod tests {
             assert!(matches!(
                 store
                     .accept(
+                        Daemon,
                         Mutation::Save {
                             application: Box::new(application.clone()),
                             expected_application_id: Some(saved.application_id.clone()),
@@ -419,27 +447,16 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        let (MutationResponse::Operation(deploy), wake) = store
-            .accept(
-                Mutation::deploy(id.clone()),
-                Some(saved.generation),
-                false,
-                Some("deploy-once"),
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("deployment")
-        };
+        let (first, wake) = deploy(&store, &id, saved.generation, Some("deploy-once")).await;
         assert!(wake);
         let original = store
-            .deployment_snapshot(&deploy.operation_id)
+            .deployment_snapshot(&first.operation_id)
             .await
             .unwrap()
             .template;
         store
             .transition_operation(
-                &deploy.operation_id,
+                &first.operation_id,
                 OperationState::Requested,
                 OperationState::Running,
                 None,
@@ -459,7 +476,7 @@ mod tests {
         drop(store);
         let store = Store::open(&path).await.unwrap();
         store.recover_interrupted().await.unwrap();
-        let op = store.operation(&deploy.operation_id).await.unwrap();
+        let op = store.operation(&first.operation_id).await.unwrap();
         let attempts = store.deployment_attempts(&op.id, None, 100).await.unwrap();
         assert_eq!(attempts.items.len(), 1);
         assert_eq!(attempts.items[0].attempt, 1);
@@ -471,27 +488,10 @@ mod tests {
             store.deployment_snapshot(&op.id).await.unwrap().template,
             original
         );
-        let (MutationResponse::Operation(replay), wake) = store
-            .accept(
-                Mutation::deploy(id.clone()),
-                Some(1),
-                false,
-                Some("deploy-once"),
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("replay")
-        };
+        let (replay, wake) = deploy(&store, &id, 1, Some("deploy-once")).await;
         assert!(!wake);
         assert_eq!(replay.operation_id, op.id);
-        let (MutationResponse::Operation(next), _) = store
-            .accept(Mutation::deploy(id.clone()), Some(2), false, None)
-            .await
-            .unwrap()
-        else {
-            panic!("deployment")
-        };
+        let (next, _) = deploy(&store, &id, 2, None).await;
         assert_ne!(next.operation_id, op.id);
         assert!(matches!(
             store.retry_operation(&op).await,

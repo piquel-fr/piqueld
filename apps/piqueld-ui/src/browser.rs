@@ -1,5 +1,6 @@
 //! Leptos client-side-rendered dashboard routes and shared data services.
 
+mod access;
 mod auth;
 mod builds;
 mod dashboard;

@@ -26,6 +26,24 @@
         ],
         "type": "object"
       },
+      "Account": {
+        "description": "An account and its grants.",
+        "properties": {
+          "grants": {
+            "$ref": "#/components/schemas/Grants",
+            "description": "What the account may do."
+          },
+          "user": {
+            "$ref": "#/components/schemas/User",
+            "description": "Account information."
+          }
+        },
+        "required": [
+          "user",
+          "grants"
+        ],
+        "type": "object"
+      },
       "ActionDuration": {
         "description": "Aggregated duration for one action phase.",
         "properties": {
@@ -1868,7 +1886,7 @@
         "type": "object"
       },
       "Directory": {
-        "description": "Account management directory, available in full to every authenticated user.",
+        "description": "Account management directory. Callers with `accounts:manage` see every\naccount and invitation; everyone else sees only their own account.",
         "properties": {
           "credentials": {
             "description": "Sessions and tokens, without secrets.",
@@ -1892,9 +1910,9 @@
             "type": "array"
           },
           "users": {
-            "description": "Accounts.",
+            "description": "Accounts with their grants.",
             "items": {
-              "$ref": "#/components/schemas/User"
+              "$ref": "#/components/schemas/Account"
             },
             "type": "array"
           }
@@ -4521,6 +4539,34 @@
         ],
         "type": "object"
       },
+      "Grant": {
+        "description": "One grant on the wire: a permission on every application, or only on the\nlisted ones.\n\n```json\n{\"permission\": \"apps:deploy\", \"applications\": [\"app-0123abcd\"]}\n{\"permission\": \"system:read\"}\n```",
+        "properties": {
+          "applications": {
+            "description": "Stable IDs of the applications this grant is limited to; absent for\nevery application. Installation-wide permissions never have one.",
+            "items": {
+              "$ref": "#/components/schemas/ApplicationId"
+            },
+            "nullable": true,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "permission": {
+            "$ref": "#/components/schemas/Permission",
+            "description": "Granted permission."
+          }
+        },
+        "required": [
+          "permission"
+        ],
+        "type": "object"
+      },
+      "Grants": {
+        "items": {
+          "$ref": "#/components/schemas/Grant"
+        },
+        "type": "array"
+      },
       "HealthCheck": {
         "description": "User-declared container health check.",
         "oneOf": [
@@ -4689,6 +4735,10 @@
             "format": "int64",
             "type": "integer"
           },
+          "grants": {
+            "$ref": "#/components/schemas/Grants",
+            "description": "Grants the created account receives; empty for enrollment links."
+          },
           "id": {
             "description": "Revocation identifier.",
             "type": "string"
@@ -4696,12 +4746,18 @@
           "issuer_id": {
             "description": "Issuing account.",
             "type": "string"
+          },
+          "user_id": {
+            "description": "Existing account an enrollment link adds a passkey to; absent for\ninvitations that create an account.",
+            "nullable": true,
+            "type": "string"
           }
         },
         "required": [
           "id",
           "issuer_id",
-          "expires_at"
+          "expires_at",
+          "grants"
         ],
         "type": "object"
       },
@@ -4812,10 +4868,10 @@
         "type": "string"
       },
       "Manage": {
-        "description": "Account management commands. There are deliberately no ownership restrictions.",
+        "description": "Account management commands.\n\nEvery account may manage itself: its profile, passkeys, sessions, and tokens.\nChanging another account requires `accounts:manage` and that the caller\nholds every grant of that account; grants can only be handed out by\nsomeone who holds them. Passkeys are only added by their owner, so others\nreceive an enrollment link instead.",
         "oneOf": [
           {
-            "description": "Edit any account's profile.",
+            "description": "Edit an account's profile.",
             "properties": {
               "action": {
                 "enum": [
@@ -4845,7 +4901,7 @@
             "type": "object"
           },
           {
-            "description": "Delete any account except the last remaining one.",
+            "description": "Delete an account, unless no administrator with a passkey would remain.",
             "properties": {
               "action": {
                 "enum": [
@@ -4950,16 +5006,66 @@
             "type": "object"
           },
           {
-            "description": "Create a transferable invitation, valid for 24 hours.",
+            "description": "Replace an account's grants.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "set_grants"
+                ],
+                "type": "string"
+              },
+              "grants": {
+                "$ref": "#/components/schemas/Grants",
+                "description": "Complete new grant list."
+              },
+              "user_id": {
+                "description": "Target account.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "grants",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Create a transferable invitation, valid for 24 hours, whose account\nreceives `grants`.",
             "properties": {
               "action": {
                 "enum": [
                   "create_invitation"
                 ],
                 "type": "string"
+              },
+              "grants": {
+                "$ref": "#/components/schemas/Grants",
+                "description": "Grants for the created account."
               }
             },
             "required": [
+              "grants",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Create a single-use link, valid for 24 hours, that adds a passkey to an\nexisting account.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "create_enrollment"
+                ],
+                "type": "string"
+              },
+              "user_id": {
+                "description": "Target account.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
               "action"
             ],
             "type": "object"
@@ -4985,7 +5091,7 @@
             "type": "object"
           },
           {
-            "description": "Create an automation token; callers supply 90 days for the default.",
+            "description": "Create an automation token for the caller's own account; callers supply\n90 days for the default.",
             "properties": {
               "action": {
                 "enum": [
@@ -5003,14 +5109,9 @@
               "name": {
                 "description": "Token label.",
                 "type": "string"
-              },
-              "user_id": {
-                "description": "Target account.",
-                "type": "string"
               }
             },
             "required": [
-              "user_id",
               "name",
               "action"
             ],
@@ -5022,7 +5123,7 @@
         "description": "Management result. Secrets are disclosed only once.",
         "properties": {
           "invitation_url": {
-            "description": "Newly created invitation link.",
+            "description": "Newly created invitation or enrollment link.",
             "nullable": true,
             "type": "string"
           },
@@ -5484,6 +5585,24 @@
         ],
         "type": "object"
       },
+      "Permission": {
+        "enum": [
+          "admin",
+          "apps:read",
+          "apps:write",
+          "apps:deploy",
+          "apps:delete",
+          "secrets:write",
+          "logs:read",
+          "apps:exec",
+          "events:read",
+          "apps:create",
+          "system:read",
+          "system:operate",
+          "accounts:manage"
+        ],
+        "type": "string"
+      },
       "Plan": {
         "additionalProperties": false,
         "description": "Ordered runtime plan and its diagnostics.",
@@ -5696,14 +5815,14 @@
         "type": "string"
       },
       "RegistrationStart": {
-        "description": "New account information and its single-use invitation or setup secret.",
+        "description": "Passkey registration: a new account redeeming an invitation or setup\nsecret, an existing account redeeming an enrollment link, or a signed-in\naccount adding a passkey to itself.",
         "properties": {
           "display_name": {
-            "description": "New account display name.",
+            "description": "New account display name; ignored for enrollment.",
             "type": "string"
           },
           "invitation": {
-            "description": "Invitation or initial setup secret; absent when adding to an existing account.",
+            "description": "Invitation, enrollment, or initial setup secret; absent when a signed-in\naccount adds a passkey to itself.",
             "nullable": true,
             "type": "string"
           },
@@ -5712,12 +5831,12 @@
             "type": "string"
           },
           "user_id": {
-            "description": "Existing target account; any authenticated user may enroll its passkeys.",
+            "description": "The signed-in caller's own account, when adding a passkey to itself.",
             "nullable": true,
             "type": "string"
           },
           "username": {
-            "description": "New account name.",
+            "description": "New account name; ignored for enrollment.",
             "type": "string"
           }
         },
@@ -6600,6 +6719,24 @@
         ],
         "type": "object"
       },
+      "Session": {
+        "description": "The signed-in account and what the current credential may do.",
+        "properties": {
+          "grants": {
+            "$ref": "#/components/schemas/Grants",
+            "description": "Effective grants of the credential used for this request."
+          },
+          "user": {
+            "$ref": "#/components/schemas/User",
+            "description": "Signed-in account."
+          }
+        },
+        "required": [
+          "user",
+          "grants"
+        ],
+        "type": "object"
+      },
       "SetupLink": {
         "description": "First-account setup link, served only over the daemon's Unix socket.",
         "properties": {
@@ -6940,7 +7077,7 @@
         ]
       },
       "User": {
-        "description": "Public account information; accounts have identical capabilities.",
+        "description": "Public account information.",
         "properties": {
           "display_name": {
             "description": "Optional human-readable name (empty when unset).",
@@ -7717,7 +7854,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Gets deployment analytics for a time window."
+        "summary": "Gets deployment analytics for a time window.",
+        "x-piqueld-access": "events:read"
       }
     },
     "/api/v1/applications": {
@@ -7799,7 +7937,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "List applications"
+        "summary": "List applications",
+        "x-piqueld-access": "authenticated"
       },
       "post": {
         "description": "The body holds only the name, which must not already be in use (409\notherwise). Pass `deploy=true` to also deploy it (202 instead of 200).",
@@ -7934,7 +8073,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Creates an empty application."
+        "summary": "Creates an empty application.",
+        "x-piqueld-access": "apps:create"
       }
     },
     "/api/v1/applications/apply": {
@@ -8120,7 +8260,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Apply an application manifest"
+        "summary": "Apply an application manifest",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/applications/plan": {
@@ -8279,7 +8420,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Preview an application manifest"
+        "summary": "Preview an application manifest",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/applications/{id}": {
@@ -8406,7 +8548,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Delete an application and all its environments, retaining volumes"
+        "summary": "Delete an application and all its environments, retaining volumes",
+        "x-piqueld-access": "apps:delete"
       },
       "get": {
         "operationId": "getApplication",
@@ -8484,7 +8627,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Get an application and its environments"
+        "summary": "Get an application and its environments",
+        "x-piqueld-access": "apps:read"
       }
     },
     "/api/v1/applications/{id}/environments": {
@@ -8620,7 +8764,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Adds an environment to an application."
+        "summary": "Adds an environment to an application.",
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/jobs": {
@@ -8794,7 +8939,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/manifest": {
@@ -8887,7 +9033,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Downloads the saved configuration as a TOML manifest."
+        "summary": "Downloads the saved configuration as a TOML manifest.",
+        "x-piqueld-access": "apps:read"
       }
     },
     "/api/v1/applications/{id}/name": {
@@ -9061,7 +9208,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/rename": {
@@ -9177,7 +9325,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Renames an application."
+        "summary": "Renames an application.",
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/repository": {
@@ -9323,7 +9472,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Disconnects the manifest repository."
+        "summary": "Disconnects the manifest repository.",
+        "x-piqueld-access": "apps:write"
       },
       "put": {
         "operationId": "set_manifest_repository",
@@ -9495,7 +9645,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/repository/path": {
@@ -9669,7 +9820,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/repository/url": {
@@ -9843,7 +9995,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/routes": {
@@ -10017,7 +10170,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services": {
@@ -10191,7 +10345,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}": {
@@ -10345,7 +10500,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Removes a service from the saved configuration."
+        "summary": "Removes a service from the saved configuration.",
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/arguments": {
@@ -10527,7 +10683,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/command": {
@@ -10709,7 +10866,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/depends-on": {
@@ -10891,7 +11049,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/environment": {
@@ -11073,7 +11232,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/environment/{key}": {
@@ -11235,7 +11395,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Removes an environment variable from a service."
+        "summary": "Removes an environment variable from a service.",
+        "x-piqueld-access": "apps:write"
       },
       "put": {
         "operationId": "set_service_environment_entry",
@@ -11423,7 +11584,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/general": {
@@ -11605,7 +11767,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/healthcheck": {
@@ -11787,7 +11950,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/healthcheck/command": {
@@ -11969,7 +12133,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/healthcheck/interval": {
@@ -12151,7 +12316,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/healthcheck/path": {
@@ -12333,7 +12499,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/healthcheck/port": {
@@ -12515,7 +12682,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/healthcheck/timeout": {
@@ -12697,7 +12865,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/mount": {
@@ -12879,7 +13048,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       },
       "put": {
         "operationId": "set_service_mount",
@@ -13059,7 +13229,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/mounts": {
@@ -13241,7 +13412,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/name": {
@@ -13423,7 +13595,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/process": {
@@ -13605,7 +13778,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/replicas": {
@@ -13787,7 +13961,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/resources": {
@@ -13969,7 +14144,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/resources/cpu": {
@@ -14151,7 +14327,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/resources/memory": {
@@ -14333,7 +14510,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/rollout": {
@@ -14515,7 +14693,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/secrets": {
@@ -14697,7 +14876,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/source": {
@@ -14879,7 +15059,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/source/git/branch": {
@@ -15061,7 +15242,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/source/git/commit": {
@@ -15243,7 +15425,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/source/git/context": {
@@ -15425,7 +15608,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/source/git/dockerfile": {
@@ -15607,7 +15791,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/source/git/url": {
@@ -15789,7 +15974,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/services/{service}/source/image": {
@@ -15971,7 +16157,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/variables": {
@@ -16145,7 +16332,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/volumes": {
@@ -16319,7 +16507,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       },
       "put": {
         "operationId": "set_application_volumes",
@@ -16491,7 +16680,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/applications/{id}/volumes/{volume}": {
@@ -16645,7 +16835,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Removes a named volume from the saved configuration."
+        "summary": "Removes a named volume from the saved configuration.",
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/auth/device/approve": {
@@ -16684,7 +16875,8 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "summary": "Approves a pending device sign-in."
+        "summary": "Approves a pending device sign-in.",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/auth/device/inspect": {
@@ -16723,7 +16915,8 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "summary": "Inspects a pending device sign-in."
+        "summary": "Inspects a pending device sign-in.",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/auth/device/poll": {
@@ -16763,7 +16956,8 @@
           }
         },
         "security": [],
-        "summary": "Polls a device sign-in."
+        "summary": "Polls a device sign-in.",
+        "x-piqueld-access": "public"
       }
     },
     "/api/v1/auth/device/start": {
@@ -16793,11 +16987,13 @@
           }
         },
         "security": [],
-        "summary": "Starts a device sign-in for a command-line client."
+        "summary": "Starts a device sign-in for a command-line client.",
+        "x-piqueld-access": "public"
       }
     },
     "/api/v1/auth/directory": {
       "get": {
+        "description": "With `accounts:manage`, lists every account and invitation; otherwise only\nthe caller's own account.",
         "operationId": "authDirectory",
         "responses": {
           "200": {
@@ -16821,7 +17017,8 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "summary": "Lists accounts, passkeys, credentials, and open invitations."
+        "summary": "Lists accounts, passkeys, credentials, and open invitations.",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/auth/login/finish": {
@@ -16861,7 +17058,8 @@
           }
         },
         "security": [],
-        "summary": "Finishes a passkey sign-in."
+        "summary": "Finishes a passkey sign-in.",
+        "x-piqueld-access": "public"
       }
     },
     "/api/v1/auth/login/start": {
@@ -16891,7 +17089,8 @@
           }
         },
         "security": [],
-        "summary": "Starts a passkey sign-in."
+        "summary": "Starts a passkey sign-in.",
+        "x-piqueld-access": "public"
       }
     },
     "/api/v1/auth/logout": {
@@ -16920,11 +17119,13 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "summary": "Signs out."
+        "summary": "Signs out.",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/auth/manage": {
       "post": {
+        "description": "Anyone may manage their own account. Changing other accounts requires\n`accounts:manage` and every grant the account holds; handing out grants\nrequires holding them (403 `permission_denied` or `permission_exceeded`).",
         "operationId": "authManage",
         "requestBody": {
           "content": {
@@ -16958,7 +17159,8 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "summary": "Applies one account management action as the signed-in user."
+        "summary": "Applies one account management action as the signed-in user.",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/auth/me": {
@@ -16969,7 +17171,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/User"
+                  "$ref": "#/components/schemas/Session"
                 }
               }
             },
@@ -16986,12 +17188,13 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "summary": "Gets the signed-in user."
+        "summary": "Gets the signed-in user and what the current credential may do.",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/auth/register/finish": {
       "post": {
-        "description": "Public. Verifies the passkey against the ceremony started in the same\nbrowser. New accounts are signed in with a session cookie; adding a passkey\nto an existing account is not.",
+        "description": "Public. Verifies the passkey against the ceremony started in the same\nbrowser. Redeeming an invitation, setup, or enrollment secret signs the\naccount in with a session cookie; a signed-in caller adding a passkey to\nitself gets none.",
         "operationId": "authRegistrationFinish",
         "requestBody": {
           "content": {
@@ -17026,12 +17229,13 @@
           }
         },
         "security": [],
-        "summary": "Finishes passkey registration."
+        "summary": "Finishes passkey registration.",
+        "x-piqueld-access": "public"
       }
     },
     "/api/v1/auth/register/start": {
       "post": {
-        "description": "Public. Registers a new account by redeeming an invitation or setup secret,\nor, when signed in, adds a passkey to an existing account. Sets a short-lived\nceremony cookie that the finish request must present. Rate limited per\nclient address (429 with `Retry-After`).",
+        "description": "Public. Registers a new account by redeeming an invitation or setup secret,\nadds a passkey to an existing account by redeeming an enrollment link, or,\nwhen signed in, adds a passkey to the caller's own account. Sets a\nshort-lived ceremony cookie that the finish request must present. Rate\nlimited per client address (429 with `Retry-After`).",
         "operationId": "authRegistrationStart",
         "requestBody": {
           "content": {
@@ -17066,7 +17270,8 @@
           }
         },
         "security": [],
-        "summary": "Starts passkey registration."
+        "summary": "Starts passkey registration.",
+        "x-piqueld-access": "public"
       }
     },
     "/api/v1/auth/setup-link": {
@@ -17116,7 +17321,8 @@
           }
         },
         "security": [],
-        "summary": "Gets the first-account setup link."
+        "summary": "Gets the first-account setup link.",
+        "x-piqueld-access": "public"
       }
     },
     "/api/v1/auth/status": {
@@ -17146,7 +17352,8 @@
           }
         },
         "security": [],
-        "summary": "Gets authentication status."
+        "summary": "Gets authentication status.",
+        "x-piqueld-access": "public"
       }
     },
     "/api/v1/builds": {
@@ -17235,7 +17442,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Lists Git source builds, newest first."
+        "summary": "Lists Git source builds, newest first.",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/builds/{id}/logs": {
@@ -17324,7 +17532,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Gets captured output for one build."
+        "summary": "Gets captured output for one build.",
+        "x-piqueld-access": "logs:read"
       }
     },
     "/api/v1/diagnostics/{id}": {
@@ -17383,7 +17592,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Gets a recorded diagnostic."
+        "summary": "Gets a recorded diagnostic.",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/environments/{id}": {
@@ -17501,7 +17711,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Delete an environment's services and networks, retaining volumes"
+        "summary": "Delete an environment's services and networks, retaining volumes",
+        "x-piqueld-access": "apps:delete"
       },
       "get": {
         "operationId": "getEnvironment",
@@ -17579,7 +17790,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Get an environment"
+        "summary": "Get an environment",
+        "x-piqueld-access": "apps:read"
       }
     },
     "/api/v1/environments/{id}/branch": {
@@ -17715,7 +17927,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Changes the branch an environment follows."
+        "summary": "Changes the branch an environment follows.",
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/environments/{id}/deploy": {
@@ -17850,7 +18063,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Deploys the application's saved configuration to an environment."
+        "summary": "Deploys the application's saved configuration to an environment.",
+        "x-piqueld-access": "apps:deploy"
       }
     },
     "/api/v1/environments/{id}/deployments": {
@@ -17928,7 +18142,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Lists deployments of an environment, newest first."
+        "summary": "Lists deployments of an environment, newest first.",
+        "x-piqueld-access": "apps:read"
       }
     },
     "/api/v1/environments/{id}/deployments/{deployment}/attempts": {
@@ -18014,7 +18229,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Lists attempts of one deployment, newest first."
+        "summary": "Lists attempts of one deployment, newest first.",
+        "x-piqueld-access": "apps:read"
       }
     },
     "/api/v1/environments/{id}/detail": {
@@ -18104,7 +18320,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Get desired and observed environment state"
+        "summary": "Get desired and observed environment state",
+        "x-piqueld-access": "apps:read"
       }
     },
     "/api/v1/environments/{id}/exec": {
@@ -18155,7 +18372,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "x-piqueld-access": "apps:exec"
       }
     },
     "/api/v1/environments/{id}/logs": {
@@ -18278,7 +18496,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Gets recent container output for an environment."
+        "summary": "Gets recent container output for an environment.",
+        "x-piqueld-access": "logs:read"
       }
     },
     "/api/v1/environments/{id}/reconcile": {
@@ -18395,7 +18614,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Reconciles an environment."
+        "summary": "Reconciles an environment.",
+        "x-piqueld-access": "apps:deploy"
       }
     },
     "/api/v1/environments/{id}/rename": {
@@ -18521,7 +18741,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Renames an environment."
+        "summary": "Renames an environment.",
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/environments/{id}/secrets": {
@@ -18580,7 +18801,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Lists an environment's secrets."
+        "summary": "Lists an environment's secrets.",
+        "x-piqueld-access": "apps:read"
       }
     },
     "/api/v1/environments/{id}/secrets/{name}": {
@@ -18676,7 +18898,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Deletes a secret."
+        "summary": "Deletes a secret.",
+        "x-piqueld-access": "secrets:write"
       },
       "put": {
         "description": "The body is the raw value (`application/octet-stream`, 1–512000 bytes).\n`X-Expected-Generation` must be 0 to create a secret, or its current\ngeneration to replace it; a mismatch fails with 409. Running services keep\ntheir value until the next deployment. The response carries metadata only.",
@@ -18781,7 +19004,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Creates or replaces a secret value."
+        "summary": "Creates or replaces a secret value.",
+        "x-piqueld-access": "secrets:write"
       }
     },
     "/api/v1/environments/{id}/status": {
@@ -18861,7 +19085,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Get environment status"
+        "summary": "Get environment status",
+        "x-piqueld-access": "apps:read"
       }
     },
     "/api/v1/events": {
@@ -19044,7 +19269,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Lists structured events."
+        "summary": "Lists structured events.",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/events/stream": {
@@ -19237,7 +19463,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Streams structured events as server-sent events."
+        "summary": "Streams structured events as server-sent events.",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/notifications/deliveries": {
@@ -19308,7 +19535,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Lists webhook notification deliveries."
+        "summary": "Lists webhook notification deliveries.",
+        "x-piqueld-access": "system:read"
       }
     },
     "/api/v1/notifications/deliveries/{id}/retry": {
@@ -19377,7 +19605,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Retries a webhook notification delivery."
+        "summary": "Retries a webhook notification delivery.",
+        "x-piqueld-access": "system:operate"
       }
     },
     "/api/v1/openapi.json": {
@@ -19405,7 +19634,8 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "summary": "Get the `OpenAPI` document"
+        "summary": "Get the `OpenAPI` document",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/operations/{id}": {
@@ -19475,7 +19705,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Get an operation"
+        "summary": "Get an operation",
+        "x-piqueld-access": "apps:read"
       }
     },
     "/api/v1/system/configuration": {
@@ -19514,12 +19745,13 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Gets the effective read-only host configuration."
+        "summary": "Gets the effective read-only host configuration.",
+        "x-piqueld-access": "system:read"
       }
     },
     "/api/v1/system/dns/refresh": {
       "post": {
-        "description": "Lists every configured provider's zones immediately instead of at the next\nhourly discovery, and returns the updated providers and certificates.\nCredential files are only read at daemon startup.",
+        "description": "Lists every configured provider's zones immediately instead of at the next\nhourly discovery, and returns the updated providers and certificates,\nempty without `system:read` like [`status`]. Credential files are only\nread at daemon startup.",
         "operationId": "refreshDns",
         "responses": {
           "200": {
@@ -19543,7 +19775,8 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "summary": "Check DNS providers now"
+        "summary": "Check DNS providers now",
+        "x-piqueld-access": "system:operate"
       }
     },
     "/api/v1/system/readiness": {
@@ -19582,7 +19815,8 @@
             "description": "Deployment dependencies unavailable"
           }
         },
-        "summary": "Checks whether deployment dependencies are ready."
+        "summary": "Checks whether deployment dependencies are ready.",
+        "x-piqueld-access": "authenticated"
       }
     },
     "/api/v1/system/resources": {
@@ -19621,7 +19855,8 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Gets daemon resource usage."
+        "summary": "Gets daemon resource usage.",
+        "x-piqueld-access": "system:read"
       }
     },
     "/api/v1/system/secrets/recover-key": {
@@ -19670,11 +19905,13 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Recovers from a lost secret master key."
+        "summary": "Recovers from a lost secret master key.",
+        "x-piqueld-access": "system:operate"
       }
     },
     "/api/v1/system/status": {
       "get": {
+        "description": "DNS providers and certificates are empty without `system:read`; see\n[`redact_dns`].",
         "operationId": "systemStatus",
         "responses": {
           "200": {
@@ -19698,7 +19935,8 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "summary": "Get daemon status"
+        "summary": "Get daemon status",
+        "x-piqueld-access": "authenticated"
       }
     }
   },

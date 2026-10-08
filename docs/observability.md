@@ -95,7 +95,9 @@ history intentionally removes that data rather than exposing deletion tombstones
 
 ## API and dashboard
 
-All administrative routes use the existing API access boundary. See the generated
+Routes require the permissions described in [authorization](authorization.md):
+application history, diagnostics, and analytics are limited to the applications a
+caller holds `events:read` on, and daemon history requires `system:read`. See the generated
 [OpenAPI document](openapi-v1.json) for exact contracts.
 
 | Route | Purpose |

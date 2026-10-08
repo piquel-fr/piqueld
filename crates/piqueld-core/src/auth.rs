@@ -1,8 +1,9 @@
 //! Authentication contracts shared by the daemon, browser, and CLI.
+use crate::access::Grants;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Public account information; accounts have identical capabilities.
+/// Public account information.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct User {
     /// Immutable `WebAuthn` user handle.
@@ -11,6 +12,22 @@ pub struct User {
     pub username: String,
     /// Optional human-readable name (empty when unset).
     pub display_name: String,
+}
+/// The signed-in account and what the current credential may do.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct Session {
+    /// Signed-in account.
+    pub user: User,
+    /// Effective grants of the credential used for this request.
+    pub grants: Grants,
+}
+/// An account and its grants.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct Account {
+    /// Account information.
+    pub user: User,
+    /// What the account may do.
+    pub grants: Grants,
 }
 /// Public initialization state and canonical browser origin.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -26,16 +43,19 @@ pub struct SetupLink {
     /// Dashboard URL carrying the single-use setup secret.
     pub url: String,
 }
-/// New account information and its single-use invitation or setup secret.
+/// Passkey registration: a new account redeeming an invitation or setup
+/// secret, an existing account redeeming an enrollment link, or a signed-in
+/// account adding a passkey to itself.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct RegistrationStart {
-    /// Invitation or initial setup secret; absent when adding to an existing account.
+    /// Invitation, enrollment, or initial setup secret; absent when a signed-in
+    /// account adds a passkey to itself.
     pub invitation: Option<String>,
-    /// Existing target account; any authenticated user may enroll its passkeys.
+    /// The signed-in caller's own account, when adding a passkey to itself.
     pub user_id: Option<String>,
-    /// New account name.
+    /// New account name; ignored for enrollment.
     pub username: String,
-    /// New account display name.
+    /// New account display name; ignored for enrollment.
     pub display_name: String,
     /// Human-readable passkey label.
     pub passkey_name: String,
@@ -89,14 +109,20 @@ pub struct InvitationView {
     pub id: String,
     /// Issuing account.
     pub issuer_id: String,
+    /// Existing account an enrollment link adds a passkey to; absent for
+    /// invitations that create an account.
+    pub user_id: Option<String>,
     /// Expiry as Unix seconds.
     pub expires_at: i64,
+    /// Grants the created account receives; empty for enrollment links.
+    pub grants: Grants,
 }
-/// Account management directory, available in full to every authenticated user.
+/// Account management directory. Callers with `accounts:manage` see every
+/// account and invitation; everyone else sees only their own account.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Directory {
-    /// Accounts.
-    pub users: Vec<User>,
+    /// Accounts with their grants.
+    pub users: Vec<Account>,
     /// Enrolled passkeys.
     pub passkeys: Vec<PasskeyView>,
     /// Sessions and tokens, without secrets.
@@ -104,11 +130,17 @@ pub struct Directory {
     /// Unexpired invitations.
     pub invitations: Vec<InvitationView>,
 }
-/// Account management commands. There are deliberately no ownership restrictions.
+/// Account management commands.
+///
+/// Every account may manage itself: its profile, passkeys, sessions, and tokens.
+/// Changing another account requires `accounts:manage` and that the caller
+/// holds every grant of that account; grants can only be handed out by
+/// someone who holds them. Passkeys are only added by their owner, so others
+/// receive an enrollment link instead.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Manage {
-    /// Edit any account's profile.
+    /// Edit an account's profile.
     UpdateUser {
         /// Target account.
         user_id: String,
@@ -117,7 +149,7 @@ pub enum Manage {
         /// Display name.
         display_name: String,
     },
-    /// Delete any account except the last remaining one.
+    /// Delete an account, unless no administrator with a passkey would remain.
     DeleteUser {
         /// Target account.
         user_id: String,
@@ -144,17 +176,33 @@ pub enum Manage {
         /// Target account.
         user_id: String,
     },
-    /// Create a transferable invitation, valid for 24 hours.
-    CreateInvitation,
+    /// Replace an account's grants.
+    SetGrants {
+        /// Target account.
+        user_id: String,
+        /// Complete new grant list.
+        grants: Grants,
+    },
+    /// Create a transferable invitation, valid for 24 hours, whose account
+    /// receives `grants`.
+    CreateInvitation {
+        /// Grants for the created account.
+        grants: Grants,
+    },
+    /// Create a single-use link, valid for 24 hours, that adds a passkey to an
+    /// existing account.
+    CreateEnrollment {
+        /// Target account.
+        user_id: String,
+    },
     /// Revoke a pending invitation.
     RevokeInvitation {
         /// Invitation identifier.
         id: String,
     },
-    /// Create an automation token; callers supply 90 days for the default.
+    /// Create an automation token for the caller's own account; callers supply
+    /// 90 days for the default.
     CreateToken {
-        /// Target account.
-        user_id: String,
         /// Token label.
         name: String,
         /// Lifetime in days; absent means no expiry.
@@ -166,7 +214,7 @@ pub enum Manage {
 pub struct Managed {
     /// Newly created automation token.
     pub token: Option<String>,
-    /// Newly created invitation link.
+    /// Newly created invitation or enrollment link.
     pub invitation_url: Option<String>,
 }
 /// Device login challenge for an interactive CLI.

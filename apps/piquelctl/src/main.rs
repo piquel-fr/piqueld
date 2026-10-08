@@ -1,5 +1,6 @@
 //! Safe, small operator command-line client for the Plan 06 piqueld API.
 
+mod accounts;
 mod auth;
 mod cli;
 mod commands;
@@ -223,6 +224,27 @@ mod tests {
         assert!(
             Cli::try_parse_from(["piquelctl", "app", "exec", "notes", "Web", "--", "id"]).is_err()
         );
+    }
+
+    #[test]
+    fn account_targets_do_not_select_the_credential() {
+        use super::{accounts::AccountCommand, cli::Command};
+        for (command, extra) in [
+            ("access", &["--permission", "apps:read"][..]),
+            ("enroll", &[]),
+        ] {
+            let mut arguments = vec!["piquelctl", "--account", "alice", "account", command, "bob"];
+            arguments.extend(extra);
+            let cli = Cli::try_parse_from(arguments).expect("command parses");
+            assert_eq!(cli.auth.account.as_deref(), Some("alice"));
+            let Command::Account {
+                command: AccountCommand::Access { target, .. } | AccountCommand::Enroll { target },
+            } = cli.command
+            else {
+                panic!("account command");
+            };
+            assert_eq!(target, "bob");
+        }
     }
 
     #[test]

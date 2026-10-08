@@ -321,6 +321,11 @@
       "rustType": "piqueld_core::auth::User"
     },
     {
+      "schema": "Session",
+      "name": "Session",
+      "rustType": "piqueld_core::auth::Session"
+    },
+    {
       "schema": "AuthStatus",
       "name": "AuthStatus",
       "rustType": "piqueld_core::auth::AuthStatus"

@@ -258,7 +258,7 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
     drop(connection);
 
     let summaries = store
-        .list_summaries(None, 50)
+        .list_summaries(&piqueld_core::access::Scope::All, None, 50)
         .await
         .expect("summary listing does not read manifest documents");
     assert_eq!(summaries.items.len(), 2);

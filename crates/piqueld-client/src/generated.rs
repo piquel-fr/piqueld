@@ -5201,6 +5201,9 @@ impl Client {
     }
     /*Lists accounts, passkeys, credentials, and open invitations
 
+    With `accounts:manage`, lists every account and invitation; otherwise only
+    the caller's own account.
+
     Sends a `GET` request to `/api/v1/auth/directory`
 
     */
@@ -5370,6 +5373,10 @@ impl Client {
     }
     /*Applies one account management action as the signed-in user
 
+    Anyone may manage their own account. Changing other accounts requires
+    `accounts:manage` and every grant the account holds; handing out grants
+    requires holding them (403 `permission_denied` or `permission_exceeded`).
+
     Sends a `POST` request to `/api/v1/auth/manage`
 
     */
@@ -5410,14 +5417,15 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Gets the signed-in user
+    /*Gets the signed-in user and what the current credential may do
 
     Sends a `GET` request to `/api/v1/auth/me`
 
     */
     pub async fn auth_me<'a>(
         &'a self,
-    ) -> Result<ResponseValue<piqueld_core::auth::User>, Error<piqueld_core::api::ErrorBody>> {
+    ) -> Result<ResponseValue<piqueld_core::auth::Session>, Error<piqueld_core::api::ErrorBody>>
+    {
         let url = format!("{}/api/v1/auth/me", self.baseurl,);
         let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
         header_map.append(
@@ -5452,8 +5460,9 @@ impl Client {
     /*Finishes passkey registration
 
     Public. Verifies the passkey against the ceremony started in the same
-    browser. New accounts are signed in with a session cookie; adding a passkey
-    to an existing account is not.
+    browser. Redeeming an invitation, setup, or enrollment secret signs the
+    account in with a session cookie; a signed-in caller adding a passkey to
+    itself gets none.
 
     Sends a `POST` request to `/api/v1/auth/register/finish`
 
@@ -5497,9 +5506,10 @@ impl Client {
     /*Starts passkey registration
 
     Public. Registers a new account by redeeming an invitation or setup secret,
-    or, when signed in, adds a passkey to an existing account. Sets a short-lived
-    ceremony cookie that the finish request must present. Rate limited per
-    client address (429 with `Retry-After`).
+    adds a passkey to an existing account by redeeming an enrollment link, or,
+    when signed in, adds a passkey to the caller's own account. Sets a
+    short-lived ceremony cookie that the finish request must present. Rate
+    limited per client address (429 with `Retry-After`).
 
     Sends a `POST` request to `/api/v1/auth/register/start`
 
@@ -7317,8 +7327,9 @@ impl Client {
     /*Check DNS providers now
 
     Lists every configured provider's zones immediately instead of at the next
-    hourly discovery, and returns the updated providers and certificates.
-    Credential files are only read at daemon startup.
+    hourly discovery, and returns the updated providers and certificates,
+    empty without `system:read` like [`status`]. Credential files are only
+    read at daemon startup.
 
     Sends a `POST` request to `/api/v1/system/dns/refresh`
 
@@ -7507,6 +7518,9 @@ impl Client {
         }
     }
     /*Get daemon status
+
+    DNS providers and certificates are empty without `system:read`; see
+    [`redact_dns`].
 
     Sends a `GET` request to `/api/v1/system/status`
 

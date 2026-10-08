@@ -1,14 +1,29 @@
 //! Durable opaque sessions and short-lived, explicitly approved device logins.
 use super::{Auth, AuthError, CredentialKind, DAY, MAX_PENDING, Result, now_secs};
+use piqueld_core::access::Grants;
 use piqueld_core::auth::{DeviceRequest, DeviceStart, DeviceToken, User};
 use std::collections::HashMap;
 
-/// The authenticated caller and the credential (session, token, or CLI login)
-/// that proved it.
+/// The authenticated caller, the credential (session, token, or CLI login)
+/// that proved it, and what that credential may do.
 #[derive(Clone)]
-pub(crate) struct Identity {
+pub struct Identity {
+    /// Signed-in account.
     pub user: User,
+    /// Credential that authenticated the request.
     pub credential_id: String,
+    /// Effective grants, read when the request was authenticated.
+    pub grants: Grants,
+}
+
+impl Identity {
+    /// This caller, for changes that re-read its grants in their transaction.
+    #[must_use]
+    pub fn caller(&self) -> crate::store::Caller<'_> {
+        crate::store::Caller {
+            credential_id: &self.credential_id,
+        }
+    }
 }
 /// A pending CLI device login, following the OAuth device authorization flow.
 pub(super) struct Device {
@@ -48,11 +63,16 @@ impl Auth {
         Ok(Identity {
             user: owner.user,
             credential_id: owner.credential_id,
+            grants: owner.grants,
         })
     }
     /// Revokes the credential used for the current request.
-    pub(crate) async fn logout(&self, credential_id: &str) -> Result<()> {
-        Ok(self.0.store.revoke_credential(credential_id).await?)
+    pub(crate) async fn logout(&self, identity: &Identity) -> Result<()> {
+        Ok(self
+            .0
+            .store
+            .revoke_credential(identity.caller(), &identity.credential_id)
+            .await?)
     }
     /// Starts a CLI device login valid for ten minutes.
     ///

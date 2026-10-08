@@ -53,14 +53,10 @@ pub(super) async fn exec(
     State(state): State<ApiState>,
     ApiPath(id): ApiPath<String>,
     ExecUpgrade(upgrade): ExecUpgrade,
-    identity: Option<Extension<Identity>>,
+    Extension(identity): Extension<Identity>,
     request_id: Option<Extension<RequestId>>,
 ) -> Result<Response, ApiError> {
     let id = EnvironmentId::parse(id)?;
-    let account = identity.map_or_else(
-        || "An unidentified caller".to_owned(),
-        |Extension(identity)| identity.user.username,
-    );
     let request_id =
         request_id.and_then(|Extension(id)| id.header_value().to_str().ok().map(str::to_owned));
     Ok(upgrade
@@ -70,7 +66,10 @@ pub(super) async fn exec(
             let (mut writer, mut reader) = socket.split();
             let result = async {
                 let request = read_request(&mut reader).await?;
-                let session = state.exec(&id, &request, &account).await?;
+                let caller = crate::api::Actor::Account(identity.caller());
+                let session = state
+                    .exec(caller, &id, &request, &identity.user.username)
+                    .await?;
                 Ok(relay(session, reader, &mut writer).await)
             }
             .await;

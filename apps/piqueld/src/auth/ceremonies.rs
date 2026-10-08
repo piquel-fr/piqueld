@@ -1,9 +1,10 @@
 //! Fixed `WebAuthn` policy: discoverable credentials, required user verification,
 //! exact origin/RP binding, and server-side single-use ceremony state.
 use super::{
-    Auth, AuthError, CEREMONY_LIFETIME, CredentialKind, DAY, MAX_PENDING, Result, now_secs,
+    Auth, AuthError, CEREMONY_LIFETIME, CredentialKind, DAY, Identity, MAX_PENDING, Result,
+    now_secs,
 };
-use crate::store::{NewPasskey, PasskeyOwner};
+use crate::store::{Invitation, NewPasskey, PasskeyOwner};
 use base64::Engine;
 use piqueld_core::auth::{Ceremony, CeremonyFinish, RegistrationStart, User};
 use webauthn_rs_core::proto::{
@@ -20,8 +21,9 @@ pub(super) struct Pending {
 }
 /// The ceremony-specific state needed to verify the browser's response.
 enum Kind {
-    /// Adds a passkey to an existing user, or to a new user when `invitation`
-    /// holds the hash of the redeemed invitation secret.
+    /// Adds a passkey to the signed-in user, or redeems the setup secret or
+    /// invitation whose hash `invitation` holds: creating `user`, or adding to
+    /// it for enrollment links.
     Register {
         state: RegistrationState,
         user: User,
@@ -68,8 +70,11 @@ impl Auth {
         }
         Ok(pending.remove(id).ok_or(AuthError::Unauthorized)?.kind)
     }
-    /// Starts passkey registration for either an existing user (`user_id`, requires
-    /// an authenticated caller) or a new account redeeming an invitation.
+    /// Starts passkey registration for one of:
+    ///
+    /// - the signed-in `caller` adding a passkey to its own account (`user_id`);
+    /// - a new account redeeming the setup secret or an invitation;
+    /// - an existing account redeeming an enrollment link.
     ///
     /// Existing passkeys of the user are excluded so an authenticator cannot be
     /// registered twice. Resident keys and user verification are required.
@@ -77,30 +82,34 @@ impl Auth {
         &self,
         input: RegistrationStart,
         binding: &str,
-        authenticated: bool,
+        caller: Option<&Identity>,
     ) -> Result<Ceremony> {
         if input.passkey_name.is_empty() || input.passkey_name.len() > 200 {
             return Err(AuthError::Invalid("passkey name must contain 1–200 bytes"));
         }
         let (user, invitation) = if let Some(id) = input.user_id {
-            if !authenticated {
-                return Err(AuthError::Unauthorized);
+            let caller = caller.ok_or(AuthError::Unauthorized)?;
+            if caller.user.id != id {
+                return Err(AuthError::Invalid(
+                    "passkeys can only be added to your own account; create an enrollment link for others",
+                ));
             }
-            (self.user(&id).await?, None)
+            (caller.user.clone(), None)
         } else {
             let secret = input.invitation.ok_or(AuthError::Unauthorized)?;
-            if !self.invitation_valid(&secret).await? {
-                return Err(AuthError::Unauthorized);
-            }
-            Self::validate_profile(&input.username, &input.display_name)?;
-            (
-                User {
-                    id: Self::id(),
-                    username: input.username,
-                    display_name: input.display_name,
-                },
-                Some(Self::hash(&secret)),
-            )
+            let user = match self.invitation(&secret).await? {
+                None => return Err(AuthError::Unauthorized),
+                Some(Invitation::Enrollment(user)) => user,
+                Some(Invitation::Account) => {
+                    Self::validate_profile(&input.username, &input.display_name)?;
+                    User {
+                        id: Self::id(),
+                        username: input.username,
+                        display_name: input.display_name,
+                    }
+                }
+            };
+            (user, Some(Self::hash(&secret)))
         };
         let excluded = self
             .0
@@ -137,15 +146,15 @@ impl Auth {
     }
     /// Verifies the registration response and stores the passkey.
     ///
-    /// New accounts are created atomically with the passkey, the invitation is
-    /// consumed, and a browser session token is returned. Adding a passkey to an
-    /// existing user returns no token. A store refusal (e.g. an invitation used
-    /// concurrently) is reported as unauthorized.
+    /// Redeeming a secret consumes it atomically with storing the passkey (and
+    /// creating the account), and returns a browser session token. A signed-in
+    /// account adding a passkey to itself gets no token. A store refusal (e.g.
+    /// an invitation used concurrently) is reported as unauthorized.
     pub(crate) async fn registration_finish(
         &self,
         input: CeremonyFinish,
         binding: &str,
-        authenticated: bool,
+        caller: Option<&Identity>,
     ) -> Result<(User, Option<String>)> {
         let Kind::Register {
             state,
@@ -156,7 +165,7 @@ impl Auth {
         else {
             return Err(AuthError::Unauthorized);
         };
-        if invitation.is_none() && !authenticated {
+        if invitation.is_none() && caller.is_none_or(|caller| caller.user.id != user.id) {
             return Err(AuthError::Unauthorized);
         }
         let response = serde_json::from_value(input.credential)
@@ -170,18 +179,18 @@ impl Auth {
             name: &name,
             credential: &serde_json::to_string(&credential)?,
         };
-        let is_new = invitation.is_some();
-        let (owner, token) = match &invitation {
-            Some(invitation_hash) => {
-                let (token, session) = Self::browser_session()?;
-                let owner = PasskeyOwner::New {
-                    user: &user,
-                    invitation_hash,
-                    session,
-                };
-                (owner, Some(token))
-            }
-            None => (PasskeyOwner::Existing(&user.id), None),
+        let redeemed = invitation.is_some();
+        let (owner, token) = if let Some(invitation_hash) = &invitation {
+            let (token, session) = Self::browser_session()?;
+            let owner = PasskeyOwner::Redeem {
+                user: &user,
+                invitation_hash,
+                session,
+            };
+            (owner, Some(token))
+        } else {
+            let caller = caller.ok_or(AuthError::Unauthorized)?.caller();
+            (PasskeyOwner::Existing(caller, &user.id), None)
         };
         if !self.0.store.add_passkey(owner, passkey).await? {
             return Err(AuthError::Unauthorized);
@@ -189,13 +198,13 @@ impl Auth {
         tracing::info!(
             user_id = %user.id,
             username = %user.username,
-            new_account = is_new,
+            redeemed,
             "registered passkey"
         );
         Ok((user, token))
     }
     /// A week-long browser session, which also ends after a day without use.
-    fn browser_session() -> Result<(String, crate::store::NewCredential<'static>)> {
+    pub(super) fn browser_session() -> Result<(String, crate::store::NewCredential<'static>)> {
         Self::new_credential(
             CredentialKind::Browser,
             "Browser",

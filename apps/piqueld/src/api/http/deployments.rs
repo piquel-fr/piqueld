@@ -77,6 +77,7 @@ impl DeployQuery {
     (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn deploy(
     State(state): State<ApiState>,
+    axum::Extension(identity): axum::Extension<crate::auth::Identity>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
     query: Result<Query<DeployQuery>, axum::extract::rejection::QueryRejection>,
@@ -84,6 +85,7 @@ pub(super) async fn deploy(
     let mut query = DeployQuery::decode(query)?;
     super::applications::accept_mutation(
         &state,
+        &identity,
         crate::api::Mutation::Deploy {
             id: EnvironmentId::parse(id)?,
             revision: query.revision()?,

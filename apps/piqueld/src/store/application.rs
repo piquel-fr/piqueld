@@ -154,6 +154,22 @@ impl Store {
             .map(ApplicationRow::decode).transpose()
     }
 
+    /// The ID of the application named `name`, if any.
+    pub(super) async fn application_id_by_name_on(
+        connection: &mut SqliteConnection,
+        name: &str,
+    ) -> Result<Option<ApplicationId>, StoreError> {
+        sqlx::query_scalar!(
+            r#"SELECT id AS "id!" FROM applications WHERE name=?1"#,
+            name
+        )
+        .fetch_optional(connection)
+        .await
+        .map_err(StoreError::database)?
+        .map(|id| ApplicationId::parse(id).map_err(StoreError::corrupt))
+        .transpose()
+    }
+
     /// Lists an application's environments in name order.
     ///
     /// # Errors
@@ -249,24 +265,27 @@ impl Store {
         Ok(())
     }
 
-    /// Lists live application metadata and environments by ID without reading
-    /// manifest documents.
+    /// Lists live application metadata and environments by ID, within
+    /// `visible`, without reading manifest documents.
     ///
     /// # Errors
     /// Returns a storage error or an invalid pagination error.
     pub async fn list_summaries(
         &self,
+        visible: &piqueld_core::access::Scope,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<ApplicationSummary>, StoreError> {
         let fetch_limit = page_limit(limit)? + 1;
         let after = Self::application_cursor(cursor)?;
         let after = after.as_ref().map_or("", ApplicationId::as_str);
+        let visible = super::access::scope_json(visible);
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let mut rows = sqlx::query!(
-            r#"SELECT id AS "id!",name,generation,delete_intent,created_at_ms,updated_at_ms FROM applications WHERE id>?1 ORDER BY id LIMIT ?2"#,
+            r#"SELECT id AS "id!",name,generation,delete_intent,created_at_ms,updated_at_ms FROM applications WHERE id>?1 AND (?3 IS NULL OR id IN (SELECT value FROM json_each(?3))) ORDER BY id LIMIT ?2"#,
             after,
-            fetch_limit
+            fetch_limit,
+            visible
         )
         .fetch_all(&mut *tx)
         .await

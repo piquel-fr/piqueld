@@ -7,9 +7,22 @@ use piqueld_core::observability::{
 };
 
 async fn application(store: &Store) -> Operation {
-    let manifest=piqueld_core::manifest::parse_template_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='observable'\n[spec]").unwrap();
+    named_application(store, "observable").await
+}
+/// Saves and deploys an empty application, returning its running operation.
+async fn named_application(store: &Store, name: &str) -> Operation {
+    let manifest = piqueld_core::manifest::parse_template_toml(&format!(
+        "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[spec]"
+    ))
+    .unwrap();
     let (MutationResponse::Saved(saved), _) = store
-        .accept(Mutation::save(manifest, None, true), Some(0), false, None)
+        .accept(
+            crate::api::Actor::Daemon,
+            Mutation::save(manifest, None, true),
+            Some(0),
+            false,
+            None,
+        )
         .await
         .unwrap()
     else {
@@ -58,6 +71,7 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
                 action_id: Some(action.id.clone()),
                 ..EventFilter::default()
             },
+            &Visibility::ALL,
             None,
             100,
         )
@@ -96,6 +110,7 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
     // Application history, including its environments', goes with the application.
     let (MutationResponse::Deleted(deleted), _) = store
         .accept(
+            crate::api::Actor::Daemon,
             Mutation::DeleteApplication {
                 id: ApplicationId::parse(op.environment_id.as_str()).unwrap(),
                 environments: Vec::new(),
@@ -181,6 +196,7 @@ async fn retries_keep_cause_and_outbox_deduplicates_until_recovery() {
                 errors_only: true,
                 ..EventFilter::default()
             },
+            &Visibility::ALL,
             None,
             100,
         )
@@ -236,7 +252,10 @@ async fn closed_incidents_cannot_be_retried_after_failed_delivery() {
             .unwrap();
         if failed_before_close {
             // The same failure remains retryable while its condition is open.
-            store.retry_delivery(&failure.id).await.unwrap();
+            store
+                .retry_delivery(crate::api::Actor::Daemon, &failure.id)
+                .await
+                .unwrap();
             store
                 .complete_delivery(&failure.id, DeliveryState::Failed, Some("Rejected"), 0)
                 .await
@@ -273,7 +292,9 @@ async fn closed_incidents_cannot_be_retried_after_failed_delivery() {
             assert!(store.claim_delivery().await.unwrap().is_none());
         }
         assert!(matches!(
-            store.retry_delivery(&failure.id).await,
+            store
+                .retry_delivery(crate::api::Actor::Daemon, &failure.id)
+                .await,
             Err(StoreError::InvalidInput)
         ));
     }
@@ -327,7 +348,10 @@ async fn failed_recovery_cannot_be_retried_after_its_incident_reopens() {
         .await
         .unwrap();
     // Before the incident reopens, the recovery is still accurate and retryable.
-    store.retry_delivery(&recovery.id).await.unwrap();
+    store
+        .retry_delivery(crate::api::Actor::Daemon, &recovery.id)
+        .await
+        .unwrap();
     store
         .complete_delivery(&recovery.id, DeliveryState::Failed, Some("Rejected"), 0)
         .await
@@ -338,7 +362,9 @@ async fn failed_recovery_cannot_be_retried_after_its_incident_reopens() {
     )
     .await;
     assert!(matches!(
-        store.retry_delivery(&recovery.id).await,
+        store
+            .retry_delivery(crate::api::Actor::Daemon, &recovery.id)
+            .await,
         Err(StoreError::InvalidInput)
     ));
 }
@@ -367,7 +393,10 @@ async fn open_daemon_incidents_remain_manually_retryable() {
         .complete_delivery(&delivery.id, DeliveryState::Failed, Some("Rejected"), 0)
         .await
         .unwrap();
-    store.retry_delivery(&delivery.id).await.unwrap();
+    store
+        .retry_delivery(crate::api::Actor::Daemon, &delivery.id)
+        .await
+        .unwrap();
     assert_eq!(
         store.deliveries(None, 100).await.unwrap().items[0].state,
         DeliveryState::Pending
@@ -551,6 +580,7 @@ async fn pruning_marks_stream_gaps_and_analytics_coverage() {
                 descending: true,
                 ..EventFilter::default()
             },
+            &Visibility::ALL,
             None,
             1,
         )
@@ -563,18 +593,29 @@ async fn pruning_marks_stream_gaps_and_analytics_coverage() {
         kind: Some("no_such_kind".into()),
         ..EventFilter::default()
     };
-    let (items, checkpoint) = store.stream_events(&quiet, 0, 10).await.unwrap();
+    let (items, checkpoint) = store
+        .stream_events(&quiet, &Visibility::ALL, 0, 10)
+        .await
+        .unwrap();
     assert!(items.is_empty());
     assert_eq!(checkpoint, last);
     store.prune_events(now_ms() + 1).await.unwrap();
     assert!(matches!(
         store
-            .stream_events(&EventFilter::default(), last - 1, 1)
+            .stream_events(&EventFilter::default(), &Visibility::ALL, last - 1, 1)
             .await,
         Err(StoreError::HistoryExpired)
     ));
-    assert!(store.stream_events(&quiet, checkpoint, 10).await.is_ok());
-    let analytics = store.deployment_analytics(None, 0, now_ms()).await.unwrap();
+    assert!(
+        store
+            .stream_events(&quiet, &Visibility::ALL, checkpoint, 10)
+            .await
+            .is_ok()
+    );
+    let analytics = store
+        .deployment_analytics(None, &Visibility::ALL, 0, now_ms())
+        .await
+        .unwrap();
     assert!(analytics.incomplete);
     assert_eq!(analytics.succeeded, 1);
 }
@@ -836,8 +877,107 @@ async fn recovery_waits_for_all_pending_failure_categories_at_the_same_destinati
         .await
         .unwrap();
     assert!(matches!(
-        store.retry_delivery(&second.id).await,
+        store
+            .retry_delivery(crate::api::Actor::Daemon, &second.id)
+            .await,
         Err(StoreError::InvalidInput)
     ));
     assert!(store.claim_delivery().await.unwrap().is_none());
+}
+
+/// History, the event stream, builds, and analytics only include the
+/// applications a caller may read; daemon history needs its own visibility.
+#[tokio::test]
+async fn visibility_limits_history_builds_and_analytics() {
+    use piqueld_core::access::Scope;
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let mut ids = Vec::new();
+    for name in ["blog", "shop"] {
+        let op = named_application(&store, name).await;
+        store
+            .transition_operation(
+                &op.id,
+                OperationState::Running,
+                OperationState::Succeeded,
+                None,
+            )
+            .await
+            .unwrap();
+        let source = piqueld_core::manifest::ValidatedSource::Image {
+            image: "example/web:1".into(),
+        };
+        store
+            .start_build(&op.environment_id, &op.id, "web", &source, None)
+            .await
+            .unwrap();
+        ids.push(ApplicationId::parse(op.environment_id.as_str()).unwrap());
+    }
+    let daemon = Diagnostic::from_recorded_code(
+        "diagnostic-daemon".into(),
+        "docker_unavailable",
+        "down".into(),
+    );
+    store.record_diagnostic(&daemon, None, None).await.unwrap();
+    let blog = Scope::one(ids[0].clone());
+    let only_blog = |event: &piqueld_core::Event| {
+        event.scope == EventScope::Application && event.application_id.as_ref() == Some(&ids[0])
+    };
+    for daemon in [false, true] {
+        let visible = Visibility {
+            applications: blog.clone(),
+            daemon,
+        };
+        let page = store
+            .filtered_events(&EventFilter::default(), &visible, None, 100)
+            .await
+            .unwrap()
+            .items;
+        let (streamed, _) = store
+            .stream_events(&EventFilter::default(), &visible, 0, 100)
+            .await
+            .unwrap();
+        for events in [page, streamed] {
+            assert!(events.iter().any(only_blog));
+            assert!(
+                events
+                    .iter()
+                    .all(|event| only_blog(event) || (daemon && event.scope == EventScope::Daemon))
+            );
+            assert_eq!(
+                events.iter().any(|event| event.scope == EventScope::Daemon),
+                daemon
+            );
+        }
+    }
+    let builds = store
+        .builds(None, None, &blog, None, 50)
+        .await
+        .unwrap()
+        .items;
+    assert_eq!(builds.len(), 1);
+    assert_eq!(builds[0].environment_id, ids[0].as_str());
+    // Analytics also leave out hidden applications' events and, without
+    // daemon visibility, daemon failures.
+    let analytics = |applications: Scope, daemon: bool| {
+        let store = &store;
+        async move {
+            let visible = Visibility {
+                applications,
+                daemon,
+            };
+            let analytics = store
+                .deployment_analytics(None, &visible, 0, now_ms())
+                .await
+                .unwrap();
+            let daemon_failure = analytics
+                .failures
+                .iter()
+                .any(|failure| failure.code == "docker_unavailable");
+            (analytics.succeeded, daemon_failure)
+        }
+    };
+    assert_eq!(analytics(blog.clone(), false).await, (1, false));
+    assert_eq!(analytics(Scope::All, false).await, (2, false));
+    assert_eq!(analytics(Scope::All, true).await, (2, true));
 }

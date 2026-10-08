@@ -240,7 +240,7 @@ impl Scenario {
         };
         let mut events = self
             .store
-            .filtered_events(&filter, None, 100)
+            .filtered_events(&filter, &crate::store::Visibility::ALL, None, 100)
             .await
             .unwrap()
             .items;

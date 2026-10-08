@@ -26,6 +26,8 @@ pub mod auth;
 /// One-off commands in running service tasks.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod exec;
+/// Permissions and grants.
+pub use piqueld_core::access;
 
 mod generated;
 

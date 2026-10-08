@@ -1,5 +1,7 @@
 //! Build records outlive operation retention; output is chunked and bounded.
+use super::access::scope_json;
 use super::{Store, StoreError, now_ms, page_limit};
+use piqueld_core::access::Scope;
 use piqueld_core::{
     ApplicationId, EnvironmentId,
     api::{BuildLogChunk, BuildLogPage, BuildRecord, BuildState, LogStream, Page},
@@ -218,13 +220,15 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)
     }
     /// Lists build attempts newest first, optionally limited to the
-    /// environments of one application and/or to one environment.
+    /// environments of one application and/or to one environment, and only
+    /// of live environments of applications within `visible`.
     /// # Errors
     /// Returns invalid pagination or database errors.
     pub async fn builds(
         &self,
         application: Option<&ApplicationId>,
         environment: Option<&EnvironmentId>,
+        visible: &Scope,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<BuildRecord>, StoreError> {
@@ -251,6 +255,12 @@ impl Store {
             query
                 .push(" AND environment_id=")
                 .push_bind(environment.as_str());
+        }
+        if let Some(visible) = scope_json(visible) {
+            query
+                .push(" AND environment_id IN (SELECT e.id FROM environments e JOIN json_each(")
+                .push_bind(visible)
+                .push(") v ON v.value=e.application_id)");
         }
         if let Some(application) = application {
             query
@@ -298,6 +308,20 @@ impl Store {
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
         Ok(Page { items, next_cursor })
+    }
+    /// Returns the application whose environment a build attempt belongs to.
+    /// # Errors
+    /// Returns not found or storage errors.
+    pub async fn build_application(&self, id: i64) -> Result<ApplicationId, StoreError> {
+        let application = sqlx::query_scalar!(
+            r#"SELECT e.application_id AS "application_id!" FROM builds b JOIN environments e ON e.id=b.environment_id WHERE b.id=?1"#,
+            id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::database)?
+        .ok_or(StoreError::NotFound)?;
+        ApplicationId::parse(application).map_err(StoreError::corrupt)
     }
     /// Reads the newest output chunks before an optional exclusive cursor. Stream filtering happens before pagination.
     /// Pages hold up to 16 chunks in offset order; `previous_offset` is the cursor
@@ -491,7 +515,13 @@ mod tests {
             assert_eq!(chunk.text, "a".repeat(4096));
         }
         let records = store
-            .builds(None, Some(&EnvironmentId::default_for(app.id())), None, 50)
+            .builds(
+                None,
+                Some(&EnvironmentId::default_for(app.id())),
+                &Scope::All,
+                None,
+                50,
+            )
             .await
             .unwrap();
         assert_eq!(records.items[0].state, BuildState::Succeeded);
@@ -541,7 +571,13 @@ mod tests {
                 .unwrap();
         }
         let first = store
-            .builds(None, Some(&EnvironmentId::default_for(app.id())), None, 1)
+            .builds(
+                None,
+                Some(&EnvironmentId::default_for(app.id())),
+                &Scope::All,
+                None,
+                1,
+            )
             .await
             .unwrap();
         assert_eq!(first.items[0].id, latest);
@@ -549,6 +585,7 @@ mod tests {
             .builds(
                 None,
                 Some(&EnvironmentId::default_for(app.id())),
+                &Scope::All,
                 first.next_cursor.as_deref(),
                 1,
             )
@@ -556,14 +593,20 @@ mod tests {
             .unwrap();
         assert_eq!(second.items[0].id, id);
         assert!(second.next_cursor.is_none());
-        let global = store.builds(None, None, None, 1).await.unwrap();
+        let global = store
+            .builds(None, None, &Scope::All, None, 1)
+            .await
+            .unwrap();
         assert_eq!(global.items[0].environment_id, other.id().as_str());
-        let application = store.builds(Some(app.id()), None, None, 1).await.unwrap();
+        let application = store
+            .builds(Some(app.id()), None, &Scope::All, None, 1)
+            .await
+            .unwrap();
         assert_eq!(application.items[0].id, latest);
         let absent = EnvironmentId::parse("app-absent").unwrap();
         assert!(
             store
-                .builds(None, Some(&absent), None, 1)
+                .builds(None, Some(&absent), &Scope::All, None, 1)
                 .await
                 .unwrap()
                 .items
@@ -617,7 +660,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .builds(None, Some(&EnvironmentId::default_for(app.id())), None, 50)
+                .builds(
+                    None,
+                    Some(&EnvironmentId::default_for(app.id())),
+                    &Scope::All,
+                    None,
+                    50
+                )
                 .await
                 .unwrap()
                 .items[0]
@@ -630,7 +679,10 @@ mod tests {
             .unwrap();
         store.prune_build_logs().await.unwrap();
         assert!(store.build_logs(id, None, None).await.unwrap().expired);
-        let records = store.builds(None, None, None, 50).await.unwrap();
+        let records = store
+            .builds(None, None, &Scope::All, None, 50)
+            .await
+            .unwrap();
         assert_eq!(records.items.len(), 1);
         assert_eq!(records.items[0].state, BuildState::Succeeded);
         let interrupted = store
@@ -644,12 +696,15 @@ mod tests {
             .await
             .unwrap();
         store.recover_builds().await.unwrap();
-        let page = store.builds(None, None, None, 1).await.unwrap();
+        let page = store
+            .builds(None, None, &Scope::All, None, 1)
+            .await
+            .unwrap();
         assert_eq!(page.items[0].id, interrupted);
         assert_eq!(page.items[0].state, BuildState::Interrupted);
         assert_eq!(
             store
-                .builds(None, None, page.next_cursor.as_deref(), 1)
+                .builds(None, None, &Scope::All, page.next_cursor.as_deref(), 1)
                 .await
                 .unwrap()
                 .items[0]

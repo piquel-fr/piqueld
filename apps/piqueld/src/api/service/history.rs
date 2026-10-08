@@ -80,20 +80,28 @@ impl ApplicationService {
         Ok(self.store.events(id, cursor, limit).await?)
     }
 
-    /// Lists build history, newest first.
+    /// Lists build history of applications within `visible`, newest first.
     /// # Errors
     /// Returns pagination or storage errors.
     pub async fn builds(
         &self,
         application: Option<&ApplicationId>,
         environment: Option<&EnvironmentId>,
+        visible: &piqueld_core::access::Scope,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<BuildRecord>, ApplicationError> {
         Ok(self
             .store
-            .builds(application, environment, cursor, limit)
+            .builds(application, environment, visible, cursor, limit)
             .await?)
+    }
+
+    /// Returns the application a build attempt belongs to.
+    /// # Errors
+    /// Returns absence or storage errors.
+    pub async fn build_application(&self, id: i64) -> Result<ApplicationId, ApplicationError> {
+        Ok(self.store.build_application(id).await?)
     }
 
     /// Reads the newest bounded page of persisted build output (chunks in

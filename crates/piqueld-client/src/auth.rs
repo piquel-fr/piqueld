@@ -15,13 +15,14 @@ impl Client {
     pub async fn auth_setup_link(&self) -> Result<SetupLink, ClientError> {
         crate::client::generated_result(self.generated.auth_setup_link().await).await
     }
-    /// Returns the signed-in account.
+    /// Returns the signed-in account and what the current credential may do.
     /// # Errors
     /// Returns authentication, transport, decoding, or API failures.
-    pub async fn auth_me(&self) -> Result<User, ClientError> {
+    pub async fn auth_me(&self) -> Result<Session, ClientError> {
         crate::client::generated_result(self.generated.auth_me().await).await
     }
-    /// Starts passkey registration for an invitation or an existing account.
+    /// Starts passkey registration for an invitation, an enrollment link, or
+    /// the signed-in account itself.
     /// # Errors
     /// Returns authentication, transport, decoding, or API failures.
     pub async fn auth_register_start(
@@ -30,7 +31,8 @@ impl Client {
     ) -> Result<Ceremony, ClientError> {
         crate::client::generated_result(self.generated.auth_registration_start(input).await).await
     }
-    /// Completes passkey registration and signs in a newly created account.
+    /// Completes passkey registration, signing in accounts that redeemed an
+    /// invitation, setup, or enrollment secret.
     /// # Errors
     /// Returns authentication, transport, decoding, or API failures.
     pub async fn auth_register_finish(&self, input: &CeremonyFinish) -> Result<User, ClientError> {
@@ -54,13 +56,15 @@ impl Client {
     pub async fn auth_logout(&self) -> Result<Managed, ClientError> {
         crate::client::generated_result(self.generated.auth_logout().await).await
     }
-    /// Lists accounts, passkeys, sessions, tokens, and pending invitations.
+    /// Lists the accounts the caller may see with their grants, passkeys,
+    /// sessions, tokens, and pending invitations.
     /// # Errors
     /// Returns authentication, transport, decoding, or API failures.
     pub async fn auth_directory(&self) -> Result<Directory, ClientError> {
         crate::client::generated_result(self.generated.auth_directory().await).await
     }
-    /// Changes any account's settings; accounts have equal capabilities.
+    /// Applies one account change. Changing other accounts requires
+    /// `accounts:manage` and every grant they hold.
     /// # Errors
     /// Returns authentication, transport, decoding, or API failures.
     pub async fn auth_manage(&self, input: &Manage) -> Result<Managed, ClientError> {
