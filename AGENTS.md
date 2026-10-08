@@ -27,3 +27,5 @@ the CLI and the dashboard. When adding a feature to one, make sure it is
 appropriately added to all of them.
 For example, if we add a new setting for applications, that setting should be
 present in the manifest and editable through the CLI and the dashboard.
+
+When changing/adding to configuration, make sure to update the NixOS module.
