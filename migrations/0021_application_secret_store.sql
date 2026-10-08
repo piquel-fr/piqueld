@@ -60,7 +60,8 @@ CREATE TABLE deployment_stored_secret_pins (
 -- manifest declares it. Since a name is either generated or stored per
 -- application, the environment that uses it and comes first decides:
 -- production, else the oldest. An environment uses a name when it holds a value
--- for it or its manifest (the last fetched one, else the saved one) declares it.
+-- for it or the manifest it deploys declares it: the saved one, or for an
+-- environment following a branch only the last one fetched from it.
 -- The deciding environment's value is generated, and stays, when its manifest
 -- declares the name or a retained deployment of it both declares and pins it
 -- (deleting a secret drops its pins, so a name set manually after deletion counts
@@ -73,7 +74,7 @@ WITH users(environment_id,name) AS (
  UNION
  SELECT e.id,json_extract(j.value,'$.name')
  FROM environments e JOIN applications a ON a.id=e.application_id,
-  json_each(COALESCE(e.manifest_json,a.desired_json),'$.spec.secrets') j
+  json_each(CASE WHEN e.branch IS NULL THEN a.desired_json ELSE e.manifest_json END,'$.spec.secrets') j
 ),
 deciding(environment_id,name) AS (
  SELECT environment_id,name FROM (
@@ -88,7 +89,7 @@ JOIN environment_secrets s USING(environment_id,name)
 JOIN environments e ON e.id=s.environment_id
 JOIN applications a ON a.id=e.application_id
 WHERE NOT EXISTS (
- SELECT 1 FROM json_each(COALESCE(e.manifest_json,a.desired_json),'$.spec.secrets') j
+ SELECT 1 FROM json_each(CASE WHEN e.branch IS NULL THEN a.desired_json ELSE e.manifest_json END,'$.spec.secrets') j
  WHERE json_extract(j.value,'$.name')=s.name
 )
 AND NOT EXISTS (

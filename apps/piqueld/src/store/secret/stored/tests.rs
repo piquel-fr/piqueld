@@ -385,8 +385,11 @@ async fn schema_20(dir: &std::path::Path) -> sqlx::SqlitePool {
 /// manually since. It also has a manually set `branch-token`, which staging's
 /// manifest, last fetched from the `release` branch, declares. Staging has its
 /// own `stripe`, and a manually set `shared-token`, which production's saved
-/// manifest declares though production never generated it. Returns the
-/// application and both environments.
+/// manifest declares though production never generated it. A second
+/// application, `app-migrated-02`, has environments that both follow branches:
+/// production, not fetched yet, has a manually set `token`, which staging's
+/// fetched manifest, and so the saved one, declares. Returns the first
+/// application and its environments.
 async fn schema_20_with_manual_secrets(
     dir: &std::path::Path,
 ) -> (NormalizedApplication, EnvironmentId, EnvironmentId) {
@@ -407,7 +410,7 @@ async fn schema_20_with_manual_secrets(
         EnvironmentId::default_for(application.id()),
         EnvironmentId::parse("env-staging-01").unwrap(),
     );
-    let declared = |manifest: &ApplicationManifest, names: &[&str]| {
+    let declared = |manifest: &ApplicationManifest, id: &str, names: &[&str]| {
         let mut manifest = manifest.clone();
         for name in names {
             let mut secret = manifest.spec.secrets[0].clone();
@@ -419,14 +422,19 @@ async fn schema_20_with_manual_secrets(
             .canonical_json()
             .unwrap()
     };
-    let desired = declared(&manifest, &["shared-token"]);
-    let fetched = declared(&manifest, &["branch-token"]);
-    let captured = declared(&manifest, &["retired", "recreated"]);
+    let desired = declared(&manifest, id, &["shared-token"]);
+    let fetched = declared(&manifest, id, &["branch-token"]);
+    let captured = declared(&manifest, id, &["retired", "recreated"]);
+    let tasks = "app-migrated-02";
+    let tasks_token = declared(&manifest, tasks, &["token"]);
     sqlx::raw_sql(&format!(
         "INSERT INTO applications(id,name,desired_json,generation,created_at_ms,updated_at_ms) VALUES('{id}','notes','{desired}',2,1,1);
          INSERT INTO environments(id,name,application_id,created_at_ms,updated_at_ms) VALUES('{id}','production','{id}',1,1);
          INSERT INTO environments(id,name,application_id,branch,manifest_json,created_at_ms,updated_at_ms) VALUES('{staging}','staging','{id}','release','{fetched}',2,2);
          INSERT INTO environment_status(environment_id,state,updated_at_ms) VALUES('{id}','ready',1),('{staging}','ready',2);
+         INSERT INTO applications(id,name,desired_json,generation,created_at_ms,updated_at_ms) VALUES('{tasks}','tasks','{tasks_token}',1,3,3);
+         INSERT INTO environments(id,name,application_id,branch,created_at_ms,updated_at_ms) VALUES('{tasks}','production','{tasks}','main',3,3);
+         INSERT INTO environments(id,name,application_id,branch,manifest_json,created_at_ms,updated_at_ms) VALUES('env-staging-02','staging','{tasks}','release','{tasks_token}',4,4);
          INSERT INTO operations(id,environment_id,kind,state,generation,created_at_ms,updated_at_ms,finished_at_ms) VALUES('operation-1','{id}','apply','succeeded',2,1,2,2);
          INSERT INTO deployments(id,environment_id,manifest_json,template_json,generation,created_at_ms) VALUES('operation-1','{id}','{captured}','{captured}',2,1);
          INSERT INTO deployment_secrets_prepared(operation_id) VALUES('operation-1');"
@@ -458,6 +466,7 @@ async fn schema_20_with_manual_secrets(
         (&production, "branch-token", 1, "branch"),
         (&staging, "stripe", 1, "staging"),
         (&staging, "shared-token", 1, "shared"),
+        (&EnvironmentId::parse(tasks).unwrap(), "token", 1, "tasks"),
     ] {
         let encrypted = cipher
             .encrypt(
@@ -522,6 +531,18 @@ async fn migration_moves_manual_secrets_to_the_application_store_and_keeps_pins(
         names(store.secrets(&staging).await.unwrap()),
         ["shared-token", "stripe"]
     );
+    // A branch environment that has not fetched yet declares nothing, though
+    // the saved manifest came from another branch: its manual `token` moved.
+    let tasks = EnvironmentId::parse("app-migrated-02").unwrap();
+    let stored = store
+        .stored_secrets(&ApplicationId::parse(tasks.as_str()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        (stored[0].metadata.name.as_str(), &stored[0].access),
+        ("token", &only([&tasks]))
+    );
+    assert!(store.secrets(&tasks).await.unwrap().is_empty());
     // Moved values are re-encrypted for the application and still decrypt,
     // under their original Docker secret names.
     let moved: i64 = sqlx::query_scalar(
@@ -540,6 +561,7 @@ async fn migration_moves_manual_secrets_to_the_application_store_and_keeps_pins(
         (&production, "docker-branch", "branch"),
         (&staging, "docker-staging", "staging"),
         (&staging, "docker-shared", "shared"),
+        (&tasks, "docker-tasks", "tasks"),
     ] {
         assert_eq!(
             &*store

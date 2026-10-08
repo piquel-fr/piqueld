@@ -185,8 +185,9 @@ per application, where each lists the environments that may mount it. A name is
 either generated or stored per application, so when environments disagree about a
 name (one set it manually, another's manifest declares it), the first environment
 that uses it decides: `production`, else the oldest. An environment uses a name
-when it holds a value for it or its manifest (the last fetched one, else the saved
-one) declares it in `spec.secrets`. The deciding environment's secret is generated,
+when it holds a value for it or the manifest it deploys declares it in
+`spec.secrets`: the saved one, or for an environment following a branch only the
+last one fetched from it (none before its first fetch). The deciding environment's secret is generated,
 and stays with it, when its manifest declares the name or a retained deployment
 both declares and pins it; otherwise it is manual and moves, with access limited
 to that environment, so no other environment gains access by upgrading. Deleting
