@@ -1230,11 +1230,19 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
                                             <tr>
                                                 <td>{credential.name}</td>
                                                 <td>{badge(Tone::Neutral, credential.kind)}</td>
+                                                // What the credential can do now: its grants
+                                                // within the account's current access.
                                                 <td>
                                                     {credential
                                                         .grants
                                                         .as_ref()
-                                                        .map_or_else(|| "Full account access".into_any(), summary)}
+                                                        .map(|grants| {
+                                                            initial.with_value(|account| grants.intersection(account))
+                                                        })
+                                                        .map_or_else(
+                                                            || "Full account access".into_any(),
+                                                            |grants| summary(&grants),
+                                                        )}
                                                 </td>
                                                 <td class="muted">
                                                     {when(credential.last_used_at * 1000)}

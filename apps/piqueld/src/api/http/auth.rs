@@ -364,16 +364,9 @@ pub(super) async fn manage(
 pub(super) async fn device_start(
     Extension(auth): Extension<Auth>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
-    body: axum::body::Bytes,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Json<DeviceStart>, ApiError> {
-    const LIMIT_BYTES: usize = 16 * 1024;
-    if body.len() > LIMIT_BYTES {
-        return Err(ApiError::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "request_body_too_large",
-            "device login requests are limited to 16 KiB",
-        ));
-    }
+    let body = super::applications::request_body(body)?;
     let requester = peer.map(|Extension(ConnectInfo(peer))| peer.ip());
     let request = if body.is_empty() {
         DeviceStartRequest::default()
@@ -382,11 +375,18 @@ pub(super) async fn device_start(
     };
     Ok(Json(auth.device_start(requester, request.grants).await?))
 }
-/// Marks [`device_start`]'s request body optional in the `OpenAPI` document:
-/// older clients send none.
-pub(super) fn optional_body<S>(
+/// Bodies [`device_start`] accepts; larger ones answer 413 while they are
+/// read, before anything is buffered beyond it.
+const DEVICE_START_LIMIT_BYTES: usize = 16 * 1024;
+/// Registers [`device_start`] with its [`DEVICE_START_LIMIT_BYTES`] body
+/// limit, marking the body optional in the `OpenAPI` document: older clients
+/// send none.
+pub(super) fn device_start_route<S: Clone + Send + Sync + 'static>(
     (schemas, mut paths, router): utoipa_axum::router::UtoipaMethodRouter<S>,
 ) -> utoipa_axum::router::UtoipaMethodRouter<S> {
+    let router = router.layer(axum::extract::DefaultBodyLimit::max(
+        DEVICE_START_LIMIT_BYTES,
+    ));
     for item in paths.paths.values_mut() {
         if let Some(body) = item
             .post

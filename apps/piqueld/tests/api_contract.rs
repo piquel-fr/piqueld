@@ -5514,4 +5514,14 @@ async fn device_starts_echo_their_limits_and_refuse_large_bodies() {
     let large = format!(r#"{{"grants":[],"padding":"{}"}}"#, "x".repeat(16 * 1024));
     let response = start(large).await.unwrap();
     assert_eq!(response.status(), 413);
+    // The limit applies while reading, also without a `Content-Length`.
+    let chunks = (0..64).map(|_| Ok::<_, std::io::Error>(vec![b' '; 1024]));
+    let streamed = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/device/start")
+        .header("content-type", "application/json")
+        .body(Body::from_stream(futures_util::stream::iter(chunks)))
+        .unwrap();
+    let response = router.clone().oneshot(streamed).await.unwrap();
+    assert_eq!(response.status(), 413);
 }
