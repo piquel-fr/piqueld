@@ -98,7 +98,7 @@ block, rename, then add it back under the new name. `env show` lists each
 variable's value in that manifest, or that it has none, and says when a
 repository-backed environment has fetched nothing yet.
 
-Each successful deployment of an environment records an immutable **release**:
+Each successful preparation of an environment's deployment records an immutable **release**:
 the manifest it deployed (and its commit when repository-backed), each
 service's image (a registry digest, or the local image ID and commit of a Git
 build), and the build inputs those images came from. Releases belong to the
@@ -106,8 +106,9 @@ application, so deleting an environment keeps them, and environments that
 prepared the same content share one release. `app releases` lists them newest
 first, twenty per page, with each service's image and provenance; `--json`
 adds the manifest and build inputs. `env show` reports the release the
-environment's current target runs (`none` for deployments prepared before
-releases existed).
+environment's current target runs (`none` before its first prepared
+deployment). Deployments prepared before upgrading record theirs when the
+daemon first starts.
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit
 HTTP or HTTPS origin such as `http://127.0.0.1:7845/`; the two transport options are

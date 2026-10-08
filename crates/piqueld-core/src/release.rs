@@ -140,9 +140,10 @@ impl Release {
         )
     }
 
-    /// Versioned SHA-256 over the manifest's specification, its commit, and
-    /// every service's source and image. Names and the manifest's location
-    /// are left out, so environments preparing the same content share a release.
+    /// Versioned SHA-256 over the whole manifest, its commit, and every
+    /// service's source and image. The manifest's name and location are
+    /// included, since `${{ app.name }}` and `${{ git.branch }}` render them,
+    /// so only preparations that render alike share a release.
     ///
     /// # Panics
     ///
@@ -152,13 +153,13 @@ impl Release {
         #[derive(Serialize)]
         struct Content<'a> {
             version: &'static str,
-            spec: String,
+            template: &'a ApplicationTemplate,
             commit: Option<&'a str>,
             sources: &'a BTreeMap<ServiceName, ResolvedSource>,
         }
         let bytes = serde_json::to_vec(&Content {
             version: CONTENT_HASH_VERSION,
-            spec: self.template.spec_hash(),
+            template: &self.template,
             commit: self.commit(),
             sources: &self.sources,
         })
@@ -322,7 +323,8 @@ REVISION = "${{{{ git.sha }}}}"
                 .map(|(field, value)| (field.to_owned(), value.to_owned()))
             )
         );
-        // Renames don't change content; a different build argument does.
+        // The name renders through `${{ app.name }}`, so it is content, like
+        // a build argument.
         let renamed = Release {
             template: release
                 .template
@@ -330,7 +332,15 @@ REVISION = "${{{{ git.sha }}}}"
                 .with_name(crate::ApplicationName::parse("store").unwrap()),
             ..release.clone()
         };
-        assert_eq!(renamed.content_hash(), release.content_hash());
+        assert_ne!(renamed.content_hash(), release.content_hash());
+        // So is the branch the manifest was read from, `${{ git.branch }}`.
+        let mut manifest = release.template.spec().manifest.clone().unwrap();
+        manifest.repository.branch = "release".into();
+        let branched = Release {
+            template: release.template.clone().with_manifest(Some(manifest)),
+            ..release.clone()
+        };
+        assert_ne!(branched.content_hash(), release.content_hash());
         assert_ne!(
             staging_release(template("https://shop.example.com")).content_hash(),
             release.content_hash()

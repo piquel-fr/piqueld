@@ -225,8 +225,10 @@ by reference, or the commit and local image ID of a Git build), and
 `fingerprint`, each service's rendered build inputs by field: `source.image`,
 or `source.repository`, `source.commit`, `source.build.dockerfile`,
 `source.build.context`, `source.build.args.<NAME>`, and `source.build.target`.
-`content_hash` covers the manifest's specification, its commit, and every
-source; preparations of one application with the same hash share one release,
+`content_hash` covers the whole captured manifest (including its name and the
+branch it was read from, which `${{ app.name }}` and `${{ git.branch }}`
+render), its commit, and every source; preparations of one application with the
+same hash share one release,
 so environments running the same content name the same release. Releases
 belong to the application: deleting an environment keeps them, and they are
 removed with the application. `EnvironmentDetailView.release` names the release

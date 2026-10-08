@@ -66,8 +66,8 @@ names the environment already reserving it.
 Applications have one main tab row: Overview (the default), Environments,
 Services, Source, Variables, Routes, Volumes, Jobs, Secrets, Releases, Builds,
 and Events. The Releases tab lists the application's immutable releases, newest
-first: each successful deployment of an environment records one, environments
-that prepared the same content share it, and deleting an environment keeps
+first: each successful preparation of an environment's deployment records one,
+environments that prepared the same content share it, and deleting an environment keeps
 them. Expanding a release shows the commit its manifest was read from, its
 content hash, and for each service its image (a registry digest or local image
 ID), where it came from, and the build inputs it was prepared from. The Jobs

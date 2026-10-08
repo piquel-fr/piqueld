@@ -7,7 +7,7 @@ use leptos::task::spawn_local;
 use piqueld_client::{Client, ReleaseView, ResolvedSource, ValidatedSource};
 
 /// Releases of `application`, loaded when shown and on refresh. Older pages
-/// are appended on request.
+/// are appended on request, and until the `?release=` one is shown.
 #[component]
 pub(super) fn ReleaseHistory(application: String) -> impl IntoView {
     let releases = RwSignal::new(Vec::<ReleaseView>::new());
@@ -15,25 +15,42 @@ pub(super) fn ReleaseHistory(application: String) -> impl IntoView {
     let error = RwSignal::new(None::<String>);
     let loading = RwSignal::new(false);
     let application = StoredValue::new(application);
+    let requested = StoredValue::new(
+        leptos_router::hooks::use_query_map().with_untracked(|q| q.get("release")),
+    );
     // `None` reloads the first page; a cursor appends the page after it.
-    let load = move |next: Option<String>| {
+    let load = move |mut next: Option<String>| {
         loading.set(true);
         spawn_local(async move {
-            match Client::browser()
-                .releases(&application.get_value(), next.as_deref())
-                .await
-            {
-                Ok(page) => {
-                    releases.update(|items| {
-                        if next.is_none() {
-                            items.clear();
+            if next.is_none() {
+                releases.update(Vec::clear);
+            }
+            loop {
+                match Client::browser()
+                    .releases(&application.get_value(), next.as_deref())
+                    .await
+                {
+                    Ok(page) => {
+                        releases.update(|items| items.extend(page.items));
+                        cursor.set(page.next_cursor.clone());
+                        error.set(None);
+                        let shown = requested.with_value(|requested| {
+                            requested.as_ref().is_none_or(|id| {
+                                releases.with_untracked(|items| {
+                                    items.iter().any(|release| release.id.as_str() == id)
+                                })
+                            })
+                        });
+                        match page.next_cursor {
+                            Some(cursor) if !shown => next = Some(cursor),
+                            _ => break,
                         }
-                        items.extend(page.items);
-                    });
-                    cursor.set(page.next_cursor);
-                    error.set(None);
+                    }
+                    Err(e) => {
+                        error.set(Some(client_error_message(&e)));
+                        break;
+                    }
                 }
-                Err(e) => error.set(Some(client_error_message(&e))),
             }
             loading.set(false);
         });
@@ -43,7 +60,7 @@ pub(super) fn ReleaseHistory(application: String) -> impl IntoView {
         <section class="stack-sm" aria-label="Releases">
             <div class="toolbar">
                 <p class="hint">
-                    "Each successful deployment of an environment records an immutable release: its manifest and the exact images it prepared. Environments that prepared the same content share one, and releases outlive the environments that recorded them."
+                    "Each deployment whose images are prepared records an immutable release: its manifest and the exact images it prepared. Environments that prepared the same content share one, and releases outlive the environments that recorded them."
                 </p>
                 <div class="toolbar-end">
                     <button
