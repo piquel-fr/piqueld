@@ -22,16 +22,19 @@ pub(super) fn ReleaseHistory(application: String) -> impl IntoView {
     let load = move |mut next: Option<String>| {
         loading.set(true);
         spawn_local(async move {
-            if next.is_none() {
-                releases.update(Vec::clear);
-            }
+            // A refresh replaces the list once its first page arrives.
+            let mut replace = next.is_none();
             loop {
                 match Client::browser()
                     .releases(&application.get_value(), next.as_deref())
                     .await
                 {
                     Ok(page) => {
-                        releases.update(|items| items.extend(page.items));
+                        if std::mem::take(&mut replace) {
+                            releases.set(page.items);
+                        } else {
+                            releases.update(|items| items.extend(page.items));
+                        }
                         cursor.set(page.next_cursor.clone());
                         error.set(None);
                         let shown = requested.with_value(|requested| {
