@@ -917,10 +917,10 @@ impl<'a> DeletionReport<'a> {
     }
 }
 report!(DeletionReport<'_>, self, out, {
-    let (noun, volumes) = if self.volumes_retained {
-        ("Environment", "named volumes retained")
-    } else {
-        ("Preview", "its volumes are removed")
+    let (noun, volumes) = match (self.volumes_retained, self.outcome) {
+        (true, _) => ("Environment", "named volumes retained"),
+        (false, Some(_)) => ("Preview", "its volumes removed"),
+        (false, None) => ("Preview", "its volumes will be removed"),
     };
     if self.outcome.is_some() {
         out.line(format_args!(
