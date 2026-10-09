@@ -372,8 +372,8 @@ managed records override them.
 **Ownership.** piqueld only changes records it owns. Before writing a hostname's
 records, it creates a `_piqueld.<hostname>` TXT record holding the installation ID.
 A hostname that already has A, AAAA or CNAME records without that ownership record,
-or whose ownership record names another installation, is never written: its route
-reports `dns_conflict`, with the existing records, until the operator removes them.
+or that another installation also claims, is never written: its route reports
+`dns_conflict`, with the existing records, until the operator removes them.
 Other record types at the hostname, such as MX or TXT, are left alone. Claimed
 hostnames are also kept in SQLite until their records are deleted, so a route
 removed while the daemon was down is still cleaned up.
@@ -382,8 +382,11 @@ removed while the daemon was down is still cleaned up.
 records are written once the gateway serves it, and a removed route's records and
 ownership record are deleted only after the gateway has withdrawn it. A visibility
 change withdraws the route first, so its records are deleted, then written again
-with the new targets once the gateway serves it on its new listener. Disabling
-ingress deletes the records piqueld manages. A route waiting for the gateway, or
+with the new targets once the gateway serves it on its new listener. After a
+restart, records only change once the gateway has applied the daemon's
+configuration, so switching to tunnel mode repoints records only once the gateway
+runs in that mode. Disabling ingress deletes the records piqueld manages once the
+gateway has stopped. A route waiting for the gateway, or
 a private route while the apps node has no tailnet addresses, keeps its current
 records. Removing `public_addresses` or `manage_records` leaves existing records
 in place, unmanaged.
@@ -393,7 +396,10 @@ the applied routes, the ingress mode and the apps node's addresses, without
 calling providers. When they change, and every 5 minutes otherwise, it reads each
 managed hostname's records and repairs any drift. Address changes of the apps
 node are therefore followed within seconds. A failed provider call, including a
-rate limit, leaves that hostname `pending` and is retried after a minute. Changes
+rate limit, leaves that hostname `pending` and is retried after a minute. A route
+the gateway changes during a pass waits for the next one. OVH changes take effect
+once the zone is refreshed; a failed refresh is retried even when nothing else
+changed. Changes
 are written in place where the record type stays the same; a CNAME replacing
 addresses (or the reverse) is written after the old records are deleted.
 

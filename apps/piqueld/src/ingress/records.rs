@@ -11,19 +11,24 @@
 //! ([`Store::applied_table`](crate::store::Store::applied_table)), so they
 //! are written once the gateway serves a route and deleted or repointed only
 //! after it has withdrawn it. A route waiting for the gateway keeps its
-//! current records.
+//! current records, and so does every route until the gateway has converged
+//! with this daemon's configuration, such as a new ingress mode. Each
+//! hostname's plan is checked again just before its records change.
 //!
 //! **Ownership.** piqueld only changes the records of names it owns: those
-//! with a `_piqueld.<hostname>` TXT record holding the installation ID. A
-//! name already holding A/AAAA/CNAME records, or another installation's
-//! ownership record, is a `dns_conflict` and never written. Claimed names are
+//! with a `_piqueld.<hostname>` TXT record holding the installation ID, and
+//! no other installation's. A name already holding A/AAAA/CNAME records, or
+//! another installation's ownership record, is a `dns_conflict` and never
+//! written. Claimed names are
 //! kept in the store until their records are deleted, so a removed route's
 //! records are found after a restart.
 //!
 //! **Reconciliation.** Every 10 seconds the desired records are recomputed
 //! from the store and the apps node's addresses, without calling providers.
 //! A pass runs when they changed, every 5 minutes to repair drift, and a
-//! minute after a failed pass. Changes are daemon-scoped journal actions
+//! minute after a failed pass. Changes OVH stages are marked unpublished in
+//! the store until published, so a failed publish is retried. Changes are
+//! daemon-scoped journal actions
 //! with `ingress_dns_*` phases; a pass that changes nothing records nothing.
 use super::{Ingress, wire::Journaled};
 use crate::dns::{DnsProvider, Found, Record, RecordId, Zone};
@@ -169,30 +174,22 @@ impl Ingress {
 
     /// Each hostname's plan: applied routes' records, routes waiting for the
     /// gateway kept as they are, and claimed names without a route removed.
-    /// Disabled ingress removes every record once the gateway's stop is
-    /// confirmed. Hostnames outside the zones of providers managing records
-    /// are manual.
+    /// Disabled ingress removes every record. Until the gateway has converged
+    /// (or stopped) with this daemon's configuration, such as a new ingress
+    /// mode after a restart, every record is kept. Hostnames outside the zones
+    /// of providers managing records are manual.
     async fn plan_records(&self) -> Result<BTreeMap<Hostname, Plan>> {
         // `None` is manual.
         let mut wanted: BTreeMap<Hostname, Option<Desired>> = BTreeMap::new();
-        let (stopped, addresses) = {
-            let health = self.health.read().await;
-            let addresses: Vec<IpAddr> = health
-                .private
-                .addresses
-                .iter()
-                .filter_map(|address| address.parse().ok())
-                .collect();
-            (!self.enabled && health.healthy, addresses)
-        };
-        if !self.enabled && !stopped {
-            for hostname in self.store.dns_records().await? {
-                wanted.insert(
-                    hostname,
-                    Some(Desired::Pending("Waiting for the gateway to stop")),
-                );
-            }
-        }
+        let addresses: Vec<IpAddr> = self
+            .health
+            .read()
+            .await
+            .private
+            .addresses
+            .iter()
+            .filter_map(|address| address.parse().ok())
+            .collect();
         if self.enabled {
             for route in self.store.applied_table().await?.into_values().flatten() {
                 let desired = self.desired_records(&route, &addresses);
@@ -208,6 +205,16 @@ impl Ingress {
         }
         for hostname in self.store.dns_records().await? {
             wanted.entry(hostname).or_insert(Some(Desired::Removed));
+        }
+        if !self
+            .gateway_converged
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            for desired in wanted.values_mut().flatten() {
+                *desired = Desired::Pending(
+                    "Waiting for the gateway to apply this daemon's configuration",
+                );
+            }
         }
         let dns = &self.certificates.dns;
         let mut plan = BTreeMap::new();
@@ -262,62 +269,45 @@ impl Ingress {
     /// Reconciles every managed hostname, one at a time, and publishes their
     /// states for route status. Returns whether every hostname succeeded.
     /// Shutdown stops the pass between hostnames.
+    ///
+    /// Provider calls are slow, so the gateway may change routes during a
+    /// pass. Each hostname's plan is checked again just before its records
+    /// change, and a hostname whose plan changed waits for the next pass.
     async fn reconcile_records(
         &self,
         plan: &BTreeMap<Hostname, Plan>,
         cancellation: &CancellationToken,
     ) -> bool {
-        let previous = std::mem::take(&mut *self.records.write().expect("DNS record state lock"));
         let mut states = BTreeMap::new();
         let mut complete = true;
         for (hostname, plan) in plan {
             if cancellation.is_cancelled() {
                 return false;
             }
-            let state = match plan {
-                Plan::Manual => RouteDns::default(),
-                Plan::Managed {
-                    provider,
-                    zone,
-                    desired,
-                } => self
-                    .converge_records(
-                        hostname,
-                        *provider,
-                        zone,
-                        desired,
-                        previous
-                            .get(hostname)
-                            .is_some_and(|state| state.state == DnsRecordState::Managed),
-                    )
-                    .await
-                    .unwrap_or_else(|error| {
-                        tracing::warn!(%hostname, error=format!("{error:#}"), "route DNS records could not be updated; will retry");
-                        complete = false;
-                        RouteDns::new(
-                            DnsRecordState::Pending,
-                            "The DNS provider could not update the records; piqueld retries within a minute. See daemon logs for details.".to_owned(),
-                        )
-                    }),
-            };
+            let state = self.converge(hostname, plan).await.unwrap_or_else(|error| {
+                tracing::warn!(%hostname, error=format!("{error:#}"), "route DNS records could not be updated; will retry");
+                complete = false;
+                RouteDns::new(
+                    DnsRecordState::Pending,
+                    "The DNS provider could not update the records; piqueld retries within a minute. See daemon logs for details.".to_owned(),
+                )
+            });
             states.insert(hostname.clone(), state);
         }
         *self.records.write().expect("DNS record state lock") = states;
         complete
     }
 
-    /// Converges one hostname's records, owning the name first. Never
-    /// changes a name piqueld does not own. Unless the previous pass left it
-    /// `managed`, the zone is published even without changes, so changes an
-    /// earlier failed or interrupted pass staged at OVH take effect.
-    async fn converge_records(
-        &self,
-        hostname: &Hostname,
-        provider: usize,
-        zone: &Zone,
-        desired: &Desired,
-        managed: bool,
-    ) -> Result<RouteDns> {
+    /// Applies one hostname's `plan`, unless it changed since it was made.
+    async fn converge(&self, hostname: &Hostname, plan: &Plan) -> Result<RouteDns> {
+        let Plan::Managed {
+            provider,
+            zone,
+            desired,
+        } = plan
+        else {
+            return Ok(RouteDns::default());
+        };
         let desired = match desired {
             Desired::Pending(reason) => {
                 return Ok(RouteDns::new(DnsRecordState::Pending, (*reason).to_owned()));
@@ -325,6 +315,28 @@ impl Ingress {
             Desired::Records(records) => Some(records),
             Desired::Removed => None,
         };
+        if self.plan_records().await?.get(hostname) != Some(plan) {
+            return Ok(RouteDns::new(
+                DnsRecordState::Pending,
+                "The route changed during reconciliation; piqueld retries shortly".to_owned(),
+            ));
+        }
+        self.converge_records(hostname, *provider, zone, desired)
+            .await
+    }
+
+    /// Converges one hostname's records to `desired`, or deletes them when
+    /// `None`, owning the name first. Never changes a name piqueld does not
+    /// own, nor one another installation also claims. Changes a provider
+    /// staged but did not publish, such as after a failed OVH refresh, are
+    /// published even when nothing else changed.
+    async fn converge_records(
+        &self,
+        hostname: &Hostname,
+        provider: usize,
+        zone: &Zone,
+        desired: Option<&BTreeSet<Record>>,
+    ) -> Result<RouteDns> {
         let dns = &self.certificates.dns;
         let site = Site {
             provider: dns.provider(provider),
@@ -334,17 +346,21 @@ impl Ingress {
         };
         let ours = Record::Txt(self.instance_id.clone());
         let (current, ownership) = site.read().await?;
-        let owned = ownership.iter().any(|found| found.record == ours);
-        let republish = !managed && site.provider.stages_changes();
+        let (ours_found, foreign): (Vec<&Found>, Vec<&Found>) =
+            ownership.iter().partition(|found| found.record == ours);
+        // Another installation's claim makes the name shared: never exclusive.
+        let owned = !ours_found.is_empty() && foreign.is_empty();
+        let republish = self.store.dns_records_unpublished(hostname).await?;
         let Some(desired) = desired else {
-            if owned || republish {
-                // Without ownership, only publishes.
-                let delete = current
-                    .iter()
-                    .chain(ownership.iter().filter(|found| found.record == ours))
-                    .filter(|_| owned)
-                    .map(|found| found.id.clone())
-                    .collect();
+            // Only this installation's own records: the addresses when it
+            // owns the name, and its ownership records in any case.
+            let delete: Vec<RecordId> = current
+                .iter()
+                .filter(|_| owned)
+                .chain(ours_found)
+                .map(|found| found.id.clone())
+                .collect();
+            if !delete.is_empty() || republish {
                 let changes = Changes {
                     delete,
                     ..Changes::default()
@@ -371,7 +387,6 @@ impl Ingress {
         }
         let changes = Changes::between(&current, desired);
         if !owned {
-            self.store.claim_dns_records(hostname).await?;
             self.change_records("ingress_dns_create", &site, Some(&ours), &changes)
                 .await?;
         } else if !changes.is_empty() || republish {
@@ -382,7 +397,8 @@ impl Ingress {
     }
 
     /// Writes `changes` in one journal action, after the ownership record
-    /// `claim` when given.
+    /// `claim` when given. The hostname is tracked in the store first, with
+    /// changes a provider stages marked unpublished until it publishes them.
     async fn change_records(
         &self,
         phase: &str,
@@ -390,6 +406,8 @@ impl Ingress {
         claim: Option<&Record>,
         changes: &Changes,
     ) -> Result<()> {
+        let stages = site.provider.stages_changes();
+        self.store.track_dns_records(site.hostname, stages).await?;
         let journal = self
             .journal_as(
                 DiagnosticCode::DnsRecordsFailed,
@@ -400,6 +418,9 @@ impl Ingress {
             .context("record the DNS change in the journal")?;
         let result = site.apply(&journal, claim, changes).await;
         journal.finish(result).await?;
+        if stages {
+            self.store.track_dns_records(site.hostname, false).await?;
+        }
         tracing::info!(hostname=%site.hostname, phase, "changed route DNS records");
         Ok(())
     }

@@ -14,6 +14,10 @@ struct State {
     next: u64,
     /// Every call fails while set, as during a provider outage.
     failing: bool,
+    /// Changes wait for a publish, like OVH's, while set.
+    staging: bool,
+    /// Publishing fails while set.
+    failing_publish: bool,
     /// Every change made through the provider, such as `delete A 192.0.2.1`.
     changes: Vec<String>,
 }
@@ -82,6 +86,33 @@ impl Memory {
     /// Makes every call fail, or succeed again.
     pub(crate) fn fail(&self, failing: bool) {
         self.state.lock().unwrap().failing = failing;
+    }
+
+    /// Makes changes wait for a publish, like OVH's.
+    pub(crate) fn stage(&self) {
+        self.state.lock().unwrap().staging = true;
+    }
+
+    /// Makes publishing fail, or succeed again.
+    pub(crate) fn fail_publish(&self, failing: bool) {
+        self.state.lock().unwrap().failing_publish = failing;
+    }
+
+    pub(super) fn stages_changes(&self) -> bool {
+        self.state.lock().unwrap().staging
+    }
+
+    /// Records a publish of staged changes.
+    pub(super) fn publish(&self) -> Result<(), ApiError> {
+        let mut state = self.state()?;
+        if !state.staging {
+            return Ok(());
+        }
+        if state.failing_publish {
+            return Err(ApiError::Unsupported("publish failed"));
+        }
+        state.changes.push("publish".into());
+        Ok(())
     }
 
     pub(super) fn zones(&self) -> Result<Vec<Zone>, ApiError> {

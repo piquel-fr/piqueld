@@ -388,7 +388,14 @@ impl DnsProvider {
     /// Whether changes wait for [`Self::publish`]; only OVH stages them.
     #[must_use]
     pub fn stages_changes(&self) -> bool {
-        matches!(self, Self::Ovh(_))
+        match self {
+            Self::Ovh(_) => true,
+            Self::Cloudflare(_) => false,
+            #[cfg(test)]
+            Self::Challtestsrv(_) => false,
+            #[cfg(test)]
+            Self::Memory(provider) => provider.stages_changes(),
+        }
     }
 
     /// Applies created and deleted records to the zone's nameservers. Only OVH
@@ -401,7 +408,9 @@ impl DnsProvider {
             Self::Ovh(provider) => provider.refresh(http, zone).await,
             Self::Cloudflare(_) => Ok(()),
             #[cfg(test)]
-            Self::Challtestsrv(_) | Self::Memory(_) => Ok(()),
+            Self::Challtestsrv(_) => Ok(()),
+            #[cfg(test)]
+            Self::Memory(provider) => provider.publish(),
         }
         .map_err(self.error("publish zone", Some(zone)))
     }

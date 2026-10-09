@@ -26,6 +26,7 @@ impl Harness {
         let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
         let provider = Memory::new(&["example.com"]);
         let ingress = Self::ingress(&directory, &store, &provider, manage_records, None).await;
+        ingress.converged();
         Self {
             directory,
             store,
@@ -71,7 +72,8 @@ impl Harness {
         ingress
     }
 
-    /// Another manager of this store and zone, as after a restart.
+    /// Another manager of this store and zone, as after a restart, before its
+    /// gateway has converged.
     async fn restart(&self, tunnel: Option<TunnelCredentials>) -> Ingress {
         Self::ingress(&self.directory, &self.store, &self.provider, true, tunnel).await
     }
@@ -144,6 +146,14 @@ impl Harness {
     /// The ownership record of `host` for this installation.
     fn owner(&self, host: &str) -> String {
         format!("_piqueld.{host} TXT {:?}", self.store.instance_id())
+    }
+}
+
+impl Ingress {
+    /// Marks the gateway as converged with this configuration.
+    fn converged(&self) {
+        self.gateway_converged
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -329,6 +339,7 @@ async fn visibility_changes_withdraw_before_repointing() {
     harness.stage(&id, &[], true).await;
     harness.apply().await;
     let restarted = harness.restart(None).await;
+    restarted.converged();
     assert!(Harness::pass_of(&restarted).await);
     assert_eq!(harness.provider.dump(), Vec::<String>::new());
     assert!(harness.store.dns_records().await.unwrap().is_empty());
@@ -347,7 +358,11 @@ async fn tunnel_mode_replaces_addresses_with_a_proxied_cname() {
             file: "{}".into(),
         }))
         .await;
+    // Until the gateway runs in tunnel mode, the records stay.
     harness.provider.changes();
+    assert!(Harness::pass_of(&tunnel).await);
+    harness.unchanged();
+    tunnel.converged();
     assert!(Harness::pass_of(&tunnel).await);
     assert_eq!(
         harness.provider.changes(),
@@ -402,7 +417,97 @@ async fn disabled_ingress_deletes_records_once_the_gateway_stopped() {
     // The gateway's stop is not confirmed yet: its records stay.
     assert!(Harness::pass_of(&disabled).await);
     harness.unchanged();
-    disabled.health.write().await.healthy = true;
+    disabled.converged();
     assert!(Harness::pass_of(&disabled).await);
     assert_eq!(harness.provider.dump(), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn names_another_installation_claims_are_never_changed() {
+    let harness = Harness::new(true).await;
+    let (id, route) = harness.route("www.example.com", "public").await;
+    harness.stage(&id, &[route], true).await;
+    harness.apply().await;
+    assert!(harness.pass().await);
+    // Another installation also claims the name, and its address drifts.
+    harness
+        .provider
+        .insert("_piqueld.www.example.com", Record::Txt("other".into()));
+    let drifted = harness.provider.records("www.example.com").unwrap();
+    harness
+        .provider
+        .upsert(
+            "www.example.com",
+            Some(&drifted[0].id),
+            &Record::A("198.51.100.7".parse().unwrap()),
+        )
+        .unwrap();
+    harness.provider.changes();
+    assert!(harness.pass().await);
+    harness.unchanged();
+    assert_eq!(
+        harness.state("www.example.com").state,
+        DnsRecordState::DnsConflict
+    );
+    // Removing the route deletes only this installation's ownership record.
+    harness.stage(&id, &[], true).await;
+    harness.apply().await;
+    assert!(harness.pass().await);
+    assert_eq!(
+        harness.provider.changes(),
+        [format!("delete {}", harness.owner("www.example.com"))]
+    );
+    assert_eq!(
+        harness.provider.dump(),
+        [
+            "www.example.com A 198.51.100.7",
+            "_piqueld.www.example.com TXT \"other\"",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn staged_changes_are_published_after_a_failed_publish() {
+    let harness = Harness::new(true).await;
+    harness.provider.stage();
+    let (id, route) = harness.route("www.example.com", "public").await;
+    harness.stage(&id, &[route], true).await;
+    harness.apply().await;
+    assert!(harness.pass().await);
+    harness.provider.changes();
+    // The route is removed, but publishing its deletion fails.
+    harness.stage(&id, &[], true).await;
+    harness.apply().await;
+    harness.provider.fail_publish(true);
+    assert!(!harness.pass().await);
+    harness.provider.changes();
+    // Nothing is left to delete; the deletion is still published, once.
+    harness.provider.fail_publish(false);
+    assert!(harness.pass().await);
+    assert_eq!(harness.provider.changes(), ["publish"]);
+    assert!(harness.store.dns_records().await.unwrap().is_empty());
+    assert!(harness.pass().await);
+    harness.unchanged();
+}
+
+#[tokio::test]
+async fn a_route_changed_during_a_pass_waits_for_the_next_one() {
+    let harness = Harness::new(true).await;
+    let (id, route) = harness.route("www.example.com", "public").await;
+    harness.stage(&id, &[route], true).await;
+    harness.apply().await;
+    // The pass was planned while the route was applied, then the gateway
+    // withdrew it: the stale plan writes nothing.
+    let plan = harness.ingress.plan_records().await.unwrap();
+    harness.stage(&id, &[], true).await;
+    harness.apply().await;
+    harness
+        .ingress
+        .reconcile_records(&plan, &CancellationToken::new())
+        .await;
+    harness.unchanged();
+    assert_eq!(
+        harness.state("www.example.com").state,
+        DnsRecordState::Pending
+    );
 }

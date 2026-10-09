@@ -87,6 +87,9 @@ pub struct Ingress {
     public_addresses: Vec<IpAddr>,
     /// Each route hostname's DNS record state from the latest pass.
     records: std::sync::RwLock<BTreeMap<Hostname, records::RouteDns>>,
+    /// Set once the gateway has converged, or stopped, with this daemon's
+    /// configuration; DNS records wait for it.
+    gateway_converged: std::sync::atomic::AtomicBool,
     /// Set once Swarm's address pools are verified outside the tailnet ranges.
     tailnet_pools: tokio::sync::OnceCell<()>,
     #[cfg(test)]
@@ -151,6 +154,7 @@ impl Ingress {
             tunnel: None,
             public_addresses: Vec::new(),
             records: std::sync::RwLock::default(),
+            gateway_converged: std::sync::atomic::AtomicBool::new(false),
             tailnet_pools: tokio::sync::OnceCell::new(),
             #[cfg(test)]
             issuer: None,
@@ -393,6 +397,8 @@ impl Ingress {
                 stage = "record applied routes";
                 self.store.acknowledge_routes(&accepted).await?;
                 gateway = true;
+                self.gateway_converged
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 stage = "run cloudflared for the Cloudflare Tunnel";
                 self.ensure_tunnel().await?;
             } else {
@@ -406,6 +412,8 @@ impl Ingress {
                 stage = "record withdrawn routes";
                 self.store.acknowledge_routes(&table).await?;
                 gateway = true;
+                self.gateway_converged
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
             }
             anyhow::Ok(())
         }

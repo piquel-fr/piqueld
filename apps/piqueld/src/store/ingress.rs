@@ -348,17 +348,38 @@ impl Store {
     }
 
     /// Records that piqueld manages `hostname`'s DNS records, before it writes
-    /// the first one.
-    pub(crate) async fn claim_dns_records(&self, hostname: &Hostname) -> Result<(), StoreError> {
+    /// the first one, and whether changes it staged are `unpublished`.
+    pub(crate) async fn track_dns_records(
+        &self,
+        hostname: &Hostname,
+        unpublished: bool,
+    ) -> Result<(), StoreError> {
         let hostname = hostname.as_str();
         sqlx::query!(
-            "INSERT INTO dns_records(hostname) VALUES(?1) ON CONFLICT DO NOTHING",
-            hostname
+            "INSERT INTO dns_records(hostname,unpublished) VALUES(?1,?2) ON CONFLICT(hostname) DO UPDATE SET unpublished=excluded.unpublished",
+            hostname,
+            unpublished
         )
         .execute(&self.pool)
         .await
         .map_err(StoreError::database)?;
         Ok(())
+    }
+
+    /// Whether changes staged for `hostname` may not be published yet.
+    pub(crate) async fn dns_records_unpublished(
+        &self,
+        hostname: &Hostname,
+    ) -> Result<bool, StoreError> {
+        let hostname = hostname.as_str();
+        Ok(sqlx::query_scalar!(
+            "SELECT unpublished FROM dns_records WHERE hostname=?1",
+            hostname
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::database)?
+            == Some(1))
     }
 
     /// Forgets `hostname` once its DNS records are deleted.
