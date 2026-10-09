@@ -12,7 +12,7 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::{
     Client,
-    system::{CertificateStatus, DependencyStatus, DnsProviderStatus},
+    system::{CertificateStatus, DependencyStatus, DnsProviderStatus, PublicIngressStatus},
 };
 
 #[component]
@@ -316,11 +316,32 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                                             &format!("{node}{}", private.message),
                                         )
                                     });
+                                // In tunnel mode, public routes' CNAME records point
+                                // at the tunnel ID.
+                                let tunnel_card = match &ingress.public {
+                                    PublicIngressStatus::Tunnel { id, connected, message }
+                                        if ingress.enabled =>
+                                    {
+                                        let (tone, label) = if *connected {
+                                            (Tone::Ok, "Connected")
+                                        } else {
+                                            (Tone::Bad, "Disconnected")
+                                        };
+                                        Some(status_card(
+                                            "Cloudflare Tunnel",
+                                            tone,
+                                            label,
+                                            &format!("Tunnel {id}. {message}"),
+                                        ))
+                                    }
+                                    _ => None,
+                                };
                                 view! {
                                     {dependency_readiness("Database", status.database)}
                                     {dependency_readiness("Docker Engine", status.docker)}
                                     {dependency_readiness("Swarm manager", status.swarm)}
                                     {status_card("HTTPS ingress", tone, label, &ingress.message)}
+                                    {tunnel_card}
                                     {private_card}
                                 }
                             })

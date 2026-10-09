@@ -26,10 +26,9 @@
 //! Like the gateway's, changes are daemon-scoped journal actions, and a
 //! container whose spec hash differs is replaced.
 
-use super::{Ingress, TAILSCALE_IMAGE, gateway::CONFIGURATION_LABEL, wire::UnixApi};
+use super::{Ingress, TAILSCALE_IMAGE, wire::UnixApi};
 use crate::config::{Credential, PrivateIngressConfig};
 use anyhow::{Context, Result};
-use hyper::Method;
 use piqueld_core::api::PrivateIngressStatus;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -148,10 +147,8 @@ impl Ingress {
         ];
         let mut labels = self.labels();
         if let Some(key) = &node.auth_key {
-            use sha2::{Digest, Sha256};
             environment.push("TS_AUTHKEY=file:/config/auth-key".to_owned());
-            let fingerprint = format!("{:x}", Sha256::digest(key.expose().as_bytes()));
-            labels[AUTH_KEY_LABEL] = fingerprint[..16].into();
+            labels[AUTH_KEY_LABEL] = Self::fingerprint(key).into();
         }
         let mut spec = json!({
             "Image":TAILSCALE_IMAGE,"User":format!("{uid}:{gid}"),
@@ -178,40 +175,13 @@ impl Ingress {
         let Some(node) = &self.node else {
             return self.remove_stale_container(&name).await;
         };
-        let spec = self.node_spec(node);
-        let current = self.named_container(&name).await?;
-        let matches = current.as_ref().is_some_and(|current| {
-            current["Config"]["Labels"][CONFIGURATION_LABEL] == spec["Labels"][CONFIGURATION_LABEL]
-        });
-        if let Some(current) = &current
-            && matches
-        {
-            Self::check_container_configuration(current, &spec)?;
-            if current["State"]["Running"] == true {
-                return Ok(());
-            }
-        }
-        self.prepare_node(node).await?;
-        let journal = self.journal("ingress_start_tailnet", &name).await?;
-        let result = async {
-            if !matches {
-                // Node state is a host directory, so a replacement keeps its identity.
-                self.remove_container(&journal, &name).await?;
-                self.create_container(&journal, &name, &spec).await?;
-            }
-            self.docker
-                .send(
-                    &journal,
-                    Method::POST,
-                    &format!("/containers/{name}/start"),
-                    None,
-                )
-                .await?;
-            tracing::info!(node=%name, hostname=%node.hostname, image=TAILSCALE_IMAGE, "started apps tailnet node");
-            Ok(())
-        }
-        .await;
-        journal.finish(result).await
+        self.ensure_container(
+            &name,
+            &self.node_spec(node),
+            "ingress_start_tailnet",
+            self.prepare_node(node),
+        )
+        .await
     }
 
     /// Prepares the node's directories, serve configuration, auth key, and image.

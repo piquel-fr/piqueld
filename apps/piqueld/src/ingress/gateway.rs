@@ -2,8 +2,8 @@
 //! starting it, connecting application networks, and loading the routes built by
 //! `configuration`. Replacements keep the old container and configuration for
 //! recovery if startup fails. Disabling ingress removes the managed containers,
-//! including the apps tailnet node (`node`), but keeps certificates,
-//! configuration and node state on disk.
+//! including the apps tailnet node (`node`) and `cloudflared` (`tunnel`), but
+//! keeps certificates, configuration and node state on disk.
 //!
 //! Each change is one daemon-scoped journal action (`ingress_*` phases). Methods
 //! decide from reads before opening an action, so steady-state passes record no
@@ -30,14 +30,15 @@ use std::{
     time::Duration,
 };
 
-/// Marks the gateway container, the apps node, and their egress network.
+/// Marks the gateway container, the apps node, `cloudflared`, and their
+/// egress network.
 const GATEWAY_LABEL: &str = "io.piqueld.ingress";
 /// SHA-256 of the managed container spec; a mismatch triggers replacement.
 pub(super) const CONFIGURATION_LABEL: &str = "io.piqueld.ingress-configuration";
 
 impl Ingress {
-    /// Ownership labels applied to the gateway container, the apps node, and
-    /// the egress network.
+    /// Ownership labels applied to the gateway container, the apps node,
+    /// `cloudflared`, and the egress network.
     pub(super) fn labels(&self) -> Value {
         json!({MANAGED_LABEL:"true",INSTANCE_LABEL:self.instance_id,GATEWAY_LABEL:"true"})
     }
@@ -71,8 +72,8 @@ impl Ingress {
         Ok(container)
     }
 
-    /// Removes the serving, `-previous`, and `-next` gateway containers and the
-    /// apps node in a single action when ingress is disabled. Every removal is
+    /// Removes the serving, `-previous`, and `-next` gateway containers, the
+    /// apps node and `cloudflared` in a single action when ingress is disabled. Every removal is
     /// attempted, so a failing one never keeps another serving; the first
     /// failure is returned. Records nothing if none exist.
     pub(super) async fn stop_gateway(&self) -> Result<()> {
@@ -80,6 +81,7 @@ impl Ingress {
         let mut failure = None;
         for name in [
             self.node_name(),
+            self.tunnel_name(),
             self.name.clone(),
             format!("{}-previous", self.name),
             format!("{}-next", self.name),
@@ -334,10 +336,11 @@ impl Ingress {
     }
 
     /// Builds the hardened Caddy container spec: runs as the daemon's user with a
-    /// read-only root, only `NET_BIND_SERVICE`, host-bound ports 80/443, and data,
-    /// config, and control directories bind-mounted from the ingress directory.
-    /// The private listener's ports are never published. The spec's own hash is
-    /// stored in `CONFIGURATION_LABEL` to detect drift.
+    /// read-only root, only `NET_BIND_SERVICE`, host-bound ports 80/443 unless
+    /// the tunnel replaces them, and data, config, and control directories
+    /// bind-mounted from the ingress directory. The private and tunnel
+    /// listeners' ports are never published. The spec's own hash is stored in
+    /// `CONFIGURATION_LABEL` to detect drift, so switching modes replaces it.
     pub(super) fn container_spec(&self) -> Value {
         let uid = rustix::process::geteuid().as_raw();
         let gid = rustix::process::getegid().as_raw();
@@ -350,10 +353,8 @@ impl Ingress {
             "Cmd":["caddy","run","--resume","--config","/config/caddy/autosave.json"],
             "Env":["XDG_DATA_HOME=/data","XDG_CONFIG_HOME=/config"],
             "Labels":self.labels(),
-            "ExposedPorts":{"80/tcp":{},"443/tcp":{}},
             "HostConfig":{
                 "Binds":binds,"RestartPolicy":{"Name":"unless-stopped"},
-                "PortBindings":{"80/tcp":[{"HostIp":"","HostPort":"80"}],"443/tcp":[{"HostIp":"","HostPort":"443"}]},
                 "ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["NET_BIND_SERVICE"],"SecurityOpt":["no-new-privileges:true"],
                 "Sysctls":{"net.ipv4.ip_unprivileged_port_start":"0"},
                 "Tmpfs":{"/tmp":"rw,noexec,nosuid,size=16777216"},
@@ -362,6 +363,10 @@ impl Ingress {
             },
             "NetworkingConfig":{"EndpointsConfig":{&self.name:{"GwPriority":1}}}
         });
+        if self.tunnel.is_none() {
+            spec["ExposedPorts"] = json!({"80/tcp":{},"443/tcp":{}});
+            spec["HostConfig"]["PortBindings"] = json!({"80/tcp":[{"HostIp":"","HostPort":"80"}],"443/tcp":[{"HostIp":"","HostPort":"443"}]});
+        }
         #[cfg(test)]
         if !self.extra_hosts.is_empty() {
             spec["HostConfig"]["ExtraHosts"] = json!(self.extra_hosts);
@@ -375,6 +380,13 @@ impl Ingress {
         }
         Self::label_hash(&mut spec);
         spec
+    }
+
+    /// A short SHA-256 fingerprint of a secret a container reads from a
+    /// mounted file. Labelling the container with it makes a changed secret
+    /// replace the container. Secrets are random, so it reveals nothing.
+    pub(super) fn fingerprint(secret: &crate::config::Credential) -> String {
+        format!("{:x}", Sha256::digest(secret.expose().as_bytes()))[..16].into()
     }
 
     /// Stores the SHA-256 of a container spec in its `CONFIGURATION_LABEL`.
@@ -436,6 +448,53 @@ impl Ingress {
             }
             self.attach_networks(&journal, &self.name, networks).await?;
             self.start_gateway(&journal, table).await
+        }
+        .await;
+        journal.finish(result).await
+    }
+
+    /// Ensures a running managed container `name` built from `spec`, such as
+    /// the apps node or `cloudflared`, replacing one whose spec hash differs.
+    /// `prepare` (its files and image) runs first whenever anything changes,
+    /// and only then is a `phase` action opened, so steady-state passes record
+    /// no history.
+    pub(super) async fn ensure_container(
+        &self,
+        name: &str,
+        spec: &Value,
+        phase: &str,
+        prepare: impl Future<Output = Result<()>>,
+    ) -> Result<()> {
+        let current = self.named_container(name).await?;
+        let matches = current.as_ref().is_some_and(|current| {
+            current["Config"]["Labels"][CONFIGURATION_LABEL] == spec["Labels"][CONFIGURATION_LABEL]
+        });
+        if let Some(current) = &current
+            && matches
+        {
+            Self::check_container_configuration(current, spec)?;
+            if current["State"]["Running"] == true {
+                return Ok(());
+            }
+        }
+        prepare.await?;
+        let journal = self.journal(phase, name).await?;
+        let result = async {
+            if !matches {
+                // State lives in host directories, so a replacement keeps it.
+                self.remove_container(&journal, name).await?;
+                self.create_container(&journal, name, spec).await?;
+            }
+            self.docker
+                .send(
+                    &journal,
+                    Method::POST,
+                    &format!("/containers/{name}/start"),
+                    None,
+                )
+                .await?;
+            tracing::info!(container=%name, image=%spec["Image"], "started managed ingress container");
+            Ok(())
         }
         .await;
         journal.finish(result).await
@@ -511,7 +570,8 @@ impl Ingress {
     /// the rollback configuration commits a started replacement, so failing to
     /// clean up the old container never reverts a serving gateway.
     /// Defers replacement while retained routes lack verified networks, allowing
-    /// the running gateway to keep its attachments and accept other route changes.
+    /// the running gateway to keep its attachments and accept other route changes,
+    /// unless the replacement switches between direct and tunnel mode.
     pub(super) async fn replace_gateway(
         &self,
         table: &RoutingTable,
@@ -522,11 +582,21 @@ impl Ingress {
             Self::proxies(routes)
                 && !networks.contains(&DockerNetworkName::for_ingress(id).to_string())
         }) {
+            let Some(container) = self
+                .container()
+                .await?
+                .filter(|container| container["State"]["Running"] == true)
+            else {
+                anyhow::bail!(
+                    "cannot replace gateway: retained routes for application {id} lack a verified network and the old gateway is not running"
+                );
+            };
+            // The old container cannot serve the other mode's listeners: it
+            // would keep ports 80/443 open in tunnel mode, or lack them in
+            // direct mode.
             ensure!(
-                self.container()
-                    .await?
-                    .is_some_and(|container| container["State"]["Running"] == true),
-                "cannot replace gateway: retained routes for application {id} lack a verified network and the old gateway is not running"
+                Self::publishes_ports(&container) == self.tunnel.is_none(),
+                "cannot switch between direct and tunnel ingress: retained routes for application {id} lack a verified network; repair it or withdraw its routes"
             );
             tracing::warn!(environment_id=%id,
                 "deferring gateway replacement until retained route networks are repaired or routes are withdrawn");
@@ -668,6 +738,13 @@ impl Ingress {
             )
             .await?;
         Ok(())
+    }
+
+    /// Whether an inspected gateway publishes host ports, as in direct mode.
+    fn publishes_ports(container: &Value) -> bool {
+        container["HostConfig"]["PortBindings"]
+            .as_object()
+            .is_some_and(|bindings| !bindings.is_empty())
     }
 
     /// Finishes or reverts a replacement interrupted by cancellation or a crash.
@@ -945,9 +1022,9 @@ impl Ingress {
         journal.finish(result).await
     }
 
-    /// Forwards Caddy log lines emitted since the previous relay into daemon
-    /// logs, and the apps node's at debug level since `tailscaled` is verbose
-    /// (at most 100 lines per container and pass).
+    /// Forwards Caddy's and `cloudflared`'s log lines emitted since the
+    /// previous relay into daemon logs, and the apps node's at debug level
+    /// since `tailscaled` is verbose (at most 100 lines per container and pass).
     pub(super) async fn relay_logs(&self) -> Result<()> {
         if !self.enabled {
             return Ok(());
@@ -956,7 +1033,7 @@ impl Ingress {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
-        for name in [self.name.clone(), self.node_name()] {
+        for name in [self.name.clone(), self.node_name(), self.tunnel_name()] {
             if self.named_container(&name).await?.is_none() {
                 continue;
             }
@@ -967,6 +1044,8 @@ impl Ingress {
             for line in lines {
                 if name == self.name {
                     tracing::info!(gateway=%name,caddy=%line,"Caddy diagnostic");
+                } else if name == self.tunnel_name() {
+                    tracing::info!(tunnel=%name,cloudflared=%line,"cloudflared diagnostic");
                 } else {
                     tracing::debug!(node=%name,tailscale=%line,"apps tailnet node diagnostic");
                 }
@@ -982,7 +1061,7 @@ impl Ingress {
     /// ```text
     /// [stream: u8][0; 3][length: u32 big-endian][payload: length bytes] ...
     /// ```
-    async fn container_logs(&self, name: &str, query: &str) -> Result<Vec<String>> {
+    pub(super) async fn container_logs(&self, name: &str, query: &str) -> Result<Vec<String>> {
         let path = format!("/containers/{name}/logs?stdout=1&stderr=1&{query}");
         let bytes = self.docker.read(&path).await?;
         let mut lines = Vec::new();

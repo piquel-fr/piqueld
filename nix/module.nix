@@ -13,6 +13,7 @@ let
   withoutNulls = lib.filterAttrsRecursive (_: value: value != null);
   tailscale = cfg.settings.tailscale;
   privateIngress = cfg.settings.ingress.private;
+  tunnel = cfg.settings.ingress.tunnel;
   destinations = cfg.settings.notifications.destinations;
   # `_file` settings name host files. systemd copies each into the unit's
   # private $CREDENTIALS_DIRECTORY, so the files may stay root-only, and the
@@ -45,8 +46,14 @@ let
       // lib.optionalAttrs (tailscale.auth_key_file != null) {
         tailscale.auth_key_file = "ts-auth-key";
       }
-      // lib.optionalAttrs (privateIngress.auth_key_file != null) {
-        ingress.private.auth_key_file = "ts-apps-auth-key";
+      // {
+        ingress =
+          lib.optionalAttrs (privateIngress.auth_key_file != null) {
+            private.auth_key_file = "ts-apps-auth-key";
+          }
+          // lib.optionalAttrs (tunnel.credentials_file != null) {
+            tunnel.credentials_file = "cloudflared-tunnel";
+          };
       }
     )
   );
@@ -162,6 +169,17 @@ in
             type = lib.types.nullOr (lib.types.strMatching "/.+");
             default = null;
             description = "Host file with a Tailscale auth key for the apps node's first login, such as an agenix secret, passed to piqueld as a systemd credential. Without one, the daemon logs the node's login URL.";
+          };
+          ingress.tunnel.enabled = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Serve public routes through a locally managed Cloudflare Tunnel instead of ports 80/443, which are then closed. Each public hostname needs a proxied CNAME to <tunnel-id>.cfargotunnel.com. Restart piqueld to apply.";
+          };
+          ingress.tunnel.credentials_file = lib.mkOption {
+            # A string, not a path, so the secret is never copied into the Nix store.
+            type = lib.types.nullOr (lib.types.strMatching "/.+");
+            default = null;
+            description = "Host file with the tunnel's credentials, from `cloudflared tunnel create`, such as an agenix secret, passed to piqueld as a systemd credential. Required while the tunnel is enabled.";
           };
           dns.providers = lib.mkOption {
             type = lib.types.listOf (
@@ -364,6 +382,10 @@ in
         message = "services.piqueld.runtimeDir must be a dedicated directory below /run";
       }
       {
+        assertion = tunnel.enabled -> tunnel.credentials_file != null;
+        message = "services.piqueld.settings.ingress.tunnel.credentials_file is required while the tunnel is enabled";
+      }
+      {
         assertion = lib.all (
           destination: (destination.url == null) != (destination.url_file == null)
         ) destinations;
@@ -415,6 +437,9 @@ in
           ++ lib.optional (
             privateIngress.auth_key_file != null
           ) "ts-apps-auth-key:${privateIngress.auth_key_file}"
+          ++ lib.optional (
+            tunnel.credentials_file != null
+          ) "cloudflared-tunnel:${tunnel.credentials_file}"
           ++ lib.concatLists (
             lib.imap0 (
               index: destination:

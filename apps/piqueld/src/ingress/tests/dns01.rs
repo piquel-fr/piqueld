@@ -24,7 +24,7 @@ use std::{collections::BTreeSet, net::SocketAddr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 const PEBBLE_IMAGE: &str = "ghcr.io/letsencrypt/pebble:2.10.1@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199";
-const CURL_IMAGE: &str =
+pub(super) const CURL_IMAGE: &str =
     "alpine/curl:8.22.0@sha256:3f21f10cf24835f7baae20931f18640cc30915ea4151363fe4d8fb59ee296dfb";
 const CHALLTESTSRV_IMAGE: &str = "ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1@sha256:12ce21884def456bcf9786542113949e1f19dc7738d2c70e156c2d0c38a1405b";
 
@@ -41,7 +41,7 @@ fn hosts(names: &[&str]) -> BTreeSet<Hostname> {
 
 impl Scenario {
     /// Pulls an image into the isolated daemon.
-    async fn pull(&self, image: &str) {
+    pub(super) async fn pull(&self, image: &str) {
         use bollard::query_parameters::CreateImageOptionsBuilder;
         use futures_util::TryStreamExt;
         let options = CreateImageOptionsBuilder::default()
@@ -257,8 +257,8 @@ impl Scenario {
             .to_vec()
     }
 
-    /// Runs `curl` on `network` and returns its exit code.
-    async fn curl(&self, network: &str, arguments: &[String]) -> i64 {
+    /// Runs `curl` on `network` and returns its exit code and output.
+    pub(super) async fn curl(&self, network: &str, arguments: &[String]) -> (i64, String) {
         let docker = &self.gateway.docker;
         let name = "piqueld-test-curl";
         docker
@@ -277,6 +277,12 @@ impl Scenario {
             .external(Method::POST, &format!("/containers/{name}/wait"), None)
             .await
             .unwrap();
+        let output = self
+            .gateway
+            .container_logs(name, "tail=100")
+            .await
+            .unwrap()
+            .join("\n");
         docker
             .external(
                 Method::DELETE,
@@ -285,7 +291,7 @@ impl Scenario {
             )
             .await
             .unwrap();
-        exited["StatusCode"].as_i64().unwrap()
+        (exited["StatusCode"].as_i64().unwrap(), output)
     }
 
     /// Applications reach the gateway's private listener over their ingress
@@ -310,17 +316,20 @@ impl Scenario {
             ]
         };
         assert_eq!(
-            self.curl(&network, &request("one.example.test", 443)).await,
+            self.curl(&network, &request("one.example.test", 443))
+                .await
+                .0,
             0
         );
         assert_ne!(
             self.curl(&network, &request("admin.example.test", 8443))
-                .await,
+                .await
+                .0,
             0
         );
         let mut forged = request("admin.example.test", 8443);
         forged.extend(["--haproxy-protocol", "--haproxy-clientip", "100.64.0.9"].map(String::from));
-        assert_ne!(self.curl(&network, &forged).await, 0);
+        assert_ne!(self.curl(&network, &forged).await.0, 0);
     }
 
     /// Deploys `admin.example.test` publicly, then makes it private: the

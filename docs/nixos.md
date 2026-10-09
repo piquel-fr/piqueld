@@ -108,7 +108,8 @@ services.piqueld.settings.tailscale = {
 `docker.auto_initialize_swarm`, `ingress.enabled`, `ingress.acme.directory`,
 `ingress.acme.email`, `ingress.private.enabled`, `ingress.private.hostname`,
 `ingress.private.auth_key_file` (passed as a systemd credential, like the other
-`_file` settings), `dns.providers`, all three `reconciliation`
+`_file` settings), `ingress.tunnel.enabled`, `ingress.tunnel.credentials_file`
+(also a systemd credential, required while the tunnel is enabled), `dns.providers`, all three `reconciliation`
 intervals/timeouts, the `retention` periods, both `build_history` limits,
 `metrics.listen`, `notifications.destinations`, and every `notifications` switch
 and timing, with the daemon's defaults. Reconciliation

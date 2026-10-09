@@ -93,16 +93,10 @@ impl ApplicationService {
             auto_initialize_swarm = config.docker.auto_initialize_swarm,
             "connected to Docker Engine as a single-node Swarm manager"
         );
-        let ingress = Arc::new(
-            crate::ingress::Ingress::new(
-                config.ingress.enabled,
-                &config.docker.socket,
-                &config.server.data_dir,
-                Arc::clone(&store),
-            )?
-            .with_dns(&config.dns, &config.ingress.acme)?
-            .with_private(&config.ingress.private),
-        );
+        let ingress = Arc::new(crate::ingress::Ingress::from_config(
+            config,
+            Arc::clone(&store),
+        )?);
         let wake = Arc::new(Notify::new());
         let reconciler = Controller::new(docker, Arc::clone(&store))
             .with_config(&config.reconciliation)

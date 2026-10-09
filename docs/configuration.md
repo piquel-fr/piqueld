@@ -57,6 +57,8 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `ingress.private.enabled` | `false` (restart required) |
 | `ingress.private.hostname` | `"piqueld-apps"` |
 | `ingress.private.auth_key_file` | none |
+| `ingress.tunnel.enabled` | `false` (restart required) |
+| `ingress.tunnel.credentials_file` | none; required while enabled |
 | `dns.providers` | `[]` |
 | `reconciliation.scan_interval_seconds` | `60` |
 | `reconciliation.prepare_timeout_seconds` | `300` |
@@ -260,6 +262,9 @@ file only has to exist for the node's first login.
 `ingress.private.auth_key_file` has no inline variant either. piqueld reads it at
 startup and writes it, mode 0600, to `<data_dir>/ingress/tailscale/config/auth-key`
 for the apps node's container, which only uses it for its first login.
+`ingress.tunnel.credentials_file` has no inline variant: piqueld reads it at
+startup, checks that it is a tunnel credentials file, and writes it, mode 0600, to
+`<data_dir>/ingress/tunnel/credentials.json` for the `cloudflared` container.
 
 Errors and the read-only settings view name the file a value came from, never
 the value. Restart the daemon after changing a credential file.
@@ -301,7 +306,7 @@ secure erasure from existing backups. Back up the new key with the database.
 ## Managed application ingress
 
 `[ingress] enabled = true` enables the installation-owned Caddy gateway on TCP
-ports 80/443. This setting is read once at startup and is read-only in the UI.
+ports 80/443, or behind a Cloudflare Tunnel. This setting is read once at startup and is read-only in the UI.
 Enabling requires Docker Engine 28+ and API 1.48+; the daemon reports gateway
 startup, port conflicts, and version failures through ingress health without
 stopping application management. Application images' own ports remain private.
@@ -330,6 +335,19 @@ auth_key_file = "ts-apps-auth-key"   # $CREDENTIALS_DIRECTORY/ts-apps-auth-key
 both nodes run. Without `auth_key_file`, the daemon logs the node's login URL.
 It is read once at startup; while disabled, private routes report `disabled`.
 See [public and private routes](ingress.md#public-and-private-routes).
+
+`[ingress.tunnel]` serves public routes through a locally managed Cloudflare
+Tunnel instead of ports 80/443, which are then closed:
+
+```toml
+[ingress.tunnel]
+enabled = true
+credentials_file = "cloudflared-tunnel.json"   # from `cloudflared tunnel create piqueld`
+```
+
+It is read once at startup. Each public hostname then needs a proxied CNAME to
+`<tunnel-id>.cfargotunnel.com`, and Cloudflare sees public traffic in plaintext.
+See [Cloudflare Tunnel](ingress.md#cloudflare-tunnel).
 
 Gateway certificates, accepted configuration, and the private administration socket
 live below `<data_dir>/ingress`. Only dedicated subdirectories are mounted into

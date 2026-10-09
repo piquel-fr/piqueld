@@ -7,7 +7,7 @@ use piqueld_client::{
     EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event,
     MountedSecret, Operation, OperationState, Page, PlanView, SavedApplication, SecretMetadata,
     Source, StoredSecret, SystemStatus,
-    system::{IngressStatus, RouteStatus},
+    system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
 use serde::Serialize;
 use std::io;
@@ -74,6 +74,29 @@ impl Report for StatusReport<'_> {
                     ingress.message
                 ),
             )?;
+            match &ingress.public {
+                PublicIngressStatus::Direct => out.label("Public ingress", "ports 80/443")?,
+                PublicIngressStatus::Tunnel {
+                    id,
+                    connected,
+                    message,
+                } => {
+                    out.label(
+                        "Public ingress",
+                        format_args!(
+                            "Cloudflare Tunnel {id} ({})",
+                            if *connected {
+                                "connected"
+                            } else {
+                                "not connected"
+                            }
+                        ),
+                    )?;
+                    if !connected {
+                        out.label("Tunnel problem", message)?;
+                    }
+                }
+            }
             let private = &ingress.private;
             if private.enabled {
                 out.label(

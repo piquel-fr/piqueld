@@ -2274,10 +2274,10 @@
         "type": "object"
       },
       "DnsRecords": {
-        "description": "The A and AAAA records a route's hostname needs. piqueld does not create\nthem; operators copy them to their DNS provider.",
+        "description": "The records a route's hostname needs. piqueld does not create them;\noperators copy them to their DNS provider.",
         "oneOf": [
           {
-            "description": "Public routes: this server's public addresses.",
+            "description": "Public routes: A/AAAA records to this server's public addresses.",
             "properties": {
               "type": {
                 "enum": [
@@ -2287,6 +2287,26 @@
               }
             },
             "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Public routes in tunnel mode: a proxied CNAME record to the tunnel.",
+            "properties": {
+              "target": {
+                "description": "`<tunnel-id>.cfargotunnel.com`.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "tunnel_cname"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "target",
               "type"
             ],
             "type": "object"
@@ -5478,7 +5498,7 @@
             "type": "boolean"
           },
           "healthy": {
-            "description": "Whether the gateway has accepted its desired configuration (or is\nstopped). Public routes depend only on this.",
+            "description": "Whether the gateway has accepted its desired configuration (or is\nstopped), and in tunnel mode whether the tunnel is connected. Public\nroutes depend only on this.",
             "type": "boolean"
           },
           "message": {
@@ -5488,6 +5508,10 @@
           "private": {
             "$ref": "#/components/schemas/PrivateIngressStatus",
             "description": "The private listener and the apps tailnet node carrying its traffic."
+          },
+          "public": {
+            "$ref": "#/components/schemas/PublicIngressStatus",
+            "description": "How public routes reach the gateway."
           },
           "routes": {
             "description": "Deployed routes and their latest independent HTTPS probes, limited to\napplications the caller can read.",
@@ -6700,6 +6724,56 @@
           "message"
         ],
         "type": "object"
+      },
+      "PublicIngressStatus": {
+        "description": "How public routes reach the gateway: `[ingress.tunnel]` selects the mode.",
+        "oneOf": [
+          {
+            "description": "The gateway publishes ports 80 and 443 on the host.",
+            "properties": {
+              "mode": {
+                "enum": [
+                  "direct"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`cloudflared` connects out to Cloudflare, which terminates TLS and\nforwards to the gateway. No inbound port is open.",
+            "properties": {
+              "connected": {
+                "description": "`cloudflared` holds a connection to Cloudflare's edge, from its\nhealthcheck of `/ready`.",
+                "type": "boolean"
+              },
+              "id": {
+                "description": "Tunnel ID from its credentials file.",
+                "type": "string"
+              },
+              "message": {
+                "description": "Safe diagnostic, with detailed causes in daemon logs.",
+                "type": "string"
+              },
+              "mode": {
+                "enum": [
+                  "tunnel"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "connected",
+              "message",
+              "mode"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "ReadinessStatus": {
         "description": "Deployment prerequisites. Configuration APIs remain available when false.",
