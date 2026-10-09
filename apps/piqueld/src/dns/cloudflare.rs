@@ -146,6 +146,7 @@ impl Cloudflare {
                 found.push(Found {
                     id: RecordId(record.id),
                     record: parsed,
+                    proxied: record.proxied,
                 });
             }
         }

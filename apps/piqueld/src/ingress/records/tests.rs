@@ -162,6 +162,7 @@ fn changes_update_in_place_and_delete_before_creating() {
     let found = |id: &str, record: Record| Found {
         id: RecordId(id.into()),
         record,
+        proxied: false,
     };
     let a = |last: u8| Record::A(std::net::Ipv4Addr::new(192, 0, 2, last));
     let cname = Record::Cname {
@@ -188,6 +189,18 @@ fn changes_update_in_place_and_delete_before_creating() {
         }
     );
     assert!(Changes::between(&current[..2], &BTreeSet::from([a(1), a(2)])).is_empty());
+    // An address proxied by hand is rewritten unproxied.
+    let proxied = Found {
+        proxied: true,
+        ..found("4", a(1))
+    };
+    assert_eq!(
+        Changes::between(&[proxied], &BTreeSet::from([a(1)])),
+        Changes {
+            update: vec![(RecordId("4".into()), a(1))],
+            ..Changes::default()
+        }
+    );
 }
 
 #[tokio::test]

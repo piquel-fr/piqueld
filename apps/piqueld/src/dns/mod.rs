@@ -175,6 +175,19 @@ pub struct Found {
     pub id: RecordId,
     /// The record's data.
     pub record: Record,
+    /// Cloudflare proxies it, which for A/AAAA records replaces their
+    /// addresses with Cloudflare's in public answers.
+    pub proxied: bool,
+}
+
+impl Found {
+    /// The record, unless its proxying differs from what it says: a proxied
+    /// A/AAAA record answers with other addresses.
+    #[must_use]
+    pub fn exact(&self) -> Option<&Record> {
+        let proxied = matches!(self.record, Record::Cname { proxied: true, .. });
+        (self.proxied == proxied).then_some(&self.record)
+    }
 }
 
 /// A zone hosted by one provider.

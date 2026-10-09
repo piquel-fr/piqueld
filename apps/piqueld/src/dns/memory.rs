@@ -136,6 +136,7 @@ impl Memory {
             .map(|(id, (_, record))| Found {
                 id: RecordId(id.to_string()),
                 record: record.clone(),
+                proxied: matches!(record, Record::Cname { proxied: true, .. }),
             })
             .collect())
     }

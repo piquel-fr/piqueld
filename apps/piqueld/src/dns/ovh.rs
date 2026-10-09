@@ -219,6 +219,7 @@ impl Ovh {
                 found.push(Found {
                     id: RecordId(record.id.to_string()),
                     record: parsed,
+                    proxied: false,
                 });
             }
         }

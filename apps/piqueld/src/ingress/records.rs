@@ -103,16 +103,20 @@ struct Changes {
 impl Changes {
     /// Pairs surplus records with missing ones of the same type, which are
     /// updated in place; the rest are deleted, then the missing created. A
-    /// CNAME cannot coexist with A/AAAA records, so deletions come first.
+    /// CNAME cannot coexist with A/AAAA records, so deletions come first. A
+    /// record whose proxying was changed counts as surplus.
     fn between(current: &[Found], desired: &BTreeSet<Record>) -> Self {
         let mut missing: Vec<&Record> = desired
             .iter()
-            .filter(|record| !current.iter().any(|found| &found.record == *record))
+            .filter(|record| !current.iter().any(|found| found.exact() == Some(*record)))
             .collect();
         let mut kept = BTreeSet::new();
         let mut changes = Self::default();
         for found in current {
-            if desired.contains(&found.record) && kept.insert(&found.record) {
+            if let Some(record) = found.exact()
+                && desired.contains(record)
+                && kept.insert(record)
+            {
                 continue;
             }
             match missing
