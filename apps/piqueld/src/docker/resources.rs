@@ -549,9 +549,10 @@ impl DockerApi for BollardDocker {
         build: &super::ImageBuild<'_>,
         log: Option<&crate::build::BuildLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
-        // Builds shell out to Docker Buildx against the same socket, even when
-        // `DOCKER_BUILDKIT=0` selects the legacy builder, and read the image
-        // ID from the build's `--metadata-file`, e.g.
+        // Builds shell out to Docker Buildx against the same socket, with the
+        // engine's own builder: the account may have selected one that does not
+        // load into the engine. Buildx also ignores `DOCKER_BUILDKIT=0`.
+        // They read the image ID from the build's `--metadata-file`, e.g.
         // `{"containerimage.digest": "sha256:<64 hex>"}`. Provenance
         // attestations differ on every build and, with the containerd image
         // store, change that ID, so identical builds would never share a
@@ -573,7 +574,8 @@ impl DockerApi for BollardDocker {
             command
                 .arg("--host")
                 .arg(format!("unix://{}", self.socket.display()))
-                .args(["buildx", "build", "--pull", "--provenance=false", "--file"])
+                .args(["buildx", "build", "--builder=default", "--pull"])
+                .args(["--provenance=false", "--file"])
                 .arg(&build.dockerfile)
                 .arg("--metadata-file")
                 .arg(&metadata)
