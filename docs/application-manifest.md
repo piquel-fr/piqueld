@@ -298,7 +298,9 @@ stage. Build arguments are not secret: Docker records them in image metadata and
 piqueld shows them in manifests and build history. Use service secrets for
 sensitive values. There is no automatic build backend detection, submodule or LFS
 setup, registry publishing, or automatic image cleanup. Docker's build cache is
-reused and base images are refreshed with `--pull`.
+reused and base images are refreshed with `--pull`. Builds record no provenance
+attestations, which differ on every build, so a rebuild Docker serves from its
+cache keeps the same image ID and shares its release.
 
 The resolved source records the full Git commit and content-addressed local image
 ID. Every repository and build field, including build arguments and the target, is
