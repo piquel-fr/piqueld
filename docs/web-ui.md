@@ -57,7 +57,10 @@ branch (one per agent, say), then opens the preview's deployments; for a
 preview of that branch and slot that already exists, it opens it without
 redeploying. It is disabled until a manifest repository is connected in Source.
 **Delete** confirms, then deletes the preview with every volume it created and
-their data. Neither needs a saved revision, so unsaved edits elsewhere on the
+their data. **Prune gone** confirms, then deletes every preview whose branch
+was gone when the list loaded; the daemon checks each branch again, keeps any
+it can no longer confirm gone, and deletes nothing while the repository cannot
+be read. None of them needs a saved revision, so unsaved edits elsewhere on the
 page don't block them.
 
 Each row opens the preview's page, which has an environment page's tabs.
@@ -129,8 +132,9 @@ Releases tab; the environment's Overview links to the release its current target
 runs. Current target, last successful deployment, and observed runtime health
 are distinct. History remains until the environment is deleted. Deploying an
 empty application removes its runtime services and network. Removing volumes or
-deleting an application retains Docker volume data; deleting an application
-deletes every environment, its configuration, and all database history. The
+deleting an application retains environments' Docker volume data; deleting an
+application deletes every environment and preview, with the previews' volumes,
+its configuration, and all database history. The
 confirmation names the environments being deleted.
 
 Forms save typed fields or settings sections through individual endpoints, without

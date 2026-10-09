@@ -943,6 +943,8 @@ pub(crate) struct ApplicationDeletionReport<'a> {
     /// `Some("deleted")` once the application is gone; omitted with `--no-wait`.
     #[serde(skip_serializing_if = "Option::is_none")]
     outcome: Option<&'static str>,
+    /// Always true: environments' named volumes are retained. Previews' volumes
+    /// are removed regardless.
     volumes_retained: bool,
 }
 impl<'a> ApplicationDeletionReport<'a> {

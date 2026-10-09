@@ -192,3 +192,30 @@ test('a preview created from the dashboard opens on its own page, also from its 
   expect((await deleted).status()).toBe(202);
   await expect(page).toHaveURL(`/dashboard/applications/${app}?tab=previews`);
 });
+
+test('Prune gone submits the previews whose branch is gone', async ({ page, account }) => {
+  void account;
+  const { app } = await createRepositoryApplication(page);
+  const preview = await page.evaluate(async (app) => {
+    const response = await fetch(`/api/v1/applications/${app}/previews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branch: 'old/experiment' }),
+    });
+    return (await response.json()).data.preview.id as string;
+  }, app);
+  // The test repository cannot be read, so the listing reports the branch gone.
+  await page.route(`**/api/v1/applications/${app}/previews`, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    for (const view of body.data) view.branch = { state: 'gone' };
+    await route.fulfill({ response, json: body });
+  });
+  const pruned = page.waitForRequest(request => request.url().endsWith(`/applications/${app}/previews/prune`));
+  await page.route(`**/api/v1/applications/${app}/previews/prune`, route => route.fulfill({ json: { data: [] } }));
+
+  await page.goto(`/dashboard/applications/${app}?tab=previews`);
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Prune gone', exact: true }).click();
+  expect((await pruned).postDataJSON()).toEqual({ previews: [preview] });
+});

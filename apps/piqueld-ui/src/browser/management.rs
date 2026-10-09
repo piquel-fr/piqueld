@@ -901,7 +901,7 @@ fn DeleteApplication() -> impl IntoView {
                 .collect::<Vec<_>>()
         });
         let message = format!(
-            "Delete this application, all its environments ({}), their services, and all deployment history? Docker volume data will be retained.",
+            "Delete this application, all its environments ({}) and previews, their services, and all deployment history? Environments' Docker volume data will be retained; previews' volumes are removed with their data.",
             environments.join(", ")
         );
         if !window().confirm_with_message(&message).unwrap_or(false) {
@@ -944,7 +944,7 @@ fn DeleteApplication() -> impl IntoView {
                 <div>
                     <h3>"Delete application"</h3>
                     <p>
-                        "Removes every environment's running services and all configuration and deployment history. Docker volumes and their data are retained."
+                        "Removes every environment's and preview's running services and all configuration and deployment history. Environments' Docker volumes and their data are retained; previews' volumes are removed with their data."
                     </p>
                 </div>
                 <button

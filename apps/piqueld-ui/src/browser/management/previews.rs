@@ -9,7 +9,9 @@ use leptos::prelude::*;
 use leptos_router::NavigateOptions;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
-use piqueld_client::{BranchState, Client, CreatePreviewRequest, EnvironmentView, PreviewView};
+use piqueld_client::{
+    BranchState, Client, CreatePreviewRequest, EnvironmentView, PreviewView, PrunePreviewsRequest,
+};
 
 impl EditorContext {
     /// Dashboard address of one of the application's previews.
@@ -86,8 +88,8 @@ fn urls(hostnames: Vec<String>) -> AnyView {
         .into_any()
 }
 
-/// The application's previews with their status, URLs, and branch state, read
-/// when the tab opens and on refresh.
+/// The application's previews with their status and branch state, read when
+/// the tab opens and on refresh. "Prune gone" deletes those whose branch is gone.
 #[component]
 pub(super) fn PreviewList() -> impl IntoView {
     let context = editor();
@@ -102,6 +104,49 @@ pub(super) fn PreviewList() -> impl IntoView {
                 .map_err(|error| client_error_message(&error))
         }
     });
+    // Previews whose branch was gone when the list loaded.
+    let gone = move || {
+        data.get()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|view| view.branch == BranchState::Gone)
+            .map(|view| view.preview)
+            .collect::<Vec<_>>()
+    };
+    // The daemon checks each branch again and keeps any no longer gone.
+    let prune = move |_| {
+        let previews = gone();
+        let names = previews
+            .iter()
+            .map(|preview| preview.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let message = format!(
+            "Delete the previews whose branch is gone ({names}), their services, secrets, and deployment history? Every Docker volume they created is removed with its data."
+        );
+        if !window().confirm_with_message(&message).unwrap_or(false) {
+            return;
+        }
+        let request = PrunePreviewsRequest {
+            previews: previews.into_iter().map(|preview| preview.id).collect(),
+        };
+        let application = context.id();
+        context.mutate(
+            move |client| {
+                let (application, request) = (application.clone(), request.clone());
+                async move { client.prune_previews(&application, &request).await }
+            },
+            move |deleted| {
+                context.notice.set(format!(
+                    "Deletion of {} previews accepted. Their volumes and their data will be removed.",
+                    deleted.len()
+                ));
+                context.dashboard.with_value(|d| d.refresh.run(()));
+                data.refetch();
+            },
+        );
+    };
     let none = move || {
         if context.managed() {
             "No previews yet. Create one to deploy a branch."
@@ -122,6 +167,15 @@ pub(super) fn PreviewList() -> impl IntoView {
                     <button type="button" class="btn" on:click={move |_| data.refetch()}>
                         {icon(Icon::Refresh)}
                         "Refresh"
+                    </button>
+                    <button
+                        type="button"
+                        class="btn btn-danger"
+                        title="Delete every preview whose branch is gone"
+                        disabled={move || context.blocked() || gone().is_empty()}
+                        on:click={prune}
+                    >
+                        "Prune gone"
                     </button>
                     <NewPreview />
                 </div>

@@ -419,8 +419,9 @@ Reconciliation retries the deployment snapshot using prepared digests.
 Unchanged healthy containers do not restart unnecessarily.
 
 Deletion removes application configuration and all its history after runtime
-resources are absent. Named Docker volumes remain; output includes
-`volumes_retained: true`. The CLI waits for application absence because deletion
+resources are absent. Environments' named Docker volumes remain, which output
+reports as `volumes_retained: true`; previews' volumes are removed with their
+data. The CLI waits for application absence because deletion
 also removes its operation record.
 
 For apply, delete, rename, and field edits, the CLI automatically sends the revision it
