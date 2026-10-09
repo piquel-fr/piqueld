@@ -763,7 +763,7 @@ mod tests {
         let saved = save(&store, input.clone(), false).await.unwrap();
         let id = EnvironmentId::parse(saved.application_id).unwrap();
         let mut public = input.spec().routes.clone();
-        public[0].visibility = piqueld_core::manifest::Visibility::Public;
+        public[0].access = piqueld_core::manifest::RouteAccess::Public;
         store.stage_routes(&id, &public, true, None).await.unwrap();
         // Public -> private leaves the public listener as the deployment
         // starts; the private route joins once backends are ready.
@@ -793,7 +793,7 @@ mod tests {
             statuses.push(RouteStatus {
                 environment_id: saved.application_id.clone(),
                 hostname: hostname.into(),
-                visibility: route.visibility,
+                access: route.access,
                 dns: piqueld_core::api::DnsRecords::ServerAddresses,
                 target: route.target.clone(),
                 state: "ready".into(),

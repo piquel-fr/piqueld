@@ -1,5 +1,7 @@
-//! Identifies who a connection through the tailnet node came from, so the
-//! audit trail can name them and tokens can be bound to them.
+//! Identifies who a connection through a tailnet node came from: through the
+//! daemon's own node, so the audit trail can name them and tokens can be
+//! bound to them, and through the apps node, so private routes can pass their
+//! identity to backends.
 use super::Cli;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -30,14 +32,30 @@ pub trait TailnetLookup: Send + Sync {
     async fn whois(&self, peer: SocketAddr, fresh: bool) -> Option<TailnetPeer>;
 }
 
-/// [`TailnetLookup`] through the node's `tailscaled`, with `tailscale whois`.
+/// Asks a node's `tailscaled` who an address is.
+#[async_trait]
+pub trait WhoisSource: Send + Sync {
+    /// The node's whois answer for `address`, the JSON `tailscale whois
+    /// --json` prints and `LocalAPI` returns.
+    async fn whois_json(&self, address: IpAddr) -> Result<Vec<u8>>;
+}
+
+/// The daemon's own node, through `tailscale whois`.
+#[async_trait]
+impl WhoisSource for Cli {
+    async fn whois_json(&self, address: IpAddr) -> Result<Vec<u8>> {
+        self.run(&["whois", "--json", &address.to_string()]).await
+    }
+}
+
+/// [`TailnetLookup`] through a node's `tailscaled`.
 ///
-/// Identities are cached per address for [`CACHE_FOR`] to describe audited
-/// requests; failed lookups are not cached. Lookups run one at a time, so a
-/// burst of requests spawns one `tailscale` process at a time, and requests
-/// that waited reuse the identity just looked up for their address.
-pub struct Whois {
-    cli: Cli,
+/// Identities are cached per address for [`CACHE_FOR`]; failed lookups are
+/// not cached. Lookups run one at a time, so a burst of requests spawns one
+/// `tailscale` process at a time, and requests that waited reuse the identity
+/// just looked up for their address.
+pub struct Whois<S> {
+    source: S,
     cache: Mutex<HashMap<IpAddr, (Instant, TailnetPeer)>>,
     /// Held while a `tailscale whois` runs.
     querying: Mutex<()>,
@@ -66,6 +84,8 @@ struct Node {
 struct User {
     #[serde(rename = "LoginName")]
     login: String,
+    #[serde(rename = "DisplayName", default)]
+    name: String,
 }
 
 impl Response {
@@ -79,15 +99,25 @@ impl Response {
             .unwrap_or_default()
             .to_owned();
         let tags = self.node.tags.unwrap_or_default();
-        let login = self.user.filter(|_| tags.is_empty()).map(|user| user.login);
-        TailnetPeer { login, node, tags }
+        let user = self.user.filter(|_| tags.is_empty());
+        let name = user
+            .as_ref()
+            .map(|user| user.name.clone())
+            .filter(|name| !name.is_empty());
+        TailnetPeer {
+            login: user.map(|user| user.login),
+            name,
+            node,
+            tags,
+        }
     }
 }
 
-impl Whois {
-    pub(super) fn new(cli: Cli) -> Self {
+impl<S: WhoisSource> Whois<S> {
+    /// Looks up identities through `source`.
+    pub fn new(source: S) -> Self {
         Self {
-            cli,
+            source,
             cache: Mutex::new(HashMap::new()),
             querying: Mutex::new(()),
         }
@@ -102,11 +132,9 @@ impl Whois {
 
     /// Asks `tailscaled` who `address` is.
     async fn query(&self, address: IpAddr) -> Result<TailnetPeer> {
-        let address = address.to_string();
-        let output =
-            tokio::time::timeout(LOOKUP_TIMEOUT, self.cli.run(&["whois", "--json", &address]))
-                .await
-                .context("tailscale whois timed out")??;
+        let output = tokio::time::timeout(LOOKUP_TIMEOUT, self.source.whois_json(address))
+            .await
+            .context("tailscale whois timed out")??;
         let response: Response =
             serde_json::from_slice(&output).context("invalid tailscale whois output")?;
         Ok(response.into_peer())
@@ -114,7 +142,7 @@ impl Whois {
 }
 
 #[async_trait]
-impl TailnetLookup for Whois {
+impl<S: WhoisSource> TailnetLookup for Whois<S> {
     async fn whois(&self, peer: SocketAddr, fresh: bool) -> Option<TailnetPeer> {
         let address = peer.ip();
         if !fresh && let Some(identity) = self.cached(address).await {
@@ -153,15 +181,16 @@ mod tests {
         let read = |json: &str| serde_json::from_str::<Response>(json).unwrap().into_peer();
         let laptop = read(
             r#"{"Node":{"Name":"laptop.tail1234.ts.net.","Tags":null},
-            "UserProfile":{"LoginName":"alice@example.com"}}"#,
+            "UserProfile":{"LoginName":"alice@example.com","DisplayName":"Alice Martin"}}"#,
         );
         assert_eq!(laptop.login.as_deref(), Some("alice@example.com"));
+        assert_eq!(laptop.name.as_deref(), Some("Alice Martin"));
         assert_eq!(laptop.node, "laptop");
         let runner = read(
             r#"{"Node":{"Name":"runner.tail1234.ts.net.","Tags":["tag:ci"]},
-            "UserProfile":{"LoginName":"tagged-devices"}}"#,
+            "UserProfile":{"LoginName":"tagged-devices","DisplayName":"Tagged Devices"}}"#,
         );
-        assert_eq!(runner.login, None);
+        assert_eq!((runner.login, runner.name), (None, None));
         assert_eq!(runner.tags, ["tag:ci"]);
     }
 }

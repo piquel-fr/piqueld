@@ -1,7 +1,7 @@
 //! Public manifest input and export shapes, before semantic validation.
 
 use super::variables::{RenderTarget, Template, Typed};
-use super::{APPLICATION_API_VERSION, APPLICATION_KIND, Visibility};
+use super::{APPLICATION_API_VERSION, APPLICATION_KIND, RouteAccess, Visibility};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -637,6 +637,11 @@ pub struct Route {
     /// ceiling can make it stricter, never looser.
     #[serde(default)]
     pub visibility: Visibility,
+    /// Passes the connecting device's tailnet identity to the backend in
+    /// `Piqueld-*` request headers. Requires the route's own `visibility` to
+    /// be `private`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub identity: bool,
     /// Logical service in this application.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
@@ -652,10 +657,11 @@ pub struct Route {
 impl Route {
     /// A route proxying `hostname` to a service's internal HTTP port.
     #[must_use]
-    pub fn service(hostname: String, visibility: Visibility, service: String, port: u16) -> Self {
+    pub fn service(hostname: String, access: RouteAccess, service: String, port: u16) -> Self {
         Self {
             hostname: hostname.into(),
-            visibility,
+            visibility: access.visibility(),
+            identity: access.identity(),
             service: Some(service),
             port: Some(port),
             redirect: None,
@@ -664,10 +670,11 @@ impl Route {
 
     /// A route redirecting `hostname` without reaching a service.
     #[must_use]
-    pub fn redirect(hostname: String, visibility: Visibility, redirect: Redirect) -> Self {
+    pub fn redirect(hostname: String, access: RouteAccess, redirect: Redirect) -> Self {
         Self {
             hostname: hostname.into(),
-            visibility,
+            visibility: access.visibility(),
+            identity: access.identity(),
             service: None,
             port: None,
             redirect: Some(redirect),

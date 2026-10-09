@@ -107,12 +107,25 @@ async fn test(
     shutdown: &mut Shutdown,
 ) -> Result<ExitCode> {
     engine.wait_for_dind(container).await?;
-    let ports = engine
+    let settings = engine
         .inspect_container(container, None::<InspectContainerOptions>)
         .await?
         .network_settings
-        .and_then(|settings| settings.ports)
         .unwrap_or_default();
+    // Connections from this host reach the engine's containers from its
+    // network's gateway; the ingress tests trust it as the apps node.
+    let host = settings
+        .networks
+        .iter()
+        .flat_map(HashMap::values)
+        .find_map(|network| {
+            network
+                .gateway
+                .clone()
+                .filter(|gateway| !gateway.is_empty())
+        })
+        .context("the engine's network has no gateway")?;
+    let ports = settings.ports.unwrap_or_default();
     let port = |name: &str| {
         ports
             .get(name)
@@ -147,6 +160,7 @@ async fn test(
             .env("PIQUELD_INGRESS_HTTP_PORT", port("80/tcp")?)
             .env("PIQUELD_INGRESS_HTTPS_PORT", port("443/tcp")?)
             .env("PIQUELD_INGRESS_PRIVATE_PORT", port("8443/tcp")?)
+            .env("PIQUELD_DOCKER_HOST_ADDRESS", &host)
             .env("PIQUELD_PEBBLE_PORT", port("14000/tcp")?)
             .env("PIQUELD_CHALLTESTSRV_DNS_PORT", port("8053/tcp")?)
             .env("PIQUELD_CHALLTESTSRV_API_PORT", port("8055/tcp")?),

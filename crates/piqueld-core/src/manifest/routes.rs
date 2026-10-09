@@ -159,6 +159,116 @@ impl std::str::FromStr for Visibility {
     }
 }
 
+/// Who may connect to a deployed route and what its backend learns about
+/// them. Only private routes can pass the client's tailnet identity, since
+/// only the tailnet knows who is connecting.
+///
+/// It keeps the flat wire shape of the manifest:
+///
+/// ```text
+/// Public                      {"visibility":"public"}
+/// Private { identity: false } {"visibility":"private"}
+/// Private { identity: true }  {"visibility":"private","identity":true}
+/// ```
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(try_from = "RouteAccessFields", into = "RouteAccessFields")]
+pub enum RouteAccess {
+    /// Reachable from the internet.
+    Public,
+    /// Reachable only from the tailnet.
+    Private {
+        /// Whether the gateway passes the client's tailnet identity to the
+        /// backend in `Piqueld-*` request headers.
+        identity: bool,
+    },
+}
+
+/// Who may connect to a route, and whether its backend receives the client's
+/// tailnet identity: the flat wire fields of a [`RouteAccess`].
+#[derive(Clone, Copy, Deserialize, Serialize, ToSchema)]
+struct RouteAccessFields {
+    /// Who may connect: everyone, or only tailnet devices.
+    #[serde(default)]
+    visibility: Visibility,
+    /// Whether the backend receives the client's tailnet identity; private
+    /// routes only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    identity: bool,
+}
+
+/// `identity` was requested on a public route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("identity requires visibility = \"private\" on the route itself")]
+pub struct PublicIdentityError;
+
+impl RouteAccess {
+    /// Combines a visibility with whether the route asks for identity.
+    ///
+    /// # Errors
+    /// Public routes cannot ask for identity.
+    pub const fn new(visibility: Visibility, identity: bool) -> Result<Self, PublicIdentityError> {
+        match (visibility, identity) {
+            (Visibility::Public, true) => Err(PublicIdentityError),
+            (Visibility::Public, false) => Ok(Self::Public),
+            (Visibility::Private, identity) => Ok(Self::Private { identity }),
+        }
+    }
+
+    /// Who may connect, which selects the listener serving the route.
+    #[must_use]
+    pub const fn visibility(self) -> Visibility {
+        match self {
+            Self::Public => Visibility::Public,
+            Self::Private { .. } => Visibility::Private,
+        }
+    }
+
+    /// Whether the backend receives the client's tailnet identity.
+    #[must_use]
+    pub const fn identity(self) -> bool {
+        matches!(self, Self::Private { identity: true })
+    }
+}
+
+/// A route with `visibility` and no identity.
+impl From<Visibility> for RouteAccess {
+    fn from(visibility: Visibility) -> Self {
+        match visibility {
+            Visibility::Public => Self::Public,
+            Visibility::Private => Self::Private { identity: false },
+        }
+    }
+}
+
+impl TryFrom<RouteAccessFields> for RouteAccess {
+    type Error = PublicIdentityError;
+
+    fn try_from(fields: RouteAccessFields) -> Result<Self, Self::Error> {
+        Self::new(fields.visibility, fields.identity)
+    }
+}
+
+impl From<RouteAccess> for RouteAccessFields {
+    fn from(access: RouteAccess) -> Self {
+        Self {
+            visibility: access.visibility(),
+            identity: access.identity(),
+        }
+    }
+}
+
+impl utoipa::PartialSchema for RouteAccess {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        RouteAccessFields::schema()
+    }
+}
+
+impl ToSchema for RouteAccess {
+    fn name() -> std::borrow::Cow<'static, str> {
+        "RouteAccess".into()
+    }
+}
+
 /// Invalid redirect status input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("redirect status must be 301, 302, 303, 307, or 308")]
@@ -304,10 +414,10 @@ impl fmt::Display for RouteTarget {
 pub struct ValidatedRoute {
     /// Exact canonical public hostname.
     pub hostname: Hostname,
-    /// Effective visibility: the route's own, capped by its environment's
-    /// ceiling when the manifest was rendered.
-    #[serde(default)]
-    pub visibility: Visibility,
+    /// Effective visibility, the route's own capped by its environment's
+    /// ceiling when the manifest was rendered, and whether it passes identity.
+    #[serde(flatten)]
+    pub access: RouteAccess,
     /// Backend service or redirect.
     #[serde(flatten)]
     pub target: RouteTarget,
@@ -319,7 +429,7 @@ impl ValidatedRoute {
     /// visibility withdraws it like a removal.
     #[must_use]
     pub fn same_listener(&self, other: &Self) -> bool {
-        self.hostname == other.hostname && self.visibility == other.visibility
+        self.hostname == other.hostname && self.access.visibility() == other.access.visibility()
     }
 
     /// Converts input already checked by manifest validation.
@@ -354,7 +464,7 @@ impl ValidatedRoute {
         };
         Ok(Self {
             hostname: Hostname::parse(literal(route.hostname)?).map_err(|e| invalid(&e))?,
-            visibility: route.visibility,
+            access: RouteAccess::new(route.visibility, route.identity).map_err(|e| invalid(&e))?,
             target: fields.try_into().map_err(|e| invalid(&e))?,
         })
     }
@@ -377,7 +487,8 @@ impl ValidatedRoute {
         };
         input::Route {
             hostname: Template::literal(self.hostname.as_str()),
-            visibility: self.visibility,
+            visibility: self.access.visibility(),
+            identity: self.access.identity(),
             service,
             port,
             redirect,
@@ -533,6 +644,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(stored.target.to_string(), "web:80");
+        assert_eq!(
+            stored.access,
+            super::RouteAccess::Private { identity: false }
+        );
+        // Identity keeps the flat wire shape and cannot be decoded on a public route.
+        let identity = serde_json::json!({"hostname":"a.example.com","visibility":"private","identity":true,"service":"web","port":80});
+        let route: ValidatedRoute = serde_json::from_value(identity.clone()).unwrap();
+        assert_eq!(route.access, super::RouteAccess::Private { identity: true });
+        assert_eq!(serde_json::to_value(&route).unwrap(), identity);
+        let mut public = identity;
+        public["visibility"] = "public".into();
+        assert!(serde_json::from_value::<ValidatedRoute>(public).is_err());
         let redirect_json =
             serde_json::json!({"to":"https://example.com/","status":308,"preserve_path":true});
         for target in [

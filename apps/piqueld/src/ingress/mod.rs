@@ -1,10 +1,12 @@
 //! Installation-owned Caddy gateway, independent of the daemon's process
 //! lifetime. Public routes are served on its published listener, or on a
 //! tunnel listener that only `cloudflared` reaches; private routes on a
-//! private listener that only the apps tailnet node reaches.
+//! private listener that only the apps tailnet node reaches, and that can
+//! pass each client's tailnet identity to backends (`identity`).
 mod certificates;
 mod configuration;
 mod gateway;
+mod identity;
 mod node;
 mod tunnel;
 mod wire;
@@ -37,9 +39,6 @@ use wire::UnixApi;
 /// Version released with piqueld; upgrades deliberately replace the gateway.
 pub const CADDY_IMAGE: &str =
     "caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b";
-/// Tailnet client address private probes present, Tailscale's own service address.
-const PROBE_CLIENT: std::net::SocketAddrV4 =
-    std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(100, 100, 100, 100), 0);
 /// Version of the apps tailnet node released with piqueld; upgrades replace it.
 pub const TAILSCALE_IMAGE: &str = "tailscale/tailscale:v1.102.5@sha256:c507f3a2a6ab1cabd8d809b98edeb41edbd5c3fb6ad9632ffd098b4c7d0b4065";
 /// Version of `cloudflared` released with piqueld; upgrades replace it.
@@ -87,11 +86,14 @@ pub struct Ingress {
     issuer: Option<serde_json::Value>,
     #[cfg(test)]
     extra_hosts: Vec<String>,
-    /// Publishes the private listener on the engine's port 8443, trusts PROXY
-    /// headers from Docker bridges, and probes it on this loopback port, so
-    /// tests outside the engine can reach it.
+    /// Publishes the private listener on the engine's port 8443 and probes it
+    /// on this loopback port, so tests outside the engine can reach it.
     #[cfg(test)]
     private_port: Option<u16>,
+    /// Replaces the private listener's trusted peers read from Docker, so
+    /// tests can play the apps node.
+    #[cfg(test)]
+    trust: Option<configuration::PrivateTrust>,
 }
 
 impl Ingress {
@@ -150,6 +152,8 @@ impl Ingress {
             extra_hosts: Vec::new(),
             #[cfg(test)]
             private_port: None,
+            #[cfg(test)]
+            trust: None,
         })
     }
 
@@ -249,12 +253,14 @@ impl Ingress {
         self.synchronize_for(Some(id)).await
     }
 
-    /// Repairs lifecycle/configuration and probes public HTTPS independently of deployments.
+    /// Repairs lifecycle/configuration, probes HTTPS independently of
+    /// deployments, and answers identity routes' lookups.
     pub async fn run(&self, cancellation: CancellationToken) {
         tokio::join!(
             self.run_gateway(&cancellation),
             self.run_probes(&cancellation),
-            self.run_certificates(&cancellation)
+            self.run_certificates(&cancellation),
+            self.serve_identity(&cancellation)
         );
     }
 
@@ -268,7 +274,7 @@ impl Ingress {
         table
             .values()
             .flatten()
-            .filter(|route| route.visibility == Visibility::Private)
+            .filter(|route| route.access.visibility() == Visibility::Private)
             .map(|route| route.hostname.clone())
             .collect()
     }
@@ -340,12 +346,13 @@ impl Ingress {
     ///
     /// When enabled: verifies ingress networks, ensures the gateway container,
     /// applies routes and attachments, acknowledges the applied table, then
-    /// ensures `cloudflared` and the apps node. When disabled: stops the
-    /// gateway, `cloudflared` and the node and acknowledges the withdrawal.
-    /// Callers must hold the writer lock. Network failures degrade health;
-    /// they fail the call only for `application` (or for any application when
-    /// `None`). A disconnected tunnel degrades health without failing the
-    /// call. Node failures degrade only the private listener's health.
+    /// ensures the apps node and applies routes again to trust its address,
+    /// then ensures `cloudflared`. When disabled: stops the gateway,
+    /// `cloudflared` and the node and acknowledges the withdrawal. Callers
+    /// must hold the writer lock. Network failures degrade health; they fail
+    /// the call only for `application` (or for any application when `None`).
+    /// A disconnected tunnel degrades health without failing the call. Node
+    /// failures degrade only the private listener's health.
     async fn synchronize_for(
         &self,
         application: Option<&piqueld_core::EnvironmentId>,
@@ -357,6 +364,7 @@ impl Ingress {
         // Whether the gateway converged (or stopped), even if cloudflared did
         // not: the private listener depends only on the gateway.
         let mut gateway = false;
+        let mut private = None;
         let result: Result<()> = async {
             let table = self.store.routing_table().await?;
             if self.enabled {
@@ -373,6 +381,15 @@ impl Ingress {
                 self.configure_gateway(&accepted, &networks).await?;
                 stage = "record applied routes";
                 self.store.acknowledge_routes(&accepted).await?;
+                // The private listener trusts the node only while it runs as
+                // specified, so a node about to be replaced was untrusted
+                // above, before its address is released. Once the node runs,
+                // routes load again to trust its new address.
+                private = Some(self.private_status(true).await);
+                if self.node.is_some() {
+                    stage = "trust the apps node's address";
+                    self.configure_gateway(&accepted, &networks).await?;
+                }
                 gateway = true;
                 stage = "run cloudflared for the Cloudflare Tunnel";
                 self.ensure_tunnel().await?;
@@ -392,7 +409,10 @@ impl Ingress {
         }
         .await
         .context(stage);
-        let private = self.private_status(gateway).await;
+        let private = match private {
+            Some(private) if gateway => private,
+            _ => self.private_status(gateway).await,
+        };
         let public = self.public_status().await;
         // In tunnel mode, public routes are unreachable while it is down.
         let disconnected = self.enabled
@@ -443,8 +463,8 @@ impl Ingress {
 
     /// The private listener's health once the gateway is up: the apps node's
     /// state. Ensures the node. While private ingress is disabled, removes a
-    /// leftover node even when the gateway fails, and is healthy once none
-    /// runs. Callers hold the writer lock.
+    /// leftover node once the gateway no longer trusts its address, and is
+    /// healthy once none runs. Callers hold the writer lock.
     async fn private_status(&self, gateway: bool) -> PrivateIngressStatus {
         let status = |healthy: bool, message: &str| PrivateIngressStatus {
             enabled: self.node.is_some(),
@@ -467,6 +487,14 @@ impl Ingress {
             };
         }
         let Some(node) = &self.node else {
+            // A gateway that failed to reload may still trust the node's
+            // address, which must stay allocated until it no longer does.
+            if !gateway {
+                return status(
+                    false,
+                    "Removing the apps node waits for the gateway to stop serving private routes; they may still be reachable from the tailnet. See ingress health",
+                );
+            }
             return match self.ensure_node().await {
                 Ok(()) => status(
                     true,
@@ -533,8 +561,8 @@ impl Ingress {
                 RouteStatus {
                     environment_id: id.to_string(),
                     hostname: route.hostname.to_string(),
-                    visibility: route.visibility,
-                    dns: match (route.visibility, &self.tunnel) {
+                    access: route.access,
+                    dns: match (route.access.visibility(), &self.tunnel) {
                         (Visibility::Public, None) => DnsRecords::ServerAddresses,
                         (Visibility::Public, Some(tunnel)) => DnsRecords::TunnelCname {
                             target: tunnel.hostname(),
@@ -576,7 +604,7 @@ impl Ingress {
                 ("failed", "Gateway shutdown is not confirmed; routing may still be active. See ingress health".into())
             };
         }
-        let is_private = route.visibility == Visibility::Private;
+        let is_private = route.access.visibility() == Visibility::Private;
         if is_private {
             if self.node.is_none() {
                 return if private.healthy {
@@ -617,7 +645,7 @@ impl Ingress {
             Ok(()) if self.tunnel.is_some() => ("ready", "DNS and trusted HTTPS through the Cloudflare Tunnel verified from this daemon; backend health is reported separately".into()),
             Ok(()) => ("ready", "DNS and trusted HTTPS verified from this daemon; backend health is reported separately".into()),
             Err(error) => {
-                tracing::debug!(hostname=%route.hostname, visibility=%route.visibility, error=?error, "HTTPS is not ready");
+                tracing::debug!(hostname=%route.hostname, visibility=%route.access.visibility(), error=?error, "HTTPS is not ready");
                 let message = match &self.tunnel {
                     _ if is_private => "Private HTTPS is not verified yet. Check that DNS A/AAAA records point at the apps node's tailnet addresses, and DNS-01 certificate diagnostics in daemon logs".into(),
                     Some(tunnel) => format!("Public HTTPS is not verified yet. Check the proxied CNAME record to {}, the tunnel's connection state, and daemon logs", tunnel.hostname()),
@@ -631,9 +659,10 @@ impl Ingress {
     /// Verifies a private route without crossing the tailnet:
     ///
     /// 1. Public DNS must answer exactly the apps node's tailnet addresses.
-    /// 2. The private listener, reached over the edge network with a PROXY
-    ///    header naming a tailnet client and the hostname as SNI, must serve
-    ///    a trusted certificate and this installation's probe endpoint.
+    /// 2. The private listener, reached directly over the edge network with
+    ///    the hostname as SNI, must serve a trusted certificate and this
+    ///    installation's probe endpoint. It serves the host, which cannot set
+    ///    a client address, for this.
     async fn probe_private(&self, hostname: &Hostname, addresses: &[String]) -> Result<()> {
         let expected: BTreeSet<IpAddr> = addresses
             .iter()
@@ -648,13 +677,11 @@ impl Ingress {
             !expected.is_empty() && resolved == expected,
             "DNS answers {resolved:?} instead of the apps node's addresses {expected:?}"
         );
-        let (relay, _relay) = node::proxy_relay(self.private_listener().await?, PROBE_CLIENT)
-            .await
-            .context("start the private probe's PROXY relay")?;
+        let listener = self.private_listener().await?;
         let client = Self::probe_client()
-            .resolve(hostname.as_str(), relay)
+            .resolve(hostname.as_str(), listener)
             .build()?;
-        self.probe_https(&client, &format!("https://{hostname}:{}", relay.port()))
+        self.probe_https(&client, &format!("https://{hostname}:{}", listener.port()))
             .await
     }
 

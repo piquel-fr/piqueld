@@ -113,7 +113,8 @@ addition. Hostname reservations ignore visibility.
 `piquelctl app route visibility <app> <hostname> <public|private>` and
 `piquelctl env visibility <app> <env> <public|private>` edit the saved manifest;
 the dashboard has a visibility selector per route in the Routes tab and the
-ceiling in each environment's Overview.
+ceiling in each environment's Overview. Private routes can also
+[pass the tailnet identity](#tailnet-identity) of each client to their backend.
 
 ### Listeners
 
@@ -131,9 +132,16 @@ private route on the public listener therefore receives a 404, and a forged SNI
 no certificate. Application networks are attached to the gateway, so applications
 can open connections to the private listener too; it therefore completes TLS (and
 answers HTTP) only for tailnet client addresses (`100.64.0.0/10`,
-`fd7a:115c:a1e0::/48`). Only peers on the gateway's edge network, such as the apps
-node, may set the client address with a PROXY protocol header; anyone else's
-header is ignored and their own address is used. Application networks come from
+`fd7a:115c:a1e0::/48`) and the host, which [probes](#status-and-recovery) it. Only
+the apps node may set the client address with a PROXY protocol header: the
+listener trusts its address on the edge network, read from Docker on every
+gateway pass, and only while the node runs with its current configuration.
+Routes are loaded without that trust before a node is replaced, so its old
+address is never trusted once released, and again with the new address once it
+runs. Likewise, disabling private ingress or ingress removes the node only once
+the gateway has stopped serving private routes. Anyone else's header, including
+other edge network peers' such as `cloudflared`, is ignored and their own address is used, so neither
+they nor processes on the host can pose as a tailnet client. Application networks come from
 Swarm's default address pools; a custom pool overlapping those ranges would let
 application containers pass for tailnet clients. The private listener therefore
 stays off, and its health names the pool, until the pools are verified outside
@@ -186,6 +194,80 @@ in `100.64.0.0/10`; allowlist the domain on the router, or use Tailscale split D
 Private routes get their certificates through [DNS-01](#dns-01-certificates). A
 private hostname outside every configured provider zone reports `failed` with that
 cause.
+
+### Tailnet identity
+
+The tailnet already knows who is connecting, so a private tool such as an admin
+dashboard need not run its own login. A private route can pass the connecting
+device's identity to its backend:
+
+```toml
+[[spec.routes]]
+hostname = "admin.${{ vars.domain }}"
+service = "admin"
+port = 3000
+visibility = "private"
+identity = true
+```
+
+`identity` requires the route's own `visibility = "private"`; an environment
+ceiling making a public route private does not count, and saving fails with a
+validation error naming the route. Requests then carry:
+
+| Header | Value |
+| --- | --- |
+| `Piqueld-User-Login` | the device user's login name, e.g. `alice@example.com` |
+| `Piqueld-User-Name` | the user's display name |
+| `Piqueld-Node` | the device's name, e.g. `laptop` |
+| `Piqueld-Node-Tags` | a tagged device's tags, comma-separated, e.g. `tag:ci,tag:prod` |
+
+Tagged devices belong to no user, so they get `Piqueld-Node-Tags` instead of the
+user headers. Values other than printable ASCII, such as an accented display
+name, are RFC 2047 encoded words (`=?utf-8?b?Wm/Dqw==?=`), as in Tailscale's own
+identity headers.
+
+Every listener removes client-supplied `Piqueld-*` headers (and `Piqueld_*`
+spellings, which some backends read as dashes) from every request, on every
+route, so their presence always means the gateway set them.
+
+**How it works.** For an identity route, Caddy first sends a forward-auth request
+to a Unix socket the daemon serves in the gateway's control mount
+(`<data_dir>/ingress/control/identity.sock`, `/control/identity.sock` inside the
+gateway), so no port is opened. It names the client's tailnet address, which only
+the apps node can set. piqueld asks the apps node's `LocalAPI` who that is, with
+the same whois lookup and per-address one-minute cache that identifies peers of
+the daemon's [own tailnet node](configuration.md#tailnet-node) for the audit
+trail and token bindings, and answers with the headers, which Caddy copies onto
+the proxied request.
+
+**Fail closed.** If the client cannot be identified, or the daemon does not
+answer, the route answers 503 instead of proxying without identity. A request
+whose `Connection` header names a `Piqueld-*` header, which would have the
+proxy drop the identity headers as hop-by-hop, answers 400. Identity
+routes are therefore unavailable while the daemon restarts, unlike other routes,
+which Caddy keeps serving. A backend failure on an identity route also answers 503.
+
+**What the headers trust.** As with [client addresses](#client-addresses),
+anything on the application's networks can call a service directly and send its
+own `Piqueld-*` headers. Trusting the headers therefore also trusts every service
+of the application. A backend should only accept them from the gateway, for
+example with Express:
+
+```js
+const proxies = process.env.PIQUELD_INGRESS_PROXIES.split(",");
+app.set("trust proxy", proxies);
+app.use((req, res, next) => {
+  // req.ip is the client only when the gateway forwarded the request.
+  if (!req.ips.length) return res.status(403).end();
+  req.user = req.get("Piqueld-User-Login") ?? null;
+  next();
+});
+```
+
+`piquelctl app route add ... --identity` and
+`piquelctl app route identity <app> <hostname> <on|off>` edit the saved
+manifest, `piquelctl app route list` shows an identity column, and the dashboard
+has a "Tailnet identity" toggle on private routes in the Routes tab.
 
 ## Cloudflare Tunnel
 
@@ -425,9 +507,10 @@ Deployed route status is separate from application health. A `ready` public rout
 means an HTTPS request from the daemon validated a publicly trusted certificate and
 reached this gateway at `/.well-known/piqueld-ingress`. A `ready` private route
 means public DNS answers exactly the apps node's tailnet addresses, the node is
-logged in, and the private listener, reached over the edge network with a PROXY
-header naming a tailnet client (`100.100.100.100`) and the hostname as SNI,
-served a trusted certificate and this endpoint. The tailnet hop
+logged in, and the private listener, reached directly over the edge network
+with the hostname as SNI, served a trusted certificate and this endpoint. The
+probe endpoint comes before identity lookups, so identity routes are probed the
+same way. The tailnet hop
 itself is not probed end to end. This small reserved endpoint returns
 the installation ID and never invokes the application. It is not a backend health
 check or proof of reachability from every external network. DNS, firewall, NAT
@@ -474,12 +557,18 @@ own routes (a forged Host or SNI for a private route on the public listener gets
 the public listener, that the PROXY v2 client address reaches backends in
 `X-Forwarded-For`, that a container on an application's ingress network completes
 TLS for a private route neither directly nor with a forged PROXY header, and that
-the apps node container runs hardened and reports its state. In tunnel mode, with
-a container on the edge network standing in for `cloudflared`, it checks that
-neither the gateway nor `cloudflared` publishes a port, that the tunnel listener
-serves public routes with `Cf-Connecting-IP` as the client address but not private
-ones, that a container on an application's network cannot reach it, and that
-returning to direct mode removes `cloudflared` and its credentials.
+the apps node container runs hardened and reports its state. The private route
+passes tailnet identity, with a fake whois in place of the apps node's: its
+backend receives the identity headers and never a client's own, a request
+naming them in `Connection` gets 400, a forged PROXY header from another edge
+network peer is refused TLS, and an unknown client or a stopped identity socket
+gets 503. Public routes strip client-supplied `Piqueld-*` headers too. In tunnel
+mode, with a container on the edge network standing in for `cloudflared`, it
+checks that neither the gateway nor `cloudflared` publishes a port, that the
+tunnel listener serves public routes with `Cf-Connecting-IP` as the client
+address but not private ones, that a container on an application's network
+cannot reach it, and that returning to direct mode removes `cloudflared` and its
+credentials.
 Distinct backend responses establish that requests actually switch destinations.
 
 Persistent HTTP/1, HTTP/2, WebSocket and SSE connections are exercised across reloads.

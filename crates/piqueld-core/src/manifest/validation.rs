@@ -499,6 +499,15 @@ impl ApplicationManifest {
                     "hostname is already used in this application",
                 );
             }
+            // Checked before rendering, which may make a public route private.
+            if let Err(source) = super::RouteAccess::new(route.visibility, route.identity) {
+                error(
+                    errors,
+                    "route_identity_public",
+                    &format!("{path}.identity"),
+                    &format!("route {}: {source}", route.hostname),
+                );
+            }
             match (&route.service, route.port, &route.redirect) {
                 (Some(service), Some(port), None) => {
                     if !self.spec.services.iter().any(|s| &s.name == service) {

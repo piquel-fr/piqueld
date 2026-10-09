@@ -729,8 +729,25 @@ default to `private`.
 visibility = "private"
 ```
 
+`identity = true` passes the connecting device's tailnet identity to the backend
+in `Piqueld-User-Login`, `Piqueld-User-Name`, `Piqueld-Node` and
+`Piqueld-Node-Tags` request headers. It requires the route's own `visibility` to
+be `private`, even where a ceiling would make the route private; otherwise saving
+fails with `route_identity_public`, naming the route.
+
+```toml
+[[spec.routes]]
+hostname = "admin.notes.example.com"
+service = "admin"
+port = 3000
+visibility = "private"
+identity = true
+```
+
 See [public and private routes](ingress.md#public-and-private-routes) for
-listeners, the apps tailnet node and DNS.
+listeners, the apps tailnet node and DNS, and
+[tailnet identity](ingress.md#tailnet-identity) for the headers and what trusting
+them means.
 
 Each route either references a service in the same application and its internal
 HTTP port (1–65535), or sets `redirect` instead:

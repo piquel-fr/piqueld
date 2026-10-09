@@ -128,7 +128,8 @@ async fn the_tunnel_listener_serves_only_public_routes_to_edge_peers() {
     ]
     .into();
     let edge = ["172.20.0.0/16".to_owned()];
-    let configuration = ingress.build_configuration(&table, Some(&edge), Some(&edge));
+    let configuration =
+        ingress.build_configuration(&table, Some(&super::edge_trust()), Some(&edge));
     let servers = &configuration["apps"]["http"]["servers"];
     // Ports 80 and 443 have no server; private routes keep their own.
     assert_eq!(
@@ -144,6 +145,11 @@ async fn the_tunnel_listener_serves_only_public_routes_to_edge_peers() {
     assert_eq!(
         routes[0],
         json!({"match":[{"not":[{"remote_ip":{"ranges":edge}}]}],"handle":[{"handler":"static_response","abort":true}],"terminal":true})
+    );
+    // Then client-supplied identity headers are stripped, as on every listener.
+    assert_eq!(
+        routes[1]["handle"][0]["request"]["delete"],
+        json!(["Piqueld-*", "Piqueld_*"])
     );
     // The probe endpoint and the route itself, for the public host only.
     let hosts: Vec<&Value> = routes

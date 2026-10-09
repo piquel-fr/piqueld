@@ -3377,7 +3377,7 @@ async fn route_field_edits_follow_service_renames_and_removals() {
     let id = &saved.application_id;
     let route = Route::service(
         "notes.example.com".into(),
-        piqueld_core::manifest::Visibility::Public,
+        piqueld_core::manifest::RouteAccess::Public,
         "web".into(),
         3000,
     );
@@ -5302,6 +5302,7 @@ impl piqueld::tailnet::TailnetLookup for FakeTailnet {
         };
         Some(piqueld_core::tailnet::TailnetPeer {
             login,
+            name: None,
             node: node.into(),
             tags,
         })
@@ -5420,6 +5421,7 @@ impl piqueld::tailnet::TailnetLookup for Retagged {
         let tag = if lookups == 0 { "tag:ci" } else { "tag:old" };
         Some(piqueld_core::tailnet::TailnetPeer {
             login: None,
+            name: None,
             node: "runner".into(),
             tags: vec![tag.to_owned()],
         })

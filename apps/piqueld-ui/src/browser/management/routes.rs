@@ -2,7 +2,9 @@
 use super::super::ui::{Icon, Tone, badge, empty, icon, notice, remove_button};
 use super::{dirty_group, editor, save_actions};
 use leptos::prelude::*;
-use piqueld_client::{Redirect, RedirectStatus, Route, Visibility, edit::ApplicationEdit};
+use piqueld_client::{
+    Redirect, RedirectStatus, Route, RouteAccess, Visibility, edit::ApplicationEdit,
+};
 
 /// One editable route row. Both destinations keep their fields so switching
 /// between them does not discard typed values.
@@ -10,6 +12,8 @@ use piqueld_client::{Redirect, RedirectStatus, Route, Visibility, edit::Applicat
 struct RouteDraft {
     hostname: String,
     visibility: Visibility,
+    /// Passes the tailnet identity; offered only on private routes.
+    identity: bool,
     redirect: bool,
     service: String,
     port: String,
@@ -23,6 +27,7 @@ impl Default for RouteDraft {
         Self {
             hostname: String::new(),
             visibility: Visibility::Private,
+            identity: false,
             redirect: false,
             service: String::new(),
             port: "3000".into(),
@@ -41,6 +46,8 @@ impl RouteDraft {
 
     /// The route input, or a message when a number does not parse.
     fn route(self) -> Result<Route, &'static str> {
+        let access = RouteAccess::new(self.visibility, self.identity)
+            .map_err(|_| "Only private routes can pass the tailnet identity")?;
         if self.redirect {
             let status = self
                 .status
@@ -48,7 +55,7 @@ impl RouteDraft {
                 .map_err(|_| "Redirect status must be 301, 302, 303, 307, or 308")?;
             Ok(Route::redirect(
                 self.hostname,
-                self.visibility,
+                access,
                 Redirect {
                     to: self.to.into(),
                     status,
@@ -60,12 +67,7 @@ impl RouteDraft {
                 .port
                 .parse()
                 .map_err(|_| "Route port must be between 1 and 65535")?;
-            Ok(Route::service(
-                self.hostname,
-                self.visibility,
-                self.service,
-                port,
-            ))
+            Ok(Route::service(self.hostname, access, self.service, port))
         }
     }
 }
@@ -75,6 +77,7 @@ impl From<Route> for RouteDraft {
         let mut draft = Self {
             hostname: route.hostname.to_string(),
             visibility: route.visibility,
+            identity: route.identity,
             service: route.service.unwrap_or_default(),
             ..Self::default()
         };
@@ -187,7 +190,7 @@ pub(super) fn RouteSettings() -> impl IntoView {
                     <div>
                         <h3>"Routes"</h3>
                         <p>
-                            "Public routes are reachable from the internet: point their DNS at this server (or, with a Cloudflare Tunnel, a proxied CNAME at the tunnel), and their certificates are managed automatically. Private routes, the default, are reachable only from the tailnet on the same hostname: point their DNS at the apps node’s tailnet addresses, and their certificates come from a DNS provider. An environment’s visibility can make its routes private. Redirects are answered by the gateway and need no service. Save, then deploy to activate changes."
+                            "Public routes are reachable from the internet: point their DNS at this server (or, with a Cloudflare Tunnel, a proxied CNAME at the tunnel), and their certificates are managed automatically. Private routes, the default, are reachable only from the tailnet on the same hostname: point their DNS at the apps node’s tailnet addresses, and their certificates come from a DNS provider. With tailnet identity, a private route tells its backend who is connecting in Piqueld-User-Login, Piqueld-User-Name, Piqueld-Node and Piqueld-Node-Tags headers. An environment’s visibility can make its routes private. Redirects are answered by the gateway and need no service. Save, then deploy to activate changes."
                         </p>
                     </div>
                 </header>
@@ -238,7 +241,10 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                     prop:value={move || field(draft, index, |r| r.visibility).to_string()}
                                                     on:change={move |event| {
                                                         if let Ok(visibility) = event_target_value(&event).parse() {
-                                                            edit(draft, index, |r| r.visibility = visibility);
+                                                            edit(draft, index, |r| {
+                                                                r.visibility = visibility;
+                                                                r.identity &= visibility == Visibility::Private;
+                                                            });
                                                         }
                                                     }}
                                                 >
@@ -246,6 +252,23 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                     <option value="public">"Public"</option>
                                                 </select>
                                             </label>
+                                            <Show when={move || {
+                                                field(draft, index, |r| r.visibility) == Visibility::Private
+                                            }}>
+                                                <label
+                                                    class="checkbox"
+                                                    title="Send the connecting device's tailnet user and device to the backend in Piqueld-* headers"
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        prop:checked={move || field(draft, index, |r| r.identity)}
+                                                        on:change={move |event| {
+                                                            edit(draft, index, |r| r.identity = event_target_checked(&event));
+                                                        }}
+                                                    />
+                                                    "Tailnet identity"
+                                                </label>
+                                            </Show>
                                             <label class="field" style="max-width:140px">
                                                 <span>"Destination"</span>
                                                 <select
@@ -395,6 +418,7 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                             <th>"Hostname"</th>
                                             <th>"Environment"</th>
                                             <th>"Visibility"</th>
+                                            <th>"Identity"</th>
                                             <th>"Destination"</th>
                                             <th>"DNS records"</th>
                                             <th>"State"</th>
@@ -411,7 +435,10 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                             <strong>{route.hostname}</strong>
                                                         </td>
                                                         <td>{environment}</td>
-                                                        <td>{route.visibility.to_string()}</td>
+                                                        <td>{route.access.visibility().to_string()}</td>
+                                                        <td>
+                                                            {if route.access.identity() { "Passed" } else { "—" }}
+                                                        </td>
                                                         <td>
                                                             <code>{route.target.to_string()}</code>
                                                         </td>

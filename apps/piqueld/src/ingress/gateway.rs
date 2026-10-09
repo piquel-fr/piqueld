@@ -11,6 +11,7 @@
 
 use super::{
     CADDY_IMAGE, Ingress,
+    configuration::PrivateTrust,
     node::{PRIVATE_HTTPS_PORT, Subnet, TailnetOverlap},
     wire::Journaled,
 };
@@ -72,19 +73,22 @@ impl Ingress {
         Ok(container)
     }
 
-    /// Removes the serving, `-previous`, and `-next` gateway containers, the
-    /// apps node and `cloudflared` in a single action when ingress is disabled. Every removal is
-    /// attempted, so a failing one never keeps another serving; the first
-    /// failure is returned. Records nothing if none exist.
+    /// Removes the serving, `-previous`, and `-next` gateway containers,
+    /// `cloudflared` and the apps node in a single action when ingress is
+    /// disabled. Every gateway removal is attempted, so a failing one never
+    /// keeps another serving; the first failure is returned. The node goes
+    /// last, and only once every gateway is gone, since a remaining one may
+    /// still trust its address. Records nothing if none exist.
     pub(super) async fn stop_gateway(&self) -> Result<()> {
         let mut existing = Vec::new();
         let mut failure = None;
+        let node = self.node_name();
         for name in [
-            self.node_name(),
             self.tunnel_name(),
             self.name.clone(),
             format!("{}-previous", self.name),
             format!("{}-next", self.name),
+            node.clone(),
         ] {
             match self.named_container(&name).await {
                 Ok(Some(_)) => existing.push(name),
@@ -98,6 +102,9 @@ impl Ingress {
             let journal = self.journal("ingress_stop_gateway", &self.name).await?;
             let mut result = Ok(());
             for name in &existing {
+                if *name == node && (result.is_err() || failure.is_some()) {
+                    continue;
+                }
                 if let Err(error) = self.remove_container(&journal, name).await {
                     result = result.and(Err(error));
                 }
@@ -165,9 +172,9 @@ impl Ingress {
         Ok(())
     }
 
-    /// The subnets of the edge network: the only peers whose PROXY headers the
-    /// private listener accepts. The apps node is one of them; application
-    /// networks, also attached to the gateway, are not.
+    /// The subnets of the edge network, which `cloudflared` connects to the
+    /// tunnel listener from. Application networks, also attached to the
+    /// gateway, are not among them.
     pub(super) async fn edge_subnets(&self) -> Result<Vec<String>> {
         let network = self
             .docker
@@ -182,6 +189,51 @@ impl Ingress {
             .collect();
         ensure!(!subnets.is_empty(), "gateway edge network has no subnet");
         Ok(subnets)
+    }
+
+    /// Who the private listener trusts, read from Docker: the apps node's
+    /// address and the host's on the edge network. None unless the node runs
+    /// with its current spec: a node about to be replaced, or stopped, may
+    /// lose its address to another edge network peer.
+    pub(super) async fn private_trust(&self) -> Result<Option<PrivateTrust>> {
+        #[cfg(test)]
+        if let Some(trust) = &self.trust {
+            return Ok(Some(trust.clone()));
+        }
+        let (Some(node), Some(container)) =
+            (&self.node, self.named_container(&self.node_name()).await?)
+        else {
+            return Ok(None);
+        };
+        let current = container["Config"]["Labels"][CONFIGURATION_LABEL]
+            == self.node_spec(node)["Labels"][CONFIGURATION_LABEL];
+        if !current || container["State"]["Running"] != true {
+            return Ok(None);
+        }
+        let Some(node) = container["NetworkSettings"]["Networks"][&self.name]["IPAddress"]
+            .as_str()
+            .filter(|address| !address.is_empty())
+        else {
+            return Ok(None);
+        };
+        let network = self
+            .docker
+            .inspect(&format!("/networks/{}", self.name))
+            .await?
+            .context("gateway edge network is not ready")?;
+        let host = network["IPAM"]["Config"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|config| config["Gateway"].as_str())
+            .map(|address| address.parse().context("decode the edge network's gateway"))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Some(PrivateTrust {
+            node: node
+                .parse()
+                .context("decode the apps node's edge network address")?,
+            host,
+        }))
     }
 
     /// Where the daemon reaches the private listener: the gateway's address on

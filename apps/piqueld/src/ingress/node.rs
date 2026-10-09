@@ -18,7 +18,7 @@
 //!
 //! ```text
 //! state/                  node identity and preferences
-//! run/tailscaled.sock     LocalAPI, read for status
+//! run/tailscaled.sock     LocalAPI, read for status and identities
 //! config/serve.json       serve configuration, owned by piqueld
 //! config/auth-key         first-login auth key (0600), when configured
 //! ```
@@ -27,16 +27,17 @@
 //! container whose spec hash differs is replaced.
 
 use super::{Ingress, TAILSCALE_IMAGE, wire::UnixApi};
-use crate::config::{Credential, PrivateIngressConfig};
+use crate::{
+    config::{Credential, PrivateIngressConfig},
+    tailnet::{TailnetLookup, Whois, WhoisSource},
+};
 use anyhow::{Context, Result};
 use piqueld_core::api::PrivateIngressStatus;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
-    path::PathBuf,
-};
-use tokio::{net::TcpListener, task::JoinSet};
+#[cfg(test)]
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::{net::IpAddr, path::PathBuf, sync::Arc};
 
 /// Ports of the gateway's private listener, never published on the host.
 pub(super) const PRIVATE_HTTPS_PORT: u16 = 8443;
@@ -55,9 +56,36 @@ pub(super) struct Node {
     /// Auth key for the first login.
     auth_key: Option<Credential>,
     /// The node's `LocalAPI`, over the socket in its `run` directory.
-    api: UnixApi,
+    api: LocalApi,
+    /// Identifies the clients of identity routes through the `LocalAPI`.
+    pub(super) whois: Arc<dyn TailnetLookup>,
     /// Login URL last relayed to daemon logs.
     login_url: std::sync::Mutex<Option<String>>,
+}
+
+/// The node's `LocalAPI`.
+struct LocalApi(UnixApi);
+
+impl LocalApi {
+    /// The `LocalAPI` socket of the node whose files are in `directory`.
+    fn new(directory: &std::path::Path) -> Self {
+        Self(
+            UnixApi::new(
+                directory.join("tailscale/run/tailscaled.sock"),
+                crate::docker::DockerTimeout::Request.duration(),
+            )
+            .with_host("local-tailscaled.sock"),
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl WhoisSource for LocalApi {
+    async fn whois_json(&self, address: IpAddr) -> Result<Vec<u8>> {
+        self.0
+            .read(&format!("/localapi/v0/whois?addr={address}"))
+            .await
+    }
 }
 
 /// The fields piqueld reads from the `LocalAPI` at `/localapi/v0/status`.
@@ -88,11 +116,8 @@ impl Node {
         config.enabled.then(|| Self {
             hostname: config.hostname.clone(),
             auth_key: config.auth_key.clone(),
-            api: UnixApi::new(
-                directory.join("tailscale/run/tailscaled.sock"),
-                crate::docker::DockerTimeout::Request.duration(),
-            )
-            .with_host("local-tailscaled.sock"),
+            api: LocalApi::new(directory),
+            whois: Arc::new(Whois::new(LocalApi::new(directory))),
             login_url: std::sync::Mutex::new(None),
         })
     }
@@ -216,6 +241,7 @@ impl Ingress {
     pub(super) async fn node_status(&self, node: &Node) -> Result<PrivateIngressStatus> {
         let status: LocalStatus = serde_json::from_value(
             node.api
+                .0
                 .get("/localapi/v0/status")
                 .await
                 .context("read the apps node status")?,
@@ -256,18 +282,19 @@ impl Ingress {
 }
 
 /// A loopback relay that prefixes every connection to `target` with a PROXY v2
-/// header naming `client`, as the apps node does. It stops when the returned
-/// set is dropped.
+/// header naming `client`, as the apps node does, so tests can play the node.
+/// It stops when the returned set is dropped.
 ///
 /// ```text
 /// [signature: 12][0x21 PROXY][0x11 TCP over IPv4][length: 12]
 /// [client ip: 4][target ip: 4][client port: 2][target port: 2]
 /// ```
+#[cfg(test)]
 pub(super) async fn proxy_relay(
     target: SocketAddr,
     client: SocketAddrV4,
-) -> std::io::Result<(SocketAddr, JoinSet<()>)> {
-    use tokio::io::AsyncWriteExt;
+) -> std::io::Result<(SocketAddr, tokio::task::JoinSet<()>)> {
+    use tokio::{io::AsyncWriteExt, net::TcpListener, task::JoinSet};
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let address = listener.local_addr()?;
     let destination = match target.ip() {

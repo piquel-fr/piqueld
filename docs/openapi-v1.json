@@ -7940,6 +7940,10 @@
             "$ref": "#/components/schemas/Template",
             "description": "Exact public DNS hostname."
           },
+          "identity": {
+            "description": "Passes the connecting device's tailnet identity to the backend in\n`Piqueld-*` request headers. Requires the route's own `visibility` to\nbe `private`.",
+            "type": "boolean"
+          },
           "port": {
             "description": "Internal HTTP backend port.",
             "format": "int32",
@@ -7982,8 +7986,26 @@
         ],
         "type": "object"
       },
+      "RouteAccess": {
+        "description": "Who may connect to a route, and whether its backend receives the client's\ntailnet identity: the flat wire fields of a [`RouteAccess`].",
+        "properties": {
+          "identity": {
+            "description": "Whether the backend receives the client's tailnet identity; private\nroutes only.",
+            "type": "boolean"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/Visibility",
+            "description": "Who may connect: everyone, or only tailnet devices."
+          }
+        },
+        "type": "object"
+      },
       "RouteStatus": {
         "allOf": [
+          {
+            "$ref": "#/components/schemas/RouteAccess",
+            "description": "Effective visibility, which selects the listener serving the route,\nand whether the backend receives the client's tailnet identity."
+          },
           {
             "$ref": "#/components/schemas/RouteTarget",
             "description": "Backend service or redirect."
@@ -8009,16 +8031,11 @@
               "state": {
                 "description": "disabled, pending, ready, or failed.",
                 "type": "string"
-              },
-              "visibility": {
-                "$ref": "#/components/schemas/Visibility",
-                "description": "Effective visibility, which selects the listener serving the route."
               }
             },
             "required": [
               "environment_id",
               "hostname",
-              "visibility",
               "dns",
               "state",
               "message"
@@ -9223,6 +9240,10 @@
       "ValidatedRoute": {
         "allOf": [
           {
+            "$ref": "#/components/schemas/RouteAccess",
+            "description": "Effective visibility, the route's own capped by its environment's\nceiling when the manifest was rendered, and whether it passes identity."
+          },
+          {
             "$ref": "#/components/schemas/RouteTarget",
             "description": "Backend service or redirect."
           },
@@ -9231,10 +9252,6 @@
               "hostname": {
                 "$ref": "#/components/schemas/Hostname",
                 "description": "Exact canonical public hostname."
-              },
-              "visibility": {
-                "$ref": "#/components/schemas/Visibility",
-                "description": "Effective visibility: the route's own, capped by its environment's\nceiling when the manifest was rendered."
               }
             },
             "required": [
