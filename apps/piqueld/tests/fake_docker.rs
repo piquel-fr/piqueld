@@ -3457,6 +3457,33 @@ async fn application_deletion_journals_secret_cleanup_failures() {
     assert!(harness.store.get(&first.environment_id).await.is_ok());
 }
 
+/// A mounted secret nobody stored fails the deployment as `secret_missing`,
+/// naming it, rather than as a journal failure.
+#[tokio::test]
+async fn missing_stored_secrets_fail_deployment_with_their_names() {
+    let harness = ControllerHarness::new().await;
+    let mut input = manifest();
+    input.spec.services[0]
+        .secrets
+        .push(piqueld_core::manifest::SecretMount {
+            name: "token".into(),
+            target: "/run/secrets/token".into(),
+        });
+    let failed = harness
+        .applications()
+        .apply(input.validate_template().unwrap(), Some(0))
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    let result = harness.store.operation(&failed.id).await.unwrap();
+    assert_eq!(result.error_code.as_deref(), Some("secret_missing"));
+    assert!(result.error_message.as_deref().unwrap().contains("token"));
+}
+
 #[tokio::test]
 async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollouts() {
     let harness = ControllerHarness::new().await;

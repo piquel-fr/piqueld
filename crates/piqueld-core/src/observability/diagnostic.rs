@@ -78,6 +78,8 @@ diagnostic_codes! {
     SecretStorageUnavailable => "secret_storage_unavailable",
     /// Pinned secret values were discarded and need replacement.
     SecretUnavailable => "secret_unavailable",
+    /// Mounted secrets have no value, neither stored nor generated.
+    SecretMissing => "secret_missing",
     /// An environment mounts a stored secret its access list excludes.
     SecretAccessDenied => "secret_access_denied",
     /// A Docker request failed local validation.
@@ -188,10 +190,10 @@ impl DiagnosticCode {
                 false,
                 "Restore the original secrets.key, owned by the daemon user with private permissions. If it is lost, `piquelctl secrets recover-key` recovers by discarding stored values. Secret metadata remains readable.",
             ),
-            Self::SecretUnavailable => (
+            Self::SecretUnavailable | Self::SecretMissing => (
                 Application,
                 false,
-                "Supply replacement values for the listed secrets, then start a new deployment.",
+                "Supply values for the listed secrets with `piquelctl app secret`, or declare generated ones in spec.secrets, then start a new deployment.",
             ),
             Self::SecretAccessDenied => (
                 Application,

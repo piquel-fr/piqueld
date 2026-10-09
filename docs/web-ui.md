@@ -35,8 +35,8 @@ source, and renames or deletes the environment; its other tabs are Deployments,
 Secrets, Logs, and Events. The environment's Secrets tab lists each secret the
 manifest it deploys mounts and where the value comes from: generated for the
 environment, the application's secret store (with its version), missing from the
-store, not allowed by the secret's access list, which would fail the next deploy
-with `secret_access_denied`, or discarded by key recovery, which fails it with
+store, which would fail the next deploy with `secret_missing`, not allowed by the
+secret's access list, which would fail it with `secret_access_denied`, or discarded by key recovery, which fails it with
 `secret_unavailable` until the value is replaced. Below it, the environment's generated values
 can be regenerated for the next deployment, or deleted so a later deployment
 generates new ones. Deletion confirms the environment

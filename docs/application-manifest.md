@@ -424,7 +424,8 @@ secret mounts, with unique normalized paths under `/run/secrets`. A name declare
 in `spec.secrets` is generated for each environment (see below). Any other name
 comes from the application's secret store, whose values are set with
 `piquelctl app secret` or the dashboard and must exist when a deployment captures
-its inputs. A name can't be both declared and stored: setting a stored value for
+its inputs: otherwise the deployment fails with `secret_missing`, naming each
+secret without a value. A name can't be both declared and stored: setting a stored value for
 a declared name, or saving a declaration for a stored name, fails validation
 with `secret_name_conflict`.
 

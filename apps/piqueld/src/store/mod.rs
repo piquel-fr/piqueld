@@ -86,6 +86,15 @@ pub enum StoreError {
         /// Logical names only, never values.
         names: String,
     },
+    /// Mounted secrets have no value: neither stored in the application's
+    /// store nor generated.
+    #[error(
+        "secret values missing: {names}; store them with `piquelctl app secret` or declare them in spec.secrets, then deploy again"
+    )]
+    SecretMissing {
+        /// Logical names only, never values.
+        names: String,
+    },
     /// An environment mounts a stored secret whose access list excludes it.
     #[error("environment {environment} may not mount secret {secret}: its access list excludes it")]
     SecretAccessDenied {

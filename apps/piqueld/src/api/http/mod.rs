@@ -149,6 +149,10 @@ impl ApiError {
                 "Supply replacement secret values and start a new deployment",
             )
             .details(json!({"names": names})),
+            ref error @ StoreError::SecretMissing { ref names } => {
+                Self::new(StatusCode::CONFLICT, "secret_missing", error.to_string())
+                    .details(json!({"names": names}))
+            }
             StoreError::SecretKeyUsable => Self::new(
                 StatusCode::CONFLICT,
                 "secret_key_usable",
@@ -258,6 +262,7 @@ impl From<StoreError> for ApiError {
             StoreError::Edit(error) => error.into(),
             error @ (StoreError::SecretVersionConflict { .. }
             | StoreError::SecretUnavailable { .. }
+            | StoreError::SecretMissing { .. }
             | StoreError::SecretKeyUsable
             | StoreError::SecretSource(_)
             | StoreError::SecretDeleting
