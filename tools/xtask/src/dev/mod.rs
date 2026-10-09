@@ -1,8 +1,10 @@
 //! `just dev`: one isolated development instance per worktree, with its own
 //! configuration, data and runtime directories, localhost port, and Docker
-//! engine, so worktrees never share state. See docs/development.md.
+//! engine, so worktrees never share state. Instances can also serve on the
+//! tailnet through one shared node. See docs/development.md.
 
 mod supervisor;
+mod tailnet;
 
 use std::collections::HashMap;
 use std::fs;
@@ -24,8 +26,12 @@ use serde::{Deserialize, Serialize};
 use crate::Workspace;
 use crate::docker::Engine;
 use supervisor::Supervisor;
+use tailnet::{Tailnet, TailnetCommand};
 
 const CONFIG_FILE: &str = "piqueld.local.toml";
+/// Holds every instance's sockets and logs. It is in /tmp because every
+/// session sees it, unlike /run/user.
+const RUNTIME_ROOT: &str = "/tmp/piqueld-dev";
 /// Changes to these rebuild and restart the daemon. It embeds the dashboard at
 /// compile time, so the UI crate is watched too.
 const SOURCES: [&str; 5] = [
@@ -70,6 +76,11 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Manage the shared tailnet node that serves instances over HTTPS.
+    Tailnet {
+        #[command(subcommand)]
+        command: TailnetCommand,
+    },
     /// Run this worktree's piquelctl against the instance.
     #[command(disable_help_flag = true)]
     Ctl {
@@ -82,14 +93,14 @@ impl Command {
     pub async fn run(self, workspace: Workspace) -> Result<ExitCode> {
         match self {
             Self::Config { force } => {
-                if !Instance::configure(&workspace, force)? {
+                if !Instance::configure(&workspace, force).await? {
                     eprintln!("kept {CONFIG_FILE}; pass --force to replace it");
                 }
             }
             Self::Prune => Engine::host().await?.prune_dev_instances().await?,
-            Self::Run => Instance::load_or_configure(workspace)?.run().await?,
+            Self::Run => Instance::load_or_configure(workspace).await?.run().await?,
             Self::Start { timeout } => {
-                let instance = Instance::load_or_configure(workspace)?;
+                let instance = Instance::load_or_configure(workspace).await?;
                 instance.start().await?;
                 instance.wait(timeout).await?;
             }
@@ -97,6 +108,7 @@ impl Command {
             Self::Status => Instance::load(workspace)?.status().await,
             Self::Stop => Instance::load(workspace)?.supervisor().stop().await?,
             Self::Clean => Instance::load(workspace)?.clean().await?,
+            Self::Tailnet { command } => Tailnet::new()?.run(command).await?,
             Self::Ctl { args } => return Err(Instance::load(workspace)?.ctl(&args)),
         }
         Ok(ExitCode::SUCCESS)
@@ -110,6 +122,8 @@ struct Config {
     server: ServerConfig,
     #[serde(default)]
     docker: DockerConfig,
+    #[serde(default)]
+    tailscale: TailscaleConfig,
 }
 
 #[derive(Deserialize)]
@@ -121,6 +135,11 @@ struct ServerConfig {
 
 #[derive(Default, Deserialize)]
 struct DockerConfig {
+    socket: Option<PathBuf>,
+}
+
+#[derive(Default, Deserialize)]
+struct TailscaleConfig {
     socket: Option<PathBuf>,
 }
 
@@ -177,30 +196,55 @@ impl Instance {
         Ok(Self { workspace, config })
     }
 
-    fn load_or_configure(workspace: Workspace) -> Result<Self> {
-        Self::configure(&workspace, false)?;
+    async fn load_or_configure(workspace: Workspace) -> Result<Self> {
+        Self::configure(&workspace, false).await?;
         Self::load(workspace)
     }
 
-    /// Writes the worktree's configuration unless it exists and `force` is
-    /// unset. Returns whether it did.
-    fn configure(workspace: &Workspace, force: bool) -> Result<bool> {
-        let path = workspace.root().join(CONFIG_FILE);
-        if path.exists() && !force {
-            return Ok(false);
-        }
-        let name = Self::name_for(workspace)?;
-        // State stays out of /tmp, whose old files systemd may delete. Sockets
-        // use /tmp because every session sees it, unlike /run/user.
+    /// Where instances keep their data. It stays out of /tmp, whose old files
+    /// systemd may delete.
+    fn state_root() -> Result<PathBuf> {
         let state_home = std::env::var_os("XDG_STATE_HOME")
             .filter(|home| !home.is_empty())
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".local/state")))
             .context("HOME is not set")?;
-        let data = state_home.join("piqueld-dev").join(&name);
-        let runtime = Path::new("/tmp/piqueld-dev").join(&name);
+        Ok(state_home.join("piqueld-dev"))
+    }
+
+    /// Writes the worktree's configuration unless it exists and `force` is
+    /// unset. Returns whether it did. While the shared tailnet node is logged
+    /// in, the instance also serves on it, at its localhost port.
+    async fn configure(workspace: &Workspace, force: bool) -> Result<bool> {
+        let path = workspace.root().join(CONFIG_FILE);
+        if path.exists() && !force {
+            return Ok(false);
+        }
+        let name = Self::name_for(workspace)?;
+        let data = Self::state_root()?.join(&name);
+        let runtime = Path::new(RUNTIME_ROOT).join(&name);
         let port = Self::free_port(workspace)?;
         let quote = |path: &Path| toml::Value::from(path.display().to_string()).to_string();
+        let tailnet = Tailnet::new()?;
+        let origin = match tailnet.dns_name().await {
+            Ok(Some(dns_name)) => format!(
+                r"[tailscale]
+# The shared development node serves this instance, with public_url
+# https://{dns_name}:{port}.
+# Without this section, it is only on localhost.
+enabled = true
+socket = {socket}
+https_port = {port}",
+                socket = quote(&tailnet.socket()),
+            ),
+            result => {
+                if let Err(error) = result {
+                    eprintln!("the tailnet node is unavailable: {error:#}");
+                }
+                eprintln!("`just dev tailnet up` serves new instances on the tailnet");
+                format!("[auth]\npublic_url = \"http://localhost:{port}\"")
+            }
+        };
         let (data, socket, runtime) = (
             quote(&data),
             quote(&runtime.join("docker/docker.sock")),
@@ -210,8 +254,8 @@ impl Instance {
             &path,
             format!(
                 r#"# Development instance for this worktree, generated by `just dev config`.
-# `just dev` reads the directories, port, and Docker socket from here. Unset
-# settings use the daemon's defaults; see examples/piqueld.toml.
+# `just dev` reads the directories, port, and Docker and tailnet sockets from
+# here. Unset settings use the daemon's defaults; see examples/piqueld.toml.
 
 [server]
 data_dir = {data}
@@ -220,8 +264,7 @@ runtime_dir = {runtime}
 listen_mode = "localhost"
 port = {port}
 
-[auth]
-public_url = "http://localhost:{port}"
+{origin}
 
 [docker]
 # A private Docker-in-Docker engine, started by `just dev`. Point this at
@@ -319,7 +362,7 @@ auto_initialize_swarm = true
         fs::metadata(self.engine_socket()).is_ok_and(|metadata| metadata.file_type().is_socket())
     }
 
-    fn create_private_dir(path: &Path) -> Result<()> {
+    pub(super) fn create_private_dir(path: &Path) -> Result<()> {
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)

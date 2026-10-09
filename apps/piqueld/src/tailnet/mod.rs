@@ -1,8 +1,9 @@
 //! The daemon's own tailnet node. It serves the website over HTTPS with the
 //! tailnet-issued certificate, independently of the host's Tailscale daemon.
 //!
-//! piqueld supervises a dedicated `tailscaled` in userspace-networking mode and
-//! drives it through the `tailscale` CLI, so both must be on `PATH`.
+//! piqueld supervises a dedicated `tailscaled` in userspace-networking mode, or
+//! shares a configured one, and drives it through the `tailscale` CLI, so the
+//! CLI (and `tailscaled`, unless shared) must be on `PATH`.
 
 mod node;
 mod proxy;
@@ -23,7 +24,7 @@ use tokio::{
 /// Allows certificate issuance time while bounding non-interactive commands.
 const COMMAND_TIMEOUT: Duration = Duration::from_mins(2);
 
-/// The `tailscale` CLI, pointed at the dedicated daemon's socket.
+/// The `tailscale` CLI, pointed at the node's `tailscaled` socket.
 #[derive(Clone)]
 struct Cli {
     socket: PathBuf,

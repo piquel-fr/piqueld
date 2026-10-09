@@ -1,5 +1,6 @@
 //! The instance's supervisor: it starts the instance's engine, then builds and
 //! runs the daemon, rebuilding and restarting it whenever the sources change.
+//! The shared tailnet node runs under a supervisor of its own.
 
 use std::collections::HashMap;
 use std::fs::{self, TryLockError};
@@ -17,16 +18,16 @@ use bollard::query_parameters::{
 use rustix::process::{Pid, Signal, getpid, kill_process};
 use tokio::process::Command;
 
-use super::{DATA_LABEL, Instance, Phase, RUNTIME_LABEL, State, WORKTREE_LABEL};
+use super::{DATA_LABEL, Instance, Phase, RUNTIME_LABEL, State, Tailnet, WORKTREE_LABEL};
 use crate::docker::{DIND_SOCKET_DIR, Engine};
 use crate::process::{Job, Shutdown};
 
 /// The daemon allows ten seconds to finish in-flight requests.
 const GRACE: Duration = Duration::from_secs(11);
 
-/// An instance's supervisor, found through the dev.pid it locks while it
-/// runs, so a file left behind by a crash never names an unrelated process
-/// that reuses its pid.
+/// A background xtask process, such as an instance's supervisor, found through
+/// the dev.pid it locks while it runs, so a file left behind by a crash never
+/// names an unrelated process that reuses its pid.
 pub(super) struct Supervisor {
     pid_file: PathBuf,
 }
@@ -54,7 +55,7 @@ impl Supervisor {
 
     /// Locks dev.pid and records our pid in it, for as long as the returned
     /// file stays open. Fails when another supervisor holds the lock.
-    async fn claim(&self) -> Result<fs::File> {
+    pub(super) async fn claim(&self) -> Result<fs::File> {
         let path = &self.pid_file;
         let mut file = fs::OpenOptions::new()
             .read(true)
@@ -83,7 +84,35 @@ impl Supervisor {
         bail!("already running; see `just dev status`")
     }
 
-    /// Stops the supervisor, which stops the daemon, if it runs.
+    /// Runs `xtask <args>` in the background, with its output in `log`,
+    /// unless a supervisor runs, and returns once one holds dev.pid.
+    pub(super) async fn launch(&self, args: &[&str], log: &Path) -> Result<()> {
+        if self.running().is_some() {
+            return Ok(());
+        }
+        let log = fs::File::create(log)?;
+        let mut child = std::process::Command::new(std::env::current_exe()?)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .process_group(0)
+            .spawn()
+            .context("start the supervisor")?;
+        while self.running().is_none() {
+            if let Some(status) = child.try_wait()? {
+                // A concurrent launch's supervisor may hold dev.pid instead.
+                if self.running().is_some() {
+                    break;
+                }
+                bail!("the supervisor exited ({status})");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Ok(())
+    }
+
+    /// Stops the supervisor, which stops what it supervises, if it runs.
     pub(super) async fn stop(&self) -> Result<()> {
         let Some(pid) = self.running() else {
             return Ok(());
@@ -115,6 +144,10 @@ impl Instance {
         let mut shutdown = Shutdown::listen()?;
         let result = async {
             self.start_engine().await?;
+            let tailnet = Tailnet::new()?;
+            if self.config.tailscale.socket.as_deref() == Some(&tailnet.socket()) {
+                tailnet.start().await?;
+            }
             self.supervise(&mut shutdown).await
         }
         .await;
@@ -125,32 +158,11 @@ impl Instance {
     /// Runs the supervisor in the background, unless it runs, and returns once
     /// it holds dev.pid.
     pub(super) async fn start(&self) -> Result<()> {
-        if self.supervisor().running().is_some() {
-            return Ok(());
-        }
         Self::create_private_dir(&self.config.server.runtime_dir)?;
-        let log = fs::File::create(self.file("dev.log"))?;
-        let mut child = std::process::Command::new(std::env::current_exe()?)
-            .args(["dev", "run"])
-            .current_dir(self.workspace.root())
-            .stdin(Stdio::null())
-            .stdout(log.try_clone()?)
-            .stderr(log)
-            .process_group(0)
-            .spawn()
-            .context("start the supervisor")?;
-        while self.supervisor().running().is_none() {
-            if let Some(status) = child.try_wait()? {
-                // A concurrent start's supervisor may hold dev.pid instead.
-                if self.supervisor().running().is_some() {
-                    break;
-                }
-                self.print_tail("dev.log", 40);
-                bail!("the supervisor exited ({status})");
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        Ok(())
+        self.supervisor()
+            .launch(&["dev", "run"], &self.file("dev.log"))
+            .await
+            .inspect_err(|_| self.print_tail("dev.log", 40))
     }
 
     async fn supervise(&self, shutdown: &mut Shutdown) -> Result<()> {

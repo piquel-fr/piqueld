@@ -174,7 +174,7 @@ destinations, metrics exposure, diagnostic ownership and retention semantics.
 ## Tailnet node
 
 With `[tailscale]` enabled, piqueld joins the tailnet as its own node and serves
-the website and API over HTTPS on port 443 of that node. piqueld starts and
+the website and API over HTTPS on port 443 (`https_port`) of that node. piqueld starts and
 supervises a dedicated `tailscaled` in userspace-networking mode, separate from
 any host Tailscale daemon, so `tailscaled` and `tailscale` must be on `PATH`.
 That `tailscaled` terminates TLS with the tailnet-issued certificate and
@@ -221,6 +221,30 @@ the login state, certificate expiry, and whether `auth.public_url` matches. If
 
 `listen_mode` is independent and remains available for installations without a
 dedicated node.
+
+### Sharing a tailscaled
+
+`socket` makes piqueld use a `tailscaled` that is already logged in instead of
+starting its own, and `https_port` serves the website on another port of the
+node. Several daemons can then share one node, each on its own port, as the
+[development instances](development.md#tailnet) do:
+
+```toml
+[tailscale]
+enabled = true
+socket = "/tmp/piqueld-dev/tailnet/tailscaled.sock"
+https_port = 7846         # https://<node>.<tailnet>.ts.net:7846
+```
+
+- piqueld only adds its port to the node's Serve configuration, and removes it
+  when it stops. It neither logs the node in nor changes its preferences, so
+  `hostname` is unused and `auth_key_file` is rejected; startup fails unless
+  the node is logged in.
+- The `tailscaled` must run as the daemon's user, because the forwarding
+  listener only accepts that user's connections.
+- An unset `auth.public_url` becomes `https://<node>:<https_port>`.
+- piqueld keeps running if the shared `tailscaled` exits; `piquelctl status`
+  and the dashboard report the node as unhealthy until it is back.
 
 ## Authentication origin
 

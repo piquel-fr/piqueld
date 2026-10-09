@@ -10,6 +10,7 @@ pub use tunnel::{TunnelConfig, TunnelConfigError, TunnelCredentials};
 
 use piqueld_core::TomlDiagnostic;
 use serde::Deserialize;
+use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
@@ -207,14 +208,22 @@ impl DaemonConfig {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct TailscaleConfig {
-    /// Join the tailnet and serve the website on port 443 of the node.
+    /// Join the tailnet and serve the website on `https_port` of the node.
     pub enabled: bool,
-    /// Node name, which becomes `<hostname>.<tailnet>.ts.net`.
+    /// Node name, which becomes `<hostname>.<tailnet>.ts.net`. Unused with
+    /// `socket`, whose node already has a name.
     pub hostname: String,
     /// File holding an auth key for the first login. Without one, the daemon
     /// logs an interactive login URL. Later starts reuse the node state. It is
     /// passed to Tailscale by path, so piqueld never reads the key itself.
     pub auth_key_file: Option<CredentialFile>,
+    /// Socket of a logged-in `tailscaled` to share instead of starting one.
+    /// piqueld only adds `https_port` to its Serve configuration, so several
+    /// daemons can share one node, each on its own port. That `tailscaled`
+    /// must run as the daemon's user.
+    pub socket: Option<PathBuf>,
+    /// Node port serving the website over HTTPS.
+    pub https_port: NonZeroU16,
 }
 
 impl Default for TailscaleConfig {
@@ -223,13 +232,26 @@ impl Default for TailscaleConfig {
             enabled: false,
             hostname: "piqueld".into(),
             auth_key_file: None,
+            socket: None,
+            https_port: const { NonZeroU16::new(443).unwrap() },
         }
     }
 }
 
 impl TailscaleConfig {
     fn validate(&self) -> Result<(), ConfigError> {
-        dns_label("tailscale.hostname", &self.hostname)
+        dns_label("tailscale.hostname", &self.hostname)?;
+        if let Some(socket) = &self.socket {
+            absolute_file("tailscale.socket", socket)?;
+            if self.auth_key_file.is_some() {
+                return Err(ConfigError::Invalid(
+                    "tailscale.auth_key_file is only used by piqueld's own tailscaled; \
+                     log the shared tailscaled in instead"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -751,9 +773,13 @@ impl DaemonConfig {
                     .map_or_else(|| "none".into(), ToString::to_string),
             ),
             (
-                "State directory".into(),
-                self.server.tailscale_dir().display().to_string(),
+                "tailscaled".into(),
+                tailscale.socket.as_ref().map_or_else(
+                    || format!("own, state in {}", self.server.tailscale_dir().display()),
+                    |socket| format!("shared, {}", socket.display()),
+                ),
             ),
+            ("HTTPS port".into(), tailscale.https_port.to_string()),
             ("Public URL".into(), self.public_url().to_owned()),
         ])
     }

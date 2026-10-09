@@ -1,6 +1,10 @@
-//! A dedicated `tailscaled` owns the node. It terminates HTTPS on port 443 with
-//! the tailnet certificate and forwards plain TCP, prefixed with a PROXY v2
-//! header, to a loopback listener that the website is served on.
+//! A `tailscaled` owns the node. It terminates HTTPS on the configured port
+//! with the tailnet certificate and forwards plain TCP, prefixed with a PROXY
+//! v2 header, to a loopback listener that the website is served on.
+//!
+//! piqueld normally starts a dedicated `tailscaled`. With `tailscale.socket`,
+//! it shares one that is already logged in, such as the development node that
+//! many `just dev` instances serve from, each on its own port.
 
 use super::{Cli, ProxyListener};
 use crate::config::DaemonConfig;
@@ -23,7 +27,6 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-const HTTPS_PORT: u16 = 443;
 /// tailscaled renews certificates itself; refreshing keeps the reported
 /// certificate expiry and login state current.
 const REFRESH_INTERVAL: Duration = Duration::from_mins(1);
@@ -34,10 +37,19 @@ const SHUTDOWN_RACE: Duration = Duration::from_secs(1);
 
 /// A logged-in tailnet node forwarding its HTTPS port to piqueld.
 pub struct Node {
-    daemon: Child,
+    daemon: Daemon,
     monitor: Monitor,
     listener: TcpListener,
     address: SocketAddr,
+}
+
+/// The `tailscaled` behind the node.
+enum Daemon {
+    /// Started by piqueld, which stops it on exit and exits if it does.
+    Owned(Child),
+    /// Shared with other processes. piqueld only removes its HTTPS port from
+    /// the Serve configuration on exit.
+    Shared,
 }
 
 /// The node's HTTPS listener. The no-op `tap_io` wrapper is what lets axum
@@ -47,11 +59,12 @@ pub type NodeListener = TapIo<ProxyListener, fn(&mut TcpStream)>;
 
 impl Node {
     /// Starts the node when `tailscale.enabled` is set and waits until it is
-    /// logged in, holds a certificate, and forwards port 443 to piqueld. An
-    /// unset `auth.public_url` becomes the node's HTTPS origin.
+    /// logged in, holds a certificate, and forwards `tailscale.https_port` to
+    /// piqueld. An unset `auth.public_url` becomes the node's HTTPS origin.
     ///
-    /// Without an auth key or saved state, the node needs an interactive
-    /// login; the login URL is logged and startup waits for it.
+    /// Without an auth key or saved state, a dedicated node needs an
+    /// interactive login; the login URL is logged and startup waits for it. A
+    /// shared node must already be logged in.
     ///
     /// # Errors
     /// Returns state directory, tailscaled, login, certificate, or forwarding
@@ -60,6 +73,91 @@ impl Node {
         if !config.tailscale.enabled {
             return Ok(None);
         }
+        let (daemon, cli) = match &config.tailscale.socket {
+            Some(socket) => (
+                Daemon::Shared,
+                Cli {
+                    socket: socket.clone(),
+                },
+            ),
+            None => Self::start(config).await?,
+        };
+
+        let status = cli.status().await?;
+        ensure!(
+            status.backend_state == "Running",
+            "the tailscaled at {} is {}; log it in first",
+            cli.socket.display(),
+            status.backend_state
+        );
+        let dns_name = status
+            .node
+            .map(|node| node.dns_name.trim_end_matches('.').to_owned())
+            .filter(|name| !name.is_empty())
+            .context("logged-in tailnet node reported no DNS name")?;
+        // Issue the certificate now, so the first visitor does not wait for it.
+        let expires_at_ms = cli.certificate_expiry_ms(&dns_name).await?;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .context("failed to bind the tailnet forwarding listener")?;
+        let address = listener.local_addr()?;
+        let https_port = config.tailscale.https_port.get();
+        cli.run(&[
+            "serve",
+            "--bg",
+            &format!("--tls-terminated-tcp={https_port}"),
+            "--proxy-protocol=2",
+            &format!("tcp://{address}"),
+        ])
+        .await
+        .context("failed to forward the tailnet node's HTTPS port")?;
+
+        let url = match https_port {
+            443 => format!("https://{dns_name}"),
+            port => format!("https://{dns_name}:{port}"),
+        };
+        let public_url_matches = match &config.auth.public_url {
+            None => {
+                config.auth.public_url = Some(url.clone());
+                true
+            }
+            Some(public_url) => crate::auth::Auth::validate_origin(public_url)
+                .is_ok_and(|origin| origin.origin().ascii_serialization() == url),
+        };
+        if !public_url_matches {
+            tracing::warn!(public_url = config.public_url(), node = %url,
+                "auth.public_url is not the tailnet node's origin; passkeys only work on auth.public_url");
+        }
+        tracing::info!(%url, "tailnet node is serving HTTPS");
+        let observation = Observation {
+            state: status.backend_state,
+            certificate_error: false,
+            expires_at_ms,
+        };
+        Ok(Some(Self {
+            daemon,
+            monitor: Monitor {
+                status: watch::Sender::new(observation.report(
+                    &dns_name,
+                    &url,
+                    public_url_matches,
+                    crate::store::now_ms(),
+                )),
+                cli,
+                dns_name,
+                url,
+                https_port,
+                public_url_matches,
+                expires_at_ms,
+            },
+            listener,
+            address,
+        }))
+    }
+
+    /// Starts a dedicated tailscaled with state in the data directory and
+    /// logs it in.
+    async fn start(config: &DaemonConfig) -> Result<(Daemon, Cli)> {
         let dir = config.server.tailscale_dir();
         std::fs::DirBuilder::new()
             .mode(0o700)
@@ -85,65 +183,7 @@ impl Node {
             exit = daemon.wait() => bail!("tailscaled exited during login: {}", exit?),
             result = cli.run(&up) => result.context("failed to log the tailnet node in")?,
         };
-
-        let status = cli.status().await?;
-        let dns_name = status
-            .node
-            .map(|node| node.dns_name.trim_end_matches('.').to_owned())
-            .filter(|name| !name.is_empty())
-            .context("logged-in tailnet node reported no DNS name")?;
-        // Issue the certificate now, so the first visitor does not wait for it.
-        let expires_at_ms = cli.certificate_expiry_ms(&dns_name).await?;
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await
-            .context("failed to bind the tailnet forwarding listener")?;
-        let address = listener.local_addr()?;
-        let target = format!("tcp://{address}");
-        cli.run(&[
-            "serve",
-            "--bg",
-            &format!("--tls-terminated-tcp={HTTPS_PORT}"),
-            "--proxy-protocol=2",
-            &target,
-        ])
-        .await
-        .context("failed to forward the tailnet node's HTTPS port")?;
-
-        let url = format!("https://{dns_name}");
-        let public_url_matches = match &config.auth.public_url {
-            None => {
-                config.auth.public_url = Some(url.clone());
-                true
-            }
-            Some(public_url) => crate::auth::Auth::validate_origin(public_url)
-                .is_ok_and(|origin| origin.origin().ascii_serialization() == url),
-        };
-        if !public_url_matches {
-            tracing::warn!(public_url = config.public_url(), node = %url,
-                "auth.public_url is not the tailnet node's origin; passkeys only work on auth.public_url");
-        }
-        tracing::info!(%url, "tailnet node is serving HTTPS");
-        let observation = Observation {
-            state: status.backend_state,
-            certificate_error: false,
-            expires_at_ms,
-        };
-        Ok(Some(Self {
-            daemon,
-            monitor: Monitor {
-                status: watch::Sender::new(observation.report(
-                    &dns_name,
-                    public_url_matches,
-                    crate::store::now_ms(),
-                )),
-                cli,
-                dns_name,
-                public_url_matches,
-                expires_at_ms,
-            },
-            listener,
-            address,
-        }))
+        Ok((Daemon::Owned(daemon), cli))
     }
 
     /// Starts tailscaled with private state and waits for its socket. Its logs
@@ -211,10 +251,19 @@ impl Node {
         &self.monitor.dns_name
     }
 
+    /// Leaves the node when startup fails before [`Node::listener`]: a shared
+    /// tailscaled stops forwarding the HTTPS port, and a dedicated one is
+    /// killed on drop.
+    pub async fn leave(self) {
+        if let Daemon::Shared = self.daemon {
+            self.monitor.remove_port().await;
+        }
+    }
+
     /// Starts accepting forwarded connections and refreshing status until
     /// cancellation. Returns the listener and the supervisor task, which
-    /// cancels the daemon and fails if tailscaled exits, so piqueld exits with
-    /// an error and the service manager restarts both.
+    /// cancels the daemon and fails if its own tailscaled exits, so piqueld
+    /// exits with an error and the service manager restarts both.
     #[must_use]
     pub fn listener(
         self,
@@ -231,16 +280,40 @@ impl Node {
 struct Monitor {
     cli: Cli,
     dns_name: String,
+    url: String,
+    https_port: u16,
     public_url_matches: bool,
     expires_at_ms: i64,
     status: watch::Sender<TailnetStatus>,
 }
 
 impl Monitor {
-    /// Owns tailscaled until cancellation, then drops (and so kills) it.
-    /// Fails if tailscaled exits on its own.
-    async fn run(mut self, daemon: Child, cancellation: CancellationToken) -> Result<()> {
-        Self::supervise(daemon, cancellation, self.refresh_loop()).await
+    /// Owns a dedicated tailscaled until cancellation, then drops (and so
+    /// kills) it, failing if it exits on its own. A shared tailscaled keeps
+    /// running, so its HTTPS port is removed instead.
+    async fn run(mut self, daemon: Daemon, cancellation: CancellationToken) -> Result<()> {
+        match daemon {
+            Daemon::Owned(daemon) => {
+                Self::supervise(daemon, cancellation, self.refresh_loop()).await
+            }
+            Daemon::Shared => {
+                tokio::select! {
+                    () = cancellation.cancelled() => {}
+                    () = self.refresh_loop() => {}
+                }
+                self.remove_port().await;
+                Ok(())
+            }
+        }
+    }
+
+    /// Stops forwarding this daemon's HTTPS port from a shared tailscaled,
+    /// which would otherwise keep forwarding it to a closed listener.
+    async fn remove_port(&self) {
+        let port = format!("--tls-terminated-tcp={}", self.https_port);
+        if let Err(error) = self.cli.run(&["serve", &port, "off"]).await {
+            tracing::warn!(error = %format!("{error:#}"), "failed to remove the tailnet HTTPS port");
+        }
     }
 
     /// Keep supervision active even while a refresh waits for the CLI.
@@ -300,6 +373,7 @@ impl Monitor {
         };
         self.status.send_replace(observation.report(
             &self.dns_name,
+            &self.url,
             self.public_url_matches,
             crate::store::now_ms(),
         ));
@@ -314,7 +388,13 @@ struct Observation {
 }
 
 impl Observation {
-    fn report(self, dns_name: &str, public_url_matches: bool, now_ms: i64) -> TailnetStatus {
+    fn report(
+        self,
+        dns_name: &str,
+        url: &str,
+        public_url_matches: bool,
+        now_ms: i64,
+    ) -> TailnetStatus {
         let mut problems = Vec::new();
         if self.state != "Running" {
             problems.push(format!("Tailscale is {}", self.state));
@@ -328,7 +408,7 @@ impl Observation {
         let healthy = problems.is_empty();
         if !public_url_matches {
             problems.push(format!(
-                "auth.public_url is not https://{dns_name}, so passkeys do not work on this origin"
+                "auth.public_url is not {url}, so passkeys do not work on this origin"
             ));
         }
         TailnetStatus {
@@ -339,7 +419,7 @@ impl Observation {
             certificate_expires_at_ms: Some(self.expires_at_ms),
             public_url_matches,
             message: if problems.is_empty() {
-                format!("Serving HTTPS as {dns_name}")
+                format!("Serving HTTPS at {url}")
             } else {
                 problems.join("; ")
             },
@@ -410,9 +490,17 @@ mod tests {
 
     #[test]
     fn running_node_with_valid_certificate_is_healthy() {
-        let status = observe("Running", false, 2_000).report("piqueld.tail.ts.net", true, 1_000);
+        let status = observe("Running", false, 2_000).report(
+            "piqueld.tail.ts.net",
+            "https://piqueld.tail.ts.net:8443",
+            true,
+            1_000,
+        );
         assert!(status.enabled && status.healthy);
-        assert_eq!(status.message, "Serving HTTPS as piqueld.tail.ts.net");
+        assert_eq!(
+            status.message,
+            "Serving HTTPS at https://piqueld.tail.ts.net:8443"
+        );
         assert_eq!(status.certificate_expires_at_ms, Some(2_000));
     }
 
@@ -426,7 +514,12 @@ mod tests {
             (observe("Running", false, 1_000), "certificate has expired"),
             (observe("Running", true, 2_000), "refresh failed"),
         ] {
-            let status = observation.report("piqueld.tail.ts.net", true, 1_000);
+            let status = observation.report(
+                "piqueld.tail.ts.net",
+                "https://piqueld.tail.ts.net",
+                true,
+                1_000,
+            );
             assert!(!status.healthy);
             assert!(status.message.contains(expected), "{}", status.message);
         }
@@ -434,7 +527,12 @@ mod tests {
 
     #[test]
     fn public_url_mismatch_is_reported_without_failing_the_node() {
-        let status = observe("Running", false, 2_000).report("piqueld.tail.ts.net", false, 1_000);
+        let status = observe("Running", false, 2_000).report(
+            "piqueld.tail.ts.net",
+            "https://piqueld.tail.ts.net",
+            false,
+            1_000,
+        );
         assert!(status.healthy);
         assert!(!status.public_url_matches);
         assert!(status.message.contains("https://piqueld.tail.ts.net"));
