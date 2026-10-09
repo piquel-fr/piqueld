@@ -1,6 +1,6 @@
 //! Startup-only TCP listener selection and Tailscale discovery.
 
-use super::{ListenMode, ServerConfig};
+use super::{ListenMode, MetricsConfig, ServerConfig};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use std::{
@@ -63,6 +63,24 @@ impl ServerConfig {
             .into_iter()
             .map(|ip| SocketAddr::new(ip, self.port))
             .collect()
+    }
+}
+
+impl MetricsConfig {
+    /// Binds every metrics address before the daemon starts serving.
+    ///
+    /// # Errors
+    /// Any bind failure aborts startup and releases listeners already bound.
+    pub async fn bind(&self) -> Result<Vec<TcpListener>> {
+        let mut listeners = Vec::new();
+        for address in &self.listen {
+            listeners.push(
+                TcpListener::bind(address)
+                    .await
+                    .with_context(|| format!("failed to bind metrics listener {address}"))?,
+            );
+        }
+        Ok(listeners)
     }
 }
 

@@ -8,7 +8,7 @@ use piqueld::api::http::{ApiState, UiAssets};
 use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::tailnet::Node;
 use std::{net::SocketAddr, os::unix::fs::OpenOptionsExt, path::PathBuf};
-use tokio::net::{TcpListener, UnixListener};
+use tokio::net::UnixListener;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -92,20 +92,21 @@ async fn main() -> Result<()> {
     let runtime_dir = piqueld::RuntimeDir::acquire(&config.server.runtime_dir).await?;
     let tcp_listeners = config.server.bind_tcp().await?;
     let unix_listener = runtime_dir.bind_api().await?;
+    let metrics_listeners = config.metrics.bind().await?;
     // The node may fill auth.public_url, so it joins before authentication starts.
     let tailnet = Node::join(&mut config).await?;
-    let mut metrics_listeners = Vec::new();
-    for address in &config.metrics.listen {
-        metrics_listeners.push(
-            TcpListener::bind(address)
-                .await
-                .with_context(|| format!("failed to bind metrics listener {address}"))?,
-        );
-    }
 
     let cancellation = CancellationToken::new();
     let (state, auth, controller) =
-        ApplicationService::start(&config, cancellation.clone()).await?;
+        match ApplicationService::start(&config, cancellation.clone()).await {
+            Ok(started) => started,
+            Err(error) => {
+                if let Some(node) = tailnet {
+                    node.leave().await;
+                }
+                return Err(error);
+            }
+        };
     let state = state.with_tailnet(tailnet.as_ref().map(Node::status));
     let ui_assets = UiAssets::resolve();
     log_ui_status(&ui_assets);

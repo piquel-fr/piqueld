@@ -59,9 +59,10 @@ device logins do not.
 - **State and logs:** `just dev status` prints the instance's files.
   `output.log` has the latest build and the daemon's fatal errors;
   `daemon.log` has its logs as JSON lines.
-- **Tailnet:** if `just dev start` fails because the shared node is not
-  running or logged in, ask the user to run `just dev tailnet up`; logging it
-  in needs their approval.
+- **Tailnet:** `just dev start` starts the shared node itself. Only if it
+  reports the node is not logged in, ask the user to run
+  `just dev tailnet up`, which needs their approval; report other startup
+  errors as they are.
 - **Docker:** prefix commands with
   `DOCKER_HOST=unix://<docker socket from status>`.
 

@@ -251,6 +251,15 @@ impl Node {
         &self.monitor.dns_name
     }
 
+    /// Leaves the node when startup fails before [`Node::listener`]: a shared
+    /// tailscaled stops forwarding the HTTPS port, and a dedicated one is
+    /// killed on drop.
+    pub async fn leave(self) {
+        if let Daemon::Shared = self.daemon {
+            self.monitor.remove_port().await;
+        }
+    }
+
     /// Starts accepting forwarded connections and refreshing status until
     /// cancellation. Returns the listener and the supervisor task, which
     /// cancels the daemon and fails if its own tailscaled exits, so piqueld
@@ -292,12 +301,18 @@ impl Monitor {
                     () = cancellation.cancelled() => {}
                     () = self.refresh_loop() => {}
                 }
-                let port = format!("--tls-terminated-tcp={}", self.https_port);
-                if let Err(error) = self.cli.run(&["serve", &port, "off"]).await {
-                    tracing::warn!(error = %format!("{error:#}"), "failed to remove the tailnet HTTPS port");
-                }
+                self.remove_port().await;
                 Ok(())
             }
+        }
+    }
+
+    /// Stops forwarding this daemon's HTTPS port from a shared tailscaled,
+    /// which would otherwise keep forwarding it to a closed listener.
+    async fn remove_port(&self) {
+        let port = format!("--tls-terminated-tcp={}", self.https_port);
+        if let Err(error) = self.cli.run(&["serve", &port, "off"]).await {
+            tracing::warn!(error = %format!("{error:#}"), "failed to remove the tailnet HTTPS port");
         }
     }
 
