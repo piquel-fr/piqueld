@@ -142,6 +142,15 @@ impl ApplicationView {
                 })
             })
     }
+
+    /// Finds an environment or a preview by stable ID.
+    #[must_use]
+    pub fn deployable(&self, id: &str) -> Option<&EnvironmentView> {
+        self.environments
+            .iter()
+            .chain(&self.previews)
+            .find(|deployable| deployable.id.as_str() == id)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]

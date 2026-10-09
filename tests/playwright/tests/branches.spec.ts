@@ -164,3 +164,27 @@ test('a repository-backed application page reloads what environments fetch', asy
   await page.clock.runFor(16_000);
   await expect(conflict).toBeVisible();
 });
+
+test('a preview created from the dashboard opens on its own page and is deleted from it', async ({ page, account }) => {
+  void account;
+  const { app } = await createRepositoryApplication(page);
+  await page.goto(`/dashboard/applications/${app}?tab=previews`);
+  await page.getByRole('button', { name: 'New preview', exact: true }).click();
+  const creator = page.getByRole('dialog', { name: 'Create preview' });
+  await creator.getByLabel('Branch', { exact: true }).fill('feat/login');
+  await creator.getByLabel('Slot (optional)', { exact: true }).fill('agent-2');
+  await creator.getByRole('button', { name: 'Create preview', exact: true }).click();
+  // The page is named by the slug and opens on the deployment it started.
+  await expect(title(page)).toHaveText('notes-feat-login-agent-2-503aa8');
+  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
+  const preview = new URL(page.url()).pathname.split('/').pop()!;
+  expect(preview).toMatch(/^preview-/);
+
+  await environmentTab(page, 'Overview').click();
+  await expect(page.getByText('feat/login', { exact: true })).toBeVisible();
+  page.once('dialog', dialog => dialog.accept());
+  const deleted = page.waitForResponse(response => response.request().method() === 'DELETE' && response.url().endsWith(`/previews/${preview}`));
+  await page.getByRole('button', { name: 'Delete preview', exact: true }).click();
+  expect((await deleted).status()).toBe(202);
+  await expect(page).toHaveURL(`/dashboard/applications/${app}?tab=previews`);
+});

@@ -51,11 +51,19 @@ environments: each preview's branch, slot, slug, status (or **Deleting**) with
 its status message, its URLs as `https://` links, and its branch state (exists,
 moved or gone, with shortened commits, or unknown with the repository error).
 The list loads when the tab opens and on **Refresh**, not on a timer, since
-each load runs `git ls-remote` on the manifest repository. **Delete** confirms,
-then deletes the preview with every volume it created and their data; it needs
-no saved revision, so unsaved edits elsewhere on the page don't block it.
-Without previews, the tab explains how to create one with `piquelctl preview
-create`, and first to connect a manifest repository when there is none.
+each load runs `git ls-remote` on the manifest repository. **New preview** asks
+for a branch and an optional slot, then opens the preview's deployments; for a
+preview of that branch and slot that already exists, it opens it without
+redeploying. It is disabled until a manifest repository is connected in Source.
+**Delete** confirms, then deletes the preview with every volume it created and
+their data. Neither needs a saved revision, so unsaved edits elsewhere on the
+page don't block them.
+
+Each branch links to the preview's page, which has an environment page's tabs.
+Its Overview shows the preview's branch, slot, slug, and ID, with its branch
+state and URLs read on load and on **Refresh**, then its runtime, its variables
+rendered for previews, and a card to delete it. **Redeploy** deploys the head
+of its branch again.
 
 **Preview** and **Deploy to <environment>** on an environment page target that
 environment. On the application page they target its only environment; with
