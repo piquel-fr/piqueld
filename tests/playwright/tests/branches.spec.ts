@@ -165,7 +165,7 @@ test('a repository-backed application page reloads what environments fetch', asy
   await expect(conflict).toBeVisible();
 });
 
-test('a preview created from the dashboard opens on its own page and is deleted from it', async ({ page, account }) => {
+test('a preview created from the dashboard opens on its own page, also from its row, and is deleted from it', async ({ page, account }) => {
   void account;
   const { app } = await createRepositoryApplication(page);
   await page.goto(`/dashboard/applications/${app}?tab=previews`);
@@ -179,6 +179,10 @@ test('a preview created from the dashboard opens on its own page and is deleted 
   await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
   const preview = new URL(page.url()).pathname.split('/').pop()!;
   expect(preview).toMatch(/^preview-/);
+  // Its whole row in the list opens it too.
+  await page.goto(`/dashboard/applications/${app}?tab=previews`);
+  await page.getByRole('list', { name: 'Previews' }).getByRole('listitem').click();
+  await expect(page).toHaveURL(`/dashboard/applications/${app}/previews/${preview}`);
 
   await environmentTab(page, 'Overview').click();
   await expect(page.getByText('feat/login', { exact: true })).toBeVisible();

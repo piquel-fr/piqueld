@@ -47,19 +47,20 @@ another environment.
 
 The **Previews** tab lists the application's
 [previews](application-manifest.md#previews), never shown among its
-environments: each preview's branch, slot, slug, status (or **Deleting**) with
-its status message, its URLs as `https://` links, and its branch state (exists,
-moved or gone, with shortened commits, or unknown with the repository error).
+environments: each preview's branch, slug, slot, branch state (exists, moved
+or gone, with shortened commits, or unknown with the repository error), and
+status (or **Deleting**) with its status message on hover.
 The list loads when the tab opens and on **Refresh**, not on a timer, since
 each load runs `git ls-remote` on the manifest repository. **New preview** asks
-for a branch and an optional slot, then opens the preview's deployments; for a
+for a branch and an optional slot, which tells apart several previews of one
+branch (one per agent, say), then opens the preview's deployments; for a
 preview of that branch and slot that already exists, it opens it without
 redeploying. It is disabled until a manifest repository is connected in Source.
 **Delete** confirms, then deletes the preview with every volume it created and
 their data. Neither needs a saved revision, so unsaved edits elsewhere on the
 page don't block them.
 
-Each branch links to the preview's page, which has an environment page's tabs.
+Each row opens the preview's page, which has an environment page's tabs.
 Its Overview shows the preview's branch, slot, slug, and ID, with its branch
 state and URLs read on load and on **Refresh**, then its runtime, its variables
 rendered for previews, and a card to delete it. **Redeploy** deploys the head

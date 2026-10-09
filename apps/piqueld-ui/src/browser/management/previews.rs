@@ -49,9 +49,9 @@ impl EditorContext {
 }
 
 /// Badge for where a preview's branch is, with the commits or the reason the
-/// repository could not be read below it.
-fn branch_state(state: &BranchState) -> AnyView {
-    // Full commit IDs are too wide for a table cell.
+/// repository could not be read.
+fn branch_state(state: &BranchState) -> (AnyView, Option<String>) {
+    // Full commit IDs are too wide to show.
     let short = |commit: &str| commit.get(..12).unwrap_or(commit).to_owned();
     let (tone, detail) = match state {
         BranchState::Exists { head } => (Tone::Ok, Some(format!("at {}", short(head)))),
@@ -62,11 +62,7 @@ fn branch_state(state: &BranchState) -> AnyView {
         BranchState::Gone => (Tone::Bad, None),
         BranchState::Unknown { message } => (Tone::Neutral, Some(message.clone())),
     };
-    view! {
-        {badge(tone, state.to_string())}
-        {detail.map(|detail| view! { <div class="muted">{detail}</div> })}
-    }
-    .into_any()
+    (badge(tone, state.to_string()), detail)
 }
 
 /// Links to the hostnames a preview's deployed target routes.
@@ -136,34 +132,19 @@ pub(super) fn PreviewList() -> impl IntoView {
                 Some(Ok(previews)) if previews.is_empty() => empty(none()),
                 Some(Ok(previews)) => {
                     view! {
-                        <div class="table-wrap">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>"Branch"</th>
-                                        <th>"Slot"</th>
-                                        <th>"Slug"</th>
-                                        <th>"Status"</th>
-                                        <th>"URLs"</th>
-                                        <th>"Branch state"</th>
-                                        <th></th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {previews
-                                        .into_iter()
-                                        .map(|view| {
-                                            view! {
-                                                <PreviewRow
-                                                    view={view}
-                                                    deleted={Callback::new(move |()| data.refetch())}
-                                                />
-                                            }
-                                        })
-                                        .collect_view()}
-                                </tbody>
-                            </table>
-                        </div>
+                        <ul class="list" aria-label="Previews">
+                            {previews
+                                .into_iter()
+                                .map(|view| {
+                                    view! {
+                                        <PreviewRow
+                                            view={view}
+                                            deleted={Callback::new(move |()| data.refetch())}
+                                        />
+                                    }
+                                })
+                                .collect_view()}
+                        </ul>
                     }
                         .into_any()
                 }
@@ -225,7 +206,7 @@ fn NewPreview() -> impl IntoView {
             <form class="stack-sm" on:submit={submit}>
                 <fieldset class="stack-sm" disabled={move || context.blocked()}>
                     <p class="hint">
-                        "Deploys the manifest on a branch of the application's repository, with the preview variables and visibility. A preview of that branch and slot that already exists is opened without redeploying."
+                        "Deploys the manifest on a branch of the application's repository, with the preview variables and visibility. A slot tells apart several previews of one branch, such as one per agent working on it. A preview of that branch and slot that already exists is opened without redeploying."
                     </p>
                     {text_input("Branch", form, |v| v.0.clone(), |v, input| v.0 = input)}
                     {text_input("Slot (optional)", form, |v| v.1.clone(), |v, input| v.1 = input)}
@@ -245,7 +226,8 @@ fn NewPreview() -> impl IntoView {
     }
 }
 
-/// One preview's row, linking to its page. Delete runs `deleted` once accepted.
+/// One preview's row, opening its page, with its slug, slot, branch state, and
+/// status. Delete runs `deleted` once accepted.
 #[component]
 fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
     let context = editor();
@@ -255,9 +237,11 @@ fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
     let branch = identity
         .map(|identity| identity.branch.to_string())
         .unwrap_or_default();
-    let slot = identity
-        .and_then(|identity| identity.slot.as_ref())
-        .map_or_else(|| "—".to_owned(), ToString::to_string);
+    let subtitle = match identity.and_then(|identity| identity.slot.as_ref()) {
+        Some(slot) => format!("{name} · slot {slot}"),
+        None => name.clone(),
+    };
+    let (branch_badge, branch_detail) = branch_state(&view.branch);
     let deleting = view.preview.delete_intent;
     let status = if deleting {
         badge(Tone::Warn, "Deleting")
@@ -265,36 +249,29 @@ fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
         health_badge(ApplicationHealth::from_server_state(view.status.state))
     };
     view! {
-        <tr>
-            <td>
-                <A href={context.preview_href(view.preview.id.as_str())}>
-                    <strong>{branch}</strong>
-                </A>
-            </td>
-            <td class="muted">{slot}</td>
-            <td>
-                <code>{name.clone()}</code>
-            </td>
-            <td>
-                {status}
-                {view.status.message.map(|message| view! { <div class="muted">{message}</div> })}
-            </td>
-            <td>{urls(view.hostnames)}</td>
-            <td>{branch_state(&view.branch)}</td>
-            <td class="actions">
-                <button
-                    type="button"
-                    class="btn btn-danger btn-sm"
-                    aria-label={format!("Delete preview {name}")}
-                    disabled={move || context.blocked() || deleting}
-                    on:click={move |_| {
-                        preview.with_value(|preview| context.delete_preview(preview, move || deleted.run(())));
-                    }}
-                >
-                    "Delete"
-                </button>
-            </td>
-        </tr>
+        <li class="list-row list-row-link">
+            <span class="title">
+                <A href={context.preview_href(view.preview.id.as_str())}>{branch}</A>
+                <small>{subtitle}</small>
+            </span>
+            <span class="meta">{branch_detail}</span>
+            {branch_badge}
+            <span title={view.status.message}>{status}</span>
+            <button
+                type="button"
+                class="btn btn-danger btn-sm"
+                aria-label={format!("Delete preview {name}")}
+                disabled={move || context.blocked() || deleting}
+                on:click={move |_| {
+                    preview.with_value(|preview| context.delete_preview(preview, move || deleted.run(())));
+                }}
+            >
+                "Delete"
+            </button>
+            <span class="chevron" aria-hidden="true">
+                {icon(Icon::ChevronRight)}
+            </span>
+        </li>
     }
 }
 
@@ -407,7 +384,16 @@ pub(super) fn PreviewSettings() -> impl IntoView {
                     <code>{id}</code>
                 </dd>
                 <dt>"Branch state"</dt>
-                <dd>{loaded(|view| branch_state(&view.branch))}</dd>
+                <dd>
+                    {loaded(|view| {
+                        let (badge, detail) = branch_state(&view.branch);
+                        view! {
+                            {badge}
+                            {detail.map(|detail| view! { <div class="muted">{detail}</div> })}
+                        }
+                            .into_any()
+                    })}
+                </dd>
                 <dt>"URLs"</dt>
                 <dd>{loaded(|view| urls(view.hostnames))}</dd>
             </dl>
