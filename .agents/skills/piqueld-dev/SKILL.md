@@ -65,6 +65,9 @@ device logins do not.
   errors as they are.
 - **Docker:** prefix commands with
   `DOCKER_HOST=unix://<docker socket from status>`.
+- When creating a dev instance for a user, make sure to give them the link
+  to the dashboard & setup in chat so they can access it without having to
+  go to a terminal.
 
 ## Stop
 
