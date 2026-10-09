@@ -259,15 +259,22 @@ impl OperationError {
 
     /// Diagnoses a failed ingress action without taking ownership of its error.
     /// `code` is `IngressUnavailable` for gateway changes and
-    /// `CertificateRenewalFailed` for DNS-01 certificates.
+    /// `CertificateRenewalFailed` for DNS-01 certificates and
+    /// `DnsRecordsFailed` for route DNS records.
     pub(crate) fn ingress_diagnostic(
         code: DiagnosticCode,
         error: &anyhow::Error,
     ) -> piqueld_core::observability::Diagnostic {
-        let summary = if code == DiagnosticCode::CertificateRenewalFailed {
-            "a DNS-01 certificate could not be issued or renewed; see certificate status and daemon logs"
-        } else {
-            "managed ingress could not apply a gateway change; see ingress health and daemon logs"
+        let summary = match code {
+            DiagnosticCode::CertificateRenewalFailed => {
+                "a DNS-01 certificate could not be issued or renewed; see certificate status and daemon logs"
+            }
+            DiagnosticCode::DnsRecordsFailed => {
+                "a route's DNS records could not be updated; see route status and daemon logs"
+            }
+            _ => {
+                "managed ingress could not apply a gateway change; see ingress health and daemon logs"
+            }
         };
         Self::diagnostic_from(code, summary.into(), error.as_ref())
     }

@@ -278,6 +278,10 @@ pub struct IngressConfig {
     /// Start the managed Caddy gateway and expose public routes on ports
     /// 80/443, or through `tunnel`.
     pub enabled: bool,
+    /// This server's public IPv4 and IPv6 addresses. Public routes in zones
+    /// whose provider sets `manage_records` get A/AAAA records to them;
+    /// without any, those records stay manual. Unused in tunnel mode.
+    pub public_addresses: Vec<std::net::IpAddr>,
     /// ACME account used for DNS-01 certificates.
     pub acme: AcmeConfig,
     /// The apps tailnet node, which serves private routes.
@@ -387,13 +391,14 @@ impl AcmeConfig {
     }
 }
 
-/// DNS provider accounts, used for DNS-01 certificates. Zones are discovered
-/// through each provider's API.
+/// DNS provider accounts, used for DNS-01 certificates and, where
+/// `manage_records` is set, routes' records. Zones are discovered through
+/// each provider's API.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct DnsConfig {
     /// Providers in configuration order.
-    pub providers: Vec<crate::dns::DnsProvider>,
+    pub providers: Vec<crate::dns::DnsProviderConfig>,
 }
 
 /// Persistent build output policy; metadata remains until application deletion.
@@ -788,6 +793,19 @@ impl DaemonConfig {
         let ingress = &self.ingress;
         vec![
             ("Enabled (restart required)", ingress.enabled.to_string()),
+            (
+                "Public addresses",
+                if ingress.public_addresses.is_empty() {
+                    "none".into()
+                } else {
+                    ingress
+                        .public_addresses
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                },
+            ),
             ("ACME directory", ingress.acme.directory.clone()),
             (
                 "ACME email",
@@ -852,8 +870,9 @@ impl DaemonConfig {
                 .providers
                 .iter()
                 .enumerate()
-                .map(|(index, provider)| {
-                    let value = match provider {
+                .map(|(index, config)| {
+                    let provider = &config.provider;
+                    let account = match provider {
                         crate::dns::DnsProvider::Cloudflare(cloudflare) => {
                             format!("API token {}", cloudflare.api_token())
                         }
@@ -865,9 +884,18 @@ impl DaemonConfig {
                             ovh.consumer_key
                         ),
                         #[cfg(test)]
-                        crate::dns::DnsProvider::Challtestsrv(_) => "test server".into(),
+                        crate::dns::DnsProvider::Challtestsrv(_)
+                        | crate::dns::DnsProvider::Memory(_) => "test server".into(),
                     };
-                    (format!("{}. {}", index + 1, provider.kind()), value)
+                    let records = if config.manage_records {
+                        "manages route records"
+                    } else {
+                        "route records are manual"
+                    };
+                    (
+                        format!("{}. {}", index + 1, provider.kind()),
+                        format!("{account}; {records}"),
+                    )
                 })
                 .collect(),
         )

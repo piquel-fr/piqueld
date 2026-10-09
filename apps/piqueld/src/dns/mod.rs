@@ -1,12 +1,14 @@
 //! DNS provider integrations configured in daemon TOML (`[[dns.providers]]`).
 //!
 //! piqueld calls provider APIs itself, so DNS credentials never enter a
-//! container. Today providers publish ACME DNS-01 TXT records; record
-//! management (#194) adds methods to the same [`DnsProvider`] enum.
+//! container. Providers publish ACME DNS-01 TXT records and, when
+//! `manage_records` is set, routes' A/AAAA/CNAME records.
 //!
 //! [`Dns`] discovers each provider's zones and assigns every hostname to the
 //! provider with the longest matching zone.
 mod cloudflare;
+#[cfg(test)]
+pub(crate) mod memory;
 mod ovh;
 mod propagation;
 mod zones;
@@ -21,7 +23,10 @@ pub use zones::ZoneError;
 use piqueld_core::{api::DnsProviderStatus, manifest::Hostname};
 use reqwest::StatusCode;
 use serde::{Deserialize, de::DeserializeOwned};
-use std::time::{Duration, Instant};
+use std::{
+    net::{Ipv4Addr, Ipv6Addr},
+    time::{Duration, Instant},
+};
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 
@@ -37,6 +42,139 @@ pub enum DnsProvider {
     /// Pebble's `challtestsrv`, which serves TXT records to a test CA.
     #[cfg(test)]
     Challtestsrv(challtestsrv::Challtestsrv),
+    /// Records kept in memory, for reconciliation tests.
+    #[cfg(test)]
+    #[serde(skip)]
+    Memory(memory::Memory),
+}
+
+/// One `[[dns.providers]]` entry: a provider account and whether piqueld
+/// manages routes' records in its zones.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct DnsProviderConfig {
+    /// The account, selected by `kind`.
+    #[serde(flatten)]
+    pub provider: DnsProvider,
+    /// Create, update and delete routes' A/AAAA/CNAME records in this
+    /// provider's zones. Off by default, so its zones stay manual.
+    #[serde(default)]
+    pub manage_records: bool,
+}
+
+/// A provider whose zones stay manual.
+#[cfg(test)]
+impl From<DnsProvider> for DnsProviderConfig {
+    fn from(provider: DnsProvider) -> Self {
+        Self {
+            provider,
+            manage_records: false,
+        }
+    }
+}
+
+/// The data of one DNS record, of a type piqueld reads or writes.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum Record {
+    /// An IPv4 address.
+    A(Ipv4Addr),
+    /// An IPv6 address.
+    Aaaa(Ipv6Addr),
+    /// An alias of another hostname.
+    Cname {
+        /// The hostname aliased.
+        target: Hostname,
+        /// Traffic goes through Cloudflare's proxy; other providers reject it.
+        proxied: bool,
+    },
+    /// Unquoted text.
+    Txt(String),
+}
+
+impl Record {
+    /// An A or AAAA record to `address`.
+    #[must_use]
+    pub fn address(address: std::net::IpAddr) -> Self {
+        match address {
+            std::net::IpAddr::V4(address) => Self::A(address),
+            std::net::IpAddr::V6(address) => Self::Aaaa(address),
+        }
+    }
+
+    /// The record type, as written in zone files.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::A(_) => "A",
+            Self::Aaaa(_) => "AAAA",
+            Self::Cname { .. } => "CNAME",
+            Self::Txt(_) => "TXT",
+        }
+    }
+
+    /// The record's content, without TXT quoting or a trailing dot.
+    fn content(&self) -> String {
+        match self {
+            Self::A(address) => address.to_string(),
+            Self::Aaaa(address) => address.to_string(),
+            Self::Cname { target, .. } => target.to_string(),
+            Self::Txt(text) => text.clone(),
+        }
+    }
+
+    /// TTL in seconds: short for TXT records, which ACME challenges and
+    /// ownership checks read soon after writing them.
+    fn ttl(&self) -> u32 {
+        match self {
+            Self::Txt(_) => 60,
+            _ => 300,
+        }
+    }
+
+    /// Parses a provider's record of type `kind`. Other types are `None`.
+    /// TXT content loses its quotes, and CNAME targets their trailing dot.
+    fn parse(kind: &str, content: &str, proxied: bool) -> Result<Option<Self>, ApiError> {
+        let invalid = || ApiError::Record(format!("{kind} {content}"));
+        Ok(Some(match kind {
+            "A" => Self::A(content.parse().map_err(|_| invalid())?),
+            "AAAA" => Self::Aaaa(content.parse().map_err(|_| invalid())?),
+            "CNAME" => Self::Cname {
+                target: Hostname::parse(content.trim_end_matches('.').to_ascii_lowercase())
+                    .map_err(|_| invalid())?,
+                proxied,
+            },
+            "TXT" => Self::Txt(
+                content
+                    .strip_prefix('"')
+                    .and_then(|text| text.strip_suffix('"'))
+                    .unwrap_or(content)
+                    .into(),
+            ),
+            _ => return Ok(None),
+        }))
+    }
+}
+
+/// `A 192.0.2.1`, `CNAME (proxied) x.cfargotunnel.com` or `TXT "text"`.
+impl std::fmt::Display for Record {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cname {
+                target,
+                proxied: true,
+            } => write!(f, "CNAME (proxied) {target}"),
+            Self::Txt(text) => write!(f, "TXT {text:?}"),
+            record => write!(f, "{} {}", record.kind(), record.content()),
+        }
+    }
+}
+
+/// A record found at a name, with the handle that updates or deletes it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Found {
+    /// The provider's handle.
+    pub id: RecordId,
+    /// The record's data.
+    pub record: Record,
 }
 
 /// A zone hosted by one provider.
@@ -48,9 +186,17 @@ pub struct Zone {
     id: String,
 }
 
+impl Zone {
+    /// `name` relative to the zone, as OVH names records; the apex is empty.
+    fn relative<'a>(&self, name: &'a str) -> &'a str {
+        name.strip_suffix(self.name.as_str())
+            .map_or(name, |prefix| prefix.trim_end_matches('.'))
+    }
+}
+
 /// A record created through a provider, deleted by this handle.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RecordId(String);
+pub struct RecordId(pub(crate) String);
 
 /// A failed provider call. It names the provider, operation and zone, and
 /// keeps the API's response; credentials are only ever sent in headers, so
@@ -82,6 +228,12 @@ pub enum ApiError {
     /// The API answered with an unexpected body.
     #[error("unexpected response: {0}")]
     Decode(#[from] serde_json::Error),
+    /// The API returned a record of a known type whose content is invalid.
+    #[error("unexpected record: {0}")]
+    Record(String),
+    /// The provider cannot store this record.
+    #[error("{0}")]
+    Unsupported(&'static str),
 }
 
 /// Sends a request and decodes its JSON response; an empty body decodes as
@@ -112,6 +264,8 @@ impl DnsProvider {
             Self::Ovh(_) => "ovh",
             #[cfg(test)]
             Self::Challtestsrv(_) => "challtestsrv",
+            #[cfg(test)]
+            Self::Memory(_) => "memory",
         }
     }
 
@@ -141,30 +295,64 @@ impl DnsProvider {
             Self::Ovh(provider) => provider.zones(http).await,
             #[cfg(test)]
             Self::Challtestsrv(provider) => Ok(provider.zones()),
+            #[cfg(test)]
+            Self::Memory(provider) => provider.zones(),
         }
         .map_err(self.error("list zones", None))
     }
 
-    /// Creates a TXT record. `name` is fully qualified and lies inside `zone`.
-    /// It takes effect once the zone is published, so the caller holds its ID
-    /// even when publishing fails.
+    /// Every A, AAAA, CNAME and TXT record named exactly `name`, which is
+    /// fully qualified and lies inside `zone`. Other types are left out.
     ///
     /// # Errors
     /// Returns the provider's API failure.
-    pub async fn create_txt(
+    pub async fn records(
         &self,
         http: &reqwest::Client,
         zone: &Zone,
         name: &str,
-        value: &str,
+    ) -> Result<Vec<Found>, DnsError> {
+        match self {
+            Self::Cloudflare(provider) => provider.records(http, zone, name).await,
+            Self::Ovh(provider) => provider.records(http, zone, name).await,
+            #[cfg(test)]
+            Self::Challtestsrv(_) => Err(ApiError::Unsupported("challtestsrv cannot list records")),
+            #[cfg(test)]
+            Self::Memory(provider) => provider.records(name),
+        }
+        .map_err(self.error("list records", Some(zone)))
+    }
+
+    /// Creates a record named `name`, which is fully qualified and lies
+    /// inside `zone`, or replaces record `id` of the same type. It takes
+    /// effect once the zone is published, so the caller holds its ID even
+    /// when publishing fails.
+    ///
+    /// # Errors
+    /// Returns the provider's API failure, or [`ApiError::Unsupported`] for a
+    /// proxied CNAME outside Cloudflare.
+    pub async fn upsert(
+        &self,
+        http: &reqwest::Client,
+        zone: &Zone,
+        name: &str,
+        id: Option<&RecordId>,
+        record: &Record,
     ) -> Result<RecordId, DnsError> {
         match self {
-            Self::Cloudflare(provider) => provider.create_txt(http, zone, name, value).await,
-            Self::Ovh(provider) => provider.create_txt(http, zone, name, value).await,
+            Self::Cloudflare(provider) => provider.upsert(http, zone, name, id, record).await,
+            Self::Ovh(provider) => provider.upsert(http, zone, name, id, record).await,
             #[cfg(test)]
-            Self::Challtestsrv(provider) => provider.create_txt(http, name, value).await,
+            Self::Challtestsrv(provider) => match (id, record) {
+                (None, Record::Txt(value)) => provider.create_txt(http, name, value).await,
+                _ => Err(ApiError::Unsupported(
+                    "challtestsrv only creates TXT records",
+                )),
+            },
+            #[cfg(test)]
+            Self::Memory(provider) => provider.upsert(name, id, record),
         }
-        .map_err(self.error("create TXT record", Some(zone)))
+        .map_err(self.error("write record", Some(zone)))
     }
 
     /// Deletes a record this daemon created; one that is already gone counts
@@ -184,6 +372,8 @@ impl DnsProvider {
             Self::Ovh(provider) => provider.delete_record(http, zone, id).await,
             #[cfg(test)]
             Self::Challtestsrv(provider) => provider.delete_record(http, id).await,
+            #[cfg(test)]
+            Self::Memory(provider) => provider.delete_record(id),
         }
         .or_else(|error| match error {
             ApiError::Status {
@@ -193,6 +383,12 @@ impl DnsProvider {
             error => Err(error),
         })
         .map_err(self.error("delete record", Some(zone)))
+    }
+
+    /// Whether changes wait for [`Self::publish`]; only OVH stages them.
+    #[must_use]
+    pub fn stages_changes(&self) -> bool {
+        matches!(self, Self::Ovh(_))
     }
 
     /// Applies created and deleted records to the zone's nameservers. Only OVH
@@ -205,7 +401,7 @@ impl DnsProvider {
             Self::Ovh(provider) => provider.refresh(http, zone).await,
             Self::Cloudflare(_) => Ok(()),
             #[cfg(test)]
-            Self::Challtestsrv(_) => Ok(()),
+            Self::Challtestsrv(_) | Self::Memory(_) => Ok(()),
         }
         .map_err(self.error("publish zone", Some(zone)))
     }
@@ -222,7 +418,7 @@ struct Discovery {
 
 /// Configured providers with their discovered zones.
 pub struct Dns {
-    providers: Vec<DnsProvider>,
+    providers: Vec<DnsProviderConfig>,
     /// Shared client for provider APIs; never follows redirects or proxies.
     http: reqwest::Client,
     /// One entry per provider, in configuration order.
@@ -245,7 +441,7 @@ impl Dns {
     ///
     /// # Errors
     /// Returns HTTP client initialization failures.
-    pub fn new(providers: Vec<DnsProvider>) -> reqwest::Result<Self> {
+    pub fn new(providers: Vec<DnsProviderConfig>) -> reqwest::Result<Self> {
         Ok(Self {
             discovered: RwLock::new(providers.iter().map(|_| Discovery::default()).collect()),
             providers,
@@ -267,7 +463,17 @@ impl Dns {
 
     /// The configured provider at `index`.
     pub(crate) fn provider(&self, index: usize) -> &DnsProvider {
-        &self.providers[index]
+        &self.providers[index].provider
+    }
+
+    /// Whether any provider manages routes' records.
+    pub(crate) fn manages_any_records(&self) -> bool {
+        self.providers.iter().any(|config| config.manage_records)
+    }
+
+    /// Whether the provider at `index` manages routes' records.
+    pub(crate) fn manages_records(&self, index: usize) -> bool {
+        self.providers[index].manage_records
     }
 
     /// Rediscovers every provider's zones when they are older than an hour, or
@@ -292,8 +498,8 @@ impl Dns {
     /// next [`Self::refresh`] retries instead of waiting out the hour.
     async fn discover_locked(&self, refreshed: &mut Option<Instant>) {
         let mut discovered = Vec::with_capacity(self.providers.len());
-        for provider in &self.providers {
-            discovered.push(provider.zones(&self.http).await);
+        for config in &self.providers {
+            discovered.push(config.provider.zones(&self.http).await);
         }
         let mut current = self.discovered.write().await;
         let complete = discovered.iter().all(Result::is_ok);
@@ -327,7 +533,7 @@ impl Dns {
             .iter()
             .zip(discovered.iter())
             .enumerate()
-            .map(|(index, (provider, discovery))| {
+            .map(|(index, (config, discovery))| {
                 let conflicts = zones::conflicts(&zones, index);
                 let message = match (&discovery.error, conflicts.is_empty()) {
                     (Some(error), _) => format!("Zone discovery failed: {error}"),
@@ -339,7 +545,8 @@ impl Dns {
                     (None, true) => "Zones discovered".into(),
                 };
                 DnsProviderStatus {
-                    kind: provider.kind().into(),
+                    kind: config.provider.kind().into(),
+                    manage_records: config.manage_records,
                     zones: discovery.zones.iter().map(|z| z.name.to_string()).collect(),
                     healthy: discovery.error.is_none() && conflicts.is_empty(),
                     message,

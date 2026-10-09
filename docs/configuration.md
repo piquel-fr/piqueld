@@ -52,6 +52,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `docker.socket` | `/var/run/docker.sock` |
 | `docker.auto_initialize_swarm` | `true` |
 | `ingress.enabled` | `false` (restart required) |
+| `ingress.public_addresses` | `[]` (direct public routes' records stay manual) |
 | `ingress.acme.directory` | `https://acme-v02.api.letsencrypt.org/directory` |
 | `ingress.acme.email` | none |
 | `ingress.private.enabled` | `false` (restart required) |
@@ -60,6 +61,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `ingress.tunnel.enabled` | `false` (restart required) |
 | `ingress.tunnel.credentials_file` | none; required while enabled |
 | `dns.providers` | `[]` |
+| `dns.providers[].manage_records` | `false` |
 | `reconciliation.scan_interval_seconds` | `60` |
 | `reconciliation.prepare_timeout_seconds` | `300` |
 | `reconciliation.convergence_timeout_seconds` | `120` |
@@ -342,6 +344,17 @@ retaining route intent, reservations, and certificates. No DNS or certificate wo
 runs while disabled. Re-enabling restores deployed routes, including deployments
 made while disabled, without activating saved-but-undeployed changes.
 
+`public_addresses` lists the server's public IPv4 and IPv6 addresses. Where a
+DNS provider manages records, direct public routes get A/AAAA records to them;
+without any, those records stay manual. Tunnel mode does not use them. See
+[managed DNS records](ingress.md#managed-dns-records).
+
+```toml
+[ingress]
+enabled = true
+public_addresses = ["203.0.113.10", "2001:db8::10"]
+```
+
 Routes cannot use the `auth.public_url` hostname or its subdomains, and the
 website's reverse proxy cannot share the gateway's ports on the same address.
 
@@ -382,7 +395,9 @@ See [ingress](ingress.md) for DNS, networking, lifecycle, and status details.
 
 `[[dns.providers]]` lists DNS provider accounts. piqueld uses them to obtain
 certificates through ACME DNS-01 for hostnames a public CA cannot reach, such as
-private routes. Credentials are accepted only as `_file` settings; relative
+private routes, and, with `manage_records = true`, to create and maintain routes'
+A/AAAA/CNAME records in their zones (see
+[managed DNS records](ingress.md#managed-dns-records)). Credentials are accepted only as `_file` settings; relative
 paths resolve against `$CREDENTIALS_DIRECTORY`. They are read once at startup and
 never enter a container. Settings show only their file paths.
 
@@ -394,6 +409,7 @@ email = "admin@example.com" # optional
 [[dns.providers]]
 kind = "cloudflare"
 api_token_file = "cloudflare-dns-token"   # Zone:Read and DNS:Edit
+manage_records = true                     # optional, off by default
 
 [[dns.providers]]
 kind = "ovh"
@@ -404,7 +420,8 @@ consumer_key_file = "ovh-consumer-key"
 ```
 
 The OVH consumer key needs `GET /domain/zone`, `GET /auth/time`, and `POST`,
-`DELETE` on `/domain/zone/*`. Zones are discovered through each provider's API at
+`DELETE` on `/domain/zone/*`; with `manage_records`, also `GET` and `PUT` on
+`/domain/zone/*`. Zones are discovered through each provider's API at
 startup and hourly, which also checks the credentials; a failed discovery is
 retried every minute. To check now, for example after changing a token's
 permissions or adding a zone, run `piquelctl dns refresh`, press **Check DNS

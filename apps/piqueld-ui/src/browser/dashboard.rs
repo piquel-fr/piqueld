@@ -352,7 +352,8 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
     }
 }
 
-/// Card for one DNS provider: its kind, discovered zones and health.
+/// Card for one DNS provider: its kind, discovered zones, health and whether
+/// it manages route records.
 fn dns_provider_card(provider: &DnsProviderStatus) -> AnyView {
     let (tone, label) = if provider.healthy {
         (Tone::Ok, "Ready")
@@ -368,7 +369,16 @@ fn dns_provider_card(provider: &DnsProviderStatus) -> AnyView {
         "DNS provider",
         tone,
         label,
-        &format!("{}: {zones}. {}", provider.kind, provider.message),
+        &format!(
+            "{}: {zones}. {}. {}",
+            provider.kind,
+            provider.message,
+            if provider.manage_records {
+                "Manages route DNS records"
+            } else {
+                "Route DNS records are manual"
+            }
+        ),
     )
 }
 

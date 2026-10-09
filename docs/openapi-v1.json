@@ -2438,6 +2438,10 @@
             "description": "Provider kind, such as `cloudflare` or `ovh`.",
             "type": "string"
           },
+          "manage_records": {
+            "description": "piqueld manages routes' DNS records in this provider's zones.",
+            "type": "boolean"
+          },
           "message": {
             "description": "Safe diagnostic: the discovery error or the conflicting zones.",
             "type": "string"
@@ -2458,12 +2462,29 @@
         ],
         "type": "object"
       },
+      "DnsRecordState": {
+        "description": "Who keeps a route's DNS records current.",
+        "enum": [
+          "manual",
+          "managed",
+          "pending",
+          "dns_conflict"
+        ],
+        "type": "string"
+      },
       "DnsRecords": {
-        "description": "The records a route's hostname needs. piqueld does not create them;\noperators copy them to their DNS provider.",
+        "description": "The records a route's hostname needs. piqueld creates them where its DNS\nprovider manages records (see [`DnsRecordState`]); otherwise operators\ncopy them to their DNS provider.",
         "oneOf": [
           {
             "description": "Public routes: A/AAAA records to this server's public addresses.",
             "properties": {
+              "addresses": {
+                "description": "`[ingress] public_addresses`; empty when not configured.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "type": {
                 "enum": [
                   "server_addresses"
@@ -7993,6 +8014,10 @@
               "dns": {
                 "$ref": "#/components/schemas/DnsRecords",
                 "description": "The records the hostname needs."
+              },
+              "dns_state": {
+                "$ref": "#/components/schemas/DnsRecordState",
+                "description": "Whether piqueld manages those records."
               },
               "environment_id": {
                 "description": "Owning environment identity.",

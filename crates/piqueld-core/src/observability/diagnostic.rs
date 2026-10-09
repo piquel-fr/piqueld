@@ -98,11 +98,15 @@ diagnostic_codes! {
     IngressUnavailable => "ingress_unavailable",
     /// A DNS-01 certificate could not be issued or renewed.
     CertificateRenewalFailed => "certificate_renewal_failed",
+    /// A route's DNS records could not be written or deleted.
+    DnsRecordsFailed => "dns_records_failed",
 }
 
 /// Default guidance for failures that need operator investigation.
 const INSPECT_DIAGNOSTIC: &str =
     "Inspect the diagnostic and related events; resolve the cause before retrying.";
+/// Guidance for failed route DNS record changes.
+const DNS_RECORDS_RETRY: &str = "Check DNS provider credentials, permissions and route DNS states. Records are reconciled again within minutes.";
 /// Guidance for transient failures that reconciliation retries on its own.
 const AUTOMATIC_RETRY: &str =
     "Reconciliation will retry. Inspect the affected resource if the failure persists.";
@@ -131,6 +135,7 @@ impl DiagnosticCode {
                 true,
                 "Check DNS provider credentials, zones and certificate status. Renewal retries with backoff.",
             ),
+            Self::DnsRecordsFailed => (Daemon, true, DNS_RECORDS_RETRY),
             Self::JournalUnavailable | Self::StorageUnavailable => (
                 Daemon,
                 true,
@@ -259,6 +264,7 @@ mod tests {
             DiagnosticCode::ApplicationCompilationFailed,
             DiagnosticCode::IngressUnavailable,
             DiagnosticCode::CertificateRenewalFailed,
+            DiagnosticCode::DnsRecordsFailed,
         ] {
             let diagnostic = Diagnostic::new("occurrence".into(), code, "failure".into());
             assert_eq!(diagnostic.scope, EventScope::Daemon, "{code:?}");
@@ -278,6 +284,7 @@ mod tests {
             (DiagnosticCode::PreparationTimeout, true),
             (DiagnosticCode::IngressUnavailable, true),
             (DiagnosticCode::CertificateRenewalFailed, true),
+            (DiagnosticCode::DnsRecordsFailed, true),
             (DiagnosticCode::HostnameConflict, false),
             (DiagnosticCode::ImageResolutionRejected, false),
             (DiagnosticCode::OwnershipConflict, false),

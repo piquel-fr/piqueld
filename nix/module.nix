@@ -154,6 +154,15 @@ in
             default = false;
             description = "Manage a Caddy gateway on ports 80/443. Requires Docker 28+. Restart piqueld to apply; disabling stops public routing but retains route configuration and certificates.";
           };
+          ingress.public_addresses = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            example = [
+              "203.0.113.10"
+              "2001:db8::10"
+            ];
+            description = "This server's public IPv4 and IPv6 addresses. Where a DNS provider sets manage_records, direct public routes get A/AAAA records to them; without any, those records stay manual. Unused in tunnel mode.";
+          };
           ingress.acme.directory = lib.mkOption {
             type = lib.types.strMatching "https://.+";
             default = "https://acme-v02.api.letsencrypt.org/directory";
@@ -228,11 +237,16 @@ in
                     application_key_file = file "OVH: host file with the application key";
                     application_secret_file = file "OVH: host file with the application secret";
                     consumer_key_file = file "OVH: host file with the consumer key";
+                    manage_records = lib.mkOption {
+                      type = lib.types.bool;
+                      default = false;
+                      description = "Create, update and delete routes' A/AAAA/CNAME records in this provider's zones. Off by default, so its zones stay manual.";
+                    };
                   };
               }
             );
             default = [ ];
-            description = "DNS provider accounts piqueld uses for DNS-01 certificates. Cloudflare needs api_token_file; OVH needs endpoint and the three OVH files.";
+            description = "DNS provider accounts piqueld uses for DNS-01 certificates and, with manage_records, routes' DNS records. Cloudflare needs api_token_file; OVH needs endpoint and the three OVH files.";
           };
           reconciliation.scan_interval_seconds = lib.mkOption {
             type = lib.types.ints.between 1 86400;

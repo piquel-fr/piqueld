@@ -106,7 +106,8 @@ services.piqueld.settings.tailscale = {
 `server.allowed_hosts`, `auth.public_url`, `auth.max_token_days`, `tailscale.enabled`,
 `tailscale.hostname`, `tailscale.auth_key_file`, `tailscale.https_port`,
 `tailscale.socket`, `docker.socket`,
-`docker.auto_initialize_swarm`, `ingress.enabled`, `ingress.acme.directory`,
+`docker.auto_initialize_swarm`, `ingress.enabled`, `ingress.public_addresses`,
+`ingress.acme.directory`,
 `ingress.acme.email`, `ingress.private.enabled`, `ingress.private.hostname`,
 `ingress.private.auth_key_file` (passed as a systemd credential, like the other
 `_file` settings), `ingress.tunnel.enabled`, `ingress.tunnel.credentials_file`
@@ -142,6 +143,7 @@ services.piqueld.settings = {
     {
       kind = "cloudflare";
       api_token_file = config.age.secrets.cloudflare-dns-token.path;
+      manage_records = true; # optional: maintain routes' DNS records
     }
     {
       kind = "ovh";

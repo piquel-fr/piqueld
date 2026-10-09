@@ -1,5 +1,5 @@
 //! Cloudflare API v4 with a bearer token scoped to Zone:Read and DNS:Edit.
-use super::{ApiError, RecordId, Zone, send};
+use super::{ApiError, Found, Record, RecordId, Zone, send};
 use crate::config::{Credential, CredentialError, CredentialFile};
 use piqueld_core::manifest::Hostname;
 use serde::Deserialize;
@@ -62,6 +62,17 @@ struct Object {
     name: String,
 }
 
+/// A DNS record as listed.
+#[derive(Deserialize)]
+struct ListedRecord {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    content: String,
+    #[serde(default)]
+    proxied: bool,
+}
+
 impl Cloudflare {
     /// The token file, as shown by read-only settings.
     #[must_use]
@@ -77,19 +88,18 @@ impl Cloudflare {
         send(request.bearer_auth(self.api_token.expose())).await
     }
 
-    /// Lists zones 50 per page. Names that are not public hostnames are skipped.
-    pub(super) async fn zones(&self, http: &reqwest::Client) -> Result<Vec<Zone>, ApiError> {
-        let mut zones = Vec::new();
+    /// Follows every page of a list endpoint; `path` ends with its query.
+    async fn list<T: serde::de::DeserializeOwned>(
+        &self,
+        http: &reqwest::Client,
+        path: &str,
+    ) -> Result<Vec<T>, ApiError> {
+        let mut items = Vec::new();
         for page in 1.. {
-            let response: Envelope<Vec<Object>> = self
-                .call(http.get(format!("{}/zones?per_page=50&page={page}", self.api)))
+            let response: Envelope<Vec<T>> = self
+                .call(http.get(format!("{}{path}&page={page}", self.api)))
                 .await?;
-            zones.extend(response.result.into_iter().filter_map(|zone| {
-                Some(Zone {
-                    name: Hostname::parse(&zone.name).ok()?,
-                    id: zone.id,
-                })
-            }));
+            items.extend(response.result);
             if response
                 .result_info
                 .is_none_or(|info| info.page >= info.total_pages)
@@ -97,24 +107,78 @@ impl Cloudflare {
                 break;
             }
         }
-        Ok(zones)
+        Ok(items)
     }
 
-    /// Creates a TXT record with a 60s TTL. Content is quoted, as Cloudflare
-    /// expects for TXT records.
-    pub(super) async fn create_txt(
+    /// Lists zones 50 per page. Names that are not public hostnames are skipped.
+    pub(super) async fn zones(&self, http: &reqwest::Client) -> Result<Vec<Zone>, ApiError> {
+        let zones: Vec<Object> = self.list(http, "/zones?per_page=50").await?;
+        Ok(zones
+            .into_iter()
+            .filter_map(|zone| {
+                Some(Zone {
+                    name: Hostname::parse(&zone.name).ok()?,
+                    id: zone.id,
+                })
+            })
+            .collect())
+    }
+
+    /// Lists the records named exactly `name`, 100 per page.
+    pub(super) async fn records(
         &self,
         http: &reqwest::Client,
         zone: &Zone,
         name: &str,
-        value: &str,
-    ) -> Result<RecordId, ApiError> {
-        let response: Envelope<Object> = self
-            .call(
-                http.post(format!("{}/zones/{}/dns_records", self.api, zone.id))
-                    .json(&json!({"type":"TXT","name":name,"content":format!("\"{value}\""),"ttl":60})),
+    ) -> Result<Vec<Found>, ApiError> {
+        let listed: Vec<ListedRecord> = self
+            .list(
+                http,
+                &format!(
+                    "/zones/{}/dns_records?name.exact={name}&per_page=100",
+                    zone.id
+                ),
             )
             .await?;
+        let mut found = Vec::new();
+        for record in listed {
+            if let Some(parsed) = Record::parse(&record.kind, &record.content, record.proxied)? {
+                found.push(Found {
+                    id: RecordId(record.id),
+                    record: parsed,
+                });
+            }
+        }
+        Ok(found)
+    }
+
+    /// Creates a record, or replaces record `id`. TXT content is quoted, as
+    /// Cloudflare expects, and proxied records use its automatic TTL.
+    pub(super) async fn upsert(
+        &self,
+        http: &reqwest::Client,
+        zone: &Zone,
+        name: &str,
+        id: Option<&RecordId>,
+        record: &Record,
+    ) -> Result<RecordId, ApiError> {
+        let body = match record {
+            Record::Txt(text) => {
+                json!({"type":"TXT","name":name,"content":format!("\"{text}\""),"ttl":record.ttl()})
+            }
+            Record::Cname { proxied: true, .. } => {
+                json!({"type":"CNAME","name":name,"content":record.content(),"ttl":1,"proxied":true})
+            }
+            _ => {
+                json!({"type":record.kind(),"name":name,"content":record.content(),"ttl":record.ttl(),"proxied":false})
+            }
+        };
+        let records = format!("{}/zones/{}/dns_records", self.api, zone.id);
+        let request = match id {
+            Some(id) => http.put(format!("{records}/{}", id.0)),
+            None => http.post(records),
+        };
+        let response: Envelope<Object> = self.call(request.json(&body)).await?;
         Ok(RecordId(response.result.id))
     }
 
@@ -170,7 +234,13 @@ mod tests {
             [("piquel.fr", "z1"), ("example.com", "z3")]
         );
         let id = provider
-            .create_txt(&http, &zones[0], "_acme-challenge.piquel.fr", "v")
+            .upsert(
+                &http,
+                &zones[0],
+                "_acme-challenge.piquel.fr",
+                None,
+                &Record::Txt("v".into()),
+            )
             .await
             .unwrap();
         assert_eq!(id, RecordId("r1".into()));
@@ -188,6 +258,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn records_follow_pages_and_upserts_create_or_replace() {
+        const LIST: &str = "/zones/z1/dns_records?name.exact=www.piquel.fr&per_page=100";
+        let recorded = Recorded::serve(vec![
+            (Method::GET, "/zones/z1/dns_records?name.exact=www.piquel.fr&per_page=100&page=1", 200,
+                r#"{"success":true,"errors":[],"result":[{"id":"r1","type":"A","name":"www.piquel.fr","content":"192.0.2.1","proxied":false},{"id":"r2","type":"MX","name":"www.piquel.fr","content":"mail.piquel.fr"}],"result_info":{"page":1,"per_page":100,"total_pages":2}}"#),
+            (Method::GET, "/zones/z1/dns_records?name.exact=www.piquel.fr&per_page=100&page=2", 200,
+                r#"{"success":true,"errors":[],"result":[{"id":"r3","type":"CNAME","name":"www.piquel.fr","content":"t.cfargotunnel.com","proxied":true},{"id":"r4","type":"TXT","name":"www.piquel.fr","content":"\"v=spf1 -all\""}],"result_info":{"page":2,"per_page":100,"total_pages":2}}"#),
+            (Method::PUT, "/zones/z1/dns_records/r1", 200,
+                r#"{"success":true,"errors":[],"result":{"id":"r1"}}"#),
+            (Method::POST, "/zones/z1/dns_records", 200,
+                r#"{"success":true,"errors":[],"result":{"id":"r5"}}"#),
+        ]).await;
+        let provider = provider(recorded.url.clone());
+        let http = reqwest::Client::new();
+        let zone = Zone {
+            name: Hostname::parse("piquel.fr").unwrap(),
+            id: "z1".into(),
+        };
+        let found = provider
+            .records(&http, &zone, "www.piquel.fr")
+            .await
+            .unwrap();
+        let tunnel = Hostname::parse("t.cfargotunnel.com").unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|f| (f.id.0.as_str(), f.record.clone()))
+                .collect::<Vec<_>>(),
+            [
+                ("r1", Record::A("192.0.2.1".parse().unwrap())),
+                (
+                    "r3",
+                    Record::Cname {
+                        target: tunnel.clone(),
+                        proxied: true
+                    }
+                ),
+                ("r4", Record::Txt("v=spf1 -all".into())),
+            ]
+        );
+        let replaced = provider
+            .upsert(
+                &http,
+                &zone,
+                "www.piquel.fr",
+                Some(&found[0].id),
+                &Record::Aaaa("2001:db8::1".parse().unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replaced, RecordId("r1".into()));
+        let created = provider
+            .upsert(
+                &http,
+                &zone,
+                "www.piquel.fr",
+                None,
+                &Record::Cname {
+                    target: tunnel,
+                    proxied: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(created, RecordId("r5".into()));
+        let requests = recorded.requests().await;
+        assert!(requests[0].path.starts_with(LIST));
+        assert_eq!(
+            requests[2].body,
+            json!({"type":"AAAA","name":"www.piquel.fr","content":"2001:db8::1","ttl":300,"proxied":false})
+        );
+        // Proxied records use Cloudflare's automatic TTL.
+        assert_eq!(
+            requests[3].body,
+            json!({"type":"CNAME","name":"www.piquel.fr","content":"t.cfargotunnel.com","ttl":1,"proxied":true})
+        );
+    }
+
+    #[tokio::test]
     async fn discovery_is_reused_for_an_hour_unless_forced_or_failed() {
         const ZONES: &str = "/zones?per_page=50&page=1";
         let working = Recorded::serve(vec![(
@@ -198,7 +347,7 @@ mod tests {
         )])
         .await;
         let failing = Recorded::serve(vec![(Method::GET, ZONES, 500, "{}")]).await;
-        let mut dns = crate::dns::Dns::new(vec![provider(working.url.clone())]).unwrap();
+        let mut dns = crate::dns::Dns::new(vec![provider(working.url.clone()).into()]).unwrap();
         dns.refresh().await;
         dns.refresh().await;
         assert_eq!(working.requests().await.len(), 1);
@@ -206,14 +355,14 @@ mod tests {
         assert_eq!(working.requests().await.len(), 1);
         // A failed forced discovery keeps the zones, and the next hourly
         // refresh retries at once instead of trusting the earlier success.
-        dns.providers[0] = provider(failing.url.clone());
+        dns.providers[0] = provider(failing.url.clone()).into();
         dns.discover().await;
         let status = &dns.status().await[0];
         assert!(
             !status.healthy && status.zones == ["piquel.fr"],
             "{status:?}"
         );
-        dns.providers[0] = provider(working.url.clone());
+        dns.providers[0] = provider(working.url.clone()).into();
         dns.refresh().await;
         assert_eq!(working.requests().await.len(), 1);
         assert!(dns.status().await[0].healthy);
@@ -228,17 +377,18 @@ mod tests {
             id: "z1".into(),
         };
         let error = provider(recorded.url.clone())
-            .create_txt(
+            .upsert(
                 &reqwest::Client::new(),
                 &zone,
                 "_acme-challenge.piquel.fr",
-                "v",
+                None,
+                &Record::Txt("v".into()),
             )
             .await
             .unwrap_err();
         let message = format!("{:#}", anyhow::Error::from(error));
         assert!(
-            message.starts_with("cloudflare create TXT record in zone piquel.fr: HTTP 403"),
+            message.starts_with("cloudflare write record in zone piquel.fr: HTTP 403"),
             "{message}"
         );
         assert!(message.contains("Authentication error"), "{message}");

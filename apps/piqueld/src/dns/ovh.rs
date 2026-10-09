@@ -6,7 +6,7 @@
 //! ```text
 //! X-Ovh-Signature: "$1$" + hex(sha1(secret + "+" + consumer + "+" + METHOD + "+" + url + "+" + body + "+" + time))
 //! ```
-use super::{ApiError, RecordId, Zone, send};
+use super::{ApiError, Found, Record, RecordId, Zone, send};
 use crate::config::{Credential, CredentialError, CredentialFile};
 use piqueld_core::manifest::Hostname;
 use reqwest::Method;
@@ -99,10 +99,17 @@ impl TryFrom<RawOvh> for Ovh {
     }
 }
 
-/// A created record.
+/// A record as OVH describes it.
 #[derive(Deserialize)]
-struct Record {
+#[serde(rename_all = "camelCase")]
+struct OvhRecord {
     id: u64,
+    #[serde(default)]
+    field_type: String,
+    #[serde(default)]
+    sub_domain: String,
+    #[serde(default)]
+    target: String,
 }
 
 impl Ovh {
@@ -177,27 +184,88 @@ impl Ovh {
             .collect())
     }
 
-    /// Creates a TXT record with a 60s TTL, published by [`Self::refresh`].
+    /// Lists the records named exactly `name`: their IDs, then each record.
     /// OVH names records relative to their zone; the apex is the empty name.
-    pub(super) async fn create_txt(
+    pub(super) async fn records(
         &self,
         http: &reqwest::Client,
         zone: &Zone,
         name: &str,
-        value: &str,
+    ) -> Result<Vec<Found>, ApiError> {
+        let subdomain = zone.relative(name);
+        let ids: Vec<u64> = self
+            .call(
+                http,
+                Method::GET,
+                &format!("/domain/zone/{}/record?subDomain={subdomain}", zone.id),
+                None,
+            )
+            .await?;
+        let mut found = Vec::new();
+        for id in ids {
+            let record: OvhRecord = self
+                .call(
+                    http,
+                    Method::GET,
+                    &format!("/domain/zone/{}/record/{id}", zone.id),
+                    None,
+                )
+                .await?;
+            // An empty `subDomain` filter may match every record of the zone.
+            if record.sub_domain != subdomain {
+                continue;
+            }
+            if let Some(parsed) = Record::parse(&record.field_type, &record.target, false)? {
+                found.push(Found {
+                    id: RecordId(record.id.to_string()),
+                    record: parsed,
+                });
+            }
+        }
+        Ok(found)
+    }
+
+    /// Creates a record, or replaces record `id` of the same type, published
+    /// by [`Self::refresh`]. CNAME targets get a trailing dot, so OVH does not
+    /// read them as relative to the zone. OVH cannot proxy records.
+    pub(super) async fn upsert(
+        &self,
+        http: &reqwest::Client,
+        zone: &Zone,
+        name: &str,
+        id: Option<&RecordId>,
+        record: &Record,
     ) -> Result<RecordId, ApiError> {
-        let subdomain = name
-            .strip_suffix(zone.name.as_str())
-            .map_or(name, |prefix| prefix.trim_end_matches('.'));
-        let record: Record = self
+        let target = match record {
+            Record::Cname { proxied: true, .. } => {
+                return Err(ApiError::Unsupported(
+                    "OVH cannot proxy records; a proxied CNAME needs a Cloudflare zone",
+                ));
+            }
+            Record::Cname { target, .. } => format!("{target}."),
+            record => record.content(),
+        };
+        let subdomain = zone.relative(name);
+        let records = format!("/domain/zone/{}/record", zone.id);
+        if let Some(id) = id {
+            self.call::<Value>(
+                http,
+                Method::PUT,
+                &format!("{records}/{}", id.0),
+                Some(&json!({"subDomain":subdomain,"target":target,"ttl":record.ttl()})),
+            )
+            .await?;
+            return Ok(id.clone());
+        }
+        let created: OvhRecord = self
             .call(
                 http,
                 Method::POST,
-                &format!("/domain/zone/{}/record", zone.id),
-                Some(&json!({"fieldType":"TXT","subDomain":subdomain,"target":value,"ttl":60})),
+                &records,
+                Some(&json!({"fieldType":record.kind(),"subDomain":subdomain,"target":target,"ttl":record.ttl()})),
             )
             .await?;
-        Ok(RecordId(record.id.to_string()))
+        Ok(RecordId(created.id.to_string()))
     }
 
     /// Deletes a record by its ID, published by [`Self::refresh`].
@@ -248,6 +316,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn records_are_listed_by_name_and_cnames_are_absolute() {
+        let recorded = Recorded::serve(vec![
+            (Method::GET, "/auth/time", 200, "1700000000"),
+            (Method::GET, "/domain/zone/piquel.fr/record?subDomain=www", 200, "[1,2,3]"),
+            (Method::GET, "/domain/zone/piquel.fr/record/1", 200,
+                r#"{"id":1,"zone":"piquel.fr","fieldType":"CNAME","subDomain":"www","target":"web.example.com.","ttl":300}"#),
+            (Method::GET, "/domain/zone/piquel.fr/record/2", 200,
+                r#"{"id":2,"zone":"piquel.fr","fieldType":"TXT","subDomain":"www","target":"\"owner\"","ttl":60}"#),
+            // Another name, as an empty filter returns for the apex.
+            (Method::GET, "/domain/zone/piquel.fr/record/3", 200,
+                r#"{"id":3,"zone":"piquel.fr","fieldType":"A","subDomain":"api","target":"192.0.2.1","ttl":300}"#),
+            (Method::PUT, "/domain/zone/piquel.fr/record/1", 200, "null"),
+            (Method::POST, "/domain/zone/piquel.fr/record", 200,
+                r#"{"id":4,"zone":"piquel.fr","fieldType":"A","subDomain":"www","target":"192.0.2.9","ttl":300}"#),
+        ]).await;
+        let provider = DnsProvider::Ovh(ovh(recorded.url.clone()));
+        let http = reqwest::Client::new();
+        let zone = Zone {
+            name: Hostname::parse("piquel.fr").unwrap(),
+            id: "piquel.fr".into(),
+        };
+        let found = provider
+            .records(&http, &zone, "www.piquel.fr")
+            .await
+            .unwrap();
+        let target = Hostname::parse("web2.example.com").unwrap();
+        assert_eq!(
+            found.iter().map(|f| f.record.clone()).collect::<Vec<_>>(),
+            [
+                Record::Cname {
+                    target: Hostname::parse("web.example.com").unwrap(),
+                    proxied: false
+                },
+                Record::Txt("owner".into()),
+            ]
+        );
+        let cname = Record::Cname {
+            target: target.clone(),
+            proxied: false,
+        };
+        provider
+            .upsert(&http, &zone, "www.piquel.fr", Some(&found[0].id), &cname)
+            .await
+            .unwrap();
+        let id = provider
+            .upsert(
+                &http,
+                &zone,
+                "www.piquel.fr",
+                None,
+                &Record::A("192.0.2.9".parse().unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(id, RecordId("4".into()));
+        // OVH cannot proxy, so nothing is sent.
+        let error = provider
+            .upsert(
+                &http,
+                &zone,
+                "www.piquel.fr",
+                None,
+                &Record::Cname {
+                    target,
+                    proxied: true,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(format!("{:#}", anyhow::Error::from(error)).contains("OVH cannot proxy"));
+        let signed: Vec<_> = recorded
+            .requests()
+            .await
+            .into_iter()
+            .filter(|r| r.path != "/auth/time")
+            .collect();
+        assert_eq!(signed.len(), 6);
+        assert_eq!(
+            signed[4].body,
+            json!({"subDomain":"www","target":"web2.example.com.","ttl":300})
+        );
+        assert_eq!(
+            signed[5].body,
+            json!({"fieldType":"A","subDomain":"www","target":"192.0.2.9","ttl":300})
+        );
+    }
+
+    #[tokio::test]
     async fn records_are_relative_to_their_zone_and_published_by_refresh() {
         let recorded = Recorded::serve(vec![
             (Method::GET, "/auth/time", 200, "1700000000"),
@@ -264,7 +420,13 @@ mod tests {
         let zones = provider.zones(&http).await.unwrap();
         assert_eq!(zones.len(), 1);
         let id = provider
-            .create_txt(&http, &zones[0], "_acme-challenge.staging.piquel.fr", "v")
+            .upsert(
+                &http,
+                &zones[0],
+                "_acme-challenge.staging.piquel.fr",
+                None,
+                &Record::Txt("v".into()),
+            )
             .await
             .unwrap();
         assert_eq!(id, RecordId("5170142".into()));

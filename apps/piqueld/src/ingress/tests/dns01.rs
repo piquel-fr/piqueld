@@ -5,7 +5,7 @@
 use super::Scenario;
 use crate::{
     config::AcmeConfig,
-    dns::{Dns, DnsProvider, challtestsrv::Challtestsrv},
+    dns::{Dns, DnsProvider, Record, challtestsrv::Challtestsrv},
     ingress::{
         Ingress,
         certificates::{CertificateName, Certificates, Challenge},
@@ -151,10 +151,13 @@ impl Scenario {
 
     /// A second manager of this scenario's gateway, issuing from Pebble.
     fn pebble_ingress(&self, root: &std::path::Path) -> Ingress {
-        let mut dns = Dns::new(vec![DnsProvider::Challtestsrv(Challtestsrv {
-            management: format!("http://127.0.0.1:{}", port("PIQUELD_CHALLTESTSRV_API_PORT")),
-            zones: hosts(&["example.test"]).into_iter().collect(),
-        })])
+        let mut dns = Dns::new(vec![
+            DnsProvider::Challtestsrv(Challtestsrv {
+                management: format!("http://127.0.0.1:{}", port("PIQUELD_CHALLTESTSRV_API_PORT")),
+                zones: hosts(&["example.test"]).into_iter().collect(),
+            })
+            .into(),
+        ])
         .unwrap();
         // One nameserver whose first address refuses connections, like an
         // IPv6 address on an IPv4-only host: its second address answers.
@@ -633,11 +636,12 @@ impl Scenario {
         let (provider, zone) = dns.zone_for(&hostname).await.unwrap();
         let id = dns
             .provider(provider)
-            .create_txt(
+            .upsert(
                 dns.http(),
                 &zone,
                 "_acme-challenge.leftover.example.test",
-                "stale",
+                None,
+                &Record::Txt("stale".into()),
             )
             .await
             .unwrap();

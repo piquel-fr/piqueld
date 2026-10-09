@@ -6,6 +6,7 @@ mod certificates;
 mod configuration;
 mod gateway;
 mod node;
+mod records;
 mod tunnel;
 mod wire;
 
@@ -81,6 +82,11 @@ pub struct Ingress {
     /// The Cloudflare Tunnel serving public routes instead of ports 80/443,
     /// while `[ingress.tunnel]` is enabled.
     tunnel: Option<TunnelCredentials>,
+    /// `[ingress] public_addresses`, which direct public routes' managed
+    /// A/AAAA records point at.
+    public_addresses: Vec<IpAddr>,
+    /// Each route hostname's DNS record state from the latest pass.
+    records: std::sync::RwLock<BTreeMap<Hostname, records::RouteDns>>,
     /// Set once Swarm's address pools are verified outside the tailnet ranges.
     tailnet_pools: tokio::sync::OnceCell<()>,
     #[cfg(test)]
@@ -143,6 +149,8 @@ impl Ingress {
             certificates,
             node: None,
             tunnel: None,
+            public_addresses: Vec::new(),
+            records: std::sync::RwLock::default(),
             tailnet_pools: tokio::sync::OnceCell::new(),
             #[cfg(test)]
             issuer: None,
@@ -167,7 +175,15 @@ impl Ingress {
         )?
         .with_dns(&config.dns, &config.ingress.acme)?
         .with_private(&config.ingress.private)
-        .with_tunnel(&config.ingress.tunnel))
+        .with_tunnel(&config.ingress.tunnel)
+        .with_public_addresses(&config.ingress.public_addresses))
+    }
+
+    /// Points direct public routes' managed A/AAAA records at `addresses`.
+    #[must_use]
+    pub fn with_public_addresses(mut self, addresses: &[IpAddr]) -> Self {
+        self.public_addresses = addresses.to_vec();
+        self
     }
 
     /// Serves private routes through the apps tailnet node when
@@ -195,7 +211,8 @@ impl Ingress {
             .no_proxy()
     }
 
-    /// Configures DNS providers and the ACME account for DNS-01 certificates.
+    /// Configures DNS providers, for DNS-01 certificates and route records,
+    /// and the ACME account.
     ///
     /// # Errors
     /// Returns HTTP client initialization failures.
@@ -249,12 +266,14 @@ impl Ingress {
         self.synchronize_for(Some(id)).await
     }
 
-    /// Repairs lifecycle/configuration and probes public HTTPS independently of deployments.
+    /// Repairs lifecycle/configuration, probes public HTTPS, and maintains
+    /// certificates and DNS records, independently of deployments.
     pub async fn run(&self, cancellation: CancellationToken) {
         tokio::join!(
             self.run_gateway(&cancellation),
             self.run_probes(&cancellation),
-            self.run_certificates(&cancellation)
+            self.run_certificates(&cancellation),
+            self.run_records(&cancellation)
         );
     }
 
@@ -529,13 +548,25 @@ impl Ingress {
         let private = &private;
         let mut probes = stream::iter(routes)
             .map(|(id, route)| async move {
-                let (state, message) = self.route_state(&id, &route, healthy, private).await;
+                let (state, mut message) = self.route_state(&id, &route, healthy, private).await;
+                let dns = self.route_dns(&route.hostname);
+                // Until the route is ready, a DNS conflict or failure explains it.
+                if let Some(problem) = dns.message.filter(|_| state != "ready") {
+                    message = format!("DNS records ({}): {problem}", dns.state);
+                }
                 RouteStatus {
                     environment_id: id.to_string(),
                     hostname: route.hostname.to_string(),
                     visibility: route.visibility,
+                    dns_state: dns.state,
                     dns: match (route.visibility, &self.tunnel) {
-                        (Visibility::Public, None) => DnsRecords::ServerAddresses,
+                        (Visibility::Public, None) => DnsRecords::ServerAddresses {
+                            addresses: self
+                                .public_addresses
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect(),
+                        },
                         (Visibility::Public, Some(tunnel)) => DnsRecords::TunnelCname {
                             target: tunnel.hostname(),
                         },

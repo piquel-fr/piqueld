@@ -314,6 +314,62 @@ impl Store {
         }
         Self::commit_environment_changes(tx, table.keys().map(EnvironmentId::as_str)).await
     }
+
+    /// The routes the gateway last acknowledged, for every environment. DNS
+    /// records follow this table, so they change only after the gateway has
+    /// applied or withdrawn a route.
+    pub(crate) async fn applied_table(&self) -> Result<RoutingTable, StoreError> {
+        sqlx::query!(
+            "SELECT environment_id,applied_json FROM environment_routes ORDER BY environment_id"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::database)?
+        .into_iter()
+        .map(|row| {
+            Ok((
+                EnvironmentId::parse(row.environment_id).map_err(StoreError::corrupt)?,
+                serde_json::from_str(&row.applied_json).map_err(StoreError::corrupt)?,
+            ))
+        })
+        .collect()
+    }
+
+    /// Hostnames whose DNS records piqueld manages, including those of
+    /// removed routes until their records are deleted.
+    pub(crate) async fn dns_records(&self) -> Result<BTreeSet<Hostname>, StoreError> {
+        sqlx::query_scalar!("SELECT hostname FROM dns_records")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(StoreError::database)?
+            .into_iter()
+            .map(|hostname| Hostname::parse(hostname).map_err(StoreError::corrupt))
+            .collect()
+    }
+
+    /// Records that piqueld manages `hostname`'s DNS records, before it writes
+    /// the first one.
+    pub(crate) async fn claim_dns_records(&self, hostname: &Hostname) -> Result<(), StoreError> {
+        let hostname = hostname.as_str();
+        sqlx::query!(
+            "INSERT INTO dns_records(hostname) VALUES(?1) ON CONFLICT DO NOTHING",
+            hostname
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        Ok(())
+    }
+
+    /// Forgets `hostname` once its DNS records are deleted.
+    pub(crate) async fn release_dns_records(&self, hostname: &Hostname) -> Result<(), StoreError> {
+        let hostname = hostname.as_str();
+        sqlx::query!("DELETE FROM dns_records WHERE hostname=?1", hostname)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::database)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -794,7 +850,10 @@ mod tests {
                 environment_id: saved.application_id.clone(),
                 hostname: hostname.into(),
                 visibility: route.visibility,
-                dns: piqueld_core::api::DnsRecords::ServerAddresses,
+                dns: piqueld_core::api::DnsRecords::ServerAddresses {
+                    addresses: Vec::new(),
+                },
+                dns_state: piqueld_core::api::DnsRecordState::Manual,
                 target: route.target.clone(),
                 state: "ready".into(),
                 message: String::new(),

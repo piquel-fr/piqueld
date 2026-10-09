@@ -15,11 +15,14 @@ use piqueld_core::{
 };
 use serde_json::json;
 
-fn application(name: &str, host: &str, body: &str) -> NormalizedApplication {
+pub(super) fn application(name: &str, host: &str, body: &str) -> NormalizedApplication {
     piqueld_core::parse_toml(&format!("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[[spec.services]]\nname='web'\ncommand=['caddy']\narguments=['respond','--listen',':8080','--body','{body}']\n[spec.services.source]\ntype='image'\nimage='{CADDY_IMAGE}'\n[[spec.routes]]\nhostname='{host}'\nvisibility='public'\nservice='web'\nport=8080")).unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap())
 }
 
-async fn request_deployment(store: &Store, app: NormalizedApplication) -> (EnvironmentId, String) {
+pub(super) async fn request_deployment(
+    store: &Store,
+    app: NormalizedApplication,
+) -> (EnvironmentId, String) {
     let (MutationResponse::Saved(saved), _) = store
         .accept(
             crate::api::Actor::Daemon,
