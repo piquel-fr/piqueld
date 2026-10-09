@@ -116,7 +116,7 @@ in
           tailscale.enabled = lib.mkOption {
             type = lib.types.bool;
             default = false;
-            description = "Join the tailnet as a dedicated node and serve the website over HTTPS on its port 443, with a tailnet-issued certificate. Requires HTTPS certificates to be enabled for the tailnet.";
+            description = "Join the tailnet as a dedicated node and serve the website over HTTPS on its https_port, with a tailnet-issued certificate. Requires HTTPS certificates to be enabled for the tailnet.";
           };
           tailscale.hostname = lib.mkOption {
             type = lib.types.strMatching "[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
@@ -128,6 +128,16 @@ in
             type = lib.types.nullOr (lib.types.strMatching "/.+");
             default = null;
             description = "Host file with a Tailscale auth key for the node's first login, such as an agenix secret, passed to piqueld as a systemd credential. Node state in dataDir makes it unnecessary afterwards.";
+          };
+          tailscale.https_port = lib.mkOption {
+            type = lib.types.ints.between 1 65535;
+            default = 443;
+            description = "Node port serving the website over HTTPS.";
+          };
+          tailscale.socket = lib.mkOption {
+            type = lib.types.nullOr (lib.types.strMatching "/.+");
+            default = null;
+            description = "Socket of a logged-in tailscaled, running as the piqueld user, to share instead of starting a dedicated one. piqueld then only adds https_port to its Serve configuration.";
           };
           docker.socket = lib.mkOption {
             type = lib.types.strMatching "/.+";
@@ -428,7 +438,7 @@ in
         pkgs.openssh
         pkgs.docker-client
       ]
-      # The tailnet node runs its own tailscaled and drives it with the CLI.
+      # The tailnet node runs its own tailscaled, unless shared, and drives it with the CLI.
       ++ lib.optional (usesTailscale || cfg.settings.tailscale.enabled) config.services.tailscale.package;
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/piqueld --config ${configuration}";
