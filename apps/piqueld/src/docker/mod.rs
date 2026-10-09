@@ -66,7 +66,7 @@ const IMAGE_RESOLVE_RETRY_DELAY: Duration = Duration::from_millis(100);
 pub struct BollardDocker {
     /// Typed Bollard client used for most Engine requests.
     docker: Arc<Docker>,
-    /// Engine socket path, reused for raw service requests and `docker build`.
+    /// Engine socket path, reused for raw service requests and `docker buildx build`.
     socket: Arc<Path>,
 }
 
