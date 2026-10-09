@@ -100,7 +100,8 @@ update and become healthy first. Other services wait for all jobs to succeed;
 dependency changes remain if a job fails. The Routes tab
 edits hostnames, each pointing at a service port or a redirect with a public or
 private visibility, and shows each deployed route's effective visibility, the DNS
-records its hostname needs, HTTPS readiness and diagnostics in every environment.
+records its hostname needs, HTTPS readiness and diagnostics in every environment
+and preview.
 Each environment's Overview sets its visibility ceiling, and system status shows
 the Cloudflare Tunnel's ID and connection state in tunnel mode, and the private listener
 with the apps tailnet node's name and addresses. Saving routes updates only the route field;
