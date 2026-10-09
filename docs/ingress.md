@@ -282,10 +282,13 @@ notes.example.com.   CNAME   6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.c
 
 ### Status
 
-System status and `piquelctl status` show the ingress mode, the tunnel ID and its
-connections to Cloudflare's edge, which piqueld reads from `cloudflared`'s `/ready`
-metrics endpoint over the edge network. While the tunnel has no connection, ingress
-is unhealthy, since public routes are unreachable. The public HTTPS probe is
+System status and `piquelctl status` show the ingress mode, the tunnel ID and
+whether it is connected to Cloudflare. A Docker healthcheck runs
+`cloudflared tunnel ready` inside the container every 10 seconds (every 2 seconds
+while it starts), which checks its `/ready` metrics endpoint; piqueld reads the
+outcome through the Docker API, so it needs no route to the container, and the
+metrics endpoint listens only on the container's loopback. While the tunnel is not
+connected, ingress is unhealthy, since public routes are unreachable. The public HTTPS probe is
 unchanged: it reaches the probe endpoint through Cloudflare, and the installation ID
 proves that the tunnel reaches this gateway.
 
@@ -403,7 +406,7 @@ readiness (`ready`) continues to describe database/Docker/Swarm; ingress has its
 `enabled`, `healthy`, `message`, `public`, `private`, and `routes` fields under system
 readiness. `healthy` covers the gateway and its public listener, including the
 tunnel's connection in tunnel mode; `public` reports the mode (`direct` or `tunnel`,
-with the tunnel ID and its edge connections); `private` reports
+with the tunnel ID and whether it is connected); `private` reports
 the private listener separately: the apps node's login state, `MagicDNS` name and
 tailnet addresses. A broken node degrades only private routes. Each route reports
 its effective `visibility` and the `dns` records its hostname needs. `routes` lists

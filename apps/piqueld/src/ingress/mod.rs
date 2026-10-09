@@ -395,8 +395,14 @@ impl Ingress {
         let private = self.private_status(gateway).await;
         let public = self.public_status().await;
         // In tunnel mode, public routes are unreachable while it is down.
-        let disconnected =
-            self.enabled && matches!(public, PublicIngressStatus::Tunnel { connections: 0, .. });
+        let disconnected = self.enabled
+            && matches!(
+                public,
+                PublicIngressStatus::Tunnel {
+                    connected: false,
+                    ..
+                }
+            );
         let healthy = result.is_ok() && failures.is_empty() && !disconnected;
         // Health transitions become history, and sustained failures notify
         // administrators, like other daemon dependencies.

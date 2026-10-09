@@ -78,14 +78,21 @@ impl Report for StatusReport<'_> {
                 PublicIngressStatus::Direct => out.label("Public ingress", "ports 80/443")?,
                 PublicIngressStatus::Tunnel {
                     id,
-                    connections,
+                    connected,
                     message,
                 } => {
                     out.label(
                         "Public ingress",
-                        format_args!("Cloudflare Tunnel {id} ({connections} edge connections)"),
+                        format_args!(
+                            "Cloudflare Tunnel {id} ({})",
+                            if *connected {
+                                "connected"
+                            } else {
+                                "not connected"
+                            }
+                        ),
                     )?;
-                    if *connections == 0 {
+                    if !connected {
                         out.label("Tunnel problem", message)?;
                     }
                 }

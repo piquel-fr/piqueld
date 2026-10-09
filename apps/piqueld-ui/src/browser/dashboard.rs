@@ -319,10 +319,10 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                                 // In tunnel mode, public routes' CNAME records point
                                 // at the tunnel ID.
                                 let tunnel_card = match &ingress.public {
-                                    PublicIngressStatus::Tunnel { id, connections, message }
+                                    PublicIngressStatus::Tunnel { id, connected, message }
                                         if ingress.enabled =>
                                     {
-                                        let (tone, label) = if *connections > 0 {
+                                        let (tone, label) = if *connected {
                                             (Tone::Ok, "Connected")
                                         } else {
                                             (Tone::Bad, "Disconnected")
@@ -331,7 +331,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                                             "Cloudflare Tunnel",
                                             tone,
                                             label,
-                                            &format!("Tunnel {id}, {connections} edge connections. {message}"),
+                                            &format!("Tunnel {id}. {message}"),
                                         ))
                                     }
                                     _ => None,

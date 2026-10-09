@@ -191,24 +191,17 @@ impl Ingress {
         if let Some(port) = self.private_port {
             return Ok(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
         }
-        Ok(std::net::SocketAddr::new(
-            self.edge_address(&self.name).await?,
-            PRIVATE_HTTPS_PORT,
-        ))
-    }
-
-    /// A managed container's address on the edge network, which the host
-    /// routes to.
-    pub(super) async fn edge_address(&self, name: &str) -> Result<std::net::IpAddr> {
         let container = self
-            .named_container(name)
+            .container()
             .await?
-            .with_context(|| format!("{name} is not running"))?;
-        container["NetworkSettings"]["Networks"][&self.name]["IPAddress"]
-            .as_str()
-            .with_context(|| format!("{name} has no edge network address"))?
-            .parse()
-            .with_context(|| format!("decode {name}'s edge network address"))
+            .context("gateway container is not running")?;
+        let address: std::net::IpAddr =
+            container["NetworkSettings"]["Networks"][&self.name]["IPAddress"]
+                .as_str()
+                .context("gateway has no edge network address")?
+                .parse()
+                .context("decode the gateway's edge network address")?;
+        Ok(std::net::SocketAddr::new(address, PRIVATE_HTTPS_PORT))
     }
 
     /// Ensures the gateway's own non-internal bridge network (named like the

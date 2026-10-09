@@ -6746,11 +6746,9 @@
           {
             "description": "`cloudflared` connects out to Cloudflare, which terminates TLS and\nforwards to the gateway. No inbound port is open.",
             "properties": {
-              "connections": {
-                "description": "Connections to Cloudflare's edge, from `cloudflared`'s `/ready`;\nzero while the tunnel is disconnected.",
-                "format": "int32",
-                "minimum": 0,
-                "type": "integer"
+              "connected": {
+                "description": "`cloudflared` holds a connection to Cloudflare's edge, from its\nhealthcheck of `/ready`.",
+                "type": "boolean"
               },
               "id": {
                 "description": "Tunnel ID from its credentials file.",
@@ -6769,7 +6767,7 @@
             },
             "required": [
               "id",
-              "connections",
+              "connected",
               "message",
               "mode"
             ],

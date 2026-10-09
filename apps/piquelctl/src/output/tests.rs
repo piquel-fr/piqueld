@@ -363,7 +363,7 @@ fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
         message: "Caddy is running".into(),
         public: piqueld_client::system::PublicIngressStatus::Tunnel {
             id: "6ff42ae2-765d-4adf-8112-31c55c1551ef".into(),
-            connections: 0,
+            connected: false,
             message: "cloudflared is not connected to Cloudflare".into(),
         },
         private: piqueld_client::system::PrivateIngressStatus {
@@ -395,7 +395,7 @@ fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
         "*.piquel.fr for admin.piquel.fr (expires at Unix ms 1)",
         "ovh create TXT record in zone piquel.fr: HTTP 403",
         "Public listener: healthy: Caddy is running",
-        "Public ingress: Cloudflare Tunnel 6ff42ae2-765d-4adf-8112-31c55c1551ef (0 edge connections)",
+        "Public ingress: Cloudflare Tunnel 6ff42ae2-765d-4adf-8112-31c55c1551ef (not connected)",
         "Tunnel problem: cloudflared is not connected to Cloudflare",
         "Private listener: apps node not joined (NeedsLogin, no tailnet addresses)",
         "Private listener problem: The apps node needs login",

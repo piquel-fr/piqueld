@@ -7,7 +7,7 @@ use crate::{
     ingress::Ingress,
     store::Store,
 };
-use piqueld_core::{EnvironmentId, manifest::Visibility};
+use piqueld_core::{EnvironmentId, api::PublicIngressStatus, manifest::Visibility};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -47,7 +47,8 @@ async fn cloudflared_forwards_everything_to_the_tunnel_listener_without_privileg
         json!({
             "tunnel":ID,
             "credentials-file":"/etc/cloudflared/credentials.json",
-            "metrics":"0.0.0.0:2000",
+            // Only the healthcheck, inside the container, reads it.
+            "metrics":"127.0.0.1:2000",
             "ingress":[{"service":format!("http://{gateway}:8080")}]
         })
     );
@@ -64,6 +65,17 @@ async fn cloudflared_forwards_everything_to_the_tunnel_listener_without_privileg
     assert_eq!(host["ReadonlyRootfs"], true);
     assert_eq!(host["RestartPolicy"]["Name"], "unless-stopped");
     assert!(host.get("PortBindings").is_none());
+    assert_eq!(
+        spec["Healthcheck"]["Test"],
+        json!([
+            "CMD",
+            "cloudflared",
+            "tunnel",
+            "--metrics",
+            "127.0.0.1:2000",
+            "ready"
+        ])
+    );
     assert_eq!(
         host["Binds"],
         json!([format!(
@@ -169,6 +181,44 @@ async fn the_tunnel_listener_serves_only_public_routes_to_edge_peers() {
         })
         .unwrap();
     assert!(private.get("headers").is_none());
+}
+
+/// The tunnel status reported while Docker inspects `cloudflared` as `state`.
+async fn tunnel_status(state: Value) -> PublicIngressStatus {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("docker.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+    let container = json!({
+        "Config":{"Labels":{
+            "io.piqueld.managed":"true","io.piqueld.instance":store.instance_id(),"io.piqueld.ingress":"true"
+        }},
+        "State":state
+    });
+    let engine = axum::Router::new().fallback(move || async move { axum::Json(container) });
+    let server = tokio::spawn(async move { axum::serve(listener, engine).await });
+    let ingress = Ingress::new(true, &socket, directory.path(), store)
+        .unwrap()
+        .with_tunnel(&tunnel("c2VjcmV0"));
+    let status = ingress.public_status().await;
+    server.abort();
+    status
+}
+
+#[tokio::test]
+async fn the_tunnel_is_connected_only_while_its_healthcheck_passes() {
+    let connected =
+        |status| matches!(status, PublicIngressStatus::Tunnel { connected, .. } if connected);
+    let running = |health: &str| json!({"Running":true,"Health":{"Status":health}});
+    assert!(connected(tunnel_status(running("healthy")).await));
+    for state in [
+        running("starting"),
+        running("unhealthy"),
+        // A stopped container keeps its last health status.
+        json!({"Running":false,"Health":{"Status":"healthy"}}),
+    ] {
+        assert!(!connected(tunnel_status(state.clone()).await), "{state}");
+    }
 }
 
 /// Whether `ingress` may replace a running direct-mode gateway while an

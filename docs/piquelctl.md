@@ -263,7 +263,7 @@ remove routing. `route list` shows each deployed route with its environment,
 effective visibility, state, destination and the DNS records its hostname needs,
 followed by the cause while it is not ready. `piquelctl status` also shows the
 public and private listeners: the ingress mode (ports 80/443, or the Cloudflare
-Tunnel's ID and edge connections), and the apps node's name, state and tailnet
+Tunnel's ID and whether it is connected), and the apps node's name, state and tailnet
 addresses.
 `job set` adds a job after the existing ones, or replaces the job with that name
 in place, keeping its timeout unless `--timeout-seconds` is given (300 for a new

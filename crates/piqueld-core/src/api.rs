@@ -915,9 +915,9 @@ pub enum PublicIngressStatus {
     Tunnel {
         /// Tunnel ID from its credentials file.
         id: String,
-        /// Connections to Cloudflare's edge, from `cloudflared`'s `/ready`;
-        /// zero while the tunnel is disconnected.
-        connections: u32,
+        /// `cloudflared` holds a connection to Cloudflare's edge, from its
+        /// healthcheck of `/ready`.
+        connected: bool,
         /// Safe diagnostic, with detailed causes in daemon logs.
         message: String,
     },
