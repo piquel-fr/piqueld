@@ -187,6 +187,15 @@ secret mount `name`, and the build inputs `image`, `dockerfile`, `context`, buil
 fields, mount and secret targets, `spec.secrets` declarations, Git repository
 settings and `spec.manifest`.
 
+The build inputs are baked into images, so each deployment's
+[release](piquelctl.md#commands) fingerprints their rendered values. Rendering a
+release for another environment reuses its images and requires every build
+input to render the same there; a build argument such as
+`VITE_ORIGIN = "https://${{ vars.domain }}"` makes the release incompatible
+(`release_incompatible`) with environments whose `domain` differs. Keep
+per-environment values in runtime fields, like `environment`, when the images
+should be shared.
+
 A field that is exactly one reference, like `replicas = "${{ vars.web_replicas }}"`,
 takes the variable's own value, which must have the field's type: strings are
 never parsed into numbers. Any other text containing a reference renders to a
@@ -272,7 +281,7 @@ args = { VITE_AUTH_ORIGIN = "https://auth.example.com" }
 target = "runtime"
 ```
 
-The daemon requires Git and the Docker CLI in its PATH. Git inherits the host's
+The daemon requires Git and the Docker CLI with the Buildx plugin in its PATH. Git inherits the host's
 credentials; piqueld does not store credentials or prompt for them. Only trusted
 repositories are supported: Dockerfiles execute build instructions on the host's
 Docker Engine. Builds are serialized across applications, and the existing
@@ -283,13 +292,15 @@ Each preparation gets an isolated checkout. A full configured commit hash is
 used directly; otherwise the branch head is resolved once. Dockerfile and context
 paths are relative to the repository root, must stay within it, and default build
 context is `.`. Build argument names follow the environment variable rules, and
-because they are passed on the `docker build` command line, build arguments may
+because they are passed on the `docker buildx build` command line, build arguments may
 total at most 256 KiB. `target` must name a stage in the Dockerfile; without it Docker builds the final
 stage. Build arguments are not secret: Docker records them in image metadata and
 piqueld shows them in manifests and build history. Use service secrets for
 sensitive values. There is no automatic build backend detection, submodule or LFS
 setup, registry publishing, or automatic image cleanup. Docker's build cache is
-reused and base images are refreshed with `--pull`.
+reused and base images are refreshed with `--pull`. Builds record no provenance
+attestations, which differ on every build, so a rebuild Docker serves from its
+cache keeps the same image ID and shares its release.
 
 The resolved source records the full Git commit and content-addressed local image
 ID. Every repository and build field, including build arguments and the target, is

@@ -6,8 +6,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use piqueld_core::{
-    EnvironmentId, Operation,
-    api::{AcceptedOperation, DeploymentView, Envelope, Page},
+    ApplicationId, EnvironmentId, Operation,
+    api::{AcceptedOperation, DeploymentView, Envelope, Page, ReleaseView},
     manifest::ManifestRevision,
 };
 
@@ -118,6 +118,33 @@ pub(super) async fn list(
     })?;
     Ok(ok(state
         .deployments(&EnvironmentId::parse(id)?, query.cursor.as_deref())
+        .await?))
+}
+
+/// Lists an application's releases, newest first.
+///
+/// A release is recorded by each successful preparation in a tracking
+/// environment, and shared by preparations with the same content. Releases
+/// outlive the environments that recorded them. Returns twenty per page;
+/// follow `next_cursor` for older ones.
+#[utoipa::path(get,path="/api/v1/applications/{id}/releases",operation_id="listReleases",
+    params(("id"=String,Path),HistoryQuery),
+    responses((status=200,description="Releases, newest first (twenty per page)",body=Envelope<Page<ReleaseView>>),
+    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse))))]
+pub(super) async fn releases(
+    State(state): State<ApiState>,
+    ApiPath(id): ApiPath<String>,
+    query: Result<Query<HistoryQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<impl IntoResponse, ApiError> {
+    let Query(query) = query.map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "pagination_invalid",
+            "invalid pagination parameters",
+        )
+    })?;
+    Ok(ok(state
+        .releases(&ApplicationId::parse(id)?, query.cursor.as_deref())
         .await?))
 }
 

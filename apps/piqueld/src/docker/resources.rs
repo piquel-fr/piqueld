@@ -549,31 +549,46 @@ impl DockerApi for BollardDocker {
         build: &super::ImageBuild<'_>,
         log: Option<&crate::build::BuildLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
-        // Builds shell out to the Docker CLI against the same socket and read
-        // the image ID Docker writes to `--iidfile`, e.g. `sha256:<64 hex>`.
+        // Builds shell out to Docker Buildx against the same socket, with the
+        // engine's own builder: the account may have selected one that does not
+        // load into the engine. Buildx also ignores `DOCKER_BUILDKIT=0`.
+        // They read the image ID from the build's `--metadata-file`, e.g.
+        // `{"containerimage.digest": "sha256:<64 hex>"}`. Provenance
+        // attestations differ on every build and, with the containerd image
+        // store, change that ID, so identical builds would never share a
+        // release. Without them, `--iidfile` would hold the config digest,
+        // which that store does not know the image by.
         use anyhow::Context;
+        #[derive(serde::Deserialize)]
+        struct Metadata {
+            #[serde(rename = "containerimage.digest")]
+            image_id: String,
+        }
         let result = async {
             if !build.dockerfile.is_file() || !build.context.is_dir() {
                 anyhow::bail!("Dockerfile must be a file and build context must be a directory");
             }
             let directory = tempfile::tempdir().context("create Docker build directory")?;
-            let iidfile = directory.path().join("image-id");
+            let metadata = directory.path().join("metadata.json");
             let mut command = tokio::process::Command::new("docker");
             command
                 .arg("--host")
                 .arg(format!("unix://{}", self.socket.display()))
-                .args(["build", "--pull", "--file"])
+                .args(["buildx", "build", "--builder=default", "--pull"])
+                .args(["--provenance=false", "--file"])
                 .arg(&build.dockerfile)
-                .arg("--iidfile")
-                .arg(&iidfile)
+                .arg("--metadata-file")
+                .arg(&metadata)
                 .args(build.options())
                 .arg(&build.context);
             crate::command::LoggedCommand::run_recorded(&mut command, "build Docker image", log)
                 .await?;
-            let id = tokio::fs::read_to_string(iidfile)
+            let metadata = tokio::fs::read(metadata)
                 .await
-                .context("read built image ID")?;
-            piqueld_core::resource::Sha256Digest::parse(id.trim())
+                .context("read build metadata")?;
+            let metadata: Metadata =
+                serde_json::from_slice(&metadata).context("decode build metadata")?;
+            piqueld_core::resource::Sha256Digest::parse(metadata.image_id)
                 .context("validate built image ID")
         }
         .await;

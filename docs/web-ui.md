@@ -64,7 +64,13 @@ without one. Environments that render the same hostname conflict; the error
 names the environment already reserving it.
 
 Applications have one main tab row: Overview (the default), Environments,
-Services, Source, Variables, Routes, Volumes, Jobs, Secrets, Builds, and Events. The Jobs
+Services, Source, Variables, Routes, Volumes, Jobs, Secrets, Releases, Builds,
+and Events. The Releases tab lists the application's immutable releases, newest
+first: each successful preparation of an environment's deployment records one,
+environments that prepared the same content share it, and deleting an environment keeps
+them. Expanding a release shows the commit its manifest was read from, its
+content hash, and for each service its image (a registry digest or local image
+ID), where it came from, and the build inputs it was prepared from. The Jobs
 tab adds, edits, reorders, and removes the one-shot jobs that run before each
 rollout, with one row per command element; saving replaces only the job list.
 Jobs inherit the referenced service's startup dependencies, which start or
@@ -94,7 +100,10 @@ Selecting None for a health check hides its remaining fields.
 The pencil beside the application name opens its rename form.
 An environment's Deployments tab lists expandable deployment rows with Details, Snapshot,
 and Attempts sections. Attempts load when first opened; refresh and older-attempt
-controls appear below the list. Operation IDs appear only in deployment Details. Current target, last successful deployment, and observed runtime health
+controls appear below the list. Operation IDs appear only in deployment Details,
+next to the deployment's release, which links to it in the application's
+Releases tab; the environment's Overview links to the release its current target
+runs. Current target, last successful deployment, and observed runtime health
 are distinct. History remains until the environment is deleted. Deploying an
 empty application removes its runtime services and network. Removing volumes or
 deleting an application retains Docker volume data; deleting an application

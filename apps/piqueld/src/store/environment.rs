@@ -329,7 +329,8 @@ impl Store {
 
     /// Publishes a completely resolved target only while its operation is current.
     /// Stores the target on the running, latest operation, records any fetched
-    /// repository manifest as the environment's own, and records `target_resolved`.
+    /// repository manifest as the environment's own and the release the target
+    /// runs, and records `target_resolved`.
     /// # Errors
     /// Returns storage errors or `IllegalTransition` for obsolete preparation.
     pub async fn save_prepared(
@@ -344,7 +345,16 @@ impl Store {
             return Err(StoreError::IllegalTransition);
         }
         Self::accept_deployment_on(&mut tx, operation).await?;
-        Self::operation_event(&mut tx, &operation.id, "target_resolved", None, now_ms()).await?;
+        let now = now_ms();
+        Self::record_release_on(
+            &mut tx,
+            &operation.id,
+            &operation.environment_id,
+            resolved,
+            now,
+        )
+        .await?;
+        Self::operation_event(&mut tx, &operation.id, "target_resolved", None, now).await?;
         Self::commit_environment_changes(tx, [operation.environment_id.as_str()]).await
     }
 

@@ -992,6 +992,20 @@
           }
         ]
       },
+      "BuildFingerprint": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/BuildInputs"
+        },
+        "description": "Each service's [`BuildInputs`]: what a release's images were built or\npulled from. An environment may run a release's images only where its own\nrendering of the release's manifest has the same fingerprint.",
+        "type": "object"
+      },
+      "BuildInputs": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "One service's rendered build inputs, keyed by field path from the service:\nevery source field `ApplicationSpec::visit_values` lets reference variables\n(`source.image` or `source.build.*`), plus a Git source's\n`source.repository` and the `source.commit` it was built from.",
+        "type": "object"
+      },
       "BuildLogChunk": {
         "description": "Captured output with stream identity and capture time.",
         "properties": {
@@ -1674,6 +1688,25 @@
           "operation": {
             "$ref": "#/components/schemas/Operation",
             "description": "Execution ID also identifies this deployment."
+          },
+          "release": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ReleaseId"
+                  }
+                ],
+                "description": "The release its prepared target runs; absent until prepared, and for\ndeployments that recorded none."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           },
           "succeeded_at_ms": {
             "description": "First successful convergence, retained during later drift repair.",
@@ -2953,6 +2986,25 @@
                 "$ref": "#/components/schemas/ObservedApplicationView",
                 "description": "Sanitized runtime observation."
               },
+              "release": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/ReleaseId"
+                      }
+                    ],
+                    "description": "The release the current runtime target runs; absent before a\ndeployment was prepared, and for deployments that recorded none."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
               "status": {
                 "$ref": "#/components/schemas/EnvironmentStatusView",
                 "description": "Durable environment lifecycle status."
@@ -3772,6 +3824,25 @@
                       "$ref": "#/components/schemas/Operation",
                       "description": "Execution ID also identifies this deployment."
                     },
+                    "release": {
+                      "oneOf": [
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/components/schemas/ReleaseId"
+                            }
+                          ],
+                          "description": "The release its prepared target runs; absent until prepared, and for\ndeployments that recorded none."
+                        },
+                        {
+                          "enum": [
+                            null
+                          ],
+                          "nullable": true,
+                          "type": "string"
+                        }
+                      ]
+                    },
                     "succeeded_at_ms": {
                       "description": "First successful convergence, retained during later drift repair.",
                       "format": "int64",
@@ -4224,6 +4295,72 @@
                     "state",
                     "created_at_ms",
                     "updated_at_ms"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "next_cursor": {
+                "description": "Cursor for the next page, when more items are available.",
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "items"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_Page_ReleaseView": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Cursor-paginated API response.",
+            "properties": {
+              "items": {
+                "description": "Items in this page.",
+                "items": {
+                  "description": "An immutable release of an application, recorded by a successful\npreparation in one of its tracking environments. Environments whose\ndeployments prepared the same content share it.",
+                  "properties": {
+                    "application_id": {
+                      "$ref": "#/components/schemas/ApplicationId",
+                      "description": "Owning application."
+                    },
+                    "content_hash": {
+                      "$ref": "#/components/schemas/Sha256Digest",
+                      "description": "Hash of its content, unique within the application."
+                    },
+                    "created_at_ms": {
+                      "description": "When it was first recorded, in Unix milliseconds.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "fingerprint": {
+                      "$ref": "#/components/schemas/BuildFingerprint",
+                      "description": "The build inputs each service's image was prepared from."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/ReleaseId",
+                      "description": "Stable release identifier."
+                    },
+                    "release": {
+                      "$ref": "#/components/schemas/Release",
+                      "description": "Its manifest, commit, and each service's provenance and image."
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "application_id",
+                    "content_hash",
+                    "created_at_ms",
+                    "release",
+                    "fingerprint"
                   ],
                   "type": "object"
                 },
@@ -4821,6 +4958,25 @@
           "observed": {
             "$ref": "#/components/schemas/ObservedApplicationView",
             "description": "Sanitized runtime observation."
+          },
+          "release": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ReleaseId"
+                  }
+                ],
+                "description": "The release the current runtime target runs; absent before a\ndeployment was prepared, and for deployments that recorded none."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           },
           "status": {
             "$ref": "#/components/schemas/EnvironmentStatusView",
@@ -6866,6 +7022,76 @@
           "username",
           "display_name",
           "passkey_name"
+        ],
+        "type": "object"
+      },
+      "Release": {
+        "additionalProperties": false,
+        "description": "The immutable output of one preparation in a tracking environment: its\nmanifest, and each service's source provenance and prepared image. It\nbelongs to the application, and preparations with the same\n[`Self::content_hash`] share it.",
+        "properties": {
+          "commit": {
+            "description": "Commit the manifest was read from; absent for saved manifests.",
+            "nullable": true,
+            "type": "string"
+          },
+          "sources": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ResolvedSource"
+            },
+            "description": "Each service's provenance and image: a registry digest for images\npulled by reference, the commit and local image ID for Git builds.",
+            "type": "object"
+          },
+          "template": {
+            "$ref": "#/components/schemas/ApplicationTemplate",
+            "description": "The manifest as captured, with references unresolved."
+          }
+        },
+        "required": [
+          "template",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "ReleaseId": {
+        "description": "Stable release identity, assigned by persistence when a preparation\nrecords content its application has no release for yet.",
+        "type": "string"
+      },
+      "ReleaseView": {
+        "description": "An immutable release of an application, recorded by a successful\npreparation in one of its tracking environments. Environments whose\ndeployments prepared the same content share it.",
+        "properties": {
+          "application_id": {
+            "$ref": "#/components/schemas/ApplicationId",
+            "description": "Owning application."
+          },
+          "content_hash": {
+            "$ref": "#/components/schemas/Sha256Digest",
+            "description": "Hash of its content, unique within the application."
+          },
+          "created_at_ms": {
+            "description": "When it was first recorded, in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "fingerprint": {
+            "$ref": "#/components/schemas/BuildFingerprint",
+            "description": "The build inputs each service's image was prepared from."
+          },
+          "id": {
+            "$ref": "#/components/schemas/ReleaseId",
+            "description": "Stable release identifier."
+          },
+          "release": {
+            "$ref": "#/components/schemas/Release",
+            "description": "Its manifest, commit, and each service's provenance and image."
+          }
+        },
+        "required": [
+          "id",
+          "application_id",
+          "content_hash",
+          "created_at_ms",
+          "release",
+          "fingerprint"
         ],
         "type": "object"
       },
@@ -10529,6 +10755,85 @@
           }
         },
         "x-piqueld-access": "apps:write"
+      }
+    },
+    "/api/v1/applications/{id}/releases": {
+      "get": {
+        "description": "A release is recorded by each successful preparation in a tracking\nenvironment, and shared by preparations with the same content. Releases\noutlive the environments that recorded them. Returns twenty per page;\nfollow `next_cursor` for older ones.",
+        "operationId": "listReleases",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`next_cursor` from a previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Page_ReleaseView"
+                }
+              }
+            },
+            "description": "Releases, newest first (twenty per page)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Lists an application's releases, newest first.",
+        "x-piqueld-access": "apps:read"
       }
     },
     "/api/v1/applications/{id}/rename": {

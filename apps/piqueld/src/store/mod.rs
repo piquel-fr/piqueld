@@ -23,6 +23,7 @@ pub(crate) use journal::JournalAction;
 pub(crate) use secret::SecretDeletion;
 pub(crate) use security::SecurityEvent;
 mod operation;
+mod release;
 mod repository;
 mod secret;
 mod security;
@@ -458,6 +459,7 @@ impl Store {
     ///    (see `apply_migration`), so every committed version is reopenable.
     /// 4. Re-reads and validates the instance ID and recorded schema version.
     /// 5. Re-encrypts secrets migration 0021 moved into application stores.
+    /// 6. Records releases for deployments prepared before migration 0022.
     ///
     /// # Errors
     /// Returns a sanitized storage or schema compatibility error.
@@ -534,6 +536,7 @@ impl Store {
             audit_days: 0,
         };
         store.reencrypt_moved_secrets().await?;
+        store.record_missing_releases().await?;
         Ok(store)
     }
 

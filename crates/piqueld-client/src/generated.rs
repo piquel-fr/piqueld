@@ -1045,6 +1045,74 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Lists an application's releases, newest first
+
+    A release is recorded by each successful preparation in a tracking
+    environment, and shared by preparations with the same content. Releases
+    outlive the environments that recorded them. Returns twenty per page;
+    follow `next_cursor` for older ones.
+
+    Sends a `GET` request to `/api/v1/applications/{id}/releases`
+
+    Arguments:
+    - `id`
+    - `cursor`: `next_cursor` from a previous page.
+    */
+    pub async fn list_releases<'a>(
+        &'a self,
+        id: &'a str,
+        cursor: Option<&'a str>,
+    ) -> Result<
+        ResponseValue<
+            piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::api::ReleaseView>>,
+        >,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/releases",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "list_releases",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Renames an application
 
     Changes only the user-facing name, without redeploying. The inspected

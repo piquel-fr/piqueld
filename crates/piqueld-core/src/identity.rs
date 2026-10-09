@@ -44,6 +44,14 @@ validated_string!(
     valid_id
 );
 
+validated_string!(
+    /// Stable release identity, assigned by persistence when a preparation
+    /// records content its application has no release for yet.
+    ReleaseId, ReleaseIdError,
+    "release IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens",
+    valid_id
+);
+
 impl EnvironmentId {
     /// The ID of the environment created with an application. It reuses the
     /// application's ID, as every environment migrated from a single-environment

@@ -162,6 +162,13 @@ async fn app(
                 .await?;
             console.emit(&crate::output::reports::ManifestReport(manifest))
         }
+        AppCommand::Releases { name_or_id, cursor } => {
+            let app = resolve_application(client, name_or_id).await?;
+            let releases = client
+                .releases(app.application.id().as_str(), cursor.as_deref())
+                .await?;
+            console.emit(&releases)
+        }
     }
 }
 

@@ -113,8 +113,10 @@ impl ApplicationService {
             .store
             .environments(&stored.environment.application_id)
             .await?;
+        let release = self.store.current_release(id).await?;
         Ok(EnvironmentDetailView {
             manifest: stored.manifest().cloned(),
+            release,
             environment: stored.environment,
             application: application_view(stored.application, environments),
             status,

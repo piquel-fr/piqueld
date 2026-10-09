@@ -12,7 +12,7 @@ use crate::{
         ValidatedResourceLimits, ValidatedRollout, ValidatedSource, valid_image_reference,
     },
 };
-use crate::{ImageReference, ImmutableImage, RepositoryDigest};
+use crate::{BuildInputs, ImageReference, ImmutableImage, Release, RepositoryDigest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
@@ -129,6 +129,21 @@ impl ResolvedSource {
             },
             Self::Git { requested, .. } => requested.clone(),
         }
+    }
+
+    /// The commit a Git build was resolved to.
+    #[must_use]
+    pub fn commit(&self) -> Option<&str> {
+        match self {
+            Self::Image { .. } => None,
+            Self::Git { commit, .. } => Some(commit),
+        }
+    }
+
+    /// The build inputs this source was prepared from.
+    #[must_use]
+    pub fn build_inputs(&self) -> BuildInputs {
+        BuildInputs::new(&self.requested(), self.commit())
     }
 
     /// Returns the immutable image reference used by Docker.
@@ -727,7 +742,68 @@ pub fn compile_application(
     instance_id: InstanceId,
     resolutions: &ResolutionSet,
 ) -> Result<ResolvedApplication, Vec<CompileError>> {
-    let errors = validate_application(app, resolutions);
+    compile(
+        app,
+        environment,
+        instance_id,
+        resolutions,
+        SourceOrigin::Prepared,
+    )
+}
+
+/// Compiles `app`, a release's manifest rendered for `environment` by
+/// [`Release::render`], with the release's own images and `secret_names`
+/// pinned for this deployment. Nothing is rebuilt, so every build input must
+/// render as it did for the release: each that does not is a
+/// `release_incompatible` error whose resource names the field, e.g.
+/// `web.source.build.args.VITE_ORIGIN`.
+///
+/// # Errors
+///
+/// Returns those errors, or the errors of [`compile_application`].
+///
+/// # Panics
+///
+/// Panics in the same internal-bug cases as [`compile_application`].
+pub fn compile_release(
+    app: &NormalizedApplication,
+    environment: &EnvironmentId,
+    instance_id: InstanceId,
+    release: &Release,
+    secret_names: BTreeMap<String, String>,
+) -> Result<ResolvedApplication, Vec<CompileError>> {
+    let resolutions = ResolutionSet {
+        sources: release.sources().clone(),
+        secret_names,
+    };
+    compile(
+        app,
+        environment,
+        instance_id,
+        &resolutions,
+        SourceOrigin::Release,
+    )
+}
+
+/// Where compiled sources come from, which decides how the source check
+/// reports a source that does not match its rendered service.
+#[derive(Clone, Copy)]
+enum SourceOrigin {
+    /// Prepared for this rendering, so a mismatch is an internal error.
+    Prepared,
+    /// Prepared for a release, whose build inputs the rendering must reproduce.
+    Release,
+}
+
+/// Validates resolutions as `origin` requires, then compiles; see [`compile_application`].
+fn compile(
+    app: &NormalizedApplication,
+    environment: &EnvironmentId,
+    instance_id: InstanceId,
+    resolutions: &ResolutionSet,
+    origin: SourceOrigin,
+) -> Result<ResolvedApplication, Vec<CompileError>> {
+    let errors = validate_application(app, resolutions, origin);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -785,9 +861,12 @@ pub fn compile_application(
 
 /// Collects every reason `compile_application` cannot proceed: unresolved
 /// sources, unpinned secrets, and resolutions that do not match their source.
+/// A release's sources are first checked field by field against the build
+/// inputs they were prepared from, so a mismatch names what differs.
 fn validate_application(
     app: &NormalizedApplication,
     resolutions: &ResolutionSet,
+    origin: SourceOrigin,
 ) -> Vec<CompileError> {
     let mut errors = unresolved_errors(app, resolutions);
     for service in &app.spec().services {
@@ -805,7 +884,19 @@ fn validate_application(
         let Some(resolved) = resolutions.sources.get(&service.name) else {
             continue;
         };
-        if !resolved_source_matches(&service.source, resolved) {
+        let incompatible = match origin {
+            SourceOrigin::Prepared => Vec::new(),
+            SourceOrigin::Release => resolved
+                .build_inputs()
+                .differences(&BuildInputs::new(&service.source, resolved.commit())),
+        };
+        if !incompatible.is_empty() {
+            errors.extend(incompatible.into_iter().map(|field| CompileError {
+                code: crate::codes::RELEASE_INCOMPATIBLE.into(),
+                resource: format!("{}.{field}", service.name),
+                message: "renders differently in this environment than in the release, whose images were built from it".into(),
+            }));
+        } else if !resolved_source_matches(&service.source, resolved) {
             errors.push(CompileError {
                 code: crate::codes::SOURCE_RESOLUTION_MISMATCH.into(),
                 resource: service.name.to_string(),
