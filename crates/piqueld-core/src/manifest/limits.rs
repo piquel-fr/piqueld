@@ -27,6 +27,8 @@ pub struct PreviewLimits {
     /// Most replicas a preview service runs; manifests asking for more are
     /// capped with a warning.
     pub max_replicas: u16,
+    /// Largest Git bundle `preview deploy --local` may upload, in bytes.
+    pub max_upload_bytes: u64,
 }
 
 impl Default for PreviewLimits {
@@ -37,6 +39,7 @@ impl Default for PreviewLimits {
             default_cpu_millis: 500,
             default_memory_bytes: 512 * 1024 * 1024,
             max_replicas: 1,
+            max_upload_bytes: 256 * 1024 * 1024,
         }
     }
 }
@@ -53,6 +56,9 @@ pub enum PreviewLimitsError {
     /// The replica cap is outside the manifest's replica range.
     #[error("previews.max_replicas must be between {} and {}", REPLICAS.start(), REPLICAS.end())]
     Replicas,
+    /// The upload limit is zero.
+    #[error("previews.max_upload_bytes must be at least 1")]
+    Upload,
 }
 
 impl PreviewLimits {
@@ -69,6 +75,9 @@ impl PreviewLimits {
         }
         if !REPLICAS.contains(&self.max_replicas) {
             return Err(PreviewLimitsError::Replicas);
+        }
+        if self.max_upload_bytes == 0 {
+            return Err(PreviewLimitsError::Upload);
         }
         Ok(())
     }

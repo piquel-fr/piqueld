@@ -826,6 +826,10 @@ impl DaemonConfig {
                 "Replicas per service".into(),
                 previews.max_replicas.to_string(),
             ),
+            (
+                "Local snapshot upload (bytes)".into(),
+                previews.max_upload_bytes.to_string(),
+            ),
         ])
     }
 

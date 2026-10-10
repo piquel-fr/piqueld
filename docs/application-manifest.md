@@ -649,6 +649,7 @@ application's environments, and environment commands never act on it.
 ```console
 piquelctl preview create notes --branch feat/login [--slot agent-2]
 piquelctl preview deploy notes feat/login      # redeploy the branch head
+piquelctl preview deploy notes --local         # deploy the current worktree, unpushed
 piquelctl preview list notes
 piquelctl preview delete notes feat/login
 piquelctl preview prune notes --branch-gone
@@ -741,12 +742,29 @@ fails with `preview_limit_reached`.
 **Lifetime.** Previews are never deleted automatically. `preview list` and
 `preview show` report each branch's state, read on demand with `git ls-remote`:
 `exists` (at the deployed commit, or before the first fetch), `moved` (the
-branch head is past the deployed commit), `gone`, or `unknown` when the
-repository could not be read. `preview prune --branch-gone` deletes, after
+branch head is past the deployed commit), `gone`, `local` (its latest
+deployment is a local snapshot, below), or `unknown` when the repository could
+not be read. `preview prune --branch-gone` deletes, after
 confirmation, the previews whose branch is gone; the daemon checks again and
 keeps any it can no longer confirm gone. Repository or authentication errors
 never count as gone: pruning then deletes nothing. Previews cannot be
 [promotion](#promoted-environments) sources and do not record releases.
+
+**Local worktrees.** `piquelctl preview deploy notes --local [--slot agent-2]`
+deploys the worktree of the current directory, uncommitted and untracked files
+included and ignored files excluded, without pushing it. The CLI commits it to
+a snapshot on top of `HEAD`, without changing the branch, index or refs, and
+uploads it as a Git bundle. The preview of the current branch and slot is
+created if needed, as with `preview create`. The daemon reads the manifest from
+the snapshot at the application's manifest path, renders `${{ git.sha }}` as
+the snapshot commit, and builds `repository = "self"` services from the
+snapshot; everything else (variables, bounds, secrets, routes) is as for the
+branch. The deployment history records the snapshot commit and its base, the
+commit of the repository it was uploaded against. A preview running a local
+snapshot reports its branch as `local` and is never pruned, even when the
+branch was never pushed. Deploying on push leaves it running until the branch
+moves, or is first pushed. Redeploying the preview deploys the branch head
+instead. Submodules and Git LFS are not supported.
 
 ## Startup dependencies
 

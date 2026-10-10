@@ -1078,6 +1078,26 @@
             "type": "object"
           },
           {
+            "description": "The preview's latest deployment is a snapshot of a local worktree\n(`preview deploy --local`), so the branch may never have been\npushed. Never counts as gone.",
+            "properties": {
+              "head": {
+                "description": "Commit at the branch head; absent while the repository has no\nsuch branch.",
+                "nullable": true,
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "local"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
             "description": "The repository could not be read. Never counts as gone.",
             "properties": {
               "message": {
@@ -1986,6 +2006,29 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LocalSnapshot",
+                "description": "A snapshot of a local worktree, uploaded to a preview with\n`preview deploy --local`, and built like its branch would be."
+              },
+              {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "local"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "A snapshot of a local worktree, uploaded to a preview with\n`preview deploy --local`, and built like its branch would be."
           }
         ]
       },
@@ -5023,6 +5066,10 @@
                   }
                 ]
               },
+              "origin": {
+                "$ref": "#/components/schemas/DeploymentOrigin",
+                "description": "Where its latest deployment came from: built from its branch, or a\nlocal snapshot; `build` before its first."
+              },
               "preview": {
                 "$ref": "#/components/schemas/EnvironmentView",
                 "description": "The preview."
@@ -5413,6 +5460,10 @@
                       "type": "string"
                     }
                   ]
+                },
+                "origin": {
+                  "$ref": "#/components/schemas/DeploymentOrigin",
+                  "description": "Where its latest deployment came from: built from its branch, or a\nlocal snapshot; `build` before its first."
                 },
                 "preview": {
                   "$ref": "#/components/schemas/EnvironmentView",
@@ -6811,6 +6862,24 @@
         ],
         "type": "object"
       },
+      "LocalSnapshot": {
+        "description": "A snapshot of a local worktree: a commit of its committed, uncommitted,\nand untracked files, except ignored ones, on top of its `HEAD`.",
+        "properties": {
+          "base": {
+            "description": "The commit of the application's repository it was uploaded against:\nthe nearest ancestor of `HEAD` the repository has. Absent when the\nwhole history was uploaded.",
+            "nullable": true,
+            "type": "string"
+          },
+          "commit": {
+            "description": "The snapshot commit, whose parent is the worktree's `HEAD`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "commit"
+        ],
+        "type": "object"
+      },
       "LogRecord": {
         "description": "One line of workload output with replica identity.",
         "properties": {
@@ -7974,6 +8043,13 @@
             "format": "int32",
             "minimum": 0,
             "type": "integer"
+          },
+          "max_upload_bytes": {
+            "default": 268435456,
+            "description": "Largest Git bundle `preview deploy --local` may upload, in bytes.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "type": "object"
@@ -8073,6 +8149,10 @@
                 "type": "string"
               }
             ]
+          },
+          "origin": {
+            "$ref": "#/components/schemas/DeploymentOrigin",
+            "description": "Where its latest deployment came from: built from its branch, or a\nlocal snapshot; `build` before its first."
           },
           "preview": {
             "$ref": "#/components/schemas/EnvironmentView",
@@ -9975,12 +10055,12 @@
             "type": "integer"
           },
           "commit": {
-            "description": "Full commit hash.",
+            "description": "Full commit hash; absent when the repository had no such branch, as\nwhen a preview's branch was deployed from a local worktree before it\nwas pushed. Sync deploys once the branch appears.",
+            "nullable": true,
             "type": "string"
           }
         },
         "required": [
-          "commit",
           "at_ms"
         ],
         "type": "object"
@@ -12959,6 +13039,165 @@
           }
         },
         "summary": "Creates a preview of a branch.",
+        "x-piqueld-access": "apps:deploy"
+      }
+    },
+    "/api/v1/applications/{id}/previews/local": {
+      "post": {
+        "description": "The body is a Git bundle of one snapshot commit, at most `[previews]\nmax_upload_bytes`: either thin, needing one base commit the\napplication's repository has, which the daemon fetches, or complete.\nIt is verified and unbundled into a repository of its own. The preview\nof `branch` and `slot` is created first if needed, as `createPreview`\ndoes, and deploys the snapshot's manifest, building `\"self\"` sources from\nit. Fails with 413 `snapshot_too_large`, 422 `snapshot_invalid`, or 422\n`snapshot_base_unavailable`, whose `details.base` names the base; upload\na complete bundle then. Needs no application revision.",
+        "operationId": "deployLocalPreview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The worktree's branch of the manifest repository.",
+            "in": "query",
+            "name": "branch",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Distinguishes several previews of one branch.",
+            "in": "query",
+            "name": "slot",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "description": "A Git bundle, sent as raw bytes; it only documents the request body.",
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "description": "Git bundle of the snapshot commit",
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_CreatedPreview"
+                }
+              }
+            },
+            "description": "Snapshot received and its deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Deploys a snapshot of a local worktree to a preview.",
         "x-piqueld-access": "apps:deploy"
       }
     },

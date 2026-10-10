@@ -84,8 +84,11 @@ impl std::fmt::Display for RepositorySync {
 /// sync or of its own branch. Sync deploys once the branch moves past it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct SyncedHead {
-    /// Full commit hash.
-    pub commit: String,
+    /// Full commit hash; absent when the repository had no such branch, as
+    /// when a preview's branch was deployed from a local worktree before it
+    /// was pushed. Sync deploys once the branch appears.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
     /// When sync found it, in Unix milliseconds.
     pub at_ms: i64,
 }
@@ -242,7 +245,7 @@ mod tests {
             kind: EnvironmentKind::Environment,
             sync,
             synced: synced.then(|| SyncedHead {
-                commit: "0123456789abcdef0123456789abcdef01234567".into(),
+                commit: Some("0123456789abcdef0123456789abcdef01234567".into()),
                 at_ms: 1,
             }),
             resolved_generation: None,

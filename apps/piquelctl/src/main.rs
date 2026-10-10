@@ -14,6 +14,7 @@ mod previews;
 mod profiles;
 
 mod secrets;
+mod snapshot;
 mod support;
 
 use clap::{CommandFactory, FromArgMatches};

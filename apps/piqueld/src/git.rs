@@ -178,7 +178,7 @@ impl Checkout {
 
     /// Builds a hardened `git` command: restricted transports, no interactive
     /// prompts, hooks disabled, and killed if the future is dropped.
-    fn command() -> Command {
+    pub(crate) fn command() -> Command {
         let mut command = Command::new("git");
         // Inherit host credentials while excluding executable transport helpers, even
         // when host configuration enables them or rewrites a URL to use one.

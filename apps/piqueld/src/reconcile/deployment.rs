@@ -1,16 +1,18 @@
 //! Fetch a candidate manifest without changing accepted intent or runtime state.
 use super::{Controller, DockerApi, Operation, OperationError};
+use crate::snapshot::SnapshotSource;
 use crate::store::StoreError;
 use crate::store::Tracking;
 use piqueld_core::{
     NormalizedApplication,
-    api::DiagnosticView,
+    api::{DeploymentOrigin, DiagnosticView},
     manifest::{ApplicationManifest, GitRevision, RenderContext, RepositoryManifest},
 };
 
 impl<D: DockerApi> Controller<D> {
     /// Resolves the rendered manifest an operation should deploy, with `"self"`
-    /// sources pinned to the commit its manifest was fetched from.
+    /// sources pinned to the commit its manifest was fetched from, and, for a
+    /// local snapshot, the snapshot they are checked out from.
     ///
     /// Deployments are rendered when captured, or once fetched when
     /// repository-backed, and retries reuse that rendering, so they never
@@ -25,39 +27,53 @@ impl<D: DockerApi> Controller<D> {
     /// another repository URL or manifest path. Each `[previews]` bound is a
     /// warning too. It records the head of the branch the environment
     /// tracked (see [`Self::branch_head`]). Inputs without repository backing
-    /// are marked fetched as-is.
+    /// are marked fetched as-is. A local snapshot (`preview deploy --local`)
+    /// is fetched the same way, from its own repository instead of the
+    /// branch, which must still be the application's.
     pub(super) async fn deployment_manifest(
         &self,
         operation: &Operation,
         environment: Tracking<'_>,
-    ) -> Result<NormalizedApplication, OperationError> {
+    ) -> Result<(NormalizedApplication, Option<SnapshotSource>), OperationError> {
         let snapshot = self.store.deployment_snapshot(&operation.id).await?;
         let Some(input) = self.store.deployment_input(operation).await? else {
-            return Ok(snapshot.rendering.ok_or(StoreError::Corrupt)?.application);
+            return Ok((
+                snapshot.rendering.ok_or(StoreError::Corrupt)?.application,
+                None,
+            ));
         };
+        let backing = input.template.spec().manifest.as_ref();
+        let source = self.snapshot_source(&input.origin, backing)?;
         if input.fetched {
             let application = snapshot.rendering.ok_or(StoreError::Corrupt)?.application;
-            return Ok(match &input.commit {
-                Some(commit) => application.pin_manifest_sources(commit),
-                None => application,
-            });
+            return Ok((
+                match &input.commit {
+                    Some(commit) => application.pin_manifest_sources(commit),
+                    None => application,
+                },
+                source,
+            ));
         }
-        let Some(backing) = &input.template.spec().manifest else {
+        let Some(backing) = backing else {
             let rendering = snapshot.rendering.ok_or(StoreError::Corrupt)?;
             self.store
                 .save_deployment_input(operation, &input.template, &rendering, (None, None), &[])
                 .await?;
-            return Ok(rendering.application);
+            return Ok((rendering.application, None));
         };
         self.store
             .progress(&operation.id, "fetching_manifest", None)
             .await?;
-        let checkout = crate::git::Checkout::clone(&backing.repository)
-            .await
-            .map_err(|error| {
-                tracing::error!(?error, "manifest repository fetch failed");
-                OperationError::ManifestFetchFailed(error)
-            })?;
+        let checkout = crate::git::Checkout::clone(
+            source
+                .as_ref()
+                .map_or(&backing.repository, |source| &source.repository),
+        )
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, "manifest repository fetch failed");
+            OperationError::ManifestFetchFailed(error)
+        })?;
         let mut manifest = Self::read_manifest(&checkout, &backing.path).await?;
         // Replaced before validation: `self` sources and `git.*` references
         // need a connection, and the file's own may be absent or invalid.
@@ -96,7 +112,7 @@ impl<D: DockerApi> Controller<D> {
                 operation,
                 input.tracked_branch.as_deref(),
                 backing,
-                &checkout,
+                (&checkout, source.is_some()),
             )
             .await?;
         self.store
@@ -108,22 +124,45 @@ impl<D: DockerApi> Controller<D> {
                 &warnings,
             )
             .await?;
-        Ok(rendering.application.pin_manifest_sources(&checkout.commit))
+        Ok((
+            rendering.application.pin_manifest_sources(&checkout.commit),
+            source,
+        ))
+    }
+
+    /// The kept snapshot a deployment of `origin` from the repository of
+    /// `backing` checks out, if it is a local snapshot.
+    fn snapshot_source(
+        &self,
+        origin: &DeploymentOrigin,
+        backing: Option<&RepositoryManifest>,
+    ) -> Result<Option<SnapshotSource>, OperationError> {
+        match (origin, backing) {
+            (DeploymentOrigin::Local(local), Some(backing)) => Ok(Some(
+                self.store
+                    .snapshots()
+                    .source(&backing.repository.url, &local.commit),
+            )),
+            (DeploymentOrigin::Local(_), None) => Err(StoreError::Corrupt.into()),
+            _ => Ok(None),
+        }
     }
 
     /// The head of `tracked`, the branch the environment tracked unpinned
     /// when this deployment was requested, as this deployment finds it: what sync follows from, so pushes deploy once the
     /// branch moves past it. A deployment of that head fetched it. A one-off
-    /// deployment of another revision lists the branch, so it stays until the
-    /// branch moves; when the branch cannot be listed, the fetch fails, as a
-    /// failed clone does, and when it is gone, nothing is recorded.
-    /// Sync's own deployments recorded their head when requested.
+    /// deployment of another revision, or of a `local` snapshot, lists the
+    /// branch, so it stays until the branch moves; when the branch cannot be
+    /// listed, the fetch fails, as a failed clone does. When it is gone, a
+    /// one-off records nothing, while a snapshot records its absence, so
+    /// pushing the branch is a move. Sync's own deployments recorded their
+    /// head when requested.
     async fn branch_head(
         &self,
         operation: &Operation,
         tracked: Option<&str>,
         backing: &RepositoryManifest,
-        checkout: &crate::git::Checkout,
+        (checkout, local): (&crate::git::Checkout, bool),
     ) -> Result<Option<crate::store::BranchHead>, OperationError> {
         let Some(tracked) = tracked else {
             return Ok(None);
@@ -132,7 +171,9 @@ impl<D: DockerApi> Controller<D> {
             return Ok(None);
         }
         let url = backing.repository.url.clone();
-        let commit = if backing.repository.commit.is_none() && backing.repository.branch == tracked
+        let commit = if !local
+            && backing.repository.commit.is_none()
+            && backing.repository.branch == tracked
         {
             Some(checkout.commit.clone())
         } else {
@@ -147,11 +188,13 @@ impl<D: DockerApi> Controller<D> {
                 .head(tracked)
                 .map(str::to_owned)
         };
-        Ok(commit.map(|commit| crate::store::BranchHead {
-            url,
-            branch: tracked.to_owned(),
-            commit,
-        }))
+        Ok(
+            (commit.is_some() || local).then(|| crate::store::BranchHead {
+                url,
+                branch: tracked.to_owned(),
+                commit,
+            }),
+        )
     }
 
     /// Reads and decodes, without validating, the manifest file at `relative`

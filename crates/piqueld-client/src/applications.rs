@@ -199,7 +199,7 @@ impl Client {
     /// Applies TOML to the inspected identity and revision, unless explicitly forced.
     ///
     /// Progenitor generates only one request media type per operation. The generated
-    /// apply endpoint uses JSON, so this TOML variant uses the shared TOML adapter.
+    /// apply endpoint uses JSON, so this TOML variant uses the shared raw-body adapter.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn apply_application_toml_with_preconditions(
@@ -222,11 +222,11 @@ impl Client {
         if let Some(expected_id) = expected_id {
             headers.push(("X-Expected-Application-Id", expected_id.to_owned()));
         }
-        self.send_toml::<Envelope<SavedApplication>>(
+        self.send::<Envelope<SavedApplication>>(
             "/api/v1/applications/apply",
             &query,
             &headers,
-            manifest,
+            ("application/toml", manifest.to_owned().into()),
         )
         .await
         .map(|response| response.data)
@@ -245,7 +245,7 @@ impl Client {
     /// `environment` (by default the application's only environment).
     ///
     /// Progenitor generates only one request media type per operation. The generated
-    /// plan endpoint uses JSON, so this TOML variant uses the shared TOML adapter.
+    /// plan endpoint uses JSON, so this TOML variant uses the shared raw-body adapter.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn plan_application_toml_with_generation(
@@ -260,11 +260,11 @@ impl Client {
         let query = environment
             .map(|environment| vec![("environment", environment.to_owned())])
             .unwrap_or_default();
-        self.send_toml::<Envelope<PlanView>>(
+        self.send::<Envelope<PlanView>>(
             "/api/v1/applications/plan",
             &query,
             &headers,
-            manifest,
+            ("application/toml", manifest.to_owned().into()),
         )
         .await
         .map(|response| response.data)

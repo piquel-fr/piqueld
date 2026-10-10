@@ -125,6 +125,7 @@ fn preview_bounds_must_be_values_a_manifest_could_set() {
         "default_memory_bytes = 0",
         "max_replicas = 0",
         "max_replicas = 101",
+        "max_upload_bytes = 0",
     ] {
         assert!(
             matches!(

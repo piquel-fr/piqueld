@@ -300,13 +300,21 @@ pub(super) fn sync_badge(state: SyncState) -> (AnyView, &'static str) {
     (badge(tone, state.to_string()), reason)
 }
 
-/// The branch head as of the last deployment, with the full commit on hover.
+/// The branch head as of the last deployment, with the full commit on hover;
+/// "Not pushed" when a local snapshot was deployed before its branch existed.
 pub(super) fn last_synced(synced: Option<SyncedHead>) -> AnyView {
     synced.map_or_else(
         || view! { <span class="muted">"Never"</span> }.into_any(),
         |head| {
+            let head_view = match head.commit {
+                Some(head) => {
+                    view! { <code title={head.clone()}>{commit(&head).to_owned()}</code> }
+                        .into_any()
+                }
+                None => view! { <span class="muted">"Not pushed"</span> }.into_any(),
+            };
             view! {
-                <code title={head.commit.clone()}>{commit(&head.commit).to_owned()}</code>
+                {head_view}
                 " · "
                 {when(head.at_ms)}
             }

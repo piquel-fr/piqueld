@@ -1,14 +1,19 @@
-//! Preview queries with their branch state, and pruning previews whose branch
-//! is gone. Creating, deploying, and deleting one are mutations.
+//! Preview queries with their branch state, pruning previews whose branch is
+//! gone, and deploying snapshots of local worktrees. Creating, deploying, and
+//! deleting one are mutations.
 use super::views::status_view;
 use super::{
     Actor, ApplicationError, ApplicationService, Mutation, MutationResponse, PreviewMutation,
 };
 use crate::git::Heads;
 use crate::store::StoreError;
+use axum::body::Bytes;
+use futures_util::Stream;
 use piqueld_core::{
-    ApplicationId, EnvironmentId,
-    api::{BranchState, DeletedPreview, EnvironmentView, PreviewView},
+    ApplicationId, EnvironmentId, GitBranch, PreviewSlot,
+    api::{
+        BranchState, DeletedPreview, DeploymentOrigin, EnvironmentView, LocalSnapshot, PreviewView,
+    },
     manifest::RepositoryManifest,
 };
 
@@ -48,12 +53,63 @@ impl ApplicationService {
             .await
     }
 
+    /// Receives `bundle`, a snapshot of a local worktree of `branch` that
+    /// announced `length` bytes (see `Snapshots`), and deploys it to the
+    /// preview of `branch` and `slot`, creating that preview first if needed,
+    /// as creating one does: idempotently, within the `[previews]` limits.
+    ///
+    /// # Errors
+    /// Returns refused uploads, `preview_requires_repository`, and the
+    /// errors of creating or deploying a preview.
+    pub async fn deploy_snapshot<E: std::error::Error + Send + Sync + 'static>(
+        &self,
+        actor: Actor<'_>,
+        (application, branch, slot): (ApplicationId, GitBranch, Option<PreviewSlot>),
+        (bundle, length): (impl Stream<Item = Result<Bytes, E>>, Option<u64>),
+        request_id: Option<&str>,
+    ) -> Result<MutationResponse, ApplicationError> {
+        let repository = self
+            .store
+            .application(&application)
+            .await?
+            .application
+            .spec()
+            .manifest
+            .as_ref()
+            .ok_or(StoreError::PreviewRequiresRepository)?
+            .repository
+            .url
+            .clone();
+        let snapshots = self.store.snapshots();
+        let limit = self.store.preview_limits().max_upload_bytes;
+        let received = snapshots
+            .receive(bundle, length, limit, &repository)
+            .await?;
+        let mutation = Mutation::Preview(PreviewMutation::Local {
+            application,
+            branch,
+            slot,
+            repository,
+            snapshot: LocalSnapshot {
+                commit: received.commit.clone(),
+                base: received.base.clone(),
+            },
+        });
+        snapshots
+            .keep(
+                received,
+                Box::pin(self.accept(actor, mutation, None, false, request_id)),
+            )
+            .await
+    }
+
     /// Deletes each of `confirmed` that is a preview of `application` whose
     /// branch the repository confirms is gone, and keeps the others,
     /// including all of them when the application's repository changes
-    /// meanwhile. Fails with `repository_unavailable`, deleting nothing, when
-    /// the repository cannot be read: an unreadable repository never makes a
-    /// branch gone.
+    /// meanwhile, and those whose latest deployment is a local snapshot,
+    /// whose branch may never have been pushed. Fails with
+    /// `repository_unavailable`, deleting nothing, when the repository
+    /// cannot be read: an unreadable repository never makes a branch gone.
     ///
     /// # Errors
     /// Returns absence, repository, authorization, or storage errors.
@@ -70,11 +126,9 @@ impl ApplicationService {
             .map_err(ApplicationError::RepositoryUnavailable)?;
         let mut deleted = Vec::new();
         for preview in self.store.previews(application).await? {
-            let Some(identity) = preview.preview() else {
-                continue;
-            };
+            let origin = self.store.latest_origin(&preview.id).await?;
             if !confirmed.contains(&preview.id)
-                || heads.state(identity.branch.as_str(), None) != BranchState::Gone
+                || Self::branch_state(&preview, &origin, Ok(&heads), None)? != BranchState::Gone
             {
                 continue;
             }
@@ -130,17 +184,11 @@ impl ApplicationService {
             .flat_map(|target| &target.routes)
             .map(|route| route.hostname.to_string())
             .collect();
-        let branch = match (heads, preview.preview()) {
-            (Ok(heads), Some(identity)) => heads.state(
-                identity.branch.as_str(),
-                self.store.fetched_commit(&preview.id).await?.as_deref(),
-            ),
-            (Err(error), _) => BranchState::Unknown {
-                message: format!("{error:#}"),
-            },
-            (Ok(_), None) => return Err(StoreError::NotFound.into()),
-        };
+        let origin = self.store.latest_origin(&preview.id).await?;
+        let fetched = self.store.fetched_commit(&preview.id).await?;
+        let branch = Self::branch_state(&preview, &origin, heads.as_ref(), fetched.as_deref())?;
         Ok(PreviewView {
+            origin,
             status: status_view(self.store.status(&preview.id).await?),
             latest_operation: self
                 .store
@@ -151,6 +199,28 @@ impl ApplicationService {
             bounds: self.store.preview_bounds(&preview.id).await?,
             sync: preview.sync_state(connection),
             preview,
+        })
+    }
+
+    /// Where `preview`'s branch is in `heads`: `local` while its latest
+    /// deployment, of `origin`, is a local snapshot, otherwise compared with
+    /// the commit it last `fetched`.
+    fn branch_state(
+        preview: &EnvironmentView,
+        origin: &DeploymentOrigin,
+        heads: Result<&Heads, &anyhow::Error>,
+        fetched: Option<&str>,
+    ) -> Result<BranchState, ApplicationError> {
+        let identity = preview.preview().ok_or(StoreError::NotFound)?;
+        let branch = identity.branch.as_str();
+        Ok(match (heads, origin) {
+            (Err(error), _) => BranchState::Unknown {
+                message: format!("{error:#}"),
+            },
+            (Ok(heads), DeploymentOrigin::Local(_)) => BranchState::Local {
+                head: heads.head(branch).map(str::to_owned),
+            },
+            (Ok(heads), _) => heads.state(branch, fetched),
         })
     }
 }

@@ -2,8 +2,8 @@
 //! deployments, and secrets use the environment methods with their ID.
 pub use piqueld_core::api::{
     ApplicationPreviews, BranchState, CountedPreview, CreatePreviewRequest, CreatedPreview,
-    DeletedPreview, LastDeployment, PreviewLimit, PreviewLimitReached, PreviewUsage, PreviewView,
-    PrunePreviewsRequest,
+    DeletedPreview, LastDeployment, LocalSnapshot, PreviewLimit, PreviewLimitReached, PreviewUsage,
+    PreviewView, PrunePreviewsRequest,
 };
 pub use piqueld_core::manifest::PreviewLimits;
 pub use piqueld_core::{EnvironmentKind, Preview, PreviewSlot, PreviewSlug};
@@ -58,6 +58,37 @@ impl Client {
         generated_result(self.generated.deploy_preview(id, None).await)
             .await
             .map(|response| response.data)
+    }
+
+    /// Uploads `bundle`, a Git bundle of `length` bytes holding a snapshot
+    /// of a local worktree of `branch`, and deploys it to the preview of
+    /// `branch` and `slot`, creating that preview first if needed.
+    ///
+    /// The bundle is streamed with its `Content-Length`, so the daemon
+    /// refuses one over its upload limit before reading it.
+    ///
+    /// # Errors
+    /// Returns transport, API, or decoding errors, including
+    /// `snapshot_too_large`, `snapshot_invalid`, and `snapshot_base_unavailable`.
+    pub async fn deploy_local_preview(
+        &self,
+        application: &str,
+        (branch, slot): (&str, Option<&str>),
+        (bundle, length): (impl Into<reqwest::Body>, u64),
+    ) -> Result<CreatedPreview, ClientError> {
+        let mut query = vec![("branch", branch.to_owned())];
+        query.extend(slot.map(|slot| ("slot", slot.to_owned())));
+        self.send::<crate::Envelope<CreatedPreview>>(
+            &format!(
+                "/api/v1/applications/{}/previews/local",
+                progenitor_client::encode_path(application)
+            ),
+            &query,
+            &[("Content-Length", length.to_string())],
+            ("application/octet-stream", bundle.into()),
+        )
+        .await
+        .map(|response| response.data)
     }
 
     /// Deletes a preview with every volume it created.

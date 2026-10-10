@@ -11,8 +11,8 @@ use piqueld_core::{
     ApplicationId, EnvironmentId, GitBranch, Preview, PreviewSlot, PreviewSlug,
     access::Scope,
     api::{
-        ApplicationPreviews, CountedPreview, DiagnosticView, EnvironmentView, LastDeployment,
-        PreviewLimit, PreviewLimitReached, PreviewUsage,
+        ApplicationPreviews, CountedPreview, DeploymentOrigin, DiagnosticView, EnvironmentView,
+        LastDeployment, LocalSnapshot, PreviewLimit, PreviewLimitReached, PreviewUsage,
     },
     codes,
     manifest::PreviewLimits,
@@ -31,6 +31,29 @@ impl Store {
     #[must_use]
     pub const fn preview_limits(&self) -> &PreviewLimits {
         &self.previews
+    }
+
+    /// Snapshots uploaded from local worktrees.
+    pub(crate) fn snapshots(&self) -> &crate::snapshot::Snapshots {
+        &self.snapshots
+    }
+
+    /// Removes the snapshots no preview's latest deployment uses, finding
+    /// those that are while no upload is being accepted.
+    ///
+    /// # Errors
+    /// Returns a storage or file system error.
+    pub async fn prune_snapshots(&self) -> Result<(), StoreError> {
+        self.snapshots
+            .prune(async {
+                sqlx::query_scalar!(
+                    r#"SELECT json_extract(d.origin_json,'$.commit') AS "commit!: String" FROM environments e JOIN deployments d ON d.id=(SELECT id FROM operations WHERE environment_id=e.id ORDER BY created_at_ms DESC,id DESC LIMIT 1) WHERE e.kind='preview' AND json_extract(d.origin_json,'$.type')='local'"#
+                )
+                .fetch_all(&self.pool)
+                .await
+                .map_err(StoreError::database)
+            })
+            .await
     }
 
     /// Lists an application's previews in slug order.
@@ -240,6 +263,59 @@ impl Store {
             return Err(StoreError::PreviewRequiresRepository);
         }
         Self::deploy_revision_on(tx, preview, None).await
+    }
+
+    /// Starts a deployment of `snapshot`, a snapshot of a local worktree of
+    /// a preview's branch, as its origin: it reads its manifest and builds
+    /// `"self"` sources from the snapshot instead of the branch head.
+    pub(super) async fn deploy_snapshot_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        preview: &StoredEnvironment,
+        snapshot: &LocalSnapshot,
+    ) -> Result<Operation, StoreError> {
+        let operation = Self::deploy_preview_on(tx, preview).await?;
+        let origin = serde_json::to_string(&DeploymentOrigin::Local(snapshot.clone()))
+            .map_err(StoreError::corrupt)?;
+        sqlx::query!(
+            "UPDATE deployments SET origin_json=?1 WHERE id=?2",
+            origin,
+            operation.id
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        Ok(operation)
+    }
+
+    /// Where the latest deployment of environment or preview `id` came
+    /// from: `Build` before its first.
+    ///
+    /// # Errors
+    /// Returns a storage or decoding error.
+    pub async fn latest_origin(&self, id: &EnvironmentId) -> Result<DeploymentOrigin, StoreError> {
+        Self::latest_origin_on(
+            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
+            id,
+        )
+        .await
+    }
+
+    /// [`Self::latest_origin`] on an existing connection or transaction.
+    pub(super) async fn latest_origin_on(
+        connection: &mut SqliteConnection,
+        id: &EnvironmentId,
+    ) -> Result<DeploymentOrigin, StoreError> {
+        let id = id.as_str();
+        sqlx::query_scalar!(
+            "SELECT d.origin_json FROM deployments d JOIN operations o ON o.id=d.id WHERE o.environment_id=?1 ORDER BY o.created_at_ms DESC,o.id DESC LIMIT 1",
+            id
+        )
+        .fetch_optional(connection)
+        .await
+        .map_err(StoreError::database)?
+        .map_or(Ok(DeploymentOrigin::Build), |json| {
+            serde_json::from_str(&json).map_err(StoreError::corrupt)
+        })
     }
 
     /// Adds the Docker volumes of a preview's prepared target to its

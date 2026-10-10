@@ -376,3 +376,145 @@ async fn pruning_keeps_a_preview_once_the_repository_changed() {
         .unwrap();
     assert!(store.get(&preview.id).await.unwrap().delete_intent());
 }
+
+/// Deploys a local snapshot of `branch` and `slot`, received for `repository`.
+async fn local(
+    store: &Store,
+    application: &ApplicationId,
+    (branch, slot): (&str, Option<&str>),
+    (repository, commit): (&str, &str),
+) -> Result<CreatedPreview, StoreError> {
+    let mutation = Mutation::Preview(PreviewMutation::Local {
+        application: application.clone(),
+        branch: GitBranch::parse(branch).unwrap(),
+        slot: slot.map(|slot| PreviewSlot::parse(slot).unwrap()),
+        repository: repository.into(),
+        snapshot: piqueld_core::api::LocalSnapshot {
+            commit: commit.into(),
+            base: Some("b".repeat(40)),
+        },
+    });
+    match store.accept(Daemon, mutation, None, false, None).await? {
+        (MutationResponse::Preview(created), _) => Ok(*created),
+        _ => panic!("preview"),
+    }
+}
+
+/// `preview deploy --local` creates previews as `preview create` does,
+/// within the same limits, but always deploys the snapshot, recording it in
+/// history. A snapshot received for another repository is refused.
+#[tokio::test]
+async fn local_snapshots_create_previews_within_limits_and_record_their_provenance() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db"))
+        .await
+        .unwrap()
+        .with_previews(PreviewLimits {
+            max_per_application: 1,
+            ..PreviewLimits::default()
+        });
+    let application = save(&store, false).await;
+    let notes = "https://example.com/notes.git";
+    let (first, second) = ("1".repeat(40), "2".repeat(40));
+    let created = local(&store, &application, ("feat/x", None), (notes, &first))
+        .await
+        .unwrap();
+    assert!(created.created);
+    let again = local(&store, &application, ("feat/x", None), (notes, &second))
+        .await
+        .unwrap();
+    assert_eq!(
+        (again.created, &again.preview.id),
+        (false, &created.preview.id)
+    );
+    assert_ne!(again.operation.operation_id, created.operation.operation_id);
+    let history = store
+        .deployments(&created.preview.id, None, 3)
+        .await
+        .unwrap();
+    let origins = history
+        .items
+        .iter()
+        .map(|deployment| &deployment.origin)
+        .collect::<Vec<_>>();
+    let snapshot = |commit: &str| {
+        piqueld_core::api::DeploymentOrigin::Local(piqueld_core::api::LocalSnapshot {
+            commit: commit.into(),
+            base: Some("b".repeat(40)),
+        })
+    };
+    assert_eq!(origins, [&snapshot(&second), &snapshot(&first)]);
+
+    assert!(matches!(
+        local(
+            &store,
+            &application,
+            ("feat/x", Some("agent-2")),
+            (notes, &first)
+        )
+        .await,
+        Err(StoreError::PreviewLimitReached(_))
+    ));
+    assert!(matches!(
+        local(
+            &store,
+            &application,
+            ("feat/x", None),
+            ("https://example.com/old.git", &first)
+        )
+        .await,
+        Err(StoreError::IdentityConflict)
+    ));
+}
+
+/// A preview whose latest deployment is a local snapshot may never have been
+/// pushed, so pruning keeps it until its branch head is deployed again; and,
+/// like every preview, it can't be a promotion source.
+#[tokio::test]
+async fn local_snapshot_previews_are_not_pruned_nor_promotion_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let application = save(&store, false).await;
+    let notes = "https://example.com/notes.git";
+    let preview = local(
+        &store,
+        &application,
+        ("feat/x", None),
+        (notes, &"1".repeat(40)),
+    )
+    .await
+    .unwrap()
+    .preview;
+    let accept = async |mutation| store.accept(Daemon, mutation, None, true, None).await;
+    let prune = || {
+        Mutation::Preview(PreviewMutation::Prune {
+            id: preview.id.clone(),
+            repository: notes.into(),
+        })
+    };
+    assert!(matches!(
+        accept(prune()).await,
+        Err(StoreError::IdentityConflict)
+    ));
+    assert!(!store.get(&preview.id).await.unwrap().delete_intent());
+
+    let promoted = Mutation::CreateEnvironment {
+        application: application.clone(),
+        name: piqueld_core::EnvironmentName::parse("production-2").unwrap(),
+        source: Some(crate::api::SourceChoice::PromoteFrom(preview.id.clone())),
+    };
+    assert!(matches!(
+        accept(promoted).await,
+        Err(StoreError::Promotion(
+            super::PromotionError::SourceInvalid { .. }
+        ))
+    ));
+
+    accept(Mutation::Preview(PreviewMutation::Deploy {
+        id: preview.id.clone(),
+    }))
+    .await
+    .unwrap();
+    accept(prune()).await.unwrap();
+    assert!(store.get(&preview.id).await.unwrap().delete_intent());
+}

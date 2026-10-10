@@ -516,14 +516,16 @@ impl<D: DockerApi> Controller<D> {
         result
     }
 
-    /// Prunes daemon events, the audit trail, receipts, and build logs, plus
-    /// finished operations and events older than their retention windows. A
+    /// Prunes daemon events, the audit trail, receipts, build logs, and local
+    /// snapshots no preview uses, plus finished operations and events older
+    /// than their retention windows. A
     /// zero-day window disables pruning.
     async fn prune_history(&self, operation_days: u64, event_days: u64) -> Result<(), StoreError> {
         self.store.prune_daemon_events().await?;
         self.store.prune_audit().await?;
         self.store.prune_receipts().await?;
         self.store.prune_build_logs().await?;
+        self.store.prune_snapshots().await?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

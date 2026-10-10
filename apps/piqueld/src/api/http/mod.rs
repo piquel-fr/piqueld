@@ -815,6 +815,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Read) => previews::list))
         .routes(granted!(App(Read) => previews::get))
         .routes(granted!(App(Deploy) => previews::deploy))
+        .routes(granted!(App(Deploy) => previews::deploy_local))
         .routes(granted!(App(Delete) => previews::delete))
         .routes(granted!(App(Delete) => previews::prune))
         .routes(granted!(App(Deploy) => deployments::deploy))
@@ -1233,6 +1234,42 @@ impl From<ApplicationError> for ApiError {
                     format!(
                         "The manifest repository could not be read ({error:#}); no preview was deleted"
                     ),
+                )
+            }
+            ApplicationError::Snapshot(error) => error.into(),
+        }
+    }
+}
+
+impl From<crate::snapshot::SnapshotError> for ApiError {
+    /// Maps refused snapshot uploads; Git's output stays in the logs.
+    fn from(error: crate::snapshot::SnapshotError) -> Self {
+        use crate::snapshot::SnapshotError;
+        let message = error.to_string();
+        match error {
+            SnapshotError::TooLarge { limit } => Self::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                piqueld_core::codes::SNAPSHOT_TOO_LARGE,
+                format!("{message}; raise [previews] max_upload_bytes, or upload against a base the repository has"),
+            )
+            .details(json!({ "limit": limit })),
+            SnapshotError::Invalid(_) => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                piqueld_core::codes::SNAPSHOT_INVALID,
+                message,
+            ),
+            SnapshotError::BaseUnavailable { base } => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                piqueld_core::codes::SNAPSHOT_BASE_UNAVAILABLE,
+                format!("{message}; upload a complete bundle instead"),
+            )
+            .details(json!({ "base": base })),
+            SnapshotError::Internal(error) => {
+                tracing::error!(?error, "snapshot upload failed");
+                Self::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "snapshot_unavailable",
+                    message,
                 )
             }
         }

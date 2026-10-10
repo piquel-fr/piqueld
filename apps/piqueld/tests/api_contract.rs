@@ -248,10 +248,16 @@ async fn fake_runtime_accepts_digest_pinned_requested_images() {
 }
 
 async fn state(temp: &TempDir) -> ApiState {
+    state_with(temp, piqueld_core::manifest::PreviewLimits::default()).await
+}
+
+/// [`state`] with the daemon's `[previews]` limits.
+async fn state_with(temp: &TempDir, previews: piqueld_core::manifest::PreviewLimits) -> ApiState {
     let store = Arc::new(
         Store::open(temp.path().join("state.db"))
             .await
-            .expect("fresh database opens"),
+            .expect("fresh database opens")
+            .with_previews(previews),
     );
     // `FakeAuth` signs requests in with this administrator's credential,
     // which mutations re-read from the database.
@@ -6625,27 +6631,13 @@ async fn pruning_deletes_previews_only_when_their_branch_is_confirmed_gone() {
     use piqueld_client::{BranchState, ClientError, CreatePreviewRequest, PrunePreviewsRequest};
     let temp = tempfile::tempdir().unwrap();
     let repository = repository_with_branches(temp.path(), &["feat/gone", "feat/kept"]);
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
-    let client = Client::tcp(&format!("http://{address}/")).unwrap();
-    let mut manifest = manifest();
-    manifest.spec.manifest = Some(
-        serde_json::from_value(serde_json::json!({
-            "repository": {"url": repository.display().to_string(), "branch": "main"},
-            "path": "app.toml",
-        }))
-        .unwrap(),
-    );
-    let saved = client
-        .apply_application(&ApplyApplicationRequest {
-            expected_generation: Some(0),
-            expected_application_id: None,
-            manifest,
-        })
-        .await
-        .unwrap();
-    let application = saved.application_id.as_str();
+    let (client, server, application) = connected_application(
+        &temp,
+        &repository,
+        piqueld_core::manifest::PreviewLimits::default(),
+    )
+    .await;
+    let application = application.as_str();
     let mut previews = Vec::new();
     for branch in ["feat/gone", "feat/kept"] {
         let request = CreatePreviewRequest {
@@ -6715,5 +6707,176 @@ async fn pruning_deletes_previews_only_when_their_branch_is_confirmed_gone() {
     assert_eq!(deleted.len(), 1);
     assert_eq!(deleted[0].preview.id, previews[0]);
     assert_eq!(deleting().await, [true, false]);
+    server.abort();
+}
+
+/// Serves the contract API over TCP with `limits`, and saves the contract
+/// manifest connected to `repository`. Returns the client, the server, and
+/// the application ID.
+async fn connected_application(
+    temp: &TempDir,
+    repository: &std::path::Path,
+    limits: piqueld_core::manifest::PreviewLimits,
+) -> (Client, tokio::task::JoinHandle<std::io::Result<()>>, String) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(
+        serve(listener, router(state_with(temp, limits).await, FakeAuth)).into_future(),
+    );
+    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let mut manifest = manifest();
+    manifest.spec.manifest = Some(
+        serde_json::from_value(serde_json::json!({
+            "repository": {"url": repository.display().to_string(), "branch": "main"},
+            "path": "app.toml",
+        }))
+        .unwrap(),
+    );
+    let saved = client
+        .apply_application(&ApplyApplicationRequest {
+            expected_generation: Some(0),
+            expected_application_id: None,
+            manifest,
+        })
+        .await
+        .unwrap();
+    (client, server, saved.application_id)
+}
+
+/// Commits `files` in `work` as `message`.
+fn commit_files(work: &std::path::Path, files: &[(&str, &[u8])], message: &str) {
+    for (name, contents) in files {
+        std::fs::write(work.join(name), contents).unwrap();
+    }
+    git(work, &["add", "."]);
+    git(
+        work,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            message,
+        ],
+    );
+}
+
+/// A bundle of `work`'s `feat/local`, excluding `excluded` and its history.
+fn local_bundle(work: &std::path::Path, excluded: Option<&str>) -> Vec<u8> {
+    let path = work.join("../local.bundle");
+    let mut arguments = vec!["bundle", "create", "-q"];
+    let path_argument = path.display().to_string();
+    arguments.extend([path_argument.as_str(), "refs/heads/feat/local"]);
+    let excluded = excluded.map(|commit| format!("^{commit}"));
+    arguments.extend(excluded.as_deref());
+    git(work, &arguments);
+    std::fs::read(path).unwrap()
+}
+
+/// A snapshot of a never-pushed branch is uploaded thin against the base the
+/// repository has, deploys to a new preview whose branch state is `local`,
+/// and is never pruned; oversized and invalid bundles get their own errors.
+#[tokio::test]
+async fn local_snapshots_upload_within_limits_and_are_never_pruned() {
+    use piqueld_client::{BranchState, ClientError, CreatePreviewRequest, PrunePreviewsRequest};
+    let temp = tempfile::tempdir().unwrap();
+    let repository = repository_with_branches(temp.path(), &["feat/gone"]);
+    let limits = piqueld_core::manifest::PreviewLimits {
+        max_upload_bytes: 8192,
+        ..piqueld_core::manifest::PreviewLimits::default()
+    };
+    let (client, server, application) = connected_application(&temp, &repository, limits).await;
+    let application = application.as_str();
+    let request = CreatePreviewRequest {
+        branch: "feat/gone".into(),
+        slot: None,
+    };
+    let gone = client
+        .create_preview(application, &request)
+        .await
+        .unwrap()
+        .preview
+        .id;
+    git(&repository, &["branch", "-D", "feat/gone"]);
+
+    // A clone with a commit on a branch the repository never had.
+    let work = temp.path().join("work");
+    git(
+        temp.path(),
+        &["clone", "-q", &repository.display().to_string(), "work"],
+    );
+    git(&work, &["switch", "-qc", "feat/local"]);
+    commit_files(&work, &[("app.toml", b"local")], "local");
+    let base = std::process::Command::new("git")
+        .current_dir(&work)
+        .args(["rev-parse", "origin/main"])
+        .output()
+        .unwrap()
+        .stdout;
+    let base = String::from_utf8(base).unwrap().trim().to_owned();
+    let upload = async |bytes: Vec<u8>| {
+        let length = bytes.len() as u64;
+        client
+            .deploy_local_preview(application, ("feat/local", None), (bytes, length))
+            .await
+    };
+    let created = upload(local_bundle(&work, Some(&base))).await.unwrap();
+    assert!(created.created);
+    let local = created.preview.id;
+    let deployments = client.deployments(local.as_str(), None).await.unwrap();
+    assert!(matches!(
+        &deployments.items[0].origin,
+        piqueld_client::DeploymentOrigin::Local(snapshot) if snapshot.base.as_deref() == Some(base.as_str())
+    ));
+
+    // The never-pushed branch reads as `local`, not gone, and is kept.
+    let states = client.previews(application).await.unwrap();
+    let states = states
+        .into_iter()
+        .map(|view| view.branch)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        states,
+        [BranchState::Gone, BranchState::Local { head: None }]
+    );
+    let prune = PrunePreviewsRequest {
+        previews: vec![gone.clone(), local.clone()],
+    };
+    let deleted = client.prune_previews(application, &prune).await.unwrap();
+    assert_eq!(deleted.len(), 1);
+    assert_eq!(deleted[0].preview.id, gone);
+    assert!(
+        !client
+            .preview(local.as_str())
+            .await
+            .unwrap()
+            .preview
+            .delete_intent
+    );
+
+    // Oversized and invalid uploads are refused before deploying anything.
+    // The noise is a xorshift sequence, so it doesn't compress.
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let noise = (0..65_536)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect::<Vec<_>>();
+    commit_files(&work, &[("noise.bin", &noise)], "noise");
+    let code = |error: ClientError| match error {
+        ClientError::Api { status, error } => (status.as_u16(), error.code),
+        other => panic!("{other:?}"),
+    };
+    let large = upload(local_bundle(&work, None)).await.unwrap_err();
+    assert_eq!(code(large), (413, "snapshot_too_large".into()));
+    let invalid = upload(b"# v2 git bundle\nnot a bundle\n\n".to_vec()).await;
+    assert_eq!(code(invalid.unwrap_err()), (422, "snapshot_invalid".into()));
+    let deployments = client.deployments(local.as_str(), None).await.unwrap();
+    assert_eq!(deployments.items.len(), 1);
     server.abort();
 }

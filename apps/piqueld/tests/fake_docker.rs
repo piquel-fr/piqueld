@@ -2486,6 +2486,46 @@ mod repository_deployments {
             ]);
             self.git(&["rev-parse", "HEAD"])
         }
+        /// Commits `manifest` and a new `Dockerfile` on `feat/local` of a
+        /// clone, a branch this repository never has, and bundles it against
+        /// `base`. Returns the snapshot commit and the bundle.
+        fn snapshot(&self, manifest: &ApplicationManifest, base: &str) -> (String, Vec<u8>) {
+            let work = tempfile::tempdir().unwrap();
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .current_dir(work.path())
+                    .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{output:?}");
+                String::from_utf8(output.stdout).unwrap().trim().to_owned()
+            };
+            git(&[
+                "clone",
+                "-q",
+                &self.directory.path().display().to_string(),
+                ".",
+            ]);
+            git(&["switch", "-qc", "feat/local"]);
+            let manifest = serde_json::to_vec(manifest).unwrap();
+            std::fs::write(work.path().join("app.json"), manifest).unwrap();
+            std::fs::write(work.path().join("Dockerfile"), "FROM alpine:3.21\n").unwrap();
+            git(&["add", "--all"]);
+            git(&["commit", "-qm", "snapshot"]);
+            let bundle = work.path().join(".git/snapshot.bundle");
+            let bundle_path = bundle.display().to_string();
+            let excluded = format!("^{base}");
+            git(&[
+                "bundle",
+                "create",
+                "-q",
+                &bundle_path,
+                "refs/heads/feat/local",
+                &excluded,
+            ]);
+            (git(&["rev-parse", "HEAD"]), std::fs::read(bundle).unwrap())
+        }
         /// Builds `Dockerfile` from the manifest's own repository and revision.
         fn self_source() -> piqueld_core::Source {
             piqueld_core::Source::Git {
@@ -2668,7 +2708,7 @@ mod repository_deployments {
                 .unwrap()
                 .environment
                 .synced
-                .map(|head| head.commit)
+                .and_then(|head| head.commit)
         };
         // A deployment of its branch records the head it fetched.
         assert_eq!(synced().await.as_deref(), Some(first.as_str()));
@@ -3076,6 +3116,101 @@ mod repository_deployments {
         assert!(
             matches!(&stored.resolved.as_ref().unwrap().services[0].source, ResolvedSource::Git { commit, .. } if commit == &head)
         );
+    }
+
+    /// A local snapshot of a never-pushed branch, uploaded thin, deploys its
+    /// own manifest and builds `"self"` sources from the snapshot, through
+    /// the preview's normal deployment path. Its history records where it
+    /// came from, and sync records the branch as absent.
+    #[tokio::test]
+    async fn local_snapshots_deploy_their_manifest_and_build_self_sources_from_the_snapshot() {
+        let repository = RepositoryFixture::new();
+        let harness = ControllerHarness::new().await;
+        let mut fetched = repository.manifest("app.json");
+        fetched.spec.services[0].source = RepositoryFixture::self_source();
+        repository.write("app.json", &fetched);
+        std::fs::write(
+            repository.directory.path().join("Dockerfile"),
+            "FROM alpine:3.20\n",
+        )
+        .unwrap();
+        let base = repository.commit();
+        let mut bootstrap = repository.manifest("app.json");
+        bootstrap.spec.services.clear();
+        let saved = harness
+            .applications()
+            .save(bootstrap.validate_template().unwrap(), Some(0))
+            .await
+            .unwrap();
+        let application = ApplicationId::parse(saved.application_id).unwrap();
+
+        // The snapshot changes the manifest and the Dockerfile on a branch
+        // the repository never had.
+        let mut local = fetched.clone();
+        local.spec.services[0]
+            .environment
+            .insert("SNAPSHOT".into(), "yes".into());
+        let (snapshot, bundle) = repository.snapshot(&local, &base);
+        let created = harness
+            .applications()
+            .deploy_snapshot(
+                Daemon,
+                (
+                    application,
+                    piqueld_core::GitBranch::parse("feat/local").unwrap(),
+                    None,
+                ),
+                (
+                    futures_util::stream::once(async {
+                        Ok::<_, std::io::Error>(axum::body::Bytes::from(bundle))
+                    }),
+                    None,
+                ),
+                None,
+            )
+            .await
+            .unwrap();
+        let MutationResponse::Preview(created) = created else {
+            panic!("preview expected")
+        };
+        harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+        let operation = harness
+            .store
+            .operation(&created.operation.operation_id)
+            .await
+            .unwrap();
+        assert_eq!(operation.state, OperationState::Succeeded);
+        let stored = harness.store.get(&created.preview.id).await.unwrap();
+        let service = &stored.resolved.as_ref().unwrap().services[0];
+        assert!(
+            matches!(&service.source, ResolvedSource::Git { commit, .. } if commit == &snapshot)
+        );
+        assert_eq!(
+            service.environment.get("SNAPSHOT").map(String::as_str),
+            Some("yes")
+        );
+        let history = harness
+            .store
+            .deployments(&created.preview.id, None, 3)
+            .await
+            .unwrap();
+        assert_eq!(
+            history.items[0].origin,
+            piqueld_core::api::DeploymentOrigin::Local(piqueld_core::api::LocalSnapshot {
+                commit: snapshot.clone(),
+                base: Some(base),
+            })
+        );
+        assert_eq!(
+            history.items[0].system_value(piqueld_core::manifest::SystemVariable::GitSha),
+            Some(snapshot.as_str())
+        );
+        let synced = stored.environment.synced.unwrap();
+        assert_eq!(synced.commit, None);
     }
 
     #[tokio::test]
