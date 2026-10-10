@@ -66,7 +66,7 @@ test('each environment of a repository-backed application follows its own branch
   const staging = new URL(page.url()).pathname.split('/').pop()!;
 
   const branch = page.getByLabel('Branch', { exact: true });
-  const change = page.getByRole('button', { name: 'Change branch', exact: true });
+  const change = page.getByRole('button', { name: 'Save source', exact: true });
   await expect(branch).toHaveValue('release');
   await expect(change).toBeDisabled();
   // Surrounding whitespace names the same branch.

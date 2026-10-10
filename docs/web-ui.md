@@ -37,11 +37,11 @@ manifest it deploys mounts and where the value comes from: generated for the
 environment, the application's secret store (with its version), missing from the
 store, which would fail the next deploy with `secret_missing`, not allowed by the
 secret's access list, which would fail it with `secret_access_denied`, or discarded by key recovery, which fails it with
-`secret_unavailable` until the value is replaced. Each of those rows fixes itself in place:
-**Store** saves a missing value that only this environment may mount, **Replace** stores a
-new version of a discarded one, and **Allow this environment** adds it to the secret's access
-list; each applies from the next deployment or promotion. A promoted environment not
-promoted into yet lists what the release its source runs mounts. Below it, the environment's generated values
+`secret_unavailable` until the value is replaced. A promoted environment not
+promoted into yet lists what the release its source runs mounts. Below it, the
+application's secret store works as in the application's Secrets tab, limited to the
+secrets this environment may mount or mounts; a new secret saved there may be mounted by
+this environment only, unless its access is changed. Then the environment's generated values
 can be regenerated for the next deployment, or deleted so a later deployment
 generates new ones. Deletion confirms the environment
 name, retains its Docker volumes, and leaves the application and other
@@ -79,7 +79,8 @@ of its branch again.
 
 **Preview** and **Deploy to <environment>** on an environment page target that
 environment. On the application page they target its only environment; with
-several, **Deploy…** opens the Environments tab to choose one. Deployment actions
+several, **Deploy…** opens a list of every environment, each with its own action
+(Deploy, or Promote from its source). Deployment actions
 are disabled for deleting environments. Preview plans the manifest the
 environment deploys: for an environment that follows a branch, the one last
 fetched from it, so Preview is disabled until its first deployment. A service's Logs tab reads the only
@@ -87,7 +88,8 @@ environment's logs, or links to each environment's logs.
 
 A promoted environment never builds, so its page and its Environments row offer
 **Promote from <source>** instead of Preview and Deploy, and its source's page
-offers **Promote to <environment>** next to Deploy. Either first plans the promotion of
+offers **Promote…**, listing the environments promoted from it, each with **Promote to
+<environment>**. Either first plans the promotion of
 its source environment's current release and shows it: where the release comes
 from, the release itself (commit, each service's image, availability), the
 changes against the environment's current deployment, new (empty) volumes, the
@@ -326,11 +328,12 @@ is redeployed until its next deployment. The environment's Variables card, Previ
 Logs service filter read the manifest last fetched from its branch; the
 Variables card says when it has fetched nothing yet.
 
-The **Source** card also makes an environment promoted: **Promote from** picks
-another environment of the application, after which this one only receives
-releases promoted from it and never builds. A promoted environment's card names
-its source, links to it, and offers **Track own source**, which builds the saved
-manifest or the branch `spec.manifest` names again; its branch form is hidden.
+The **Source** card makes this one choice: **Deploys** either *Builds its own source* (the
+saved manifest, or for a repository-backed application the branch and optional commit
+below) or *Releases promoted from <environment>*, which never builds and only receives
+releases promoted from it. The card says what the environment does now and what the
+selected choice would do; **Save source** applies it, redeploying nothing. A promoted
+environment's card links to its source.
 **New environment** can create a promoted environment directly. Its Variables
 card reads the manifest of the release last promoted into it. A deployment's Snapshot shows the manifest path and revision it was fetched
 from, and a warning when the fetched file's own `spec.manifest` names another

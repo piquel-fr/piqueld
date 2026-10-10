@@ -7,7 +7,7 @@ use super::super::format::commit;
 use super::super::ui::{
     Icon, Modal, Tone, badge, empty, health_badge, icon, notice, operation_badge, text_input, when,
 };
-use super::deployments::PromoteAction;
+use super::deployments::EnvironmentAction;
 use super::{EditorContext, editor, mutation_client, transport_failure};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -196,7 +196,6 @@ impl EditorContext {
 pub(super) fn EnvironmentList() -> impl IntoView {
     let context = editor();
     let signals = context.dashboard.with_value(|d| d.signals);
-    let navigate = use_navigate();
     // Latest deployment of an environment among the listed deployments.
     let latest = move |environment: &str| {
         signals.applications.with(|rows| {
@@ -223,7 +222,6 @@ pub(super) fn EnvironmentList() -> impl IntoView {
                 if environments.is_empty() {
                     return empty("No environments yet. Create one to deploy this application.");
                 }
-                let navigate = navigate.clone();
                 view! {
                     <ul class="list" aria-label="Environments">
                         {environments
@@ -231,12 +229,9 @@ pub(super) fn EnvironmentList() -> impl IntoView {
                             .map(|environment| {
                                 let id = environment.id.to_string();
                                 let href = context.environment_href(&id);
-                                let navigate = navigate.clone();
                                 let deleting = environment.delete_intent;
                                 let name = environment.name.to_string();
                                 let source = context.describe_source(&environment.source);
-                                let promoted = environment.source.promoted_from().is_some();
-                                let label = format!("Deploy to {name}");
                                 let health = environment_row(signals, &id).map(|row| row.health());
                                 let latest = latest(&id);
                                 view! {
@@ -265,32 +260,7 @@ pub(super) fn EnvironmentList() -> impl IntoView {
                                         } else {
                                             health.map(health_badge).into_any()
                                         }}
-                                        {if promoted {
-                                            view! { <PromoteAction environment={id} compact=true /> }
-                                                .into_any()
-                                        } else {
-                                            view! {
-                                                <button
-                                                    type="button"
-                                                    class="btn btn-sm"
-                                                    aria-label={label}
-                                                    disabled={move || context.action_blocked() || deleting}
-                                                    on:click={move |_| {
-                                                        let navigate = navigate.clone();
-                                                        let shown = id.clone();
-                                                        context
-                                                            .deploy(
-                                                                id.clone(),
-                                                                move || context.show_deployments(&shown, navigate),
-                                                            );
-                                                    }}
-                                                >
-                                                    {icon(Icon::Rocket)}
-                                                    "Deploy"
-                                                </button>
-                                            }
-                                                .into_any()
-                                        }}
+                                        <EnvironmentAction environment={environment} compact=true />
                                         <span class="chevron" aria-hidden="true">
                                             {icon(Icon::ChevronRight)}
                                         </span>
@@ -383,17 +353,20 @@ impl EditorContext {
     }
 }
 
-/// "Promote from" select over `sources`; its value is the chosen
-/// environment's ID, or empty for the `none` option.
+/// A `label`led ("Promote from" by default) select over `sources`, each
+/// option named after `prefix`; its value is the chosen environment's ID,
+/// or empty for the `none` option.
 #[component]
 fn PromotionSource(
     value: RwSignal<String>,
     sources: Signal<Vec<(String, String)>>,
     none: &'static str,
+    #[prop(default = "Promote from")] label: &'static str,
+    #[prop(default = "")] prefix: &'static str,
 ) -> impl IntoView {
     view! {
         <label class="field">
-            <span>"Promote from"</span>
+            <span>{label}</span>
             <select on:change={move |event| value.set(event_target_value(&event))}>
                 <option value="" prop:selected={move || value.with(String::is_empty)}>
                     {none}
@@ -409,7 +382,7 @@ fn PromotionSource(
                                     value={id}
                                     prop:selected={move || value.with(|value| *value == selected)}
                                 >
-                                    {name}
+                                    {format!("{prefix}{name}")}
                                 </option>
                             }
                         })
@@ -530,12 +503,12 @@ fn NewEnvironment() -> impl IntoView {
     }
 }
 
-/// Where the environment page's environment deploys from. A tracking one
-/// shows the branch it follows, with a form to point it at another branch or
-/// pin a commit (one deploying the saved manifest only says so), and whether
-/// pushes to it deploy it, with a button to opt in or out; a promoted one
-/// links its source and can track its own source again. Either can be made
-/// promoted from another environment.
+/// Where the environment page's environment deploys from, as one choice:
+/// building its own source (the saved manifest, or a branch and optional
+/// commit of the application's repository) or receiving releases promoted
+/// from another environment. Saving changes only where later deployments
+/// come from; nothing is redeployed. An environment following a branch also
+/// shows whether pushes to it deploy it, with a button to opt in or out.
 #[component]
 fn SourceSettings() -> impl IntoView {
     let context = editor();
@@ -555,24 +528,35 @@ fn SourceSettings() -> impl IntoView {
                 .map(ToString::to_string)
         })
     };
+    let repository = move || {
+        context
+            .saved
+            .with(|saved| saved.application.spec().manifest.is_some())
+    };
+    // The choice as currently saved: the branch it follows (by default the
+    // one `spec.manifest` names) and the environment it is promoted from.
     let drafts = move || {
-        let branch = current().map_or_else(Default::default, |branch| {
-            (
-                branch.branch().to_owned(),
-                branch.commit().unwrap_or_default().to_owned(),
-            )
-        });
+        let branch = current().map_or_else(
+            || default_branch(context),
+            |branch| {
+                (
+                    branch.branch().to_owned(),
+                    branch.commit().unwrap_or_default().to_owned(),
+                )
+            },
+        );
         (branch, promoted().unwrap_or_default())
     };
     let (initial_branch, initial_source) = drafts();
     let branch = RwSignal::new(initial_branch);
+    // The environment to promote from; empty to build its own source.
     let promote_from = RwSignal::new(initial_source);
-    // Follow source changes, e.g. a promoted environment tracking again.
     Effect::new(move |_| {
         let (current_branch, current_source) = drafts();
         branch.set(current_branch);
         promote_from.set(current_source);
     });
+    let builds = move || promote_from.with(String::is_empty);
     let sources = Signal::derive(move || context.promotion_sources(&id.get_value()));
     let deleting = move || {
         context
@@ -580,20 +564,45 @@ fn SourceSettings() -> impl IntoView {
             .is_some_and(|environment| environment.delete_intent)
     };
     let blocked = move || context.action_blocked() || deleting();
+    // The change saving would make, if any.
+    let change = move || -> Option<Result<EnvironmentChange, String>> {
+        let id = id.get_value();
+        if !builds() {
+            let from = promote_from.get();
+            return (Some(&from) != promoted().as_ref()).then(|| {
+                Ok(EnvironmentChange::Source {
+                    id,
+                    promote_from: Some(from),
+                })
+            });
+        }
+        if repository() {
+            return match tracked_branch(branch.get()) {
+                Ok(tracked) if promoted().is_none() && Some(&tracked) == current().as_ref() => None,
+                Ok(tracked) => Some(Ok(EnvironmentChange::Branch {
+                    id,
+                    branch: tracked,
+                })),
+                Err(error) => Some(Err(error)),
+            };
+        }
+        promoted().map(|_| {
+            Ok(EnvironmentChange::Source {
+                id,
+                promote_from: None,
+            })
+        })
+    };
     let save = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
-        match tracked_branch(branch.get_untracked()) {
-            Ok(tracked) => context.change_environment(
-                EnvironmentChange::Branch {
-                    id: id.get_value(),
-                    branch: tracked,
-                },
-                |_| {},
-            ),
-            Err(error) => context.set_error(Some(error)),
+        match change() {
+            Some(Ok(change)) => context.change_environment(change, |_| {}),
+            Some(Err(error)) => context.set_error(Some(error)),
+            None => {}
         }
     };
     let sync = move || {
+        current()?;
         let environment = context.selected_environment()?;
         let state = context
             .saved
@@ -609,144 +618,110 @@ fn SourceSettings() -> impl IntoView {
             context.change_environment(change, |_| {});
         }
     };
-    let change_source = move |promote_from: Option<String>| {
-        context.change_environment(
-            EnvironmentChange::Source {
-                id: id.get_value(),
-                promote_from,
-            },
-            |_| {},
-        );
-    };
     view! {
         <section class="card">
             <header>
                 <div>
                     <h3>"Source"</h3>
                     <p>
-                        {move || match promoted() {
-                            Some(from) => {
+                        {move || match (promoted(), current()) {
+                            (Some(from), _) => {
                                 view! {
                                     "Receives releases promoted from "
                                     <A href={context.environment_href(&from)}>
                                         {context.environment_name(&from)}
                                     </A>
-                                    "; it never builds or fetches. Tracking its own source again builds the saved manifest, or the branch the application's manifest names; nothing is redeployed."
+                                    ", and never builds or fetches."
                                 }
                                     .into_any()
                             }
-                            None if current().is_some() => {
-                                "Deploys the manifest on this branch of the application's repository. Changing it redeploys nothing; the next deployment fetches the new branch."
+                            (None, Some(branch)) => {
+                                format!("Builds the manifest on branch {branch} of the application's repository.")
                                     .into_any()
                             }
-                            None => "Deploys the application's saved manifest.".into_any(),
+                            (None, None) => "Builds the application's saved manifest.".into_any(),
                         }}
                     </p>
                 </div>
-                <Show when={move || promoted().is_some()}>
-                    <button
-                        type="button"
-                        class="btn"
-                        disabled={blocked}
-                        on:click={move |_| change_source(None)}
-                    >
-                        "Track own source"
-                    </button>
-                </Show>
             </header>
-            <Show when={move || current().is_some()}>
-                <form class="stack-sm" on:submit={save}>
-                    <fieldset class="form-grid" disabled={blocked}>
-                        {text_input("Branch", branch, |v| v.0.clone(), |v, input| v.0 = input)}
-                        {text_input(
-                            "Commit (optional)",
-                            branch,
-                            |v| v.1.clone(),
-                            |v, input| v.1 = input,
-                        )}
-                    </fieldset>
-                    <div class="form-actions">
-                        <button
-                            type="submit"
-                            class="btn"
-                            disabled={move || {
-                                blocked() || tracked_branch(branch.get()).ok() == current()
-                            }}
-                        >
-                            "Change branch"
-                        </button>
-                    </div>
-                </form>
-                {move || {
-                    sync()
-                        .map(|(environment, state)| {
-                            let (badge, reason) = sync_badge(state);
-                            view! {
-                                <dl class="kv">
-                                    <dt>"Deploy on push"</dt>
-                                    <dd>
-                                        {badge}
-                                        <div class="muted">{reason}</div>
-                                    </dd>
-                                    <dt>"Last synced"</dt>
-                                    <dd>{last_synced(environment.synced)}</dd>
-                                </dl>
-                                <div class="form-actions">
-                                    <button
-                                        type="button"
-                                        class="btn"
-                                        disabled={move || context.action_blocked() || deleting()}
-                                        on:click={toggle_sync}
-                                    >
-                                        {if environment.sync {
-                                            "Stop deploying on push"
-                                        } else {
-                                            "Deploy on push"
-                                        }}
-                                    </button>
-                                </div>
+            <form class="stack-sm" on:submit={save}>
+                <fieldset class="stack-sm" disabled={blocked}>
+                    <PromotionSource
+                        value={promote_from}
+                        sources={sources}
+                        none="Builds its own source"
+                        label="Deploys"
+                        prefix="Releases promoted from "
+                    />
+                    <Show when={move || builds() && repository()}>
+                        <div class="form-grid">
+                            {text_input("Branch", branch, |v| v.0.clone(), |v, input| v.0 = input)}
+                            {text_input(
+                                "Commit (optional)",
+                                branch,
+                                |v| v.1.clone(),
+                                |v, input| v.1 = input,
+                            )}
+                        </div>
+                    </Show>
+                </fieldset>
+                <p class="hint">
+                    {move || {
+                        match (builds(), repository()) {
+                            (false, _) => {
+                                "Promoted: never builds or fetches. Deploy it with Promote, which takes the release its source runs."
                             }
-                        })
-                }}
-            </Show>
-            <Show when={move || sources.with(|sources| !sources.is_empty())}>
-                <form
-                    class="stack-sm"
-                    on:submit={move |event: leptos::ev::SubmitEvent| {
-                        event.prevent_default();
-                        change_source(Some(promote_from.get_untracked()));
+                            (true, true) => {
+                                "Builds: each deployment fetches the manifest from this branch, or the pinned commit, and builds it."
+                            }
+                            (true, false) => {
+                                "Builds: each deployment builds the application's saved manifest."
+                            }
+                        }
                     }}
-                >
-                    <p class="hint">
-                        "A promoted environment never builds: it only deploys releases promoted from its source environment. Changing the source redeploys nothing."
-                    </p>
-                    <fieldset class="stack-sm" disabled={blocked}>
-                        <PromotionSource
-                            value={promote_from}
-                            sources={sources}
-                            none="Choose an environment"
-                        />
-                    </fieldset>
-                    <div class="form-actions">
-                        <button
-                            type="submit"
-                            class="btn"
-                            disabled={move || {
-                                blocked() || promote_from.with(String::is_empty)
-                                    || Some(promote_from.get()) == promoted()
-                            }}
-                        >
-                            {move || {
-                                if promoted().is_some() {
-                                    "Change source environment"
-                                } else {
-                                    "Promote from environment"
-                                }
-                            }}
-                        </button>
-                    </div>
-                </form>
-            </Show>
+                    " Saving redeploys nothing; the change applies from the next deployment or promotion."
+                </p>
+                <div class="form-actions">
+                    <button
+                        type="submit"
+                        class="btn"
+                        disabled={move || blocked() || change().is_none()}
+                    >
+                        "Save source"
+                    </button>
+                </div>
+            </form>
+            {move || {
+                sync()
+                    .map(|(environment, state)| {
+                        let (badge, reason) = sync_badge(state);
+                        view! {
+                            <dl class="kv">
+                                <dt>"Deploy on push"</dt>
+                                <dd>
+                                    {badge}
+                                    <div class="muted">{reason}</div>
+                                </dd>
+                                <dt>"Last synced"</dt>
+                                <dd>{last_synced(environment.synced)}</dd>
+                            </dl>
+                            <div class="form-actions">
+                                <button
+                                    type="button"
+                                    class="btn"
+                                    disabled={move || context.action_blocked() || deleting()}
+                                    on:click={toggle_sync}
+                                >
+                                    {if environment.sync {
+                                        "Stop deploying on push"
+                                    } else {
+                                        "Deploy on push"
+                                    }}
+                                </button>
+                            </div>
+                        }
+                    })
+            }}
         </section>
     }
 }

@@ -44,7 +44,10 @@ test('the application page stays whole and each environment has its own page', a
 
   // With several environments, deploying starts by choosing one.
   await page.getByRole('button', { name: 'Deploy…', exact: true }).click();
-  await expect(applicationTab(page, 'Environments')).toHaveAttribute('aria-current', 'page');
+  const chooser = page.getByRole('dialog', { name: 'Deploy an environment' });
+  await expect(chooser.getByRole('button', { name: /^Deploy to / })).toHaveCount(2);
+  await chooser.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await applicationTab(page, 'Environments').click();
   const environments = page.getByRole('list', { name: 'Environments' });
   await expect(environments.getByRole('link')).toHaveText(['production', 'staging']);
 

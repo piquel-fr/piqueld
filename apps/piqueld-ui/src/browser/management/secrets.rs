@@ -209,10 +209,18 @@ impl AccessForm {
 /// The application's secret store: manually set values (never read back),
 /// their versions and access lists. Writes are guarded by generation and
 /// clear the value field as soon as they are submitted; after a failure,
-/// actions stay disabled until the list is refreshed.
+/// actions stay disabled until the list is refreshed. On an environment's
+/// page, given the secrets its manifest `mounts`, it lists only the secrets
+/// that environment may mount or mounts, and new ones default to it alone;
+/// `changed` runs after every write.
 #[component]
-fn StoredSecrets() -> impl IntoView {
+fn StoredSecrets(
+    #[prop(optional, into)] mounts: Option<Signal<BTreeSet<String>>>,
+    #[prop(optional)] changed: Option<Callback<()>>,
+) -> impl IntoView {
     let context = editor();
+    // The environment page's environment, when scoped to it.
+    let scope = move || mounts.and_then(|_| context.selected_environment());
     let secrets = RwSignal::new(Vec::<StoredSecret>::new());
     let ready = RwSignal::new(false);
     let feedback = Feedback::new();
@@ -246,6 +254,17 @@ fn StoredSecrets() -> impl IntoView {
             form.load(&access);
         }
     });
+    if let Some(environment) = mounts.and_then(|_| context.selected_environment()) {
+        form.load(&SecretAccess {
+            environments: EnvironmentAccess::Only(BTreeSet::from([environment.id])),
+            previews: false,
+        });
+    }
+    let notify = move || {
+        if let Some(changed) = changed {
+            changed.run(());
+        }
+    };
     let saved = move |secret: StoredSecret, message: &str| {
         secrets.update(|items| {
             items.retain(|s| s.metadata.name != secret.metadata.name);
@@ -253,6 +272,7 @@ fn StoredSecrets() -> impl IntoView {
             items.sort_by(|a, b| a.metadata.name.cmp(&b.metadata.name));
         });
         feedback.succeed(message);
+        notify();
     };
     let failed = move |e: ClientError| {
         ready.set(false);
@@ -335,16 +355,30 @@ fn StoredSecrets() -> impl IntoView {
                 Ok(()) => {
                     secrets.update(|items| items.retain(|s| s.metadata.name != secret.name));
                     feedback.succeed("Secret deleted.");
+                    notify();
                 }
                 Err(e) => failed(e),
             }
             context.busy.set(false);
         });
     });
-    let rows = move || {
-        let environments = context.saved.with(|saved| saved.environments.clone());
+    // Every secret, or on an environment's page the ones it may mount or mounts.
+    let shown = move || {
+        let scope = scope();
+        let mounts = mounts.map(|mounts| mounts.get()).unwrap_or_default();
         secrets
             .get()
+            .into_iter()
+            .filter(|secret| {
+                scope.as_ref().is_none_or(|environment| {
+                    secret.access.allows(environment) || mounts.contains(&secret.metadata.name)
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let rows = move || {
+        let environments = context.saved.with(|saved| saved.environments.clone());
+        shown()
             .into_iter()
             .map(|secret| {
                 let selected = secret.clone();
@@ -399,7 +433,13 @@ fn StoredSecrets() -> impl IntoView {
                 <div>
                     <h3>"Secret store"</h3>
                     <p>
-                        "Manually set values, shared by this application's environments and write-only. Each lists the environments that may mount it; deploying an environment that mounts a secret it may not use fails before rollout."
+                        {move || {
+                            if scope().is_some() {
+                                "Manually set values this environment may mount or mounts, from the application's store, write-only. New ones may be mounted by this environment only, unless you choose otherwise; deploying or promoting it while it mounts a secret it may not use fails before rollout."
+                            } else {
+                                "Manually set values, shared by this application's environments and write-only. Each lists the environments that may mount it; deploying an environment that mounts a secret it may not use fails before rollout."
+                            }
+                        }}
                     </p>
                 </div>
                 <button
@@ -426,9 +466,13 @@ fn StoredSecrets() -> impl IntoView {
                 }}
                 <div class="table-wrap">
                     {move || {
-                        if secrets.with(Vec::is_empty) {
+                        if shown().is_empty() {
                             if ready.get() {
-                                empty("No secrets stored for this application.")
+                                empty(if scope().is_some() {
+                                    "No stored secret this environment may mount."
+                                } else {
+                                    "No secrets stored for this application."
+                                })
                             } else {
                                 empty("Loading secrets…")
                             }
@@ -613,6 +657,13 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
         let template = context.environment_manifest()?;
         Some(stored.with(|stored| MountedSecret::list(&template, &environment, stored)))
     };
+    let mounted_names = Signal::derive(move || {
+        mounted()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<BTreeSet<_>>()
+    });
     let mounted_rows = move || {
         mounted()
             .unwrap_or_default()
@@ -623,22 +674,12 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                     MountedSecret::Missing => Tone::Warn,
                     MountedSecret::Denied | MountedSecret::Unavailable => Tone::Bad,
                 };
-                let fix = view! {
-                    <MountedSecretFix
-                        name={name.clone()}
-                        state={source.clone()}
-                        stored={stored}
-                        feedback={feedback}
-                        reload={reload_stored}
-                    />
-                };
                 view! {
                     <tr>
                         <td>
                             <strong>{name}</strong>
                         </td>
                         <td>{badge(tone, source.to_string())}</td>
-                        <td class="actions">{fix}</td>
                     </tr>
                 }
             })
@@ -695,7 +736,7 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                     <div>
                         <h3>"Mounted secrets"</h3>
                         <p>
-                            "Where each secret this environment's manifest mounts comes from. Store a missing value, or allow this environment to mount one, here or in the application's Secrets tab."
+                            "Where each secret this environment's manifest mounts comes from. Set stored values below."
                         </p>
                     </div>
                     <button
@@ -739,7 +780,6 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                                             <tr>
                                                 <th>"Name"</th>
                                                 <th>"Value"</th>
-                                                <th></th>
                                             </tr>
                                         </thead>
                                         <tbody>{mounted_rows()}</tbody>
@@ -751,6 +791,7 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                     </div>
                 </div>
             </section>
+            <StoredSecrets mounts={mounted_names} changed={reload_stored} />
             <section class="card">
                 <header>
                     <div>
@@ -789,133 +830,6 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                 </div>
             </section>
         </div>
-    }
-}
-
-/// Fixes a mounted secret the environment page's environment can't use, in
-/// place: stores a missing value that only this environment may mount,
-/// replaces a value key recovery discarded, or adds this environment to a
-/// stored secret's access list. Nothing to fix renders nothing. Changes
-/// apply to its next deployment or promotion.
-#[component]
-fn MountedSecretFix(
-    name: String,
-    state: MountedSecret,
-    stored: RwSignal<Vec<StoredSecret>>,
-    feedback: Feedback,
-    reload: Callback<()>,
-) -> impl IntoView {
-    let context = editor();
-    let name = StoredValue::new(name);
-    let value = RwSignal::new(String::new());
-    let environment = move || EnvironmentId::parse(context.environment_id()).ok();
-    let current = move || {
-        stored.with_untracked(|items| {
-            items
-                .iter()
-                .find(|secret| secret.metadata.name == name.get_value())
-                .cloned()
-        })
-    };
-    let finish = move |result: Result<StoredSecret, ClientError>| {
-        match result {
-            Ok(_) => feedback.succeed("Saved. It applies to this environment's next deployment."),
-            Err(e) => feedback.fail(client_error_message(&e), &e),
-        }
-        reload.run(());
-        context.busy.set(false);
-    };
-    // Stores the typed value: a new secret only this environment may mount,
-    // or a new version of a discarded one, keeping its access list.
-    let store = move |_| {
-        let Some(environment) = environment() else {
-            return;
-        };
-        let bytes = value.get_untracked().into_bytes();
-        if bytes.is_empty() {
-            return;
-        }
-        value.set(String::new());
-        let existing = current();
-        let generation = existing
-            .as_ref()
-            .map_or(0, |secret| secret.metadata.generation);
-        let access = existing.is_none().then(|| SecretAccess {
-            environments: EnvironmentAccess::Only(BTreeSet::from([environment])),
-            previews: false,
-        });
-        let (application, name) = (context.id(), name.get_value());
-        context.busy.set(true);
-        feedback.clear();
-        spawn_local(async move {
-            finish(
-                Client::browser()
-                    .put_stored_secret(&application, &name, generation, bytes, access.as_ref())
-                    .await,
-            );
-        });
-    };
-    let allow = move |_| {
-        let (Some(environment), Some(secret)) = (environment(), current()) else {
-            return;
-        };
-        let mut allowed = match secret.access.environments {
-            EnvironmentAccess::Only(allowed) => allowed,
-            EnvironmentAccess::All => BTreeSet::new(),
-        };
-        allowed.insert(environment);
-        let access = SecretAccess {
-            environments: EnvironmentAccess::Only(allowed),
-            previews: secret.access.previews,
-        };
-        let (application, name) = (context.id(), name.get_value());
-        context.busy.set(true);
-        feedback.clear();
-        spawn_local(async move {
-            finish(
-                Client::browser()
-                    .set_secret_access(&application, &name, &access)
-                    .await,
-            );
-        });
-    };
-    let blocked = move || context.blocked();
-    match state {
-        MountedSecret::Missing | MountedSecret::Unavailable => {
-            let action = if state == MountedSecret::Missing {
-                "Store"
-            } else {
-                "Replace"
-            };
-            view! {
-                <div class="form-actions">
-                    <input
-                        type="password"
-                        autocomplete="off"
-                        placeholder="Value"
-                        aria-label={format!("Value of {}", name.get_value())}
-                        prop:value={move || value.get()}
-                        on:input={move |e| value.set(event_target_value(&e))}
-                    />
-                    <button
-                        type="button"
-                        class="btn btn-sm"
-                        disabled={move || blocked() || value.with(String::is_empty)}
-                        on:click={store}
-                    >
-                        {action}
-                    </button>
-                </div>
-            }
-            .into_any()
-        }
-        MountedSecret::Denied => view! {
-            <button type="button" class="btn btn-sm" disabled={blocked} on:click={allow}>
-                "Allow this environment"
-            </button>
-        }
-        .into_any(),
-        MountedSecret::Generated | MountedSecret::Stored { .. } => ().into_any(),
     }
 }
 

@@ -11,8 +11,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{
-    ApplyApplicationRequest, Client, DeploymentOrigin, DeploymentView, Page, PlanView,
-    PromoteRequest, SecretProblem, Source, ValidatedRollout,
+    ApplyApplicationRequest, Client, DeploymentOrigin, DeploymentView, EnvironmentView, Page,
+    PlanView, PromoteRequest, SecretProblem, Source, ValidatedRollout,
 };
 
 /// "Preview" and "Deploy" buttons for the editor's target environment. Preview
@@ -20,10 +20,10 @@ use piqueld_client::{
 /// fetched one when it follows a branch; cleared whenever the saved view or
 /// target changes); Deploy starts a deployment of the saved
 /// generation, then shows the environment's deployments. Without a single target
-/// (an application with several environments or none), Deploy opens the
-/// Environments tab to choose one. A promoted target, which never builds,
-/// offers Promote instead; a tracking one also promotes into every
-/// environment promoted from it.
+/// (an application with several environments or none), Deploy… lists the
+/// environments to choose one. A promoted target, which never builds,
+/// offers Promote instead; a tracking one also offers Promote… into the
+/// environments promoted from it.
 #[component]
 pub(super) fn DeploymentActions() -> impl IntoView {
     let context = editor();
@@ -35,7 +35,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
             .is_some_and(|environment| environment.source.promoted_from().is_some())
     });
     // Environments promoted from this one, which its page promotes into.
-    let dependents = move || {
+    let dependents = Signal::derive(move || {
         let current = context.environment.get();
         context.saved.with(|saved| {
             saved
@@ -46,10 +46,10 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                         && environment.source.promoted_from().map(|id| id.as_str())
                             == current.as_deref()
                 })
-                .map(|environment| environment.id.to_string())
+                .cloned()
                 .collect::<Vec<_>>()
         })
-    };
+    });
     let deploy = move |_| {
         let environment = context.environment_id();
         context.deploy(environment.clone(), move || {
@@ -89,16 +89,33 @@ pub(super) fn DeploymentActions() -> impl IntoView {
         <Show
             when={move || context.environment.get().is_some()}
             fallback={move || {
+                let environments = Signal::derive(move || {
+                    context.saved.with(|saved| saved.environments.clone())
+                });
                 view! {
-                    <button
-                        type="button"
-                        class="btn btn-primary"
-                        title="Choose an environment to deploy"
-                        on:click={move |_| context.tab.set("Environments")}
+                    // Without environments, Deploy… leads to creating one.
+                    <Show
+                        when={move || !environments.with(Vec::is_empty)}
+                        fallback={move || {
+                            view! {
+                                <button
+                                    type="button"
+                                    class="btn btn-primary"
+                                    title="Create an environment to deploy"
+                                    on:click={move |_| context.tab.set("Environments")}
+                                >
+                                    {icon(Icon::Rocket)}
+                                    "Deploy…"
+                                </button>
+                            }
+                        }}
                     >
-                        {icon(Icon::Rocket)}
-                        "Deploy…"
-                    </button>
+                        <ChooseEnvironment
+                            label="Deploy…"
+                            title="Deploy an environment"
+                            environments={environments}
+                        />
+                    </Show>
                 }
             }}
         >
@@ -137,12 +154,114 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                             .map_or_else(|| "Deploy".into(), |env| format!("Deploy to {}", env.name))
                     }}
                 </button>
-                <For each={dependents} key={String::clone} let:id>
-                    <PromoteAction environment={id} />
-                </For>
+                <Show when={move || !dependents.with(Vec::is_empty)}>
+                    <ChooseEnvironment
+                        label="Promote…"
+                        title="Promote into an environment"
+                        environments={dependents}
+                    />
+                </Show>
             </Show>
         </Show>
         <DeploymentPreview preview={preview} />
+    }
+}
+
+/// `environment`'s own action: Deploy for one that builds its source, or
+/// Promote for a promoted one (see `PromoteAction`). Either shows its
+/// deployments once accepted, then runs `done`.
+#[component]
+pub(super) fn EnvironmentAction(
+    environment: EnvironmentView,
+    #[prop(optional)] compact: bool,
+    #[prop(default = None)] done: Option<Callback<()>>,
+) -> impl IntoView {
+    let context = editor();
+    let id = environment.id.to_string();
+    if environment.source.promoted_from().is_some() {
+        return view! { <PromoteAction environment={id} compact={compact} done={done} /> }
+            .into_any();
+    }
+    let navigate = StoredValue::new(use_navigate());
+    let deleting = environment.delete_intent;
+    let label = format!("Deploy to {}", environment.name);
+    let id = StoredValue::new(id);
+    view! {
+        <button
+            type="button"
+            class={if compact { "btn btn-sm" } else { "btn btn-primary" }}
+            aria-label={label.clone()}
+            disabled={move || context.action_blocked() || deleting}
+            on:click={move |_| {
+                context
+                    .deploy(
+                        id.get_value(),
+                        move || {
+                            context.show_deployments(&id.get_value(), navigate.get_value());
+                            if let Some(done) = done {
+                                done.run(());
+                            }
+                        },
+                    );
+            }}
+        >
+            {icon(Icon::Rocket)}
+            {if compact { "Deploy".to_owned() } else { label.clone() }}
+        </button>
+    }
+    .into_any()
+}
+
+/// A `label`led button opening a dialog that lists `environments`, each
+/// with its own action (see `EnvironmentAction`), so one can be chosen:
+/// "Deploy…" over an application's environments, "Promote…" over the
+/// environments promoted from the shown one. Closes once an action was
+/// accepted.
+#[component]
+pub(super) fn ChooseEnvironment(
+    label: &'static str,
+    title: &'static str,
+    environments: Signal<Vec<EnvironmentView>>,
+) -> impl IntoView {
+    let context = editor();
+    let opened = RwSignal::new(false);
+    let close = Callback::new(move |()| opened.set(false));
+    view! {
+        <button
+            type="button"
+            class="btn btn-primary"
+            disabled={move || environments.with(Vec::is_empty)}
+            on:click={move |_| opened.set(true)}
+        >
+            {icon(Icon::Rocket)}
+            {label}
+        </button>
+        <Modal title={title} opened={opened} busy={context.busy}>
+            <ul class="list">
+                {move || {
+                    environments
+                        .get()
+                        .into_iter()
+                        .map(|environment| {
+                            let source = context.describe_source(&environment.source);
+                            view! {
+                                <li class="list-row">
+                                    <span class="title">
+                                        {environment.name.to_string()}
+                                        <small>{source}</small>
+                                    </span>
+                                    <EnvironmentAction
+                                        environment={environment}
+                                        compact=true
+                                        done={Some(close)}
+                                    />
+                                </li>
+                            }
+                        })
+                        .collect_view()
+                }}
+            </ul>
+        </Modal>
     }
 }
 
@@ -152,12 +271,14 @@ pub(super) fn DeploymentActions() -> impl IntoView {
 /// it planned, which the daemon refuses if the source has moved on since, or
 /// the release), then shows the environment's deployments. Confirmation
 /// stays disabled while the release mounts secrets the environment lacks or
-/// may not use. `compact` is the list-row button.
+/// may not use. `compact` is the list-row button; `done` runs once the
+/// promotion was accepted.
 #[component]
 pub(super) fn PromoteAction(
     environment: String,
     #[prop(optional)] release: Option<String>,
     #[prop(optional)] compact: bool,
+    #[prop(default = None)] done: Option<Callback<()>>,
 ) -> impl IntoView {
     let context = editor();
     let environment = StoredValue::new(environment);
@@ -252,6 +373,9 @@ pub(super) fn PromoteAction(
                     .set("Promotion accepted. Follow its progress below.".into());
                 context.show_deployments(&environment.get_value(), navigate);
                 context.dashboard.with_value(|d| d.refresh.run(()));
+                if let Some(done) = done {
+                    done.run(());
+                }
             },
         );
     };
