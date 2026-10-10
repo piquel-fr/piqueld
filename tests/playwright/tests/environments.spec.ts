@@ -43,7 +43,7 @@ test('the application page stays whole and each environment has its own page', a
   await expect(page.getByRole('button', { name: 'Preview', exact: true })).toHaveCount(0);
 
   // With several environments, deploying starts by choosing one.
-  await page.getByRole('button', { name: 'Deploy…', exact: true }).click();
+  await page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true }).click();
   const chooser = page.getByRole('dialog', { name: 'Deploy an environment' });
   await expect(chooser.getByRole('button', { name: /^Deploy to / })).toHaveCount(2);
   await chooser.getByRole('button', { name: 'Close dialog', exact: true }).click();
@@ -65,7 +65,7 @@ test('the application page stays whole and each environment has its own page', a
   await expect(page).toHaveURL(url => url.pathname.endsWith(`/environments/${sibling}`) && url.searchParams.get('tab') === 'deployments');
   await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
   await expect(title(page)).toHaveText('staging');
-  await expect(page.getByRole('button', { name: 'Deploy to staging', exact: true })).toBeVisible();
+  await expect(page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true })).toBeVisible();
 
   await page.reload();
   await expect(title(page)).toHaveText('staging');
@@ -83,14 +83,14 @@ test('the dashboard creates, renames and deletes only the chosen environment', a
   await creator.getByLabel('Environment name', { exact: true }).fill('qa');
   await creator.getByRole('button', { name: 'Create environment', exact: true }).click();
   await expect(title(page)).toHaveText('qa');
-  await expect(page.getByRole('button', { name: 'Deploy to qa', exact: true })).toBeEnabled();
+  await expect(page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true })).toBeEnabled();
   const qa = new URL(page.url()).pathname.split('/').pop()!;
   expect(qa).not.toBe(app);
 
   await page.getByLabel('Environment name', { exact: true }).fill('preview');
   await page.getByRole('button', { name: 'Rename environment', exact: true }).click();
   await expect(title(page)).toHaveText('preview');
-  await expect(page.getByRole('button', { name: 'Deploy to preview', exact: true })).toBeEnabled();
+  await expect(page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true })).toBeEnabled();
 
   const remove = page.getByRole('button', { name: 'Delete environment', exact: true });
   page.once('dialog', dialog => dialog.dismiss());
@@ -113,7 +113,7 @@ test('the dashboard creates, renames and deletes only the chosen environment', a
   // The whole row opens the environment, not only its name.
   await row.click({ position: { x: 400, y: 10 } });
   await expect(title(page)).toHaveText('preview');
-  await expect(page.getByRole('button', { name: 'Deploy to preview', exact: true })).toBeDisabled();
+  await expect(page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true })).toBeDisabled();
   const retried = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${qa}/reconcile?`));
   await page.getByRole('button', { name: 'Retry deletion', exact: true }).click();
   expect((await retried).status()).toBe(202);
@@ -145,14 +145,14 @@ test('an application with no environments can create one in the dashboard', asyn
     await route.fulfill({ response, json: body });
   });
   await page.goto(`/dashboard/applications/${app}`);
-  await page.getByRole('button', { name: 'Deploy…', exact: true }).click();
+  await page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true }).click();
   await expect(page.getByText('No environments yet.', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'New environment', exact: true }).click();
   const creator = page.getByRole('dialog', { name: 'Create environment' });
   await creator.getByLabel('Environment name', { exact: true }).fill('replacement');
   await creator.getByRole('button', { name: 'Create environment', exact: true }).click();
   await expect(title(page)).toHaveText('replacement');
-  await expect(page.getByRole('button', { name: 'Deploy to replacement', exact: true })).toBeEnabled();
+  await expect(page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true })).toBeEnabled();
   await expect(page).toHaveURL(url => url.pathname.includes(`/applications/${app}/environments/`));
 });
 

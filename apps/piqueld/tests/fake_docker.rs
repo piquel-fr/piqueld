@@ -5177,6 +5177,24 @@ mod promotion {
         let built = shop.deploy_staging().await;
         let release = shop.release(&built.id).await;
         let image = shop.web(&shop.staging).await.1;
+        // Before its first promotion, production shows the manifest the
+        // release its source runs would deploy.
+        let next = shop
+            .harness
+            .store
+            .release(&shop.application, &release)
+            .await
+            .unwrap()
+            .release
+            .template()
+            .clone();
+        let detail = shop
+            .harness
+            .applications()
+            .environment_detail(&shop.production)
+            .await
+            .unwrap();
+        assert_eq!(detail.manifest, Some(next));
         let pulls = shop.harness.pulls().await;
         // Cleanup or an operator removed the pulled image meanwhile.
         shop.harness.docker.local_images.lock().await.clear();

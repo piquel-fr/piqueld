@@ -107,7 +107,7 @@ test('an environment page reads the manifest last fetched from its branch', asyn
     }
   });
   const deployed = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${staging}/deploy?`));
-  await page.locator('.detail-head').getByRole('button', { name: 'Deploy to staging', exact: true }).click();
+  await page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true }).click();
   expect((await deployed).status()).toBe(202);
   await page.reload();
 

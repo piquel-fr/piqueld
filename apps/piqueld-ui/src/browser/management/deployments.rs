@@ -20,10 +20,11 @@ use piqueld_client::{
 /// fetched one when it follows a branch; cleared whenever the saved view or
 /// target changes); Deploy starts a deployment of the saved
 /// generation, then shows the environment's deployments. Without a single target
-/// (an application with several environments or none), Deploy… lists the
+/// (an application with several environments or none), Deploy lists the
 /// environments to choose one. A promoted target, which never builds,
-/// offers Promote instead; a tracking one also offers Promote… into the
-/// environments promoted from it.
+/// offers Promote instead; a tracking one also offers Promote, before
+/// Deploy, into the environments promoted from it. On its own page, Deploy
+/// doesn't name the environment.
 #[component]
 pub(super) fn DeploymentActions() -> impl IntoView {
     let context = editor();
@@ -93,7 +94,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                     context.saved.with(|saved| saved.environments.clone())
                 });
                 view! {
-                    // Without environments, Deploy… leads to creating one.
+                    // Without environments, Deploy leads to creating one.
                     <Show
                         when={move || !environments.with(Vec::is_empty)}
                         fallback={move || {
@@ -105,13 +106,13 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                                     on:click={move |_| context.tab.set("Environments")}
                                 >
                                     {icon(Icon::Rocket)}
-                                    "Deploy…"
+                                    "Deploy"
                                 </button>
                             }
                         }}
                     >
                         <ChooseEnvironment
-                            label="Deploy…"
+                            label="Deploy"
                             title="Deploy an environment"
                             environments={environments}
                         />
@@ -141,6 +142,13 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                     {icon(Icon::Eye)}
                     "Preview"
                 </button>
+                <Show when={move || !dependents.with(Vec::is_empty)}>
+                    <ChooseEnvironment
+                        label="Promote"
+                        title="Promote into an environment"
+                        environments={dependents}
+                    />
+                </Show>
                 <button
                     type="button"
                     class="btn btn-primary"
@@ -148,19 +156,14 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                     on:click={deploy}
                 >
                     {icon(Icon::Rocket)}
-                    {move || {
-                        context
-                            .selected_environment()
-                            .map_or_else(|| "Deploy".into(), |env| format!("Deploy to {}", env.name))
+                    // Its own page names the environment already.
+                    {move || match context.selected_environment() {
+                        Some(environment) if !context.environment_page() => {
+                            format!("Deploy to {}", environment.name)
+                        }
+                        _ => "Deploy".into(),
                     }}
                 </button>
-                <Show when={move || !dependents.with(Vec::is_empty)}>
-                    <ChooseEnvironment
-                        label="Promote…"
-                        title="Promote into an environment"
-                        environments={dependents}
-                    />
-                </Show>
             </Show>
         </Show>
         <DeploymentPreview preview={preview} />
@@ -214,7 +217,7 @@ pub(super) fn EnvironmentAction(
 
 /// A `label`led button opening a dialog that lists `environments`, each
 /// with its own action (see `EnvironmentAction`), so one can be chosen:
-/// "Deploy…" over an application's environments, "Promote…" over the
+/// "Deploy" over an application's environments, "Promote" over the
 /// environments promoted from the shown one. Closes once an action was
 /// accepted.
 #[component]
@@ -243,13 +246,9 @@ pub(super) fn ChooseEnvironment(
                         .get()
                         .into_iter()
                         .map(|environment| {
-                            let source = context.describe_source(&environment.source);
                             view! {
                                 <li class="list-row">
-                                    <span class="title">
-                                        {environment.name.to_string()}
-                                        <small>{source}</small>
-                                    </span>
+                                    <span class="title">{environment.name.to_string()}</span>
                                     <EnvironmentAction
                                         environment={environment}
                                         compact=true
@@ -271,7 +270,8 @@ pub(super) fn ChooseEnvironment(
 /// it planned, which the daemon refuses if the source has moved on since, or
 /// the release), then shows the environment's deployments. Confirmation
 /// stays disabled while the release mounts secrets the environment lacks or
-/// may not use. `compact` is the list-row button; `done` runs once the
+/// may not use. `compact` is the list-row button, which shows only its
+/// verb; `done` runs once the
 /// promotion was accepted.
 #[component]
 pub(super) fn PromoteAction(
@@ -388,7 +388,7 @@ pub(super) fn PromoteAction(
             on:click={inspect}
         >
             {icon(Icon::Rocket)}
-            {label}
+            {move || if compact { verb.to_owned() } else { label() }}
         </button>
         <Modal
             title="Promotion preview"

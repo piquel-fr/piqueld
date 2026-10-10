@@ -2583,3 +2583,130 @@ fn sync_settings_and_environment_opt_outs_are_sent_as_typed_requests() {
     assert_eq!(assert_json_success(&output)["sync"], false);
     let _ = server.finish();
 }
+
+/// `shop`'s production, promoted from its staging environment.
+fn promoted_view() -> Value {
+    let mut view = two_environment_view();
+    view["environments"][0]["source"] =
+        json!({"type": "promoted", "environment": "env-staging-01"});
+    view
+}
+
+/// A plan of promoting staging's release into production, which lacks its
+/// own API key.
+fn promotion_plan() -> Value {
+    let mut view = plan("app-notes-01");
+    let digest = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
+    view["release"] = json!({
+        "release": {
+            "id": "rel-0123456789abcdef",
+            "application_id": "app-notes-01",
+            "content_hash": format!("sha256:{}", "b".repeat(64)),
+            "created_at_ms": 1,
+            "release": {
+                "template": app_view("app-notes-01", "notes")["application"],
+                "sources": {"web": {"type": "image", "requested": "ghcr.io/example/notes:1.4.0", "digest_reference": digest}}
+            },
+            "fingerprint": {"web": {"source.image": "ghcr.io/example/notes:1.4.0"}},
+            "promotions": []
+        },
+        "origin": {"type": "promotion", "environment": "env-staging-01", "deployment": "operation-01"},
+        "new_volumes": ["data"],
+        "secrets": [{"problem": "missing", "secret": "production-api-key"}]
+    });
+    view
+}
+
+/// Promotion output names environments, not their IDs; a plan the
+/// environment lacks secrets for exits as a conflict, listing them; and an
+/// accepted promotion reports the release it pinned and where it came from.
+#[test]
+fn promotion_commands_name_environments_and_report_the_pinned_release() {
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
+        "/api/v1/environments/app-notes-01/source" => {
+            assert_eq!(request.method, "PUT");
+            let body: Value = serde_json::from_slice(&request.body).expect("JSON body");
+            assert_eq!(
+                body,
+                json!({"promote_from": "env-staging-01", "expected_generation": 1})
+            );
+            Reply::json(promoted_view()["environments"][0].clone())
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run_human(
+        &server,
+        &[
+            "env",
+            "source",
+            "app-notes-01",
+            "production",
+            "--promote-from",
+            "staging",
+            "--yes",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("deploys from releases promoted from staging."),
+        "{output:?}"
+    );
+    let _ = server.finish();
+
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(promoted_view()),
+        "/api/v1/environments/app-notes-01/promote/plan" => Reply::json(promotion_plan()),
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run_human(
+        &server,
+        &["env", "promote", "app-notes-01", "production", "--plan"],
+    );
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("promoted from staging's deployment operation-01"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("New volume"), "{stdout}");
+    assert!(stdout.contains("production-api-key"), "{stdout}");
+    let _ = server.finish();
+
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(promoted_view()),
+        "/api/v1/environments/app-notes-01/promote" => {
+            let body: Value = serde_json::from_slice(&request.body).expect("JSON body");
+            assert_eq!(
+                body,
+                json!({"deployment": "operation-01", "expected_generation": 1})
+            );
+            Reply::accepted(json!({
+                "operation_id": "operation-02", "environment_id": "app-notes-01", "generation": 1,
+                "release_id": "rel-0123456789abcdef",
+                "origin": {"type": "promotion", "environment": "env-staging-01", "deployment": "operation-01"}
+            }))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(
+        &server,
+        &[
+            "env",
+            "promote",
+            "app-notes-01",
+            "production",
+            "--deployment",
+            "operation-01",
+            "--yes",
+            "--no-wait",
+        ],
+    );
+    let report = assert_json_success(&output);
+    assert_eq!(report["deployment_id"], "operation-02");
+    assert_eq!(report["operation_id"], "operation-02");
+    assert_eq!(report["release_id"], "rel-0123456789abcdef");
+    assert_eq!(report["origin"]["environment"], "env-staging-01");
+    let _ = server.finish();
+}
