@@ -80,7 +80,7 @@ of its branch again.
 **Preview** and **Deploy to <environment>** on an environment page target that
 environment. On the application page they target its only environment; with
 several, **Deploy** opens a list of every environment, each with its own **Deploy** or
-**Promote** button. On an environment's own page the button is just **Deploy**. Deployment actions
+**Promote from <source>** button. On an environment's own page the button is just **Deploy**. Deployment actions
 are disabled for deleting environments. Preview plans the manifest the
 environment deploys: for an environment that follows a branch, the one last
 fetched from it, so Preview is disabled until its first deployment. A service's Logs tab reads the only
@@ -89,7 +89,7 @@ environment's logs, or links to each environment's logs.
 A promoted environment never builds, so its page and its Environments row offer
 **Promote from <source>** instead of Preview and Deploy, and its source's page
 offers **Promote**, before Deploy, listing the environments promoted from it, each
-with its own **Promote** button. Either first plans the promotion of
+with its own **Promote from <source>** button. Either first plans the promotion of
 its source environment's current release and shows it: where the release comes
 from, the release itself (commit, each service's image, availability), the
 changes against the environment's current deployment, new (empty) volumes, the

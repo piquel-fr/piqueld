@@ -85,12 +85,12 @@ test('deploying and promoting start from a list of environments with their own a
   void account;
   const { app, production, staging } = await createPromotion(page);
 
-  // The application lists every environment, each with its own action and nothing more.
+  // The application lists every environment with its own action, a promoted one naming its source.
   await page.goto(`/dashboard/applications/${app}`);
   await head(page).getByRole('button', { name: 'Deploy', exact: true }).click();
   const deploy = page.getByRole('dialog', { name: 'Deploy an environment' });
-  await expect(deploy.getByRole('listitem').filter({ hasText: 'production' }).getByRole('button')).toHaveText('Promote');
-  await expect(deploy.getByRole('listitem').filter({ hasText: 'staging' }).getByRole('button')).toHaveText('Deploy');
+  await expect(deploy.getByRole('listitem').locator('.title')).toHaveText(['production', 'staging']);
+  await expect(deploy.getByRole('listitem').getByRole('button')).toHaveText(['Promote from staging', 'Deploy']);
   await expect(deploy).not.toContainText('promoted from');
   await expect(deploy).not.toContainText('saved manifest');
   await deploy.getByRole('button', { name: 'Close dialog', exact: true }).click();
@@ -101,7 +101,7 @@ test('deploying and promoting start from a list of environments with their own a
   await head(page).getByRole('button', { name: 'Promote', exact: true }).click();
   const promote = page.getByRole('dialog', { name: 'Promote into an environment' });
   await expect(promote.getByRole('listitem')).toHaveCount(1);
-  await expect(promote.getByRole('listitem').getByRole('button')).toHaveText('Promote');
+  await expect(promote.getByRole('listitem').getByRole('button')).toHaveText('Promote from staging');
   await expect(promote).toContainText('production');
 
   // A promoted environment never builds: it promotes from its source.

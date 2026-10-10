@@ -270,8 +270,7 @@ pub(super) fn ChooseEnvironment(
 /// it planned, which the daemon refuses if the source has moved on since, or
 /// the release), then shows the environment's deployments. Confirmation
 /// stays disabled while the release mounts secrets the environment lacks or
-/// may not use. `compact` is the list-row button, which shows only its
-/// verb; `done` runs once the
+/// may not use. `compact` is the smaller list-row button; `done` runs once the
 /// promotion was accepted.
 #[component]
 pub(super) fn PromoteAction(
@@ -294,18 +293,15 @@ pub(super) fn PromoteAction(
     } else {
         "Promote"
     };
-    // A promotion names its source, except on that source's own page,
-    // where it names where it goes.
+    // A promotion names its source; deploying a release names its target.
     let label = move || {
         let target = environment.get_value();
-        let elsewhere = context.environment_page()
-            && context.environment.get().as_deref() != Some(target.as_str());
         let source = context.saved.with(|saved| {
             saved
                 .deployable(&target)
                 .and_then(|environment| environment.source.promoted_from().cloned())
         });
-        match source.filter(|_| verb == "Promote" && !elsewhere) {
+        match source.filter(|_| verb == "Promote") {
             Some(source) => format!("Promote from {}", context.environment_name(source.as_str())),
             None => format!("{verb} to {}", context.environment_name(&target)),
         }
@@ -388,7 +384,7 @@ pub(super) fn PromoteAction(
             on:click={inspect}
         >
             {icon(Icon::Rocket)}
-            {move || if compact { verb.to_owned() } else { label() }}
+            {label}
         </button>
         <Modal
             title="Promotion preview"
