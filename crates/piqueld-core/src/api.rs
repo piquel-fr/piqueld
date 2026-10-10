@@ -234,6 +234,23 @@ pub struct CreateEnvironmentRequest {
     /// Full commit to pin instead of following `branch`'s head; requires `branch`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// ID of an environment to receive releases from instead of building;
+    /// excludes `branch`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promote_from: Option<String>,
+    /// Current application revision, required unless explicitly forced.
+    pub expected_generation: Option<u64>,
+}
+
+/// Makes an environment promoted from another, or returns a promoted one
+/// to tracking its application's saved manifest or the branch
+/// `spec.manifest` names, conditioned on the inspected application revision.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentSourceRequest {
+    /// ID of the environment to receive releases from; absent to track again.
+    #[serde(default)]
+    pub promote_from: Option<String>,
     /// Current application revision, required unless explicitly forced.
     pub expected_generation: Option<u64>,
 }
@@ -498,6 +515,10 @@ pub struct PlanView {
     pub variables: BTreeMap<String, VariableValue>,
     /// Effective rollout of each service, sorted by service name.
     pub rollouts: Vec<ServiceRolloutView>,
+    /// For a plan of a release (`env promote --plan`):
+    /// the release, its origin, new volumes, and unusable secrets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<ReleasePlan>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -727,6 +748,10 @@ pub struct DeploymentView {
     /// deployments that recorded none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleaseId>,
+    /// Where it came from: built from its environment's source, or a
+    /// promoted or redeployed release.
+    #[serde(default)]
+    pub origin: DeploymentOrigin,
     /// First successful convergence, retained during later drift repair.
     pub succeeded_at_ms: Option<i64>,
     /// Whether this is the currently promoted runtime target.
@@ -756,6 +781,134 @@ pub struct ReleaseView {
     /// absent when Docker could not be asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub availability: Option<crate::ReleaseAvailability>,
+    /// Every deployment that received it rather than building it, newest
+    /// first: where it was promoted or deployed again.
+    #[serde(default)]
+    pub promotions: Vec<ReleasePromotion>,
+}
+
+/// A deployment that received a release: promoted, or deployed again by ID.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct ReleasePromotion {
+    /// The environment it was deployed to.
+    pub environment_id: EnvironmentId,
+    /// That deployment, whose ID is also its operation's.
+    pub deployment_id: String,
+    /// Where it came from; never `build`.
+    pub origin: DeploymentOrigin,
+    /// When it was accepted, in Unix milliseconds.
+    pub created_at_ms: i64,
+}
+
+/// Where a deployment came from.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DeploymentOrigin {
+    /// Built from its environment's source: the saved manifest or its branch.
+    /// It records its release once prepared.
+    #[default]
+    Build,
+    /// The release of another environment's deployment, promoted into this one.
+    Promotion {
+        /// The environment it was promoted from.
+        environment: EnvironmentId,
+        /// That environment's deployment whose release it runs.
+        deployment: String,
+    },
+    /// An earlier release, deployed again by ID.
+    Release,
+}
+
+/// What `env promote` deploys into a promoted environment. Either way the
+/// release is pinned when the promotion is accepted.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(tag = "from", rename_all = "snake_case")]
+pub enum PromotionSelection {
+    /// The release of the source environment's current deployment, which
+    /// must be `deployment` when given.
+    Source {
+        /// The deployment the caller reviewed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deployment: Option<String>,
+    },
+    /// An earlier release of the application, rendered with the
+    /// environment's current secrets.
+    Release {
+        /// The release to deploy.
+        release: ReleaseId,
+    },
+}
+
+/// Promotes a release into a promoted environment, conditioned on the
+/// inspected application revision. By default the source environment's
+/// current deployment; `deployment` and `release` are mutually exclusive.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromoteRequest {
+    /// The source deployment to promote; it must still be the source's current one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<String>,
+    /// An earlier release to deploy instead of the source's current one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
+    /// Current application revision, required unless explicitly forced; ignored by plans.
+    #[serde(default)]
+    pub expected_generation: Option<u64>,
+}
+
+/// An accepted promotion and the release it pinned.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct AcceptedPromotion {
+    /// The deployment operation; its ID is also the deployment's.
+    #[serde(flatten)]
+    pub operation: AcceptedOperation,
+    /// The release it deploys.
+    pub release_id: ReleaseId,
+    /// Where the release came from.
+    pub origin: DeploymentOrigin,
+}
+
+/// A secret a rendered deployment mounts but cannot use. Promotions are
+/// refused while any is left. Generated secrets are generated when missing,
+/// so only a pending deletion makes one unusable.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
+#[serde(tag = "problem", rename_all = "snake_case")]
+pub enum SecretProblem {
+    /// Mounted from the application's store, which has no such secret.
+    Missing {
+        /// Logical secret name.
+        secret: String,
+    },
+    /// Stored, but its access list excludes the environment.
+    AccessDenied {
+        /// Logical secret name.
+        secret: String,
+    },
+    /// Stored, but key recovery discarded its value; store a new version.
+    Unavailable {
+        /// Logical secret name.
+        secret: String,
+    },
+    /// Being deleted, stored or generated; finish or abandon the deletion.
+    Deleting {
+        /// Logical secret name.
+        secret: String,
+    },
+}
+
+/// What a plan of a release adds: the release and where it comes from, and
+/// what the environment still lacks.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct ReleasePlan {
+    /// The release, with its provenance and image availability.
+    pub release: ReleaseView,
+    /// Where it comes from.
+    pub origin: DeploymentOrigin,
+    /// Volumes it declares that the environment doesn't have yet; they are
+    /// created empty.
+    pub new_volumes: Vec<String>,
+    /// Every secret it mounts that is missing or that the environment may not use.
+    pub secrets: Vec<SecretProblem>,
 }
 
 /// Effective host settings loaded by the daemon; no mutation endpoint exists.

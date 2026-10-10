@@ -49,9 +49,11 @@ impl Store {
             )
             .fetch_all(&mut *connection)
             .await,
-            // #132 selects the current target of every environment a promoted
-            // environment promotes from.
-            RetentionRoot::PromotionSource => Ok(Vec::new()),
+            RetentionRoot::PromotionSource => sqlx::query_scalar!(
+                r#"SELECT s.resolved_json AS "json!" FROM environments s WHERE s.resolved_json IS NOT NULL AND EXISTS(SELECT 1 FROM environments p WHERE p.promoted_from=s.id)"#
+            )
+            .fetch_all(&mut *connection)
+            .await,
         }
         .map_err(StoreError::database)?;
         targets

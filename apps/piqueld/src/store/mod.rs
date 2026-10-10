@@ -25,6 +25,8 @@ pub(crate) use secret::SecretDeletion;
 pub(crate) use security::SecurityEvent;
 mod operation;
 mod preview;
+mod promotion;
+pub use promotion::{Promotion, PromotionCandidate, PromotionError};
 mod release;
 mod repository;
 mod secret;
@@ -220,6 +222,9 @@ pub enum StoreError {
         /// Old or new name that has a block.
         environment: EnvironmentName,
     },
+    /// A promotion, or a promoted environment's source, was refused.
+    #[error(transparent)]
+    Promotion(#[from] PromotionError),
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]
     AlreadyExists,
@@ -328,8 +333,9 @@ pub struct StoredEnvironment {
     pub environment: EnvironmentView,
     /// Owning application and its saved configuration.
     pub application: StoredApplication,
-    /// The manifest last fetched from the environment's branch.
-    pub fetched: Option<ApplicationTemplate>,
+    /// The environment's own manifest: the one last fetched from its branch,
+    /// or of the release last promoted into it.
+    pub own: Option<ApplicationTemplate>,
     /// Resolved Docker target, including immutable image digests.
     pub resolved: Option<ResolvedApplication>,
 }
@@ -348,44 +354,52 @@ impl StoredEnvironment {
     }
 
     /// The manifest this environment deploys, which its hostname
-    /// reservations, rename checks, and plans read: the last one fetched from
-    /// its branch (`None` before the first fetch), or the application's saved
-    /// manifest.
+    /// reservations, rename checks, and plans read: the application's saved
+    /// manifest, the last one fetched from its branch, or the manifest of the
+    /// release last promoted into it (`None` before the first fetch or
+    /// promotion).
     #[must_use]
     pub fn manifest(&self) -> Option<&ApplicationTemplate> {
         match self.environment.source {
             EnvironmentSource::Saved => Some(&self.application.application),
-            EnvironmentSource::Branch(_) => self.fetched.as_ref(),
+            EnvironmentSource::Branch(_) | EnvironmentSource::Promoted(_) => self.own.as_ref(),
         }
     }
 
-    /// The application's manifest repository at this environment's branch,
-    /// which its deployments fetch.
-    #[must_use]
-    pub fn repository(&self) -> Option<RepositoryManifest> {
-        let connection = self.application.application.spec().manifest.as_ref()?;
-        Some(self.environment.source.branch()?.in_repository(connection))
-    }
-
-    /// The manifest a new deployment captures: the application's saved one,
-    /// fetched instead from [`Self::repository`], at `revision` when given.
+    /// Renders `release` for deployment `deployment` of this environment,
+    /// with its block and variables from the release's own manifest, under
+    /// the application's current name: a rename changes display metadata
+    /// without rewriting the release.
     ///
     /// # Errors
     ///
-    /// Rejects a revision for an environment without a branch.
-    pub fn candidate(
+    /// Returns the references without a value here and invalid rendered values.
+    pub fn render_release(
         &self,
-        revision: Option<&ManifestRevision>,
-    ) -> Result<ApplicationTemplate, StoreError> {
-        let template = self
+        release: &piqueld_core::Release,
+        deployment: String,
+    ) -> Result<Rendering, StoreError> {
+        let mut rendering = release.render(self.environment.name.clone(), Some(deployment))?;
+        rendering.application = rendering
             .application
-            .application
-            .clone()
-            .with_manifest(self.repository());
-        Ok(match revision {
-            Some(revision) => template.with_manifest_revision(revision)?,
-            None => template,
-        })
+            .with_name(self.application.application.metadata().name.clone());
+        Ok(rendering)
+    }
+
+    /// This environment as one that builds what it deploys. Building and
+    /// fetching need it, so a promoted environment can do neither.
+    ///
+    /// # Errors
+    ///
+    /// `environment_promoted` for a promoted environment.
+    pub fn tracking(&self) -> Result<Tracking<'_>, StoreError> {
+        match &self.environment.source {
+            EnvironmentSource::Saved | EnvironmentSource::Branch(_) => Ok(Tracking(self)),
+            EnvironmentSource::Promoted(_) => Err(PromotionError::Promoted {
+                environment: self.environment.name.clone(),
+            }
+            .into()),
+        }
     }
 
     /// Renders `template` for a deployment of this environment.
@@ -402,6 +416,55 @@ impl StoredEnvironment {
             self.environment.target(),
             deployment.into(),
         ))?)
+    }
+}
+
+/// A tracking environment: one that builds from its saved manifest or
+/// branch. Only [`StoredEnvironment::tracking`] makes one.
+#[derive(Clone, Copy, Debug)]
+pub struct Tracking<'a>(&'a StoredEnvironment);
+
+impl Tracking<'_> {
+    /// The environment.
+    #[must_use]
+    pub const fn environment(&self) -> &EnvironmentView {
+        &self.0.environment
+    }
+
+    /// The application's manifest repository at this environment's branch,
+    /// which its deployments fetch.
+    #[must_use]
+    pub fn repository(&self) -> Option<RepositoryManifest> {
+        let connection = self.0.application.application.spec().manifest.as_ref()?;
+        Some(
+            self.0
+                .environment
+                .source
+                .branch()?
+                .in_repository(connection),
+        )
+    }
+
+    /// The manifest a new deployment captures: the application's saved one,
+    /// fetched instead from [`Self::repository`], at `revision` when given.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a revision for an environment without a branch.
+    pub fn candidate(
+        &self,
+        revision: Option<&ManifestRevision>,
+    ) -> Result<ApplicationTemplate, StoreError> {
+        let template = self
+            .0
+            .application
+            .application
+            .clone()
+            .with_manifest(self.repository());
+        Ok(match revision {
+            Some(revision) => template.with_manifest_revision(revision)?,
+            None => template,
+        })
     }
 }
 
@@ -751,6 +814,7 @@ struct EnvironmentRow {
     kind: String,
     branch: Option<String>,
     pinned_commit: Option<String>,
+    promoted_from: Option<String>,
     preview_slot: Option<String>,
     sync: i64,
     synced_commit: Option<String>,
@@ -765,11 +829,15 @@ impl EnvironmentRow {
     /// Converts raw columns into the environment view, reporting out-of-range
     /// values as corruption.
     fn decode(self) -> Result<EnvironmentView, StoreError> {
-        let source = match self.branch {
-            Some(branch) => EnvironmentSource::Branch(
+        let source = match (self.branch, self.promoted_from) {
+            (Some(branch), None) => EnvironmentSource::Branch(
                 TrackedBranch::new(branch, self.pinned_commit).map_err(StoreError::corrupt)?,
             ),
-            None => EnvironmentSource::Saved,
+            (None, Some(source)) => EnvironmentSource::Promoted(piqueld_core::PromotedFrom {
+                environment: EnvironmentId::parse(source).map_err(StoreError::corrupt)?,
+            }),
+            (None, None) => EnvironmentSource::Saved,
+            (Some(_), Some(_)) => return Err(StoreError::Corrupt),
         };
         // A preview is named by its slug and deploys an unpinned branch.
         let kind = match (self.kind.as_str(), source.branch()) {
@@ -822,6 +890,7 @@ struct StoredEnvironmentRow {
     kind: String,
     branch: Option<String>,
     pinned_commit: Option<String>,
+    promoted_from: Option<String>,
     preview_slot: Option<String>,
     sync: i64,
     synced_commit: Option<String>,
@@ -858,6 +927,7 @@ impl StoredEnvironmentRow {
             kind: self.kind,
             branch: self.branch,
             pinned_commit: self.pinned_commit,
+            promoted_from: self.promoted_from,
             preview_slot: self.preview_slot,
             sync: self.sync,
             synced_commit: self.synced_commit,
@@ -868,18 +938,18 @@ impl StoredEnvironmentRow {
             updated_at_ms: self.updated_at_ms,
         }
         .decode()?;
-        // Renames change display identity without rewriting fetched manifests.
-        let fetched = self
+        // Renames change display identity without rewriting own manifests.
+        let own = self
             .manifest_json
             .as_deref()
             .map(serde_json::from_str::<ApplicationTemplate>)
             .transpose()
             .map_err(StoreError::corrupt)?
-            .map(|fetched| fetched.with_name(application.application.metadata().name.clone()));
+            .map(|own| own.with_name(application.application.metadata().name.clone()));
         Ok(StoredEnvironment {
             environment,
             application,
-            fetched,
+            own,
             resolved: self
                 .resolved_json
                 .as_deref()

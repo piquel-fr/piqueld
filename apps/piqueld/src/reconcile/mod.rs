@@ -163,6 +163,7 @@ impl<D: DockerApi> Controller<D> {
                 .expect("store instance identity is valid"),
             wake,
             self.prepare_timeout,
+            self.images_lock(),
         ))
     }
 }

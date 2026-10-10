@@ -2,12 +2,13 @@
 use super::{HumanWriter, Report};
 use crate::profiles::ProfileSummary;
 use piqueld_client::{
-    AcceptedOperation, ActionReason, ActionRisk, ApplicationLogs, ApplicationSummary,
-    ApplicationView, BranchState, BuildLogPage, BuildRecord, CreatedPreview, DeletedApplication,
-    DeletedPreview, DnsStatus, EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView,
-    EnvironmentView, Event, ImageStatus, MountedSecret, Operation, OperationState, Page, PlanView,
-    PreviewUsage, PreviewView, ReleaseAvailability, ReleaseView, ResolvedSource, SavedApplication,
-    SecretMetadata, ServiceImage, Source, StoredSecret, SystemStatus,
+    AcceptedOperation, AcceptedPromotion, ActionReason, ActionRisk, ApplicationId, ApplicationLogs,
+    ApplicationSummary, ApplicationView, BranchState, BuildLogPage, BuildRecord, CreatedPreview,
+    DeletedApplication, DeletedPreview, DeploymentOrigin, DnsStatus, EnvironmentDetailView,
+    EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event, ImageStatus, MountedSecret,
+    Operation, OperationState, Page, PlanView, PreviewUsage, PreviewView, ReleaseAvailability,
+    ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, SavedApplication, SecretMetadata,
+    SecretProblem, ServiceImage, Source, StoredSecret, SystemStatus,
     sync::{SyncState, WebhookSecret, WebhookView},
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
@@ -315,12 +316,23 @@ impl EnvironmentRow {
     }
 }
 
-/// Where an environment deploys from: `saved`, or the branch it follows,
-/// e.g. `main` or `main@<commit>`.
-fn source(source: &EnvironmentSource) -> String {
+/// Where an environment deploys from: `saved`, the branch it follows, e.g.
+/// `main` or `main@<commit>`, or `promoted from <name>`, naming the source
+/// among `environments` (by ID once it is gone).
+fn source(source: &EnvironmentSource, environments: &[EnvironmentView]) -> String {
     match source {
         EnvironmentSource::Saved => "saved".into(),
         EnvironmentSource::Branch(branch) => branch.to_string(),
+        EnvironmentSource::Promoted(from) => {
+            let name = environments
+                .iter()
+                .find(|environment| environment.id == from.environment)
+                .map_or_else(
+                    || from.environment.to_string(),
+                    |source| source.name.to_string(),
+                );
+            format!("promoted from {name}")
+        }
     }
 }
 
@@ -334,13 +346,17 @@ impl Report for Vec<EnvironmentRow> {
             return out.line("No environments.");
         }
         out.heading("NAME  STATE  SOURCE  RESOLVED  ID")?;
+        let environments = self
+            .iter()
+            .map(|row| row.environment.clone())
+            .collect::<Vec<_>>();
         for row in self {
             let environment = &row.environment;
             out.line(format_args!(
                 "{}  {}  {}  {}  {}",
                 environment.name,
                 row.state(),
-                source(&environment.source),
+                source(&environment.source, &environments),
                 environment
                     .resolved_generation
                     .map_or_else(|| "none".to_owned(), |v| v.to_string()),
@@ -408,6 +424,11 @@ report!(ShowReport<'_>, self, out, {
             }
         }
     }
+    let environments = self
+        .environments
+        .iter()
+        .map(|row| row.environment.clone())
+        .collect::<Vec<_>>();
     for row in self.environments {
         out.label(
             "Environment",
@@ -416,7 +437,7 @@ report!(ShowReport<'_>, self, out, {
                 row.environment.name,
                 row.environment.id,
                 row.state(),
-                source(&row.environment.source)
+                source(&row.environment.source, &environments)
             ),
         )?;
     }
@@ -675,7 +696,10 @@ report!(EnvironmentShowReport<'_>, self, out, {
         "Runtime",
         status.runtime_health.as_deref().unwrap_or("unknown"),
     )?;
-    out.label("Source", source(&environment.source))?;
+    out.label(
+        "Source",
+        source(&environment.source, &application.environments),
+    )?;
     let connection = application.application.spec().manifest.as_ref();
     out.label(
         "Sync",
@@ -785,63 +809,173 @@ report!(Page<ReleaseView>, self, out, {
         out.line("No releases.")?;
     }
     for release in &self.items {
-        out.line(format_args!(
-            "{}  {}  created {}",
-            release.id,
-            release.release.commit().map_or_else(
-                || "saved manifest".to_owned(),
-                |commit| format!("commit {commit}")
-            ),
-            release.created_at_ms
-        ))?;
-        if let Some(availability) = &release.availability {
-            let services = |missing: &[ServiceImage]| {
-                missing
-                    .iter()
-                    .map(|image| image.service.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            out.label(
-                "  Images",
-                match availability {
-                    ReleaseAvailability::Present => "all present".into(),
-                    ReleaseAvailability::Pullable { missing } => format!(
-                        "missing for {}; deploying it pulls them again by digest",
-                        services(missing)
-                    ),
-                    ReleaseAvailability::Unavailable { missing } => format!(
-                        "missing for {}; it can't be deployed again",
-                        services(missing)
-                    ),
-                },
-            )?;
-        }
-        for (service, source) in release.release.sources() {
-            out.label(
-                &format!("  {service}"),
-                match source {
-                    ResolvedSource::Image {
-                        requested,
-                        digest_reference,
-                    } => format!("{digest_reference} (pulled {requested})"),
-                    ResolvedSource::Git {
-                        requested,
-                        commit,
-                        image_id,
-                        ..
-                    } => format!(
-                        "{image_id} (built from {} at {commit})",
-                        repository(requested)
-                    ),
-                },
-            )?;
-        }
+        release.render_human(out)?;
     }
     if let Some(cursor) = &self.next_cursor {
         out.label("Next cursor", cursor)?;
     }
     Ok(())
+});
+
+// One release: its commit, image availability, each service's image and
+// provenance, and every deployment that received it.
+report!(ReleaseView, self, out, {
+    out.line(format_args!(
+        "{}  {}  created {}",
+        self.id,
+        self.release.commit().map_or_else(
+            || "saved manifest".to_owned(),
+            |commit| format!("commit {commit}")
+        ),
+        self.created_at_ms
+    ))?;
+    if let Some(availability) = &self.availability {
+        let services = |missing: &[ServiceImage]| {
+            missing
+                .iter()
+                .map(|image| image.service.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        out.label(
+            "  Images",
+            match availability {
+                ReleaseAvailability::Present => "all present".into(),
+                ReleaseAvailability::Pullable { missing } => format!(
+                    "missing for {}; deploying it pulls them again by digest",
+                    services(missing)
+                ),
+                ReleaseAvailability::Unavailable { missing } => format!(
+                    "missing for {}; it can't be deployed again",
+                    services(missing)
+                ),
+            },
+        )?;
+    }
+    for (service, source) in self.release.sources() {
+        out.label(
+            &format!("  {service}"),
+            match source {
+                ResolvedSource::Image {
+                    requested,
+                    digest_reference,
+                } => format!("{digest_reference} (pulled {requested})"),
+                ResolvedSource::Git {
+                    requested,
+                    commit,
+                    image_id,
+                    ..
+                } => format!(
+                    "{image_id} (built from {} at {commit})",
+                    repository(requested)
+                ),
+            },
+        )?;
+    }
+    for promotion in &self.promotions {
+        out.label(
+            "  Deployed to",
+            format_args!(
+                "{} as {}, {}",
+                promotion.environment_id,
+                promotion.deployment_id,
+                origin(&promotion.origin)
+            ),
+        )?;
+    }
+    Ok(())
+});
+
+// A plan's release: the release, where it comes from, the volumes it
+// creates empty, and every secret the environment can't use yet.
+report!(ReleasePlan, self, out, {
+    out.blank()?;
+    out.heading("Release:")?;
+    self.release.render_human(out)?;
+    out.label("  Origin", origin(&self.origin))?;
+    for volume in &self.new_volumes {
+        out.label("  New volume", format_args!("{volume} (created empty)"))?;
+    }
+    for problem in &self.secrets {
+        let (secret, problem) = match problem {
+            SecretProblem::Missing { secret } => (secret, "missing from the application's store"),
+            SecretProblem::AccessDenied { secret } => {
+                (secret, "its access list excludes this environment")
+            }
+            SecretProblem::Unavailable { secret } => {
+                (secret, "key recovery discarded its value; store a new one")
+            }
+            SecretProblem::Deleting { secret } => (secret, "it is being deleted"),
+        };
+        out.label("  Secret", format_args!("{secret}: {problem}"))?;
+    }
+    Ok(())
+});
+
+/// Where a deployment came from, in a phrase.
+fn origin(origin: &DeploymentOrigin) -> String {
+    match origin {
+        DeploymentOrigin::Build => "built from its source".into(),
+        DeploymentOrigin::Promotion {
+            environment,
+            deployment,
+        } => format!("promoted from {environment}'s deployment {deployment}"),
+        DeploymentOrigin::Release => "deployed again by release ID".into(),
+    }
+}
+
+/// `env promote` result: the deployment, the release it pinned and where it
+/// came from, and, once waited for, its outcome.
+#[derive(Serialize)]
+pub(crate) struct PromotionReport<'a> {
+    application_id: &'a ApplicationId,
+    environment_id: &'a str,
+    /// Also the operation's ID.
+    deployment_id: &'a str,
+    operation_id: &'a str,
+    release_id: &'a ReleaseId,
+    origin: &'a DeploymentOrigin,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<OperationState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation: Option<&'a Operation>,
+}
+
+impl<'a> PromotionReport<'a> {
+    /// An accepted promotion, not waited for.
+    pub(crate) fn new(application: &'a ApplicationView, accepted: &'a AcceptedPromotion) -> Self {
+        Self {
+            application_id: application.application.id(),
+            environment_id: &accepted.operation.environment_id,
+            deployment_id: &accepted.operation.operation_id,
+            operation_id: &accepted.operation.operation_id,
+            release_id: &accepted.release_id,
+            origin: &accepted.origin,
+            outcome: None,
+            operation: None,
+        }
+    }
+
+    /// The promotion once its deployment finished.
+    pub(crate) const fn finished(mut self, operation: &'a Operation) -> Self {
+        self.outcome = Some(operation.state);
+        self.operation = Some(operation);
+        self
+    }
+}
+
+report!(PromotionReport<'_>, self, out, {
+    out.line(format_args!(
+        "Promoting release {} into environment {}: {}, deployment {}.",
+        self.release_id,
+        self.environment_id,
+        origin(self.origin),
+        self.deployment_id
+    ))?;
+    match self.operation {
+        Some(operation) => operation.render_human(out),
+        None => Ok(()),
+    }
 });
 
 /// The repository a Git source builds from.
@@ -1239,6 +1373,9 @@ report!(PlanView, self, out, {
             ActionReason::VolumeRetentionPolicy => "volume retention policy".into(),
         };
         out.line(format_args!("      {risk} · {reason}"))?;
+    }
+    if let Some(release) = &self.release {
+        release.render_human(out)?;
     }
     Configuration::variables(out, &self.variables)?;
     if !self.rollouts.is_empty() {

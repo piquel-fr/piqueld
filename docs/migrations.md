@@ -239,6 +239,17 @@ Existing applications don't sync, so nothing is redeployed. It follows
 `0024_dns_records.sql`; a database that ran this change's former
 `0024_sync.sql` (only development instances) needs resetting.
 
+`0026_promoted_environments.sql`, after `0025_sync.sql`, adds `environments.promoted_from`, the ID of
+the environment a [promoted environment](application-manifest.md#promoted-environments)
+receives releases from. It is only allowed on environments (not previews)
+without a branch, and never on the environment itself; an index finds the
+environments that promote from a given one. Every existing environment keeps
+`promoted_from` null, so none becomes promoted on its own. Deleting a source
+with live dependents is refused by the daemon; when both are deleted together,
+as with the application, the column is cleared. `deployments.origin_json`
+records where each deployment came from, and every existing deployment becomes
+`{"type":"build"}`. Nothing is redeployed.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

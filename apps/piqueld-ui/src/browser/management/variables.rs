@@ -4,7 +4,7 @@ use super::super::ui::{Icon, Tone, badge, empty, icon, remove_button};
 use super::{dirty_group, editor, save_actions};
 use leptos::prelude::*;
 use piqueld_client::{
-    Variable,
+    EnvironmentSource, Variable,
     edit::{ApplicationEdit, Variables},
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -310,14 +310,19 @@ pub(super) fn EnvironmentVariables() -> impl IntoView {
                 </div>
             </header>
             {move || {
-                let fetched = context
-                    .selected_environment()
-                    .is_none_or(|environment| environment.source.branch().is_none())
+                let source = context.selected_environment().map(|environment| environment.source);
+                let fetched = source.as_ref().is_none_or(|source| *source == EnvironmentSource::Saved)
                     || signals.detail.with(|detail| {
                         detail.as_ref().is_some_and(|detail| detail.manifest.is_some())
                     });
                 if !fetched {
-                    return empty("Deploy this environment to fetch its manifest from its branch.");
+                    return empty(
+                        if source.as_ref().is_some_and(|source| source.promoted_from().is_some()) {
+                            "Promote a release into this environment to see its manifest's values."
+                        } else {
+                            "Deploy this environment to fetch its manifest from its branch."
+                        },
+                    );
                 }
                 let values = values().unwrap_or_default();
                 if values.is_empty() {

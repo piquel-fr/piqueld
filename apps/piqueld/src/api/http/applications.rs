@@ -335,6 +335,7 @@ pub(super) async fn accept_mutation(
         }
         MutationResponse::Rename(renamed) => Ok(ok(renamed).into_response()),
         MutationResponse::Environment(environment) => Ok(ok(environment).into_response()),
+        MutationResponse::Promotion(promotion) => Ok(accepted(promotion)),
         MutationResponse::Preview(preview) if preview.created => Ok(accepted(preview)),
         MutationResponse::Preview(preview) => Ok(ok(preview).into_response()),
         MutationResponse::Deleted(deleted) => Ok(accepted(deleted)),

@@ -25,8 +25,8 @@ added later: requests about an environment are checked on its application.
 | --- | --- | --- |
 | `admin` | all or listed applications | On every application: everything, including installation-wide permissions. On listed applications: every application permission there |
 | `apps:read` | all or listed applications | Configuration, environments, status, deployments, operations, builds and job runs, and secret names and which environments may mount them |
-| `apps:write` | all or listed applications | Configuration edits, manifest apply, rename, adding or renaming environments, opting them into or out of sync, and generating webhook secrets |
-| `apps:deploy` | all or listed applications | Deploy and reconcile environments, create and deploy previews, and, with `apps:write`, turn on [deploying on push](application-manifest.md#deploying-on-push) or opt an environment into it |
+| `apps:write` | all or listed applications | Configuration edits, manifest apply, rename, adding, renaming or changing the source of environments, opting them into or out of sync, and generating webhook secrets |
+| `apps:deploy` | all or listed applications | Deploy, promote releases into, and reconcile environments, create and deploy previews, and, with `apps:write`, turn on [deploying on push](application-manifest.md#deploying-on-push) or opt an environment into it |
 | `apps:delete` | all or listed applications | Delete the application, its environments or its previews |
 | `apps:exec` | all or listed applications | Run commands in running containers (`piquelctl app exec`), which reaches everything those containers can, including secret values |
 | `secrets:write` | all or listed applications | Store, regenerate, and delete secret values, and choose which environments may mount a stored secret |

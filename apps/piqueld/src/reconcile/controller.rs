@@ -493,11 +493,14 @@ impl<D: DockerApi> Controller<D> {
 
     /// Resolves the operation's deployable target, reusing a previously saved one.
     ///
-    /// Verifies the swarm topology, fetches the deployment manifest, keeps the
-    /// application's current name, reuses prior image resolutions unless this is
-    /// a `Refresh`, pins secret versions, then resolves images and builds sources.
-    /// The result is saved on the operation only if it is still current and the
-    /// topology is still supported. Image cleanup waits until it is saved.
+    /// Verifies the swarm topology, then returns the saved target, as every
+    /// promotion has from acceptance. Otherwise the environment must still be
+    /// tracking (`environment_promoted` once it was made promoted): fetches
+    /// the deployment manifest, keeps the application's current name, reuses
+    /// prior image resolutions unless this is a `Refresh`, pins secret
+    /// versions, then resolves images and builds sources. The result is saved
+    /// on the operation only if it is still current and the topology is still
+    /// supported. Image cleanup waits until it is saved.
     #[tracing::instrument(skip_all, fields(phase = "preparation", timeout_seconds = self.prepare_timeout.as_secs()))]
     async fn prepare_target(
         &self,
@@ -514,6 +517,7 @@ impl<D: DockerApi> Controller<D> {
         {
             return Ok(target);
         }
+        let tracking = application.tracking()?;
         // Cleanup can't remove the images this preparation reuses, pulls, or
         // builds until its target is saved and they are retention roots.
         let _in_use = self.images_in_use().await;
@@ -522,10 +526,11 @@ impl<D: DockerApi> Controller<D> {
             piqueld_core::InstanceId::parse(self.store.instance_id()).expect("valid identity"),
             Arc::new(tokio::sync::Notify::new()),
             self.prepare_timeout,
+            self.images_lock(),
         )
         .with_progress(Arc::clone(&self.store), operation.id.clone())
         .with_build_priority(&application.environment.kind);
-        let manifest = self.deployment_manifest(operation, application).await?;
+        let manifest = self.deployment_manifest(operation, tracking).await?;
         // A rename changes display metadata without rewriting deployment history.
         let manifest =
             manifest.with_name(application.application.application.metadata().name.clone());
@@ -550,6 +555,7 @@ impl<D: DockerApi> Controller<D> {
                     tracing::warn!(error = ?error, "Git source build failed");
                     OperationError::GitBuildFailed(error)
                 }
+                crate::application::BoundaryError::ImageUnavailable(error) => *error,
                 crate::application::BoundaryError::Compilation(errors) => {
                     tracing::error!(?errors, "application compilation failed");
                     OperationError::ValidationFailed("compile application")

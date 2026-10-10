@@ -3,6 +3,7 @@
 use super::{BoundaryError, RuntimeBoundary};
 use crate::{
     docker::{BuildPriority, DockerApi, DockerError, DockerTimeout},
+    reconcile::ImagesInUse,
     store::StoredEnvironment,
 };
 use async_trait::async_trait;
@@ -31,16 +32,20 @@ pub struct ApplicationRuntime<D> {
     progress: Option<(Arc<crate::store::Store>, String)>,
     /// The build queue its Git sources wait in.
     priority: BuildPriority,
+    /// The lock image cleanup takes exclusively; see `ImagesInUse`.
+    images: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl<D> ApplicationRuntime<D> {
-    /// Creates application runtime orchestration with the supplied preparation budget.
+    /// Creates application runtime orchestration with the supplied
+    /// preparation budget, sharing `images`, the lock image cleanup takes.
     #[must_use]
     pub fn new(
         docker: Arc<D>,
         instance_id: InstanceId,
         wake: Arc<Notify>,
         prepare_timeout: Duration,
+        images: Arc<tokio::sync::RwLock<()>>,
     ) -> Self {
         Self {
             docker,
@@ -49,6 +54,7 @@ impl<D> ApplicationRuntime<D> {
             prepare_timeout,
             progress: None,
             priority: BuildPriority::Environment,
+            images,
         }
     }
     /// Associates source preparation with the operation whose status is reported.
@@ -225,6 +231,21 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
             .run("list images", self.docker.images())
             .await?;
         Ok(crate::docker::LocalImage::present(&images))
+    }
+
+    async fn reuse_images(
+        &self,
+        sources: &std::collections::BTreeMap<piqueld_core::ServiceName, ResolvedSource>,
+    ) -> Result<ImagesInUse, BoundaryError> {
+        let in_use = ImagesInUse::hold(Arc::clone(&self.images)).await;
+        in_use
+            .ensure(&*self.docker, sources)
+            .await
+            .map_err(|error| match error {
+                crate::operations::OperationError::Docker(error) => BoundaryError::Runtime(error),
+                error => BoundaryError::ImageUnavailable(Box::new(error)),
+            })?;
+        Ok(in_use)
     }
 
     async fn check_available(&self) -> Result<(), BoundaryError> {

@@ -36,6 +36,18 @@ prerequisites may roll out before promotion. Promotion and active repair share t
 lock, so old-target repair cannot continue after promotion. There is no automatic
 rollback after rollout starts.
 
+Promoting a release into a
+[promoted environment](application-manifest.md#promoted-environments) (`env
+promote`, not to be confused with the target promotion above) has no
+preparation phase. The daemon checks the source and the release's images,
+renders and compiles the release when it accepts the request, and saves the
+prepared target with the deployment; the controller then reuses that target as
+a retry would, running jobs and rolling out without building, fetching, or
+resolving tags. An environment can't become promoted while a deployment is
+requested or running (`application_busy`), and retrying an earlier deployment
+that never prepared fails with `environment_promoted` instead of fetching or
+building.
+
 Saving an identical normalized manifest does not schedule work. Apply with
 deployment creates a new deployment even when the manifest is unchanged.
 Explicit reconcile requests
@@ -169,8 +181,9 @@ An image is kept while a retention root uses it:
   with its prepared target until a newer one replaces it;
 - each environment's last `images.keep_deployments` successful deployments
   (default 3), for restores; previews keep none;
-- the current release of every environment a promoted environment promotes
-  from, once promotion exists.
+- what every environment that a
+  [promoted environment](application-manifest.md#promoted-environments)
+  promotes from currently runs: the release `env promote` takes by default.
 
 Images a container uses, even a stopped one, are kept too. Cleanup runs after
 each operation finishes and every `images.cleanup_interval_seconds` (default
@@ -187,9 +200,12 @@ roots and removes images, and skips its turn while any preparation holds it,
 so it never removes an image a preparation is about to record, including one
 Docker's build cache returned unchanged, and never delays a deployment for
 more than its removals. Deployments that use a retained image again, such as
-restores and promotion, check that it is still present first: a missing
+restores and release promotion, check that it is still present first: a missing
 registry image is pulled again by its digest, and a missing build, or a pull
-that fails, fails with `image_unavailable` naming the service and image.
+that fails, fails with `image_unavailable` naming the service and image. A
+release promotion holds the lock shared from that check until the promotion
+and its prepared target are saved, so cleanup cannot remove the images in
+between.
 `app releases` shows whether each release's images are present.
 
 ## Ingress coordination

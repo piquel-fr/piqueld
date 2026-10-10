@@ -138,6 +138,26 @@ async fn each_root_keeps_its_deployments_and_previews_keep_no_history() {
         kept(&store, RetentionRoot::PromotionSource, 2).await,
         images("")
     );
+    // Once another environment promotes from production, what production
+    // runs is what promoting it deploys.
+    let create = Mutation::CreateEnvironment {
+        application: store
+            .get(&production)
+            .await
+            .unwrap()
+            .environment
+            .application_id,
+        name: piqueld_core::EnvironmentName::parse("canary").unwrap(),
+        source: Some(crate::api::SourceChoice::PromoteFrom(production.clone())),
+    };
+    store
+        .accept(Daemon, create, None, true, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        kept(&store, RetentionRoot::PromotionSource, 2).await,
+        images("c")
+    );
     assert_eq!(store.retained_images(2).await.unwrap(), images("bcdef"));
     assert_eq!(store.retained_images(3).await.unwrap(), images("abcdef"));
 }

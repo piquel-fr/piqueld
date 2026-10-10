@@ -361,7 +361,7 @@ mod tests {
         ))
         .unwrap()
         .normalize(current.application.application.id().clone())
-        .with_manifest(current.repository());
+        .with_manifest(current.tracking().unwrap().repository());
         let rendering = current.render(&fetched, &op.id).unwrap();
         store
             .save_deployment_input(
@@ -503,7 +503,9 @@ mod tests {
                 Mutation::CreateEnvironment {
                     application,
                     name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
-                    branch: Some(piqueld_core::TrackedBranch::new("release".into(), None).unwrap()),
+                    source: Some(crate::api::SourceChoice::Branch(
+                        piqueld_core::TrackedBranch::new("release".into(), None).unwrap(),
+                    )),
                 },
                 None,
                 true,
@@ -534,7 +536,7 @@ mod tests {
         // Staging has fetched nothing yet, so it reserves nothing.
         assert_eq!(reserved(&production).await, ["notes.example.com"]);
         assert_eq!(reserved(&staging.id).await, Vec::<String>::new());
-        let before = store.get(&production).await.unwrap().fetched;
+        let before = store.get(&production).await.unwrap().own;
         fetch(
             &store,
             &staging.id,
@@ -545,7 +547,7 @@ mod tests {
         .await;
         assert_eq!(reserved(&production).await, ["notes.example.com"]);
         assert_eq!(reserved(&staging.id).await, ["staging.example.com"]);
-        assert_eq!(store.get(&production).await.unwrap().fetched, before);
+        assert_eq!(store.get(&production).await.unwrap().own, before);
         // Only production's own manifest configures `qa`.
         let rename = |id: &EnvironmentId| Mutation::RenameEnvironment {
             id: id.clone(),
@@ -641,7 +643,9 @@ mod tests {
                 Mutation::CreateEnvironment {
                     application: application.clone(),
                     name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
-                    branch: Some(piqueld_core::TrackedBranch::new("release".into(), None).unwrap()),
+                    source: Some(crate::api::SourceChoice::Branch(
+                        piqueld_core::TrackedBranch::new("release".into(), None).unwrap(),
+                    )),
                 },
                 None,
                 true,

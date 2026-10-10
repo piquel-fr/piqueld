@@ -81,6 +81,17 @@ environment deploys: for an environment that follows a branch, the one last
 fetched from it, so Preview is disabled until its first deployment. A service's Logs tab reads the only
 environment's logs, or links to each environment's logs.
 
+A promoted environment never builds, so its page and its Environments row offer
+**Promote** instead of Preview and Deploy. Promote first plans the promotion of
+its source environment's current release and shows it: where the release comes
+from, the release itself (commit, each service's image, availability), the
+changes against the environment's latest deployment, new (empty) volumes, the
+runtime actions, and every secret that is missing or that the environment may
+not use. **Promote release** is disabled while a secret is listed, and promotes
+exactly the source deployment that was planned: if the source deployed again
+meanwhile, the daemon refuses it (`promotion_source_changed`) and the dialog
+shows why.
+
 Values that differ between environments come from manifest variables. The
 Variables tab edits them: one row per variable, with its default, one column
 per environment, including environments the manifest configures before they
@@ -101,7 +112,11 @@ them. Expanding a release shows the commit its manifest was read from, its
 content hash, and for each service its image (a registry digest or local image
 ID), where it came from, and the build inputs it was prepared from. A badge
 says whether its images are still present, will be pulled again by digest
-when deployed, or were removed, so it can't be deployed again. The Jobs
+when deployed, or were removed, so it can't be deployed again. **Deployed to**
+lists every environment it was promoted into, or deployed again by release ID,
+with that deployment. **Deploy to <environment>**, offered for each promoted
+environment, plans deploying the release there with that environment's current
+secrets, like `piquelctl env promote --release`, and deploys it once confirmed. The Jobs
 tab adds, edits, reorders, and removes the one-shot jobs that run before each
 rollout, with one row per command element; saving replaces only the job list.
 Jobs inherit the referenced service's startup dependencies, which start or
@@ -138,8 +153,9 @@ An environment's Deployments tab lists expandable deployment rows with Details, 
 and Attempts sections. Attempts load when first opened; refresh and older-attempt
 controls appear below the list. Operation IDs appear only in deployment Details,
 next to the deployment's release, which links to it in the application's
-Releases tab; the environment's Overview links to the release its current target
-runs. Current target, last successful deployment, and observed runtime health
+Releases tab, and its origin: built from the environment's source, promoted
+from another environment's deployment, or a release deployed again. The
+environment's Overview links to the release its current target runs. Current target, last successful deployment, and observed runtime health
 are distinct. History remains until the environment is deleted. Deploying an
 empty application removes its runtime services and network. Removing volumes or
 deleting an application retains environments' Docker volume data; deleting an
@@ -303,7 +319,15 @@ names) and an optional commit, the Environments list shows each environment's
 branch, and the **Source** card on an environment's Overview changes it; nothing
 is redeployed until its next deployment. The environment's Variables card, Preview, and
 Logs service filter read the manifest last fetched from its branch; the
-Variables card says when it has fetched nothing yet. A deployment's Snapshot shows the manifest path and revision it was fetched
+Variables card says when it has fetched nothing yet.
+
+The **Source** card also makes an environment promoted: **Promote from** picks
+another environment of the application, after which this one only receives
+releases promoted from it and never builds. A promoted environment's card names
+its source, links to it, and offers **Track own source**, which builds the saved
+manifest or the branch `spec.manifest` names again; its branch form is hidden.
+**New environment** can create a promoted environment directly. Its Variables
+card reads the manifest of the release last promoted into it. A deployment's Snapshot shows the manifest path and revision it was fetched
 from, and a warning when the fetched file's own `spec.manifest` names another
 repository or path (`manifest_connection_ignored`); that section is ignored.
 

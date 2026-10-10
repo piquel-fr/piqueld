@@ -23,9 +23,9 @@ pub enum RetentionRoot {
     /// deployments, which restoring a deployment (#172) deploys again.
     /// Previews keep none.
     Recent,
-    /// The current release of an environment that a promoted environment
-    /// promotes from (#132), which populates it. There are no promoted
-    /// environments yet, so nothing has this root.
+    /// What an environment that a promoted environment promotes from
+    /// currently runs: the release `env promote` takes by default. Promoting
+    /// then saves its target, which `Latest` keeps, while holding cleanup off.
     PromotionSource,
 }
 

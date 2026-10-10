@@ -5,6 +5,7 @@ mod history;
 mod notification_worker;
 mod observability;
 mod previews;
+mod promotions;
 mod queries;
 mod startup;
 mod sync;
@@ -12,6 +13,7 @@ mod system;
 mod views;
 mod webhooks;
 
+use crate::store::Promotion;
 use crate::{
     application::{BoundaryError, RuntimeBoundary},
     store::{Store, StoreError},
@@ -20,7 +22,7 @@ pub use exec::ExecSession;
 pub use history::ManifestExport;
 use piqueld_core::{
     ApplicationId, EnvironmentId, EnvironmentName, GitBranch, PreviewSlot, TrackedBranch,
-    api::{SecretAccess, SecretMetadata, StoredSecret},
+    api::{PromotionSelection, SecretAccess, SecretMetadata, StoredSecret},
     manifest::{ApplicationTemplate, RepositoryManifest, ValidatedTemplate},
 };
 use std::sync::Arc;
@@ -107,9 +109,10 @@ pub enum Mutation {
         application: ApplicationId,
         /// Name, unique within the application.
         name: EnvironmentName,
-        /// Branch to follow instead of the one `spec.manifest` names.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        branch: Option<TrackedBranch>,
+        /// Where it deploys from instead of the saved manifest or the branch
+        /// `spec.manifest` names.
+        #[serde(flatten)]
+        source: Option<SourceChoice>,
     },
     /// Point an environment of a repository-backed application at another branch.
     SetBranch {
@@ -118,6 +121,8 @@ pub enum Mutation {
         /// Branch to follow, optionally pinned to a commit.
         branch: TrackedBranch,
     },
+    /// Change where an environment's releases come from, or promote one.
+    Promotion(PromotionMutation),
     /// Change only an environment's name.
     RenameEnvironment {
         /// Stable environment ID.
@@ -188,6 +193,45 @@ pub enum SyncOutcome {
     Busy,
 }
 
+/// Where a new environment deploys from, when not from the saved manifest
+/// or the branch `spec.manifest` names. Serialized as the request field it
+/// came from, so requests from before promotion keep their identity.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceChoice {
+    /// Follow this branch of the manifest repository.
+    Branch(TrackedBranch),
+    /// Receive releases promoted from this environment.
+    PromoteFrom(EnvironmentId),
+}
+
+/// A change to a promoted environment, or making one.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "promotion", rename_all = "snake_case")]
+pub enum PromotionMutation {
+    /// Make an environment promoted from another, or track its own source again.
+    SetSource {
+        /// Stable environment ID.
+        id: EnvironmentId,
+        /// The environment to receive releases from; `None` to track the
+        /// saved manifest or the branch `spec.manifest` names again.
+        promote_from: Option<EnvironmentId>,
+    },
+    /// Deploy a release into a promoted environment.
+    Promote {
+        /// Stable environment ID.
+        id: EnvironmentId,
+        /// What was requested; this, not the release it pinned, identifies
+        /// the request for replay.
+        selection: PromotionSelection,
+        /// The release pinned before acceptance, checked again inside it;
+        /// `None` only to look the request up for replay, which never
+        /// executes it.
+        #[serde(skip)]
+        promotion: Option<Promotion>,
+    },
+}
+
 /// A change to a preview. Previews select no `[spec.environments.<name>]`
 /// block, so none needs or advances the application revision.
 #[derive(Debug, serde::Serialize)]
@@ -235,6 +279,8 @@ pub enum MutationResponse {
     Rename(piqueld_core::api::RenamedApplication),
     /// Created or renamed environment.
     Environment(piqueld_core::api::EnvironmentView),
+    /// Accepted promotion, with the release it pinned.
+    Promotion(piqueld_core::api::AcceptedPromotion),
     /// Created or existing preview. Boxed, as the largest response, so
     /// acceptance futures stay small.
     Preview(Box<piqueld_core::api::CreatedPreview>),
@@ -266,8 +312,10 @@ impl Mutation {
             | Self::CreateEnvironment { .. }
             | Self::RenameEnvironment { .. }
             | Self::SetBranch { .. }
-            | Self::SetSync { .. } => &[Write],
+            | Self::SetSync { .. }
+            | Self::Promotion(PromotionMutation::SetSource { .. }) => &[Write],
             Self::Deploy { .. }
+            | Self::Promotion(PromotionMutation::Promote { .. })
             | Self::Reconcile { .. }
             | Self::Sync(_)
             | Self::Preview(PreviewMutation::Create { .. } | PreviewMutation::Deploy { .. }) => {
@@ -652,6 +700,7 @@ impl ApplicationService {
                 | Mutation::CreateEnvironment { .. }
                 | Mutation::RenameEnvironment { .. }
                 | Mutation::SetBranch { .. }
+                | Mutation::Promotion(_)
                 | Mutation::Deploy { .. }
                 | Mutation::Delete { .. } => expected_generation.is_none(),
                 Mutation::Reconcile { .. }

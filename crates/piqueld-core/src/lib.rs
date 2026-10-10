@@ -6,7 +6,7 @@
 pub mod api;
 pub mod codes;
 pub mod environment;
-pub use environment::{EnvironmentKind, EnvironmentSource, Preview, TrackedBranch};
+pub use environment::{EnvironmentKind, EnvironmentSource, Preview, PromotedFrom, TrackedBranch};
 pub mod event;
 pub mod exec;
 pub mod identity;

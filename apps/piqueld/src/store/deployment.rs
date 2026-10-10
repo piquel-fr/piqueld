@@ -16,6 +16,7 @@ struct DeploymentRow {
     warnings_json: String,
     succeeded_at_ms: Option<i64>,
     release_id: Option<String>,
+    origin_json: String,
 }
 
 /// A deployment's captured inputs.
@@ -47,7 +48,60 @@ impl DeploymentRow {
     }
 }
 
+/// An environment's current deployment: the latest one whose target was
+/// published, which its runtime runs.
+pub(crate) struct CurrentDeployment {
+    /// The deployment's ID, also its operation's.
+    pub(crate) id: String,
+    /// Whether its operation has succeeded, as opposed to still rolling out,
+    /// failed, or retried.
+    pub(crate) succeeded: bool,
+    /// The release its target runs, when it recorded or received one.
+    pub(crate) release: Option<piqueld_core::ReleaseId>,
+}
+
 impl Store {
+    /// Reads `environment`'s current deployment, if any.
+    pub(super) async fn current_deployment_on(
+        connection: &mut sqlx::SqliteConnection,
+        environment: &EnvironmentId,
+    ) -> Result<Option<CurrentDeployment>, StoreError> {
+        let id = environment.as_str();
+        sqlx::query!(
+            r#"SELECT d.id AS "id!",d.release_id,o.state AS "state!" FROM deployments d JOIN operations o ON o.id=d.id WHERE d.environment_id=?1 AND o.promoted=1 ORDER BY d.id DESC LIMIT 1"#,
+            id
+        )
+        .fetch_optional(connection)
+        .await
+        .map_err(StoreError::database)?
+        .map(|row| {
+            Ok(CurrentDeployment {
+                succeeded: row.state == super::OperationState::Succeeded.as_str(),
+                release: row
+                    .release_id
+                    .map(piqueld_core::ReleaseId::parse)
+                    .transpose()
+                    .map_err(StoreError::corrupt)?,
+                id: row.id,
+            })
+        })
+        .transpose()
+    }
+
+    /// See [`Self::current_deployment_on`].
+    /// # Errors
+    /// Returns storage or decoding errors.
+    pub(crate) async fn current_deployment(
+        &self,
+        environment: &EnvironmentId,
+    ) -> Result<Option<CurrentDeployment>, StoreError> {
+        Self::current_deployment_on(
+            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
+            environment,
+        )
+        .await
+    }
+
     /// Saves edited configuration with the next generation without creating an
     /// operation, so nothing is deployed until requested. New applications get a
     /// `production` environment that starts as `not_deployed`. Returns
@@ -108,14 +162,15 @@ impl Store {
         })
     }
 
-    /// Snapshots the manifest `environment` deploys next (see
-    /// [`super::StoredEnvironment::candidate`]) as operation `id`'s deployment
+    /// Snapshots the manifest a tracking `environment` builds next (see
+    /// [`super::Tracking::candidate`]) as operation `id`'s deployment
     /// record, rendered for that environment, together with the values its
     /// references resolved to, so retries never read variables again. A
     /// reference without a value, or a stored secret the environment may not
     /// mount (`SecretAccessDenied`), fails the request. Repository-backed
     /// manifests are rendered and checked once fetched, when their revision is known.
-    /// The deployment row shares the operation's ID.
+    /// The deployment row shares the operation's ID. A promoted environment
+    /// fails with `environment_promoted`: it never builds.
     pub(super) async fn capture_deployment(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
@@ -124,7 +179,7 @@ impl Store {
         let environment = Self::environment_on(tx, environment.as_str())
             .await?
             .ok_or(StoreError::NotFound)?;
-        let template = environment.candidate(None)?;
+        let template = environment.tracking()?.candidate(None)?;
         let rendering = if template.spec().manifest.is_some() {
             None
         } else {
@@ -163,7 +218,7 @@ impl Store {
     pub(crate) async fn deployment_snapshot(&self, id: &str) -> Result<Snapshot, StoreError> {
         sqlx::query_as!(
             DeploymentRow,
-            r#"SELECT id AS "id!",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id FROM deployments WHERE id=?1"#,
+            r#"SELECT id AS "id!",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments WHERE id=?1"#,
             id
         )
         .fetch_optional(&self.pool)
@@ -225,7 +280,7 @@ impl Store {
         let mut rows = if let Some(before) = before {
             sqlx::query_as!(
                 DeploymentRow,
-                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id FROM deployments
+                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments
                  WHERE environment_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
                 app_id,
                 before,
@@ -236,7 +291,7 @@ impl Store {
         } else {
             sqlx::query_as!(
                 DeploymentRow,
-                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id FROM deployments
+                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments
                  WHERE environment_id=?1 ORDER BY id DESC LIMIT ?2",
                 app_id,
                 limit_sql
@@ -250,7 +305,9 @@ impl Store {
         let next_cursor = more
             .then(|| rows.last().map(|row| format!("v1:{}", row.id)))
             .flatten();
-        let current = sqlx::query_scalar!("SELECT d.id FROM deployments d JOIN operations o ON o.id=d.id WHERE d.environment_id=?1 AND o.promoted=1 ORDER BY d.id DESC LIMIT 1",app_id).fetch_optional(&mut *tx).await.map_err(StoreError::database)?.flatten();
+        let current = Self::current_deployment_on(&mut tx, app)
+            .await?
+            .map(|current| current.id);
         let successful = sqlx::query_scalar!("SELECT id FROM deployments WHERE environment_id=?1 AND succeeded_at_ms IS NOT NULL ORDER BY id DESC LIMIT 1",app_id).fetch_optional(&mut *tx).await.map_err(StoreError::database)?.flatten();
         let mut items = Vec::with_capacity(rows.len());
         for row in rows {
@@ -270,6 +327,7 @@ impl Store {
                 application,
                 warnings: snapshot.warnings,
                 release,
+                origin: serde_json::from_str(&row.origin_json).map_err(StoreError::corrupt)?,
                 succeeded_at_ms: row.succeeded_at_ms,
                 current_target: current.as_ref() == Some(&row.id),
                 last_successful: successful.as_ref() == Some(&row.id),

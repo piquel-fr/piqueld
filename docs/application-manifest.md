@@ -11,7 +11,8 @@ path and message; JSON request bodies report only `json_malformed`.
 
 The manifest is shared by the application's environments (for a
 repository-backed application, each environment reads it from its own
-branch), including services,
+branch; a [promoted environment](#promoted-environments) deploys the manifest
+of the release it receives), including services,
 replica counts, limits, volumes, routes, jobs, repository settings and secret
 file references. Manually set secret values live in one store per application,
 shared by the environments their access lists allow; generated secret values
@@ -191,7 +192,8 @@ settings and `spec.manifest`.
 
 The build inputs are baked into images, so each deployment's
 [release](piquelctl.md#commands) fingerprints their rendered values. Rendering a
-release for another environment reuses its images and requires every build
+release for another environment, as [promotion](#promoted-environments) does,
+reuses its images and requires every build
 input to render the same there; a build argument such as
 `VITE_ORIGIN = "https://${{ vars.domain }}"` makes the release incompatible
 (`release_incompatible`) with environments whose `domain` differs. Keep
@@ -368,8 +370,9 @@ piquelctl env branch notes production main --commit 0123456789012345678901234567
 Changing a branch redeploys nothing: the environment's next deployment fetches
 it. Connecting a repository to an application points every environment at the
 branch `spec.manifest` names; disconnecting returns every environment to the
-saved manifest. Environments report their source as `saved` or as the branch they
-follow.
+saved manifest. Both leave [promoted environments](#promoted-environments)
+promoted. Environments report their source as `saved`, as the branch they
+follow, or as `promoted from <name>`.
 
 Deploying an environment resolves its pinned commit (or branch head), reads only
 the exact configured TOML/JSON file, and checks that its name matches the
@@ -552,6 +555,89 @@ generates a new version for the next deployment. A value discarded by key
 recovery has nothing left to keep, so the next deployment that mounts it
 generates a new one. Removing a declaration retains the generated value.
 
+## Promoted environments
+
+A promoted environment never builds and never fetches. It only receives
+releases promoted from another environment of the same application, so it runs
+exactly the images that environment ran: the same commit, base images and build
+cache.
+
+```console
+piquelctl env create notes production --promote-from staging
+piquelctl env source notes production --promote-from staging   # convert an existing environment
+piquelctl env promote notes production --plan
+piquelctl env promote notes production [--deployment ID | --release ID]
+```
+
+**Sources.** The source is stored by ID, so renaming either environment keeps
+it. Any environment of the application can be a source, including a promoted
+one, so chains such as staging → canary → production work. Previews,
+environments of other applications and environments being deleted cannot
+(`promotion_source_invalid`), and an environment cannot promote from itself,
+directly or through others (`promotion_cycle`). Deleting an environment that
+others promote from is refused with `promotion_source_in_use`, naming them;
+deleting the application deletes them all.
+
+Converting is always explicit: existing and migrated environments never become
+promoted on their own, and connecting or disconnecting the manifest repository
+leaves promoted environments promoted. `env source --tracking` returns one to
+the saved manifest, or to the branch `spec.manifest` names; `env branch` makes
+it follow another branch. Changing the source deploys nothing. Deploying a
+promoted environment (`env deploy`, `app deploy`) fails with
+`environment_promoted`. An environment can't become promoted while a deployment
+of it is requested or running (`application_busy`), since that deployment may be
+fetching or building; retrying an earlier one that never prepared fails with
+`environment_promoted`.
+
+**What gets promoted.** `env promote` deploys the release of the source
+environment's current deployment. `--deployment ID` names the deployment you
+reviewed: the promotion is refused with `promotion_source_changed` once it is no
+longer the source's current one, so what you reviewed is what is deployed.
+`--release ID` deploys an earlier release of the application, rendered with the
+environment's current secrets, without checking any source; exactly restoring a
+previous deployment is a separate feature. The release is pinned when the
+promotion is accepted, so later deployments of the source cannot retarget it.
+Promotion never happens automatically when the source deploys.
+
+**Preconditions.** All of them are checked before anything is captured:
+
+- the source's current deployment succeeded and every service of it runs as
+  deployed (same image, replicas, and configuration) and healthy right now
+  (`promotion_source_not_ready`);
+- the release instantiates for the environment: its build inputs render as
+  they did when it was built (`release_incompatible`, see
+  [Variables](#variables));
+- its images are present, or are registry images pulled again by digest
+  (`image_unavailable` otherwise); [image cleanup](docker-reconciliation.md#image-retention)
+  is held off until the promotion is saved;
+- every secret the rendered release mounts is usable: stored secrets exist,
+  their access list allows the environment, and their value wasn't discarded by
+  key recovery, and no mounted secret is being deleted (`secrets_unavailable`,
+  listing every one at once). Declared secrets the environment lacks are
+  generated for it and stored only if the promotion is accepted.
+
+Acceptance checks the source again, so a source that moved on in the meantime
+fails with `promotion_source_changed`.
+
+**Rendering.** The release's own manifest is rendered with the target's
+`[spec.environments.<target>]` block and variables from that same manifest, so
+every per-environment setting is reviewed in Git and travels with the release.
+Only secrets, volumes and the environment's other runtime state come from the
+target. The release's images are deployed as recorded, never rebuilt, so
+per-environment values must stay out of build inputs. A promoted environment's
+manifest, as shown by `env show`, is the one of the release it last received.
+
+**Plans.** `env promote --plan` shows what a promotion would do without
+changing anything: the release, its provenance and whether its images are
+present, where it comes from, the rendered changes against the environment's
+current deployment (including routes), the runtime plan, volumes it would create
+empty, and every missing or inaccessible secret. Plans of an earlier release
+(`--release`) work for any environment, promoted or not.
+
+**History.** Each deployment records its origin: `build`, `promotion` (with the
+source environment and deployment), or `release` (an earlier release deployed by
+ID). Each release lists the deployments that received it.
+
 ## Previews
 
 A preview is a disposable deployment of one branch of the application's
@@ -659,8 +745,8 @@ branch head is past the deployed commit), `gone`, or `unknown` when the
 repository could not be read. `preview prune --branch-gone` deletes, after
 confirmation, the previews whose branch is gone; the daemon checks again and
 keeps any it can no longer confirm gone. Repository or authentication errors
-never count as gone: pruning then deletes nothing. Previews cannot be promotion
-sources and do not record releases.
+never count as gone: pruning then deletes nothing. Previews cannot be
+[promotion](#promoted-environments) sources and do not record releases.
 
 ## Startup dependencies
 

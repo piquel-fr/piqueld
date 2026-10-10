@@ -31,7 +31,7 @@ pub(super) use navigation::HistoryGuard;
 use navigation::guard_navigation;
 use piqueld_client::{
     ApplicationManifest, ApplicationSpec, ApplicationTemplate, ApplicationView, Client,
-    ClientError, Metadata,
+    ClientError, DeploymentOrigin, EnvironmentSource, Metadata,
     edit::{ApplicationEdit, EditOptions},
 };
 use secrets::{EnvironmentSecrets, SecretFileSettings};
@@ -117,12 +117,13 @@ impl EditorContext {
     fn manifest(self) -> ApplicationManifest {
         self.saved.with(|saved| saved.application.to_manifest())
     }
-    /// The manifest the shown environment deploys: the saved one, or when it
-    /// follows a branch, the one last fetched from it, read from its loaded
-    /// detail. `None` before a branch's first fetch or while the detail loads.
+    /// The manifest the shown environment deploys: the saved one, or the one
+    /// last fetched from its branch or promoted into it, read from its loaded
+    /// detail. `None` before a branch's first fetch or an environment's first
+    /// promotion, or while the detail loads.
     fn environment_manifest(self) -> Option<ApplicationTemplate> {
         let environment = self.selected_environment()?;
-        if environment.source.branch().is_none() {
+        if environment.source == EnvironmentSource::Saved {
             return Some(self.saved.with(|saved| saved.application.clone()));
         }
         let signals = self.dashboard.with_value(|d| d.signals);
@@ -167,6 +168,38 @@ impl EditorContext {
             "/dashboard/applications/{}/environments/{environment}",
             self.id()
         )
+    }
+    /// Name of one of the application's environments or previews; its ID
+    /// once it is gone.
+    fn environment_name(self, environment: &str) -> String {
+        self.saved.with(|saved| {
+            saved
+                .deployable(environment)
+                .map_or_else(|| environment.to_owned(), |env| env.name.to_string())
+        })
+    }
+    /// Where an environment deploys from, naming a promotion source:
+    /// "the saved manifest", "branch main", or "promoted from staging".
+    fn describe_source(self, source: &EnvironmentSource) -> String {
+        match source.promoted_from() {
+            Some(from) => format!("promoted from {}", self.environment_name(from.as_str())),
+            None => source.to_string(),
+        }
+    }
+    /// Where a deployment came from: "Built", "Promoted from staging
+    /// (deployment …)", or "Release redeployed".
+    fn describe_origin(self, origin: &DeploymentOrigin) -> String {
+        match origin {
+            DeploymentOrigin::Build => "Built".into(),
+            DeploymentOrigin::Promotion {
+                environment,
+                deployment,
+            } => format!(
+                "Promoted from {} (deployment {deployment})",
+                self.environment_name(environment.as_str())
+            ),
+            DeploymentOrigin::Release => "Release redeployed".into(),
+        }
     }
     fn name(self) -> String {
         self.saved
@@ -269,6 +302,17 @@ impl EditorContext {
     fn environment_page(self) -> bool {
         self.page
             .with_value(|page| matches!(page, Page::Environment(_)))
+    }
+
+    /// Shows `environment`'s deployments: the Deployments tab on its own
+    /// page, otherwise by navigating there.
+    fn show_deployments(self, environment: &str, navigate: impl Fn(&str, NavigateOptions)) {
+        if self.environment_page() {
+            self.tab.set("Deployments");
+        } else {
+            let href = format!("{}?tab=deployments", self.environment_href(environment));
+            navigate(&href, NavigateOptions::default());
+        }
     }
 
     /// Sends one mutation with a fresh request identity while the editor is

@@ -1,9 +1,11 @@
 //! The application's immutable releases, newest first.
 use super::super::format::timestamp;
 use super::super::ui::{Icon, Tone, badge, empty, icon, notice, when};
-use super::client_error_message;
+use super::deployments::PromoteAction;
+use super::{client_error_message, editor};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use leptos_router::components::A;
 use piqueld_client::{
     Client, ReleaseAvailability, ReleaseView, ResolvedSource, ServiceImage, ValidatedSource,
 };
@@ -104,13 +106,30 @@ pub(super) fn ReleaseHistory(application: String) -> impl IntoView {
     }
 }
 
-/// Expandable release: where its manifest came from, and each service's image,
-/// provenance, and build inputs. Starts expanded when it matches `?release=`.
+/// Expandable release: where its manifest came from, each service's image,
+/// provenance, and build inputs, and the deployments that received it by
+/// promotion or by ID. Offers to deploy it into each promoted environment,
+/// unless it is `planned`: shown in such a deployment's plan, where it starts
+/// expanded. Also starts expanded when it matches `?release=`.
 #[component]
-fn ReleaseCard(release: ReleaseView) -> impl IntoView {
+pub(super) fn ReleaseCard(release: ReleaseView, #[prop(optional)] planned: bool) -> impl IntoView {
+    let context = editor();
     let selected = leptos_router::hooks::use_query_map()
         .with(|q| q.get("release").is_some_and(|id| id == release.id.as_str()));
-    let opened = RwSignal::new(selected);
+    let opened = RwSignal::new(selected || planned);
+    let id = release.id.to_string();
+    // Promoted environments it can be deployed into.
+    let targets = move || {
+        context.saved.with(|saved| {
+            saved
+                .environments
+                .iter()
+                .filter(|env| env.source.promoted_from().is_some() && !env.delete_intent)
+                .map(|env| env.id.to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+    let promotions = StoredValue::new(release.promotions.clone());
     let commit = release.release.commit().map(str::to_owned);
     let availability = release.availability.as_ref().map(availability);
     let services = release
@@ -213,6 +232,54 @@ fn ReleaseCard(release: ReleaseView) -> impl IntoView {
                         })}
                 </dl>
                 {services}
+                {(!planned)
+                    .then(|| {
+                        view! {
+                            <div class="btn-group">
+                                {move || {
+                                    targets()
+                                        .into_iter()
+                                        .map(|environment| {
+                                            view! {
+                                                <PromoteAction
+                                                    environment={environment}
+                                                    release={id.clone()}
+                                                />
+                                            }
+                                        })
+                                        .collect_view()
+                                }}
+                            </div>
+                        }
+                    })}
+                <Show when={move || promotions.with_value(|promotions| !promotions.is_empty())}>
+                    <div class="snapshot-service">
+                        <h4>"Deployed to"</h4>
+                        <ul class="stack-sm">
+                            {move || {
+                                promotions
+                                    .get_value()
+                                    .into_iter()
+                                    .map(|promotion| {
+                                        let environment = promotion.environment_id.to_string();
+                                        let href = format!(
+                                            "{}?deployment={}",
+                                            context.environment_href(&environment),
+                                            promotion.deployment_id,
+                                        );
+                                        view! {
+                                            <li class="btn-group">
+                                                <A href={href}>{context.environment_name(&environment)}</A>
+                                                <span>{context.describe_origin(&promotion.origin)}</span>
+                                                <span class="meta">{when(promotion.created_at_ms)}</span>
+                                            </li>
+                                        }
+                                    })
+                                    .collect_view()
+                            }}
+                        </ul>
+                    </div>
+                </Show>
             </div>
         </article>
     }

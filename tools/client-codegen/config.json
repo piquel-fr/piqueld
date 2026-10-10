@@ -201,6 +201,21 @@
       "rustType": "piqueld_core::api::EnvironmentBranchRequest"
     },
     {
+      "schema": "EnvironmentSourceRequest",
+      "name": "EnvironmentSourceRequest",
+      "rustType": "piqueld_core::api::EnvironmentSourceRequest"
+    },
+    {
+      "schema": "PromoteRequest",
+      "name": "PromoteRequest",
+      "rustType": "piqueld_core::api::PromoteRequest"
+    },
+    {
+      "schema": "Envelope_AcceptedPromotion",
+      "name": "EnvelopeAcceptedPromotion",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::AcceptedPromotion>"
+    },
+    {
       "schema": "Envelope_CreatedPreview",
       "name": "EnvelopeCreatedPreview",
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::CreatedPreview>"

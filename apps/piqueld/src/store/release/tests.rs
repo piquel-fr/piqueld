@@ -73,7 +73,7 @@ async fn save_with_staging(store: &Store) -> (ApplicationId, EnvironmentId, Envi
     let create = Mutation::CreateEnvironment {
         application: application.clone(),
         name: EnvironmentName::parse("staging").unwrap(),
-        branch: None,
+        source: None,
     };
     let (MutationResponse::Environment(staging), _) = store
         .accept(Daemon, create, None, true, None)

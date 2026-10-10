@@ -401,12 +401,29 @@ impl Store {
             .execute(&self.pool).await.map_err(StoreError::database)?.rows_affected())
     }
 
+    /// Starts a new operation for environment `app` within `tx` (see
+    /// `start_operation`) and, unless it deletes, snapshots the manifest its
+    /// source deploys into deployment history (see `capture_deployment`).
+    pub(super) async fn insert_operation(
+        tx: &mut Transaction<'_, Sqlite>,
+        app: &EnvironmentId,
+        kind: OperationKind,
+        now: i64,
+    ) -> Result<Operation, StoreError> {
+        let operation = Self::start_operation(tx, app, kind, now).await?;
+        if kind != OperationKind::Delete {
+            Self::capture_deployment(tx, &operation.id, app).await?;
+        }
+        Ok(operation)
+    }
+
     /// Starts a new operation for environment `app` within `tx`:
     /// 1. supersedes any requested or running operation, recording events and attempt snapshots;
     /// 2. inserts a `requested` operation at its application's current generation;
-    /// 3. snapshots the manifest into deployment history for non-delete kinds;
-    /// 4. records the kind's request event.
-    pub(super) async fn insert_operation(
+    /// 3. records the kind's request event.
+    ///
+    /// Callers capture its deployment.
+    pub(super) async fn start_operation(
         tx: &mut Transaction<'_, Sqlite>,
         app: &EnvironmentId,
         kind: OperationKind,
@@ -424,9 +441,6 @@ impl Store {
         let kind = kind.as_str();
         sqlx::query!("INSERT INTO operations(id,environment_id,generation,kind,state,created_at_ms,updated_at_ms) SELECT ?1,e.id,a.generation,?3,'requested',?4,?4 FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?2",id,app_id,kind,now)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
-        if kind != "delete" {
-            Self::capture_deployment(tx, &id, app).await?;
-        }
         let event = match kind {
             "apply" => "application_applied",
             "refresh" => "refresh_requested",

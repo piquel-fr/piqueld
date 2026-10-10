@@ -387,7 +387,9 @@ pub(crate) mod tests {
             let create = Mutation::CreateEnvironment {
                 application: self.application.clone(),
                 name: EnvironmentName::parse(name).unwrap(),
-                branch: Some(TrackedBranch::new(branch.into(), None).unwrap()),
+                source: Some(crate::api::SourceChoice::Branch(
+                    TrackedBranch::new(branch.into(), None).unwrap(),
+                )),
             };
             let MutationResponse::Environment(environment) = self
                 .service

@@ -26,6 +26,32 @@
         ],
         "type": "object"
       },
+      "AcceptedPromotion": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AcceptedOperation",
+            "description": "The deployment operation; its ID is also the deployment's."
+          },
+          {
+            "properties": {
+              "origin": {
+                "$ref": "#/components/schemas/DeploymentOrigin",
+                "description": "Where the release came from."
+              },
+              "release_id": {
+                "$ref": "#/components/schemas/ReleaseId",
+                "description": "The release it deploys."
+              }
+            },
+            "required": [
+              "release_id",
+              "origin"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "An accepted promotion and the release it pinned."
+      },
       "Account": {
         "description": "An account and its grants.",
         "properties": {
@@ -1477,6 +1503,11 @@
           "name": {
             "description": "Environment name, unique within the application.",
             "type": "string"
+          },
+          "promote_from": {
+            "description": "ID of an environment to receive releases from instead of building;\nexcludes `branch`.",
+            "nullable": true,
+            "type": "string"
           }
         },
         "required": [
@@ -1898,6 +1929,66 @@
         ],
         "type": "object"
       },
+      "DeploymentOrigin": {
+        "description": "Where a deployment came from.",
+        "oneOf": [
+          {
+            "description": "Built from its environment's source: the saved manifest or its branch.\nIt records its release once prepared.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "build"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The release of another environment's deployment, promoted into this one.",
+            "properties": {
+              "deployment": {
+                "description": "That environment's deployment whose release it runs.",
+                "type": "string"
+              },
+              "environment": {
+                "$ref": "#/components/schemas/EnvironmentId",
+                "description": "The environment it was promoted from."
+              },
+              "type": {
+                "enum": [
+                  "promotion"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "environment",
+              "deployment",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An earlier release, deployed again by ID.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "release"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "DeploymentView": {
         "description": "Durable deployment snapshot and execution summary.",
         "properties": {
@@ -1931,6 +2022,10 @@
           "operation": {
             "$ref": "#/components/schemas/Operation",
             "description": "Execution ID also identifies this deployment."
+          },
+          "origin": {
+            "$ref": "#/components/schemas/DeploymentOrigin",
+            "description": "Where it came from: built from its environment's source, or a\npromoted or redeployed release."
           },
           "release": {
             "oneOf": [
@@ -2696,6 +2791,41 @@
               "generation"
             ],
             "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_AcceptedPromotion": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AcceptedOperation",
+                "description": "The deployment operation; its ID is also the deployment's."
+              },
+              {
+                "properties": {
+                  "origin": {
+                    "$ref": "#/components/schemas/DeploymentOrigin",
+                    "description": "Where the release came from."
+                  },
+                  "release_id": {
+                    "$ref": "#/components/schemas/ReleaseId",
+                    "description": "The release it deploys."
+                  }
+                },
+                "required": [
+                  "release_id",
+                  "origin"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "An accepted promotion and the release it pinned."
           }
         },
         "required": [
@@ -4163,6 +4293,10 @@
                       "$ref": "#/components/schemas/Operation",
                       "description": "Execution ID also identifies this deployment."
                     },
+                    "origin": {
+                      "$ref": "#/components/schemas/DeploymentOrigin",
+                      "description": "Where it came from: built from its environment's source, or a\npromoted or redeployed release."
+                    },
                     "release": {
                       "oneOf": [
                         {
@@ -4697,6 +4831,13 @@
                       "$ref": "#/components/schemas/ReleaseId",
                       "description": "Stable release identifier."
                     },
+                    "promotions": {
+                      "description": "Every deployment that received it rather than building it, newest\nfirst: where it was promoted or deployed again.",
+                      "items": {
+                        "$ref": "#/components/schemas/ReleasePromotion"
+                      },
+                      "type": "array"
+                    },
                     "release": {
                       "$ref": "#/components/schemas/Release",
                       "description": "Its manifest, commit, and each service's provenance and image."
@@ -4780,6 +4921,25 @@
               "plan": {
                 "$ref": "#/components/schemas/Plan",
                 "description": "Ordered runtime plan for the selected environment; unresolved images are\nexplicit actions. Empty when no environment is selected."
+              },
+              "release": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/ReleasePlan"
+                      }
+                    ],
+                    "description": "For a plan of a release (`env promote --plan`):\nthe release, its origin, new volumes, and unusable secrets."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
               },
               "rollouts": {
                 "description": "Effective rollout of each service, sorted by service name.",
@@ -5670,7 +5830,7 @@
         "type": "object"
       },
       "EnvironmentSource": {
-        "description": "Where an environment's deployments come from.\n\nEnvironments of an application without a manifest repository deploy its\nsaved manifest. Environments of a repository-backed application each\nfollow a branch of that repository: its URL and manifest path belong to\nthe application, the branch to the environment.",
+        "description": "Where an environment's deployments come from.\n\nTracking environments build what they deploy. Those of an application\nwithout a manifest repository deploy its saved manifest. Those of a\nrepository-backed application each follow a branch of that repository:\nits URL and manifest path belong to the application, the branch to the\nenvironment. A promoted environment never builds or fetches: it only\nreceives releases promoted from another environment.",
         "oneOf": [
           {
             "description": "The application's saved manifest.",
@@ -5709,8 +5869,50 @@
               }
             ],
             "description": "The manifest file on a branch of the application's manifest repository."
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PromotedFrom",
+                "description": "Releases promoted from another environment of the application."
+              },
+              {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "promoted"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "Releases promoted from another environment of the application."
           }
         ]
+      },
+      "EnvironmentSourceRequest": {
+        "additionalProperties": false,
+        "description": "Makes an environment promoted from another, or returns a promoted one\nto tracking its application's saved manifest or the branch\n`spec.manifest` names, conditioned on the inspected application revision.",
+        "properties": {
+          "expected_generation": {
+            "description": "Current application revision, required unless explicitly forced.",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "promote_from": {
+            "description": "ID of the environment to receive releases from; absent to track again.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
       },
       "EnvironmentStatusView": {
         "description": "Current environment reconciliation status.",
@@ -7573,6 +7775,25 @@
             "$ref": "#/components/schemas/Plan",
             "description": "Ordered runtime plan for the selected environment; unresolved images are\nexplicit actions. Empty when no environment is selected."
           },
+          "release": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ReleasePlan"
+                  }
+                ],
+                "description": "For a plan of a release (`env promote --plan`):\nthe release, its origin, new volumes, and unusable secrets."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "rollouts": {
             "description": "Effective rollout of each service, sorted by service name.",
             "items": {
@@ -7927,6 +8148,44 @@
         ],
         "type": "object"
       },
+      "PromoteRequest": {
+        "additionalProperties": false,
+        "description": "Promotes a release into a promoted environment, conditioned on the\ninspected application revision. By default the source environment's\ncurrent deployment; `deployment` and `release` are mutually exclusive.",
+        "properties": {
+          "deployment": {
+            "description": "The source deployment to promote; it must still be the source's current one.",
+            "nullable": true,
+            "type": "string"
+          },
+          "expected_generation": {
+            "description": "Current application revision, required unless explicitly forced; ignored by plans.",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "release": {
+            "description": "An earlier release to deploy instead of the source's current one.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "PromotedFrom": {
+        "additionalProperties": false,
+        "description": "The environment a promoted environment receives releases from. Stored by\nID, so renaming either keeps it.",
+        "properties": {
+          "environment": {
+            "$ref": "#/components/schemas/EnvironmentId",
+            "description": "The source environment; never a preview."
+          }
+        },
+        "required": [
+          "environment"
+        ],
+        "type": "object"
+      },
       "PrunePreviewsRequest": {
         "additionalProperties": false,
         "description": "Deletes the listed previews whose branch the repository confirms is gone.",
@@ -8185,6 +8444,69 @@
         "description": "Stable release identity, assigned by persistence when a preparation\nrecords content its application has no release for yet.",
         "type": "string"
       },
+      "ReleasePlan": {
+        "description": "What a plan of a release adds: the release and where it comes from, and\nwhat the environment still lacks.",
+        "properties": {
+          "new_volumes": {
+            "description": "Volumes it declares that the environment doesn't have yet; they are\ncreated empty.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/DeploymentOrigin",
+            "description": "Where it comes from."
+          },
+          "release": {
+            "$ref": "#/components/schemas/ReleaseView",
+            "description": "The release, with its provenance and image availability."
+          },
+          "secrets": {
+            "description": "Every secret it mounts that is missing or that the environment may not use.",
+            "items": {
+              "$ref": "#/components/schemas/SecretProblem"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "release",
+          "origin",
+          "new_volumes",
+          "secrets"
+        ],
+        "type": "object"
+      },
+      "ReleasePromotion": {
+        "description": "A deployment that received a release: promoted, or deployed again by ID.",
+        "properties": {
+          "created_at_ms": {
+            "description": "When it was accepted, in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "deployment_id": {
+            "description": "That deployment, whose ID is also its operation's.",
+            "type": "string"
+          },
+          "environment_id": {
+            "$ref": "#/components/schemas/EnvironmentId",
+            "description": "The environment it was deployed to."
+          },
+          "origin": {
+            "$ref": "#/components/schemas/DeploymentOrigin",
+            "description": "Where it came from; never `build`."
+          }
+        },
+        "required": [
+          "environment_id",
+          "deployment_id",
+          "origin",
+          "created_at_ms"
+        ],
+        "type": "object"
+      },
       "ReleaseView": {
         "description": "An immutable release of an application, recorded by a successful\npreparation in one of its tracking environments. Environments whose\ndeployments prepared the same content share it.",
         "properties": {
@@ -8227,6 +8549,13 @@
           "id": {
             "$ref": "#/components/schemas/ReleaseId",
             "description": "Stable release identifier."
+          },
+          "promotions": {
+            "description": "Every deployment that received it rather than building it, newest\nfirst: where it was promoted or deployed again.",
+            "items": {
+              "$ref": "#/components/schemas/ReleasePromotion"
+            },
+            "type": "array"
           },
           "release": {
             "$ref": "#/components/schemas/Release",
@@ -9027,6 +9356,91 @@
           "target"
         ],
         "type": "object"
+      },
+      "SecretProblem": {
+        "description": "A secret a rendered deployment mounts but cannot use. Promotions are\nrefused while any is left. Generated secrets are generated when missing,\nso only a pending deletion makes one unusable.",
+        "oneOf": [
+          {
+            "description": "Mounted from the application's store, which has no such secret.",
+            "properties": {
+              "problem": {
+                "enum": [
+                  "missing"
+                ],
+                "type": "string"
+              },
+              "secret": {
+                "description": "Logical secret name.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "secret",
+              "problem"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Stored, but its access list excludes the environment.",
+            "properties": {
+              "problem": {
+                "enum": [
+                  "access_denied"
+                ],
+                "type": "string"
+              },
+              "secret": {
+                "description": "Logical secret name.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "secret",
+              "problem"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Stored, but key recovery discarded its value; store a new version.",
+            "properties": {
+              "problem": {
+                "enum": [
+                  "unavailable"
+                ],
+                "type": "string"
+              },
+              "secret": {
+                "description": "Logical secret name.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "secret",
+              "problem"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Being deleted, stored or generated; finish or abandon the deletion.",
+            "properties": {
+              "problem": {
+                "enum": [
+                  "deleting"
+                ],
+                "type": "string"
+              },
+              "secret": {
+                "description": "Logical secret name.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "secret",
+              "problem"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "SecretsValue": {
         "additionalProperties": false,
@@ -11367,7 +11781,7 @@
     },
     "/api/v1/applications/{id}/environments": {
       "post": {
-        "description": "The environment starts `not_deployed`. It deploys the application's saved\nmanifest or, when the application is repository-backed, the manifest on\n`branch` (by default the branch `spec.manifest` names), optionally pinned\nto `commit`. A branch for an application without a repository fails with\n`manifest_repository_required`. The inspected application\n`expected_generation` goes in the JSON body.",
+        "description": "The environment starts `not_deployed`. It deploys the application's saved\nmanifest or, when the application is repository-backed, the manifest on\n`branch` (by default the branch `spec.manifest` names), optionally pinned\nto `commit`. A branch for an application without a repository fails with\n`manifest_repository_required`. With `promote_from`, it never builds and\nonly receives releases promoted from that environment, which must be\nanother environment of the application, never a preview\n(`promotion_source_invalid`). The inspected application\n`expected_generation` goes in the JSON body.",
         "operationId": "createEnvironment",
         "parameters": [
           {
@@ -22868,6 +23282,283 @@
         "x-piqueld-access": "logs:read"
       }
     },
+    "/api/v1/environments/{id}/promote": {
+      "post": {
+        "description": "Deploys the release of the source environment's current deployment\n(which must be `deployment` when given), or an earlier `release`, without\nbuilding or fetching. The release is pinned at acceptance: its own\nmanifest is rendered with this environment's `[spec.environments.<name>]`\nblock and variables, and its images deployed as recorded. Refused unless\nthe source deployment is current and succeeded and its services are\nhealthy now (`promotion_source_not_ready`, `promotion_source_changed`),\nthe release's build inputs render as they did for it\n(`release_incompatible`), its images are present or can be pulled again\n(`image_unavailable`), and every secret it mounts exists and allows this\nenvironment (`secrets_unavailable`, listing all of them). The inspected\napplication `expected_generation` goes in the JSON body.",
+        "operationId": "promoteEnvironment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedPromotion"
+                }
+              }
+            },
+            "description": "Promotion accepted with its release pinned"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Promotes a release into a promoted environment.",
+        "x-piqueld-access": "apps:deploy"
+      }
+    },
+    "/api/v1/environments/{id}/promote/plan": {
+      "post": {
+        "description": "Shows the release and its provenance and image availability, the\nrendered diff against the environment's latest deployment, the runtime\nplan, new (empty) volumes, and every secret that is missing or that the\nenvironment may not use. The source must be promotable, as for\n`promoteEnvironment`; an earlier `release` may be planned for any\nenvironment. `expected_generation` is ignored.",
+        "operationId": "planPromotion",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_PlanView"
+                }
+              }
+            },
+            "description": "Plan"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Plans a promotion, or deploying an earlier release, without changing\nanything.",
+        "x-piqueld-access": "apps:read"
+      }
+    },
     "/api/v1/environments/{id}/reconcile": {
       "post": {
         "description": "Returns 202 with a durable operation that repairs the runtime to match the\naccepted configuration. Unlike other mutations, `expected_generation` is\noptional. Repeating a request with the same `Idempotency-Key` returns the\noriginal response.",
@@ -23365,6 +24056,143 @@
         },
         "summary": "Generates a new version of a generated secret from its declaration.",
         "x-piqueld-access": "secrets:write"
+      }
+    },
+    "/api/v1/environments/{id}/source": {
+      "put": {
+        "description": "With `promote_from`, the environment never builds or fetches again: it\nonly receives releases promoted from that environment, by ID, which must\nbe another live environment of the application, never a preview\n(`promotion_source_invalid`), and must not promote from it, directly or\nthrough others (`promotion_cycle`). Without it, a promoted environment\ntracks the saved manifest, or the branch `spec.manifest` names, again.\nNothing is deployed. The inspected application `expected_generation`\ngoes in the JSON body.",
+        "operationId": "setEnvironmentSource",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentSourceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_EnvironmentView"
+                }
+              }
+            },
+            "description": "Environment deploys from its new source from its next deployment or promotion"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Changes where an environment's releases come from.",
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/environments/{id}/status": {

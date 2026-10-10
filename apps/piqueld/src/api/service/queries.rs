@@ -207,7 +207,7 @@ impl ApplicationService {
         let (operation, identical, changes, rendering, mut plan) = if let Some(environment) =
             &environment
         {
-            let repository = environment.repository();
+            let repository = environment.tracking()?.repository();
             let mut rendering = render(environment.environment.target(), repository.as_ref())?;
             let bounds = environment
                 .environment
@@ -277,6 +277,7 @@ impl ApplicationService {
             plan,
             rollouts,
             variables,
+            release: None,
         })
     }
     /// The environment's latest operation and, unless it deletes, the

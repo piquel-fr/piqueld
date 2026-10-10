@@ -973,7 +973,7 @@ impl EnvironmentHarness {
                 Mutation::CreateEnvironment {
                     application: harness.application.id().clone(),
                     name: EnvironmentName::parse("staging").unwrap(),
-                    branch: None,
+                    source: None,
                 },
                 Some(saved.generation),
                 false,
@@ -2569,7 +2569,9 @@ mod repository_deployments {
                 Mutation::CreateEnvironment {
                     application: application.environment.application_id,
                     name: EnvironmentName::parse(name).unwrap(),
-                    branch: Some(TrackedBranch::new(branch.into(), None).unwrap()),
+                    source: Some(piqueld::api::SourceChoice::Branch(
+                        TrackedBranch::new(branch.into(), None).unwrap(),
+                    )),
                 },
                 None,
                 true,
@@ -2611,7 +2613,10 @@ mod repository_deployments {
         );
         let current = harness.store.get(&first.environment_id).await.unwrap();
         assert_eq!(current.resolved.as_ref().unwrap().services[0].replicas, 2);
-        assert_eq!(current.repository(), initial.spec.manifest);
+        assert_eq!(
+            current.tracking().unwrap().repository(),
+            initial.spec.manifest
+        );
         assert_eq!(
             current.application.application.spec().manifest,
             initial.spec.manifest
@@ -2633,7 +2638,10 @@ mod repository_deployments {
             assert_eq!(deployed.state, OperationState::Succeeded);
             assert_eq!(warnings(&harness, &deployed).await, Vec::<String>::new());
             let current = harness.store.get(&first.environment_id).await.unwrap();
-            assert_eq!(current.repository(), initial.spec.manifest);
+            assert_eq!(
+                current.tracking().unwrap().repository(),
+                initial.spec.manifest
+            );
         }
     }
 
@@ -2706,7 +2714,7 @@ mod repository_deployments {
                 current
                     .resolved
                     .map(|resolved| resolved.services[0].replicas),
-                current.fetched,
+                current.own,
             )
         };
         let deployed = RepositoryFixture::deploy(&harness, &staging).await;
@@ -4962,14 +4970,13 @@ mod image_retention {
     #[tokio::test]
     async fn missing_images_are_pulled_again_by_digest_or_reported_unavailable() {
         let harness = ControllerHarness::new().await;
-        let in_use: ImagesInUse<'_> = harness.controller.images_in_use().await;
+        let in_use: ImagesInUse = harness.controller.images_in_use().await;
         let web = ServiceName::parse("web").unwrap();
         let pulled = harness.resolutions.sources[&web].clone();
         let digest = pulled.repository_digest().unwrap().to_string();
 
-        harness
-            .controller
-            .ensure_images(&in_use, [(&web, &pulled)])
+        in_use
+            .ensure(&*harness.docker, [(&web, &pulled)])
             .await
             .unwrap();
         assert_eq!(harness.docker.registry.lock().await.pulls[&digest], 1);
@@ -4982,9 +4989,8 @@ mod image_retention {
             commit: "a".repeat(40),
             image_id: image('c', &[]).id,
         };
-        let error = harness
-            .controller
-            .ensure_images(&in_use, [(&web, &pulled), (&api, &built)])
+        let error = in_use
+            .ensure(&*harness.docker, [(&web, &pulled), (&api, &built)])
             .await
             .unwrap_err();
         assert_eq!(error.code(), "image_unavailable");
@@ -4997,5 +5003,570 @@ mod image_retention {
         );
         // `web` was present this time.
         assert_eq!(harness.docker.registry.lock().await.pulls[&digest], 1);
+    }
+}
+
+/// Promoting releases into promoted environments, which never build or fetch.
+mod promotion {
+    use super::*;
+    use piqueld::api::{ApplicationError, Mutation, MutationResponse, PromotionMutation};
+    use piqueld::store::{PromotionError, StoreError};
+    use piqueld_core::api::{
+        AcceptedPromotion, DeploymentOrigin, DeploymentView, EnvironmentAccess, PromotionSelection,
+        SecretAccess, SecretProblem,
+    };
+    use piqueld_core::{EnvironmentName, ReleaseId, manifest::parse_template_toml};
+
+    /// `shop`, whose `web` service renders `ORIGIN` from each environment's
+    /// `domain`, with more `staging` and `production` variables, then `spec`.
+    fn shop_toml(staging: &str, production: &str, spec: &str) -> String {
+        format!(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='shop'\n\
+             [spec.environments.staging.variables]\ndomain='staging.example.com'\n{staging}\n\
+             [spec.environments.production.variables]\ndomain='example.com'\n{production}\n\
+             [[spec.services]]\nname='web'\n[spec.services.environment]\nORIGIN='https://${{{{ vars.domain }}}}'\n{spec}"
+        )
+    }
+
+    /// The image source every `shop` deploys unless a test changes it.
+    const IMAGE: &str = "[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'";
+
+    /// `shop` saved from `manifest`, with `staging` tracking it and
+    /// `production` promoted from `staging`.
+    struct Shop {
+        harness: ControllerHarness,
+        application: ApplicationId,
+        staging: EnvironmentId,
+        production: EnvironmentId,
+    }
+
+    impl Shop {
+        async fn new(manifest: &str) -> Self {
+            let harness = ControllerHarness::new().await;
+            let saved = harness
+                .applications()
+                .save(parse_template_toml(manifest).unwrap(), Some(0))
+                .await
+                .unwrap();
+            let application = ApplicationId::parse(saved.application_id).unwrap();
+            let production = EnvironmentId::default_for(&application);
+            let create = Mutation::CreateEnvironment {
+                application: application.clone(),
+                name: EnvironmentName::parse("staging").unwrap(),
+                source: None,
+            };
+            let MutationResponse::Environment(staging) = harness
+                .applications()
+                .accept(Daemon, create, None, true, None)
+                .await
+                .unwrap()
+            else {
+                panic!("environment expected")
+            };
+            let shop = Self {
+                harness,
+                application,
+                staging: staging.id,
+                production,
+            };
+            shop.set_source(&shop.production, Some(&shop.staging)).await;
+            shop
+        }
+
+        async fn set_source(&self, id: &EnvironmentId, source: Option<&EnvironmentId>) {
+            let mutation = Mutation::Promotion(PromotionMutation::SetSource {
+                id: id.clone(),
+                promote_from: source.cloned(),
+            });
+            self.harness
+                .applications()
+                .accept(Daemon, mutation, None, true, None)
+                .await
+                .unwrap();
+        }
+
+        /// Deploys `staging` until it succeeds.
+        async fn deploy_staging(&self) -> Operation {
+            let operation = self
+                .harness
+                .applications()
+                .deploy(&self.staging, None)
+                .await
+                .unwrap();
+            self.harness.finish(&operation).await;
+            operation
+        }
+
+        /// Promotes `selection` into `production`.
+        async fn promote(
+            &self,
+            selection: PromotionSelection,
+        ) -> Result<AcceptedPromotion, ApplicationError> {
+            self.harness
+                .applications()
+                .promote(Daemon, &self.production, selection, None, true, None)
+                .await
+        }
+
+        /// Promotes the source's current release.
+        async fn promote_current(&self) -> Result<AcceptedPromotion, ApplicationError> {
+            self.promote(PromotionSelection::Source { deployment: None })
+                .await
+        }
+
+        /// Promotes the source's current release and runs it until it succeeds.
+        async fn promoted(&self) -> AcceptedPromotion {
+            let accepted = self.promote_current().await.unwrap();
+            let operation = self
+                .harness
+                .store
+                .operation(&accepted.operation.operation_id)
+                .await
+                .unwrap();
+            self.harness.finish(&operation).await;
+            accepted
+        }
+
+        async fn deployment(&self, id: &str) -> DeploymentView {
+            let environment = self
+                .harness
+                .store
+                .operation(id)
+                .await
+                .unwrap()
+                .environment_id;
+            self.harness
+                .store
+                .deployments(&environment, None, 50)
+                .await
+                .unwrap()
+                .items
+                .into_iter()
+                .find(|deployment| deployment.operation.id == id)
+                .unwrap()
+        }
+
+        /// The value `environment`'s running `web` gets for `ORIGIN`, and its image.
+        async fn web(&self, environment: &EnvironmentId) -> (String, String) {
+            let target = self.harness.target(environment).await;
+            let web = &target.services[0];
+            (web.environment["ORIGIN"].clone(), web.image.to_string())
+        }
+
+        async fn release(&self, deployment: &str) -> ReleaseId {
+            self.deployment(deployment).await.release.unwrap()
+        }
+    }
+
+    /// The promotion error a request failed with.
+    fn refusal(result: Result<AcceptedPromotion, ApplicationError>) -> PromotionError {
+        match result {
+            Err(ApplicationError::Store(StoreError::Promotion(error))) => error,
+            other => panic!("promotion refusal expected, got {other:?}"),
+        }
+    }
+
+    /// The release staging built is deployed to production as recorded:
+    /// rendered with production's block, its image never pulled or built
+    /// again, except a missing registry image, pulled again by digest at
+    /// acceptance. Each deployment records where it came from, and the
+    /// release where it was promoted.
+    #[tokio::test]
+    async fn promotes_the_source_release_rendered_for_the_target_without_building() {
+        let shop = Shop::new(&shop_toml("", "", IMAGE)).await;
+        let built = shop.deploy_staging().await;
+        let release = shop.release(&built.id).await;
+        let image = shop.web(&shop.staging).await.1;
+        let pulls = shop.harness.pulls().await;
+        // Cleanup or an operator removed the pulled image meanwhile.
+        shop.harness.docker.local_images.lock().await.clear();
+
+        let accepted = shop.promoted().await;
+        assert_eq!(accepted.release_id, release);
+        let origin = DeploymentOrigin::Promotion {
+            environment: shop.staging.clone(),
+            deployment: built.id.clone(),
+        };
+        assert_eq!(accepted.origin, origin);
+        assert_eq!(shop.harness.pulls().await, pulls + 1);
+        assert!(!shop.harness.docker.local_images.lock().await.is_empty());
+
+        assert_eq!(
+            shop.web(&shop.production).await,
+            ("https://example.com".to_owned(), image.clone())
+        );
+        assert_eq!(
+            shop.web(&shop.staging).await,
+            ("https://staging.example.com".to_owned(), image)
+        );
+        let promoted = shop.deployment(&accepted.operation.operation_id).await;
+        assert_eq!(promoted.release, Some(release.clone()));
+        assert_eq!(promoted.origin, origin);
+        assert_eq!(
+            shop.deployment(&built.id).await.origin,
+            DeploymentOrigin::Build
+        );
+        let releases = shop
+            .harness
+            .store
+            .releases(&shop.application, None, 20)
+            .await
+            .unwrap();
+        let [listed] = releases.items.as_slice() else {
+            panic!("one release expected, got {releases:?}")
+        };
+        assert_eq!(
+            listed
+                .promotions
+                .iter()
+                .map(|promotion| (&promotion.environment_id, &promotion.origin))
+                .collect::<Vec<_>>(),
+            [(&shop.production, &origin)]
+        );
+    }
+
+    /// A later source deployment never retargets an accepted promotion, a
+    /// reviewed deployment that is no longer current is refused, and an
+    /// earlier release can be deployed again by ID.
+    #[tokio::test]
+    async fn the_release_is_pinned_at_acceptance() {
+        let shop = Shop::new(&shop_toml("", "", IMAGE)).await;
+        let first = shop.deploy_staging().await;
+        let release = shop.release(&first.id).await;
+        let applications = shop.harness.applications();
+        let promote = |request| {
+            applications.promote(
+                Daemon,
+                &shop.production,
+                PromotionSelection::Source {
+                    deployment: Some(first.id.clone()),
+                },
+                None,
+                true,
+                Some(request),
+            )
+        };
+        let accepted = promote("promote-first").await.unwrap();
+
+        // The tag now resolves to another image, so staging's next deployment
+        // records another release. Running it also runs the promotion.
+        shop.harness
+            .docker
+            .registry
+            .lock()
+            .await
+            .digests
+            .insert("ghcr.io/example/notes:1.4.0".into(), "b".repeat(64));
+        let second = shop.deploy_staging().await;
+        assert_ne!(shop.release(&second.id).await, release);
+        let promoted = shop
+            .harness
+            .store
+            .operation(&accepted.operation.operation_id)
+            .await
+            .unwrap();
+        assert_eq!(promoted.state, OperationState::Succeeded);
+        assert_eq!(
+            shop.deployment(&promoted.id).await.release,
+            Some(release.clone())
+        );
+        assert!(
+            shop.web(&shop.production)
+                .await
+                .1
+                .ends_with(&"a".repeat(64))
+        );
+
+        assert!(matches!(
+            refusal(
+                shop.promote(PromotionSelection::Source {
+                    deployment: Some(first.id.clone()),
+                })
+                .await
+            ),
+            PromotionError::SourceChanged { deployment, .. } if deployment == first.id
+        ));
+        // Repeating the accepted request returns its response all the same.
+        let repeated = promote("promote-first").await.unwrap();
+        assert_eq!(
+            repeated.operation.operation_id,
+            accepted.operation.operation_id
+        );
+
+        let again = shop
+            .promote(PromotionSelection::Release {
+                release: release.clone(),
+            })
+            .await
+            .unwrap();
+        let operation = shop
+            .harness
+            .store
+            .operation(&again.operation.operation_id)
+            .await
+            .unwrap();
+        shop.harness.finish(&operation).await;
+        assert_eq!(again.origin, DeploymentOrigin::Release);
+        assert_eq!(
+            shop.deployment(&operation.id).await.origin,
+            DeploymentOrigin::Release
+        );
+        assert!(
+            shop.web(&shop.production)
+                .await
+                .1
+                .ends_with(&"a".repeat(64))
+        );
+    }
+
+    /// Every precondition refuses the promotion before anything is captured:
+    /// a source without a succeeded deployment or with unhealthy services, a
+    /// build input that renders differently, and missing or inaccessible
+    /// secrets, all listed at once (also by the plan).
+    #[tokio::test]
+    async fn preconditions_are_checked_before_anything_is_captured() {
+        let manifest = shop_toml(
+            "api='staging-api'",
+            "api='production-api'",
+            &format!(
+                "{IMAGE}\n[[spec.services.secrets]]\nname='${{{{ vars.api }}}}'\ntarget='/run/secrets/api'\n\
+                 [[spec.services.secrets]]\nname='${{{{ vars.db }}}}'\ntarget='/run/secrets/db'\n\
+                 [spec.variables]\ndb='shared-db'"
+            ),
+        );
+        let shop = Shop::new(&manifest).await;
+        assert!(matches!(
+            refusal(shop.promote_current().await),
+            PromotionError::SourceNotReady { .. }
+        ));
+        let applications = shop.harness.applications();
+        applications
+            .put_stored_secret(
+                Daemon,
+                &shop.application,
+                "staging-api",
+                0,
+                b"api".to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        let staging_only = SecretAccess {
+            environments: EnvironmentAccess::Only([shop.staging.clone()].into()),
+            previews: false,
+        };
+        applications
+            .put_stored_secret(
+                Daemon,
+                &shop.application,
+                "shared-db",
+                0,
+                b"db".to_vec(),
+                Some(&staging_only),
+            )
+            .await
+            .unwrap();
+        shop.deploy_staging().await;
+
+        let expected = [
+            SecretProblem::Missing {
+                secret: "production-api".into(),
+            },
+            SecretProblem::AccessDenied {
+                secret: "shared-db".into(),
+            },
+        ];
+        match refusal(shop.promote_current().await) {
+            PromotionError::Secrets { secrets, .. } => assert_eq!(secrets, expected),
+            other => panic!("secrets refusal expected, got {other:?}"),
+        }
+        let plan = applications
+            .plan_release(
+                &shop.production,
+                &PromotionSelection::Source { deployment: None },
+            )
+            .await
+            .unwrap();
+        assert_eq!(plan.release.unwrap().secrets, expected);
+
+        // Unhealthy right now, though its deployment succeeded; then healthy,
+        // but running another image than its release's.
+        shop.harness.docker.observed.lock().await.services[0].convergence = Convergence::Degraded;
+        assert!(matches!(
+            refusal(shop.promote_current().await),
+            PromotionError::SourceNotReady { .. }
+        ));
+        {
+            let mut observed = shop.harness.docker.observed.lock().await;
+            let web = &mut observed.services[0];
+            web.convergence = Convergence::Converged;
+            web.image = format!("ghcr.io/example/notes@sha256:{}", "f".repeat(64));
+        }
+        assert!(matches!(
+            refusal(shop.promote_current().await),
+            PromotionError::SourceNotReady { .. }
+        ));
+        assert!(
+            shop.harness
+                .store
+                .latest_operation_for_environment(&shop.production)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// The environment's declared secrets are generated for a promotion, but
+    /// stored only once it is accepted.
+    #[tokio::test]
+    async fn generated_secrets_are_stored_with_the_accepted_promotion() {
+        let manifest = shop_toml(
+            "",
+            "",
+            &format!(
+                "{IMAGE}\n[[spec.services.secrets]]\nname='session'\ntarget='/run/secrets/session'\n\
+                 [[spec.secrets]]\nname='session'\n[spec.secrets.generate]\ntype='random'\nbytes=16"
+            ),
+        );
+        let shop = Shop::new(&manifest).await;
+        shop.deploy_staging().await;
+        let applications = shop.harness.applications();
+        let current = PromotionSelection::Source { deployment: None };
+        assert!(matches!(
+            applications
+                .promote(
+                    Daemon,
+                    &shop.production,
+                    current.clone(),
+                    Some(0),
+                    false,
+                    None
+                )
+                .await,
+            Err(ApplicationError::Store(
+                StoreError::GenerationConflict { .. }
+            ))
+        ));
+        assert!(
+            shop.harness
+                .store
+                .secrets(&shop.production)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        shop.promoted().await;
+        let stored = shop.harness.store.secrets(&shop.production).await.unwrap();
+        assert_eq!(
+            stored
+                .iter()
+                .map(|secret| secret.name.as_str())
+                .collect::<Vec<_>>(),
+            ["session"]
+        );
+        // Planning the same release again changes nothing: services keep the
+        // secret version they run.
+        let plan = applications
+            .plan_release(&shop.production, &current)
+            .await
+            .unwrap();
+        assert!(plan.identical, "{:?}", plan.changes);
+        assert!(
+            !plan.plan.actions.iter().any(|action| matches!(
+                action.kind,
+                piqueld_core::ActionKind::EnsureService { .. }
+            )),
+            "{:?}",
+            plan.plan.actions
+        );
+    }
+
+    /// A build input production renders differently can't reuse the
+    /// release's image.
+    #[tokio::test]
+    async fn a_release_whose_build_inputs_render_differently_is_refused() {
+        let tagged = shop_toml(
+            "",
+            "tag='1.5.0'",
+            "[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:${{ vars.tag }}'\n\
+             [spec.variables]\ntag='1.4.0'",
+        );
+        let shop = Shop::new(&tagged).await;
+        shop.deploy_staging().await;
+        match shop.promote_current().await {
+            Err(ApplicationError::Store(StoreError::Validation(errors))) => assert_eq!(
+                errors
+                    .0
+                    .iter()
+                    .map(|error| (error.code.as_str(), error.path.as_str()))
+                    .collect::<Vec<_>>(),
+                [("release_incompatible", "web.source.image")]
+            ),
+            other => panic!("release_incompatible expected, got {other:?}"),
+        }
+    }
+
+    /// An environment can't become promoted while a deployment may be
+    /// fetching or building, and retrying a deployment that never prepared
+    /// fails instead of fetching or building once it is promoted.
+    #[tokio::test]
+    async fn a_promoted_environment_never_builds_a_deployment_requested_before() {
+        let shop = Shop::new(&shop_toml("", "", IMAGE)).await;
+        shop.set_source(&shop.production, None).await;
+        let requested = shop
+            .harness
+            .applications()
+            .deploy(&shop.production, None)
+            .await
+            .unwrap();
+        let convert = || {
+            Mutation::Promotion(PromotionMutation::SetSource {
+                id: shop.production.clone(),
+                promote_from: Some(shop.staging.clone()),
+            })
+        };
+        assert!(matches!(
+            shop.harness
+                .applications()
+                .accept(Daemon, convert(), None, true, None)
+                .await,
+            Err(ApplicationError::Store(StoreError::Busy))
+        ));
+
+        // It fails before preparing anything, then the environment is promoted.
+        shop.harness
+            .docker
+            .incompatible_swarm
+            .store(true, Ordering::SeqCst);
+        shop.harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+        let failed = shop.harness.store.operation(&requested.id).await.unwrap();
+        assert_eq!(failed.state, OperationState::Failed);
+        shop.harness
+            .docker
+            .incompatible_swarm
+            .store(false, Ordering::SeqCst);
+        shop.set_source(&shop.production, Some(&shop.staging)).await;
+
+        let pulls = shop.harness.pulls().await;
+        let retried = shop
+            .harness
+            .applications()
+            .reconcile(&shop.production, None)
+            .await
+            .unwrap();
+        assert_eq!(retried.id, requested.id);
+        shop.harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+        let failed = shop.harness.store.operation(&requested.id).await.unwrap();
+        assert_eq!(failed.state, OperationState::Failed);
+        assert_eq!(failed.error_code.as_deref(), Some("environment_promoted"));
+        assert_eq!(shop.harness.pulls().await, pulls);
     }
 }

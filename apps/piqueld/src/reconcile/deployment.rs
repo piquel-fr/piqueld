@@ -1,6 +1,7 @@
 //! Fetch a candidate manifest without changing accepted intent or runtime state.
-use super::{Controller, DockerApi, Operation, OperationError, StoredEnvironment};
+use super::{Controller, DockerApi, Operation, OperationError};
 use crate::store::StoreError;
+use crate::store::Tracking;
 use piqueld_core::{
     NormalizedApplication,
     api::DiagnosticView,
@@ -28,7 +29,7 @@ impl<D: DockerApi> Controller<D> {
     pub(super) async fn deployment_manifest(
         &self,
         operation: &Operation,
-        environment: &StoredEnvironment,
+        environment: Tracking<'_>,
     ) -> Result<NormalizedApplication, OperationError> {
         let snapshot = self.store.deployment_snapshot(&operation.id).await?;
         let Some(input) = self.store.deployment_input(operation).await? else {
@@ -73,7 +74,7 @@ impl<D: DockerApi> Controller<D> {
         }
         let mut rendering = template
             .render(&RenderContext {
-                target: environment.environment.target(),
+                target: environment.environment().target(),
                 git: Some(GitRevision {
                     branch: backing.repository.branch.clone(),
                     sha: checkout.commit.clone(),
@@ -83,7 +84,7 @@ impl<D: DockerApi> Controller<D> {
             .map_err(Self::invalid_manifest)?;
         warnings.extend(
             environment
-                .environment
+                .environment()
                 .kind
                 .bound(&mut rendering.application, self.store.preview_limits())
                 .into_iter()

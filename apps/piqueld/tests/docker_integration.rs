@@ -883,6 +883,7 @@ async fn git_build_runs_as_a_local_swarm_image() {
         owner.clone(),
         std::sync::Arc::new(tokio::sync::Notify::new()),
         Duration::from_mins(2),
+        std::sync::Arc::default(),
     );
     let target = runtime
         .prepare(&environment, &app, &piqueld_core::ResolutionSet::default())

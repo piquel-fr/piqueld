@@ -9,7 +9,10 @@ use crate::store::{Actor, Attribution};
 use piqueld_core::{
     ApplicationId, EnvironmentId, ValidationError, ValidationErrors,
     access::Permission,
-    api::{EnvironmentAccess, EnvironmentView, SecretAccess, SecretMetadata, StoredSecret},
+    api::{
+        EnvironmentAccess, EnvironmentView, SecretAccess, SecretMetadata, SecretProblem,
+        StoredSecret,
+    },
     codes,
     manifest::ApplicationTemplate,
 };
@@ -35,7 +38,7 @@ impl Store {
     }
 
     /// Lists an application's stored secrets on an existing connection or transaction.
-    async fn stored_secrets_on(
+    pub(in crate::store) async fn stored_secrets_on(
         connection: &mut SqliteConnection,
         application: &ApplicationId,
     ) -> Result<Vec<StoredSecret>, StoreError> {
@@ -322,31 +325,29 @@ impl Store {
 
     /// Checks that `app`, rendered for `environment`, may use its application
     /// store: no declared secret is also stored, and every stored secret it
-    /// mounts allows the environment (`SecretAccessDenied`). Missing stored
-    /// secrets fail later, when pinned.
+    /// mounts allows the environment (`SecretAccessDenied`, naming the first
+    /// that doesn't). Other unusable secrets fail later, when pinned.
     pub(in crate::store) async fn check_secret_access_on(
         connection: &mut SqliteConnection,
         environment: &EnvironmentView,
         app: &NormalizedApplication,
     ) -> Result<(), StoreError> {
-        let stored = Self::stored_secrets_on(connection, &environment.application_id).await?;
-        Self::check_declared_names(
-            &app.spec().secrets,
-            stored.iter().map(|secret| secret.metadata.name.as_str()),
-        )?;
-        for (name, source) in app.spec().mounted_secrets() {
-            if source == SecretSource::Stored
-                && stored.iter().any(|secret| {
-                    secret.metadata.name == name && !secret.access.allows(environment)
-                })
-            {
-                return Err(StoreError::SecretAccessDenied {
-                    environment: environment.name.clone(),
-                    secret: name.into(),
-                });
-            }
+        let denied = Self::secret_problems_on(connection, environment, app)
+            .await?
+            .into_iter()
+            .find_map(|problem| match problem {
+                SecretProblem::AccessDenied { secret } => Some(secret),
+                SecretProblem::Missing { .. }
+                | SecretProblem::Unavailable { .. }
+                | SecretProblem::Deleting { .. } => None,
+            });
+        match denied {
+            Some(secret) => Err(StoreError::SecretAccessDenied {
+                environment: environment.name.clone(),
+                secret,
+            }),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// Checks a preview of `app` for `environment`; see `check_secret_access_on`.

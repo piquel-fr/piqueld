@@ -3,15 +3,17 @@
 mod runtime;
 pub use runtime::ApplicationRuntime;
 
+use crate::reconcile::ImagesInUse;
 use crate::{
     docker::{DockerError, Exec, ExecIo},
     store::{StoreError, StoredEnvironment},
 };
 use async_trait::async_trait;
 use piqueld_core::{
-    CompileError, EnvironmentId, NormalizedApplication, ObservedApplication,
-    resource::ResolvedApplication,
+    CompileError, EnvironmentId, NormalizedApplication, ObservedApplication, ServiceName,
+    resource::{ResolvedApplication, ResolvedSource},
 };
+use std::collections::BTreeMap;
 
 #[derive(Debug, thiserror::Error)]
 /// Errors crossing the runtime boundary.
@@ -28,6 +30,10 @@ pub enum BoundaryError {
     /// Resolved inputs could not be compiled into desired runtime resources.
     #[error("application compilation failed")]
     Compilation(Vec<CompileError>),
+    /// An image a release runs is gone: a build, or a registry image that
+    /// couldn't be pulled again by digest.
+    #[error(transparent)]
+    ImageUnavailable(Box<crate::operations::OperationError>),
 }
 
 /// Resolves accepted intent during execution and observes runtime for API reads.
@@ -78,6 +84,14 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
     ) -> Result<ResolvedApplication, BoundaryError>;
     /// Lists the images present in the local engine.
     async fn local_images(&self) -> Result<piqueld_core::LocalImages, BoundaryError>;
+    /// Keeps image cleanup from removing anything until the returned guard
+    /// drops, and makes sure every image of `sources` is present, pulling
+    /// registry images again by digest (see `ImagesInUse::ensure`). Promoting
+    /// a release holds the guard until it saved the target that runs them.
+    async fn reuse_images(
+        &self,
+        sources: &BTreeMap<ServiceName, ResolvedSource>,
+    ) -> Result<ImagesInUse, BoundaryError>;
     /// Checks Docker availability without preparing images or changing runtime resources.
     async fn check_available(&self) -> Result<(), BoundaryError>;
     /// Captures current runtime state for a stored environment.

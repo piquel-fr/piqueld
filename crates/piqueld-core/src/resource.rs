@@ -565,6 +565,22 @@ pub struct ResolvedApplication {
 }
 
 impl ResolvedApplication {
+    /// Whether `observed` runs every one of its services exactly as
+    /// desired (no field the planner compares drifts), converged: what
+    /// promoting a release requires of its source environment right now.
+    /// Project ingress first (see [`Self::with_ingress_routes`]), as
+    /// reconciliation does.
+    #[must_use]
+    pub fn converged_in(&self, observed: &ObservedApplication) -> bool {
+        self.services.iter().all(|desired| {
+            observed.services.iter().any(|service| {
+                service.name == desired.name.as_str()
+                    && service.convergence == Convergence::Converged
+                    && service.matches(desired)
+            })
+        })
+    }
+
     /// Services that must converge before this job starts, inherited from its
     /// referenced service. Read the service so prepared targets saved by older
     /// versions, which cleared job container dependencies, work too.
@@ -716,6 +732,23 @@ pub struct CompileError {
     pub resource: String,
     /// Safe human-readable explanation.
     pub message: String,
+}
+
+/// Reports compilation errors at their resource, e.g. a release's
+/// `release_incompatible` build input `web.source.build.args.VITE_ORIGIN`.
+impl From<Vec<CompileError>> for crate::ValidationErrors {
+    fn from(errors: Vec<CompileError>) -> Self {
+        Self(
+            errors
+                .into_iter()
+                .map(|error| crate::ValidationError {
+                    code: error.code,
+                    path: error.resource,
+                    message: error.message,
+                })
+                .collect(),
+        )
+    }
 }
 
 /// Compiles normalized intent for one environment after all image references have

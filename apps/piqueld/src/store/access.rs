@@ -700,7 +700,7 @@ mod tests {
         let create = Mutation::CreateEnvironment {
             application: blog.clone(),
             name: names[1].clone(),
-            branch: None,
+            source: None,
         };
         store.accept(actor, create, None, true, None).await.unwrap();
         let delete = Mutation::DeleteApplication {

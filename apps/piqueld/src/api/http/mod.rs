@@ -23,7 +23,7 @@ use tower_http::{
 };
 use utoipa_axum::router::OpenApiRouter;
 
-use crate::store::StoreError;
+use crate::store::{PromotionError, StoreError};
 
 #[macro_use]
 mod access;
@@ -239,6 +239,61 @@ impl ApiError {
         }
     }
 
+    /// Maps refused promotions and promotion sources, with what they name in
+    /// `details`. Changes the source made since it was inspected are
+    /// conflicts; impossible sources are invalid input.
+    fn from_promotion_error(error: &PromotionError) -> Self {
+        let (status, code, details) = match error {
+            PromotionError::Promoted { environment } => (
+                StatusCode::CONFLICT,
+                "environment_promoted",
+                json!({"environment": environment}),
+            ),
+            PromotionError::NotPromoted { environment } => (
+                StatusCode::CONFLICT,
+                "environment_not_promoted",
+                json!({"environment": environment}),
+            ),
+            PromotionError::Cycle { environments } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "promotion_cycle",
+                json!({"environments": environments}),
+            ),
+            PromotionError::SourceInvalid { environment, .. } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "promotion_source_invalid",
+                json!({"environment": environment}),
+            ),
+            PromotionError::InUse { environments } => (
+                StatusCode::CONFLICT,
+                "promotion_source_in_use",
+                json!({"environments": environments}),
+            ),
+            PromotionError::SourceNotReady { environment, .. } => (
+                StatusCode::CONFLICT,
+                "promotion_source_not_ready",
+                json!({"environment": environment}),
+            ),
+            PromotionError::SourceChanged {
+                environment,
+                deployment,
+            } => (
+                StatusCode::CONFLICT,
+                "promotion_source_changed",
+                json!({"environment": environment, "deployment": deployment}),
+            ),
+            PromotionError::Secrets {
+                environment,
+                secrets,
+            } => (
+                StatusCode::CONFLICT,
+                "secrets_unavailable",
+                json!({"environment": environment, "secrets": secrets}),
+            ),
+        };
+        Self::new(status, code, error.to_string()).details(details)
+    }
+
     /// Maps hostname reservation conflicts selected by `From<StoreError>`,
     /// naming the hostname, and the sibling environment reserving it if any.
     ///
@@ -285,6 +340,7 @@ impl From<StoreError> for ApiError {
             | StoreError::EnvironmentConfigured { .. }
             | StoreError::PreviewRequiresRepository
             | StoreError::PreviewLimitReached(_)) => Self::from_environment_error(error),
+            StoreError::Promotion(error) => Self::from_promotion_error(&error),
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "generation_conflict",
@@ -410,6 +466,9 @@ impl From<BoundaryError> for ApiError {
                 "application_compilation_failed",
                 "application compilation failed",
             ),
+            BoundaryError::ImageUnavailable(error) => {
+                Self::new(StatusCode::CONFLICT, "image_unavailable", error.to_string())
+            }
         };
         error.diagnostic = Some(Box::new(diagnostic));
         error
@@ -749,6 +808,9 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Write) => environments::sync))
         .routes(granted!(App(Read) => webhooks::get))
         .routes(granted!(App(Write) => webhooks::generate_secret))
+        .routes(granted!(App(Write) => environments::source))
+        .routes(granted!(App(Deploy) => environments::promote))
+        .routes(granted!(App(Read) => environments::plan_promotion))
         .routes(granted!(App(Deploy) => previews::create))
         .routes(granted!(App(Read) => previews::list))
         .routes(granted!(App(Read) => previews::get))
