@@ -2824,27 +2824,38 @@ fn wait_follows_one_deployment_until_its_routes_are_ready() {
 
 #[test]
 fn wait_never_follows_a_newer_deployment_and_fails_or_times_out_with_its_code() {
-    for (states, latest, timeout, code, error_code) in [
+    let pending = || detail("operation-01", true, "pending");
+    // A retry of the deployment that failed after it first succeeded.
+    let mut retried = detail("operation-01", true, "ready");
+    retried["latest_operation"]["state"] = json!("failed");
+    // A daemon that does not report URL readiness never reads as ready.
+    let mut no_urls = detail("operation-01", true, "ready");
+    no_urls.as_object_mut().unwrap().remove("urls");
+    let cases = [
         // Superseded while pending, or after succeeding by a newer one.
         (
             vec!["superseded"],
-            "operation-01",
+            pending(),
             "10s",
             3,
             "deployment_superseded",
         ),
         (
             vec!["succeeded"],
-            "operation-02",
+            detail("operation-02", true, "pending"),
             "10s",
             3,
             "deployment_superseded",
         ),
-        (vec!["failed"], "operation-01", "10s", 5, "operation_failed"),
+        (vec!["failed"], pending(), "10s", 5, "operation_failed"),
+        (vec!["succeeded"], retried, "10s", 5, "operation_failed"),
+        (vec!["succeeded"], no_urls, "10s", 1, "failed"),
         // Ready only once routes are: the timeout ends the local wait.
-        (vec!["running"], "operation-01", "500ms", 4, "timeout"),
-    ] {
-        let server = wait_server(states, vec![detail(latest, true, "pending")]);
+        (vec!["running"], pending(), "500ms", 4, "timeout"),
+    ];
+    for (states, detail, timeout, code, error_code) in cases {
+        let newer = detail["latest_operation"]["id"] == "operation-02";
+        let server = wait_server(states, vec![detail]);
         let output = run_with_timeout(
             &server,
             &["env", "wait", "app-notes-01", "--ready", "routes"],
@@ -2854,7 +2865,7 @@ fn wait_never_follows_a_newer_deployment_and_fails_or_times_out_with_its_code() 
         assert_eq!(output.status.code(), Some(code), "{error_code}");
         let error = support::json_error(&output);
         assert_eq!(error["code"], error_code);
-        if latest == "operation-02" {
+        if newer {
             assert_eq!(error["details"]["superseded_by"], "operation-02");
         }
     }

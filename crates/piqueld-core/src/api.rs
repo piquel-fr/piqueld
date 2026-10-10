@@ -628,9 +628,10 @@ pub struct EnvironmentDetailView {
     /// Bounded diagnostics from status, runtime, and the latest operation.
     pub diagnostics: Vec<DiagnosticView>,
     /// The URL of every route the current runtime target renders, and
-    /// whether each is ready; see [`RouteUrl::derive`].
-    #[serde(default)]
-    pub urls: Vec<RouteUrl>,
+    /// whether each is ready; see [`RouteUrl::derive`]. Absent from daemons
+    /// that predate URL readiness, which is not the same as no routes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub urls: Option<Vec<RouteUrl>>,
 }
 
 impl EnvironmentDetailView {
@@ -641,12 +642,6 @@ impl EnvironmentDetailView {
             .services
             .iter()
             .all(ObservedServiceView::healthy)
-    }
-
-    /// Whether every URL is ready.
-    #[must_use]
-    pub fn urls_ready(&self) -> bool {
-        self.urls.iter().all(|url| url.state == UrlState::Ready)
     }
 }
 

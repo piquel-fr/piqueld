@@ -136,7 +136,7 @@ impl ApplicationService {
             observed: observed_view,
             latest_operation,
             diagnostics,
-            urls,
+            urls: Some(urls),
         })
     }
     /// The manifest a promotion from `source` would deploy next: that of the

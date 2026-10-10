@@ -228,8 +228,13 @@ impl Console {
         self.write_human(|out| out.value(message))
     }
 
-    /// Multi-line interactive instructions; values remain terminal-escaped.
+    /// Multi-line instructions for the operator, never quieted; values
+    /// remain terminal-escaped. With `--json`, one `info` event.
     pub(crate) fn prompt_lines(&mut self, lines: &[String]) -> Result<()> {
+        if self.json {
+            let message = lines.join("\n");
+            return self.write_stderr(|writer| Event::Info { message }.write(writer));
+        }
         self.write_human(|out| {
             for line in lines {
                 out.line(line)?;

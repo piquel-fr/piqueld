@@ -200,7 +200,7 @@ fn detail_view(
                         <p>"Routes of the current runtime target, and whether each is reachable."</p>
                     </div>
                 </header>
-                {if detail.urls.is_empty() {
+                {if detail.urls.as_deref().unwrap_or_default().is_empty() {
                     empty("No routes are deployed in this environment.")
                 } else {
                     view! {
@@ -215,7 +215,7 @@ fn detail_view(
                                     <th>"Details"</th>
                                 </tr>
                             </thead>
-                            <tbody>{detail.urls.iter().map(url_row).collect_view()}</tbody>
+                            <tbody>{detail.urls.iter().flatten().map(url_row).collect_view()}</tbody>
                         </table>
                     }
                         .into_any()

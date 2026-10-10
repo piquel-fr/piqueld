@@ -552,7 +552,8 @@ never probes the URL for a client. A URL is `ready` exactly when nothing in
    `converged` with every desired replica healthy. Redirects have no service.
 
 Otherwise the URL is `pending`, with every condition that holds, in that
-order. `piquelctl env url`, `preview url` and `wait --ready routes`, and the
+order. Daemons older than URL readiness omit `urls`; clients must not read
+that as "no routes". `piquelctl env url`, `preview url` and `wait --ready routes`, and the
 dashboard, read this field.
 
 `GET /api/v1/builds` lists attempts newest first, with optional `application_id`,

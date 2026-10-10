@@ -3462,10 +3462,11 @@
                 "description": "Durable environment lifecycle status."
               },
               "urls": {
-                "description": "The URL of every route the current runtime target renders, and\nwhether each is ready; see [`RouteUrl::derive`].",
+                "description": "The URL of every route the current runtime target renders, and\nwhether each is ready; see [`RouteUrl::derive`]. Absent from daemons\nthat predate URL readiness, which is not the same as no routes.",
                 "items": {
                   "$ref": "#/components/schemas/RouteUrl"
                 },
+                "nullable": true,
                 "type": "array"
               }
             },
@@ -5755,10 +5756,11 @@
             "description": "Durable environment lifecycle status."
           },
           "urls": {
-            "description": "The URL of every route the current runtime target renders, and\nwhether each is ready; see [`RouteUrl::derive`].",
+            "description": "The URL of every route the current runtime target renders, and\nwhether each is ready; see [`RouteUrl::derive`]. Absent from daemons\nthat predate URL readiness, which is not the same as no routes.",
             "items": {
               "$ref": "#/components/schemas/RouteUrl"
             },
+            "nullable": true,
             "type": "array"
           }
         },

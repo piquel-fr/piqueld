@@ -648,7 +648,7 @@ pub(crate) async fn wait_for_operation_until<T>(
 
 /// Accepts `Succeeded` and `Superseded` terminal states; any other state becomes an
 /// operation error whose details carry the full operation for the error report.
-fn finish_operation(operation: Operation) -> Result<Operation> {
+pub(crate) fn finish_operation(operation: Operation) -> Result<Operation> {
     if matches!(
         operation.state,
         OperationState::Succeeded | OperationState::Superseded

@@ -3,7 +3,7 @@
 //! `url` to read its URLs. Readiness comes from the daemon; the CLI never
 //! probes a URL.
 use crate::{
-    commands::{Settled, wait_for_operation, wait_for_operation_until},
+    commands::{Settled, finish_operation, wait_for_operation, wait_for_operation_until},
     error::{CliCode, CliError, ErrorKind, Result},
     output::{
         Console,
@@ -80,7 +80,8 @@ impl Deployed {
                 .map(str::to_owned),
             outcome: Some(deployment.operation.state),
             urls: (deployment.operation.state == OperationState::Succeeded && runs(detail, id))
-                .then(|| detail.urls.clone()),
+                .then(|| detail.urls.clone())
+                .flatten(),
             ..Self::accepted(environment, id)
         }
     }
@@ -111,6 +112,17 @@ fn runs(detail: &EnvironmentDetailView, deployment: &str) -> bool {
         .latest_operation
         .as_ref()
         .is_some_and(|latest| latest.id == deployment)
+}
+
+/// The detail's URLs. Daemons that predate URL readiness report none, which
+/// must not read as "no routes".
+fn urls(detail: &EnvironmentDetailView) -> Result<&[RouteUrl]> {
+    detail.urls.as_deref().ok_or_else(|| {
+        CliError::new(
+            ErrorKind::General,
+            "the daemon does not report URL readiness; upgrade it",
+        )
+    })
 }
 
 /// Finds a deployment of `environment` by ID, newest pages first.
@@ -174,22 +186,19 @@ pub(crate) enum Readiness {
 
 impl Readiness {
     /// What `detail` still lacks, or nothing once it is this ready.
-    fn missing(self, detail: &EnvironmentDetailView) -> Option<String> {
+    fn missing(self, detail: &EnvironmentDetailView) -> Result<Option<String>> {
         if !detail.services_healthy() {
-            return Some("waiting for healthy services".into());
+            return Ok(Some("waiting for healthy services".into()));
         }
-        let pending: Vec<_> = detail
-            .urls
+        if matches!(self, Self::Runtime) {
+            return Ok(None);
+        }
+        let pending: Vec<_> = urls(detail)?
             .iter()
             .filter(|url| url.state == UrlState::Pending)
             .map(|url| url.url.as_str())
             .collect();
-        match self {
-            Self::Routes if !pending.is_empty() => {
-                Some(format!("waiting for {}", pending.join(", ")))
-            }
-            Self::Runtime | Self::Routes => None,
-        }
+        Ok((!pending.is_empty()).then(|| format!("waiting for {}", pending.join(", "))))
     }
 }
 
@@ -227,16 +236,25 @@ impl<T: Args + Target> WaitArgs<T> {
                     return Err(superseded(&id, None));
                 }
                 let detail = client.environment_detail(environment.id.as_str()).await?;
-                if !runs(&detail, &id) {
-                    let newer = detail
-                        .latest_operation
-                        .as_ref()
-                        .map(|latest| latest.id.as_str());
-                    return Err(superseded(&id, newer));
+                // The detail's copy of the operation is the one its runtime
+                // state goes with: a retry may have started or failed since.
+                let latest = match &detail.latest_operation {
+                    Some(latest) if latest.id == id => latest.clone(),
+                    newer => {
+                        let newer = newer.as_ref().map(|latest| latest.id.as_str());
+                        return Err(superseded(&id, newer));
+                    }
+                };
+                if !latest.state.terminal() {
+                    return Ok(Settled::Waiting(format!("{} again", latest.state)));
                 }
-                Ok(match self.ready.missing(&detail) {
+                let latest = finish_operation(latest)?;
+                if latest.state == OperationState::Superseded {
+                    return Err(superseded(&id, None));
+                }
+                Ok(match self.ready.missing(&detail)? {
                     Some(missing) => Settled::Waiting(missing),
-                    None => Settled::Done((operation, detail)),
+                    None => Settled::Done((latest, detail)),
                 })
             })
             .await?;
@@ -298,12 +316,10 @@ impl<T: Args + Target> UrlArgs<T> {
     /// pending.
     pub(crate) async fn run(&self, console: &mut Console, client: &Client) -> Result<()> {
         let environment = &self.target.environment(client).await?;
-        let urls = client
-            .environment_detail(environment.id.as_str())
-            .await?
-            .urls;
+        let detail = client.environment_detail(environment.id.as_str()).await?;
+        let urls = urls(&detail)?;
         let Some(name) = &self.route else {
-            return console.emit(&urls);
+            return console.emit(&urls.to_vec());
         };
         let url = urls
             .iter()

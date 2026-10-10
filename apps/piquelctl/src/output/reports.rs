@@ -874,7 +874,7 @@ report!(EnvironmentShowReport<'_>, self, out, {
     for (name, mounted) in secrets {
         out.label("Secret", format_args!("{name}: {mounted}"))?;
     }
-    for url in &self.detail.urls {
+    for url in self.detail.urls.iter().flatten() {
         out.label("URL", url_line(url))?;
     }
     Ok(())
