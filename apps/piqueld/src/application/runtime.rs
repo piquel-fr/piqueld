@@ -238,9 +238,12 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
         sources: &std::collections::BTreeMap<piqueld_core::ServiceName, ResolvedSource>,
     ) -> Result<ImagesInUse, BoundaryError> {
         let in_use = ImagesInUse::hold(Arc::clone(&self.images)).await;
-        in_use
-            .ensure(&*self.docker, sources)
+        // Bounded like preparation: a hung pull would hold cleanup off.
+        tokio::time::timeout(self.prepare_timeout, in_use.ensure(&*self.docker, sources))
             .await
+            .map_err(|source| {
+                BoundaryError::Runtime(DockerError::unavailable("reuse release images", source))
+            })?
             .map_err(|error| match error {
                 crate::operations::OperationError::Docker(error) => BoundaryError::Runtime(error),
                 error => BoundaryError::ImageUnavailable(Box::new(error)),

@@ -118,7 +118,8 @@ async fn sources_are_other_live_environments_without_cycles() {
         panic!("preview")
     };
     let other = EnvironmentId::default_for(&application(&store, "shop").await);
-    for source in [&preview.preview.id, &other] {
+    let unknown = EnvironmentId::parse("env-unknown-0001").unwrap();
+    for source in [&preview.preview.id, &other, &unknown] {
         assert!(matches!(
             set_source(&store, &production, Some(source)).await,
             Err(StoreError::Promotion(PromotionError::SourceInvalid { environment, .. }))

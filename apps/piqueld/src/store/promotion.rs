@@ -130,24 +130,27 @@ pub struct PromotionCandidate {
 }
 
 impl Store {
-    /// Checks that `environment` may receive releases from `source`: another
-    /// live environment of its application, never a preview, whose own
-    /// sources never lead back to it. Chains are allowed.
+    /// Checks that environment `id`, named `name`, of `application` may
+    /// receive releases from `source`: another live environment of that
+    /// application, never a preview, whose own sources never lead back to
+    /// it. Chains are allowed. Runs before an environment being created
+    /// exists, so a missing source is reported as invalid.
     pub(super) async fn check_promotion_source_on(
         connection: &mut SqliteConnection,
-        environment: &StoredEnvironment,
+        application: &piqueld_core::ApplicationId,
+        (target, name): (&EnvironmentId, &EnvironmentName),
         source: &EnvironmentId,
     ) -> Result<(), StoreError> {
         let invalid = |reason| PromotionError::SourceInvalid {
             environment: source.clone(),
             reason,
         };
-        let mut chain = vec![environment.environment.name.clone()];
+        let mut chain = vec![name.clone()];
         let mut visited = BTreeSet::new();
         let mut next = Some(source.clone());
         while let Some(id) = next {
-            if id == *environment.id() {
-                chain.push(environment.environment.name.clone());
+            if id == *target {
+                chain.push(name.clone());
                 return Err(PromotionError::Cycle {
                     environments: chain,
                 }
@@ -159,9 +162,7 @@ impl Store {
             }
             let current = Self::environment_on(connection, id.as_str())
                 .await?
-                .filter(|current| {
-                    current.environment.application_id == environment.environment.application_id
-                })
+                .filter(|current| current.environment.application_id == *application)
                 .ok_or_else(|| invalid("no such environment in this application"))?;
             if id == *source {
                 if let EnvironmentKind::Preview(_) = current.environment.kind {
@@ -435,13 +436,23 @@ impl Store {
                 environment,
                 deployment,
             } => {
-                let source = Self::environment_on(tx, environment.as_str())
-                    .await?
-                    .filter(|_| *environment == from.environment)
-                    .ok_or_else(|| PromotionError::SourceChanged {
-                        environment: target.environment.name.clone(),
-                        deployment: deployment.clone(),
-                    })?;
+                // The target promotes from another environment since, or the
+                // source is gone: either way the reviewed deployment no
+                // longer applies. Name the source while it exists.
+                let source = Self::environment_on(tx, environment.as_str()).await?;
+                let source = match source {
+                    Some(source) if *environment == from.environment => source,
+                    other => {
+                        return Err(PromotionError::SourceChanged {
+                            environment: other.map_or_else(
+                                || target.environment.name.clone(),
+                                |source| source.environment.name,
+                            ),
+                            deployment: deployment.clone(),
+                        }
+                        .into());
+                    }
+                };
                 let (_, release) =
                     Self::promotable_on(tx, &source.environment, Some(deployment)).await?;
                 if release != promotion.release {

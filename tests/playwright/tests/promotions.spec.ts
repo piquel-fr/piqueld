@@ -134,11 +134,21 @@ test('promoting shows the plan and promotes exactly what was reviewed', async ({
   await expect(dialog.getByRole('button', { name: 'Promote release', exact: true })).toBeDisabled();
   await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
 
-  // Once nothing is missing, confirming pins the reviewed deployment and revision.
+  // Once nothing is missing, confirming pins the reviewed deployment and
+  // revision. A refused promotion stays refused until inspected again.
   plan = await promotionPlan(page, app, staging, []);
   let promoted: Record<string, unknown> | undefined;
+  let refuse = true;
   await page.route(url => url.pathname === `/api/v1/environments/${production}/promote`, async (route: Route) => {
     promoted = route.request().postDataJSON();
+    if (refuse) {
+      refuse = false;
+      await route.fulfill({
+        status: 409,
+        json: { code: 'promotion_source_changed', message: 'staging no longer runs the reviewed deployment', details: {} },
+      });
+      return;
+    }
     await route.fulfill({
       status: 202,
       json: { data: {
@@ -148,10 +158,16 @@ test('promoting shows the plan and promotes exactly what was reviewed', async ({
     });
   });
   await promote.click();
-  await dialog.getByRole('button', { name: 'Promote release', exact: true }).click();
+  const confirm = dialog.getByRole('button', { name: 'Promote release', exact: true });
+  await confirm.click();
+  await expect(dialog).toContainText('staging no longer runs the reviewed deployment');
+  await expect(confirm).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await promote.click();
+  await confirm.click();
   await expect(dialog).toBeHidden();
   expect(promoted).toMatchObject({ deployment: 'operation-0123456789abcdef', expected_generation: plan.generation });
-  expect(plans).toHaveLength(2);
+  expect(plans).toHaveLength(3);
   for (const request of plans) expect(request).not.toHaveProperty('release');
 
   // An earlier release is deployed again from the Releases tab, through the same plan.

@@ -410,7 +410,12 @@ pub(super) fn PromoteAction(
                 <button
                     type="button"
                     class="btn btn-primary"
-                    disabled={move || context.action_blocked() || promotable().is_none()}
+                    // A failed promotion stays blocked until inspected again.
+                    disabled={move || {
+                        context.action_blocked()
+                            || context.error.with(Option::is_some)
+                            || promotable().is_none()
+                    }}
                     on:click={confirm}
                 >
                     {icon(Icon::Rocket)}

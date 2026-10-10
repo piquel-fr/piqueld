@@ -91,13 +91,10 @@ impl Store {
             None => EnvironmentSource::select(connection, None)?,
         };
         let id = EnvironmentId::parse(super::new_id("env")).map_err(StoreError::corrupt)?;
-        Self::insert_environment_on(tx, template.id(), &id, name, &source, now).await?;
         if let Some(from) = source.promoted_from() {
-            let created = Self::environment_on(tx, id.as_str())
-                .await?
-                .ok_or(StoreError::NotFound)?;
-            Self::check_promotion_source_on(tx, &created, from).await?;
+            Self::check_promotion_source_on(tx, template.id(), (&id, name), from).await?;
         }
+        Self::insert_environment_on(tx, template.id(), &id, name, &source, now).await?;
         Self::bump_generation_on(
             tx,
             application.application.id(),
@@ -201,7 +198,13 @@ impl Store {
     ) -> Result<(), StoreError> {
         let source = match promote_from {
             Some(from) => {
-                Self::check_promotion_source_on(tx, environment, &from).await?;
+                Self::check_promotion_source_on(
+                    tx,
+                    &environment.environment.application_id,
+                    (environment.id(), &environment.environment.name),
+                    &from,
+                )
+                .await?;
                 EnvironmentSource::Promoted(PromotedFrom { environment: from })
             }
             None if environment.environment.source.promoted_from().is_some() => {

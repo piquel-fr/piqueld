@@ -535,7 +535,8 @@ fn SourceSettings() -> impl IntoView {
     };
     // The choice as currently saved: the branch it follows (by default the
     // one `spec.manifest` names) and the environment it is promoted from.
-    let drafts = move || {
+    // Memoized so unrelated saved changes keep unsaved edits.
+    let drafts = Memo::new(move |_| {
         let branch = current().map_or_else(
             || default_branch(context),
             |branch| {
@@ -546,13 +547,13 @@ fn SourceSettings() -> impl IntoView {
             },
         );
         (branch, promoted().unwrap_or_default())
-    };
-    let (initial_branch, initial_source) = drafts();
+    });
+    let (initial_branch, initial_source) = drafts.get_untracked();
     let branch = RwSignal::new(initial_branch);
     // The environment to promote from; empty to build its own source.
     let promote_from = RwSignal::new(initial_source);
     Effect::new(move |_| {
-        let (current_branch, current_source) = drafts();
+        let (current_branch, current_source) = drafts.get();
         branch.set(current_branch);
         promote_from.set(current_source);
     });
