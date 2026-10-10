@@ -1,5 +1,5 @@
 //! Cloudflare API v4 with a bearer token scoped to Zone:Read and DNS:Edit.
-use super::{ApiError, Found, Record, RecordId, Zone, send};
+use super::{ApiError, Found, Provider, Record, RecordId, Zone, send};
 use crate::config::{Credential, CredentialError, CredentialFile};
 use piqueld_core::manifest::Hostname;
 use serde::Deserialize;
@@ -109,9 +109,15 @@ impl Cloudflare {
         }
         Ok(items)
     }
+}
+
+impl Provider for Cloudflare {
+    fn kind(&self) -> &'static str {
+        "cloudflare"
+    }
 
     /// Lists zones 50 per page. Names that are not public hostnames are skipped.
-    pub(super) async fn zones(&self, http: &reqwest::Client) -> Result<Vec<Zone>, ApiError> {
+    async fn zones(&self, http: &reqwest::Client) -> Result<Vec<Zone>, ApiError> {
         let zones: Vec<Object> = self.list(http, "/zones?per_page=50").await?;
         Ok(zones
             .into_iter()
@@ -125,7 +131,7 @@ impl Cloudflare {
     }
 
     /// Lists the records named exactly `name`, 100 per page.
-    pub(super) async fn records(
+    async fn records(
         &self,
         http: &reqwest::Client,
         zone: &Zone,
@@ -155,7 +161,7 @@ impl Cloudflare {
 
     /// Creates a record, or replaces record `id`. TXT content is quoted, as
     /// Cloudflare expects, and proxied records use its automatic TTL.
-    pub(super) async fn upsert(
+    async fn upsert(
         &self,
         http: &reqwest::Client,
         zone: &Zone,
@@ -184,7 +190,7 @@ impl Cloudflare {
     }
 
     /// Deletes a record by its ID.
-    pub(super) async fn delete_record(
+    async fn delete_record(
         &self,
         http: &reqwest::Client,
         zone: &Zone,
@@ -202,7 +208,7 @@ impl Cloudflare {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dns::{DnsProvider, tests::Recorded};
+    use crate::dns::provider::{DnsProvider, tests::Recorded};
     use axum::http::Method;
 
     fn provider(api: String) -> DnsProvider {

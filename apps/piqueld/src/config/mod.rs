@@ -398,7 +398,7 @@ impl AcmeConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct DnsConfig {
     /// Providers in configuration order.
-    pub providers: Vec<crate::dns::DnsProviderConfig>,
+    pub providers: Vec<crate::dns::provider::DnsProviderConfig>,
 }
 
 /// Persistent build output policy; metadata remains until application deletion.
@@ -873,10 +873,10 @@ impl DaemonConfig {
                 .map(|(index, config)| {
                     let provider = &config.provider;
                     let account = match provider {
-                        crate::dns::DnsProvider::Cloudflare(cloudflare) => {
+                        crate::dns::provider::DnsProvider::Cloudflare(cloudflare) => {
                             format!("API token {}", cloudflare.api_token())
                         }
-                        crate::dns::DnsProvider::Ovh(ovh) => format!(
+                        crate::dns::provider::DnsProvider::Ovh(ovh) => format!(
                             "{}, application key {}, application secret {}, consumer key {}",
                             ovh.endpoint,
                             ovh.application_key,
@@ -884,8 +884,8 @@ impl DaemonConfig {
                             ovh.consumer_key
                         ),
                         #[cfg(test)]
-                        crate::dns::DnsProvider::Challtestsrv(_)
-                        | crate::dns::DnsProvider::Memory(_) => "test server".into(),
+                        crate::dns::provider::DnsProvider::Challtestsrv(_)
+                        | crate::dns::provider::DnsProvider::Test(_) => "test server".into(),
                     };
                     let records = if config.manage_records {
                         "manages route records"

@@ -26,7 +26,10 @@
 use super::{Ingress, wire::Journaled};
 use crate::{
     config::AcmeConfig,
-    dns::{Dns, Record, RecordId, Zone, ZoneError},
+    dns::{
+        Dns, ZoneError,
+        provider::{Record, RecordId, Zone},
+    },
 };
 use anyhow::{Context, Result, bail};
 use instant_acme::{

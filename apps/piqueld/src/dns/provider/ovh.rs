@@ -6,7 +6,7 @@
 //! ```text
 //! X-Ovh-Signature: "$1$" + hex(sha1(secret + "+" + consumer + "+" + METHOD + "+" + url + "+" + body + "+" + time))
 //! ```
-use super::{ApiError, Found, Record, RecordId, Zone, send};
+use super::{ApiError, Found, Provider, Record, RecordId, Zone, send};
 use crate::config::{Credential, CredentialError, CredentialFile};
 use piqueld_core::manifest::Hostname;
 use reqwest::Method;
@@ -153,25 +153,15 @@ impl Ovh {
         )
         .await
     }
+}
 
-    /// Applies pending record changes to the zone's nameservers.
-    pub(super) async fn refresh(
-        &self,
-        http: &reqwest::Client,
-        zone: &Zone,
-    ) -> Result<(), ApiError> {
-        self.call::<Value>(
-            http,
-            Method::POST,
-            &format!("/domain/zone/{}/refresh", zone.id),
-            None,
-        )
-        .await?;
-        Ok(())
+impl Provider for Ovh {
+    fn kind(&self) -> &'static str {
+        "ovh"
     }
 
     /// Lists zone names. Names that are not public hostnames are skipped.
-    pub(super) async fn zones(&self, http: &reqwest::Client) -> Result<Vec<Zone>, ApiError> {
+    async fn zones(&self, http: &reqwest::Client) -> Result<Vec<Zone>, ApiError> {
         let names: Vec<String> = self.call(http, Method::GET, "/domain/zone", None).await?;
         Ok(names
             .into_iter()
@@ -186,7 +176,7 @@ impl Ovh {
 
     /// Lists the records named exactly `name`: their IDs, then each record.
     /// OVH names records relative to their zone; the apex is the empty name.
-    pub(super) async fn records(
+    async fn records(
         &self,
         http: &reqwest::Client,
         zone: &Zone,
@@ -227,9 +217,9 @@ impl Ovh {
     }
 
     /// Creates a record, or replaces record `id` of the same type, published
-    /// by [`Self::refresh`]. CNAME targets get a trailing dot, so OVH does not
+    /// by [`Self::publish`]. CNAME targets get a trailing dot, so OVH does not
     /// read them as relative to the zone. OVH cannot proxy records.
-    pub(super) async fn upsert(
+    async fn upsert(
         &self,
         http: &reqwest::Client,
         zone: &Zone,
@@ -269,8 +259,8 @@ impl Ovh {
         Ok(RecordId(created.id.to_string()))
     }
 
-    /// Deletes a record by its ID, published by [`Self::refresh`].
-    pub(super) async fn delete_record(
+    /// Deletes a record by its ID, published by [`Self::publish`].
+    async fn delete_record(
         &self,
         http: &reqwest::Client,
         zone: &Zone,
@@ -285,12 +275,28 @@ impl Ovh {
         .await?;
         Ok(())
     }
+
+    fn stages_changes(&self) -> bool {
+        true
+    }
+
+    /// Applies pending record changes to the zone's nameservers.
+    async fn publish(&self, http: &reqwest::Client, zone: &Zone) -> Result<(), ApiError> {
+        self.call::<Value>(
+            http,
+            Method::POST,
+            &format!("/domain/zone/{}/refresh", zone.id),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dns::{DnsProvider, tests::Recorded};
+    use crate::dns::provider::{DnsProvider, tests::Recorded};
 
     fn ovh(api: String) -> Ovh {
         Ovh {

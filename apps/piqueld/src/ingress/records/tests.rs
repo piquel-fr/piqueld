@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     config::TunnelCredentials,
-    dns::{DnsProvider, DnsProviderConfig, memory::Memory},
+    dns::provider::{DnsProvider, DnsProviderConfig, test_provider::TestProvider},
     ingress::tests::{application, request_deployment},
     store::Store,
 };
@@ -16,7 +16,7 @@ const TUNNEL: &str = "6ff42ae2-765d-4adf-8112-31c55c1551ef";
 struct Harness {
     directory: tempfile::TempDir,
     store: Arc<Store>,
-    provider: Memory,
+    provider: TestProvider,
     ingress: Ingress,
 }
 
@@ -24,7 +24,7 @@ impl Harness {
     async fn new(manage_records: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
-        let provider = Memory::new(&["example.com"]);
+        let provider = TestProvider::new(&["example.com"]);
         let ingress = Self::ingress(&directory, &store, &provider, manage_records, None).await;
         ingress.converged();
         Self {
@@ -39,7 +39,7 @@ impl Harness {
     async fn ingress(
         directory: &tempfile::TempDir,
         store: &Arc<Store>,
-        provider: &Memory,
+        provider: &TestProvider,
         manage_records: bool,
         tunnel: Option<TunnelCredentials>,
     ) -> Ingress {
@@ -53,7 +53,7 @@ impl Harness {
             .with_dns(
                 &crate::config::DnsConfig {
                     providers: vec![DnsProviderConfig {
-                        provider: DnsProvider::Memory(provider.clone()),
+                        provider: DnsProvider::Test(provider.clone()),
                         manage_records,
                     }],
                 },
@@ -242,10 +242,10 @@ async fn records_are_written_once_applied_and_never_on_foreign_names() {
     assert_eq!(harness.journaled(&mut since).await, Vec::<String>::new());
 
     // Drift is repaired: an address piqueld owns is changed by hand.
-    let drifted = harness.provider.records("www.example.com").unwrap();
+    let drifted = harness.provider.found("www.example.com").unwrap();
     harness
         .provider
-        .upsert(
+        .set(
             "www.example.com",
             Some(&drifted[0].id),
             &Record::A("198.51.100.7".parse().unwrap()),
@@ -446,10 +446,10 @@ async fn names_another_installation_claims_are_never_changed() {
     harness
         .provider
         .insert("_piqueld.www.example.com", Record::Txt("other".into()));
-    let drifted = harness.provider.records("www.example.com").unwrap();
+    let drifted = harness.provider.found("www.example.com").unwrap();
     harness
         .provider
-        .upsert(
+        .set(
             "www.example.com",
             Some(&drifted[0].id),
             &Record::A("198.51.100.7".parse().unwrap()),

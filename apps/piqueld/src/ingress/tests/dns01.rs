@@ -5,7 +5,10 @@
 use super::Scenario;
 use crate::{
     config::AcmeConfig,
-    dns::{Dns, DnsProvider, Record, challtestsrv::Challtestsrv},
+    dns::{
+        Dns,
+        provider::{DnsProvider, Record, challtestsrv::Challtestsrv},
+    },
     ingress::{
         Ingress,
         certificates::{CertificateName, Certificates, Challenge},

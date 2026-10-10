@@ -1,6 +1,6 @@
 //! Zone ownership: a hostname belongs to the provider with the longest zone
 //! containing it. A zone claimed by two providers is a conflict and not used.
-use super::Zone;
+use super::provider::Zone;
 use piqueld_core::manifest::Hostname;
 use thiserror::Error;
 

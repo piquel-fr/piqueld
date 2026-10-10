@@ -1,6 +1,6 @@
 //! Test-only provider keeping records in memory, shared by its clones so a
 //! test can inspect and change what reconciliation sees.
-use super::{ApiError, Found, Record, RecordId, Zone};
+use super::{ApiError, Found, Provider, Record, RecordId, Zone};
 use piqueld_core::manifest::Hostname;
 use std::{
     collections::BTreeMap,
@@ -24,7 +24,7 @@ struct State {
 
 /// An in-memory provider serving fixed zones.
 #[derive(Clone, Debug)]
-pub struct Memory {
+pub struct TestProvider {
     zones: Vec<Hostname>,
     state: Arc<Mutex<State>>,
 }
@@ -36,15 +36,15 @@ impl std::fmt::Debug for State {
 }
 
 /// Clones share their records, so they are equal.
-impl PartialEq for Memory {
+impl PartialEq for TestProvider {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.state, &other.state)
     }
 }
 
-impl Eq for Memory {}
+impl Eq for TestProvider {}
 
-impl Memory {
+impl TestProvider {
     pub(crate) fn new(zones: &[&str]) -> Self {
         Self {
             zones: zones.iter().map(|z| Hostname::parse(*z).unwrap()).collect(),
@@ -98,36 +98,8 @@ impl Memory {
         self.state.lock().unwrap().failing_publish = failing;
     }
 
-    pub(super) fn stages_changes(&self) -> bool {
-        self.state.lock().unwrap().staging
-    }
-
-    /// Records a publish of staged changes.
-    pub(super) fn publish(&self) -> Result<(), ApiError> {
-        let mut state = self.state()?;
-        if !state.staging {
-            return Ok(());
-        }
-        if state.failing_publish {
-            return Err(ApiError::Unsupported("publish failed"));
-        }
-        state.changes.push("publish".into());
-        Ok(())
-    }
-
-    pub(super) fn zones(&self) -> Result<Vec<Zone>, ApiError> {
-        let _state = self.state()?;
-        Ok(self
-            .zones
-            .iter()
-            .map(|name| Zone {
-                name: name.clone(),
-                id: name.to_string(),
-            })
-            .collect())
-    }
-
-    pub(crate) fn records(&self, name: &str) -> Result<Vec<Found>, ApiError> {
+    /// The records named `name`, as the provider lists them.
+    pub(crate) fn found(&self, name: &str) -> Result<Vec<Found>, ApiError> {
         Ok(self
             .state()?
             .records
@@ -141,7 +113,8 @@ impl Memory {
             .collect())
     }
 
-    pub(crate) fn upsert(
+    /// Creates a record, or replaces record `id`, as an API call does.
+    pub(crate) fn set(
         &self,
         name: &str,
         id: Option<&RecordId>,
@@ -159,11 +132,88 @@ impl Memory {
         Ok(RecordId(id.to_string()))
     }
 
-    pub(super) fn delete_record(&self, id: &RecordId) -> Result<(), ApiError> {
+    fn zone_list(&self) -> Result<Vec<Zone>, ApiError> {
+        let _state = self.state()?;
+        Ok(self
+            .zones
+            .iter()
+            .map(|name| Zone {
+                name: name.clone(),
+                id: name.to_string(),
+            })
+            .collect())
+    }
+
+    fn remove(&self, id: &RecordId) -> Result<(), ApiError> {
         let mut state = self.state()?;
         if let Some((name, record)) = state.records.remove(&id.0.parse().unwrap()) {
             state.changes.push(format!("delete {name} {record}"));
         }
         Ok(())
+    }
+
+    /// Records a publish of staged changes.
+    fn published(&self) -> Result<(), ApiError> {
+        let mut state = self.state()?;
+        if !state.staging {
+            return Ok(());
+        }
+        if state.failing_publish {
+            return Err(ApiError::Unsupported("publish failed"));
+        }
+        state.changes.push("publish".into());
+        Ok(())
+    }
+}
+
+/// Every call completes at once.
+impl Provider for TestProvider {
+    fn kind(&self) -> &'static str {
+        "test"
+    }
+
+    fn zones(&self, _http: &reqwest::Client) -> impl Future<Output = Result<Vec<Zone>, ApiError>> {
+        std::future::ready(self.zone_list())
+    }
+
+    fn records(
+        &self,
+        _http: &reqwest::Client,
+        _zone: &Zone,
+        name: &str,
+    ) -> impl Future<Output = Result<Vec<Found>, ApiError>> {
+        std::future::ready(self.found(name))
+    }
+
+    fn upsert(
+        &self,
+        _http: &reqwest::Client,
+        _zone: &Zone,
+        name: &str,
+        id: Option<&RecordId>,
+        record: &Record,
+    ) -> impl Future<Output = Result<RecordId, ApiError>> {
+        std::future::ready(self.set(name, id, record))
+    }
+
+    fn delete_record(
+        &self,
+        _http: &reqwest::Client,
+        _zone: &Zone,
+        id: &RecordId,
+    ) -> impl Future<Output = Result<(), ApiError>> {
+        std::future::ready(self.remove(id))
+    }
+
+    fn stages_changes(&self) -> bool {
+        self.state.lock().unwrap().staging
+    }
+
+    fn publish(
+        &self,
+        _http: &reqwest::Client,
+        _zone: &Zone,
+    ) -> impl Future<Output = Result<(), ApiError>> {
+        std::future::ready(self.published())
     }
 }
