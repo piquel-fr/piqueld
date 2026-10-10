@@ -244,8 +244,7 @@ impl EnvCommand {
                 reconcile(cli, client, console, (&application, &environment), flags).await
             }
             Self::Logs { target, window } => {
-                let (_, environment) = target.resolve(client).await?;
-                logs(console, client, &environment, window).await
+                logs(console, client, &target.resolve(client).await?.1, window).await
             }
             Self::Wait(args) => args.run(console, client).await,
             Self::Url(args) => args.run(console, client).await,
