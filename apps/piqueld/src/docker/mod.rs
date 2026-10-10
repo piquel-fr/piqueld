@@ -210,6 +210,17 @@ impl LocalImage {
         Self::labelled_for(&self.labels, instance)
     }
 
+    /// Whether `retained` names it, by ID or by any of its repository
+    /// digests.
+    #[must_use]
+    pub fn retained_by(&self, retained: &BTreeSet<piqueld_core::ImmutableImage>) -> bool {
+        retained.contains(self.id.as_str())
+            || self
+                .repo_digests
+                .iter()
+                .any(|digest| retained.contains(digest.as_str()))
+    }
+
     /// Whether `labels` mark an image `instance` built.
     fn labelled_for(labels: &BTreeMap<String, String>, instance: &InstanceId) -> bool {
         labels.get(MANAGED_LABEL).map(String::as_str) == Some("true")
@@ -483,5 +494,25 @@ mod tests {
                 "runtime"
             ]
         );
+    }
+
+    #[test]
+    fn images_are_retained_by_id_or_repository_digest() {
+        let hex = "c".repeat(64);
+        let image = LocalImage {
+            id: piqueld_core::Sha256Digest::parse(format!("sha256:{hex}")).unwrap(),
+            repo_digests: vec![
+                piqueld_core::RepositoryDigest::parse(format!("example.com/web@sha256:{hex}"))
+                    .unwrap(),
+            ],
+            labels: BTreeMap::new(),
+            size: 0,
+            used: false,
+        };
+        let retained =
+            |value: String| BTreeSet::from([piqueld_core::ImmutableImage::parse(value).unwrap()]);
+        assert!(image.retained_by(&retained(format!("sha256:{hex}"))));
+        assert!(image.retained_by(&retained(format!("example.com/web@sha256:{hex}"))));
+        assert!(!image.retained_by(&retained(format!("example.com/api@sha256:{hex}"))));
     }
 }

@@ -106,8 +106,8 @@ async fn deploy(store: &Store, environment: &EnvironmentId, byte: char) {
 
 /// The images `root` keeps.
 async fn kept(store: &Store, root: RetentionRoot, keep: u32) -> BTreeSet<ImmutableImage> {
-    store
-        .retained(root, keep)
+    let mut connection = store.pool.acquire().await.unwrap();
+    Store::retained_on(&mut connection, root, keep)
         .await
         .unwrap()
         .iter()

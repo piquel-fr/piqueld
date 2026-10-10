@@ -107,7 +107,8 @@ impl<D: DockerApi> Controller<D> {
     }
 
     /// Removes each image this installation built that no retention root
-    /// keeps and no container uses, one by one, by ID. Returns `false`
+    /// keeps, by ID or repository digest, and no container uses, one by one,
+    /// by ID. Returns `false`
     /// without doing anything while a preparation may be recording images;
     /// the next request or period cleans up instead.
     ///
@@ -132,7 +133,7 @@ impl<D: DockerApi> Controller<D> {
                 continue;
             }
             if image.used
-                || retained.contains(image.id.as_str())
+                || image.retained_by(&retained)
                 || !self.remove_image(&instance, &image).await?
             {
                 kept += 1;
