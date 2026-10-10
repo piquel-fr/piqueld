@@ -553,6 +553,13 @@
           "$ref": "#/definitions/Template",
           "description": "Exact public DNS hostname."
         },
+        "name": {
+          "description": "Stable name, unique within the application, that selects this route in\nevery environment and preview, e.g. `piquelctl env url --route web`.\nDeclared after `hostname`, so routes stay ordered by hostname.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "port": {
           "description": "Internal HTTP backend port.",
           "format": "int32",

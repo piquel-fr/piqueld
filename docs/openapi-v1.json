@@ -3460,6 +3460,13 @@
               "status": {
                 "$ref": "#/components/schemas/EnvironmentStatusView",
                 "description": "Durable environment lifecycle status."
+              },
+              "urls": {
+                "description": "The URL of every route the current runtime target renders, and\nwhether each is ready; see [`RouteUrl::derive`].",
+                "items": {
+                  "$ref": "#/components/schemas/RouteUrl"
+                },
+                "type": "array"
               }
             },
             "required": [
@@ -5746,6 +5753,13 @@
           "status": {
             "$ref": "#/components/schemas/EnvironmentStatusView",
             "description": "Durable environment lifecycle status."
+          },
+          "urls": {
+            "description": "The URL of every route the current runtime target renders, and\nwhether each is ready; see [`RouteUrl::derive`].",
+            "items": {
+              "$ref": "#/components/schemas/RouteUrl"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -8973,6 +8987,11 @@
             "$ref": "#/components/schemas/Template",
             "description": "Exact public DNS hostname."
           },
+          "name": {
+            "description": "Stable name, unique within the application, that selects this route in\nevery environment and preview, e.g. `piquelctl env url --route web`.\nDeclared after `hostname`, so routes stay ordered by hostname.",
+            "nullable": true,
+            "type": "string"
+          },
           "port": {
             "description": "Internal HTTP backend port.",
             "format": "int32",
@@ -9015,6 +9034,10 @@
         ],
         "type": "object"
       },
+      "RouteName": {
+        "description": "Optional stable name of a route, unique within its application. Every\nenvironment and preview renders the same routes, so a name selects the\nsame route in each, whatever hostname it renders.",
+        "type": "string"
+      },
       "RouteStatus": {
         "allOf": [
           {
@@ -9042,6 +9065,25 @@
               "message": {
                 "description": "Diagnostic explaining DNS, TLS, or gateway readiness.",
                 "type": "string"
+              },
+              "name": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/RouteName"
+                      }
+                    ],
+                    "description": "The route's name, when it has one."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
               },
               "state": {
                 "description": "disabled, pending, ready, or failed.",
@@ -9102,6 +9144,64 @@
             "type": "object"
           }
         ]
+      },
+      "RouteUrl": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RouteTarget",
+            "description": "Backend service or redirect."
+          },
+          {
+            "properties": {
+              "name": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/RouteName"
+                      }
+                    ],
+                    "description": "The route's name, when it has one."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
+              "pending": {
+                "description": "Every condition that keeps the URL pending, in the order above.",
+                "items": {
+                  "$ref": "#/components/schemas/UrlCondition"
+                },
+                "type": "array"
+              },
+              "state": {
+                "$ref": "#/components/schemas/UrlState",
+                "description": "`ready` exactly when `pending` is empty."
+              },
+              "url": {
+                "description": "`https://` and the rendered hostname.",
+                "type": "string"
+              },
+              "visibility": {
+                "$ref": "#/components/schemas/Visibility",
+                "description": "Effective visibility: `private` URLs are reachable only from the tailnet."
+              }
+            },
+            "required": [
+              "url",
+              "visibility",
+              "state",
+              "pending"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "One URL of a rendered route, and whether it is ready."
       },
       "RoutesValue": {
         "additionalProperties": false,
@@ -10132,6 +10232,94 @@
           }
         ]
       },
+      "UrlCondition": {
+        "description": "A condition that keeps a URL pending.",
+        "oneOf": [
+          {
+            "description": "The gateway has not acknowledged this exact route yet.",
+            "properties": {
+              "condition": {
+                "enum": [
+                  "ingress"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "condition"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "HTTPS, with the route's certificate, is not verified for this route:\nthe daemon's latest route check failed or has not run since the route\nchanged.",
+            "properties": {
+              "condition": {
+                "enum": [
+                  "https"
+                ],
+                "type": "string"
+              },
+              "message": {
+                "description": "Why, from the route's status.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "message",
+              "condition"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The hostname's managed DNS records are not in place.",
+            "properties": {
+              "condition": {
+                "enum": [
+                  "dns"
+                ],
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/DnsRecordState",
+                "description": "`pending` or `dns_conflict`."
+              }
+            },
+            "required": [
+              "state",
+              "condition"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The route's service is not observed healthy.",
+            "properties": {
+              "condition": {
+                "enum": [
+                  "service"
+                ],
+                "type": "string"
+              },
+              "service": {
+                "$ref": "#/components/schemas/ServiceName",
+                "description": "The route's service."
+              }
+            },
+            "required": [
+              "service",
+              "condition"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "UrlState": {
+        "description": "Whether a URL is reachable. A known URL is not a ready one.",
+        "enum": [
+          "pending",
+          "ready"
+        ],
+        "type": "string"
+      },
       "User": {
         "description": "Public account information.",
         "properties": {
@@ -10451,6 +10639,25 @@
               "hostname": {
                 "$ref": "#/components/schemas/Hostname",
                 "description": "Exact canonical public hostname."
+              },
+              "name": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/RouteName"
+                      }
+                    ],
+                    "description": "Stable name, unique within the application. Declared after\n`hostname`, so routes stay ordered by hostname."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
               },
               "visibility": {
                 "$ref": "#/components/schemas/Visibility",

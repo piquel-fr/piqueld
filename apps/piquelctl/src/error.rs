@@ -1,10 +1,12 @@
-//! Error classification, exit codes, and human error reports with connection hints.
+//! Error classification, exit codes, stable error codes, and error reports:
+//! human with connection hints, or one JSON object with `--json`.
 use crate::{
     cli::Cli,
-    output::{DiagnosticReport, HumanWriter},
+    output::{DiagnosticReport, Event, HumanWriter},
 };
 use piqueld_client::{ClientError, PlanView, PreviewLimitReached, TransportFailure};
-use serde_json::Value;
+use serde::Serialize;
+use serde_json::{Map, Value, json};
 use std::{fmt, io};
 
 /// Failure classes, each mapped to a stable process exit code.
@@ -14,7 +16,8 @@ pub(crate) enum ErrorKind {
     General,
     /// Invalid arguments, configuration, or unconfirmed action (exit 2).
     Input,
-    /// Generation precondition, name ambiguity, or blocked plan (exit 3).
+    /// Generation precondition, name ambiguity, blocked plan, or a
+    /// superseded deployment (exit 3).
     Conflict,
     /// Daemon unreachable, gateway errors, or command timeout (exit 4).
     Unavailable,
@@ -35,16 +38,71 @@ impl ErrorKind {
             Self::Interrupted => 130,
         }
     }
+
+    /// The code of a CLI-side failure of this class with no more specific one.
+    const fn code(self) -> CliCode {
+        match self {
+            Self::General => CliCode::Failed,
+            Self::Input => CliCode::InvalidInput,
+            Self::Conflict => CliCode::Conflict,
+            Self::Unavailable => CliCode::Unavailable,
+            Self::Operation => CliCode::OperationFailed,
+            Self::Interrupted => CliCode::Interrupted,
+        }
+    }
 }
 
-/// Command failure with an exit class, a one-line message, and optional API
-/// context rendered by `ErrorReport`.
+/// Stable codes of failures the CLI detects itself, reported with `--json`
+/// in place of an API error code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CliCode {
+    /// Unexpected client or output failure.
+    Failed,
+    /// Arguments the command line parser rejected.
+    Usage,
+    /// Invalid input, or an unconfirmed action.
+    InvalidInput,
+    /// Invalid connection configuration from a flag, variable, or profile.
+    InvalidConfiguration,
+    /// An endpoint rejected before connecting.
+    InvalidEndpoint,
+    /// The request failed before the daemon answered.
+    ConnectionFailed,
+    /// One request exceeded `--timeout`.
+    RequestTimeout,
+    /// The whole command exceeded `--timeout`; server-side work goes on.
+    Timeout,
+    /// The answer is not a valid piqueld API response.
+    InvalidResponse,
+    /// The daemon became unavailable.
+    Unavailable,
+    /// A conflict found by the CLI, such as an ambiguous name or a blocked plan.
+    Conflict,
+    /// The awaited deployment was superseded by a newer one.
+    DeploymentSuperseded,
+    /// An awaited operation ended unsuccessfully.
+    OperationFailed,
+    /// Ctrl-C.
+    Interrupted,
+}
+
+/// A failure's stable code: the daemon's, or the CLI's own.
+#[derive(Debug)]
+enum Code {
+    /// From an API error response.
+    Api(String),
+    Cli(CliCode),
+}
+
+/// Command failure with an exit class, a stable code, a one-line message,
+/// and optional API context rendered by `ErrorReport`.
 #[derive(Debug)]
 pub(crate) struct CliError {
     kind: ErrorKind,
+    code: Code,
+    /// The message, without the API code a human report appends.
     message: String,
-    /// Stable API error code from the daemon, if the error came from an API response.
-    api_code: Option<String>,
     request_id: Option<String>,
     /// Structured context; an `operation` object gets a dedicated rendering.
     details: Option<Value>,
@@ -61,26 +119,54 @@ enum Diagnostic {
     Configuration(String),
     /// The request failed at the transport level.
     Transport(TransportFailure),
-    /// The daemon answered with something that is not a valid piqueld API response.
-    Response,
+    /// The daemon answered with something that is not a valid piqueld API
+    /// response, with its HTTP status when it was an error.
+    Response(Option<http::StatusCode>),
     /// The whole command exceeded `--timeout`.
     CommandTimeout,
+}
+
+impl Diagnostic {
+    /// The CLI code of a failure this diagnostic explains.
+    const fn code(&self) -> CliCode {
+        match self {
+            Self::Endpoint => CliCode::InvalidEndpoint,
+            Self::Configuration(_) => CliCode::InvalidConfiguration,
+            Self::Transport(TransportFailure::Timeout) => CliCode::RequestTimeout,
+            Self::Transport(_) => CliCode::ConnectionFailed,
+            Self::Response(_) => CliCode::InvalidResponse,
+            Self::CommandTimeout => CliCode::Timeout,
+        }
+    }
 }
 
 impl CliError {
     pub(crate) fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
+            code: Code::Cli(kind.code()),
             message: message.into(),
-            api_code: None,
             request_id: None,
             details: None,
             diagnostic: None,
         }
     }
 
-    /// Attaches a connection diagnostic; the public builders below wrap this.
+    /// Arguments the command line parser rejected.
+    pub(crate) fn usage(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Input, message).code(CliCode::Usage)
+    }
+
+    /// Replaces the class's default code with a more specific one.
+    pub(crate) fn code(mut self, code: CliCode) -> Self {
+        self.code = Code::Cli(code);
+        self
+    }
+
+    /// Attaches a connection diagnostic and its code; the public builders
+    /// below wrap this.
     fn diagnostic(mut self, diagnostic: Diagnostic) -> Self {
+        self.code = Code::Cli(diagnostic.code());
         self.diagnostic = Some(Box::new(diagnostic));
         self
     }
@@ -97,7 +183,7 @@ impl CliError {
 
     /// Marks the error as an invalid daemon response.
     pub(crate) fn invalid_response(self) -> Self {
-        self.diagnostic(Diagnostic::Response)
+        self.diagnostic(Diagnostic::Response(None))
     }
 
     /// Undecodable response body, reported as an invalid API response.
@@ -111,14 +197,6 @@ impl CliError {
 
     pub(crate) fn exit_code(&self) -> u8 {
         self.kind.exit_code()
-    }
-
-    /// Attaches API error context, dropping an empty request ID and null details.
-    pub(crate) fn api(mut self, code: String, request_id: String, details: Value) -> Self {
-        self.api_code = Some(code);
-        self.request_id = (!request_id.is_empty()).then_some(request_id);
-        self.details = (!details.is_null()).then_some(details);
-        self
     }
 
     pub(crate) fn with_details(mut self, details: Value) -> Self {
@@ -156,9 +234,18 @@ impl CliError {
     }
 }
 
+/// The human one-line message: an API error's message with its code, and
+/// the HTTP status of an invalid response.
 impl fmt::Display for CliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
+        formatter.write_str(&self.message)?;
+        match (&self.code, self.diagnostic.as_deref()) {
+            (Code::Api(code), Some(Diagnostic::Response(Some(status)))) => {
+                write!(formatter, " ({code}, HTTP {status})")
+            }
+            (Code::Api(code), _) => write!(formatter, " ({code})"),
+            (Code::Cli(_), _) => Ok(()),
+        }
     }
 }
 
@@ -201,16 +288,15 @@ impl From<ClientError> for CliError {
                 };
                 let diagnostic = (error.code == "invalid_error_response"
                     || status.is_redirection())
-                .then_some(Diagnostic::Response);
-                let message = if diagnostic.is_some() {
-                    format!("{} ({}, HTTP {status})", error.message, error.code)
-                } else {
-                    format!("{} ({})", error.message, error.code)
-                };
-                let mut result =
-                    Self::new(kind, message).api(error.code, error.request_id, error.details);
-                result.diagnostic = diagnostic.map(Box::new);
-                result
+                .then_some(Diagnostic::Response(Some(status)));
+                Self {
+                    kind,
+                    code: Code::Api(error.code),
+                    message: error.message,
+                    request_id: (!error.request_id.is_empty()).then_some(error.request_id),
+                    details: (!error.details.is_null()).then_some(error.details),
+                    diagnostic: diagnostic.map(Box::new),
+                }
             }
         }
     }
@@ -297,7 +383,7 @@ impl<'a> ErrorReport<'a> {
             Diagnostic::CommandTimeout => {
                 "Check daemon responsiveness and whether the timeout allows the command to finish. A server-side operation may still be running."
             }
-            Diagnostic::Transport(TransportFailure::Exchange) | Diagnostic::Response => {
+            Diagnostic::Transport(TransportFailure::Exchange) | Diagnostic::Response(_) => {
                 "Check that the selected endpoint serves the piqueld API and inspect the daemon logs."
             }
         };
@@ -382,12 +468,12 @@ impl DiagnosticReport for ErrorReport<'_> {
         if let Some(application) = self.application {
             out.label(
                 "Warning",
-                format_args!("{application}: status unavailable: {}", error.message),
+                format_args!("{application}: status unavailable: {error}"),
             )?;
         } else {
-            out.label("Error", &error.message)?;
+            out.label("Error", error)?;
         }
-        if let Some(code) = &error.api_code {
+        if let Code::Api(code) = &error.code {
             out.label("  API code", code)?;
         }
         if let Some(id) = &error.request_id {
@@ -398,4 +484,91 @@ impl DiagnosticReport for ErrorReport<'_> {
         }
         self.connection(out)
     }
+
+    fn event(&self) -> Event<'_> {
+        let error = self.error;
+        if let Some(application) = self.application {
+            return Event::Warning {
+                message: format!("{application}: status unavailable: {error}"),
+            };
+        }
+        let mut body = ErrorReport::body(error);
+        if body.details.is_none() {
+            body.details = self.connection_details();
+        }
+        Event::Error(body)
+    }
+}
+
+impl ErrorReport<'_> {
+    /// The JSON form of `error`, without connection facts.
+    pub(crate) fn body(error: &CliError) -> ErrorBody<'_> {
+        ErrorBody {
+            code: match &error.code {
+                Code::Api(code) => ErrorCode::Api(code),
+                Code::Cli(code) => ErrorCode::Cli(*code),
+            },
+            message: &error.message,
+            details: error.details.clone(),
+            request_id: error.request_id.as_deref(),
+        }
+    }
+
+    /// The connection facts a human report shows, as JSON details.
+    fn connection_details(&self) -> Option<Value> {
+        let cli = self.cli;
+        let diagnostic = self.error.diagnostic.as_deref()?;
+        let mut details = Map::new();
+        if let Diagnostic::Response(Some(status)) = diagnostic {
+            details.insert("http_status".into(), json!(status.as_u16()));
+        }
+        if let Diagnostic::Configuration(source) = diagnostic {
+            details.insert("configuration_source".into(), json!(source));
+        } else {
+            if !matches!(diagnostic, Diagnostic::Endpoint) {
+                details.insert(
+                    "endpoint".into(),
+                    json!(crate::support::transport_description(cli)),
+                );
+            }
+            details.insert(
+                "endpoint_source".into(),
+                json!(cli.connection_sources.endpoint.to_string()),
+            );
+        }
+        if matches!(
+            diagnostic,
+            Diagnostic::CommandTimeout | Diagnostic::Transport(TransportFailure::Timeout)
+        ) {
+            details.insert(
+                "timeout".into(),
+                json!(crate::support::format_duration(cli.timeout)),
+            );
+            details.insert(
+                "timeout_source".into(),
+                json!(cli.connection_sources.timeout.to_string()),
+            );
+        }
+        Some(Value::Object(details))
+    }
+}
+
+/// A failure with `--json`: the API's error envelope, whose `code` is the
+/// daemon's or a [`CliCode`]. `request_id` is present for API errors.
+#[derive(Serialize)]
+pub(crate) struct ErrorBody<'a> {
+    code: ErrorCode<'a>,
+    message: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<&'a str>,
+}
+
+/// An API error code, or the CLI's own, serialized as a string.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ErrorCode<'a> {
+    Api(&'a str),
+    Cli(CliCode),
 }

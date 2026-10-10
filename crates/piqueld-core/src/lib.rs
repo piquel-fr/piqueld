@@ -16,7 +16,8 @@ pub mod names;
 pub use names::{
     ApplicationName, ApplicationNameError, EnvironmentName, EnvironmentNameError, GitBranch,
     GitBranchError, JobName, JobNameError, PreviewSlot, PreviewSlotError, PreviewSlug,
-    PreviewSlugError, ServiceName, ServiceNameError, VolumeName, VolumeNameError,
+    PreviewSlugError, RouteName, RouteNameError, ServiceName, ServiceNameError, VolumeName,
+    VolumeNameError,
 };
 pub mod operation;
 pub mod planner;
@@ -25,6 +26,8 @@ pub mod release;
 pub use release::{BuildFingerprint, BuildInputs, Release};
 pub mod resource;
 pub mod retention;
+/// URLs of rendered routes and their readiness.
+pub mod urls;
 pub use retention::{LocalImages, ReleaseAvailability, RetentionRoot, ServiceImage};
 pub mod sync;
 

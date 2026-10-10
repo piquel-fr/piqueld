@@ -408,6 +408,9 @@ pub(crate) struct AddRouteArgs {
     /// ceiling can make it stricter.
     #[arg(long, default_value = "private", value_parser = visibility())]
     visibility: Visibility,
+    /// Stable route name, unique within the application, e.g. for `env url --route`.
+    #[arg(long)]
+    name: Option<String>,
 }
 #[derive(Debug, Args)]
 pub(crate) struct RedirectRouteArgs {
@@ -424,6 +427,16 @@ pub(crate) struct RedirectRouteArgs {
     /// Who may connect: everyone, or only tailnet devices.
     #[arg(long, default_value = "private", value_parser = visibility())]
     visibility: Visibility,
+    /// Stable route name, unique within the application, e.g. for `env url --route`.
+    #[arg(long)]
+    name: Option<String>,
+}
+#[derive(Debug, Args)]
+pub(crate) struct RouteNameArgs {
+    #[command(flatten)]
+    target: RouteTarget,
+    /// New stable route name, unique within the application; omit to remove it.
+    name: Option<String>,
 }
 #[derive(Debug, Args)]
 pub(crate) struct RouteVisibilityArgs {
@@ -448,6 +461,9 @@ pub(crate) enum RouteCommand {
     /// Change who may connect to a route. Changing it withdraws the route from
     /// its old listener as the next deployment starts.
     Visibility(RouteVisibilityArgs),
+    /// Name a route, or remove its name. Names select the same route in
+    /// every environment and preview, e.g. `env url --route NAME`.
+    Name(RouteNameArgs),
     /// Remove an HTTPS route by hostname.
     Remove(RouteTarget),
 }
@@ -883,6 +899,7 @@ impl RouteCommand {
             Self::Add(args) => &args.target,
             Self::Redirect(args) => &args.target,
             Self::Visibility(args) => &args.target,
+            Self::Name(args) => &args.target,
             Self::Remove(target) => target,
         };
         let current = resolve_application(client, &target.app).await?;
@@ -901,27 +918,41 @@ impl RouteCommand {
         };
         match self {
             Self::List { .. } => unreachable!("listing returned above"),
-            Self::Add(args) => routes.push(Route::service(
-                target.hostname.clone(),
-                args.visibility,
-                args.service.clone(),
-                args.port,
-            )),
-            Self::Redirect(args) => routes.push(Route::redirect(
-                target.hostname.clone(),
-                args.visibility,
-                Redirect {
-                    to: args.to.clone(),
-                    status: args.status,
-                    preserve_path: !args.no_preserve_path,
-                },
-            )),
+            Self::Add(args) => routes.push(
+                Route::service(
+                    target.hostname.clone(),
+                    args.visibility,
+                    args.service.clone(),
+                    args.port,
+                )
+                .named(args.name.clone()),
+            ),
+            Self::Redirect(args) => routes.push(
+                Route::redirect(
+                    target.hostname.clone(),
+                    args.visibility,
+                    Redirect {
+                        to: args.to.clone(),
+                        status: args.status,
+                        preserve_path: !args.no_preserve_path,
+                    },
+                )
+                .named(args.name.clone()),
+            ),
             Self::Visibility(args) => {
                 routes
                     .iter_mut()
                     .find(|route| route.hostname.as_str() == hostname)
                     .ok_or_else(not_found)?
                     .visibility = args.visibility;
+            }
+            Self::Name(args) => {
+                routes
+                    .iter_mut()
+                    .find(|route| route.hostname.as_str() == hostname)
+                    .ok_or_else(not_found)?
+                    .name
+                    .clone_from(&args.name);
             }
             Self::Remove(_) => {
                 let count = routes.len();

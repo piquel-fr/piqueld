@@ -1,5 +1,5 @@
 //! Application-owned route editing and independent HTTPS readiness.
-use super::super::ui::{Icon, Tone, badge, empty, icon, notice, remove_button};
+use super::super::ui::{Icon, Tone, badge, empty, icon, notice, remove_button, route_name};
 use super::{dirty_group, editor, save_actions};
 use leptos::prelude::*;
 use piqueld_client::{
@@ -11,6 +11,8 @@ use piqueld_client::{
 #[derive(Clone, PartialEq)]
 struct RouteDraft {
     hostname: String,
+    /// Optional stable name; empty when unnamed.
+    name: String,
     visibility: Visibility,
     redirect: bool,
     service: String,
@@ -24,6 +26,7 @@ impl Default for RouteDraft {
     fn default() -> Self {
         Self {
             hostname: String::new(),
+            name: String::new(),
             visibility: Visibility::Private,
             redirect: false,
             service: String::new(),
@@ -43,12 +46,13 @@ impl RouteDraft {
 
     /// The route input, or a message when a number does not parse.
     fn route(self) -> Result<Route, &'static str> {
-        if self.redirect {
+        let name = Some(self.name).filter(|name| !name.is_empty());
+        let route = if self.redirect {
             let status = self
                 .status
                 .parse()
                 .map_err(|_| "Redirect status must be 301, 302, 303, 307, or 308")?;
-            Ok(Route::redirect(
+            Route::redirect(
                 self.hostname,
                 self.visibility,
                 Redirect {
@@ -56,19 +60,15 @@ impl RouteDraft {
                     status,
                     preserve_path: self.preserve_path,
                 },
-            ))
+            )
         } else {
             let port = self
                 .port
                 .parse()
                 .map_err(|_| "Route port must be between 1 and 65535")?;
-            Ok(Route::service(
-                self.hostname,
-                self.visibility,
-                self.service,
-                port,
-            ))
-        }
+            Route::service(self.hostname, self.visibility, self.service, port)
+        };
+        Ok(route.named(name))
     }
 }
 
@@ -76,6 +76,7 @@ impl From<Route> for RouteDraft {
     fn from(route: Route) -> Self {
         let mut draft = Self {
             hostname: route.hostname.to_string(),
+            name: route.name.unwrap_or_default(),
             visibility: route.visibility,
             service: route.service.unwrap_or_default(),
             ..Self::default()
@@ -245,6 +246,18 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                 />
                                             </label>
                                             <label class="field" style="max-width:130px">
+                                                <span>"Name"</span>
+                                                <input
+                                                    type="text"
+                                                    placeholder="optional"
+                                                    title="Stable name selecting this route in every environment and preview"
+                                                    prop:value={move || field(draft, index, |r| r.name.clone())}
+                                                    on:input={move |event| {
+                                                        edit(draft, index, |r| r.name = event_target_value(&event));
+                                                    }}
+                                                />
+                                            </label>
+                                            <label class="field" style="max-width:130px">
                                                 <span>"Visibility"</span>
                                                 <select
                                                     prop:value={move || field(draft, index, |r| r.visibility).to_string()}
@@ -405,6 +418,7 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                     <thead>
                                         <tr>
                                             <th>"Hostname"</th>
+                                            <th>"Name"</th>
                                             <th>"Environment"</th>
                                             <th>"Visibility"</th>
                                             <th>"Destination"</th>
@@ -423,6 +437,7 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                         <td>
                                                             <strong>{route.hostname}</strong>
                                                         </td>
+                                                        <td>{route_name(route.name)}</td>
                                                         <td>{environment}</td>
                                                         <td>{route.visibility.to_string()}</td>
                                                         <td>

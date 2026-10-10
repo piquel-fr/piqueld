@@ -2,7 +2,8 @@
 pub use piqueld_core::api::{
     AcceptedPromotion, CreateEnvironmentRequest, DeploymentOrigin, EnvironmentBranchRequest,
     EnvironmentDetailView, EnvironmentRequest, EnvironmentSourceRequest, EnvironmentStatusView,
-    EnvironmentView, PromoteRequest, ReleasePlan, ReleasePromotion, SecretProblem,
+    EnvironmentView, PromoteRequest, ReleasePlan, ReleasePromotion, RouteUrl, SecretProblem,
+    UrlCondition, UrlState,
 };
 pub use piqueld_core::{EnvironmentName, EnvironmentSource, PromotedFrom, TrackedBranch};
 

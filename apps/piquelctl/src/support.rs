@@ -25,6 +25,9 @@ pub(crate) const MAX_MANIFEST_BYTES: u64 = 2 * 1024 * 1024;
 pub(crate) const PAGE_SIZE: u16 = piqueld_client::MAX_APPLICATION_PAGE_SIZE;
 /// Delay between operation status polls.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Delay between readiness polls once an operation ended; each one observes
+/// the runtime, and the daemon checks routes far less often.
+pub(crate) const SETTLE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Set while a blocking operator read is in progress; see `read_input`.
 static INTERACTION_ACTIVE: AtomicBool = AtomicBool::new(false);

@@ -3,7 +3,7 @@ use super::format::{relative, timestamp};
 use crate::state::ApplicationHealth;
 use leptos::prelude::*;
 use leptos::wasm_bindgen::JsCast;
-use piqueld_client::{BuildState, OperationState};
+use piqueld_client::{BuildState, OperationState, RouteName};
 
 /// Inline stroke icons, drawn on a 24-unit grid.
 #[derive(Clone, Copy)]
@@ -206,6 +206,14 @@ pub(super) fn build_badge(state: BuildState) -> AnyView {
         BuildState::Interrupted => (Tone::Neutral, "interrupted"),
     };
     badge(tone, label)
+}
+
+/// A route's name, or a dash when it has none.
+pub(super) fn route_name(name: Option<RouteName>) -> AnyView {
+    name.map_or_else(
+        || view! { <span class="muted">"—"</span> }.into_any(),
+        |name| view! { <code>{name.to_string()}</code> }.into_any(),
+    )
 }
 
 /// Inline message box. Failures are announced assertively; everything else politely.

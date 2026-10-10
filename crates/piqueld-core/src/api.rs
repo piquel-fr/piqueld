@@ -14,6 +14,8 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+pub use crate::urls::{RouteUrl, UrlCondition, UrlState};
+
 /// Versioned prefix used by all API endpoints.
 pub const API_PREFIX: &str = "/api/v1";
 /// Maximum number of application summaries returned in one page.
@@ -625,6 +627,27 @@ pub struct EnvironmentDetailView {
     pub release: Option<ReleaseId>,
     /// Bounded diagnostics from status, runtime, and the latest operation.
     pub diagnostics: Vec<DiagnosticView>,
+    /// The URL of every route the current runtime target renders, and
+    /// whether each is ready; see [`RouteUrl::derive`].
+    #[serde(default)]
+    pub urls: Vec<RouteUrl>,
+}
+
+impl EnvironmentDetailView {
+    /// Whether every service of the current runtime target is observed healthy.
+    #[must_use]
+    pub fn services_healthy(&self) -> bool {
+        self.observed
+            .services
+            .iter()
+            .all(ObservedServiceView::healthy)
+    }
+
+    /// Whether every URL is ready.
+    #[must_use]
+    pub fn urls_ready(&self) -> bool {
+        self.urls.iter().all(|url| url.state == UrlState::Ready)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -761,6 +784,18 @@ pub struct DeploymentView {
     pub current_target: bool,
     /// Whether this is the most recent deployment to converge successfully.
     pub last_successful: bool,
+}
+
+impl DeploymentView {
+    /// A system variable's rendered value, e.g. `git.sha`: absent before a
+    /// repository-backed manifest is fetched, and for saved manifests.
+    #[must_use]
+    pub fn system_value(&self, variable: crate::manifest::SystemVariable) -> Option<&str> {
+        match self.variables.get(variable.as_str())? {
+            VariableValue::String(value) => Some(value),
+            VariableValue::Boolean(_) | VariableValue::Integer(_) => None,
+        }
+    }
 }
 
 /// An immutable release of an application, recorded by a successful
@@ -1570,6 +1605,9 @@ pub struct CertificateStatus {
 pub struct RouteStatus {
     /// Owning environment identity.
     pub environment_id: String,
+    /// The route's name, when it has one.
+    #[serde(default)]
+    pub name: Option<crate::RouteName>,
     /// Exact public DNS hostname.
     pub hostname: String,
     /// Effective visibility, which selects the listener serving the route.

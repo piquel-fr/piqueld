@@ -3,7 +3,8 @@
 //! order. Creating, deploying, and deleting one need no application revision.
 use crate::{
     cli::{Cli, LogArgs},
-    commands::{resolve_application, wait_for_accepted, wait_for_deletion, wait_for_operation},
+    commands::{resolve_application, wait_for_deletion, wait_for_operation},
+    deployments::{Deployed, Target, UrlArgs, WaitArgs, wait_for_accepted},
     environments::logs,
     error::{CliError, ErrorKind, Result},
     output::{
@@ -58,6 +59,11 @@ pub(crate) enum PreviewCommand {
         #[command(flatten)]
         window: LogArgs,
     },
+    /// Wait until a deployment of a preview is ready. Exits 3 if a newer
+    /// deployment supersedes it, 5 if it fails, and 4 at `--timeout`.
+    Wait(WaitArgs<PreviewArgs>),
+    /// Print the URLs of a preview's routes, and whether each is ready.
+    Url(UrlArgs<PreviewArgs>),
     /// Confirm and delete a preview with every volume it ever created.
     Delete {
         #[command(flatten)]
@@ -122,6 +128,12 @@ impl PreviewArgs {
     }
 }
 
+impl Target for PreviewArgs {
+    async fn environment(&self, client: &Client) -> Result<EnvironmentView> {
+        Ok(self.resolve(client).await?.1)
+    }
+}
+
 impl PreviewCommand {
     /// Runs a `preview` subcommand.
     pub(crate) async fn run(
@@ -147,7 +159,7 @@ impl PreviewCommand {
                 let (_, preview) = target.resolve(client).await?;
                 let accepted =
                     retry_transport(|| client.deploy_preview(preview.id.as_str())).await?;
-                wait_for_accepted(console, client, *no_wait, &accepted).await
+                wait_for_accepted(console, client, &preview, *no_wait, &accepted).await
             }
             Self::List { application } => {
                 let application = resolve_application(client, application).await?;
@@ -164,6 +176,8 @@ impl PreviewCommand {
                 let (_, preview) = target.resolve(client).await?;
                 logs(console, client, &preview, window).await
             }
+            Self::Wait(args) => args.run(console, client).await,
+            Self::Url(args) => args.run(console, client).await,
             Self::Delete { target, flags } => delete(cli, client, console, target, flags).await,
             Self::Prune {
                 application, flags, ..
@@ -184,15 +198,16 @@ async fn create(
     let application = resolve_application(client, application).await?;
     let id = application.application.id().as_str();
     let created = retry_transport(|| client.create_preview(id, request)).await?;
-    let outcome = if no_wait {
-        None
+    let deployed = if no_wait {
+        Deployed::accepted(&created.preview, &created.operation.operation_id)
     } else {
-        let operation = wait_for_operation(console, client, &created.operation.operation_id);
-        Some(operation.await?.state)
+        let operation =
+            wait_for_operation(console, client, &created.operation.operation_id).await?;
+        Deployed::read(client, &created.preview, operation, None).await?
     };
     console.emit(&CreatedPreviewReport {
         created: &created,
-        outcome,
+        deployed,
     })
 }
 

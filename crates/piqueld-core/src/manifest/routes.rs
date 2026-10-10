@@ -1,7 +1,7 @@
 //! Exact public hostnames and validated HTTP route destinations.
 
 use super::{ValidationErrors, input, variables::Template};
-use crate::{ServiceName, names::validated_string};
+use crate::{RouteName, ServiceName, names::validated_string};
 use serde::{Deserialize, Serialize};
 use std::{fmt, num::NonZeroU16};
 use utoipa::ToSchema;
@@ -304,6 +304,10 @@ impl fmt::Display for RouteTarget {
 pub struct ValidatedRoute {
     /// Exact canonical public hostname.
     pub hostname: Hostname,
+    /// Stable name, unique within the application. Declared after
+    /// `hostname`, so routes stay ordered by hostname.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<RouteName>,
     /// Effective visibility: the route's own, capped by its environment's
     /// ceiling when the manifest was rendered.
     #[serde(default)]
@@ -353,6 +357,11 @@ impl ValidatedRoute {
                 .transpose()?,
         };
         Ok(Self {
+            name: route
+                .name
+                .map(RouteName::parse)
+                .transpose()
+                .map_err(|e| invalid(&e))?,
             hostname: Hostname::parse(literal(route.hostname)?).map_err(|e| invalid(&e))?,
             visibility: route.visibility,
             target: fields.try_into().map_err(|e| invalid(&e))?,
@@ -376,6 +385,7 @@ impl ValidatedRoute {
             ),
         };
         input::Route {
+            name: self.name.as_ref().map(ToString::to_string),
             hostname: Template::literal(self.hostname.as_str()),
             visibility: self.visibility,
             service,

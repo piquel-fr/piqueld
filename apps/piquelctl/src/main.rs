@@ -4,6 +4,7 @@ mod accounts;
 mod auth;
 mod cli;
 mod commands;
+mod deployments;
 mod editing;
 mod environments;
 mod error;
@@ -31,7 +32,10 @@ use tokio::time::Instant;
 /// Errors are rendered to stderr and mapped to `ErrorKind` exit codes.
 #[tokio::main]
 async fn main() -> ExitCode {
-    let matches = Cli::command().get_matches();
+    let matches = match Cli::command().try_get_matches() {
+        Ok(matches) => matches,
+        Err(error) => return usage_error(&error),
+    };
     let mut cli = Cli::from_arg_matches(&matches).expect("validated command arguments");
     let mut console = Console::new(&cli);
     let result = async {
@@ -80,6 +84,31 @@ async fn main() -> ExitCode {
             ExitCode::from(code)
         }
     }
+}
+
+/// Reports arguments clap rejected, exiting 2. Without `--json` (and for
+/// help and version) clap prints its own report; with it, the report is one
+/// `usage` error event, like every other failure.
+fn usage_error(error: &clap::Error) -> ExitCode {
+    let json = std::env::args_os()
+        .skip(1)
+        .take_while(|argument| argument != "--")
+        .any(|argument| argument == "--json");
+    if !json || !error.use_stderr() {
+        error.exit();
+    }
+    // The first paragraph names the problem; usage and help hints follow it.
+    let rendered = error.render().to_string();
+    let message = rendered
+        .split("\n\n")
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches("error: ");
+    let error = CliError::usage(message);
+    let mut stderr = std::io::stderr().lock();
+    let _ = output::Event::Error(ErrorReport::body(&error)).write(&mut stderr);
+    ExitCode::from(error.exit_code())
 }
 
 /// Bounds the command by `--timeout` while excluding interactive prompts:

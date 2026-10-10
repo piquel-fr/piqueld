@@ -98,27 +98,6 @@ fn bounds(bounds: Vec<DiagnosticView>) -> AnyView {
         .into_any()
 }
 
-/// Links to the hostnames a preview's deployed target routes.
-fn urls(hostnames: Vec<String>) -> AnyView {
-    if hostnames.is_empty() {
-        return view! { <span class="muted">"None"</span> }.into_any();
-    }
-    hostnames
-        .into_iter()
-        .map(|hostname| {
-            let href = format!("https://{hostname}");
-            view! {
-                <div>
-                    <a href={href} target="_blank" rel="noopener noreferrer">
-                        {hostname}
-                    </a>
-                </div>
-            }
-        })
-        .collect_view()
-        .into_any()
-}
-
 /// The application's previews with their status and branch state, read when
 /// the tab opens and on refresh. "Prune gone" deletes those whose branch is gone.
 #[component]
@@ -406,8 +385,9 @@ pub(super) fn PreviewActions() -> impl IntoView {
     }
 }
 
-/// A preview's branch, slot, slug, and ID, with its URLs, branch state, and
-/// `[previews]` bounds and sync state read when the page opens and on refresh.
+/// A preview's branch, slot, slug, and ID, with its branch state,
+/// `[previews]` bounds and sync state read when the page opens and on
+/// refresh. Its URLs are in the runtime overview, as for environments.
 #[component]
 pub(super) fn PreviewSettings() -> impl IntoView {
     let context = editor();
@@ -503,8 +483,6 @@ pub(super) fn PreviewSettings() -> impl IntoView {
                 </dd>
                 <dt>"Last synced"</dt>
                 <dd>{loaded(|view| last_synced(view.preview.synced))}</dd>
-                <dt>"URLs"</dt>
-                <dd>{loaded(|view| urls(view.hostnames))}</dd>
                 <dt>"Bounds"</dt>
                 <dd>{loaded(|view| bounds(view.bounds))}</dd>
             </dl>

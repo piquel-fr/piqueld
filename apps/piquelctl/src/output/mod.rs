@@ -2,8 +2,9 @@
 //!
 //! Results use stdout; every other role uses stderr. Quiet suppresses human
 //! results, info and progress, but preserves JSON, warnings, prompts and errors.
-//! Each event is rendered and flushed before returning, coordinated with active
-//! progress. Clap owns help/version/parse errors before this boundary exists.
+//! With `--json`, every stderr event except an interactive prompt is one
+//! [`Event`] line. Each event is rendered and flushed before returning,
+//! coordinated with active progress. `main` reports clap's usage errors itself.
 
 mod progress;
 pub(crate) mod reports;
@@ -33,9 +34,39 @@ pub(crate) trait Report {
     fn render_human(&self, output: &mut HumanWriter<'_>) -> io::Result<()>;
 }
 
-/// Human-only stderr events can carry context without changing stdout's schema.
+/// Stderr events that can carry context without changing stdout's schema.
 pub(crate) trait DiagnosticReport {
     fn render(&self, output: &mut HumanWriter<'_>) -> io::Result<()>;
+    /// The event written instead with `--json`.
+    fn event(&self) -> Event<'_>;
+}
+
+/// One stderr event with `--json`: a single-line object whose only key names
+/// its kind, e.g. `{"warning":{"message":"…"}}` or `{"error":{"code":…}}`.
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Event<'a> {
+    /// Routine context; hidden in quiet mode.
+    Info { message: String },
+    /// A degraded, incomplete, or surprising result.
+    Warning { message: String },
+    /// A task's progress; `outcome` is set once it finished.
+    Progress {
+        task: &'a str,
+        message: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        outcome: Option<&'static str>,
+    },
+    /// The command's failure, shaped like the API's error envelope.
+    Error(crate::error::ErrorBody<'a>),
+}
+
+impl Event<'_> {
+    /// Writes the event as one JSON line.
+    pub(crate) fn write(&self, writer: &mut dyn Write) -> io::Result<()> {
+        serde_json::to_writer(&mut *writer, self).map_err(io::Error::other)?;
+        writeln!(writer)
+    }
 }
 
 /// Destination for results, chosen once from `--json` and `--quiet`.
@@ -49,6 +80,8 @@ enum ResultChannel {
 pub(crate) struct Console {
     result: ResultChannel,
     stderr: SharedWriter,
+    /// Whether stderr events are written as JSON lines.
+    json: bool,
     /// Whether info messages are shown (off in quiet mode).
     info: bool,
     progress: ProgressOutput,
@@ -91,8 +124,9 @@ impl Console {
             } else {
                 ResultChannel::Human(stdout)
             },
-            progress: ProgressOutput::new(Arc::clone(&stderr), terminal, quiet),
+            progress: ProgressOutput::new(Arc::clone(&stderr), terminal, quiet, json),
             stderr,
+            json,
             info: !quiet,
         }
     }
@@ -120,14 +154,14 @@ impl Console {
     /// Routine context/advice on stderr; discarded in quiet mode.
     pub(crate) fn info(&mut self, message: impl fmt::Display) -> Result<()> {
         if self.info {
-            self.message("Info", message)?;
+            self.message("Info", message, |message| Event::Info { message })?;
         }
         Ok(())
     }
 
     /// Degraded, incomplete or surprising results on stderr, including quiet mode.
     pub(crate) fn warning(&mut self, message: impl fmt::Display) -> Result<()> {
-        self.message("Warning", message)
+        self.message("Warning", message, |message| Event::Warning { message })
     }
 
     /// A contextual warning is one indivisible, fallible stderr event.
@@ -143,40 +177,60 @@ impl Console {
 
     /// Writes a diagnostic report to stderr as one event.
     fn diagnostic(&mut self, report: &impl DiagnosticReport) -> Result<()> {
-        self.write_stderr(|out| report.render(out))
+        if self.json {
+            self.write_stderr(|writer| report.event().write(writer))
+        } else {
+            self.write_human(|out| report.render(out))
+        }
     }
 
-    /// Writes a labelled one-line message, e.g. `Warning: ...`, to stderr.
-    fn message(&mut self, role: &'static str, message: impl fmt::Display) -> Result<()> {
-        self.write_stderr(|out| out.label(role, message))
+    /// Writes a labelled one-line message, e.g. `Warning: ...`, to stderr, or
+    /// its `event` with `--json`.
+    fn message(
+        &mut self,
+        role: &'static str,
+        message: impl fmt::Display,
+        event: impl FnOnce(String) -> Event<'static>,
+    ) -> Result<()> {
+        if self.json {
+            self.write_stderr(|writer| event(message.to_string()).write(writer))
+        } else {
+            self.write_human(|out| out.label(role, message))
+        }
     }
 
-    /// Renders one stderr event under the stderr lock with progress rows suspended,
-    /// then flushes so the event is visible before returning.
-    fn write_stderr(
+    /// Renders one human stderr event through the escaping writer.
+    fn write_human(
         &mut self,
         render: impl FnOnce(&mut HumanWriter<'_>) -> io::Result<()>,
     ) -> Result<()> {
+        self.write_stderr(|writer| render(&mut HumanWriter::new(writer)))
+    }
+
+    /// Writes one stderr event under the stderr lock with progress rows suspended,
+    /// then flushes so the event is visible before returning.
+    fn write_stderr(&mut self, write: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> Result<()> {
         self.progress.suspend(|| {
             let mut writer = self
                 .stderr
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            render(&mut HumanWriter::new(writer.as_mut()))?;
+            write(writer.as_mut())?;
             writer.flush()?;
             Ok(())
         })
     }
 
-    /// Interactive questions on stderr, always flushed and never quieted.
+    /// Interactive questions on stderr, always flushed, never quieted, and
+    /// human even with `--json`: they only appear on a terminal.
     /// The caller enforces --yes/noninteractive policy before invoking this.
     pub(crate) fn prompt(&mut self, message: &str) -> Result<()> {
-        self.write_stderr(|out| out.value(message))
+        self.write_human(|out| out.value(message))
     }
 
     /// Multi-line interactive instructions; values remain terminal-escaped.
     pub(crate) fn prompt_lines(&mut self, lines: &[String]) -> Result<()> {
-        self.write_stderr(|out| {
+        self.write_human(|out| {
             for line in lines {
                 out.line(line)?;
             }

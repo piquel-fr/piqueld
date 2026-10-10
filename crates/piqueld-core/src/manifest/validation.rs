@@ -466,10 +466,24 @@ fn validate_redirect(
 impl ApplicationManifest {
     /// Canonicalizes route hostnames in place (lowercase, trailing dot removed),
     /// then checks hostname syntax, uniqueness, the target service, and the port.
-    /// Hostnames that reference variables are checked once rendered.
+    /// Hostnames that reference variables are checked once rendered. Names
+    /// are literal, so they are checked here and stay the same everywhere.
     fn validate_routes(&mut self, errors: &mut Vec<ValidationError>) {
         let mut hostnames = BTreeSet::new();
+        let mut names = BTreeSet::new();
         for (index, route) in self.spec.routes.iter_mut().enumerate() {
+            if let Some(name) = &route.name {
+                let path = format!("spec.routes[{index}].name");
+                validate_name(name, &path, errors);
+                if !names.insert(name.clone()) {
+                    error(
+                        errors,
+                        codes::ROUTE_NAME_DUPLICATE,
+                        &path,
+                        "route name is already used in this application",
+                    );
+                }
+            }
             let hostname = route.hostname.as_literal().map(|hostname| {
                 hostname
                     .strip_suffix('.')

@@ -325,6 +325,7 @@ fn saved_hostnames_skip_missing_invalid_and_deployment_only_values() {
     ]
     .map(|hostname| Route {
         hostname: hostname.into(),
+        name: None,
         visibility: Visibility::Private,
         service: Some("web".into()),
         port: Some(80),
@@ -395,4 +396,64 @@ fn into_literal_preserves_text_escapes_and_rejects_unresolved_typed_escapes() {
         codes_and_paths(&errors),
         [(codes::VARIABLE_UNRESOLVED, "spec.services[0].replicas")]
     );
+}
+
+/// A route's name is literal: checked once, and the same in every environment
+/// whatever hostname it renders there.
+#[test]
+fn route_names_are_validated_unique_and_stable_across_environments() {
+    let route = |name: &str, hostname: &str| {
+        format!(
+            "[[spec.routes]]\nname = \"{name}\"\nhostname = \"{hostname}\"\nservice = \"web\"\nport = 80\n"
+        )
+    };
+    let template = template(&format!(
+        "{VARIABLES}\n{}{}",
+        route("web", "${{ vars.domain }}"),
+        route("api", "api.${{ vars.domain }}")
+    ));
+    for (environment, hostname) in [
+        ("staging", "staging.piquel.fr"),
+        ("production", "piquel.fr"),
+    ] {
+        let rendering = render(&template, environment).unwrap();
+        let route = rendering
+            .application
+            .spec()
+            .routes
+            .iter()
+            .find(|route| {
+                route
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| name.as_str() == "web")
+            })
+            .unwrap();
+        assert_eq!(route.hostname.as_str(), hostname);
+    }
+
+    for (routes, code, path) in [
+        (
+            route("Web!", "a.piquel.fr"),
+            codes::NAME_INVALID,
+            "spec.routes[0].name",
+        ),
+        (
+            route("${{ vars.tag }}", "a.piquel.fr"),
+            codes::VARIABLE_NOT_ALLOWED,
+            "spec.routes[0].name",
+        ),
+        (
+            format!(
+                "{}{}",
+                route("web", "a.piquel.fr"),
+                route("web", "b.piquel.fr")
+            ),
+            codes::ROUTE_NAME_DUPLICATE,
+            "spec.routes[1].name",
+        ),
+    ] {
+        let errors = parse_template_toml(&manifest(&format!("{VARIABLES}\n{routes}"))).unwrap_err();
+        assert_eq!(codes_and_paths(&errors), [(code, path)], "{routes}");
+    }
 }

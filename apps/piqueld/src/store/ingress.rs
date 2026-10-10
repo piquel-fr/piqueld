@@ -868,6 +868,7 @@ mod tests {
             let saved = save(&store, input.clone(), false).await.unwrap();
             let route = &input.spec().routes[0];
             statuses.push(RouteStatus {
+                name: None,
                 environment_id: saved.application_id.clone(),
                 hostname: hostname.into(),
                 visibility: route.visibility,

@@ -73,7 +73,7 @@ page don't block them.
 
 Each row opens the preview's page, which has an environment page's tabs.
 Its Overview shows the preview's branch, slot, slug, and ID, with its branch
-state, URLs and bounds read on load and on **Refresh**, then its runtime, its variables
+state and bounds read on load and on **Refresh**, then its runtime and URLs, its variables
 rendered for previews, and a card to delete it. **Redeploy** deploys the head
 of its branch again.
 
@@ -129,8 +129,9 @@ rollout, with one row per command element; saving replaces only the job list.
 Jobs inherit the referenced service's startup dependencies, which start or
 update and become healthy first. Other services wait for all jobs to succeed;
 dependency changes remain if a job fails. The Routes tab
-edits hostnames, each pointing at a service port or a redirect with a public or
-private visibility, and shows each deployed route's effective visibility, the DNS
+edits hostnames, each with an optional [name](application-manifest.md#routes)
+and pointing at a service port or a redirect with a public or
+private visibility, and shows each deployed route's name, effective visibility, the DNS
 records its hostname needs, whether piqueld
 [manages them](ingress.md#managed-dns-records) (`manual`, `managed`, `pending` or
 `dns_conflict`), HTTPS readiness and diagnostics in every environment and preview.
@@ -147,7 +148,11 @@ revision, and environments, and the delete action. Builds and Events cover every
 environment, each linking to its environment, and include application-wide
 events such as edits and renames; a deleted environment's events remain until
 the application is deleted. Events has an **Errors only** filter. An environment's Overview shows the runtime status, the latest operation,
-observed services, and reconciliation diagnostics. Each service row opens a service page with a
+a URLs card, observed services, and reconciliation diagnostics. The URLs card
+lists the URL of each route the current deployment renders, with its name,
+visibility, destination and state: **ready**, or **pending** with what it waits
+for (ingress, HTTPS, DNS records, or a healthy service), as the daemon reports
+it in [URL readiness](api.md#url-readiness). Each service row opens a service page with a
 breadcrumb back to the application and tabs for source and scaling,
 environment, command and arguments, volume mounts, health checks, startup
 dependencies, rollout, resource limits, and logs. Startup dependencies list the

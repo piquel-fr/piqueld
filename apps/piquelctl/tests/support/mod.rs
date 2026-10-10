@@ -1,5 +1,6 @@
 //! Child-process configuration shared by the CLI integration suites.
-use std::process::Command;
+use serde_json::Value;
+use std::process::{Command, Output};
 
 /// Builds a `piquelctl` command isolated from inherited connection,
 /// profile, and login configuration.
@@ -30,4 +31,19 @@ pub fn command() -> Command {
         ),
     );
     command
+}
+
+/// The one error event of a `--json` failure, checking that every stderr
+/// line is a JSON event and that stdout is empty.
+pub fn json_error(output: &Output) -> Value {
+    assert!(!output.status.success());
+    assert_eq!(output.stdout, b"", "a failure writes nothing on stdout");
+    let events: Vec<Value> = String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("every stderr line is a JSON event"))
+        .collect();
+    let mut errors = events.iter().filter_map(|event| event.get("error"));
+    let error = errors.next().expect("an error event").clone();
+    assert!(errors.next().is_none(), "exactly one error event");
+    error
 }

@@ -113,7 +113,7 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/environments/{id}/promote` | Promote a release into a promoted environment: `{ "deployment": null, "release": null, "expected_generation": 3 }`; 202 with `AcceptedPromotion` |
 | POST | `/api/v1/environments/{id}/promote/plan` | Plan that promotion, or an earlier `release` for any environment, without changing anything; `PlanView` with `release` |
 | GET | `/api/v1/environments/{id}` | Environment metadata |
-| GET | `/api/v1/environments/{id}/detail` | Environment, application intent, resolved generation, current release, observed runtime, operation, diagnostics |
+| GET | `/api/v1/environments/{id}/detail` | Environment, application intent, resolved generation, current release, observed runtime, operation, diagnostics, and the URL of each rendered route with its state (see [URL readiness](#url-readiness)) |
 | GET | `/api/v1/environments/{id}/status` | Intent progress and separate runtime health |
 | POST | `/api/v1/environments/{id}/deploy` | Deploy the environment from its source with fresh source resolution; supersede pending work. `branch=NAME` or `commit=SHA` fetches a repository-backed manifest from that revision instead of the environment's branch, for this deployment only |
 | GET | `/api/v1/environments/{id}/deployments` | Deployment snapshots, newest first, three per page |
@@ -528,7 +528,32 @@ does not block configuration saves or history reads. `/health` remains a
 process-liveness endpoint. A separate `ingress` object reports gateway health and
 per-route HTTPS readiness, for applications the caller can read, without
 affecting `ready`; see
-[ingress](ingress.md#status-and-recovery). No registry checks are introduced.
+[ingress](ingress.md#status-and-recovery). Each route status carries the
+route's `name`, when it has one. No registry checks are introduced.
+
+### URL readiness
+
+`EnvironmentDetailView.urls` lists a `RouteUrl` for every route the current
+runtime target of an environment or preview renders: its `name`, `url`
+(`https://` and the hostname), `visibility`, destination, `state` and
+`pending`. The daemon derives the state from what it already observes and
+never probes the URL for a client. A URL is `ready` exactly when nothing in
+`pending` holds:
+
+1. `ingress`: the gateway acknowledged this exact route (hostname,
+   visibility and destination);
+2. `https` (with the route status's `message`): the daemon's latest check of
+   this route found it `ready`, i.e. DNS answers the right listener, which serves
+   the hostname with a trusted certificate (a DNS-01 certificate for private
+   routes). A check made before the route changed does not count;
+3. `dns` (with its `state`): the hostname's managed records are not `pending` or
+   `dns_conflict` (`manual` and `managed` records do not keep a URL pending);
+4. `service` (with the `service`): the route's service is observed
+   `converged` with every desired replica healthy. Redirects have no service.
+
+Otherwise the URL is `pending`, with every condition that holds, in that
+order. `piquelctl env url`, `preview url` and `wait --ready routes`, and the
+dashboard, read this field.
 
 `GET /api/v1/builds` lists attempts newest first, with optional `application_id`,
 `environment_id`,

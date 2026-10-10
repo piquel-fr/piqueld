@@ -618,6 +618,7 @@ impl Ingress {
                 }
                 RouteStatus {
                     environment_id: id.to_string(),
+                    name: route.name.clone(),
                     hostname: route.hostname.to_string(),
                     visibility: route.visibility,
                     dns_state: dns.state,

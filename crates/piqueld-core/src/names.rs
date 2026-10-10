@@ -139,6 +139,14 @@ validated_string!(
     crate::resource::valid_logical_name
 );
 validated_string!(
+    /// Optional stable name of a route, unique within its application. Every
+    /// environment and preview renders the same routes, so a name selects the
+    /// same route in each, whatever hostname it renders.
+    RouteName, RouteNameError,
+    "route names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
+    crate::resource::valid_logical_name
+);
+validated_string!(
     /// Logical one-shot job name.
     JobName, JobNameError,
     "job names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
