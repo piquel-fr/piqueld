@@ -5062,8 +5062,23 @@
                 "type": "string"
               },
               "previews": {
-                "$ref": "#/components/schemas/PreviewUsage",
-                "description": "Previews against the `[previews]` limits."
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/PreviewUsage"
+                      }
+                    ],
+                    "description": "Previews against the `[previews]` limits; absent when they could not\nbe counted."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
               },
               "status": {
                 "description": "Machine-readable service status.",
@@ -7478,7 +7493,7 @@
             "type": "array"
           },
           "cpu_millis": {
-            "description": "CPU limits in millicores, summed over the deployed replicas that have\nboth limits.",
+            "description": "CPU limits in millicores, summed over the replicas of each preview's\ncurrent target (which the daemon keeps converging Docker to) that have\nboth limits.",
             "format": "int64",
             "minimum": 0,
             "type": "integer"
@@ -8977,8 +8992,23 @@
             "type": "string"
           },
           "previews": {
-            "$ref": "#/components/schemas/PreviewUsage",
-            "description": "Previews against the `[previews]` limits."
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/PreviewUsage"
+                  }
+                ],
+                "description": "Previews against the `[previews]` limits; absent when they could not\nbe counted."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           },
           "status": {
             "description": "Machine-readable service status.",

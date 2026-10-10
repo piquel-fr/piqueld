@@ -69,7 +69,7 @@ counts that the caller may read, oldest deployment first, each with its `id`,
 until their deletion finishes) and `last_deployment` (`id`, `created_at_ms`). Returning an existing preview never counts against a limit.
 `PreviewView.bounds` lists how the limits bounded the preview's deployed target:
 `preview_limits_defaulted` and `preview_replicas_capped` warnings, also recorded
-on its deployments and plans. `SystemStatus.previews` counts previews against
+on its deployments and plans. `SystemStatus.previews`, absent when they cannot be counted, counts previews against
 the limits, installation-wide and for each readable application, sums the
 CPU and memory limits of their deployed replicas, and counts the replicas
 deployed before the limits applied, which run without them until redeployed.

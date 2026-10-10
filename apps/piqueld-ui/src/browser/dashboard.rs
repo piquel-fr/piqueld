@@ -269,7 +269,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                             status_card("Tailnet node", tone, label, &tailnet.message)
                         })
                     }}
-                    {move || signals.system.get().map(|system| preview_card(&system.previews))}
+                    {move || signals.system.get().map(|system| preview_card(system.previews.as_ref()))}
                     {move || {
                         signals.system.get().map(|system| {
                             system
@@ -387,7 +387,15 @@ fn dns_provider_card(provider: &DnsProviderStatus) -> AnyView {
 /// count, each readable application's, and the limits of their replicas. A
 /// count at its limit refuses new previews; one over it, after the limit was
 /// lowered, keeps its existing previews running.
-fn preview_card(usage: &PreviewUsage) -> AnyView {
+fn preview_card(usage: Option<&PreviewUsage>) -> AnyView {
+    let Some(usage) = usage else {
+        return status_card(
+            "Previews",
+            Tone::Neutral,
+            "Unavailable",
+            "The daemon could not count previews.",
+        );
+    };
     let limits = &usage.limits;
     let counts = std::iter::once((usage.total, limits.max_total))
         .chain(

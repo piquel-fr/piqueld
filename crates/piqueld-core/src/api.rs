@@ -408,7 +408,8 @@ pub struct PreviewUsage {
     pub total: u32,
     /// Readable applications with previews, in name order.
     pub applications: Vec<ApplicationPreviews>,
-    /// CPU limits in millicores, summed over the deployed replicas that have
+    /// CPU limits in millicores, summed over the replicas of each preview's
+    /// current target (which the daemon keeps converging Docker to) that have
     /// both limits.
     pub cpu_millis: u64,
     /// Memory limits in bytes, summed over the deployed replicas that have
@@ -604,9 +605,10 @@ pub struct SystemStatus {
     /// DNS providers and the certificates issued through them with DNS-01.
     #[serde(default)]
     pub dns: DnsStatus,
-    /// Previews against the `[previews]` limits.
+    /// Previews against the `[previews]` limits; absent when they could not
+    /// be counted.
     #[serde(default)]
-    pub previews: PreviewUsage,
+    pub previews: Option<PreviewUsage>,
 }
 
 /// A change to a manifest field. Environment and process values are redacted.

@@ -3,7 +3,7 @@
 use super::{ApplicationError, ApplicationService};
 use piqueld_core::access::Scope;
 use piqueld_core::api::{
-    DependencyStatus, DnsStatus, HostConfiguration, PreviewUsage, ReadinessStatus, SystemStatus,
+    DependencyStatus, DnsStatus, HostConfiguration, ReadinessStatus, SystemStatus,
 };
 use std::time::Duration;
 
@@ -13,18 +13,13 @@ impl ApplicationService {
     /// limits, naming only `readable` applications.
     pub async fn system_status(&self, readable: &Scope) -> SystemStatus {
         // Status reports storage outages instead of failing, so preview
-        // counts that cannot be read are left empty.
+        // counts that cannot be read are absent rather than zero.
         let previews = self
             .store
             .preview_usage(readable)
             .await
-            .unwrap_or_else(|error| {
-                tracing::warn!(?error, "could not count previews");
-                PreviewUsage {
-                    limits: self.store.preview_limits().clone(),
-                    ..PreviewUsage::default()
-                }
-            });
+            .inspect_err(|error| tracing::warn!(?error, "could not count previews"))
+            .ok();
         SystemStatus {
             status: "running".into(),
             api_version: "v1".into(),

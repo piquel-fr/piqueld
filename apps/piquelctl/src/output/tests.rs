@@ -353,7 +353,7 @@ fn status_and_dns_refresh_list_dns_providers_certificate_failures_and_preview_ov
             }],
         },
         // `max_total` was lowered below the existing previews.
-        previews: PreviewUsage {
+        previews: Some(PreviewUsage {
             limits: PreviewLimits {
                 max_total: 2,
                 ..PreviewLimits::default()
@@ -367,7 +367,7 @@ fn status_and_dns_refresh_list_dns_providers_certificate_failures_and_preview_ov
             cpu_millis: 1500,
             memory_bytes: 1_610_612_736,
             unlimited_replicas: 2,
-        },
+        }),
     };
     let stdout = Capture::default();
     let mut console = Console::with_writers(

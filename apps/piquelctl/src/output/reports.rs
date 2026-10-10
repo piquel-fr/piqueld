@@ -122,7 +122,10 @@ impl Report for StatusReport<'_> {
                 }
             }
         }
-        s.previews.render_human(out)?;
+        match &s.previews {
+            Some(previews) => previews.render_human(out)?,
+            None => out.label("Previews", "unavailable: the daemon could not count them")?,
+        }
         s.dns.render_human(out)
     }
 }
