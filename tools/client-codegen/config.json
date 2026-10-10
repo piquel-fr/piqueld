@@ -201,6 +201,36 @@
       "rustType": "piqueld_core::api::EnvironmentBranchRequest"
     },
     {
+      "schema": "Envelope_CreatedPreview",
+      "name": "EnvelopeCreatedPreview",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::CreatedPreview>"
+    },
+    {
+      "schema": "Envelope_PreviewView",
+      "name": "EnvelopePreviewView",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::PreviewView>"
+    },
+    {
+      "schema": "Envelope_Vec_PreviewView",
+      "name": "EnvelopeVecPreviewView",
+      "rustType": "piqueld_core::api::Envelope<Vec<piqueld_core::api::PreviewView>>"
+    },
+    {
+      "schema": "Envelope_Vec_DeletedPreview",
+      "name": "EnvelopeVecDeletedPreview",
+      "rustType": "piqueld_core::api::Envelope<Vec<piqueld_core::api::DeletedPreview>>"
+    },
+    {
+      "schema": "CreatePreviewRequest",
+      "name": "CreatePreviewRequest",
+      "rustType": "piqueld_core::api::CreatePreviewRequest"
+    },
+    {
+      "schema": "PrunePreviewsRequest",
+      "name": "PrunePreviewsRequest",
+      "rustType": "piqueld_core::api::PrunePreviewsRequest"
+    },
+    {
       "schema": "LogStream",
       "name": "LogStream",
       "rustType": "piqueld_core::api::LogStream"

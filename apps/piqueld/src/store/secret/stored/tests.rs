@@ -349,7 +349,8 @@ async fn access_lists_keep_renamed_environments_and_drop_deleted_ones() {
     assert_eq!(secrets[0].access, SecretAccess::default());
     assert_eq!(secrets[1].access, only([]));
     assert_eq!(secrets[1].access.describe(&[]), "no environment");
-    assert!(!secrets[1].access.allows(&production));
+    let production_view = store.get(&production).await.unwrap().environment;
+    assert!(!secrets[1].access.allows(&production_view));
     assert!(matches!(
         store
             .set_secret_access(Daemon, &application, "shared", &only([&staging]))

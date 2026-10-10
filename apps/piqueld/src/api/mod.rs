@@ -5,5 +5,5 @@ mod service;
 
 pub use service::{
     Actor, ApplicationError, ApplicationService, ExecSession, ManifestExport, Mutation,
-    MutationResponse,
+    MutationResponse, PreviewMutation,
 };

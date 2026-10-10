@@ -35,8 +35,8 @@ source, and renames or deletes the environment; its other tabs are Deployments,
 Secrets, Logs, and Events. The environment's Secrets tab lists each secret the
 manifest it deploys mounts and where the value comes from: generated for the
 environment, the application's secret store (with its version), missing from the
-store, not allowed by the secret's access list, which would fail the next deploy
-with `secret_access_denied`, or discarded by key recovery, which fails it with
+store, which would fail the next deploy with `secret_missing`, not allowed by the
+secret's access list, which would fail it with `secret_access_denied`, or discarded by key recovery, which fails it with
 `secret_unavailable` until the value is replaced. Below it, the environment's generated values
 can be regenerated for the next deployment, or deleted so a later deployment
 generates new ones. Deletion confirms the environment
@@ -44,6 +44,30 @@ name, retains its Docker volumes, and leaves the application and other
 environments intact; **Retry deletion** resumes cleanup when needed. An
 environment page whose environment no longer exists says so rather than showing
 another environment.
+
+The **Previews** tab lists the application's
+[previews](application-manifest.md#previews), never shown among its
+environments: each preview's branch, slug, slot, branch state (exists, moved
+or gone, with shortened commits, or unknown with the repository error), and
+status (or **Deleting**) with its status message on hover.
+The list loads when the tab opens and on **Refresh**, not on a timer, since
+each load runs `git ls-remote` on the manifest repository. **New preview** asks
+for a branch and an optional slot, which tells apart several previews of one
+branch (one per agent, say), then opens the preview's deployments; for a
+preview of that branch and slot that already exists, it opens it without
+redeploying. It is disabled until a manifest repository is connected in Source.
+**Delete** confirms, then deletes the preview with every volume it created and
+their data. **Prune gone** confirms, then deletes every preview whose branch
+was gone when the list loaded; the daemon checks each branch again, keeps any
+it can no longer confirm gone, and deletes nothing while the repository cannot
+be read. None of them needs a saved revision, so unsaved edits elsewhere on the
+page don't block them.
+
+Each row opens the preview's page, which has an environment page's tabs.
+Its Overview shows the preview's branch, slot, slug, and ID, with its branch
+state and URLs read on load and on **Refresh**, then its runtime, its variables
+rendered for previews, and a card to delete it. **Redeploy** deploys the head
+of its branch again.
 
 **Preview** and **Deploy to <environment>** on an environment page target that
 environment. On the application page they target its only environment; with
@@ -54,9 +78,10 @@ fetched from it, so Preview is disabled until its first deployment. A service's 
 environment's logs, or links to each environment's logs.
 
 Values that differ between environments come from manifest variables. The
-Variables tab edits them: one row per variable, with its default and one column
+Variables tab edits them: one row per variable, with its default, one column
 per environment, including environments the manifest configures before they
-exist. An environment's value overrides the default, and an empty cell has no
+exist, and a Previews column for `[spec.previews.variables]`. An environment's
+or the previews' value overrides the default, and an empty cell has no
 value, so a variable may have only per-environment values. Fields that accept variables, such as replicas
 or health check settings, take `${{ vars.<name> }}` in place of a literal. An
 environment's Overview lists the value of each variable there, marking variables
@@ -64,9 +89,9 @@ without one. Environments that render the same hostname conflict; the error
 names the environment already reserving it.
 
 Applications have one main tab row: Overview (the default), Environments,
-Services, Source, Variables, Routes, Volumes, Jobs, Secrets, Releases, Builds,
+Previews, Services, Source, Variables, Routes, Volumes, Jobs, Secrets, Releases, Builds,
 and Events. The Releases tab lists the application's immutable releases, newest
-first: each successful preparation of an environment's deployment records one,
+first: each successful preparation of an environment's deployment (never a preview's) records one,
 environments that prepared the same content share it, and deleting an environment keeps
 them. Expanding a release shows the commit its manifest was read from, its
 content hash, and for each service its image (a registry digest or local image
@@ -78,7 +103,8 @@ update and become healthy first. Other services wait for all jobs to succeed;
 dependency changes remain if a job fails. The Routes tab
 edits hostnames, each pointing at a service port or a redirect with a public or
 private visibility, and shows each deployed route's effective visibility, the DNS
-records its hostname needs, HTTPS readiness and diagnostics in every environment.
+records its hostname needs, HTTPS readiness and diagnostics in every environment
+and preview.
 Each environment's Overview sets its visibility ceiling, and system status shows
 the Cloudflare Tunnel's ID and connection state in tunnel mode, and the private listener
 with the apps tailnet node's name and addresses. Saving routes updates only the route field;
@@ -106,8 +132,9 @@ Releases tab; the environment's Overview links to the release its current target
 runs. Current target, last successful deployment, and observed runtime health
 are distinct. History remains until the environment is deleted. Deploying an
 empty application removes its runtime services and network. Removing volumes or
-deleting an application retains Docker volume data; deleting an application
-deletes every environment, its configuration, and all database history. The
+deleting an application retains environments' Docker volume data; deleting an
+application deletes every environment and preview, with the previews' volumes,
+its configuration, and all database history. The
 confirmation names the environments being deleted.
 
 Forms save typed fields or settings sections through individual endpoints, without
@@ -142,7 +169,8 @@ local storage. See [authentication](authentication.md).
 The application's **Secrets** tab lists the secret store's names, versions and
 who may mount each one, by environment name. It creates or replaces write-only
 text values, edits access (every environment, including ones created later, or
-the checked environments, plus a previews flag kept for when previews exist), and
+the checked environments, plus whether previews may mount it, which "every
+environment" never includes), and
 deletes secrets no environment uses. Submitted values are cleared and cannot
 be read back; use the CLI for binary secret files. If a write or deletion fails,
 further secret changes are disabled until metadata refresh succeeds. Metadata

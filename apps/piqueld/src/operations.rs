@@ -27,6 +27,9 @@ pub enum OperationError {
         /// Logical names only, never values.
         names: String,
     },
+    /// Mounted secrets have no value to deploy.
+    #[error("{0}")]
+    SecretMissing(#[source] crate::store::StoreError),
     /// The environment mounts a stored secret its access list excludes.
     #[error("{0}")]
     SecretAccessDenied(#[source] crate::store::StoreError),
@@ -129,6 +132,7 @@ impl OperationError {
             Self::Journal(_) => DiagnosticCode::JournalUnavailable,
             Self::SecretStorageUnavailable(_) => DiagnosticCode::SecretStorageUnavailable,
             Self::SecretUnavailable { .. } => DiagnosticCode::SecretUnavailable,
+            Self::SecretMissing(_) => DiagnosticCode::SecretMissing,
             Self::SecretAccessDenied(_) => DiagnosticCode::SecretAccessDenied,
             Self::ManifestInput {
                 not_found: true, ..
@@ -229,6 +233,7 @@ impl From<crate::store::StoreError> for OperationError {
             crate::store::StoreError::SecretUnavailable { names } => {
                 Self::SecretUnavailable { names }
             }
+            error @ crate::store::StoreError::SecretMissing { .. } => Self::SecretMissing(error),
             error @ crate::store::StoreError::SecretAccessDenied { .. } => {
                 Self::SecretAccessDenied(error)
             }

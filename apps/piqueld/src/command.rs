@@ -55,6 +55,41 @@ impl LoggedCommand {
         operation: &'static str,
         log: Option<&crate::build::BuildLog>,
     ) -> anyhow::Result<()> {
+        let stdout =
+            |stdout| Self::tail_recorded(stdout, log, piqueld_core::api::LogStream::Stdout);
+        Self::run_in_group(command, operation, stdout, log)
+            .await
+            .map(drop)
+    }
+
+    /// Runs a command like [`Self::run_recorded`], without a log, and returns
+    /// its whole standard output. More than `limit` bytes is an error.
+    pub(crate) async fn output(
+        command: &mut Command,
+        operation: &'static str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<u8>> {
+        let stdout = async |stdout: tokio::process::ChildStdout| {
+            let mut output = Vec::new();
+            stdout
+                .take(u64::try_from(limit)?.saturating_add(1))
+                .read_to_end(&mut output)
+                .await?;
+            anyhow::ensure!(output.len() <= limit, "output exceeds {limit} bytes");
+            Ok(output)
+        };
+        Self::run_in_group(command, operation, stdout, None).await
+    }
+
+    /// Runs a command in its own process group, reading its standard output
+    /// with `read_stdout` and the last `TAIL_BYTES` of its standard error,
+    /// streamed into `log` when supplied. Returns what `read_stdout` read.
+    async fn run_in_group<F: Future<Output = anyhow::Result<Vec<u8>>>>(
+        command: &mut Command,
+        operation: &'static str,
+        read_stdout: impl FnOnce(tokio::process::ChildStdout) -> F,
+        log: Option<&crate::build::BuildLog>,
+    ) -> anyhow::Result<Vec<u8>> {
         let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -75,7 +110,7 @@ impl LoggedCommand {
         // Keep the leader unreaped while draining pipes. Its reserved PID prevents
         // the process-group ID from being reused while cancellation can signal it.
         let (stdout, stderr) = tokio::try_join!(
-            Self::tail_recorded(stdout, log, piqueld_core::api::LogStream::Stdout),
+            read_stdout(stdout),
             Self::tail_recorded(stderr, log, piqueld_core::api::LogStream::Stderr),
         )
         .with_context(|| operation)?;
@@ -91,7 +126,7 @@ impl LoggedCommand {
             }
             .into());
         }
-        Ok(())
+        Ok(stdout)
     }
 
     #[cfg(test)]

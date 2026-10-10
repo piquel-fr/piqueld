@@ -209,6 +209,10 @@ fn App() -> impl IntoView {
                         path={path!("applications/:id/environments/:environment")}
                         view={ApplicationDetailPage}
                     />
+                    <Route
+                        path={path!("applications/:id/previews/:preview")}
+                        view={ApplicationDetailPage}
+                    />
                     <Route path={path!("*any")} view={NotFoundPage} />
                 </ParentRoute>
             </Routes>
@@ -268,8 +272,9 @@ fn dashboard_context() -> DashboardContext {
     use_context().expect("dashboard routes are descendants of DashboardLayout")
 }
 
-/// Route wrapper for `/applications/:id[/services/:service|/environments/:environment]`.
-/// Loads the shown environment's detail into the shared signals when the route
+/// Route wrapper for
+/// `/applications/:id[/services/:service|/environments/:environment|/previews/:preview]`.
+/// Loads the shown environment's or preview's detail into the shared signals when the route
 /// changes, and keys `management::ApplicationPage` on the route so it remounts
 /// on navigation.
 #[component]
@@ -280,7 +285,12 @@ fn ApplicationDetailPage() -> impl IntoView {
     let client = context.client.clone();
 
     Effect::new(move |_| {
-        let (id, environment) = params.with(|params| (params.get("id"), params.get("environment")));
+        let (id, environment) = params.with(|params| {
+            (
+                params.get("id"),
+                params.get("environment").or_else(|| params.get("preview")),
+            )
+        });
         let Some(id) = id else {
             return;
         };
@@ -303,12 +313,19 @@ fn ApplicationDetailPage() -> impl IntoView {
                     .with(|p| {
                         p.get("id")
                             .map(|id| {
-                                let page = match (p.get("service"), p.get("environment")) {
-                                    (Some(service), _) => management::Page::Service(service),
-                                    (None, Some(environment)) => {
+                                let page = match (
+                                    p.get("service"),
+                                    p.get("environment"),
+                                    p.get("preview"),
+                                ) {
+                                    (Some(service), _, _) => management::Page::Service(service),
+                                    (None, Some(environment), _) => {
                                         management::Page::Environment(environment)
                                     }
-                                    (None, None) => management::Page::Application,
+                                    (None, None, Some(preview)) => {
+                                        management::Page::Preview(preview)
+                                    }
+                                    (None, None, None) => management::Page::Application,
                                 };
                                 (id, page)
                             })
@@ -502,8 +519,8 @@ fn load_detail(client: Client, signals: DashboardSignals, id: String) {
     });
 }
 
-/// Loads the application, then the environment with the selected ID or, with
-/// no selection, its only environment. Applications with several environments
+/// Loads the application, then the environment or preview with the selected
+/// ID or, with no selection, its only environment. Applications with several environments
 /// (or none) have no environment detail of their own.
 async fn environment_detail(
     client: &Client,
@@ -518,9 +535,7 @@ async fn environment_detail(
     // replaced, so later actions never target another environment.
     let environment = match selected {
         Some(selected) => application
-            .environments
-            .iter()
-            .find(|environment| environment.id.as_str() == selected)
+            .deployable(selected)
             .ok_or_else(|| "This environment no longer exists.".to_owned())?,
         None => match application.sole_environment() {
             Ok(environment) => environment,

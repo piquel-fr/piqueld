@@ -7,7 +7,7 @@ fn hostnames_render_per_environment_before_deployment() {
     ));
     let hostnames = |environment: &str| {
         template
-            .hostnames(&EnvironmentName::parse(environment).unwrap())
+            .hostnames(&super::environment(environment))
             .into_iter()
             .map(String::from)
             .collect::<Vec<_>>()
@@ -177,9 +177,9 @@ fn template_export_round_trips_overrides_escapes_and_identity() {
         original.canonical_json().unwrap()
     );
     assert_eq!(changed.to_manifest().metadata.name, "renamed");
-    assert!(changed.configures(&environment("production")));
-    assert!(changed.configures(&environment("staging")));
-    assert!(!changed.configures(&environment("other")));
+    assert!(changed.configures(&EnvironmentName::parse("production").unwrap()));
+    assert!(changed.configures(&EnvironmentName::parse("staging").unwrap()));
+    assert!(!changed.configures(&EnvironmentName::parse("other").unwrap()));
     let exported = changed.export_toml().unwrap();
     assert!(exported.contains("$${{ vars.tag }}"));
     assert_eq!(

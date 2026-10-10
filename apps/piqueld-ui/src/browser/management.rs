@@ -4,6 +4,7 @@ mod environments;
 mod jobs;
 mod logs;
 mod navigation;
+mod previews;
 mod releases;
 mod routes;
 mod secrets;
@@ -17,6 +18,7 @@ use super::ui::{
     Icon, Modal, PageHeader, Tabs, Tone, badge, health_badge, icon, notice, text_input,
 };
 use super::{client_error_message, dashboard_context, environment_row, row_health};
+use crate::state::ApplicationHealth;
 
 use deployments::{DeploymentActions, DeploymentHistory};
 use leptos::prelude::*;
@@ -36,9 +38,10 @@ use secrets::{EnvironmentSecrets, SecretFileSettings};
 use settings::{MetadataSettings, NewService, RepositorySettings, VolumeSettings};
 use std::collections::BTreeSet;
 
-const APPLICATION_TABS: [&str; 12] = [
+const APPLICATION_TABS: [&str; 13] = [
     "Overview",
     "Environments",
+    "Previews",
     "Services",
     "Source",
     "Variables",
@@ -62,13 +65,15 @@ pub(super) enum Page {
     Service(String),
     /// One environment's runtime, deployments, secrets, logs, and history.
     Environment(String),
+    /// One preview's branch, runtime, deployments, secrets, logs, and history.
+    Preview(String),
 }
 
 impl Page {
     /// Tabs of the page; service pages have their own section tabs.
     const fn tabs(&self) -> &'static [&'static str] {
         match self {
-            Self::Environment(_) => &ENVIRONMENT_TABS,
+            Self::Environment(_) | Self::Preview(_) => &ENVIRONMENT_TABS,
             Self::Application | Self::Service(_) => &APPLICATION_TABS,
         }
     }
@@ -138,13 +143,7 @@ impl EditorContext {
     }
     fn selected_environment(self) -> Option<piqueld_client::EnvironmentView> {
         let id = self.environment.get()?;
-        self.saved.with(|saved| {
-            saved
-                .environments
-                .iter()
-                .find(|env| env.id.as_str() == id)
-                .cloned()
-        })
+        self.saved.with(|saved| saved.deployable(&id).cloned())
     }
     /// Runtime actions require a loaded, live environment, including after
     /// deletion. Background refreshes of an already loaded detail keep them
@@ -272,9 +271,15 @@ impl EditorContext {
             .with_value(|page| matches!(page, Page::Environment(_)))
     }
 
-    /// Deploys the saved revision to `environment`, retrying once on transport
-    /// failure, then runs `accepted`.
-    fn deploy(self, environment: String, accepted: impl FnOnce() + 'static) {
+    /// Sends one mutation with a fresh request identity while the editor is
+    /// busy, retrying once on transport failure with the same identity so the
+    /// server can deduplicate it. Runs `done` with the response, or shows the
+    /// failure.
+    fn mutate<T: 'static, F: Future<Output = Result<T, ClientError>>>(
+        self,
+        request: impl Fn(Client) -> F + 'static,
+        done: impl FnOnce(T) + 'static,
+    ) {
         self.set_error(None);
         let client = match mutation_client() {
             Ok(client) => client,
@@ -283,28 +288,39 @@ impl EditorContext {
                 return;
             }
         };
-        let generation = self.saved.with_untracked(|saved| saved.generation);
         self.busy.set(true);
         spawn_local(async move {
-            let mut result = client
-                .deploy_environment(&environment, generation, None)
-                .await;
+            let mut result = request(client.clone()).await;
             if result.as_ref().is_err_and(transport_failure) {
-                result = client
-                    .deploy_environment(&environment, generation, None)
-                    .await;
+                result = request(client).await;
             }
             match result {
-                Ok(_) => {
-                    self.notice
-                        .set("Deployment accepted. Follow its progress below.".into());
-                    accepted();
-                    self.dashboard.with_value(|d| d.refresh.run(()));
-                }
+                Ok(response) => done(response),
                 Err(error) => self.failure(&error),
             }
             self.busy.set(false);
         });
+    }
+
+    /// Deploys the saved revision to `environment`, then runs `accepted`.
+    fn deploy(self, environment: String, accepted: impl FnOnce() + 'static) {
+        let generation = self.saved.with_untracked(|saved| saved.generation);
+        self.mutate(
+            move |client| {
+                let environment = environment.clone();
+                async move {
+                    client
+                        .deploy_environment(&environment, generation, None)
+                        .await
+                }
+            },
+            move |_| {
+                self.notice
+                    .set("Deployment accepted. Follow its progress below.".into());
+                accepted();
+                self.dashboard.with_value(|d| d.refresh.run(()));
+            },
+        );
     }
 }
 
@@ -548,7 +564,7 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
     let dashboard = dashboard_context();
     let saved = RwSignal::new(initial);
     let shown = match &page {
-        Page::Environment(environment) => Some(environment.clone()),
+        Page::Environment(environment) | Page::Preview(environment) => Some(environment.clone()),
         Page::Application | Page::Service(_) => None,
     };
     let context = EditorContext {
@@ -614,10 +630,27 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
             }
         }
     });
+    // The listing has no previews; take them from the detail it reloads.
+    Effect::new(move |_| {
+        signals.detail.with(|detail| {
+            let Some(application) = detail.as_ref().map(|detail| &detail.application) else {
+                return;
+            };
+            if application.application.id().as_str() == context.id()
+                && context
+                    .saved
+                    .with_untracked(|saved| saved.previews != application.previews)
+            {
+                context
+                    .saved
+                    .update(|saved| saved.previews.clone_from(&application.previews));
+            }
+        });
+    });
     guard_navigation(context.dirty);
     match page {
         Page::Service(name) => view! { <services::ServiceEditor name={name} /> }.into_any(),
-        Page::Environment(_) => view! { <EnvironmentPage /> }.into_any(),
+        Page::Environment(_) | Page::Preview(_) => view! { <EnvironmentPage /> }.into_any(),
         Page::Application => view! { <ApplicationSections /> }.into_any(),
     }
 }
@@ -672,6 +705,9 @@ fn ApplicationSections() -> impl IntoView {
         <div hidden={move || context.tab.get() != "Environments"}>
             <environments::EnvironmentList />
         </div>
+        <Show when={move || context.tab.get() == "Previews"}>
+            <previews::PreviewList />
+        </Show>
         <ApplicationSettings />
         <Show when={move || context.tab.get() == "Releases"}>
             <releases::ReleaseHistory application={context.id()} />
@@ -742,22 +778,31 @@ fn ApplicationOverview() -> impl IntoView {
     }
 }
 
-/// One environment: its runtime, deployments, secrets, logs, and history, with
-/// rename and deletion on its overview.
+/// One environment or preview: its runtime, deployments, secrets, logs, and
+/// history. An environment's overview renames and deletes it; a preview's
+/// shows its branch and deletes it.
 #[component]
 fn EnvironmentPage() -> impl IntoView {
     let context = editor();
     let signals = context.dashboard.with_value(|d| d.signals);
     let id = context.environment_id();
-    let app_href = move || format!("/dashboard/applications/{}?tab=environments", context.id());
+    let preview = context
+        .page
+        .with_value(|page| matches!(page, Page::Preview(_)));
+    let (list, kind) = if preview {
+        ("previews", "preview")
+    } else {
+        ("environments", "environment")
+    };
+    let app_href = move || format!("/dashboard/applications/{}?tab={list}", context.id());
     if context.selected_environment().is_none() {
         return view! {
             <div class="stack-sm">
-                {notice(Tone::Bad, "This environment no longer exists.")}
+                {notice(Tone::Bad, format!("This {kind} no longer exists."))}
                 <div class="btn-group">
                     <A attr:class="btn" href={app_href}>
                         {icon(Icon::ArrowLeft)}
-                        "Back to environments"
+                        {format!("Back to {list}")}
                     </A>
                 </div>
             </div>
@@ -770,9 +815,21 @@ fn EnvironmentPage() -> impl IntoView {
             .map(|environment| environment.name.to_string())
             .unwrap_or_default()
     };
+    // Previews are not listed, so their health comes from the loaded detail.
     let health = {
         let id = id.clone();
-        move || environment_row(signals, &id).map(|row| row.health())
+        move || {
+            environment_row(signals, &id)
+                .map(|row| row.health())
+                .or_else(|| {
+                    signals.detail.with(|detail| {
+                        detail
+                            .as_ref()
+                            .filter(|detail| detail.environment.id.as_str() == id)
+                            .map(|detail| ApplicationHealth::from_server_state(detail.status.state))
+                    })
+                })
+        }
     };
     let deleting = move || {
         context
@@ -794,16 +851,22 @@ fn EnvironmentPage() -> impl IntoView {
                 {move || deleting().then(|| badge(Tone::Warn, "Deleting"))}
             </div>
             <div class="page-actions">
-                <DeploymentActions />
+                {if preview {
+                    view! { <previews::PreviewActions /> }.into_any()
+                } else {
+                    view! { <DeploymentActions /> }.into_any()
+                }}
             </div>
         </header>
         <EditorFeedback />
         <Tabs label="Environment sections" options={&ENVIRONMENT_TABS} selected={context.tab} />
         <div hidden={move || context.tab.get() != "Overview"}>
             <div class="stack">
+                {preview.then(|| view! { <previews::PreviewSettings /> })}
                 <RuntimeOverview />
                 <variables::EnvironmentVariables />
-                <environments::EnvironmentSettings />
+                {(!preview).then(|| view! { <environments::EnvironmentSettings /> })}
+                {preview.then(|| view! { <previews::DeletePreview /> })}
             </div>
         </div>
         <div hidden={move || context.tab.get() != "Deployments"}>
@@ -838,7 +901,7 @@ fn DeleteApplication() -> impl IntoView {
                 .collect::<Vec<_>>()
         });
         let message = format!(
-            "Delete this application, all its environments ({}), their services, and all deployment history? Docker volume data will be retained.",
+            "Delete this application, all its environments ({}) and previews, their services, and all deployment history? Environments' Docker volume data will be retained; previews' volumes are removed with their data.",
             environments.join(", ")
         );
         if !window().confirm_with_message(&message).unwrap_or(false) {
@@ -881,7 +944,7 @@ fn DeleteApplication() -> impl IntoView {
                 <div>
                     <h3>"Delete application"</h3>
                     <p>
-                        "Removes every environment's running services and all configuration and deployment history. Docker volumes and their data are retained."
+                        "Removes every environment's and preview's running services and all configuration and deployment history. Environments' Docker volumes and their data are retained; previews' volumes are removed with their data."
                     </p>
                 </div>
                 <button

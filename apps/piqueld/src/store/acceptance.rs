@@ -1,9 +1,11 @@
 //! Atomic acceptance: compare current intent, write the change and its replay receipt together.
 use super::access::Holder;
 use super::{Actor, Operation, OperationKind, Store, StoreError, StoredApplication, now_ms};
-use crate::api::{Mutation, MutationResponse};
+use crate::api::{Mutation, MutationResponse, PreviewMutation};
 use piqueld_core::access::{Grants, Target};
-use piqueld_core::api::{AcceptedOperation, DeletedApplication, RenamedApplication};
+use piqueld_core::api::{
+    AcceptedOperation, CreatedPreview, DeletedApplication, RenamedApplication,
+};
 use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName};
 use sha2::{Digest, Sha256};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
@@ -189,12 +191,20 @@ impl Store {
             | Mutation::DeleteApplication { id, .. }
             | Mutation::CreateEnvironment {
                 application: id, ..
-            } => Some(id.clone()),
+            }
+            | Mutation::Preview(PreviewMutation::Create {
+                application: id, ..
+            }) => Some(id.clone()),
             Mutation::RenameEnvironment { id, .. }
             | Mutation::SetBranch { id, .. }
             | Mutation::Deploy { id, .. }
             | Mutation::Delete { id }
-            | Mutation::Reconcile { id } => Self::environment_application_on(tx, id).await?,
+            | Mutation::Reconcile { id }
+            | Mutation::Preview(
+                PreviewMutation::Deploy { id }
+                | PreviewMutation::Delete { id }
+                | PreviewMutation::Prune { id, .. },
+            ) => Self::environment_application_on(tx, id).await?,
         };
         let target = match (&application, mutation) {
             (None, Mutation::Save { .. }) => Target::New,
@@ -314,7 +324,8 @@ impl Store {
             }
             Mutation::Edit { id, edit, deploy } => {
                 let current = Self::checked_application_on(tx, &id, expected).await?;
-                Self::accept_edit(tx, current, *edit, deploy, now).await
+                // Boxed: the largest arm would otherwise size every acceptance.
+                Box::pin(Self::accept_edit(tx, current, *edit, deploy, now)).await
             }
             Mutation::Rename { id, name } => {
                 let current = Self::checked_application_on(tx, &id, expected).await?;
@@ -380,7 +391,82 @@ impl Store {
                 };
                 Ok(Self::operation_accepted(&operation))
             }
+            // Boxed: preview changes would otherwise grow every acceptance future.
+            Mutation::Preview(mutation) => {
+                Box::pin(Self::execute_preview_on(tx, mutation, now)).await
+            }
         }
+    }
+
+    /// Creates, deploys, or deletes a preview. Previews are found by ID only
+    /// among previews, and never check or advance the application revision.
+    async fn execute_preview_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        mutation: PreviewMutation,
+        now: i64,
+    ) -> Result<Accepted, StoreError> {
+        match mutation {
+            PreviewMutation::Create {
+                application,
+                branch,
+                slot,
+            } => {
+                let current = Self::checked_application_on(tx, &application, None).await?;
+                let (id, created) =
+                    Self::create_preview_on(tx, &current, &branch, slot.as_ref(), now).await?;
+                let preview = Self::preview_on(tx, &id).await?;
+                let operation = match Self::latest_operation_on(tx, &id).await? {
+                    Some(operation) if !created => operation,
+                    _ => Self::deploy_preview_on(tx, &preview).await?,
+                };
+                Ok(Accepted {
+                    response: MutationResponse::Preview(Box::new(CreatedPreview {
+                        preview: preview.environment,
+                        operation: AcceptedOperation::from(&operation),
+                        created,
+                    })),
+                    wake: created,
+                    environments: vec![id],
+                })
+            }
+            PreviewMutation::Deploy { id } => {
+                let preview = Self::preview_on(tx, &id).await?;
+                let operation = Self::deploy_preview_on(tx, &preview).await?;
+                Ok(Self::operation_accepted(&operation))
+            }
+            PreviewMutation::Delete { id } => {
+                let preview = Self::preview_on(tx, &id).await?;
+                Self::delete_preview_on(tx, &preview).await
+            }
+            PreviewMutation::Prune { id, repository } => {
+                let preview = Self::preview_on(tx, &id).await?;
+                // A branch gone from one repository says nothing about another.
+                if preview
+                    .repository()
+                    .is_none_or(|current| current.repository.url != repository)
+                {
+                    return Err(StoreError::IdentityConflict);
+                }
+                Self::delete_preview_on(tx, &preview).await
+            }
+        }
+    }
+
+    /// Requests a preview's deletion, or returns the one already pending.
+    async fn delete_preview_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        preview: &super::StoredEnvironment,
+    ) -> Result<Accepted, StoreError> {
+        let id = preview.id();
+        let operation = match Self::latest_operation_on(tx, id).await? {
+            Some(operation)
+                if preview.delete_intent() && operation.kind == OperationKind::Delete =>
+            {
+                operation
+            }
+            _ => Self::request_delete_on(tx, id).await?,
+        };
+        Ok(Self::operation_accepted(&operation))
     }
 
     /// Loads an application after checking the revision precondition, so a
@@ -396,7 +482,8 @@ impl Store {
     }
 
     /// Loads an environment after checking the revision precondition against
-    /// its application's revision.
+    /// its application's revision. Previews are `NotFound`: environment
+    /// changes never act on them.
     async fn checked_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &EnvironmentId,
@@ -409,7 +496,9 @@ impl Store {
                 .as_ref()
                 .map_or(0, |environment| environment.application.generation),
         )?;
-        current.ok_or(StoreError::NotFound)
+        current
+            .filter(|current| current.environment.preview().is_none())
+            .ok_or(StoreError::NotFound)
     }
 
     /// Advances the application revision past `current` after an environment
@@ -646,9 +735,12 @@ impl Store {
         // Resolved and latest targets may be retried after a rename. Only their display metadata changes.
         sqlx::query!("UPDATE environments SET resolved_json=CASE WHEN resolved_json IS NULL THEN NULL ELSE json_set(resolved_json,'$.name',?1) END WHERE application_id=?2",name,id)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
-        for environment in Self::environments_on(tx, &id).await? {
-            let name = &environment.name;
-            if current.application.renders_like(name, &application, name) {
+        for environment in Self::deployables_on(tx, &id).await? {
+            let target = environment.target();
+            if current
+                .application
+                .renders_like(&target, &application, &target)
+            {
                 let environment = environment.id.as_str();
                 sqlx::query!("UPDATE environments SET resolved_generation=?1 WHERE id=?2 AND resolved_generation=?3",revision,environment,previous)
                     .execute(&mut **tx).await.map_err(StoreError::database)?;
@@ -667,10 +759,10 @@ impl Store {
         })
     }
 
-    /// Requests deletion of an application and every environment. With several
-    /// environments, `confirmed` must name each of them. Environments already
-    /// being deleted keep their pending operation. An application without
-    /// environments is removed immediately.
+    /// Requests deletion of an application, every environment and every
+    /// preview. With several environments, `confirmed` must name each of them;
+    /// previews need no confirmation. Those already being deleted keep their
+    /// pending operation. An application without any is removed immediately.
     async fn delete_application_on(
         tx: &mut Transaction<'_, Sqlite>,
         current: StoredApplication,
@@ -678,9 +770,10 @@ impl Store {
         now: i64,
     ) -> Result<Accepted, StoreError> {
         let id = current.application.id().as_str().to_owned();
-        let environments = Self::environments_on(tx, &id).await?;
+        let environments = Self::deployables_on(tx, &id).await?;
         let names = environments
             .iter()
+            .filter(|environment| environment.preview().is_none())
             .map(|environment| environment.name.clone())
             .collect::<Vec<_>>();
         confirmed.sort();

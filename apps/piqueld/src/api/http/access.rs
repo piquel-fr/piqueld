@@ -8,9 +8,9 @@
 //! API request against the resulting table after authentication.
 //!
 //! On `/api/v1/applications/{id}` routes, application permissions are checked
-//! on that application, and on `/api/v1/environments/{id}` routes on the
-//! environment's application: callers who cannot read it get 404, as if it did
-//! not exist. Elsewhere they only require the permission on some application,
+//! on that application, and on `/api/v1/environments/{id}` and
+//! `/api/v1/previews/{id}` routes on the environment's or preview's
+//! application: callers who cannot read it get 404, as if it did not exist. Elsewhere they only require the permission on some application,
 //! and handlers narrow results to the applications the caller may see.
 use super::{ApiError, ApiState, ui};
 use crate::auth::{AuthError, Identity};
@@ -42,15 +42,16 @@ const EXTENSION: &str = "x-piqueld-access";
 enum PathOwner {
     /// An application.
     Application,
-    /// An environment, checked on its application.
+    /// An environment or preview, checked on its application.
     Environment,
 }
 
 impl PathOwner {
     /// Route prefixes whose `{id}` path parameter names an owner.
-    const ROUTES: [(&str, Self); 2] = [
+    const ROUTES: [(&str, Self); 3] = [
         ("/api/v1/applications/{id}", Self::Application),
         ("/api/v1/environments/{id}", Self::Environment),
+        ("/api/v1/previews/{id}", Self::Environment),
     ];
 
     /// The owner a matched route names, with its `{id}`, if any.

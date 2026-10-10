@@ -126,6 +126,8 @@ pub const VARIABLE_NAME_INVALID: &str = "variable_name_invalid";
 pub const VARIABLE_COUNT_EXCESSIVE: &str = "variable_count_excessive";
 /// Variable value exceeds its byte budget.
 pub const VARIABLE_VALUE_EXCESSIVE: &str = "variable_value_excessive";
+/// Previews need an application whose manifest comes from a repository.
+pub const PREVIEW_REQUIRES_REPOSITORY: &str = "preview_requires_repository";
 /// `[spec.environments.<name>]` names no environment of the application.
 pub const ENVIRONMENT_BLOCK_UNKNOWN: &str = "environment_block_unknown";
 /// Manifest that must be literal still references variables.

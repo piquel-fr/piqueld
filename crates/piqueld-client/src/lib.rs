@@ -18,6 +18,8 @@ pub mod observability;
 pub mod openapi;
 /// Operation inspection contracts.
 pub mod operations;
+/// Preview lifecycle and branch state contracts.
+pub mod previews;
 /// Control-plane status contracts.
 pub mod system;
 
@@ -66,6 +68,10 @@ pub use piqueld_core::{
 };
 pub use piqueld_core::{
     ApplicationState, Convergence, Event, Operation, OperationKind, OperationState,
+};
+pub use previews::{
+    BranchState, CreatePreviewRequest, CreatedPreview, DeletedPreview, EnvironmentKind, Preview,
+    PreviewSlot, PreviewSlug, PreviewView, PrunePreviewsRequest,
 };
 pub use system::{CertificateStatus, DnsProviderStatus, DnsStatus, SystemStatus, TailnetStatus};
 

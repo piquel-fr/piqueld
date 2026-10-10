@@ -266,8 +266,8 @@ impl Store {
     /// every referenced secret, so retries deploy the same versions even after
     /// rotation; later calls reuse the pins. A stored secret's version gets the
     /// environment's own Docker secret the first time it is pinned there.
-    /// Fails if a referenced secret is missing (`InvalidInput`), being deleted,
-    /// or had its value discarded by key recovery.
+    /// Fails if referenced secrets have no value (`SecretMissing`, naming
+    /// them), are being deleted, or had their value discarded by key recovery.
     pub(super) async fn pin_secrets_on(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         operation: &Operation,
@@ -294,6 +294,7 @@ impl Store {
                 .ok_or(StoreError::NotFound)?;
             Self::check_secret_access_on(tx, &environment.environment, app).await?;
             let application = environment.environment.application_id.as_str();
+            let mut missing = Vec::new();
             for (name, source) in app.spec().mounted_secrets() {
                 let changed = match source {
                     SecretSource::Generated => sqlx::query!("INSERT INTO deployment_secret_pins(operation_id,environment_id,name,generation) SELECT ?1,environment_id,name,generation FROM environment_secrets WHERE environment_id=?2 AND name=?3",operation,id,name).execute(&mut **tx).await,
@@ -306,8 +307,13 @@ impl Store {
                 .map_err(StoreError::database)?
                 .rows_affected();
                 if changed != 1 {
-                    return Err(StoreError::InvalidInput);
+                    missing.push(name);
                 }
+            }
+            if !missing.is_empty() {
+                return Err(StoreError::SecretMissing {
+                    names: missing.join(", "),
+                });
             }
             sqlx::query!(
                 "INSERT INTO deployment_secrets_prepared(operation_id) VALUES(?1)",

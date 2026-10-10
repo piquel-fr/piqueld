@@ -70,7 +70,7 @@ impl<D: DockerApi> Controller<D> {
         }
         let rendering = template
             .render(&RenderContext {
-                environment: environment.environment.name.clone(),
+                target: environment.environment.target(),
                 git: Some(GitRevision {
                     branch: backing.repository.branch.clone(),
                     sha: checkout.commit.clone(),

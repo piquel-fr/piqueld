@@ -2,8 +2,8 @@
 //! deployed, reusable by other environments without rebuilding.
 
 use crate::manifest::{
-    ApplicationTemplate, GitRevision, RenderContext, Rendering, SourceRepository, ValidatedSource,
-    ValidationErrors,
+    ApplicationTemplate, GitRevision, RenderContext, RenderTarget, Rendering, SourceRepository,
+    ValidatedSource, ValidationErrors,
 };
 use crate::resource::{ResolvedApplication, ResolvedSource, Sha256Digest};
 use crate::{EnvironmentName, ServiceName};
@@ -192,8 +192,9 @@ impl Release {
                 branch: manifest.repository.branch.clone(),
                 sha: commit.clone(),
             });
+        // Releases are instantiated for environments, never for previews.
         let mut rendering = self.template.render(&RenderContext {
-            environment,
+            target: RenderTarget::Environment(environment),
             git,
             deployment,
         })?;

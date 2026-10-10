@@ -123,8 +123,10 @@ renames and deletion, since environment names select configuration.
 
 ## Variables
 
-Declare variables with a default in `[spec.variables]` or for one environment in
-`[spec.environments.<name>.variables]`, and reference them as `${{ vars.<name> }}`:
+Declare variables with a default in `[spec.variables]`, for one environment in
+`[spec.environments.<name>.variables]`, or for every preview in
+`[spec.previews.variables]` (see [Previews](#previews)), and reference them as
+`${{ vars.<name> }}`:
 
 ```toml
 [spec.variables]
@@ -172,8 +174,8 @@ variables, but not other variables. System variables:
 | Reference | Value |
 | --- | --- |
 | `app.name` | Application name. |
-| `env.name` | Environment name. |
-| `env.slug` | DNS-safe environment identifier; the environment name. |
+| `env.name` | Environment name; a preview's slug. |
+| `env.slug` | DNS-safe environment identifier: the environment name, or a preview's slug. |
 | `git.branch`, `git.sha` | Branch and commit the manifest was read from: the environment's branch, or a one-off `--branch`; only with `spec.manifest`. |
 | `deployment.id` | ID of the deployment being captured. |
 
@@ -422,13 +424,15 @@ secret mounts, with unique normalized paths under `/run/secrets`. A name declare
 in `spec.secrets` is generated for each environment (see below). Any other name
 comes from the application's secret store, whose values are set with
 `piquelctl app secret` or the dashboard and must exist when a deployment captures
-its inputs. A name can't be both declared and stored: setting a stored value for
+its inputs: otherwise the deployment fails with `secret_missing`, naming each
+secret without a value. A name can't be both declared and stored: setting a stored value for
 a declared name, or saving a declaration for a stored name, fails validation
 with `secret_name_conflict`.
 
 Each stored secret lists who may mount it: every environment, including ones
-created later (the default), or only the listed ones, plus a flag for previews,
-which is kept for when previews exist. Lists hold environment IDs, so a renamed
+created later (the default), or only the listed ones, plus a flag for previews.
+Previews may mount it only with that flag, which is off by default: "every
+environment" never includes previews. Lists hold environment IDs, so a renamed
 environment keeps its access and a deleted one drops out of every list. When a
 deployment captures its inputs, or `app plan --env` previews them, an environment
 that mounts a stored secret its list excludes fails with `secret_access_denied`,
@@ -477,6 +481,108 @@ it, so rotation stays explicit: `piquelctl env secret APP --env ENV regenerate N
 generates a new version for the next deployment. A value discarded by key
 recovery has nothing left to keep, so the next deployment that mounts it
 generates a new one. Removing a declaration retains the generated value.
+
+## Previews
+
+A preview is a disposable deployment of one branch of the application's
+manifest repository, for testing a branch by hand or from an agent. It is an
+environment of its own kind: it has its own deployments, generated secrets,
+volumes, routes, logs and Docker network, but it never appears among the
+application's environments, and environment commands never act on it.
+
+```console
+piquelctl preview create notes --branch feat/login [--slot agent-2]
+piquelctl preview deploy notes feat/login      # redeploy the branch head
+piquelctl preview list notes
+piquelctl preview delete notes feat/login
+piquelctl preview prune notes --branch-gone
+```
+
+Only repository-backed applications have previews; creating one for another
+application fails with `preview_requires_repository`. A preview deploys the
+manifest file from its own branch, rendered with `[spec.previews]` and never
+with an `[spec.environments.<name>]` block:
+
+```toml
+[spec.previews]
+# The strictest visibility preview routes get; private by default.
+visibility = "private"
+
+[spec.previews.variables]
+domain = "${{ env.slug }}.dev.example.com"
+web_replicas = 1
+```
+
+Each value in `[spec.previews.variables]` overrides the `[spec.variables]`
+default of the same name, or declares a variable without one, for every
+preview. `git.branch` and `git.sha` are the branch and commit the preview
+fetched.
+
+**Identity.** A preview is keyed by its branch and optional slot, so several
+agents can work on one branch. Creating a preview again with the same branch
+and slot returns the existing preview and its latest deployment without
+redeploying it; `preview deploy` redeploys. Creation, deployment and deletion
+need no application revision, so agents creating previews never conflict with
+each other or with people saving the manifest.
+
+**Slugs.** Each preview gets a DNS-safe slug derived once from
+`<application>-<branch>[-<slot>]`: lowercase letters and digits, with every
+other run of characters as one hyphen, truncated, then a hyphen and a short
+hash of the exact application, branch and slot (`notes-feat-login-3fa2c1`).
+Slugs are at most 40 characters, so a prefix still fits in a 63-character DNS
+label. The slug is stored when the preview is created and never recomputed, so
+renaming the application keeps it. It is `env.slug` (and `env.name`), and also
+the preview's name, so no environment of the application can share it.
+
+**Routes.** Previews render the same routes as environments. Use flat
+hostnames, one label below a shared domain, so one wildcard certificate
+(`*.dev.example.com`) covers every preview. The slug already names the
+application, so a route needs a prefix only to tell several routes apart:
+
+```toml
+# notes-feat-login-3fa2c1.dev.example.com
+[[spec.routes]]
+hostname = "${{ env.slug }}.dev.example.com"
+service = "web"
+port = 3000
+
+# api-notes-feat-login-3fa2c1.dev.example.com
+[[spec.routes]]
+hostname = "api-${{ env.slug }}.dev.example.com"
+service = "api"
+port = 8080
+```
+
+In practice these hostnames go through a variable, so environments keep their
+own: `hostname = "${{ vars.domain }}"` with `domain` set per environment and in
+`[spec.previews.variables]`.
+
+Hostnames are reserved as for environments: a preview reserves the hostnames
+its last fetched manifest renders, and two previews or environments rendering
+the same hostname conflict with `hostname_conflict`. Preview routes are private
+unless `[spec.previews] visibility = "public"`. Private hostnames need DNS
+records pointing at the apps tailnet node (see
+[public and private routes](ingress.md#public-and-private-routes)).
+
+**Secrets.** Each preview generates its own `spec.secrets` values. It mounts a
+stored secret only when the secret's access allows previews; otherwise its
+deployment fails with `secret_access_denied`.
+
+**Volumes.** A preview's volumes start empty. The preview keeps an inventory of
+every volume its deployments created, including volumes a later manifest
+dropped. Deleting the preview removes all of them, with their data, and checks
+that none is left before the preview is gone; a deletion that cannot remove one
+is retried. Environment volumes are retained, as always.
+
+**Lifetime.** Previews are never deleted automatically. `preview list` and
+`preview show` report each branch's state, read on demand with `git ls-remote`:
+`exists` (at the deployed commit, or before the first fetch), `moved` (the
+branch head is past the deployed commit), `gone`, or `unknown` when the
+repository could not be read. `preview prune --branch-gone` deletes, after
+confirmation, the previews whose branch is gone; the daemon checks again and
+keeps any it can no longer confirm gone. Repository or authentication errors
+never count as gone: pruning then deletes nothing. Previews cannot be promotion
+sources and do not record releases.
 
 ## Startup dependencies
 

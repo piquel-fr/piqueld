@@ -4,6 +4,7 @@ mod exec;
 mod history;
 mod notification_worker;
 mod observability;
+mod previews;
 mod queries;
 mod startup;
 mod system;
@@ -16,7 +17,7 @@ use crate::{
 pub use exec::ExecSession;
 pub use history::ManifestExport;
 use piqueld_core::{
-    ApplicationId, EnvironmentId, EnvironmentName, TrackedBranch,
+    ApplicationId, EnvironmentId, EnvironmentName, GitBranch, PreviewSlot, TrackedBranch,
     api::{SecretAccess, SecretMetadata, StoredSecret},
     manifest::{ApplicationTemplate, ValidatedTemplate},
 };
@@ -52,6 +53,9 @@ pub enum ApplicationError {
     /// Image resolution or compilation failed.
     #[error(transparent)]
     Runtime(#[from] BoundaryError),
+    /// The manifest repository could not be read, so no branch is known gone.
+    #[error("the manifest repository could not be read")]
+    RepositoryUnavailable(#[source] anyhow::Error),
 }
 
 pub use crate::store::Actor;
@@ -137,6 +141,44 @@ pub enum Mutation {
         /// Stable environment ID.
         id: EnvironmentId,
     },
+    /// Change a preview.
+    Preview(PreviewMutation),
+}
+
+/// A change to a preview. Previews select no `[spec.environments.<name>]`
+/// block, so none needs or advances the application revision.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "preview", rename_all = "snake_case")]
+pub enum PreviewMutation {
+    /// Create and deploy a preview of a branch, or return the existing
+    /// preview of that branch and slot without redeploying it.
+    Create {
+        /// Stable application ID.
+        application: ApplicationId,
+        /// Branch of the application's manifest repository.
+        branch: GitBranch,
+        /// Distinguishes several previews of one branch.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        slot: Option<PreviewSlot>,
+    },
+    /// Deploy the head of a preview's branch.
+    Deploy {
+        /// Stable preview ID.
+        id: EnvironmentId,
+    },
+    /// Delete a preview with every volume it created.
+    Delete {
+        /// Stable preview ID.
+        id: EnvironmentId,
+    },
+    /// Delete a preview whose branch `repository` no longer has, unless the
+    /// application's manifest repository changed since (`IdentityConflict`).
+    Prune {
+        /// Stable preview ID.
+        id: EnvironmentId,
+        /// URL of the repository the branch was found gone from.
+        repository: String,
+    },
 }
 
 /// Small acceptance response stored for request replay, without manifest contents.
@@ -150,6 +192,9 @@ pub enum MutationResponse {
     Rename(piqueld_core::api::RenamedApplication),
     /// Created or renamed environment.
     Environment(piqueld_core::api::EnvironmentView),
+    /// Created or existing preview. Boxed, as the largest response, so
+    /// acceptance futures stay small.
+    Preview(Box<piqueld_core::api::CreatedPreview>),
     /// Accepted application deletion.
     Deleted(piqueld_core::api::DeletedApplication),
 }
@@ -157,7 +202,8 @@ pub enum MutationResponse {
 impl Mutation {
     /// Application permissions this mutation needs on its application (the
     /// environment's, for environment changes): `Write` and optionally
-    /// `Deploy` for saves and edits.
+    /// `Deploy` for saves and edits. Previews need `Deploy` to create and
+    /// deploy, and `Delete` to delete.
     #[must_use]
     pub fn required(&self) -> &'static [piqueld_core::access::AppPermission] {
         use piqueld_core::access::AppPermission::{Delete, Deploy, Write};
@@ -169,8 +215,16 @@ impl Mutation {
             | Self::CreateEnvironment { .. }
             | Self::RenameEnvironment { .. }
             | Self::SetBranch { .. } => &[Write],
-            Self::Deploy { .. } | Self::Reconcile { .. } => &[Deploy],
-            Self::DeleteApplication { .. } | Self::Delete { .. } => &[Delete],
+            Self::Deploy { .. }
+            | Self::Reconcile { .. }
+            | Self::Preview(PreviewMutation::Create { .. } | PreviewMutation::Deploy { .. }) => {
+                &[Deploy]
+            }
+            Self::DeleteApplication { .. }
+            | Self::Delete { .. }
+            | Self::Preview(PreviewMutation::Delete { .. } | PreviewMutation::Prune { .. }) => {
+                &[Delete]
+            }
         }
     }
 
@@ -489,7 +543,7 @@ impl ApplicationService {
                 | Mutation::SetBranch { .. }
                 | Mutation::Deploy { .. }
                 | Mutation::Delete { .. } => expected_generation.is_none(),
-                Mutation::Reconcile { .. } => false,
+                Mutation::Reconcile { .. } | Mutation::Preview(_) => false,
             };
             if missing {
                 return Err(ApplicationError::PreconditionRequired);

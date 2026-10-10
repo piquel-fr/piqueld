@@ -1,9 +1,87 @@
 //! Isolated Git checkouts. No shared mutable repository or credential store.
 
 use anyhow::{Context, bail};
+use piqueld_core::api::BranchState;
 use piqueld_core::manifest::{GitRepository, valid_git_commit, valid_repository_path};
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 use tokio::process::Command;
+
+/// The branch heads of a remote repository, listed with `git ls-remote`.
+pub(crate) struct Heads {
+    /// The repository listed.
+    url: String,
+    /// Head commit of each branch.
+    branches: BTreeMap<String, String>,
+}
+
+impl Heads {
+    /// Longest a listing may take before it counts as failed, well within a
+    /// client's 30-second request budget so it still gets `unknown` branch
+    /// states. Its process group, Git's helpers included, is then killed.
+    const TIMEOUT: Duration = Duration::from_secs(10);
+    /// Most output a listing may produce: tens of thousands of branches.
+    const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+
+    /// Lists every branch of `url` with its head commit. Any repository,
+    /// network, or authentication failure is an error, never an empty
+    /// listing, so a branch only counts as gone when the repository answered.
+    pub(crate) async fn list(url: &str) -> anyhow::Result<Self> {
+        let mut command = Checkout::command();
+        command.args(["ls-remote", "--heads", "--"]).arg(url);
+        let output = tokio::time::timeout(
+            Self::TIMEOUT,
+            crate::command::LoggedCommand::output(
+                &mut command,
+                "list Git branches",
+                Self::OUTPUT_LIMIT,
+            ),
+        )
+        .await
+        .context("git ls-remote timed out")?
+        .map_err(|error| {
+            // Git may echo the URL, credentials included, so details stay in logs.
+            tracing::warn!(?error, "git ls-remote failed");
+            match error.downcast_ref::<crate::command::CommandFailure>() {
+                Some(failure) => anyhow::anyhow!("git ls-remote failed ({})", failure.status),
+                None => anyhow::anyhow!("git ls-remote could not run"),
+            }
+        })?;
+        let mut heads = BTreeMap::new();
+        for line in String::from_utf8(output)
+            .context("decode git ls-remote output")?
+            .lines()
+        {
+            let (commit, reference) = line
+                .split_once('\t')
+                .context("parse git ls-remote output")?;
+            if let Some(branch) = reference.strip_prefix("refs/heads/") {
+                heads.insert(branch.to_owned(), commit.to_owned());
+            }
+        }
+        Ok(Self {
+            url: url.to_owned(),
+            branches: heads,
+        })
+    }
+
+    /// The repository listed, which a branch state only describes.
+    pub(crate) fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Where `branch` is compared with `fetched`, the commit a preview last
+    /// fetched its manifest from.
+    pub(crate) fn state(&self, branch: &str, fetched: Option<&str>) -> BranchState {
+        match (self.branches.get(branch), fetched) {
+            (None, _) => BranchState::Gone,
+            (Some(head), Some(deployed)) if head != deployed => BranchState::Moved {
+                head: head.clone(),
+                deployed: deployed.to_owned(),
+            },
+            (Some(head), _) => BranchState::Exists { head: head.clone() },
+        }
+    }
+}
 
 /// A private checkout pinned once, retained until preparation finishes.
 pub(crate) struct Checkout {

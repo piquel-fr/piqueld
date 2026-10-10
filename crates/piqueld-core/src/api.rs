@@ -4,12 +4,13 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::manifest::{
-    ApplicationManifest, ApplicationTemplate, RolloutOrder, RolloutOrderSource, SecretSource,
-    VariableValue,
+    ApplicationManifest, ApplicationTemplate, RenderTarget, RolloutOrder, RolloutOrderSource,
+    SecretSource, VariableValue,
 };
 use crate::{
-    ApplicationId, ApplicationState, BuildFingerprint, Convergence, EnvironmentId, EnvironmentName,
-    EnvironmentSource, NormalizedApplication, Operation, Plan, Release, ReleaseId, Sha256Digest,
+    ApplicationId, ApplicationState, BuildFingerprint, Convergence, EnvironmentId, EnvironmentKind,
+    EnvironmentName, EnvironmentSource, NormalizedApplication, Operation, Plan, Preview, Release,
+    ReleaseId, Sha256Digest,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -84,8 +85,11 @@ pub struct ApplicationView {
     pub created_at_ms: i64,
     /// Last update timestamp in Unix milliseconds.
     pub updated_at_ms: i64,
-    /// Environments in name order.
+    /// Environments in name order. Never includes previews.
     pub environments: Vec<EnvironmentView>,
+    /// Previews in slug order.
+    #[serde(default)]
+    pub previews: Vec<EnvironmentView>,
 }
 
 impl ApplicationView {
@@ -120,6 +124,33 @@ impl ApplicationView {
                     .find(|environment| environment.name.as_str() == id_or_name)
             })
     }
+
+    /// Finds a preview by stable ID, then by slug, then by branch and `slot`,
+    /// in that order, since a slug or branch can equal another's ID.
+    #[must_use]
+    pub fn preview(&self, selector: &str, slot: Option<&str>) -> Option<&EnvironmentView> {
+        let previews = || self.previews.iter();
+        previews()
+            .find(|preview| preview.id.as_str() == selector)
+            .or_else(|| previews().find(|preview| preview.name.as_str() == selector))
+            .or_else(|| {
+                previews().find(|preview| {
+                    preview.preview().is_some_and(|identity| {
+                        identity.branch.as_str() == selector
+                            && identity.slot.as_ref().map(crate::PreviewSlot::as_str) == slot
+                    })
+                })
+            })
+    }
+
+    /// Finds an environment or a preview by stable ID.
+    #[must_use]
+    pub fn deployable(&self, id: &str) -> Option<&EnvironmentView> {
+        self.environments
+            .iter()
+            .chain(&self.previews)
+            .find(|deployable| deployable.id.as_str() == id)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
@@ -130,10 +161,13 @@ pub struct EnvironmentView {
     pub id: EnvironmentId,
     /// Owning application.
     pub application_id: ApplicationId,
-    /// Name, unique within the application.
+    /// Name, unique within the application; a preview's slug.
     pub name: EnvironmentName,
-    /// Where deployments come from.
+    /// Where deployments come from; a preview's branch.
     pub source: EnvironmentSource,
+    /// An environment, or a preview of a branch.
+    #[serde(default)]
+    pub kind: EnvironmentKind,
     /// Application revision of the last completely resolved target, not a
     /// convergence guarantee.
     pub resolved_generation: Option<u64>,
@@ -143,6 +177,26 @@ pub struct EnvironmentView {
     pub created_at_ms: i64,
     /// Last update timestamp in Unix milliseconds.
     pub updated_at_ms: i64,
+}
+
+impl EnvironmentView {
+    /// What its manifest renders for: its own block, or `[spec.previews]`.
+    #[must_use]
+    pub fn target(&self) -> RenderTarget {
+        match &self.kind {
+            EnvironmentKind::Environment => RenderTarget::Environment(self.name.clone()),
+            EnvironmentKind::Preview(preview) => RenderTarget::Preview(preview.slug.clone()),
+        }
+    }
+
+    /// The preview's identity, unless this is an environment.
+    #[must_use]
+    pub const fn preview(&self) -> Option<&Preview> {
+        match &self.kind {
+            EnvironmentKind::Environment => None,
+            EnvironmentKind::Preview(preview) => Some(preview),
+        }
+    }
 }
 
 /// Renames an environment, conditioned on the inspected application revision.
@@ -185,6 +239,100 @@ pub struct EnvironmentBranchRequest {
     pub commit: Option<String>,
     /// Current application revision, required unless explicitly forced.
     pub expected_generation: Option<u64>,
+}
+
+/// Creates a preview of a branch of the application's manifest repository,
+/// or returns the existing preview of that branch and slot. Needs no
+/// application revision.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreatePreviewRequest {
+    /// Branch to deploy.
+    pub branch: String,
+    /// Distinguishes several previews of one branch, e.g. one per agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
+}
+
+/// A preview and its deployment, as created or found.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct CreatedPreview {
+    /// The preview.
+    pub preview: EnvironmentView,
+    /// Its first deployment or, when it already existed, its latest
+    /// operation: creating a preview again never redeploys it.
+    pub operation: AcceptedOperation,
+    /// Whether this request created the preview.
+    pub created: bool,
+}
+
+/// Where a preview's branch is, read on demand with `git ls-remote`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum BranchState {
+    /// The branch is at the deployed commit, or nothing was fetched yet.
+    Exists {
+        /// Commit at the branch head.
+        head: String,
+    },
+    /// The branch moved past the deployed commit.
+    Moved {
+        /// Commit at the branch head.
+        head: String,
+        /// Commit the preview last fetched its manifest from.
+        deployed: String,
+    },
+    /// The repository answered and has no such branch.
+    Gone,
+    /// The repository could not be read. Never counts as gone.
+    Unknown {
+        /// Why the repository could not be read.
+        message: String,
+    },
+}
+
+impl std::fmt::Display for BranchState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Exists { .. } => formatter.write_str("exists"),
+            Self::Moved { .. } => formatter.write_str("moved"),
+            Self::Gone => formatter.write_str("gone"),
+            Self::Unknown { .. } => formatter.write_str("unknown"),
+        }
+    }
+}
+
+/// A preview with its status, latest operation, hostnames, and branch state.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct PreviewView {
+    /// The preview.
+    pub preview: EnvironmentView,
+    /// Its reconciliation status.
+    pub status: EnvironmentStatusView,
+    /// Its newest operation, if any.
+    pub latest_operation: Option<Operation>,
+    /// Hostnames its deployed target routes; none before its first deployment.
+    pub hostnames: Vec<String>,
+    /// Where its branch is now.
+    pub branch: BranchState,
+}
+
+/// Deletes the listed previews whose branch the repository confirms is gone.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PrunePreviewsRequest {
+    /// Previews to delete, as confirmed by the caller. Any whose branch is
+    /// not confirmed gone when the request runs is kept.
+    pub previews: Vec<EnvironmentId>,
+}
+
+/// A preview whose deletion was accepted.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct DeletedPreview {
+    /// The preview.
+    pub preview: EnvironmentView,
+    /// Its deletion.
+    pub operation: AcceptedOperation,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -770,19 +918,22 @@ impl EnvironmentAccess {
 pub struct SecretAccess {
     /// Environments that may mount the secret.
     pub environments: EnvironmentAccess,
-    /// Whether previews may mount the secret. Stored for previews, which do
-    /// not exist yet.
+    /// Whether previews may mount the secret. Previews are never covered by
+    /// `environments`, even `all`.
     #[serde(default)]
     pub previews: bool,
 }
 
 impl SecretAccess {
-    /// Whether `environment` may mount the secret.
+    /// Whether `environment`, or a preview, may mount the secret.
     #[must_use]
-    pub fn allows(&self, environment: &EnvironmentId) -> bool {
-        match &self.environments {
-            EnvironmentAccess::All => true,
-            EnvironmentAccess::Only(allowed) => allowed.contains(environment),
+    pub fn allows(&self, environment: &EnvironmentView) -> bool {
+        match (&environment.kind, &self.environments) {
+            (EnvironmentKind::Preview(_), _) => self.previews,
+            (EnvironmentKind::Environment, EnvironmentAccess::All) => true,
+            (EnvironmentKind::Environment, EnvironmentAccess::Only(allowed)) => {
+                allowed.contains(&environment.id)
+            }
         }
     }
 
@@ -856,7 +1007,7 @@ impl MountedSecret {
         stored: &[StoredSecret],
     ) -> Vec<(String, Self)> {
         template
-            .mounted_secrets(&environment.name)
+            .mounted_secrets(&environment.target())
             .into_iter()
             .map(|(name, source)| {
                 let mounted = match source {
@@ -864,7 +1015,7 @@ impl MountedSecret {
                     SecretSource::Stored => {
                         match stored.iter().find(|secret| secret.metadata.name == name) {
                             None => Self::Missing,
-                            Some(secret) if !secret.access.allows(&environment.id) => Self::Denied,
+                            Some(secret) if !secret.access.allows(environment) => Self::Denied,
                             Some(secret) if secret.metadata.unavailable => Self::Unavailable,
                             Some(secret) => Self::Stored {
                                 generation: secret.metadata.generation,
@@ -1098,6 +1249,7 @@ mod environment_tests {
             application_id: ApplicationId::parse("app-notes-01").unwrap(),
             name: EnvironmentName::parse(name).unwrap(),
             source: EnvironmentSource::Saved,
+            kind: crate::EnvironmentKind::Environment,
             resolved_generation: None,
             delete_intent: false,
             created_at_ms: 1,
@@ -1124,6 +1276,7 @@ mod environment_tests {
                 environment("env-impostor-01", "app-notes-01"),
                 environment("app-notes-01", "production"),
             ],
+            previews: Vec::new(),
         };
         assert_eq!(
             view.environment("app-notes-01").unwrap().name.as_str(),

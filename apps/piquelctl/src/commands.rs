@@ -53,6 +53,7 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
         } => refresh_dns(client, console).await,
         Command::App { command } => app(cli, client, console, command).await,
         Command::Env { command } => command.run(cli, client, console).await,
+        Command::Preview { command } => command.run(cli, client, console).await,
         Command::Builds(args) => match &args.command {
             BuildCommand::List {
                 application,
@@ -377,8 +378,9 @@ async fn apply(cli: &Cli, client: &Client, console: &mut Console, args: &ApplyAr
     })
 }
 
-/// Confirms and deletes an application and all its environments (named volumes
-/// are retained), guarded by the expected generation unless `--force`. With
+/// Confirms and deletes an application, all its environments (named volumes
+/// are retained), and all its previews (their volumes are removed), guarded by
+/// the expected generation unless `--force`. With
 /// several environments, `--environments` must name every one. Waits until the
 /// application is gone unless `--no-wait`.
 async fn delete(
@@ -420,13 +422,29 @@ async fn delete(
         application.application.id(),
         if names.is_empty() { "(none)".to_owned() } else { names.join(", ") }
     ))?;
+    let previews = if application.previews.is_empty() {
+        String::new()
+    } else {
+        let slugs = application
+            .previews
+            .iter()
+            .map(|preview| preview.name.as_str())
+            .collect::<Vec<_>>();
+        console.info(format_args!(
+            "its previews {} are deleted with their volumes",
+            slugs.join(", ")
+        ))?;
+        " Previews' volumes will be removed.".to_owned()
+    };
 
     let flags = &args.deletion;
     confirm(
         console,
         cli.noninteractive,
         flags.yes,
-        &format!("Delete application {name:?}? Named volumes will be retained. [y/N] "),
+        &format!(
+            "Delete application {name:?}? Named volumes of environments will be retained.{previews} [y/N] "
+        ),
     )
     .await?;
 

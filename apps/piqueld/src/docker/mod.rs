@@ -282,6 +282,14 @@ pub trait DockerApi: Send + Sync + 'static {
         name: &str,
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError>;
+    /// Removes a managed volume and its data after rechecking its ownership.
+    /// A missing volume counts as removed. Only deleting a preview removes
+    /// volumes; environments retain theirs.
+    async fn remove_volume(
+        &self,
+        name: &str,
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError>;
 }
 
 #[async_trait]

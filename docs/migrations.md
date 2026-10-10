@@ -214,6 +214,17 @@ after upgrading it records releases for deployments already prepared, oldest
 first, sharing them the same way; deployments that never finished preparing
 have none.
 
+`0023_previews.sql` makes previews environments of another `kind`, so they
+reuse every environment table. Existing rows become `environment`. A preview
+always has a branch and never a pinned commit, records its optional slot in
+`preview_slot`, and is named by its slug, so the existing unique name index
+keeps previews and environments of one application apart. The partial unique
+index `preview_key` on (application, branch, slot) makes creating a preview
+idempotent without the application revision. `preview_volumes` lists every
+Docker volume each preview's deployments created; it is removed with its
+preview, after deletion has removed and verified those volumes. Nothing is
+redeployed.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

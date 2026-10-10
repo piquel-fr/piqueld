@@ -143,7 +143,7 @@ impl Store {
         {
             names.extend(
                 manifest
-                    .hostnames(&environment.environment.name)
+                    .hostnames(&environment.environment.target())
                     .into_iter()
                     .map(String::from),
             );
@@ -495,7 +495,7 @@ mod tests {
         // Environments that render the same hostname still conflict.
         let same = piqueld_core::edit::Variables {
             defaults: [("domain".into(), Variable::String("piquel.fr".into()))].into(),
-            environments: std::collections::BTreeMap::new(),
+            ..Default::default()
         };
         let edit = Mutation::Edit {
             id: application,

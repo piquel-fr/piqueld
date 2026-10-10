@@ -131,8 +131,7 @@ fn variables_without_a_value_fail_only_the_environment_that_needs_them() {
         errors.0[0].message,
         "vars.tag has no value for environment production"
     );
-    let production = EnvironmentName::parse("production").unwrap();
-    let values = template.values(&production);
+    let values = template.values(&environment("production"));
     assert_eq!(values["tag"], None);
     assert_eq!(
         values["domain"],
@@ -372,9 +371,9 @@ fn contexts_supply_exact_system_values_and_explain_unavailable_ones() {
                     )]
                 );
                 let reason = if system == SystemVariable::DeploymentId {
-                    "when deploying production"
+                    "when deploying environment production"
                 } else {
-                    "for repository-backed deployments of production"
+                    "for repository-backed deployments of environment production"
                 };
                 assert_eq!(
                     errors.0[0].message,
@@ -747,5 +746,104 @@ fn secret_mount_names_select_each_environments_secret_and_resolve_once_rendered(
     assert_eq!(
         codes_and_paths(&render(&template, "staging").unwrap_err()),
         [(codes::NAME_INVALID, path.as_str())]
+    );
+}
+
+/// A preview of `feat/login` of the `notes` application.
+fn preview() -> RenderTarget {
+    RenderTarget::Preview(crate::PreviewSlug::derive(
+        &crate::ApplicationName::parse("notes").unwrap(),
+        &crate::GitBranch::parse("feat/login").unwrap(),
+        None,
+    ))
+}
+
+#[test]
+fn previews_override_defaults_with_their_own_variables_and_no_environment_block() {
+    let slug = preview().name().to_owned();
+    // A block named like the slug configures an environment, never the preview.
+    let template = template(&format!(
+        r#"{VARIABLES}
+[spec.environments.{slug}.variables]
+tag = "environment"
+
+[spec.previews.variables]
+domain = "${{{{ env.slug }}}}.dev.piquel.fr"
+only = "preview"
+
+[[spec.routes]]
+hostname = "${{{{ vars.domain }}}}"
+service = "web"
+port = 3000
+
+[[spec.routes]]
+hostname = "${{{{ vars.only }}}}.piquel.fr"
+service = "web"
+port = 3000
+"#
+    ));
+    let rendering = template
+        .render(&RenderContext::deployment(preview(), "operation-1".into()))
+        .unwrap();
+    let spec = rendering.application.spec();
+    assert_eq!(spec.services[0].replicas, 1);
+    assert_eq!(
+        rendering.values["vars.tag"],
+        VariableValue::String("stable".into())
+    );
+    assert_eq!(
+        rendering.values["env.slug"],
+        VariableValue::String(slug.clone())
+    );
+    assert_eq!(
+        spec.services[0].environment["GREETING"],
+        format!("hello {slug}, keep ${{HOME}} and $USER, escape ${{{{ vars.tag }}}}")
+    );
+    let hostnames = spec
+        .routes
+        .iter()
+        .map(|route| route.hostname.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        hostnames,
+        [format!("{slug}.dev.piquel.fr"), "preview.piquel.fr".into()]
+    );
+    // Environments never see the previews' values.
+    let errors = render(&template, "staging").unwrap_err();
+    assert_eq!(
+        errors.0[0].message,
+        "vars.only has no value for environment staging"
+    );
+}
+
+#[test]
+fn preview_routes_are_private_unless_previews_are_public() {
+    let routes = r#"
+[[spec.routes]]
+hostname = "notes.dev.piquel.fr"
+service = "web"
+port = 3000
+visibility = "public"
+"#;
+    let visibility = |previews: &str| {
+        template(&format!("{VARIABLES}{previews}{routes}"))
+            .render(&RenderContext::deployment(preview(), "operation-1".into()))
+            .unwrap()
+            .application
+            .spec()
+            .routes[0]
+            .visibility
+    };
+    assert_eq!(visibility(""), Visibility::Private);
+    assert_eq!(
+        visibility("[spec.previews]\nvisibility = \"public\"\n"),
+        Visibility::Public
+    );
+    // Environments are unaffected by the previews' ceiling.
+    let template = template(&format!("{VARIABLES}{routes}"));
+    let rendered = render(&template, "production").unwrap();
+    assert_eq!(
+        rendered.application.spec().routes[0].visibility,
+        Visibility::Public
     );
 }

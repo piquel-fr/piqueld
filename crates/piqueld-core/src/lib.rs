@@ -6,7 +6,7 @@
 pub mod api;
 pub mod codes;
 pub mod environment;
-pub use environment::{EnvironmentSource, TrackedBranch};
+pub use environment::{EnvironmentKind, EnvironmentSource, Preview, TrackedBranch};
 pub mod event;
 pub mod exec;
 pub mod identity;
@@ -14,8 +14,9 @@ pub use event::Event;
 pub mod manifest;
 pub mod names;
 pub use names::{
-    ApplicationName, ApplicationNameError, EnvironmentName, EnvironmentNameError, JobName,
-    JobNameError, ServiceName, ServiceNameError, VolumeName, VolumeNameError,
+    ApplicationName, ApplicationNameError, EnvironmentName, EnvironmentNameError, GitBranch,
+    GitBranchError, JobName, JobNameError, PreviewSlot, PreviewSlotError, PreviewSlug,
+    PreviewSlugError, ServiceName, ServiceNameError, VolumeName, VolumeNameError,
 };
 pub mod operation;
 pub mod planner;

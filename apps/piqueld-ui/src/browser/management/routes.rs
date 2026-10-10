@@ -163,21 +163,21 @@ pub(super) fn RouteSettings() -> impl IntoView {
     let readiness = context
         .dashboard
         .with_value(|dashboard| dashboard.signals.readiness);
-    // Deployed routes of every environment, with the environment's name.
+    // Deployed routes of every environment and preview, with its name.
     let deployed = move || {
-        let environments = context.saved.with(|saved| saved.environments.clone());
         readiness.get().map(|status| {
-            status
-                .ingress
-                .routes
-                .into_iter()
-                .filter_map(|route| {
-                    environments
-                        .iter()
-                        .find(|environment| environment.id.as_str() == route.environment_id)
-                        .map(|environment| (environment.name.to_string(), route))
-                })
-                .collect::<Vec<_>>()
+            context.saved.with(|saved| {
+                status
+                    .ingress
+                    .routes
+                    .into_iter()
+                    .filter_map(|route| {
+                        saved
+                            .deployable(&route.environment_id)
+                            .map(|environment| (environment.name.to_string(), route))
+                    })
+                    .collect::<Vec<_>>()
+            })
         })
     };
     view! {

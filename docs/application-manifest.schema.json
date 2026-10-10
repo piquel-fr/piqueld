@@ -358,6 +358,17 @@
       "additionalProperties": false,
       "description": "Configuration shared by previews, `[spec.previews]`.",
       "properties": {
+        "variables": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Variable"
+          },
+          "default": {},
+          "description": "Values for every preview: each overrides the `[spec.variables]`\ndefault of the same name, or declares a variable without a default.",
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        },
         "visibility": {
           "default": "private",
           "oneOf": [

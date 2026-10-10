@@ -609,6 +609,22 @@ impl DockerApi for FakeDocker {
         observed.networks.retain(|network| network.name != name);
         Ok(())
     }
+
+    async fn remove_volume(
+        &self,
+        name: &str,
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        let _probe = self.mutations.enter().await;
+        let mut observed = self.observed.lock().await;
+        if let Some(existing) = observed.volumes.iter().find(|volume| volume.name == name)
+            && !Self::ownership_matches(&existing.labels, ownership)
+        {
+            return Err(DockerError::OwnershipConflict);
+        }
+        observed.volumes.retain(|volume| volume.name != name);
+        Ok(())
+    }
 }
 
 /// The environment created with `application`, which shares its ID.
@@ -2334,7 +2350,7 @@ async fn mixed_sources_report_the_failing_source() {
 
 mod repository_deployments {
     use super::*;
-    use piqueld::api::{ApplicationError, Mutation, MutationResponse};
+    use piqueld::api::{ApplicationError, Mutation, MutationResponse, PreviewMutation};
     use piqueld::store::StoreError;
     use piqueld_core::manifest::{
         ApplicationManifest, GitRepository, ManifestRevision, RepositoryManifest, SourceRepository,
@@ -2655,6 +2671,138 @@ mod repository_deployments {
                 TrackedBranch::new("main".into(), None).unwrap()
             )
         );
+    }
+
+    /// Runs `mutation` of a preview and the controller, and returns how its
+    /// operation ended, unless a deletion removed it, with the preview.
+    async fn run_preview(
+        harness: &ControllerHarness,
+        mutation: Mutation,
+    ) -> (Option<Operation>, Option<EnvironmentId>) {
+        let (operation, preview) = match harness
+            .applications()
+            .accept(Daemon, mutation, None, false, None)
+            .await
+            .unwrap()
+        {
+            MutationResponse::Preview(created) => (created.operation, Some(created.preview.id)),
+            MutationResponse::Operation(operation) => (operation, None),
+            _ => panic!("preview operation expected"),
+        };
+        harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+        let operation = harness.store.operation(&operation.operation_id).await.ok();
+        (operation, preview)
+    }
+
+    /// Deleting a preview removes every volume it ever created, including one
+    /// its branch's manifest later dropped, while environments keep theirs.
+    /// Unlike environments, it records no release.
+    #[tokio::test]
+    async fn deleting_a_preview_removes_every_volume_it_ever_created() {
+        let repository = RepositoryFixture::new();
+        let mut harness = ControllerHarness::new().await;
+        harness.docker = Arc::new(FakeDocker {
+            isolate_observations: true,
+            ..FakeDocker::default()
+        });
+        harness.controller =
+            Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
+        let main = repository.manifest("app.json");
+        repository.write("app.json", &main);
+        repository.commit();
+        let production = harness
+            .applications()
+            .apply(main.clone().validate_template().unwrap(), Some(0))
+            .await
+            .unwrap();
+        harness.finish(&production).await;
+        repository.git(&["checkout", "-b", "feat/cache"]);
+        let mut cached = main.clone();
+        cached
+            .spec
+            .volumes
+            .push(serde_json::from_value(serde_json::json!({"name": "cache"})).unwrap());
+        cached.spec.services[0].mounts.push(
+            serde_json::from_value(
+                serde_json::json!({"volume": "cache", "target": "/var/cache/notes"}),
+            )
+            .unwrap(),
+        );
+        repository.write("app.json", &cached);
+        repository.commit();
+        let volumes = async || {
+            let observed = harness.docker.observed.lock().await;
+            observed
+                .volumes
+                .iter()
+                .map(|volume| volume.name.clone())
+                .collect::<Vec<_>>()
+        };
+        let before = volumes().await;
+
+        let (created, preview) = run_preview(
+            &harness,
+            Mutation::Preview(PreviewMutation::Create {
+                application: harness
+                    .store
+                    .get(&production.environment_id)
+                    .await
+                    .unwrap()
+                    .environment
+                    .application_id,
+                branch: "feat/cache".parse().unwrap(),
+                slot: None,
+            }),
+        )
+        .await;
+        assert_eq!(created.unwrap().state, OperationState::Succeeded);
+        let preview = preview.unwrap();
+        // Previews never record releases; the environment that deployed did.
+        assert_eq!(harness.store.current_release(&preview).await.unwrap(), None);
+        assert!(
+            harness
+                .store
+                .current_release(&production.environment_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        // The branch drops the cache volume; the preview keeps it until deleted.
+        repository.write("app.json", &main);
+        repository.commit();
+        let (deployed, _) = run_preview(
+            &harness,
+            Mutation::Preview(PreviewMutation::Deploy {
+                id: preview.clone(),
+            }),
+        )
+        .await;
+        assert_eq!(deployed.unwrap().state, OperationState::Succeeded);
+        let inventory = harness.store.preview_volumes(&preview).await.unwrap();
+        assert_eq!(inventory.len(), 2);
+        assert!(inventory.iter().all(|name| !before.contains(name)));
+        let current = volumes().await;
+        assert!(inventory.iter().all(|name| current.contains(name)));
+
+        let (deleted, _) = run_preview(
+            &harness,
+            Mutation::Preview(PreviewMutation::Delete {
+                id: preview.clone(),
+            }),
+        )
+        .await;
+        assert!(deleted.is_none(), "{deleted:?}");
+        assert!(matches!(
+            harness.store.get(&preview).await,
+            Err(StoreError::NotFound)
+        ));
+        let remaining = volumes().await;
+        assert!(inventory.iter().all(|name| !remaining.contains(name)));
+        assert_eq!(remaining, before, "production keeps its volume");
     }
 
     #[tokio::test]
@@ -3307,6 +3455,33 @@ async fn application_deletion_journals_secret_cleanup_failures() {
         && event.phase.as_deref() == Some("remove_secrets")
         && event.error_code.as_deref() == Some("docker_request_failed")));
     assert!(harness.store.get(&first.environment_id).await.is_ok());
+}
+
+/// A mounted secret nobody stored fails the deployment as `secret_missing`,
+/// naming it, rather than as a journal failure.
+#[tokio::test]
+async fn missing_stored_secrets_fail_deployment_with_their_names() {
+    let harness = ControllerHarness::new().await;
+    let mut input = manifest();
+    input.spec.services[0]
+        .secrets
+        .push(piqueld_core::manifest::SecretMount {
+            name: "token".into(),
+            target: "/run/secrets/token".into(),
+        });
+    let failed = harness
+        .applications()
+        .apply(input.validate_template().unwrap(), Some(0))
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    let result = harness.store.operation(&failed.id).await.unwrap();
+    assert_eq!(result.error_code.as_deref(), Some("secret_missing"));
+    assert!(result.error_message.as_deref().unwrap().contains("token"));
 }
 
 #[tokio::test]

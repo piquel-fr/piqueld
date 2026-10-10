@@ -50,7 +50,7 @@ impl Store {
         let environment = Self::environment_on(tx, environment.as_str())
             .await?
             .ok_or(StoreError::NotFound)?;
-        if !environment.environment.source.records_releases() {
+        if !environment.environment.kind.records_releases() {
             return Ok(());
         }
         let Some(row) = sqlx::query!(

@@ -23,6 +23,7 @@ pub(crate) use journal::JournalAction;
 pub(crate) use secret::SecretDeletion;
 pub(crate) use security::SecurityEvent;
 mod operation;
+mod preview;
 mod release;
 mod repository;
 mod secret;
@@ -30,8 +31,8 @@ mod security;
 mod status;
 
 use piqueld_core::{
-    ApplicationId, EnvironmentId, EnvironmentName, EnvironmentSource, NormalizedApplication,
-    TrackedBranch,
+    ApplicationId, EnvironmentId, EnvironmentKind, EnvironmentName, EnvironmentSource,
+    NormalizedApplication, Preview, PreviewSlot, PreviewSlug, TrackedBranch,
     api::EnvironmentView,
     manifest::{
         ApplicationTemplate, ManifestRevision, RenderContext, Rendering, RepositoryManifest,
@@ -82,6 +83,15 @@ pub enum StoreError {
         "secret values unavailable: {names}; supply replacement values and start a new deployment"
     )]
     SecretUnavailable {
+        /// Logical names only, never values.
+        names: String,
+    },
+    /// Mounted secrets have no value: neither stored in the application's
+    /// store nor generated.
+    #[error(
+        "secret values missing: {names}; store them with `piquelctl app secret` or declare them in spec.secrets, then deploy again"
+    )]
+    SecretMissing {
         /// Logical names only, never values.
         names: String,
     },
@@ -187,6 +197,11 @@ pub enum StoreError {
     /// Runtime fields are managed by the repository manifest.
     #[error("application configuration is managed by its repository manifest")]
     RepositoryManaged,
+    /// Previews deploy a branch of the application's manifest repository.
+    #[error(
+        "previews deploy a branch of the application's manifest repository; connect one with `piquelctl app repository` first"
+    )]
+    PreviewRequiresRepository,
     /// Renaming would change which `[spec.environments.<name>]` block applies.
     #[error(
         "the saved manifest configures [spec.environments.{environment}]; renaming would change which configuration applies, so remove that block from the manifest first and add it back under the new name after renaming"
@@ -374,7 +389,7 @@ impl StoredEnvironment {
         deployment: &str,
     ) -> Result<Rendering, StoreError> {
         Ok(template.render(&RenderContext::deployment(
-            self.environment.name.clone(),
+            self.environment.target(),
             deployment.into(),
         ))?)
     }
@@ -720,8 +735,10 @@ struct EnvironmentRow {
     id: String,
     application_id: String,
     name: String,
+    kind: String,
     branch: Option<String>,
     pinned_commit: Option<String>,
+    preview_slot: Option<String>,
     resolved_generation: Option<i64>,
     delete_intent: i64,
     created_at_ms: i64,
@@ -732,17 +749,34 @@ impl EnvironmentRow {
     /// Converts raw columns into the environment view, reporting out-of-range
     /// values as corruption.
     fn decode(self) -> Result<EnvironmentView, StoreError> {
+        let source = match self.branch {
+            Some(branch) => EnvironmentSource::Branch(
+                TrackedBranch::new(branch, self.pinned_commit).map_err(StoreError::corrupt)?,
+            ),
+            None => EnvironmentSource::Saved,
+        };
+        // A preview is named by its slug and deploys an unpinned branch.
+        let kind = match (self.kind.as_str(), source.branch()) {
+            ("environment", _) => EnvironmentKind::Environment,
+            ("preview", Some(branch)) => EnvironmentKind::Preview(Box::new(Preview {
+                branch: piqueld_core::GitBranch::parse(branch.branch())
+                    .map_err(StoreError::corrupt)?,
+                slot: self
+                    .preview_slot
+                    .map(PreviewSlot::parse)
+                    .transpose()
+                    .map_err(StoreError::corrupt)?,
+                slug: PreviewSlug::parse(self.name.as_str()).map_err(StoreError::corrupt)?,
+            })),
+            _ => return Err(StoreError::Corrupt),
+        };
         Ok(EnvironmentView {
             id: EnvironmentId::parse(self.id).map_err(StoreError::corrupt)?,
             application_id: ApplicationId::parse(self.application_id)
                 .map_err(StoreError::corrupt)?,
             name: EnvironmentName::parse(self.name).map_err(StoreError::corrupt)?,
-            source: match self.branch {
-                Some(branch) => EnvironmentSource::Branch(
-                    TrackedBranch::new(branch, self.pinned_commit).map_err(StoreError::corrupt)?,
-                ),
-                None => EnvironmentSource::Saved,
-            },
+            source,
+            kind,
             resolved_generation: self
                 .resolved_generation
                 .map(u64::try_from)
@@ -761,8 +795,10 @@ struct StoredEnvironmentRow {
     id: String,
     application_id: String,
     name: String,
+    kind: String,
     branch: Option<String>,
     pinned_commit: Option<String>,
+    preview_slot: Option<String>,
     manifest_json: Option<String>,
     resolved_json: Option<String>,
     resolved_generation: Option<i64>,
@@ -792,8 +828,10 @@ impl StoredEnvironmentRow {
             id: self.id,
             application_id: self.application_id,
             name: self.name,
+            kind: self.kind,
             branch: self.branch,
             pinned_commit: self.pinned_commit,
+            preview_slot: self.preview_slot,
             resolved_generation: self.resolved_generation,
             delete_intent: self.delete_intent,
             created_at_ms: self.created_at_ms,
@@ -827,6 +865,9 @@ mod observability_tests;
 
 #[cfg(test)]
 mod environment_tests;
+
+#[cfg(test)]
+mod preview_tests;
 
 #[cfg(test)]
 mod tests {

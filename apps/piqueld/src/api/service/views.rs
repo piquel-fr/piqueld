@@ -9,10 +9,12 @@ use piqueld_core::{
     resource::{Convergence, ObservedService, TaskDiagnostic, TaskState},
 };
 
-/// Projects stored intent and its environments into the API view, adding the spec hash.
+/// Projects stored intent, its environments, and its previews into the API
+/// view, adding the spec hash.
 pub(super) fn application_view(
     stored: StoredApplication,
     environments: Vec<EnvironmentView>,
+    previews: Vec<EnvironmentView>,
 ) -> ApplicationView {
     ApplicationView {
         generation: stored.generation,
@@ -22,6 +24,7 @@ pub(super) fn application_view(
         created_at_ms: stored.created_at_ms,
         updated_at_ms: stored.updated_at_ms,
         environments,
+        previews,
     }
 }
 
