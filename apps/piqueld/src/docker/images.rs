@@ -6,7 +6,8 @@ use bollard::query_parameters::{
 use std::collections::BTreeSet;
 
 impl BollardDocker {
-    /// Lists every image with its repository digests, and marks those a
+    /// Lists every image with its repository digests, including untagged
+    /// parents the classic image store otherwise hides, and marks those a
     /// container uses. IDs and digests Docker reports in another form (a
     /// non-SHA-256 store) are skipped, so such images are never removed.
     pub(super) async fn list_local_images(&self) -> Result<Vec<LocalImage>, DockerError> {
@@ -26,7 +27,10 @@ impl BollardDocker {
             "list images",
             self.docker
                 .list_images(Some(
-                    ListImagesOptionsBuilder::default().digests(true).build(),
+                    ListImagesOptionsBuilder::default()
+                        .all(true)
+                        .digests(true)
+                        .build(),
                 ))
                 .await,
         )?;
