@@ -38,6 +38,8 @@ pub struct DaemonConfig {
     pub retention: RetentionConfig,
     /// Durable build-output bounds.
     pub build_history: BuildHistoryConfig,
+    /// Retention and cleanup of the images this installation builds.
+    pub images: ImagesConfig,
     /// Optional metrics-only listener.
     pub metrics: MetricsConfig,
     /// Global webhook notification settings.
@@ -174,6 +176,11 @@ impl DaemonConfig {
         {
             return Err(ConfigError::Invalid(
                 "reconciliation timeouts must be 1..=86400 seconds".into(),
+            ));
+        }
+        if !(1..=86_400).contains(&self.images.cleanup_interval_seconds) {
+            return Err(ConfigError::Invalid(
+                "images.cleanup_interval_seconds must be 1..=86400 seconds".into(),
             ));
         }
         if !(1..=64 * 1024 * 1024).contains(&self.build_history.log_max_bytes)
@@ -422,6 +429,25 @@ impl Default for BuildHistoryConfig {
         Self {
             log_max_bytes: 4 * 1024 * 1024,
             log_retention_days: 30,
+        }
+    }
+}
+
+/// Retention and cleanup of the images this installation builds.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ImagesConfig {
+    /// Successful deployments per environment whose images are kept for
+    /// restores, besides what environments and previews run or are deploying.
+    pub keep_deployments: u32,
+    /// Seconds between cleanups; cleanup also runs after each deployment.
+    pub cleanup_interval_seconds: u64,
+}
+impl Default for ImagesConfig {
+    fn default() -> Self {
+        Self {
+            keep_deployments: 3,
+            cleanup_interval_seconds: 3600,
         }
     }
 }
@@ -733,6 +759,19 @@ impl DaemonConfig {
         .collect();
         groups.insert("Retention".into(), self.retention_view());
         groups.insert("Previews".into(), self.previews_view());
+        groups.insert(
+            "Images".into(),
+            std::collections::BTreeMap::from([
+                (
+                    "Deployments kept per environment".into(),
+                    self.images.keep_deployments.to_string(),
+                ),
+                (
+                    "Cleanup interval (seconds)".into(),
+                    self.images.cleanup_interval_seconds.to_string(),
+                ),
+            ]),
+        );
         groups.insert("Authentication".into(), self.auth_view());
         groups.insert("Tailscale".into(), self.tailscale_view());
         groups.insert("Private ingress".into(), self.private_ingress_view());

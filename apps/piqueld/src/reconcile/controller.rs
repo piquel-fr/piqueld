@@ -24,6 +24,8 @@ impl<D: DockerApi> Controller<D> {
         let started = std::time::Instant::now();
         tracing::info!("operation started");
         let result = self.run_operation_inner(operation, cancellation).await;
+        // Finished deployments change the retention roots.
+        self.images.request_cleanup();
         {
             // Repair uses this operation's context too. Let any in-flight repair
             // commit its result before recovering abandoned execution actions.
@@ -495,7 +497,7 @@ impl<D: DockerApi> Controller<D> {
     /// application's current name, reuses prior image resolutions unless this is
     /// a `Refresh`, pins secret versions, then resolves images and builds sources.
     /// The result is saved on the operation only if it is still current and the
-    /// topology is still supported.
+    /// topology is still supported. Image cleanup waits until it is saved.
     #[tracing::instrument(skip_all, fields(phase = "preparation", timeout_seconds = self.prepare_timeout.as_secs()))]
     async fn prepare_target(
         &self,
@@ -512,6 +514,9 @@ impl<D: DockerApi> Controller<D> {
         {
             return Ok(target);
         }
+        // Cleanup can't remove the images this preparation reuses, pulls, or
+        // builds until its target is saved and they are retention roots.
+        let _in_use = self.images_in_use().await;
         let runtime = crate::application::ApplicationRuntime::new(
             Arc::clone(&self.docker),
             piqueld_core::InstanceId::parse(self.store.instance_id()).expect("valid identity"),

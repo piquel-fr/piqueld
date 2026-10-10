@@ -278,6 +278,16 @@ in
             default = 30;
             description = "Days to retain output after a build completes.";
           };
+          images.keep_deployments = lib.mkOption {
+            type = lib.types.ints.u32;
+            default = 3;
+            description = "Successful deployments per environment whose built images are kept for restores, besides what environments and previews run or are deploying.";
+          };
+          images.cleanup_interval_seconds = lib.mkOption {
+            type = lib.types.ints.between 1 86400;
+            default = 3600;
+            description = "Seconds between cleanups of unretained built images; cleanup also runs after each operation.";
+          };
           retention.event_days = lib.mkOption {
             type = lib.types.ints.unsigned;
             default = 90;

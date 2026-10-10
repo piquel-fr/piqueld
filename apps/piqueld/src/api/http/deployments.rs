@@ -125,8 +125,9 @@ pub(super) async fn list(
 ///
 /// A release is recorded by each successful preparation in a tracking
 /// environment, and shared by preparations with the same content. Releases
-/// outlive the environments that recorded them. Returns twenty per page;
-/// follow `next_cursor` for older ones.
+/// outlive the environments that recorded them, but image cleanup may remove
+/// their built images: `availability` says whether each one's images are
+/// still present. Returns twenty per page; follow `next_cursor` for older ones.
 #[utoipa::path(get,path="/api/v1/applications/{id}/releases",operation_id="listReleases",
     params(("id"=String,Path),HistoryQuery),
     responses((status=200,description="Releases, newest first (twenty per page)",body=Envelope<Page<ReleaseView>>),

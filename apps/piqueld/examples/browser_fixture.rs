@@ -35,6 +35,9 @@ impl RuntimeBoundary for Runtime {
     async fn check_available(&self) -> Result<(), BoundaryError> {
         Ok(())
     }
+    async fn local_images(&self) -> Result<piqueld_core::LocalImages, BoundaryError> {
+        Err(DockerError::Unavailable("browser fixture").into())
+    }
     async fn observe(&self, _: &StoredEnvironment) -> Result<ObservedApplication, BoundaryError> {
         Ok(ObservedApplication::default())
     }

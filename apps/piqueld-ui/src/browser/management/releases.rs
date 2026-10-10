@@ -1,10 +1,12 @@
 //! The application's immutable releases, newest first.
 use super::super::format::timestamp;
-use super::super::ui::{Icon, Tone, empty, icon, notice, when};
+use super::super::ui::{Icon, Tone, badge, empty, icon, notice, when};
 use super::client_error_message;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use piqueld_client::{Client, ReleaseView, ResolvedSource, ValidatedSource};
+use piqueld_client::{
+    Client, ReleaseAvailability, ReleaseView, ResolvedSource, ServiceImage, ValidatedSource,
+};
 
 /// Releases of `application`, loaded when shown and on refresh. Older pages
 /// are appended on request, and until the `?release=` one is shown.
@@ -63,7 +65,7 @@ pub(super) fn ReleaseHistory(application: String) -> impl IntoView {
         <section class="stack-sm" aria-label="Releases">
             <div class="toolbar">
                 <p class="hint">
-                    "Each deployment whose images are prepared records an immutable release: its manifest and the exact images it prepared. Environments that prepared the same content share one, and releases outlive the environments that recorded them."
+                    "Each deployment whose images are prepared records an immutable release: its manifest and the exact images it prepared. Environments that prepared the same content share one, and releases outlive the environments that recorded them. Image cleanup keeps what environments run and their last few successful deployments; an older release whose built images were removed can't be deployed again."
                 </p>
                 <div class="toolbar-end">
                     <button
@@ -110,6 +112,7 @@ fn ReleaseCard(release: ReleaseView) -> impl IntoView {
         .with(|q| q.get("release").is_some_and(|id| id == release.id.as_str()));
     let opened = RwSignal::new(selected);
     let commit = release.release.commit().map(str::to_owned);
+    let availability = release.availability.as_ref().map(availability);
     let services = release
         .release
         .sources()
@@ -178,6 +181,7 @@ fn ReleaseCard(release: ReleaseView) -> impl IntoView {
                             |commit| format!("Commit {}", &commit[..commit.len().min(12)]),
                         )}
                 </span>
+                {availability.clone().map(|(tone, label, _)| badge(tone, label))}
                 <span class="meta">{when(release.created_at_ms)}</span>
             </button>
             <div class="expander-body" hidden={move || !opened.get()}>
@@ -200,9 +204,49 @@ fn ReleaseCard(release: ReleaseView) -> impl IntoView {
                     <dd>
                         <code>{release.content_hash.to_string()}</code>
                     </dd>
+                    {availability
+                        .map(|(_, _, detail)| {
+                            view! {
+                                <dt>"Images"</dt>
+                                <dd>{detail}</dd>
+                            }
+                        })}
                 </dl>
                 {services}
             </div>
         </article>
+    }
+}
+
+/// Badge tone and label, and a sentence, saying whether a release's images
+/// are still present.
+fn availability(availability: &ReleaseAvailability) -> (Tone, &'static str, String) {
+    let services = |missing: &[ServiceImage]| {
+        missing
+            .iter()
+            .map(|image| image.service.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match availability {
+        ReleaseAvailability::Present => {
+            (Tone::Ok, "Images present", "Every image is present.".into())
+        }
+        ReleaseAvailability::Pullable { missing } => (
+            Tone::Warn,
+            "Images to pull",
+            format!(
+                "Missing for {}; deploying the release pulls them again by digest.",
+                services(missing)
+            ),
+        ),
+        ReleaseAvailability::Unavailable { missing } => (
+            Tone::Bad,
+            "Images removed",
+            format!(
+                "Missing for {}; the release can't be deployed again.",
+                services(missing)
+            ),
+        ),
     }
 }

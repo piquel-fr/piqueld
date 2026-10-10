@@ -82,6 +82,7 @@ mod logs;
 pub(crate) use limited::LimitedDocker;
 mod errors;
 mod identity;
+mod images;
 mod jobs;
 mod observation;
 mod policy;
@@ -142,6 +143,9 @@ impl JobRuns<'_> {
 /// Resolved inputs for one local Docker image build.
 #[derive(Debug)]
 pub struct ImageBuild<'a> {
+    /// Installation whose ownership labels the image carries. Image cleanup
+    /// only ever removes images labelled for its own installation.
+    pub owner: &'a InstanceId,
     /// Dockerfile inside a checkout.
     pub dockerfile: PathBuf,
     /// Build context directory inside a checkout.
@@ -155,14 +159,22 @@ pub struct ImageBuild<'a> {
 }
 
 impl ImageBuild<'_> {
-    /// Docker CLI options selecting build arguments, in name order and passed
-    /// verbatim, followed by the target stage.
+    /// Docker CLI options labelling the image for its owner, then selecting
+    /// build arguments, in name order and passed verbatim, then the target
+    /// stage.
     ///
     /// ```text
-    /// args {A: "1", B: "x=y"}, target "runtime"
-    ///   -> --build-arg A=1 --build-arg B=x=y --target runtime
+    /// owner "instance-1", args {A: "1", B: "x=y"}, target "runtime"
+    ///   -> --label io.piqueld.managed=true --label io.piqueld.instance=instance-1
+    ///      --build-arg A=1 --build-arg B=x=y --target runtime
     /// ```
     fn options(&self) -> impl Iterator<Item = String> {
+        let labels = [
+            format!("{MANAGED_LABEL}=true"),
+            format!("{INSTANCE_LABEL}={}", self.owner),
+        ]
+        .into_iter()
+        .flat_map(|label| ["--label".into(), label]);
         let args = self
             .args
             .iter()
@@ -171,7 +183,57 @@ impl ImageBuild<'_> {
             .target
             .into_iter()
             .flat_map(|target| ["--target".into(), target.to_owned()]);
-        args.chain(target)
+        labels.chain(args).chain(target)
+    }
+}
+
+/// An image in the local Docker Engine.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalImage {
+    /// Content-addressed image ID. It covers the image's labels, so an image
+    /// with this ID always carries the same ones.
+    pub id: piqueld_core::Sha256Digest,
+    /// Registry digests Docker recorded for it.
+    pub repo_digests: Vec<piqueld_core::RepositoryDigest>,
+    /// Image labels.
+    pub labels: BTreeMap<String, String>,
+    /// Size in bytes, including layers shared with other images.
+    pub size: u64,
+    /// Whether a container, running or stopped, uses it.
+    pub used: bool,
+}
+
+impl LocalImage {
+    /// Whether `instance` built it: the only images cleanup may remove.
+    #[must_use]
+    pub fn built_by(&self, instance: &InstanceId) -> bool {
+        Self::labelled_for(&self.labels, instance)
+    }
+
+    /// Whether `retained` names it, by ID or by any of its repository
+    /// digests.
+    #[must_use]
+    pub fn retained_by(&self, retained: &BTreeSet<piqueld_core::ImmutableImage>) -> bool {
+        retained.contains(self.id.as_str())
+            || self
+                .repo_digests
+                .iter()
+                .any(|digest| retained.contains(digest.as_str()))
+    }
+
+    /// Whether `labels` mark an image `instance` built.
+    fn labelled_for(labels: &BTreeMap<String, String>, instance: &InstanceId) -> bool {
+        labels.get(MANAGED_LABEL).map(String::as_str) == Some("true")
+            && labels.get(INSTANCE_LABEL).map(String::as_str) == Some(instance.as_str())
+    }
+
+    /// The images present under each of `images`' IDs and repository digests.
+    #[must_use]
+    pub fn present(images: &[Self]) -> piqueld_core::LocalImages {
+        piqueld_core::LocalImages::new(images.iter().flat_map(|image| {
+            std::iter::once(image.id.clone().into())
+                .chain(image.repo_digests.iter().cloned().map(Into::into))
+        }))
     }
 }
 
@@ -286,6 +348,17 @@ pub trait DockerApi: Send + Sync + 'static {
         name: &str,
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError>;
+    /// Lists every local image, and whether a container uses it.
+    async fn images(&self) -> Result<Vec<LocalImage>, DockerError>;
+    /// Removes one image `instance` built, by ID, after rechecking its labels:
+    /// without force, so an image a container uses or that is tagged several
+    /// times fails, and without removing untagged parents. A missing image
+    /// counts as removed.
+    async fn remove_image(
+        &self,
+        instance: &InstanceId,
+        id: &piqueld_core::Sha256Digest,
+    ) -> Result<(), DockerError>;
     /// Removes a managed volume and its data after rechecking its ownership.
     /// A missing volume counts as removed. Only deleting a preview removes
     /// volumes; environments retain theirs.
@@ -392,12 +465,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn image_build_options_pass_arguments_verbatim_and_target_last() {
+    fn image_build_options_label_the_owner_and_pass_arguments_verbatim() {
         let args = BTreeMap::from([
             ("ORIGIN".to_owned(), "https://a=b c".to_owned()),
             ("EMPTY".to_owned(), String::new()),
         ]);
+        let owner = InstanceId::parse("instance-1").unwrap();
         let build = ImageBuild {
+            owner: &owner,
             dockerfile: PathBuf::from("Dockerfile"),
             context: PathBuf::from("."),
             args: &args,
@@ -407,6 +482,10 @@ mod tests {
         assert_eq!(
             build.options().collect::<Vec<_>>(),
             [
+                "--label",
+                "io.piqueld.managed=true",
+                "--label",
+                "io.piqueld.instance=instance-1",
                 "--build-arg",
                 "EMPTY=",
                 "--build-arg",
@@ -415,5 +494,25 @@ mod tests {
                 "runtime"
             ]
         );
+    }
+
+    #[test]
+    fn images_are_retained_by_id_or_repository_digest() {
+        let hex = "c".repeat(64);
+        let image = LocalImage {
+            id: piqueld_core::Sha256Digest::parse(format!("sha256:{hex}")).unwrap(),
+            repo_digests: vec![
+                piqueld_core::RepositoryDigest::parse(format!("example.com/web@sha256:{hex}"))
+                    .unwrap(),
+            ],
+            labels: BTreeMap::new(),
+            size: 0,
+            used: false,
+        };
+        let retained =
+            |value: String| BTreeSet::from([piqueld_core::ImmutableImage::parse(value).unwrap()]);
+        assert!(image.retained_by(&retained(format!("sha256:{hex}"))));
+        assert!(image.retained_by(&retained(format!("example.com/web@sha256:{hex}"))));
+        assert!(!image.retained_by(&retained(format!("example.com/api@sha256:{hex}"))));
     }
 }

@@ -48,6 +48,8 @@ diagnostic_codes! {
     ImageResolutionFailed => "image_resolution_failed",
     /// The registry rejected the image or credentials.
     ImageResolutionRejected => "image_resolution_rejected",
+    /// An image a deployment needs is gone and can't be pulled again.
+    ImageUnavailable => "image_unavailable",
     /// A Docker request failed.
     DockerRequestFailed => "docker_request_failed",
     /// The runtime did not converge before its deadline.
@@ -107,6 +109,8 @@ const INSPECT_DIAGNOSTIC: &str =
     "Inspect the diagnostic and related events; resolve the cause before retrying.";
 /// Guidance for failed route DNS record changes.
 const DNS_RECORDS_RETRY: &str = "Check DNS provider credentials, permissions and route DNS states. Records are reconciled again within minutes.";
+/// Guidance for deployments whose retained image is gone.
+const IMAGE_UNAVAILABLE: &str = "The image was removed and could not be pulled again. Deploy a release whose images are present, or deploy again to rebuild.";
 /// Guidance for transient failures that reconciliation retries on its own.
 const AUTOMATIC_RETRY: &str =
     "Reconciliation will retry. Inspect the affected resource if the failure persists.";
@@ -155,6 +159,7 @@ impl DiagnosticCode {
                 false,
                 "Check the image reference and registry credentials, then retry the deployment.",
             ),
+            Self::ImageUnavailable => (Application, false, IMAGE_UNAVAILABLE),
             Self::GitBuildFailed => (
                 Application,
                 false,

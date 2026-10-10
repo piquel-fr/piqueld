@@ -98,7 +98,9 @@ first: each successful preparation of an environment's deployment (never a previ
 environments that prepared the same content share it, and deleting an environment keeps
 them. Expanding a release shows the commit its manifest was read from, its
 content hash, and for each service its image (a registry digest or local image
-ID), where it came from, and the build inputs it was prepared from. The Jobs
+ID), where it came from, and the build inputs it was prepared from. A badge
+says whether its images are still present, will be pulled again by digest
+when deployed, or were removed, so it can't be deployed again. The Jobs
 tab adds, edits, reorders, and removes the one-shot jobs that run before each
 rollout, with one row per command element; saving replaces only the job list.
 Jobs inherit the referenced service's startup dependencies, which start or
@@ -323,7 +325,9 @@ and service labels default hidden in a service’s own Logs tab. Terminal escape
 the bottom only when the reader has not scrolled up.
 
 The main overview groups daemon connectivity with deployment readiness for
-SQLite, Docker reachability, and Swarm suitability. Green and red labels state
+SQLite, Docker reachability, and Swarm suitability. A Built images card shows
+how many images this installation built that image cleanup kept, and the size
+of those it removed since the daemon started. Green and red labels state
 each result in text, and one refresh updates the complete dashboard status.
 These diagnostics never disable configuration controls.
 

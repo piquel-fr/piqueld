@@ -80,7 +80,7 @@ when the complete normalized manifest is needed.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/v1/system/status` | Daemon status; DNS providers and certificates only with `system:read`; preview counts per readable application |
+| GET | `/api/v1/system/status` | Daemon status, with `images`: the built images cleanup kept, the total size of those it removed since the daemon started, and when it last ran; DNS providers and certificates only with `system:read`; preview counts per readable application |
 | GET | `/api/v1/system/configuration` | Effective read-only host settings |
 | POST | `/api/v1/system/dns/refresh` | Check DNS provider credentials and zones now (`system:operate`); returns `DnsStatus`, empty without `system:read` |
 | GET | `/api/v1/openapi.json` | Generated API schema |
@@ -264,7 +264,14 @@ so environments running the same content name the same release. Releases
 belong to the application: deleting an environment keeps them, and they are
 removed with the application. `EnvironmentDetailView.release` names the release
 the environment's current target runs. A recorded digest does not guarantee
-the image still exists on the host. Deployments prepared before releases
+the image still exists on the host: `availability` says whether it does, as
+`{"state": "present"}`, `{"state": "pullable", "missing": [...]}` when only
+registry images are missing, which deploying the release pulls again by
+digest, or `{"state": "unavailable", "missing": [...]}` when a built image is
+gone, each missing entry naming its `service` and `image`. It is absent when
+Docker can't be asked. Deployments that use a retained image again fail with
+`image_unavailable`, naming the service and image, when it is gone and can't
+be pulled again; see [image retention](docker-reconciliation.md#image-retention). Deployments prepared before releases
 existed record theirs when the daemon first starts after upgrading.
 
 A release can be rendered for another environment of its application without

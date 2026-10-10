@@ -609,6 +609,23 @@ pub struct SystemStatus {
     /// be counted.
     #[serde(default)]
     pub previews: Option<PreviewUsage>,
+    /// The images this installation built, and their cleanup.
+    #[serde(default)]
+    pub images: ImageStatus,
+}
+
+/// The images this installation built, as of the last cleanup.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct ImageStatus {
+    /// Built images still present after the last cleanup.
+    pub images: u32,
+    /// Total size of the images cleanup removed since the daemon started.
+    /// Layers they shared with kept images stay, so less space may be freed.
+    pub reclaimed_bytes: u64,
+    /// When cleanup last ran, in Unix milliseconds; absent before it first
+    /// ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleaned_at_ms: Option<i64>,
 }
 
 /// A change to a manifest field. Environment and process values are redacted.
@@ -720,6 +737,10 @@ pub struct ReleaseView {
     pub release: Release,
     /// The build inputs each service's image was prepared from.
     pub fingerprint: BuildFingerprint,
+    /// Whether its images are still present, so it can be deployed again;
+    /// absent when Docker could not be asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability: Option<crate::ReleaseAvailability>,
 }
 
 /// Effective host settings loaded by the daemon; no mutation endpoint exists.

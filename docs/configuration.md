@@ -77,6 +77,8 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `previews.default_cpu_millis` | `500` |
 | `previews.default_memory_bytes` | `536870912` (512 MiB) |
 | `previews.max_replicas` | `1` |
+| `images.keep_deployments` | `3` (successful deployments per environment whose built images are kept) |
+| `images.cleanup_interval_seconds` | `3600` (`1..=86400`; cleanup also runs after each operation) |
 
 Reconciliation intervals and timeouts are bounded to `1..=86400` seconds.
 The convergence timeout bounds how long a deployment waits without progress:
@@ -167,6 +169,20 @@ without them, which status reports as unlimited replicas. Previews are never del
 4194304 (maximum 64 MiB), and `log_retention_days` to 30 (1–3650). Build metadata
 remains until the application is deleted. Expiration removes output chunks while
 retaining the attempt and an explicit expired indicator.
+
+`[images]` controls cleanup of the images this installation builds. It keeps
+what every environment and preview runs or is deploying, plus each
+environment's last `keep_deployments` successful deployments, so they can be
+restored, and removes the rest one by one, by ID. Images other installations
+built on the same Docker Engine, images built by hand, and pulled registry
+images are never removed. See
+[image retention](docker-reconciliation.md#image-retention).
+
+```toml
+[images]
+keep_deployments = 3
+cleanup_interval_seconds = 3600
+```
 
 ## TCP listen modes and Tailscale
 

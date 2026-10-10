@@ -29,6 +29,7 @@ async fn status() -> Json<Envelope<SystemStatus>> {
             tailscale: piqueld_core::api::TailnetStatus::default(),
             dns: piqueld_core::api::DnsStatus::default(),
             previews: None,
+            images: piqueld_core::api::ImageStatus::default(),
         },
     })
 }

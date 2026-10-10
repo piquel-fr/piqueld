@@ -598,6 +598,22 @@ impl DockerApi for BollardDocker {
         })
     }
 
+    async fn images(&self) -> Result<Vec<super::LocalImage>, DockerError> {
+        DockerTimeout::Request
+            .run("list images", self.list_local_images())
+            .await
+    }
+
+    async fn remove_image(
+        &self,
+        instance: &piqueld_core::InstanceId,
+        id: &piqueld_core::Sha256Digest,
+    ) -> Result<(), DockerError> {
+        DockerTimeout::Request
+            .run("remove image", self.remove_built_image(instance, id))
+            .await
+    }
+
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
         // Pulling through the Engine records RepoDigests, and resolution
         // verifies the tag was not re-pointed while the pull ran. Stream

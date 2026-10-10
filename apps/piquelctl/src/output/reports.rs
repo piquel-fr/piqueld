@@ -5,9 +5,9 @@ use piqueld_client::{
     AcceptedOperation, ActionReason, ActionRisk, ApplicationLogs, ApplicationSummary,
     ApplicationView, BranchState, BuildLogPage, BuildRecord, CreatedPreview, DeletedApplication,
     DeletedPreview, DnsStatus, EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView,
-    EnvironmentView, Event, MountedSecret, Operation, OperationState, Page, PlanView, PreviewUsage,
-    PreviewView, ReleaseView, ResolvedSource, SavedApplication, SecretMetadata, Source,
-    StoredSecret, SystemStatus,
+    EnvironmentView, Event, ImageStatus, MountedSecret, Operation, OperationState, Page, PlanView,
+    PreviewUsage, PreviewView, ReleaseAvailability, ReleaseView, ResolvedSource, SavedApplication,
+    SecretMetadata, ServiceImage, Source, StoredSecret, SystemStatus,
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
 use serde::Serialize;
@@ -45,6 +45,7 @@ impl Report for StatusReport<'_> {
             s.status, s.daemon_version, s.api_version, s.instance_id
         ))?;
         out.label("Transport", self.transport)?;
+        s.images.render_human(out)?;
         let tailnet = &s.tailscale;
         if tailnet.enabled {
             out.label(
@@ -129,6 +130,20 @@ impl Report for StatusReport<'_> {
         s.dns.render_human(out)
     }
 }
+
+// The built images cleanup kept, and what it removed since the daemon started.
+report!(ImageStatus, self, out, {
+    match self.cleaned_at_ms {
+        Some(at) => out.label(
+            "Built images",
+            format_args!(
+                "{} kept; cleanup removed {} bytes of images since the daemon started (last run at Unix ms {at})",
+                self.images, self.reclaimed_bytes
+            ),
+        ),
+        None => out.label("Built images", "not cleaned up yet"),
+    }
+});
 
 // Previews against their limits, then each readable application's. A count
 // over its limit, after the limit was lowered, is flagged.
@@ -707,6 +722,29 @@ report!(Page<ReleaseView>, self, out, {
             ),
             release.created_at_ms
         ))?;
+        if let Some(availability) = &release.availability {
+            let services = |missing: &[ServiceImage]| {
+                missing
+                    .iter()
+                    .map(|image| image.service.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            out.label(
+                "  Images",
+                match availability {
+                    ReleaseAvailability::Present => "all present".into(),
+                    ReleaseAvailability::Pullable { missing } => format!(
+                        "missing for {}; deploying it pulls them again by digest",
+                        services(missing)
+                    ),
+                    ReleaseAvailability::Unavailable { missing } => format!(
+                        "missing for {}; it can't be deployed again",
+                        services(missing)
+                    ),
+                },
+            )?;
+        }
         for (service, source) in release.release.sources() {
             out.label(
                 &format!("  {service}"),

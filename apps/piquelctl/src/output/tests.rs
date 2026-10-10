@@ -326,7 +326,7 @@ fn terminal_progress_is_suspended_for_every_role_and_cleared_on_final_drop() {
 }
 
 #[test]
-fn status_and_dns_refresh_list_dns_providers_certificate_failures_and_preview_overage() {
+fn status_and_dns_refresh_list_images_dns_providers_certificate_failures_and_preview_overage() {
     use piqueld_client::{
         ApplicationPreviews, CertificateStatus, DnsProviderStatus, DnsStatus, PreviewLimits,
         PreviewUsage, SystemStatus,
@@ -368,15 +368,15 @@ fn status_and_dns_refresh_list_dns_providers_certificate_failures_and_preview_ov
             memory_bytes: 1_610_612_736,
             unlimited_replicas: 2,
         }),
+        images: piqueld_client::ImageStatus {
+            images: 4,
+            reclaimed_bytes: 2048,
+            cleaned_at_ms: Some(7),
+        },
     };
     let stdout = Capture::default();
-    let mut console = Console::with_writers(
-        false,
-        false,
-        false,
-        stdout.writer(),
-        Capture::default().writer(),
-    );
+    let mut console =
+        Console::with_writers(false, false, false, stdout.writer(), Box::new(io::sink()));
     let ingress = piqueld_client::system::IngressStatus {
         enabled: true,
         healthy: true,
@@ -423,6 +423,7 @@ fn status_and_dns_refresh_list_dns_providers_certificate_failures_and_preview_ov
         "Preview usage: 1500 millicores and 1610612736 bytes of limits across preview replicas",
         "Previews of notes: 3 of 10",
         "Unlimited replicas: 2 preview replicas deployed before the limits applied",
+        "Built images: 4 kept; cleanup removed 2048 bytes of images since the daemon started (last run at Unix ms 7)",
     ] {
         assert!(text.contains(expected), "{text}");
     }

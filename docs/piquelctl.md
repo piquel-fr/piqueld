@@ -112,8 +112,12 @@ service's image (a registry digest, or the local image ID and commit of a Git
 build), and the build inputs those images came from. Releases belong to the
 application, so deleting an environment keeps them, and environments that
 prepared the same content share one release. `app releases` lists them newest
-first, twenty per page, with each service's image and provenance; `--json`
-adds the manifest and build inputs. `env show` reports the release the
+first, twenty per page, with each service's image and provenance, and whether
+its images are still present: all present, missing registry images that
+deploying it pulls again by digest, or missing builds, which mean it can't be
+deployed again (image cleanup keeps each environment's last
+`images.keep_deployments` successful deployments). `--json` adds the manifest
+and build inputs. `env show` reports the release the
 environment's current target runs (`none` before its first prepared
 deployment). Deployments prepared before upgrading record theirs when the
 daemon first starts.
@@ -162,7 +166,10 @@ each [DNS provider](configuration.md#dns-providers) with its zones, health and
 whether it manages route records,
 and each DNS-01 certificate with its hostnames, expiry and last error.
 `piquelctl dns refresh` checks the providers' credentials and zones now instead
-of at the next hourly discovery, then prints the same DNS lines.
+of at the next hourly discovery, then prints the same DNS lines. `status` also
+reports how many images this installation built that
+[image cleanup](docker-reconciliation.md#image-retention) kept, and the total
+size of those it removed since the daemon started.
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer

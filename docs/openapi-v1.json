@@ -4620,6 +4620,25 @@
                       "$ref": "#/components/schemas/ApplicationId",
                       "description": "Owning application."
                     },
+                    "availability": {
+                      "oneOf": [
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/components/schemas/ReleaseAvailability"
+                            }
+                          ],
+                          "description": "Whether its images are still present, so it can be deployed again;\nabsent when Docker could not be asked."
+                        },
+                        {
+                          "enum": [
+                            null
+                          ],
+                          "nullable": true,
+                          "type": "string"
+                        }
+                      ]
+                    },
                     "content_hash": {
                       "$ref": "#/components/schemas/Sha256Digest",
                       "description": "Hash of its content, unique within the application."
@@ -5056,6 +5075,10 @@
               "dns": {
                 "$ref": "#/components/schemas/DnsStatus",
                 "description": "DNS providers and the certificates issued through them with DNS-01."
+              },
+              "images": {
+                "$ref": "#/components/schemas/ImageStatus",
+                "description": "The images this installation built, and their cleanup."
               },
               "instance_id": {
                 "description": "Control-plane instance identifier.",
@@ -6163,6 +6186,34 @@
         "description": "A syntactically valid requested container image reference.\n\nThe schema accepts a lowercase repository path with an optional registry,\ntag, and content digest. Registry hostnames are case-insensitive and may\ninclude a valid TCP port. Repository paths follow Docker naming rules,\ntags use Docker's 128-character format, and digests use a lowercase\nalgorithm name with an encoded value of at least 32 characters.\nURLs, credentials, IPv6 registry authorities, whitespace, and query or\nfragment suffixes are rejected.",
         "pattern": "^(?=.{1,512}$)(?=.{1,255}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@[a-z][a-z0-9]*(?:[_+.-][a-z][a-z0-9]*)*:[A-Za-z0-9=_-]{32,})?$)(?:(?:(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)(?::0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?:0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@[a-z][a-z0-9]*(?:[_+.-][a-z][a-z0-9]*)*:[A-Za-z0-9=_-]{32,})?$",
         "type": "string"
+      },
+      "ImageStatus": {
+        "description": "The images this installation built, as of the last cleanup.",
+        "properties": {
+          "cleaned_at_ms": {
+            "description": "When cleanup last ran, in Unix milliseconds; absent before it first\nran.",
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "images": {
+            "description": "Built images still present after the last cleanup.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reclaimed_bytes": {
+            "description": "Total size of the images cleanup removed since the daemon started.\nLayers they shared with kept images stay, so less space may be freed.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "images",
+          "reclaimed_bytes"
+        ],
+        "type": "object"
       },
       "ImmutableImage": {
         "description": "An immutable runtime image: a repository digest or a local SHA-256 image ID.\n\n```compile_fail\nuse piqueld_core::{ImageReference, ImmutableImage};\nlet runtime: ImmutableImage = ImageReference::parse(\"alpine:latest\").unwrap();\n```\n\nThe schema accepts either a [`RepositoryDigest`] or a local Docker image\nID written as `sha256:` followed by exactly 64 lowercase hexadecimal\ndigits. Mutable tags and unqualified repository names are rejected.",
@@ -7847,6 +7898,72 @@
         ],
         "type": "object"
       },
+      "ReleaseAvailability": {
+        "description": "Whether a release's images are still present, so it can be deployed again.",
+        "oneOf": [
+          {
+            "description": "Every image is present.",
+            "properties": {
+              "state": {
+                "enum": [
+                  "present"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Only registry images are missing: deploying the release pulls them\nagain by digest.",
+            "properties": {
+              "missing": {
+                "description": "The missing images.",
+                "items": {
+                  "$ref": "#/components/schemas/ServiceImage"
+                },
+                "type": "array"
+              },
+              "state": {
+                "enum": [
+                  "pullable"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "missing",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Built images are missing, so the release can't be deployed again.",
+            "properties": {
+              "missing": {
+                "description": "The missing images, built or pulled.",
+                "items": {
+                  "$ref": "#/components/schemas/ServiceImage"
+                },
+                "type": "array"
+              },
+              "state": {
+                "enum": [
+                  "unavailable"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "missing",
+              "state"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "ReleaseId": {
         "description": "Stable release identity, assigned by persistence when a preparation\nrecords content its application has no release for yet.",
         "type": "string"
@@ -7857,6 +7974,25 @@
           "application_id": {
             "$ref": "#/components/schemas/ApplicationId",
             "description": "Owning application."
+          },
+          "availability": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ReleaseAvailability"
+                  }
+                ],
+                "description": "Whether its images are still present, so it can be deployed again;\nabsent when Docker could not be asked."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           },
           "content_hash": {
             "$ref": "#/components/schemas/Sha256Digest",
@@ -8744,6 +8880,24 @@
         ],
         "type": "object"
       },
+      "ServiceImage": {
+        "description": "A service and the image it runs.",
+        "properties": {
+          "image": {
+            "$ref": "#/components/schemas/ImmutableImage",
+            "description": "Its immutable image."
+          },
+          "service": {
+            "$ref": "#/components/schemas/ServiceName",
+            "description": "Logical service name."
+          }
+        },
+        "required": [
+          "service",
+          "image"
+        ],
+        "type": "object"
+      },
       "ServiceName": {
         "description": "Logical service name, distinct from an application or volume name.\n\n```compile_fail\nuse piqueld_core::{ServiceName, VolumeName};\nlet volume: VolumeName = ServiceName::parse(\"data\").unwrap();\n```",
         "type": "string"
@@ -8986,6 +9140,10 @@
           "dns": {
             "$ref": "#/components/schemas/DnsStatus",
             "description": "DNS providers and the certificates issued through them with DNS-01."
+          },
+          "images": {
+            "$ref": "#/components/schemas/ImageStatus",
+            "description": "The images this installation built, and their cleanup."
           },
           "instance_id": {
             "description": "Control-plane instance identifier.",
@@ -11911,7 +12069,7 @@
     },
     "/api/v1/applications/{id}/releases": {
       "get": {
-        "description": "A release is recorded by each successful preparation in a tracking\nenvironment, and shared by preparations with the same content. Releases\noutlive the environments that recorded them. Returns twenty per page;\nfollow `next_cursor` for older ones.",
+        "description": "A release is recorded by each successful preparation in a tracking\nenvironment, and shared by preparations with the same content. Releases\noutlive the environments that recorded them, but image cleanup may remove\ntheir built images: `availability` says whether each one's images are\nstill present. Returns twenty per page; follow `next_cursor` for older ones.",
         "operationId": "listReleases",
         "parameters": [
           {

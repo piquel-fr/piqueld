@@ -179,6 +179,11 @@ impl RuntimeBoundary for FakeRuntime {
         Ok(resolved)
     }
 
+    /// Image availability is unknown: no engine.
+    async fn local_images(&self) -> Result<piqueld_core::LocalImages, BoundaryError> {
+        Err(piqueld::docker::DockerError::Unavailable("list images").into())
+    }
+
     async fn check_available(&self) -> Result<(), BoundaryError> {
         if self.unavailable.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(piqueld::docker::DockerError::Unavailable("observe application").into());

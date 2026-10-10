@@ -31,6 +31,7 @@ impl ReleaseRow {
             created_at_ms: self.created_at_ms,
             fingerprint: release.fingerprint(),
             release,
+            availability: None,
         })
     }
 }

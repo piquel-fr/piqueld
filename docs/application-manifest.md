@@ -299,7 +299,9 @@ total at most 256 KiB. `target` must name a stage in the Dockerfile; without it 
 stage. Build arguments are not secret: Docker records them in image metadata and
 piqueld shows them in manifests and build history. Use service secrets for
 sensitive values. There is no automatic build backend detection, submodule or LFS
-setup, registry publishing, or automatic image cleanup. Docker's build cache is
+setup, or registry publishing. Built images are labelled with the installation's
+identity, and [image cleanup](docker-reconciliation.md#image-retention) removes
+the ones no environment runs, deploys, or keeps for restores. Docker's build cache is
 reused and base images are refreshed with `--pull`. Builds record no provenance
 attestations, which differ on every build, so a rebuild Docker serves from its
 cache keeps the same image ID and shares its release.

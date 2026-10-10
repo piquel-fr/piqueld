@@ -69,6 +69,16 @@ pub enum OperationError {
     /// The registry rejected the requested image or credentials.
     #[error("container image was rejected by the registry while {0}")]
     ImageResolutionRejected(&'static str),
+    /// An image a deployment uses again is gone: a build, or a registry
+    /// image that could not be pulled again by digest.
+    #[error("service {}'s image {} is no longer present{}", .image.service, .image.image, if .source.is_some() { " and could not be pulled again" } else { ", and a build can't be pulled again" })]
+    ImageUnavailable {
+        /// The service and its missing image.
+        image: piqueld_core::ServiceImage,
+        /// Why pulling it again failed; absent for builds.
+        #[source]
+        source: Option<crate::docker::DockerError>,
+    },
     /// Git source preparation failed before rollout.
     #[error("Git source build failed")]
     GitBuildFailed(#[source] anyhow::Error),
@@ -142,6 +152,7 @@ impl OperationError {
                 not_found: false, ..
             }
             | Self::ManifestInvalid => DiagnosticCode::ManifestInvalid,
+            Self::ImageUnavailable { .. } => DiagnosticCode::ImageUnavailable,
             Self::GitBuildFailed(_) => DiagnosticCode::GitBuildFailed,
             Self::Cancelled => DiagnosticCode::Cancelled,
             Self::Superseded => DiagnosticCode::Superseded,
