@@ -519,9 +519,11 @@ auto_initialize_swarm = true
     }
 
     /// Replaces xtask with this worktree's piquelctl; returns only on failure.
+    /// Cargo's output stays visible: the build lock is shared with the dev
+    /// daemon's rebuilds, so a wait for it would otherwise look like a hang.
     fn ctl(&self, args: &[String]) -> anyhow::Error {
         let error = std::process::Command::new("cargo")
-            .args(["run", "--quiet", "--package", "piquelctl", "--"])
+            .args(["run", "--package", "piquelctl", "--"])
             .args(args)
             .env("PIQUELD_SOCKET", self.socket())
             .current_dir(self.workspace.root())
