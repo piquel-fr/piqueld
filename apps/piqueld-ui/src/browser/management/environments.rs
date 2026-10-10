@@ -1,6 +1,8 @@
-//! Environment lifecycle controls and the branch an environment follows;
-//! configuration continues to belong to the application or its repository.
+//! Environment lifecycle controls, the branch an environment follows, and
+//! whether pushes to it deploy it; configuration continues to belong to the
+//! application or its repository.
 use super::super::environment_row;
+use super::super::format::commit;
 use super::super::ui::{
     Icon, Modal, Tone, badge, empty, health_badge, icon, notice, operation_badge, text_input, when,
 };
@@ -12,7 +14,9 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{
     Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest, EnvironmentName,
-    EnvironmentRequest, EnvironmentView, TrackedBranch, Visibility, edit::ApplicationEdit,
+    EnvironmentRequest, EnvironmentView, TrackedBranch, Visibility,
+    edit::ApplicationEdit,
+    sync::{SyncState, SyncedHead},
 };
 
 enum EnvironmentChange {
@@ -27,6 +31,11 @@ enum EnvironmentChange {
     Branch {
         id: String,
         branch: TrackedBranch,
+    },
+    /// Opts in or out of the application's sync, without a revision.
+    Sync {
+        id: String,
+        enabled: bool,
     },
     Delete(String),
     RetryDeletion(String),
@@ -76,6 +85,7 @@ impl EnvironmentChange {
                     .await
                     .map(Some)
             }
+            Self::Sync { id, enabled } => client.set_environment_sync(id, *enabled).await.map(Some),
             Self::Delete(id) => client
                 .delete_environment(id, Some(generation), false)
                 .await
@@ -120,7 +130,10 @@ impl EditorContext {
                     self.saved.update(|saved| {
                         // Environment lifecycle changes advance the application
                         // revision, so later edits stay guarded by it.
-                        if !matches!(change, EnvironmentChange::RetryDeletion(_)) {
+                        if !matches!(
+                            change,
+                            EnvironmentChange::RetryDeletion(_) | EnvironmentChange::Sync { .. }
+                        ) {
                             saved.generation += 1;
                         }
                         if let Some(environment) = &environment {
@@ -260,6 +273,45 @@ pub(super) fn EnvironmentList() -> impl IntoView {
     }
 }
 
+/// Badge for whether pushes deploy an environment or preview, with why or why not.
+pub(super) fn sync_badge(state: SyncState) -> (AnyView, &'static str) {
+    let (tone, reason) = match state {
+        SyncState::Following => (Tone::Ok, "Pushes to its branch deploy it."),
+        SyncState::Off => (
+            Tone::Neutral,
+            "Its application does not deploy on push; turn it on in the application's Source tab.",
+        ),
+        SyncState::Pinned => (
+            Tone::Neutral,
+            "It is pinned to a commit, so pushes never move it.",
+        ),
+        SyncState::NotOptedIn => (
+            Tone::Neutral,
+            "It has not opted in: pushes to its branch do not deploy it.",
+        ),
+        SyncState::AwaitingDeployment => (
+            Tone::Warn,
+            "It follows its branch from its next deployment, since it was never deployed or its branch or repository changed.",
+        ),
+    };
+    (badge(tone, state.to_string()), reason)
+}
+
+/// The branch head as of the last deployment, with the full commit on hover.
+pub(super) fn last_synced(synced: Option<SyncedHead>) -> AnyView {
+    synced.map_or_else(
+        || view! { <span class="muted">"Never"</span> }.into_any(),
+        |head| {
+            view! {
+                <code title={head.commit.clone()}>{commit(&head.commit).to_owned()}</code>
+                " · "
+                {when(head.at_ms)}
+            }
+            .into_any()
+        },
+    )
+}
+
 /// Validates a branch and optional commit typed into a form; a blank commit
 /// follows the branch head.
 fn tracked_branch((branch, commit): (String, String)) -> Result<TrackedBranch, String> {
@@ -384,8 +436,9 @@ fn NewEnvironment() -> impl IntoView {
 }
 
 /// The branch the environment page's environment follows, with a form to point
-/// it at another branch or pin a commit. Environments deploying the saved
-/// manifest only say so.
+/// it at another branch or pin a commit, and whether pushes to it deploy it,
+/// with a button to opt in or out. Environments deploying the saved manifest
+/// only say so.
 #[component]
 fn EnvironmentBranch() -> impl IntoView {
     let context = editor();
@@ -417,6 +470,22 @@ fn EnvironmentBranch() -> impl IntoView {
                 |_| {},
             ),
             Err(error) => context.set_error(Some(error)),
+        }
+    };
+    let sync = move || {
+        let environment = context.selected_environment()?;
+        let state = context
+            .saved
+            .with(|saved| environment.sync_state(saved.application.spec().manifest.as_ref()));
+        Some((environment, state))
+    };
+    let toggle_sync = move |_| {
+        if let Some((environment, _)) = sync() {
+            let change = EnvironmentChange::Sync {
+                id: id.get_value(),
+                enabled: !environment.sync,
+            };
+            context.change_environment(change, |_| {});
         }
     };
     view! {
@@ -463,6 +532,37 @@ fn EnvironmentBranch() -> impl IntoView {
                         </button>
                     </div>
                 </form>
+                {move || {
+                    sync()
+                        .map(|(environment, state)| {
+                            let (badge, reason) = sync_badge(state);
+                            view! {
+                                <dl class="kv">
+                                    <dt>"Deploy on push"</dt>
+                                    <dd>
+                                        {badge}
+                                        <div class="muted">{reason}</div>
+                                    </dd>
+                                    <dt>"Last synced"</dt>
+                                    <dd>{last_synced(environment.synced)}</dd>
+                                </dl>
+                                <div class="form-actions">
+                                    <button
+                                        type="button"
+                                        class="btn"
+                                        disabled={move || context.action_blocked() || deleting()}
+                                        on:click={toggle_sync}
+                                    >
+                                        {if environment.sync {
+                                            "Stop deploying on push"
+                                        } else {
+                                            "Deploy on push"
+                                        }}
+                                    </button>
+                                </div>
+                            }
+                        })
+                }}
             </Show>
         </section>
     }

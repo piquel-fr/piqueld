@@ -225,6 +225,20 @@ Docker volume each preview's deployments created; it is removed with its
 preview, after deletion has removed and verified those volumes. Nothing is
 redeployed.
 
+`0025_sync.sql` records what [deploying on push](application-manifest.md#deploying-on-push)
+observes; how an application syncs is part of its saved manifest. Environments
+gain `sync`, set once one opts in (previews follow their application), and
+`synced_commit`/`synced_at_ms`, the branch head as of its last deployment,
+cleared when its branch or the application's repository URL changes.
+Applications gain the last check of their repository, `sync_checked_at_ms` and
+`sync_error`. `webhook_secrets` holds each application's webhook secret,
+encrypted with the secret master key; lost-key recovery deletes them.
+Operations, events, and active actions gain `actor_system`, e.g. `sync:poll`,
+and the trigger copying an operation's actor onto its events copies it too.
+Existing applications don't sync, so nothing is redeployed. It follows
+`0024_dns_records.sql`; a database that ran this change's former
+`0024_sync.sql` (only development instances) needs resetting.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

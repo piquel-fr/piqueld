@@ -437,6 +437,7 @@ struct EventRow {
     actor_user_id: Option<String>,
     actor_credential_id: Option<String>,
     actor_operator_uid: Option<i64>,
+    actor_system: Option<String>,
 }
 
 impl EventRow {
@@ -453,8 +454,8 @@ impl EventRow {
         let mut query = QueryBuilder::new(
             "SELECT id, application_id, environment_id, operation_id, generation, attempt, kind, message, error_code, \
              phase, resource, created_at_ms, scope, action_id, retry, retry_delay_ms, duration_ms, \
-             request_id, diagnostic_json, actor_user_id, actor_credential_id, actor_operator_uid \
-             FROM events WHERE id",
+             request_id, diagnostic_json, actor_user_id, actor_credential_id, actor_operator_uid, \
+             actor_system FROM events WHERE id",
         );
         query
             .push(if filter.descending { " < " } else { " > " })
@@ -572,6 +573,12 @@ impl EventRow {
             actor_operator: self
                 .actor_operator_uid
                 .map(Store::host_operator)
+                .transpose()?,
+            actor_system: self
+                .actor_system
+                .map(|system| {
+                    piqueld_core::sync::SystemActor::parse(&system).ok_or(StoreError::Corrupt)
+                })
                 .transpose()?,
             diagnostic: self
                 .diagnostic_json

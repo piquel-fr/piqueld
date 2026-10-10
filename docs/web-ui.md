@@ -52,7 +52,8 @@ or gone, with shortened commits, or unknown with the repository error), and
 status (or **Deleting**) with its status message on hover. A **Bounded**
 badge marks a preview whose deployment runs a service with the
 [`[previews]`](configuration.md#previews) default limits or fewer replicas than
-its manifest asks for, listed on hover.
+its manifest asks for, listed on hover. It also shows whether pushes
+redeploy it, with the commit sync last deployed or found.
 The list loads when the tab opens and on **Refresh**, not on a timer, since
 each load runs `git ls-remote` on the manifest repository. **New preview** asks
 for a branch and an optional slot, which tells apart several previews of one
@@ -305,6 +306,22 @@ Logs service filter read the manifest last fetched from its branch; the
 Variables card says when it has fetched nothing yet. A deployment's Snapshot shows the manifest path and revision it was fetched
 from, and a warning when the fetched file's own `spec.manifest` names another
 repository or path (`manifest_connection_ignored`); that section is ignored.
+
+**Deploy on push** in the repository settings selects how the application
+[follows pushes](application-manifest.md#deploying-on-push): off, polling every
+given number of seconds, or GitHub webhooks. While it is on, the card shows the
+last check of the repository's branches and why it failed. With webhooks, a
+**GitHub webhook** card shows the payload URL to configure (or that the daemon
+must set `ingress.webhook_hostname`), the content type and event, and whether a
+secret exists. **Generate secret** creates one and shows it once in a copyable
+field; **Rotate secret** confirms first, since the previous secret stops
+verifying at once. On an environment's Overview, the **Source** card says
+whether pushes deploy it (following, off, pinned, not opted in, or waiting
+for a deployment, with the reason) and the branch head of its last
+deployment; **Deploy on push** opts it in without a saved revision, and
+**Stop deploying on push** opts it out. A
+preview's page shows the same, without the opt-out. Events caused by sync name
+`sync:poll` or `sync:webhook` as their requester.
 
 **Download saved manifest** exports the current server-saved configuration as TOML. Unsaved form edits and runtime/deployment state are excluded. Repository connection settings are preserved; the download does not fetch Git or require Docker. Original comments and formatting are not retained.
 

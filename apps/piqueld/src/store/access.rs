@@ -37,6 +37,9 @@ pub enum Actor<'a> {
     },
     /// A signed-in caller.
     Account(Caller<'a>),
+    /// An automated actor of the daemon, such as sync; never restricted
+    /// but recorded as itself.
+    System(piqueld_core::sync::SystemActor),
 }
 
 /// Who caused a record: an account and the credential it used, or the host
@@ -49,6 +52,8 @@ pub struct Attribution<'a> {
     pub credential_id: Option<&'a str>,
     /// The host operator, when it acted instead of an account.
     pub operator: Option<HostOperator>,
+    /// The automated actor, when one acted instead.
+    pub system: Option<piqueld_core::sync::SystemActor>,
 }
 
 impl<'a> Actor<'a> {
@@ -61,11 +66,17 @@ impl<'a> Actor<'a> {
                 user_id: None,
                 credential_id: session,
                 operator: Some(operator),
+                system: None,
             },
             Self::Account(caller) => Attribution {
                 user_id: Some(caller.user_id),
                 credential_id: Some(caller.credential_id),
                 operator: None,
+                system: None,
+            },
+            Self::System(system) => Attribution {
+                system: Some(system),
+                ..Attribution::default()
             },
         }
     }
@@ -87,7 +98,7 @@ impl Actor<'_> {
         db: &mut SqliteConnection,
     ) -> Result<Option<Authority>, StoreError> {
         match self {
-            Self::Daemon | Self::Operator { session: None, .. } => Ok(None),
+            Self::Daemon | Self::System(_) | Self::Operator { session: None, .. } => Ok(None),
             Self::Operator {
                 session: Some(id), ..
             } => {

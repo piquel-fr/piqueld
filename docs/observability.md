@@ -115,8 +115,9 @@ writes and deletions (including the deletion's runtime action, even when a
 restart interrupts it), environment changes, the start and end of commands
 run with `app exec`, secret key recovery, and diagnostics for failed requests. Events show them as `actor_user_id` and `actor_credential_id`, or,
 for the host operator, `actor_operator` with its Unix user ID and its browser
-session (if any) as `actor_credential_id`; all are empty for the daemon's own
-work.
+session (if any) as `actor_credential_id`. Deployments sync starts on push
+carry `actor_system`, `sync:poll` or `sync:webhook`, instead. All are empty for
+the daemon's other own work.
 
 The metrics listener exports `piqueld_access_denied_total`, the number of
 refused API requests since the daemon started.

@@ -20,6 +20,8 @@ pub mod openapi;
 pub mod operations;
 /// Preview lifecycle and branch state contracts.
 pub mod previews;
+/// Deploying on push: environment opt-out and GitHub webhooks.
+pub mod sync;
 /// Control-plane status contracts.
 pub mod system;
 

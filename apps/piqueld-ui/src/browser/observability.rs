@@ -296,6 +296,7 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
             .map(|ms| duration(i64::try_from(ms).unwrap_or(i64::MAX))),
         event.error_code.clone(),
         event.action_id.clone().map(|id| format!("action {id}")),
+        event.actor_system.map(|actor| format!("by {actor}")),
     ];
     view! {
         <article class="event">

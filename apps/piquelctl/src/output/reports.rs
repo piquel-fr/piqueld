@@ -8,6 +8,7 @@ use piqueld_client::{
     EnvironmentView, Event, ImageStatus, MountedSecret, Operation, OperationState, Page, PlanView,
     PreviewUsage, PreviewView, ReleaseAvailability, ReleaseView, ResolvedSource, SavedApplication,
     SecretMetadata, ServiceImage, Source, StoredSecret, SystemStatus,
+    sync::{SyncState, WebhookSecret, WebhookView},
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
 use serde::Serialize;
@@ -398,6 +399,15 @@ report!(ShowReport<'_>, self, out, {
     ))?;
     out.blank()?;
     out.label("Configuration revision", app.generation)?;
+    if let Some(connection) = &app.application.spec().manifest {
+        out.label("Sync", connection.sync)?;
+        if let Some(check) = &app.sync_check {
+            match &check.error {
+                Some(error) => out.label("Last sync check", format_args!("failed: {error}"))?,
+                None => out.label("Last sync check", "succeeded")?,
+            }
+        }
+    }
     for row in self.environments {
         out.label(
             "Environment",
@@ -472,6 +482,24 @@ fn preview_branch(preview: &EnvironmentView) -> String {
     }
 }
 
+/// Whether pushes deploy `environment`, and the branch head as of its last
+/// deployment.
+///
+/// ```text
+/// following, last synced 0123456789abcdef0123456789abcdef01234567
+/// off (not opted in)
+/// ```
+fn sync(state: SyncState, environment: &EnvironmentView) -> String {
+    match (state, &environment.synced) {
+        (SyncState::Following, Some(synced)) => {
+            format!("following, last synced {}", synced.commit)
+        }
+        (SyncState::Following, None) => "following".into(),
+        (SyncState::Off, _) => "off".into(),
+        (state, _) => format!("off ({state})"),
+    }
+}
+
 /// A branch state in words, with the commits involved.
 fn branch_state(state: &BranchState) -> String {
     match state {
@@ -494,7 +522,7 @@ impl Report for Vec<PreviewView> {
         if self.is_empty() {
             return out.line("No previews.");
         }
-        out.heading("BRANCH  SLOT  SLUG  STATE  BRANCH STATE  LAST OPERATION  ID")?;
+        out.heading("BRANCH  SLOT  SLUG  STATE  BRANCH STATE  SYNC  SYNCED  LAST OPERATION  ID")?;
         for view in self {
             let preview = &view.preview;
             let slot = preview
@@ -502,13 +530,18 @@ impl Report for Vec<PreviewView> {
                 .and_then(|identity| identity.slot.as_ref())
                 .map_or("-", |slot| slot.as_str());
             out.line(format_args!(
-                "{}  {slot}  {}  {}  {}  {}  {}",
+                "{}  {slot}  {}  {}  {}  {}  {}  {}  {}",
                 preview
                     .preview()
                     .map_or_else(|| preview.name.to_string(), |p| p.branch.to_string()),
                 preview.name,
                 view.status.state,
                 view.branch,
+                view.sync,
+                preview
+                    .synced
+                    .as_ref()
+                    .map_or("-", |synced| &synced.commit[..synced.commit.len().min(12)]),
                 view.latest_operation
                     .as_ref()
                     .map_or_else(|| "none".to_owned(), |op| format!("{} {}", op.state, op.id)),
@@ -534,6 +567,7 @@ report!(PreviewView, self, out, {
         self.status.runtime_health.as_deref().unwrap_or("unknown"),
     )?;
     out.label("Branch", branch_state(&self.branch))?;
+    out.label("Sync", sync(self.sync, preview))?;
     if let Some(operation) = &self.latest_operation {
         out.label(
             "Last operation",
@@ -642,6 +676,11 @@ report!(EnvironmentShowReport<'_>, self, out, {
         status.runtime_health.as_deref().unwrap_or("unknown"),
     )?;
     out.label("Source", source(&environment.source))?;
+    let connection = application.application.spec().manifest.as_ref();
+    out.label(
+        "Sync",
+        sync(environment.sync_state(connection), environment),
+    )?;
     if let (EnvironmentSource::Branch(_), None) = (&environment.source, manifest) {
         out.label("Manifest", "not fetched yet; deploy to fetch it")?;
     }
@@ -679,9 +718,42 @@ report!(EnvironmentShowReport<'_>, self, out, {
 
 report!(EnvironmentView, self, out, {
     out.line(format_args!(
-        "Environment {} ({}), deploys from {}.",
-        self.name, self.id, self.source
+        "Environment {} ({}), deploys from {}{}.",
+        self.name,
+        self.id,
+        self.source,
+        if self.sync { ", opted into sync" } else { "" }
     ))
+});
+
+// `app repository webhook show` result.
+report!(WebhookView, self, out, {
+    match &self.url {
+        Some(url) => out.label("Payload URL", url)?,
+        None => out.label(
+            "Payload URL",
+            "not served; set ingress.webhook_hostname on the daemon",
+        )?,
+    }
+    out.label("Content type", "application/json")?;
+    out.label("Events", "push")?;
+    match self.secret_created_at_ms {
+        Some(_) => out.label("Secret", "generated; rotate it to see a new one")?,
+        None => out.label(
+            "Secret",
+            "none; generate one with `app repository webhook rotate`",
+        )?,
+    }
+    Ok(())
+});
+
+// `app repository webhook rotate` result: the only time the secret is shown.
+report!(WebhookSecret, self, out, {
+    if let Some(url) = &self.url {
+        out.label("Payload URL", url)?;
+    }
+    out.label("Secret", &self.secret)?;
+    out.line("Configure this secret in GitHub now; piqueld never shows it again.")
 });
 
 report!(ApplicationLogs, self, out, {
@@ -912,6 +984,7 @@ report!(Page<Event>, self, out, {
             event
                 .actor_operator
                 .map(|operator| operator.to_string())
+                .or_else(|| event.actor_system.map(|system| system.to_string()))
                 .or_else(|| event.actor_user_id.clone())
                 .map_or_else(String::new, |actor| format!("  by {actor}"))
         ))?;

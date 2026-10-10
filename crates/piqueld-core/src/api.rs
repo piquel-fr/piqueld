@@ -90,6 +90,10 @@ pub struct ApplicationView {
     /// Previews in slug order.
     #[serde(default)]
     pub previews: Vec<EnvironmentView>,
+    /// The last time sync listed its repository's branches; absent until it
+    /// did, and while sync is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_check: Option<crate::sync::SyncCheck>,
 }
 
 impl ApplicationView {
@@ -168,6 +172,14 @@ pub struct EnvironmentView {
     /// An environment, or a preview of a branch.
     #[serde(default)]
     pub kind: EnvironmentKind,
+    /// Whether this environment opted into its application's sync (see
+    /// [`Self::sync_state`]). Previews follow their application's setting.
+    #[serde(default)]
+    pub sync: bool,
+    /// The branch head as of its last deployment, by sync or of its own
+    /// branch; absent before its first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced: Option<crate::sync::SyncedHead>,
     /// Application revision of the last completely resolved target, not a
     /// convergence guarantee.
     pub resolved_generation: Option<u64>,
@@ -319,6 +331,9 @@ pub struct PreviewView {
     /// default limits or fewer replicas than their manifest asks for.
     #[serde(default)]
     pub bounds: Vec<DiagnosticView>,
+    /// Whether pushes to its branch redeploy it: `following` while its
+    /// application syncs and once it was deployed.
+    pub sync: crate::sync::SyncState,
 }
 
 /// Deletes the listed previews whose branch the repository confirms is gone.
@@ -1432,6 +1447,8 @@ mod environment_tests {
             name: EnvironmentName::parse(name).unwrap(),
             source: EnvironmentSource::Saved,
             kind: crate::EnvironmentKind::Environment,
+            sync: true,
+            synced: None,
             resolved_generation: None,
             delete_intent: false,
             created_at_ms: 1,
@@ -1459,6 +1476,7 @@ mod environment_tests {
                 environment("app-notes-01", "production"),
             ],
             previews: Vec::new(),
+            sync_check: None,
         };
         assert_eq!(
             view.environment("app-notes-01").unwrap().name.as_str(),

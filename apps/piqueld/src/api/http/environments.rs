@@ -15,6 +15,7 @@ use piqueld_core::api::{
     AcceptedOperation, CreateEnvironmentRequest, Envelope, EnvironmentBranchRequest,
     EnvironmentDetailView, EnvironmentRequest, EnvironmentStatusView, EnvironmentView,
 };
+use piqueld_core::sync::EnvironmentSyncRequest;
 use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName, TrackedBranch};
 
 /// Decodes a JSON environment or preview request, requiring the JSON content type.
@@ -222,6 +223,36 @@ pub(super) async fn branch(
         &headers,
     )
     .await
+}
+
+/// Opts an environment into or out of its application's sync.
+///
+/// While its application syncs (`spec.manifest.sync`), pushes to the branch
+/// an environment follows deploy it once it opted in and was deployed. Pinned
+/// environments never sync. Previews follow their application and are
+/// `NotFound` here. Needs no application revision: nothing the environment
+/// deploys changes. Opting in while the application syncs also needs
+/// `apps:deploy`, since pushes then deploy the environment.
+#[utoipa::path(put,path="/api/v1/environments/{id}/sync",operation_id="setEnvironmentSync",
+    params(("id"=String,Path),("Idempotency-Key"=Option<String>,Header)),
+    request_body=EnvironmentSyncRequest,
+    responses((status=200,description="Environment sync changed",body=Envelope<EnvironmentView>),
+    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
+    (status=409,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),
+    (status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn sync(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
+    ApiPath(id): ApiPath<String>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Response, ApiError> {
+    let request: EnvironmentSyncRequest = environment_request(&headers, body)?;
+    let mutation = Mutation::SetSync {
+        id: EnvironmentId::parse(id)?,
+        enabled: request.enabled,
+    };
+    accept_mutation(&state, &identity, mutation, None, false, &headers).await
 }
 
 // Accepts a deletion operation; named volumes are retained.

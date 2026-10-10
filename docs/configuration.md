@@ -60,6 +60,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `ingress.private.auth_key_file` | none |
 | `ingress.tunnel.enabled` | `false` (restart required) |
 | `ingress.tunnel.credentials_file` | none; required while enabled |
+| `ingress.webhook_hostname` | none (restart required) |
 | `dns.providers` | `[]` |
 | `dns.providers[].manage_records` | `false` |
 | `reconciliation.scan_interval_seconds` | `60` |
@@ -450,9 +451,17 @@ It is read once at startup. Each public hostname then needs a proxied CNAME to
 `<tunnel-id>.cfargotunnel.com`, and Cloudflare sees public traffic in plaintext.
 See [Cloudflare Tunnel](ingress.md#cloudflare-tunnel).
 
+`ingress.webhook_hostname` serves GitHub push webhooks, and nothing else, on a
+dedicated public hostname, for applications whose repository syncs with
+`webhook`. The daemon then always serves the webhook socket; the gateway
+forwards to it while ingress is enabled. It is read once at startup. See
+[push webhooks](ingress.md#push-webhooks).
+
 Gateway certificates, accepted configuration, and the private administration socket
 live below `<data_dir>/ingress`. Only dedicated subdirectories are mounted into
 Caddy; it receives neither the Docker socket nor the daemon API socket/database.
+The control mount also holds the webhook socket, which serves only webhook
+deliveries.
 See [ingress](ingress.md) for DNS, networking, lifecycle, and status details.
 
 ## DNS providers

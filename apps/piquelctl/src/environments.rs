@@ -12,7 +12,7 @@ use crate::{
     },
     support::{confirm, retry_transport},
 };
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, builder::TypedValueParser};
 use piqueld_client::{
     ApplicationView, Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest,
     EnvironmentRequest, EnvironmentStatusView, EnvironmentView, Visibility, edit::ApplicationEdit,
@@ -58,6 +58,10 @@ pub(crate) enum EnvCommand {
         #[command(flatten)]
         change: ChangeFlags,
     },
+    /// Opt an environment into or out of its application's sync: while it is
+    /// in, pushes to its branch deploy it, from its next deployment if it was
+    /// never deployed. Pinned environments never sync.
+    Sync(SyncArgs),
     /// Show one environment and its status.
     Show(EnvironmentArgs),
     /// Cap the visibility of an environment's routes in the saved manifest:
@@ -197,6 +201,7 @@ impl EnvCommand {
                 )
                 .await
             }
+            Self::Sync(args) => args.run(client, console).await,
             Self::Show(target) => show(client, console, target).await,
             Self::Visibility(args) => args.run(cli, client, console).await,
             Self::Secret {
@@ -254,6 +259,32 @@ impl EnvCommand {
                 logs(console, client, &environment, window).await
             }
         }
+    }
+}
+
+/// `env sync` arguments.
+#[derive(Debug, Args)]
+pub(crate) struct SyncArgs {
+    /// Application name or stable ID.
+    application: String,
+    /// Environment name or stable ID.
+    environment: String,
+    /// `on` deploys pushes; `off` deploys only when asked.
+    #[arg(
+        value_name = "on|off",
+        action = clap::ArgAction::Set,
+        value_parser = clap::builder::PossibleValuesParser::new(["on", "off"]).map(|value| value == "on")
+    )]
+    enabled: bool,
+}
+
+impl SyncArgs {
+    /// Opts the environment in or out of its application's sync.
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let (_, environment) = select(client, &self.application, Some(&self.environment)).await?;
+        let id = environment.id.as_str();
+        let environment = retry_transport(|| client.set_environment_sync(id, self.enabled)).await?;
+        console.emit(&environment)
     }
 }
 

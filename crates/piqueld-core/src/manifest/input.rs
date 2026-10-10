@@ -279,6 +279,10 @@ pub struct RepositoryManifest {
     pub repository: GitRepository,
     /// Exact TOML or JSON file path relative to the repository root.
     pub path: String,
+    /// How environments and previews follow pushes. Like the rest of
+    /// `spec.manifest`, ignored in fetched files.
+    #[serde(default, skip_serializing_if = "crate::sync::RepositorySync::is_off")]
+    pub sync: crate::sync::RepositorySync,
 }
 
 /// User-declared application service.

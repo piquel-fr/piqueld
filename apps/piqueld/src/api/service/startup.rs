@@ -25,12 +25,14 @@ impl ApplicationService {
     ///
     /// Steps, in order:
     /// 1. Open the store and initialize authentication.
-    /// 2. Reserve the website's hostname so applications cannot route it.
+    /// 2. Reserve the website's and webhooks' hostnames so applications
+    ///    cannot route them.
     /// 3. Connect Docker, interrupt stale actions, and ensure a Swarm manager
     ///    (journaled as an `ensure_swarm` action).
     /// 4. Build the ingress, reconciliation controller, and service.
     /// 5. Spawn one task joining reconciliation, image cleanup, ingress,
-    ///    notification observation, and webhook delivery.
+    ///    notification observation, notification webhook delivery, sync, and
+    ///    the listener receiving GitHub webhooks.
     /// # Errors
     /// Returns contextual storage, Docker connection, or Swarm initialization errors.
     pub async fn start(
@@ -47,16 +49,9 @@ impl ApplicationService {
         );
         info!(path = %config.server.database_path().display(), "opened control-plane state");
         let auth = crate::auth::Auth::initialize(&store, config).await?;
-        // Application routes must never serve the website origin or its subdomains,
-        // which could otherwise act on its passkeys or cookies.
-        let website = crate::auth::Auth::validate_origin(config.public_url())?
-            .domain()
-            .and_then(|host| Hostname::parse(host.trim_end_matches('.')).ok());
-        for hostname in store
-            .reserve_installation_hostnames(website.as_slice())
-            .await?
-        {
-            tracing::error!(%hostname, "route hostname is reserved for the piqueld website; the gateway will not publish it");
+        let reserved = Self::installation_hostnames(config)?;
+        for hostname in store.reserve_installation_hostnames(&reserved).await? {
+            tracing::error!(%hostname, "route hostname is reserved for the piqueld website or its webhooks; the gateway will not publish it");
         }
         let docker = Arc::new(
             BollardDocker::connect(&config.docker.socket)
@@ -106,7 +101,12 @@ impl ApplicationService {
         let service = Self::new(store, reconciler.runtime(Arc::clone(&wake)))
             .with_image_status(reconciler.image_status())
             .with_configuration(config.view())
-            .with_ingress(Arc::clone(&ingress));
+            .with_ingress(Arc::clone(&ingress))
+            .with_webhook_hostname(config.ingress.webhook_hostname.clone());
+        let webhook_listener = ingress
+            .bind_webhooks()
+            .await
+            .context("failed to bind the webhook socket")?;
         let scan_interval = Duration::from_secs(config.reconciliation.scan_interval_seconds);
         let finished_operation_days = config.retention.finished_operation_days;
         let event_days = config.retention.event_days;
@@ -128,15 +128,28 @@ impl ApplicationService {
                 cancellation.cancel();
                 result
             };
-            let (result, (), (), (), ()) = tokio::join!(
+            let (result, (), (), (), (), (), ()) = tokio::join!(
                 reconcile,
                 reconciler.run_image_cleanup(cancellation.child_token()),
                 ingress.run(cancellation.child_token()),
                 background.observe_notifications(scan_seconds, cancellation.child_token()),
-                background.deliver_notifications(webhook_client, cancellation.child_token())
+                background.deliver_notifications(webhook_client, cancellation.child_token()),
+                background.sync(cancellation.child_token()),
+                background.serve_webhooks(webhook_listener, cancellation.child_token())
             );
             result
         });
         Ok((service, auth, controller))
+    }
+
+    /// The hostnames the installation serves itself, which application routes
+    /// may not claim, nor their subdomains: the website's, which could
+    /// otherwise act on its passkeys or cookies, and the webhooks'.
+    fn installation_hostnames(config: &DaemonConfig) -> anyhow::Result<Vec<Hostname>> {
+        let website = crate::auth::Auth::validate_origin(config.public_url())?
+            .domain()
+            .and_then(|host| Hostname::parse(host.trim_end_matches('.')).ok());
+        let webhooks = config.ingress.webhook_hostname.clone();
+        Ok(website.into_iter().chain(webhooks).collect())
     }
 }

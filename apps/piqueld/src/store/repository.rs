@@ -22,20 +22,25 @@ pub(crate) struct DeploymentInput {
     pub(crate) fetched: bool,
     /// Commit the fetched manifest was read from.
     pub(crate) commit: Option<String>,
+    /// The branch its environment tracked, unpinned, when it was requested.
+    pub(crate) tracked_branch: Option<String>,
 }
 
 impl Store {
-    /// Captures the configuration a Deploy started from, still unfetched.
+    /// Captures the configuration a Deploy started from, still unfetched, with
+    /// the branch its environment tracks unpinned now.
     pub(crate) async fn insert_deployment_on(
         tx: &mut Transaction<'_, Sqlite>,
         operation: &Operation,
         application: &ApplicationTemplate,
     ) -> Result<(), StoreError> {
         let json = application.canonical_json().map_err(StoreError::corrupt)?;
+        let environment = operation.environment_id.as_str();
         sqlx::query!(
-            "INSERT INTO deployment_inputs(operation_id,application_json) VALUES(?1,?2)",
+            "INSERT INTO deployment_inputs(operation_id,application_json,tracked_branch) VALUES(?1,?2,(SELECT branch FROM environments WHERE id=?3 AND pinned_commit IS NULL))",
             operation.id,
-            json
+            json,
+            environment
         )
         .execute(&mut **tx)
         .await
@@ -49,7 +54,7 @@ impl Store {
         operation: &Operation,
     ) -> Result<Option<DeploymentInput>, StoreError> {
         sqlx::query!(
-            "SELECT application_json,fetched,repository_commit FROM deployment_inputs WHERE operation_id=?1",
+            "SELECT application_json,fetched,repository_commit,tracked_branch FROM deployment_inputs WHERE operation_id=?1",
             operation.id
         )
         .fetch_optional(&self.pool)
@@ -61,6 +66,7 @@ impl Store {
                     .map_err(StoreError::corrupt)?,
                 fetched: row.fetched != 0,
                 commit: row.repository_commit,
+                tracked_branch: row.tracked_branch,
             })
         })
         .transpose()
@@ -68,15 +74,16 @@ impl Store {
 
     /// Stores the fetched manifest and commit for the latest running operation,
     /// copying it, its rendering, and `warnings` into deployment history,
-    /// pinning its secret versions, and re-checking hostname reservations.
-    /// Fetching happens once: a second save, or one for superseded work, fails
-    /// with `StoreError::IllegalTransition`.
+    /// pinning its secret versions, recording the `branch_head` sync follows
+    /// from (see `record_branch_head_on`), and re-checking hostname
+    /// reservations. Fetching happens once: a second save, or one for
+    /// superseded work, fails with `StoreError::IllegalTransition`.
     pub(crate) async fn save_deployment_input(
         &self,
         operation: &Operation,
         template: &ApplicationTemplate,
         rendering: &Rendering,
-        commit: Option<&str>,
+        (commit, branch_head): (Option<&str>, Option<&super::BranchHead>),
         warnings: &[DiagnosticView],
     ) -> Result<(), StoreError> {
         let json = template.canonical_json().map_err(StoreError::corrupt)?;
@@ -102,7 +109,11 @@ impl Store {
         .execute(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        Self::operation_event(&mut tx, &operation.id, "manifest_fetched", commit, now_ms()).await?;
+        let now = now_ms();
+        Self::operation_event(&mut tx, &operation.id, "manifest_fetched", commit, now).await?;
+        if let Some(head) = branch_head {
+            Self::record_branch_head_on(&mut tx, &operation.environment_id, head, now).await?;
+        }
         Self::pin_secrets_on(&mut tx, operation, application).await?;
         Self::commit_environment_changes(tx, [app_id]).await
     }
@@ -241,7 +252,13 @@ mod tests {
         let environment = store.get(&op.environment_id).await.unwrap();
         let rendering = environment.render(&fetched, &op.id).unwrap();
         store
-            .save_deployment_input(&op, &fetched, &rendering, Some(&"a".repeat(40)), &[])
+            .save_deployment_input(
+                &op,
+                &fetched,
+                &rendering,
+                (Some(&"a".repeat(40)), None),
+                &[],
+            )
             .await
             .unwrap();
         let mut edited = captured.to_manifest();
@@ -289,7 +306,7 @@ mod tests {
         );
         assert!(matches!(
             store
-                .save_deployment_input(&op, &edited, &rendering, None, &[])
+                .save_deployment_input(&op, &edited, &rendering, (None, None), &[])
                 .await,
             Err(StoreError::IllegalTransition)
         ));
@@ -347,7 +364,13 @@ mod tests {
         .with_manifest(current.repository());
         let rendering = current.render(&fetched, &op.id).unwrap();
         store
-            .save_deployment_input(&op, &fetched, &rendering, Some(&"a".repeat(40)), &[])
+            .save_deployment_input(
+                &op,
+                &fetched,
+                &rendering,
+                (Some(&"a".repeat(40)), None),
+                &[],
+            )
             .await
             .unwrap();
         let resolutions = ResolutionSet {

@@ -46,6 +46,9 @@ pub const TAILSCALE_IMAGE: &str = "tailscale/tailscale:v1.102.5@sha256:c507f3a2a
 /// Version of `cloudflared` released with piqueld; upgrades replace it.
 pub const CLOUDFLARED_IMAGE: &str = "cloudflare/cloudflared:2026.10.0@sha256:9b49eed8f62806d5d45ddf59ecefb5710429598ea6d3fcccd2af938f621b2b07";
 
+/// Socket in the control mount that the gateway forwards webhook deliveries to.
+const WEBHOOK_SOCKET: &str = "webhooks.sock";
+
 /// Serializes gateway configuration, lifecycle, and durable route projection.
 pub struct Ingress {
     /// Whether the daemon configuration enables ingress; disabled ingress stops
@@ -92,6 +95,9 @@ pub struct Ingress {
     gateway_converged: std::sync::atomic::AtomicBool,
     /// Set once Swarm's address pools are verified outside the tailnet ranges.
     tailnet_pools: tokio::sync::OnceCell<()>,
+    /// Public hostname whose webhook path the gateway forwards to the
+    /// daemon's webhook socket, `ingress.webhook_hostname`.
+    webhooks: Option<Hostname>,
     #[cfg(test)]
     issuer: Option<serde_json::Value>,
     #[cfg(test)]
@@ -156,6 +162,7 @@ impl Ingress {
             records: std::sync::RwLock::default(),
             gateway_converged: std::sync::atomic::AtomicBool::new(false),
             tailnet_pools: tokio::sync::OnceCell::new(),
+            webhooks: None,
             #[cfg(test)]
             issuer: None,
             #[cfg(test)]
@@ -180,7 +187,8 @@ impl Ingress {
         .with_dns(&config.dns, &config.ingress.acme)?
         .with_private(&config.ingress.private)
         .with_tunnel(&config.ingress.tunnel)
-        .with_public_addresses(&config.ingress.public_addresses))
+        .with_public_addresses(&config.ingress.public_addresses)
+        .with_webhooks(config.ingress.webhook_hostname.clone()))
     }
 
     /// Points direct public routes' managed A/AAAA records at `addresses`.
@@ -188,6 +196,52 @@ impl Ingress {
     pub fn with_public_addresses(mut self, addresses: &[IpAddr]) -> Self {
         self.public_addresses = addresses.to_vec();
         self
+    }
+
+    /// Forwards GitHub webhook deliveries on `hostname` to the daemon.
+    #[must_use]
+    pub fn with_webhooks(mut self, hostname: Option<Hostname>) -> Self {
+        self.webhooks = hostname;
+        self
+    }
+
+    /// The public hostname the gateway forwards webhook deliveries on, while
+    /// ingress is enabled.
+    #[must_use]
+    pub fn webhook_hostname(&self) -> Option<&Hostname> {
+        self.webhooks.as_ref().filter(|_| self.enabled)
+    }
+
+    /// Binds the socket webhook deliveries arrive on, in the gateway's control
+    /// mount, whenever a webhook hostname is configured: the gateway forwards
+    /// to it while ingress is enabled, and otherwise another proxy running as
+    /// the daemon's user may. Only that user, which the gateway runs as, may
+    /// connect. A socket left by an earlier run is replaced: the data
+    /// directory lock is held.
+    ///
+    /// # Errors
+    /// Returns directory preparation or binding errors.
+    pub async fn bind_webhooks(&self) -> Result<Option<tokio::net::UnixListener>> {
+        if self.webhooks.is_none() {
+            return Ok(None);
+        }
+        let control = self.directory.join("control");
+        for directory in [&self.directory, &control] {
+            crate::prepare_data_dir(directory).await?;
+        }
+        let path = control.join(WEBHOOK_SOCKET);
+        match tokio::fs::remove_file(&path).await {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(error).context("remove the previous webhook socket");
+            }
+            _ => {}
+        }
+        let previous = rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
+        let bound = tokio::net::UnixListener::bind(&path);
+        rustix::process::umask(previous);
+        let listener = bound.context("bind the webhook socket")?;
+        tracing::info!(socket = %path.display(), "webhook socket bound");
+        Ok(Some(listener))
     }
 
     /// Serves private routes through the apps tailnet node when

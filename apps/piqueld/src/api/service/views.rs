@@ -9,14 +9,23 @@ use piqueld_core::{
     resource::{Convergence, ObservedService, TaskDiagnostic, TaskState},
 };
 
-/// Projects stored intent, its environments, and its previews into the API
-/// view, adding the spec hash.
+/// Projects stored intent, its environments, its previews, and its last
+/// sync check into the API view, adding the spec hash.
 pub(super) fn application_view(
     stored: StoredApplication,
     environments: Vec<EnvironmentView>,
     previews: Vec<EnvironmentView>,
+    sync_check: Option<piqueld_core::sync::SyncCheck>,
 ) -> ApplicationView {
+    // A check from before sync was turned off describes nothing current.
+    let syncs = stored
+        .application
+        .spec()
+        .manifest
+        .as_ref()
+        .is_some_and(|connection| !connection.sync.is_off());
     ApplicationView {
+        sync_check: sync_check.filter(|_| syncs),
         generation: stored.generation,
         spec_hash: stored.application.spec_hash(),
         application: stored.application,

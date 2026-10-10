@@ -2508,3 +2508,78 @@ fn audit_matches_accounts_missing_from_the_directory() {
         "{audits:?}"
     );
 }
+
+#[test]
+fn sync_settings_and_environment_opt_outs_are_sent_as_typed_requests() {
+    let server = start_server(false, 2, |request| {
+        if request.method == "GET" {
+            let mut view = app_view("app-notes-01", "notes");
+            view["application"]["spec"]["manifest"] = json!({
+                "repository": {"url": "https://example.com/notes.git", "branch": "main"},
+                "path": "app.toml"
+            });
+            return Reply::json(view);
+        }
+        assert_eq!(request.method, "PUT");
+        assert_eq!(
+            request.path,
+            "/api/v1/applications/app-notes-01/repository/sync?deploy=false&expected_generation=1&force=false"
+        );
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(
+            body,
+            json!({"value": {"mode": "poll", "interval_seconds": 120}})
+        );
+        Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
+    });
+    let output = run(
+        &server,
+        &[
+            "app",
+            "repository",
+            "sync",
+            "app-notes-01",
+            "poll",
+            "--interval",
+            "120",
+            "--yes",
+        ],
+    );
+    assert_eq!(assert_json_success(&output)["generation"], 2);
+    let _ = server.finish();
+
+    // An interval only applies to polling, and nothing is sent.
+    let server = start_server(false, 0, |request| panic!("unexpected {}", request.path));
+    let output = run(
+        &server,
+        &[
+            "app",
+            "repository",
+            "sync",
+            "app-notes-01",
+            "webhook",
+            "--interval",
+            "120",
+            "--yes",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--interval applies only to `poll`"));
+    assert!(server.finish().is_empty());
+
+    let server = start_server(false, 2, |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
+        "/api/v1/environments/env-staging-01/sync" => {
+            assert_eq!(request.method, "PUT");
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            assert_eq!(body, json!({"enabled": false}));
+            let mut staging = environment("app-notes-01", "env-staging-01", "staging");
+            staging["sync"] = json!(false);
+            Reply::json(staging)
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(&server, &["env", "sync", "app-notes-01", "staging", "off"]);
+    assert_eq!(assert_json_success(&output)["sync"], false);
+    let _ = server.finish();
+}

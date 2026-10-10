@@ -417,6 +417,10 @@
         "repository": {
           "$ref": "#/definitions/GitRepository",
           "description": "Repository and revision containing the manifest."
+        },
+        "sync": {
+          "$ref": "#/definitions/RepositorySync",
+          "description": "How environments and previews follow pushes. Like the rest of\n`spec.manifest`, ignored in fetched files."
         }
       },
       "required": [
@@ -424,6 +428,62 @@
         "path"
       ],
       "type": "object"
+    },
+    "RepositorySync": {
+      "description": "How an application follows pushes to its manifest repository. Applies to\nevery preview, and to every environment following an unpinned branch that\nopted in.",
+      "oneOf": [
+        {
+          "description": "Deploy only when asked.",
+          "properties": {
+            "mode": {
+              "enum": [
+                "off"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "List the branch heads every `interval_seconds`.",
+          "properties": {
+            "interval_seconds": {
+              "description": "Seconds between listings, from 60 to 86400.",
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mode": {
+              "enum": [
+                "poll"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "List the branch heads when GitHub reports a push.",
+          "properties": {
+            "mode": {
+              "enum": [
+                "webhook"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "ResourceLimits": {
       "additionalProperties": false,

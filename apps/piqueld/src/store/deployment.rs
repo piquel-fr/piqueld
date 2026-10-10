@@ -74,6 +74,19 @@ impl Store {
         )
         .await?;
         Self::check_declared_against_store_on(tx, id, &app.spec().secrets).await?;
+        // What sync followed in another repository says nothing about this one.
+        let previous_url = Self::application_on(tx, id).await?.and_then(|current| {
+            Some(
+                current
+                    .application
+                    .spec()
+                    .manifest
+                    .as_ref()?
+                    .repository
+                    .url
+                    .clone(),
+            )
+        });
         let previous = Self::generation_on(tx, id, expected).await?;
         let generation = previous.checked_add(1).ok_or(StoreError::InvalidInput)?;
         let json = serde_json::to_string(app).map_err(StoreError::corrupt)?;
@@ -87,7 +100,7 @@ impl Store {
         if previous == 0 {
             Self::create_default_environment_on(tx, app, now).await?;
         }
-        Self::follow_connection_on(tx, app).await?;
+        Self::follow_connection_on(tx, app, previous_url.as_deref()).await?;
         Ok(SavedApplication {
             application_id: id.into(),
             generation: u64::try_from(generation).map_err(StoreError::corrupt)?,

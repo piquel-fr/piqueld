@@ -580,6 +580,7 @@ impl ApplicationManifest {
             manifest
                 .repository
                 .validate("spec.manifest.repository", &mut errors);
+            manifest.sync.validate("spec.manifest.sync", &mut errors);
             if Template::mentions_reference(&manifest.path) {
                 error(
                     &mut errors,

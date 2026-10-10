@@ -93,6 +93,7 @@ impl ExecSession {
                     user_id: self.actor_user_id.as_deref(),
                     credential_id: self.actor_credential_id.as_deref(),
                     operator: self.actor_operator,
+                    system: None,
                 },
                 &self.application,
                 &self.environment,

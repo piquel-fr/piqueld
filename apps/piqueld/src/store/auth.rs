@@ -558,6 +558,7 @@ impl Store {
                 user_id: Some(&invitation.issuer_id),
                 credential_id: None,
                 operator: None,
+                system: None,
             };
             let how = "by invitation";
             Self::replace_user_grants_on(db, &user.id, &grants, issuer, how).await?;

@@ -406,12 +406,80 @@ change services or volumes, and rename is rejected with `repository_managed`.
 Connection settings alone remain editable through apply so an incorrect path
 can be repaired. Manifest connection settings do not change the runtime spec
 hash. Source builds, deployment, and rollback retain the behavior described above.
-Automatic synchronization and webhooks are not implemented.
 
 `piquelctl env deploy NAME ENV --branch feature` (or `--commit SHA`, also on
 `app deploy`) fetches the manifest from another revision for one deployment,
 without changing the environment's branch. `self` sources build that revision
 too. Subsequent deploys fetch the environment's own branch again.
+
+### Deploying on push
+
+`sync` in the connection deploys pushes:
+
+```toml
+[spec.manifest]
+path = "infra/piqueld/application.toml"
+sync = { mode = "poll", interval_seconds = 300 }  # or { mode = "webhook" }
+[spec.manifest.repository]
+url = "https://example.com/team/infrastructure.git"
+branch = "main"
+```
+
+It is part of the application's connection, set with
+`piquelctl app repository connect --sync` or `app repository sync`, or in the
+dashboard's repository settings. Like the rest of `spec.manifest`, a fetched
+file's `sync` is ignored. Sync is `off` by default.
+
+While it is on, every preview, and every environment that opted in with
+`piquelctl env sync APP ENV on` (or on its dashboard page) and follows an
+unpinned branch, redeploys when its branch moves:
+
+- **`poll`** lists the repository's branch heads every `interval_seconds`
+  (60–86400, 300 by default) with one `git ls-remote`, however many
+  applications, environments, and previews read it.
+- **`webhook`** lists them when GitHub reports a push, and once after the
+  daemon starts, since pushes reported while it was down may not have
+  deployed. See [webhooks](ingress.md#push-webhooks) for exposing the
+  endpoint and `piquelctl app repository webhook` for its URL and secret. A
+  delivery only says that something moved: piqueld lists the branches itself
+  and never deploys a commit a payload names. A missed delivery waits for
+  the next push, or a deployment by hand.
+
+Sync follows from a deployment: each deployment of an environment or preview
+records the head of the branch it tracks at that time (the commit it fetched,
+or, for a one-off revision, the head listed then), and sync deploys the head it
+lists, exactly, once the branch moves past that. So:
+
+- Nothing follows before its first deployment. Changing an environment's
+  branch, or the application's repository URL, also waits for the next
+  deployment.
+- Each head deploys once, and a failed deployment is not retried until the
+  branch moves again.
+- A one-off `--branch` or `--commit` deployment stays until the branch moves.
+  A rollback is a move, and deploys the earlier commit.
+- A push while its first deployment runs waits for it, then deploys if the
+  branch moved past what it fetched.
+- A gone branch deploys nothing. Sync never creates or deletes previews.
+
+Pushes while a deployment of the same environment or preview runs coalesce:
+sync waits for it to finish, then deploys the head of then, once. A
+deployment that is failing is superseded right away instead, since the push may
+fix it. Sync deployments go through the same build queue as any other.
+
+Pinned environments never sync. Opting an environment in, or turning sync on,
+deploys what moved since the last deployments at the next listing, so both
+need `apps:deploy` as well as `apps:write`. Nothing else does: changes to an
+application's connection, branches, or environments take effect with each
+one's next deployment.
+
+A repository is listed once for every application reading it, at the shortest
+of their intervals. One that cannot be listed deploys nothing and is retried
+with backoff, from one minute up to an hour, as is one whose deployments could
+not be submitted. `app show` and the application page show the
+last check and its error; `env show`, `preview list`, and their dashboard pages
+show whether each one follows pushes and the branch head of its last
+deployment. Sync deployments are attributed to `sync:poll` or `sync:webhook`
+in events, which also record the commit in a `branch_synced` event.
 
 Services mount secrets as files:
 

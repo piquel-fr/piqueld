@@ -74,6 +74,17 @@ the limits, installation-wide and for each readable application, sums the
 CPU and memory limits of their deployed replicas, and counts the replicas
 deployed before the limits applied, which run without them until redeployed.
 
+[Deploying on push](application-manifest.md#deploying-on-push) is configured by
+`spec.manifest.sync`. Environment views carry `sync`, true once an environment
+opted in (previews follow their application), and `synced`, the branch head as
+of its last deployment (`commit`, `at_ms`), which sync follows from.
+`PreviewView.sync` is `following` while the application syncs and once the
+preview was deployed, and `ApplicationView.sync_check` is the last listing of the repository's
+branches (`checked_at_ms`, and `error` when it failed). Sync deployments are
+ordinary operations whose events carry `actor_system`, `sync:poll` or
+`sync:webhook`, with a `branch_synced` event naming the commit. GitHub
+deliveries never reach this API; see [push webhooks](ingress.md#push-webhooks).
+
 Application list items contain `id`, `name`, generation metadata, deletion
 intent, timestamps, and their environments. Read `/api/v1/applications/{id}`
 when the complete normalized manifest is needed.
@@ -92,6 +103,9 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment |
 | POST | `/api/v1/applications/{id}/environments` | Add an environment: `{ "name": "staging", "branch": "main", "commit": null, "expected_generation": 3 }`; `branch` defaults to the one `spec.manifest` names and requires a repository-backed application |
 | PUT | `/api/v1/environments/{id}/branch` | Follow another branch, or pin or unpin a commit, without redeploying: `{ "branch": "release", "commit": null, "expected_generation": 3 }` |
+| PUT | `/api/v1/environments/{id}/sync` | Opt an environment into or out of its application's sync: `{ "enabled": true }`; needs no `expected_generation`, and opting in while it syncs needs `apps:deploy` too. 404 for previews, which follow their application |
+| GET | `/api/v1/applications/{id}/webhook` | `WebhookView`: the payload URL to configure in GitHub (absent until the daemon sets `ingress.webhook_hostname`) and when the secret was generated |
+| POST | `/api/v1/applications/{id}/webhook/secret` | Generate a new webhook secret, replacing the previous one (`apps:write`); the `WebhookSecret` response is the only time it is shown |
 | GET | `/api/v1/environments/{id}` | Environment metadata |
 | GET | `/api/v1/environments/{id}/detail` | Environment, application intent, resolved generation, current release, observed runtime, operation, diagnostics |
 | GET | `/api/v1/environments/{id}/status` | Intent progress and separate runtime health |
@@ -152,6 +166,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/services/{service}/resources/{cpu,memory}` | `{ "value": 500 }`; null clears the selected limit |
 | PUT / DELETE | `/repository` | PUT: `{ "value": RepositoryManifest }`; DELETE: disconnect |
 | PUT | `/repository/{url,path}` | `{ "value": "..." }`; every environment fetches from them. Branches belong to environments: see `/api/v1/environments/{id}/branch` |
+| PUT | `/repository/sync` | `{ "value": { "mode": "poll", "interval_seconds": 300 } }`, `{ "mode": "webhook" }`, or `{ "mode": "off" }`. Turning sync on needs `apps:deploy` too, as does saving or connecting with it on |
 
 The braces listing multiple names denote separate documented endpoints. Nested
 source/check settings require the appropriate variant; switch variants through

@@ -2661,6 +2661,7 @@ async fn downloaded_manifest_round_trips_saved_configuration_without_docker() {
             commit: None,
         },
         path: "infra/app.toml".into(),
+        sync: piqueld_core::sync::RepositorySync::Off,
     });
     let saved = api.client.apply_application(&request).await.unwrap();
     let response = router(
@@ -3643,6 +3644,7 @@ async fn field_edits_validate_atomically_and_preserve_git_ownership() {
             commit: None,
         },
         path: "app.toml".into(),
+        sync: piqueld_core::sync::RepositorySync::Off,
     }));
     api.client
         .edit_application(id, &repository, &options)

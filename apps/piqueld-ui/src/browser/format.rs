@@ -105,3 +105,8 @@ pub(super) fn bytes(value: u64) -> String {
         format!("{size:.1} {}", UNITS[unit])
     }
 }
+
+/// A commit hash shortened to 12 characters; full hashes are too wide to show.
+pub(super) fn commit(hash: &str) -> &str {
+    hash.get(..12).unwrap_or(hash)
+}

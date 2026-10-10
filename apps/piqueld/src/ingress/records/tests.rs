@@ -8,7 +8,7 @@ use crate::{
     ingress::tests::{application, request_deployment},
     store::Store,
 };
-use piqueld_core::EnvironmentId;
+use piqueld_core::{EnvironmentId, manifest::ValidatedRoute};
 use std::sync::Arc;
 
 const PUBLIC: &str = "203.0.113.10";
@@ -548,4 +548,47 @@ async fn tunnel_routes_wait_in_zones_that_cannot_proxy() {
     let state = tunnel.route_dns(&Hostname::parse("www.example.com").unwrap());
     assert_eq!(state.state, DnsRecordState::Pending);
     assert!(state.message.unwrap().contains("Cloudflare"));
+}
+
+#[tokio::test]
+async fn the_webhook_hostname_gets_a_public_routes_records() {
+    let harness = Harness::new(true).await;
+    let hooks = Hostname::parse("hooks.example.com").unwrap();
+    let direct = Harness::ingress(
+        &harness.directory,
+        &harness.store,
+        &harness.provider,
+        true,
+        None,
+    )
+    .await
+    .with_webhooks(Some(hooks.clone()));
+    direct.converged();
+    assert!(Harness::pass_of(&direct).await);
+    assert_eq!(
+        harness.provider.dump(),
+        [
+            harness.owner("hooks.example.com"),
+            format!("hooks.example.com A {PUBLIC}")
+        ]
+    );
+    // In tunnel mode, the proxied CNAME to the tunnel replaces it.
+    let tunnel = TunnelCredentials {
+        id: TUNNEL.parse().unwrap(),
+        file: "{}".into(),
+    };
+    let tunneled = harness
+        .restart(Some(tunnel))
+        .await
+        .with_webhooks(Some(hooks));
+    tunneled.converged();
+    harness.provider.changes();
+    assert!(Harness::pass_of(&tunneled).await);
+    assert_eq!(
+        harness.provider.changes(),
+        [
+            format!("delete hooks.example.com A {PUBLIC}"),
+            format!("write hooks.example.com CNAME (proxied) {TUNNEL}.cfargotunnel.com"),
+        ]
+    );
 }

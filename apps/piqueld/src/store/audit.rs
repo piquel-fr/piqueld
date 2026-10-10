@@ -215,6 +215,7 @@ impl Store {
                 user_id: row.user_id.as_deref(),
                 credential_id: row.credential_id.as_deref(),
                 operator: event.operator,
+                system: None,
             };
             let (peer, username) = (row.peer.as_deref(), row.username.as_deref());
             Self::check_denial_burst_on(&mut tx, peer, actor, username, row.created_at_ms).await?;

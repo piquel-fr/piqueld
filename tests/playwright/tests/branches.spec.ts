@@ -219,3 +219,48 @@ test('Prune gone submits the previews whose branch is gone', async ({ page, acco
   await page.getByRole('button', { name: 'Prune gone', exact: true }).click();
   expect((await pruned).postDataJSON()).toEqual({ previews: [preview] });
 });
+
+test('an application deploys on push by polling or webhook, and an environment opts in', async ({ page, account }) => {
+  void account;
+  const { app } = await createRepositoryApplication(page);
+  await page.goto(`/dashboard/applications/${app}?tab=source`);
+  const mode = page.getByRole('combobox', { name: 'Deploy on push', exact: true });
+  const save = page.getByRole('button', { name: 'Save changes', exact: true });
+  const saved = () => page.waitForRequest(request => request.method() === 'PUT' && new URL(request.url()).pathname === `/api/v1/applications/${app}/repository`);
+  await mode.selectOption('poll');
+  await page.getByLabel('Poll interval (seconds)', { exact: true }).fill('600');
+  let request = saved();
+  await save.click();
+  expect((await request).postDataJSON().value.sync).toEqual({ mode: 'poll', interval_seconds: 600 });
+  await expect(save).toBeHidden();
+  await expect(page.getByText('Last sync check', { exact: true })).toBeVisible();
+
+  await mode.selectOption('webhook');
+  request = saved();
+  await save.click();
+  expect((await request).postDataJSON().value.sync).toEqual({ mode: 'webhook' });
+  const webhook = page.locator('section.card', { has: page.getByRole('heading', { name: 'GitHub webhook' }) });
+  // The fixture daemon sets no `ingress.webhook_hostname`.
+  await expect(webhook).toContainText('set ingress.webhook_hostname');
+  await expect(webhook).toContainText('None yet');
+  const generated = page.waitForResponse(response => response.url().endsWith(`/applications/${app}/webhook/secret`));
+  await webhook.getByRole('button', { name: 'Generate secret', exact: true }).click();
+  const { secret } = (await (await generated).json()).data;
+  await expect(webhook.locator('.secret-box')).toHaveText(secret);
+  await expect(webhook.getByRole('button', { name: 'Rotate secret', exact: true })).toBeVisible();
+  // It is shown only once.
+  await page.reload();
+  await expect(webhook).toContainText('Generated');
+  await expect(webhook.locator('.secret-box')).toHaveCount(0);
+
+  await page.goto(`/dashboard/applications/${app}?tab=environments`);
+  await page.getByRole('list', { name: 'Environments' }).getByRole('link', { name: 'production' }).click();
+  const source = page.locator('section.card', { has: page.getByRole('heading', { name: 'Source' }) });
+  // Environments opt in, then follow from their next deployment.
+  await expect(source).toContainText('not opted in');
+  const optedIn = page.waitForRequest(request => request.method() === 'PUT' && request.url().endsWith('/sync'));
+  await source.getByRole('button', { name: 'Deploy on push', exact: true }).click();
+  expect((await optedIn).postDataJSON()).toEqual({ enabled: true });
+  await expect(source).toContainText('waiting for a deployment');
+  await expect(source.getByRole('button', { name: 'Stop deploying on push', exact: true })).toBeVisible();
+});

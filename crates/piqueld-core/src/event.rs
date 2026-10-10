@@ -57,6 +57,9 @@ pub struct Event {
     /// The host operator, when it made that request instead of an account.
     #[serde(default)]
     pub actor_operator: Option<crate::auth::HostOperator>,
+    /// The automated actor that caused it instead, e.g. `sync:poll`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_system: Option<crate::sync::SystemActor>,
     /// Safe, independently readable failure details.
     #[serde(default)]
     pub diagnostic: Option<crate::observability::Diagnostic>,

@@ -6,7 +6,7 @@ impl Store {
     /// Loads the master key and proves it matches the database by decrypting the
     /// stored verifier. The first write binds the key by storing a new verifier
     /// in `tx`, so it only persists if the caller commits.
-    pub(super) async fn verified_secret_cipher(
+    pub(in crate::store) async fn verified_secret_cipher(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     ) -> Result<SecretCipher, StoreError> {
@@ -97,6 +97,11 @@ impl Store {
         .execute(&mut *tx)
         .await
         .map_err(StoreError::database)?;
+        // Webhook secrets are encrypted too; applications generate new ones.
+        sqlx::query!("DELETE FROM webhook_secrets")
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
         sqlx::query!("DELETE FROM secret_key_verification")
             .execute(&mut *tx)
             .await

@@ -9,6 +9,7 @@ use crate::store::StoreError;
 use piqueld_core::{
     ApplicationId, EnvironmentId,
     api::{BranchState, DeletedPreview, EnvironmentView, PreviewView},
+    manifest::RepositoryManifest,
 };
 
 impl ApplicationService {
@@ -22,10 +23,13 @@ impl ApplicationService {
         &self,
         application: &ApplicationId,
     ) -> Result<Vec<PreviewView>, ApplicationError> {
-        let heads = self.heads(application).await?;
+        let (connection, heads) = self.heads(application).await?;
         let mut views = Vec::new();
         for preview in self.store.previews(application).await? {
-            views.push(self.preview_view(preview, &heads).await?);
+            views.push(
+                self.preview_view(preview, connection.as_ref(), &heads)
+                    .await?,
+            );
         }
         Ok(views)
     }
@@ -39,8 +43,9 @@ impl ApplicationService {
         if preview.preview().is_none() {
             return Err(StoreError::NotFound.into());
         }
-        let heads = self.heads(&preview.application_id).await?;
-        self.preview_view(preview, &heads).await
+        let (connection, heads) = self.heads(&preview.application_id).await?;
+        self.preview_view(preview, connection.as_ref(), &heads)
+            .await
     }
 
     /// Deletes each of `confirmed` that is a preview of `application` whose
@@ -61,6 +66,7 @@ impl ApplicationService {
         let heads = self
             .heads(application)
             .await?
+            .1
             .map_err(ApplicationError::RepositoryUnavailable)?;
         let mut deleted = Vec::new();
         for preview in self.store.previews(application).await? {
@@ -87,27 +93,30 @@ impl ApplicationService {
         Ok(deleted)
     }
 
-    /// Lists the branches of `application`'s manifest repository, or why
-    /// they could not be listed.
+    /// The connection of `application`'s manifest repository, with its
+    /// branches or why they could not be listed.
     async fn heads(
         &self,
         application: &ApplicationId,
-    ) -> Result<Result<Heads, anyhow::Error>, ApplicationError> {
+    ) -> Result<(Option<RepositoryManifest>, Result<Heads, anyhow::Error>), ApplicationError> {
         let application = self.store.application(application).await?;
-        Ok(match &application.application.spec().manifest {
+        let connection = application.application.spec().manifest.clone();
+        let heads = match &connection {
             Some(connection) => Heads::list(&connection.repository.url).await,
             None => Err(anyhow::anyhow!(
                 "the application has no manifest repository"
             )),
-        })
+        };
+        Ok((connection, heads))
     }
 
     /// Projects a preview with its status, latest operation, the hostnames
-    /// its deployed target routes, its branch state, and how `[previews]`
-    /// bounded its deployed target.
+    /// its deployed target routes, its branch state, how `[previews]`
+    /// bounded its deployed target, and whether it syncs with `connection`.
     async fn preview_view(
         &self,
         preview: EnvironmentView,
+        connection: Option<&RepositoryManifest>,
         heads: &Result<Heads, anyhow::Error>,
     ) -> Result<PreviewView, ApplicationError> {
         // Deployed routes include hostnames that only render when deploying,
@@ -140,6 +149,7 @@ impl ApplicationService {
             hostnames,
             branch,
             bounds: self.store.preview_bounds(&preview.id).await?,
+            sync: preview.sync_state(connection),
             preview,
         })
     }

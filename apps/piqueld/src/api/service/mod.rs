@@ -7,8 +7,10 @@ mod observability;
 mod previews;
 mod queries;
 mod startup;
+mod sync;
 mod system;
 mod views;
+mod webhooks;
 
 use crate::{
     application::{BoundaryError, RuntimeBoundary},
@@ -19,9 +21,10 @@ pub use history::ManifestExport;
 use piqueld_core::{
     ApplicationId, EnvironmentId, EnvironmentName, GitBranch, PreviewSlot, TrackedBranch,
     api::{SecretAccess, SecretMetadata, StoredSecret},
-    manifest::{ApplicationTemplate, ValidatedTemplate},
+    manifest::{ApplicationTemplate, RepositoryManifest, ValidatedTemplate},
 };
 use std::sync::Arc;
+pub use webhooks::{Delivery, WEBHOOK_BODY_LIMIT, WEBHOOK_PATH, WebhookError};
 
 /// Errors returned by transport-independent daemon operations.
 #[derive(Debug, thiserror::Error)]
@@ -141,8 +144,48 @@ pub enum Mutation {
         /// Stable environment ID.
         id: EnvironmentId,
     },
+    /// Opt an environment in or out of its application's sync. Needs no
+    /// application revision, since it changes nothing an environment deploys.
+    SetSync {
+        /// Stable environment ID.
+        id: EnvironmentId,
+        /// Whether pushes may deploy it.
+        enabled: bool,
+    },
+    /// Deploy a branch head sync listed, unless sync already acted on it
+    /// (see `Store::sync_on`). Needs no application revision.
+    Sync(ListedHead),
     /// Change a preview.
     Preview(PreviewMutation),
+}
+
+/// A branch head sync listed for an environment or preview.
+#[derive(Debug, serde::Serialize)]
+pub struct ListedHead {
+    /// Stable environment or preview ID.
+    pub id: EnvironmentId,
+    /// URL of the repository that was listed.
+    pub repository: String,
+    /// Branch that was listed.
+    pub branch: GitBranch,
+    /// Full commit hash at its head, as listed by piqueld itself.
+    pub head: String,
+    /// The head of its last deployment, as recorded when the listing
+    /// started, so a deployment that finished meanwhile, even of the same
+    /// commit, is never undone with what was listed before it.
+    pub since: Option<piqueld_core::sync::SyncedHead>,
+}
+
+/// What a [`Mutation::Sync`] did.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum SyncOutcome {
+    /// Deployed the head.
+    Deployed(piqueld_core::api::AcceptedOperation),
+    /// Nothing to deploy: sync already acted on the head, its deployment
+    /// already fetched it, or it no longer follows the branch.
+    Current,
+    /// A deployment is running; sync tries again once it finished.
+    Busy,
 }
 
 /// A change to a preview. Previews select no `[spec.environments.<name>]`
@@ -197,26 +240,36 @@ pub enum MutationResponse {
     Preview(Box<piqueld_core::api::CreatedPreview>),
     /// Accepted application deletion.
     Deleted(piqueld_core::api::DeletedApplication),
+    /// What sync did with a branch head.
+    Synced(SyncOutcome),
 }
 
 impl Mutation {
     /// Application permissions this mutation needs on its application (the
-    /// environment's, for environment changes): `Write` and optionally
-    /// `Deploy` for saves and edits. Previews need `Deploy` to create and
+    /// environment's, for environment changes), whose repository connection
+    /// is currently `connection`: `Write`, and `Deploy` too for saves and
+    /// edits that deploy, and for changes sync then deploys (see
+    /// [`Self::deploys_on_push`]). Previews need `Deploy` to create and
     /// deploy, and `Delete` to delete.
     #[must_use]
-    pub fn required(&self) -> &'static [piqueld_core::access::AppPermission] {
+    pub fn required(
+        &self,
+        connection: Option<&RepositoryManifest>,
+    ) -> &'static [piqueld_core::access::AppPermission] {
         use piqueld_core::access::AppPermission::{Delete, Deploy, Write};
         match self {
             Self::Save { deploy: true, .. } | Self::Edit { deploy: true, .. } => &[Write, Deploy],
+            _ if self.deploys_on_push(connection) => &[Write, Deploy],
             Self::Save { .. }
             | Self::Edit { .. }
             | Self::Rename { .. }
             | Self::CreateEnvironment { .. }
             | Self::RenameEnvironment { .. }
-            | Self::SetBranch { .. } => &[Write],
+            | Self::SetBranch { .. }
+            | Self::SetSync { .. } => &[Write],
             Self::Deploy { .. }
             | Self::Reconcile { .. }
+            | Self::Sync(_)
             | Self::Preview(PreviewMutation::Create { .. } | PreviewMutation::Deploy { .. }) => {
                 &[Deploy]
             }
@@ -225,6 +278,34 @@ impl Mutation {
             | Self::Preview(PreviewMutation::Delete { .. } | PreviewMutation::Prune { .. }) => {
                 &[Delete]
             }
+        }
+    }
+
+    /// Whether this change lets sync deploy what no deployment chose, given
+    /// the application's current `connection`: turning sync on, which lets
+    /// it deploy previews and opted-in environments whose branch moved since
+    /// their last deployment, or opting an environment in while it syncs.
+    /// Those take the permission to deploy. Nothing else does: sync follows
+    /// only from a deployment's head, and a new environment, a new branch, or
+    /// a new repository follows only after its next deployment. Changes to
+    /// how a following environment renders, such as a rename, take effect
+    /// with its next deployment, as without sync.
+    #[must_use]
+    pub fn deploys_on_push(&self, connection: Option<&RepositoryManifest>) -> bool {
+        use piqueld_core::edit::ApplicationEdit;
+        let syncs = |connection: Option<&RepositoryManifest>| {
+            connection.is_some_and(|connection| !connection.sync.is_off())
+        };
+        let turns_on = |changed: Option<&RepositoryManifest>| syncs(changed) && !syncs(connection);
+        match self {
+            Self::Save { application, .. } => turns_on(application.spec().manifest.as_ref()),
+            Self::Edit { edit, .. } => match edit.as_ref() {
+                ApplicationEdit::Repository(changed) => turns_on(changed.as_ref()),
+                ApplicationEdit::RepositorySync(sync) => !sync.is_off() && !syncs(connection),
+                _ => false,
+            },
+            Self::SetSync { enabled, .. } => *enabled && syncs(connection),
+            _ => false,
         }
     }
 
@@ -287,6 +368,10 @@ pub struct ApplicationService {
     anonymous_backlog: Arc<tokio::sync::Semaphore>,
     /// Credential and network pairs already noted (see `observe_address`).
     known_addresses: Arc<observability::KnownAddresses>,
+    /// Applications a webhook said moved, waiting for the sync worker.
+    hints: Arc<sync::Hints>,
+    /// Public hostname serving webhook deliveries, `ingress.webhook_hostname`.
+    webhook_hostname: Option<piqueld_core::manifest::Hostname>,
 }
 
 /// Audit records allowed to wait for the writer at once.
@@ -308,7 +393,20 @@ impl ApplicationService {
             audit_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG)),
             anonymous_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG / 2)),
             known_addresses: Arc::default(),
+            hints: Arc::default(),
+            webhook_hostname: None,
         }
+    }
+
+    /// Names the public hostname webhook deliveries arrive on, for the
+    /// payload URLs shown to users.
+    #[must_use]
+    pub fn with_webhook_hostname(
+        mut self,
+        hostname: Option<piqueld_core::manifest::Hostname>,
+    ) -> Self {
+        self.webhook_hostname = hostname;
+        self
     }
 
     /// Reports the tailnet node's latest status, when the daemon runs one.
@@ -556,7 +654,10 @@ impl ApplicationService {
                 | Mutation::SetBranch { .. }
                 | Mutation::Deploy { .. }
                 | Mutation::Delete { .. } => expected_generation.is_none(),
-                Mutation::Reconcile { .. } | Mutation::Preview(_) => false,
+                Mutation::Reconcile { .. }
+                | Mutation::SetSync { .. }
+                | Mutation::Sync(_)
+                | Mutation::Preview(_) => false,
             };
             if missing {
                 return Err(ApplicationError::PreconditionRequired);

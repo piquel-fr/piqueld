@@ -49,9 +49,12 @@ piquelctl app deploy <name-or-id>
 piquelctl app rename <name-or-id> <new-name>
 piquelctl app secret <name-or-id> list|set|access|delete
 piquelctl app releases <name-or-id> [--cursor <cursor>]
+piquelctl app repository sync <name-or-id> off|poll|webhook [--interval <seconds>]
+piquelctl app repository webhook show|rotate <name-or-id>
 piquelctl env list <app>
 piquelctl env create <app> <name> [--branch <branch> [--commit <sha>]]
 piquelctl env branch <app> <env> <branch> [--commit <sha>]
+piquelctl env sync <app> <env> on|off
 piquelctl env show <app> [<env>]
 piquelctl env rename <app> <env> <new-name>
 piquelctl env delete <app> <env>
@@ -93,6 +96,27 @@ unpins (without `--commit`) a commit; nothing is redeployed until its next
 deployment. Both fail with `manifest_repository_required` for applications
 without a repository. `env list` and `env show` report the source as `saved` or
 as the branch, e.g. `main` or `main@<commit>`.
+
+[Deploying on push](application-manifest.md#deploying-on-push) is a repository
+setting: `app repository sync APP poll [--interval SECONDS]` lists the branches
+every interval (300 seconds by default), `webhook` when GitHub reports a push,
+and `off` (the default) deploys only when asked; `app repository connect` takes
+the same as `--sync` and `--interval`. Every preview, and every environment
+that opted in with `env sync APP ENV on` and follows an unpinned branch, then
+redeploys when its branch moves past the head of its last deployment; nothing
+follows before its first deployment, and a one-off `--branch`/`--commit`
+deployment stays until the branch moves. `env sync … off` opts it out again.
+Neither needs a revision. Turning sync on, or opting in while it is on, needs
+`apps:deploy` too.
+`app show` reports the setting and the last check of the repository, with its
+error; `env show`, `preview show`, and `preview list` report whether each one
+follows pushes (`following`, `off`, `off (pinned)`, `off (not opted in)`,
+`off (waiting for a deployment)`) and the branch head of its last deployment. `app repository webhook show APP` prints the payload URL to
+configure in GitHub, once the daemon sets `ingress.webhook_hostname`, and
+whether a secret exists; `app repository webhook rotate APP` confirms, then
+generates a new secret, replacing the previous one, and prints it: it is never
+shown again. `events` names sync deployments' actor, `sync:poll` or
+`sync:webhook`.
 
 The manifest is shared; values that differ between environments come from
 [manifest variables](application-manifest.md#variables). Environments that render
@@ -193,7 +217,9 @@ written to stderr, so stdout remains valid JSON.
 | `app show` | `{ "application": ApplicationView, "environments": [EnvironmentRow] }` |
 | `env list` | `[EnvironmentRow]`, where `EnvironmentRow` is `{ "environment": EnvironmentView, "status": EnvironmentStatusView or null }` |
 | `env show` | `EnvironmentDetailView`, with `"stored": [StoredSecret]` |
-| `env create` / `env rename` / `env branch` | `EnvironmentView` |
+| `env create` / `env rename` / `env branch` / `env sync` | `EnvironmentView` |
+| `app repository webhook show` | `WebhookView` |
+| `app repository webhook rotate` | `WebhookSecret` |
 | `app logs` / `env logs` | `ApplicationLogs` |
 | `app validate` | `{ "application": string }` |
 | `app exec` | None; the command's raw output |
@@ -389,6 +415,7 @@ locally:
 ```console
 piquelctl app repository connect notes https://example.com/infra.git infra/app.toml --yes
 piquelctl app repository path notes corrected/app.toml --yes
+piquelctl app repository sync notes poll --interval 120 --yes
 piquelctl env branch notes production release --yes
 piquelctl app repository disconnect notes --yes
 ```

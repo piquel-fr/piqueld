@@ -26,6 +26,7 @@ pub use release::{BuildFingerprint, BuildInputs, Release};
 pub mod resource;
 pub mod retention;
 pub use retention::{LocalImages, ReleaseAvailability, RetentionRoot, ServiceImage};
+pub mod sync;
 
 pub use identity::{
     ApplicationId, ApplicationIdError, EnvironmentId, EnvironmentIdError, ReleaseId,

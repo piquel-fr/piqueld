@@ -30,6 +30,8 @@ mod repository;
 mod secret;
 mod security;
 mod status;
+mod sync;
+pub(crate) use sync::{BranchHead, SyncApplication};
 
 use piqueld_core::{
     ApplicationId, EnvironmentId, EnvironmentKind, EnvironmentName, EnvironmentSource,
@@ -750,6 +752,9 @@ struct EnvironmentRow {
     branch: Option<String>,
     pinned_commit: Option<String>,
     preview_slot: Option<String>,
+    sync: i64,
+    synced_commit: Option<String>,
+    synced_at_ms: Option<i64>,
     resolved_generation: Option<i64>,
     delete_intent: i64,
     created_at_ms: i64,
@@ -788,6 +793,14 @@ impl EnvironmentRow {
             name: EnvironmentName::parse(self.name).map_err(StoreError::corrupt)?,
             source,
             kind,
+            sync: self.sync != 0,
+            synced: match (self.synced_commit, self.synced_at_ms) {
+                (Some(commit), Some(at_ms)) => {
+                    Some(piqueld_core::sync::SyncedHead { commit, at_ms })
+                }
+                (None, None) => None,
+                _ => return Err(StoreError::Corrupt),
+            },
             resolved_generation: self
                 .resolved_generation
                 .map(u64::try_from)
@@ -810,6 +823,9 @@ struct StoredEnvironmentRow {
     branch: Option<String>,
     pinned_commit: Option<String>,
     preview_slot: Option<String>,
+    sync: i64,
+    synced_commit: Option<String>,
+    synced_at_ms: Option<i64>,
     manifest_json: Option<String>,
     resolved_json: Option<String>,
     resolved_generation: Option<i64>,
@@ -843,6 +859,9 @@ impl StoredEnvironmentRow {
             branch: self.branch,
             pinned_commit: self.pinned_commit,
             preview_slot: self.preview_slot,
+            sync: self.sync,
+            synced_commit: self.synced_commit,
+            synced_at_ms: self.synced_at_ms,
             resolved_generation: self.resolved_generation,
             delete_intent: self.delete_intent,
             created_at_ms: self.created_at_ms,

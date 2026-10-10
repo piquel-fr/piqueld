@@ -22,7 +22,9 @@ impl<D: DockerApi> Controller<D> {
     /// invalid: the repository it was fetched from replaces it before
     /// validation, with a `manifest_connection_ignored` warning when it names
     /// another repository URL or manifest path. Each `[previews]` bound is a
-    /// warning too. Inputs without repository backing are marked fetched as-is.
+    /// warning too. It records the head of the branch the environment
+    /// tracked (see [`Self::branch_head`]). Inputs without repository backing
+    /// are marked fetched as-is.
     pub(super) async fn deployment_manifest(
         &self,
         operation: &Operation,
@@ -42,7 +44,7 @@ impl<D: DockerApi> Controller<D> {
         let Some(backing) = &input.template.spec().manifest else {
             let rendering = snapshot.rendering.ok_or(StoreError::Corrupt)?;
             self.store
-                .save_deployment_input(operation, &input.template, &rendering, None, &[])
+                .save_deployment_input(operation, &input.template, &rendering, (None, None), &[])
                 .await?;
             return Ok(rendering.application);
         };
@@ -88,16 +90,67 @@ impl<D: DockerApi> Controller<D> {
                 .map(DiagnosticView::from),
         );
         self.check_current(operation).await?;
+        let branch_head = self
+            .branch_head(
+                operation,
+                input.tracked_branch.as_deref(),
+                backing,
+                &checkout,
+            )
+            .await?;
         self.store
             .save_deployment_input(
                 operation,
                 &template,
                 &rendering,
-                Some(&checkout.commit),
+                (Some(&checkout.commit), branch_head.as_ref()),
                 &warnings,
             )
             .await?;
         Ok(rendering.application.pin_manifest_sources(&checkout.commit))
+    }
+
+    /// The head of `tracked`, the branch the environment tracked unpinned
+    /// when this deployment was requested, as this deployment finds it: what sync follows from, so pushes deploy once the
+    /// branch moves past it. A deployment of that head fetched it. A one-off
+    /// deployment of another revision lists the branch, so it stays until the
+    /// branch moves; when the branch cannot be listed, the fetch fails, as a
+    /// failed clone does, and when it is gone, nothing is recorded.
+    /// Sync's own deployments recorded their head when requested.
+    async fn branch_head(
+        &self,
+        operation: &Operation,
+        tracked: Option<&str>,
+        backing: &RepositoryManifest,
+        checkout: &crate::git::Checkout,
+    ) -> Result<Option<crate::store::BranchHead>, OperationError> {
+        let Some(tracked) = tracked else {
+            return Ok(None);
+        };
+        if self.store.requested_by_sync(operation).await? {
+            return Ok(None);
+        }
+        let url = backing.repository.url.clone();
+        let commit = if backing.repository.commit.is_none() && backing.repository.branch == tracked
+        {
+            Some(checkout.commit.clone())
+        } else {
+            // Without its head, the previous one would replace this deployment
+            // at the next sync, so the fetch fails, as a failed clone does.
+            crate::git::Heads::list(&url)
+                .await
+                .map_err(|error| {
+                    tracing::error!(?error, "listing the tracked branch failed");
+                    OperationError::ManifestFetchFailed(error)
+                })?
+                .head(tracked)
+                .map(str::to_owned)
+        };
+        Ok(commit.map(|commit| crate::store::BranchHead {
+            url,
+            branch: tracked.to_owned(),
+            commit,
+        }))
     }
 
     /// Reads and decodes, without validating, the manifest file at `relative`
