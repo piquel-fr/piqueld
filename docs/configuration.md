@@ -72,6 +72,11 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `notifications.enabled` | `false` |
 | `notifications.security` | `true` ([security notifications](observability.md#security-notifications); like every category, sent only when `notifications.enabled`) |
 | `retention.finished_operation_days` | `10` (`0` disables pruning; terminal operations older than the cutoff are pruned during each reconciliation cycle) |
+| `previews.max_per_application` | `10` |
+| `previews.max_total` | `30` |
+| `previews.default_cpu_millis` | `500` |
+| `previews.default_memory_bytes` | `536870912` (512 MiB) |
+| `previews.max_replicas` | `1` |
 
 Reconciliation intervals and timeouts are bounded to `1..=86400` seconds.
 The convergence timeout bounds how long a deployment waits without progress:
@@ -79,8 +84,13 @@ it restarts each time a service converges, so each link of a
 [startup dependency](application-manifest.md#startup-dependencies) chain gets
 the full timeout.
 One async controller overlaps pending work. Internal global limits allow two
-image resolutions, eight observations, and one resource mutation request. Timers
-consume no I/O slot. These limits are not configurable.
+image resolutions, one image build, eight observations, and one resource
+mutation request. Timers consume no I/O slot. These limits are not
+configurable. Waiting environment builds go before waiting preview builds,
+except that a preview build goes next once three environment builds went ahead
+of it, so a steady stream of environment builds cannot starve previews. A
+running build is never interrupted. Waiting for the build counts against the
+preparation timeout.
 
 The data directory is the only persistent daemon state. Back up the database,
 `secrets.key` (see below), and `<data_dir>/ingress/acme` and
@@ -114,6 +124,42 @@ The dashboard is not configurable at runtime: it is embedded when the daemon
 is built with the `embedded-ui` cargo feature and absent otherwise. It is
 served on the TCP listener only, so a TCP listen mode must be enabled to reach
 it; the Unix API socket serves the API alone.
+
+## Previews
+
+`[previews]` bounds what [previews](application-manifest.md#previews), often
+created by agents, may use on the node that also runs production:
+
+```toml
+[previews]
+max_per_application = 10
+max_total = 30
+default_cpu_millis = 500
+default_memory_bytes = 536870912
+max_replicas = 1
+```
+
+Creating a preview that would take its application's previews past
+`max_per_application`, or the installation's past `max_total`, fails with
+`preview_limit_reached`. The error lists the previews counted, with their
+branch, slot, slug and last deployment, so a caller can delete one. Previews
+being deleted no longer count, and repeating the creation of an existing
+preview always succeeds. The check runs in the creating transaction, so
+concurrent creations cannot pass a limit together. Zero refuses every new
+preview.
+
+When a preview's manifest is rendered, each CPU or memory limit a service
+leaves unset gets `default_cpu_millis` or `default_memory_bytes`, and replicas
+above `max_replicas` are capped. Explicit limits are kept, even above the
+defaults. Each change is a warning on the plan and the deployment, and is shown
+on the preview. Environments are never bounded. The defaults must be values a
+manifest could set: 1–1048576 millicores, a nonzero memory limit, and 1–100
+replicas.
+
+Lowering a limit never deletes or redeploys anything. Previews over a lowered
+count keep running and only new ones are refused; `piquelctl status` and the
+dashboard show the overage. Previews pick up changed resource bounds on their
+next deployment. Previews are never deleted automatically.
 
 `[build_history]` bounds persisted build output: `log_max_bytes` defaults to
 4194304 (maximum 64 MiB), and `log_retention_days` to 30 (1–3650). Build metadata

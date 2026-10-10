@@ -126,9 +126,14 @@ creates and deploys the preview of `--branch` and `--slot`, or returns the
 existing one and its latest deployment without redeploying it, and fails with
 `preview_requires_repository` for other applications. `preview deploy`
 redeploys the head of its branch. None of them needs the application revision.
+`preview create` fails with `preview_limit_reached` when a new preview would
+exceed the daemon's [`[previews]` limits](configuration.md#previews), listing
+the previews it counts with their branch, slot, slug and last deployment so you
+can delete one; repeating an existing creation always succeeds.
 `preview list` and `preview show` report each branch as `exists`, `moved`,
 `gone` or `unknown`, read with `git ls-remote`; `show` also lists the
-preview's URLs. `preview delete` removes the preview and every volume it
+preview's URLs, and each service its deployment runs with default limits or
+fewer replicas than its manifest asks for. `preview delete` removes the preview and every volume it
 created, after confirmation. `preview prune --branch-gone` lists the previews
 whose branch is gone, confirms, and deletes them; the daemon checks each branch
 again, keeps any it can no longer confirm gone, and deletes nothing while the
@@ -318,7 +323,9 @@ effective visibility, state, destination, whether piqueld
 cause while it is not ready. `piquelctl status` also shows the
 public and private listeners: the ingress mode (ports 80/443, or the Cloudflare
 Tunnel's ID and whether it is connected), and the apps node's name, state and tailnet
-addresses.
+addresses. It also counts the previews against their limits, installation-wide
+and for each application you may read, flags a count left over a lowered limit,
+and sums the CPU and memory limits of the previews' deployed replicas.
 `job set` adds a job after the existing ones, or replaces the job with that name
 in place, keeping its timeout unless `--timeout-seconds` is given (300 for a new
 job). `job move` sets a job's 1-based position in the run order. Jobs run in

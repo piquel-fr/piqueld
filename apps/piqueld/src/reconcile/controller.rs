@@ -518,7 +518,8 @@ impl<D: DockerApi> Controller<D> {
             Arc::new(tokio::sync::Notify::new()),
             self.prepare_timeout,
         )
-        .with_progress(Arc::clone(&self.store), operation.id.clone());
+        .with_progress(Arc::clone(&self.store), operation.id.clone())
+        .with_build_priority(&application.environment.kind);
         let manifest = self.deployment_manifest(operation, application).await?;
         // A rename changes display metadata without rewriting deployment history.
         let manifest =

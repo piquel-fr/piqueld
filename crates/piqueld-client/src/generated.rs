@@ -8671,7 +8671,8 @@ impl Client {
     /*Get daemon status
 
     DNS providers and certificates are empty without `system:read`; see
-    [`redact_dns`].
+    [`redact_dns`]. Preview counts per application list only readable
+    applications.
 
     Sends a `GET` request to `/api/v1/system/status`
 

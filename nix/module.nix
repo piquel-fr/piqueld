@@ -293,6 +293,31 @@ in
             default = 365;
             description = "Days to retain the audit trail independently of application deletion; zero disables pruning.";
           };
+          previews.max_per_application = lib.mkOption {
+            type = lib.types.ints.unsigned;
+            default = 10;
+            description = "Previews one application may have; creating more fails with preview_limit_reached.";
+          };
+          previews.max_total = lib.mkOption {
+            type = lib.types.ints.unsigned;
+            default = 30;
+            description = "Previews the installation may have; creating more fails with preview_limit_reached.";
+          };
+          previews.default_cpu_millis = lib.mkOption {
+            type = lib.types.ints.between 1 1048576;
+            default = 500;
+            description = "CPU limit, in millicores, of preview services that set none.";
+          };
+          previews.default_memory_bytes = lib.mkOption {
+            type = lib.types.ints.positive;
+            default = 536870912;
+            description = "Memory limit, in bytes, of preview services that set none.";
+          };
+          previews.max_replicas = lib.mkOption {
+            type = lib.types.ints.between 1 100;
+            default = 1;
+            description = "Most replicas a preview service runs; manifests asking for more are capped with a warning.";
+          };
           metrics.listen = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [ ];

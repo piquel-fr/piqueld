@@ -3,14 +3,28 @@
 use super::{ApplicationError, ApplicationService};
 use piqueld_core::access::Scope;
 use piqueld_core::api::{
-    DependencyStatus, DnsStatus, HostConfiguration, ReadinessStatus, SystemStatus,
+    DependencyStatus, DnsStatus, HostConfiguration, PreviewUsage, ReadinessStatus, SystemStatus,
 };
 use std::time::Duration;
 
 impl ApplicationService {
     /// Returns daemon identity and version information, with the tailnet node,
-    /// DNS providers and DNS-01 certificates.
-    pub async fn system_status(&self) -> SystemStatus {
+    /// DNS providers and DNS-01 certificates, and previews against their
+    /// limits, naming only `readable` applications.
+    pub async fn system_status(&self, readable: &Scope) -> SystemStatus {
+        // Status reports storage outages instead of failing, so preview
+        // counts that cannot be read are left empty.
+        let previews = self
+            .store
+            .preview_usage(readable)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(?error, "could not count previews");
+                PreviewUsage {
+                    limits: self.store.preview_limits().clone(),
+                    ..PreviewUsage::default()
+                }
+            });
         SystemStatus {
             status: "running".into(),
             api_version: "v1".into(),
@@ -25,6 +39,7 @@ impl ApplicationService {
                 Some(ingress) => ingress.dns_status().await,
                 None => DnsStatus::default(),
             },
+            previews,
         }
     }
 

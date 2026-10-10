@@ -61,13 +61,25 @@ environment's. The environment read endpoints (`detail`, `status`,
 deployment and deletion take no `expected_generation` and never advance the
 application revision: creation is idempotent on (branch, slot) instead.
 
+Creating a preview that would exceed a [`[previews]` limit](configuration.md#previews)
+fails with 409 `preview_limit_reached`. Its `details` are a `PreviewLimitReached`:
+the `limit` (`per_application` or `total`), its `max`, and the `previews` it
+counts that the caller may read, oldest deployment first, each with its `id`,
+`application_id`, `preview` (branch, slot, slug) and `last_deployment` (`id`,
+`created_at_ms`). Returning an existing preview never counts against a limit.
+`PreviewView.bounds` lists how the limits bounded the preview's deployed target:
+`preview_limits_defaulted` and `preview_replicas_capped` warnings, also recorded
+on its deployments and plans. `SystemStatus.previews` counts previews against
+the limits, installation-wide and for each readable application, and sums the
+CPU and memory limits of their deployed replicas.
+
 Application list items contain `id`, `name`, generation metadata, deletion
 intent, timestamps, and their environments. Read `/api/v1/applications/{id}`
 when the complete normalized manifest is needed.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/v1/system/status` | Daemon status; DNS providers and certificates only with `system:read` |
+| GET | `/api/v1/system/status` | Daemon status; DNS providers and certificates only with `system:read`; preview counts per readable application |
 | GET | `/api/v1/system/configuration` | Effective read-only host settings |
 | POST | `/api/v1/system/dns/refresh` | Check DNS provider credentials and zones now (`system:operate`); returns `DnsStatus`, empty without `system:read` |
 | GET | `/api/v1/openapi.json` | Generated API schema |
@@ -90,7 +102,7 @@ when the complete normalized manifest is needed.
 | DELETE | `/api/v1/environments/{id}` | Request deletion of one environment; no body |
 | POST | `/api/v1/environments/{id}/reconcile` | Retry the latest operation with its saved inputs once it has ended or failed; an operation still in progress is returned unchanged |
 | GET | `/api/v1/applications/{id}/previews` | Previews with status, latest operation, hostnames and branch state (`exists`, `moved`, `gone` or `unknown`), from one `git ls-remote` |
-| POST | `/api/v1/applications/{id}/previews` | Create and deploy a preview: `{ "branch": "feat/login", "slot": "agent-2" }`; 202 with `CreatedPreview` (`preview`, `operation`, `created: true`), or 200 with the existing preview of that branch and slot and its latest operation (`created: false`), never redeploying it. 409 `preview_requires_repository` without a manifest repository |
+| POST | `/api/v1/applications/{id}/previews` | Create and deploy a preview: `{ "branch": "feat/login", "slot": "agent-2" }`; 202 with `CreatedPreview` (`preview`, `operation`, `created: true`), or 200 with the existing preview of that branch and slot and its latest operation (`created: false`), never redeploying it. 409 `preview_requires_repository` without a manifest repository, `preview_limit_reached` over a `[previews]` limit |
 | POST | `/api/v1/applications/{id}/previews/prune` | Delete each listed preview whose branch is confirmed gone: `{ "previews": [preview IDs] }`; returns the `DeletedPreview`s and keeps the rest. 502 `repository_unavailable`, deleting nothing, when the repository cannot be read |
 | GET | `/api/v1/previews/{id}` | One `PreviewView` |
 | POST | `/api/v1/previews/{id}/deploy` | Deploy the head of the preview's branch; 202 with `AcceptedOperation` |

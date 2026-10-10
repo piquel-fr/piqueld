@@ -1,17 +1,38 @@
 //! Previews: environments of the preview kind, deploying one branch each.
 //! Their lifecycle never needs or advances the application revision, since
 //! they select no `[spec.environments.<name>]` block; creation is idempotent
-//! through the `preview_key` unique index instead.
+//! through the `preview_key` unique index instead, and bounded by the
+//! `[previews]` counts checked in the creating transaction.
 use super::{
     EnvironmentRow, Operation, ResolvedApplication, Store, StoreError, StoredApplication,
     StoredEnvironment, now_ms,
 };
 use piqueld_core::{
-    ApplicationId, EnvironmentId, GitBranch, PreviewSlot, PreviewSlug, api::EnvironmentView,
+    ApplicationId, EnvironmentId, GitBranch, Preview, PreviewSlot, PreviewSlug,
+    access::Scope,
+    api::{
+        ApplicationPreviews, CountedPreview, DiagnosticView, EnvironmentView, LastDeployment,
+        PreviewLimit, PreviewLimitReached, PreviewUsage,
+    },
+    codes,
+    manifest::PreviewLimits,
 };
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 impl Store {
+    /// Applies the daemon's `[previews]` limits.
+    #[must_use]
+    pub fn with_previews(mut self, limits: PreviewLimits) -> Self {
+        self.previews = limits;
+        self
+    }
+
+    /// The `[previews]` limits that preview creation and rendering apply.
+    #[must_use]
+    pub const fn preview_limits(&self) -> &PreviewLimits {
+        &self.previews
+    }
+
     /// Lists an application's previews in slug order.
     ///
     /// # Errors
@@ -50,12 +71,15 @@ impl Store {
     /// from them, unless one exists. Returns its ID and whether it was created.
     /// The application must be repository-backed (`PreviewRequiresRepository`)
     /// and not being deleted (`Busy`); so must an existing preview. A slug
-    /// already naming an environment is `AlreadyExists`.
+    /// already naming an environment is `AlreadyExists`. A new preview must
+    /// fit `limits` (`PreviewLimitReached`); an existing one is returned
+    /// whatever the counts.
     pub(super) async fn create_preview_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &StoredApplication,
         branch: &GitBranch,
         slot: Option<&PreviewSlot>,
+        limits: &PreviewLimits,
         now: i64,
     ) -> Result<(EnvironmentId, bool), StoreError> {
         if application.delete_intent {
@@ -104,6 +128,7 @@ impl Store {
             return Err(StoreError::Busy);
         }
         if created {
+            Self::check_preview_limits_on(tx, application_id, &id, limits).await?;
             Self::write_status(tx, &id, "not_deployed", None, now).await?;
             let message = format!("created preview {slug} of branch {branch}");
             sqlx::query!(
@@ -121,6 +146,74 @@ impl Store {
             EnvironmentId::parse(id).map_err(StoreError::corrupt)?,
             created,
         ))
+    }
+
+    /// Refuses `created`, the preview just inserted into `application`, when
+    /// it takes the application's previews past `max_per_application`, or
+    /// the installation's past `max_total`, listing the others it counts.
+    /// Previews being deleted are not counted. Writers run one transaction
+    /// at a time, so concurrent creations count each other's previews.
+    /// Counts already over a lowered limit only refuse new previews.
+    async fn check_preview_limits_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        application: &str,
+        created: &str,
+        limits: &PreviewLimits,
+    ) -> Result<(), StoreError> {
+        let counts = sqlx::query!(
+            r#"SELECT COUNT(*) AS "total!: i64",COALESCE(SUM(application_id=?1),0) AS "own!: i64" FROM environments WHERE kind='preview' AND delete_intent=0"#,
+            application
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        let (limit, max, scope) = if counts.own > i64::from(limits.max_per_application) {
+            (
+                PreviewLimit::PerApplication,
+                limits.max_per_application,
+                Some(application),
+            )
+        } else if counts.total > i64::from(limits.max_total) {
+            (PreviewLimit::Total, limits.max_total, None)
+        } else {
+            return Ok(());
+        };
+        let previews = sqlx::query!(
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "slug!",e.branch AS "branch!",e.preview_slot,d.id AS "deployment_id?",d.created_at_ms AS "deployed_at_ms?" FROM environments e LEFT JOIN deployments d ON d.id=(SELECT MAX(id) FROM deployments WHERE environment_id=e.id) WHERE e.kind='preview' AND e.delete_intent=0 AND e.id!=?2 AND (?1 IS NULL OR e.application_id=?1) ORDER BY COALESCE(d.created_at_ms,e.created_at_ms),e.id"#,
+            scope,
+            created
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(StoreError::database)?
+        .into_iter()
+        .map(|row| {
+            Ok(CountedPreview {
+                id: EnvironmentId::parse(row.id).map_err(StoreError::corrupt)?,
+                application_id: ApplicationId::parse(row.application_id)
+                    .map_err(StoreError::corrupt)?,
+                preview: Preview {
+                    branch: GitBranch::parse(row.branch).map_err(StoreError::corrupt)?,
+                    slot: row
+                        .preview_slot
+                        .map(PreviewSlot::parse)
+                        .transpose()
+                        .map_err(StoreError::corrupt)?,
+                    slug: PreviewSlug::parse(row.slug).map_err(StoreError::corrupt)?,
+                },
+                last_deployment: row.deployment_id.zip(row.deployed_at_ms).map(
+                    |(id, created_at_ms)| LastDeployment { id, created_at_ms },
+                ),
+            })
+        })
+        .collect::<Result<_, StoreError>>()?;
+        Err(StoreError::PreviewLimitReached(Box::new(
+            PreviewLimitReached {
+                limit,
+                max,
+                previews,
+            },
+        )))
     }
 
     /// Loads a preview for a change. Environments are `NotFound`, as previews
@@ -185,6 +278,90 @@ impl Store {
         .fetch_all(&self.pool)
         .await
         .map_err(StoreError::database)
+    }
+
+    /// How `[previews]` bounded a preview's current target: the default
+    /// limit and replica cap warnings of the deployment it promoted last.
+    ///
+    /// # Errors
+    /// Returns a storage or decoding error.
+    pub async fn preview_bounds(
+        &self,
+        id: &EnvironmentId,
+    ) -> Result<Vec<DiagnosticView>, StoreError> {
+        let id = id.as_str();
+        let warnings = sqlx::query_scalar!(
+            "SELECT d.warnings_json FROM deployments d JOIN operations o ON o.id=d.id WHERE d.environment_id=?1 AND o.promoted=1 ORDER BY d.id DESC LIMIT 1",
+            id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::database)?
+        .map(|json| serde_json::from_str::<Vec<DiagnosticView>>(&json))
+        .transpose()
+        .map_err(StoreError::corrupt)?
+        .unwrap_or_default();
+        Ok(warnings
+            .into_iter()
+            .filter(|warning| {
+                [
+                    codes::PREVIEW_LIMITS_DEFAULTED,
+                    codes::PREVIEW_REPLICAS_CAPPED,
+                ]
+                .contains(&warning.code.as_str())
+            })
+            .collect())
+    }
+
+    /// Previews against the `[previews]` limits: the installation's count
+    /// and the CPU and memory limits of their deployed replicas, and the
+    /// count of each `readable` application with previews. Previews being
+    /// deleted are not counted, as when creating one.
+    ///
+    /// # Errors
+    /// Returns a storage or decoding error.
+    pub async fn preview_usage(&self, readable: &Scope) -> Result<PreviewUsage, StoreError> {
+        let rows = sqlx::query!(
+            r#"SELECT e.application_id AS "id!",a.name AS "name!",e.resolved_json FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.kind='preview' AND e.delete_intent=0 ORDER BY a.name"#
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        let mut usage = PreviewUsage {
+            limits: self.previews.clone(),
+            ..PreviewUsage::default()
+        };
+        for row in rows {
+            usage.total += 1;
+            let id = ApplicationId::parse(row.id).map_err(StoreError::corrupt)?;
+            if readable.contains(&id) {
+                match usage.applications.last_mut() {
+                    Some(last) if last.id == id => last.previews += 1,
+                    _ => usage.applications.push(ApplicationPreviews {
+                        id,
+                        name: row.name,
+                        previews: 1,
+                    }),
+                }
+            }
+            let target: Option<ResolvedApplication> = row
+                .resolved_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(StoreError::corrupt)?;
+            for service in target.iter().flat_map(|target| &target.services) {
+                let replicas = u64::from(service.replicas);
+                let limits = service.resources.as_ref();
+                let cpu = limits.and_then(|limits| limits.cpu_millis).unwrap_or(0);
+                let memory = limits.and_then(|limits| limits.memory_bytes).unwrap_or(0);
+                usage.cpu_millis += replicas * u64::from(cpu);
+                usage.memory_bytes = usage
+                    .memory_bytes
+                    .saturating_add(replicas.saturating_mul(memory));
+            }
+        }
+        Ok(usage)
     }
 
     /// The commit a preview's latest fetched deployment read its manifest from.

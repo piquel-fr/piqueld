@@ -11,7 +11,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::{
-    Client,
+    Client, PreviewUsage,
     system::{CertificateStatus, DependencyStatus, DnsProviderStatus, PublicIngressStatus},
 };
 
@@ -269,6 +269,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                             status_card("Tailnet node", tone, label, &tailnet.message)
                         })
                     }}
+                    {move || signals.system.get().map(|system| preview_card(&system.previews))}
                     {move || {
                         signals.system.get().map(|system| {
                             system
@@ -378,6 +379,54 @@ fn dns_provider_card(provider: &DnsProviderStatus) -> AnyView {
             } else {
                 "Route DNS records are manual"
             }
+        ),
+    )
+}
+
+/// Card for previews against their `[previews]` limits: the installation's
+/// count, each readable application's, and the limits of their replicas. A
+/// count at its limit refuses new previews; one over it, after the limit was
+/// lowered, keeps its existing previews running.
+fn preview_card(usage: &PreviewUsage) -> AnyView {
+    let limits = &usage.limits;
+    let counts = std::iter::once((usage.total, limits.max_total))
+        .chain(
+            usage
+                .applications
+                .iter()
+                .map(|application| (application.previews, limits.max_per_application)),
+        )
+        .collect::<Vec<_>>();
+    let (tone, label) = if counts.iter().any(|(count, max)| count > max) {
+        (Tone::Bad, "Over limit")
+    } else if counts.iter().any(|(count, max)| count == max) {
+        (Tone::Warn, "At limit")
+    } else {
+        (Tone::Ok, "Within limits")
+    };
+    let applications = usage
+        .applications
+        .iter()
+        .map(|application| {
+            format!(
+                " {}: {} of {}.",
+                application.name, application.previews, limits.max_per_application
+            )
+        })
+        .collect::<String>();
+    status_card(
+        "Previews",
+        tone,
+        label,
+        &format!(
+            "{} of {} previews.{applications} Their replicas are limited to {} millicores and {} in total. Services without limits get {} millicores and {}, at most {} replicas.",
+            usage.total,
+            limits.max_total,
+            usage.cpu_millis,
+            super::format::bytes(usage.memory_bytes),
+            limits.default_cpu_millis,
+            super::format::bytes(limits.default_memory_bytes),
+            limits.max_replicas,
         ),
     )
 }

@@ -103,7 +103,8 @@ impl ApplicationService {
     }
 
     /// Projects a preview with its status, latest operation, the hostnames
-    /// its deployed target routes, and its branch state.
+    /// its deployed target routes, its branch state, and how `[previews]`
+    /// bounded its deployed target.
     async fn preview_view(
         &self,
         preview: EnvironmentView,
@@ -138,6 +139,7 @@ impl ApplicationService {
                 .await?,
             hostnames,
             branch,
+            bounds: self.store.preview_bounds(&preview.id).await?,
             preview,
         })
     }

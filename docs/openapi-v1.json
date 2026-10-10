@@ -455,6 +455,31 @@
         "description": "User-facing logical application name.",
         "type": "string"
       },
+      "ApplicationPreviews": {
+        "description": "One application's previews against `max_per_application`.",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ApplicationId",
+            "description": "Stable application identifier."
+          },
+          "name": {
+            "description": "Editable application name.",
+            "type": "string"
+          },
+          "previews": {
+            "description": "Its previews; above `max_per_application` once the limit is lowered.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "previews"
+        ],
+        "type": "object"
+      },
       "ApplicationSpec": {
         "additionalProperties": false,
         "description": "User-provided application resource lists.",
@@ -4686,6 +4711,13 @@
           "data": {
             "description": "A preview with its status, latest operation, hostnames, and branch state.",
             "properties": {
+              "bounds": {
+                "description": "How `[previews]` bounded its deployed target: services that run with\ndefault limits or fewer replicas than their manifest asks for.",
+                "items": {
+                  "$ref": "#/components/schemas/DiagnosticView"
+                },
+                "type": "array"
+              },
               "branch": {
                 "$ref": "#/components/schemas/BranchState",
                 "description": "Where its branch is now."
@@ -4982,6 +5014,10 @@
                 "description": "Control-plane instance identifier.",
                 "type": "string"
               },
+              "previews": {
+                "$ref": "#/components/schemas/PreviewUsage",
+                "description": "Previews against the `[previews]` limits."
+              },
               "status": {
                 "description": "Machine-readable service status.",
                 "type": "string"
@@ -5042,6 +5078,13 @@
             "items": {
               "description": "A preview with its status, latest operation, hostnames, and branch state.",
               "properties": {
+                "bounds": {
+                  "description": "How `[previews]` bounded its deployed target: services that run with\ndefault limits or fewer replicas than their manifest asks for.",
+                  "items": {
+                    "$ref": "#/components/schemas/DiagnosticView"
+                  },
+                  "type": "array"
+                },
                 "branch": {
                   "$ref": "#/components/schemas/BranchState",
                   "description": "Where its branch is now."
@@ -7272,6 +7315,48 @@
         },
         "type": "object"
       },
+      "PreviewLimits": {
+        "additionalProperties": false,
+        "description": "How many previews may exist, and what each preview service may use.\n\nCounts are checked when a preview is created, so lowering one below the\ncurrent count keeps every existing preview running and only refuses new\nones. Bounds apply when a preview's manifest is rendered, so a preview\npicks up changed bounds on its next deployment.",
+        "properties": {
+          "default_cpu_millis": {
+            "default": 500,
+            "description": "CPU limit, in millicores, of preview services that set none.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "default_memory_bytes": {
+            "default": 536870912,
+            "description": "Memory limit, in bytes, of preview services that set none.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_per_application": {
+            "default": 10,
+            "description": "Previews one application may have.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_replicas": {
+            "default": 1,
+            "description": "Most replicas a preview service runs; manifests asking for more are\ncapped with a warning.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_total": {
+            "default": 30,
+            "description": "Previews the whole installation may have.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "PreviewSlot": {
         "description": "Distinguishes several previews of one branch, e.g. one per agent.",
         "type": "string"
@@ -7280,9 +7365,58 @@
         "description": "DNS-safe identifier of a preview, derived once by\n[`PreviewSlug::derive`] and persisted. It is also the preview's name,\nso no environment of its application can share it.",
         "type": "string"
       },
+      "PreviewUsage": {
+        "description": "Previews against the daemon's `[previews]` limits.",
+        "properties": {
+          "applications": {
+            "description": "Readable applications with previews, in name order.",
+            "items": {
+              "$ref": "#/components/schemas/ApplicationPreviews"
+            },
+            "type": "array"
+          },
+          "cpu_millis": {
+            "description": "CPU limits in millicores, summed over every preview's deployed replicas.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/PreviewLimits",
+            "description": "The configured limits."
+          },
+          "memory_bytes": {
+            "description": "Memory limits in bytes, summed over every preview's deployed replicas.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total": {
+            "description": "Previews of every application. Above `limits.max_total` once the\nlimit is lowered: existing previews keep running, new ones are refused.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "limits",
+          "total",
+          "applications",
+          "cpu_millis",
+          "memory_bytes"
+        ],
+        "type": "object"
+      },
       "PreviewView": {
         "description": "A preview with its status, latest operation, hostnames, and branch state.",
         "properties": {
+          "bounds": {
+            "description": "How `[previews]` bounded its deployed target: services that run with\ndefault limits or fewer replicas than their manifest asks for.",
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticView"
+            },
+            "type": "array"
+          },
           "branch": {
             "$ref": "#/components/schemas/BranchState",
             "description": "Where its branch is now."
@@ -8733,6 +8867,10 @@
           "instance_id": {
             "description": "Control-plane instance identifier.",
             "type": "string"
+          },
+          "previews": {
+            "$ref": "#/components/schemas/PreviewUsage",
+            "description": "Previews against the `[previews]` limits."
           },
           "status": {
             "description": "Machine-readable service status.",
@@ -23378,7 +23516,7 @@
     },
     "/api/v1/system/status": {
       "get": {
-        "description": "DNS providers and certificates are empty without `system:read`; see\n[`redact_dns`].",
+        "description": "DNS providers and certificates are empty without `system:read`; see\n[`redact_dns`]. Preview counts per application list only readable\napplications.",
         "operationId": "systemStatus",
         "responses": {
           "200": {

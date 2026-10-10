@@ -4,13 +4,13 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::manifest::{
-    ApplicationManifest, ApplicationTemplate, RenderTarget, RolloutOrder, RolloutOrderSource,
-    SecretSource, VariableValue,
+    ApplicationManifest, ApplicationTemplate, PreviewLimits, RenderTarget, RolloutOrder,
+    RolloutOrderSource, SecretSource, VariableValue,
 };
 use crate::{
     ApplicationId, ApplicationState, BuildFingerprint, Convergence, EnvironmentId, EnvironmentKind,
-    EnvironmentName, EnvironmentSource, NormalizedApplication, Operation, Plan, Preview, Release,
-    ReleaseId, Sha256Digest,
+    EnvironmentName, EnvironmentSource, NormalizedApplication, Operation, Plan, PlanDiagnostic,
+    Preview, Release, ReleaseId, Sha256Digest,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -315,6 +315,10 @@ pub struct PreviewView {
     pub hostnames: Vec<String>,
     /// Where its branch is now.
     pub branch: BranchState,
+    /// How `[previews]` bounded its deployed target: services that run with
+    /// default limits or fewer replicas than their manifest asks for.
+    #[serde(default)]
+    pub bounds: Vec<DiagnosticView>,
 }
 
 /// Deletes the listed previews whose branch the repository confirms is gone.
@@ -333,6 +337,89 @@ pub struct DeletedPreview {
     pub preview: EnvironmentView,
     /// Its deletion.
     pub operation: AcceptedOperation,
+}
+
+/// A `[previews]` count limit.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewLimit {
+    /// `max_per_application`: the previews of one application.
+    PerApplication,
+    /// `max_total`: the previews of every application.
+    Total,
+}
+
+/// Names the setting: `max_per_application` or `max_total`.
+impl std::fmt::Display for PreviewLimit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::PerApplication => "max_per_application",
+            Self::Total => "max_total",
+        })
+    }
+}
+
+/// Details of `preview_limit_reached`: the limit creating another preview
+/// would exceed, and the previews it counts, so a caller can choose which
+/// to delete.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct PreviewLimitReached {
+    /// The limit reached.
+    pub limit: PreviewLimit,
+    /// Its configured value.
+    pub max: u32,
+    /// The previews it counts that the caller may read, oldest deployment
+    /// first.
+    pub previews: Vec<CountedPreview>,
+}
+
+/// A preview counted against a `[previews]` limit.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct CountedPreview {
+    /// Stable preview identifier.
+    pub id: EnvironmentId,
+    /// Owning application.
+    pub application_id: ApplicationId,
+    /// Its branch, slot, and slug.
+    pub preview: Preview,
+    /// Its newest deployment; absent before its first.
+    pub last_deployment: Option<LastDeployment>,
+}
+
+/// When a deployment was requested.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct LastDeployment {
+    /// Deployment (and operation) identifier.
+    pub id: String,
+    /// Request timestamp in Unix milliseconds.
+    pub created_at_ms: i64,
+}
+
+/// Previews against the daemon's `[previews]` limits.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
+pub struct PreviewUsage {
+    /// The configured limits.
+    pub limits: PreviewLimits,
+    /// Previews of every application. Above `limits.max_total` once the
+    /// limit is lowered: existing previews keep running, new ones are refused.
+    pub total: u32,
+    /// Readable applications with previews, in name order.
+    pub applications: Vec<ApplicationPreviews>,
+    /// CPU limits in millicores, summed over every preview's deployed replicas.
+    pub cpu_millis: u64,
+    /// Memory limits in bytes, summed over every preview's deployed replicas.
+    pub memory_bytes: u64,
+}
+
+/// One application's previews against `max_per_application`.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct ApplicationPreviews {
+    /// Stable application identifier.
+    pub id: ApplicationId,
+    /// Editable application name.
+    pub name: String,
+    /// Its previews; above `max_per_application` once the limit is lowered.
+    pub previews: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -425,6 +512,17 @@ pub struct DiagnosticView {
     pub message: String,
 }
 
+/// Keeps a planner warning's code and message, e.g. to record it on a
+/// deployment.
+impl From<PlanDiagnostic> for DiagnosticView {
+    fn from(diagnostic: PlanDiagnostic) -> Self {
+        Self {
+            code: diagnostic.code,
+            message: diagnostic.message,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Observed service state summarized for browser and operator clients.
 pub struct ObservedServiceView {
@@ -497,6 +595,9 @@ pub struct SystemStatus {
     /// DNS providers and the certificates issued through them with DNS-01.
     #[serde(default)]
     pub dns: DnsStatus,
+    /// Previews against the `[previews]` limits.
+    #[serde(default)]
+    pub previews: PreviewUsage,
 }
 
 /// A change to a manifest field. Environment and process values are redacted.

@@ -2,13 +2,14 @@
 
 use super::{BoundaryError, RuntimeBoundary};
 use crate::{
-    docker::{DockerApi, DockerError, DockerTimeout},
+    docker::{BuildPriority, DockerApi, DockerError, DockerTimeout},
     store::StoredEnvironment,
 };
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use piqueld_core::{
-    EnvironmentId, InstanceId, NormalizedApplication, ResolutionSet, compile_application,
+    EnvironmentId, EnvironmentKind, InstanceId, NormalizedApplication, ResolutionSet,
+    compile_application,
     manifest::{SourceRepository, ValidatedSource as Source},
     resource::ResolvedSource,
 };
@@ -28,6 +29,8 @@ pub struct ApplicationRuntime<D> {
     // Set only for execution, never API previews. Records the source-preparation
     // phase and service names, and journals each source-preparation action.
     progress: Option<(Arc<crate::store::Store>, String)>,
+    /// The build queue its Git sources wait in.
+    priority: BuildPriority,
 }
 
 impl<D> ApplicationRuntime<D> {
@@ -45,6 +48,7 @@ impl<D> ApplicationRuntime<D> {
             wake,
             prepare_timeout,
             progress: None,
+            priority: BuildPriority::Environment,
         }
     }
     /// Associates source preparation with the operation whose status is reported.
@@ -54,6 +58,14 @@ impl<D> ApplicationRuntime<D> {
         operation_id: String,
     ) -> Self {
         self.progress = Some((store, operation_id));
+        self
+    }
+
+    /// Queues Git source builds as `kind`'s, so environments build before
+    /// previews.
+    #[must_use]
+    pub(crate) fn with_build_priority(mut self, kind: &EnvironmentKind) -> Self {
+        self.priority = kind.into();
         self
     }
 }
@@ -335,7 +347,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
         docker: &D,
     ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
         let Some((store, operation)) = &self.progress else {
-            return crate::git::Checkout::prepare(repository, build, docker).await;
+            return crate::git::Checkout::prepare(repository, build, self.priority, docker).await;
         };
         let attempt = crate::build::BuildAttempt::start(
             Arc::clone(store),
@@ -346,9 +358,14 @@ impl<D: DockerApi> ApplicationRuntime<D> {
             None,
         )
         .await?;
-        let result =
-            crate::git::Checkout::prepare_recorded(repository, build, docker, Some(&attempt.log))
-                .await;
+        let result = crate::git::Checkout::prepare_recorded(
+            repository,
+            build,
+            self.priority,
+            docker,
+            Some(&attempt.log),
+        )
+        .await;
         match &result {
             Ok((_, image)) => {
                 attempt

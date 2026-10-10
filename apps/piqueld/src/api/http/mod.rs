@@ -197,8 +197,9 @@ impl ApiError {
     }
 
     /// Maps environment selection and rename failures selected by
-    /// `From<StoreError>`, naming the environments in `details`, and previews
-    /// of applications without a manifest repository.
+    /// `From<StoreError>`, naming the environments in `details`, previews
+    /// of applications without a manifest repository, and previews over a
+    /// `[previews]` limit, listing the previews it counts in `details`.
     ///
     /// Panics if given another variant; callers must pre-filter.
     fn from_environment_error(error: StoreError) -> Self {
@@ -226,6 +227,12 @@ impl ApiError {
                 piqueld_core::codes::PREVIEW_REQUIRES_REPOSITORY,
                 error.to_string(),
             ),
+            ref error @ StoreError::PreviewLimitReached(ref reached) => Self::new(
+                StatusCode::CONFLICT,
+                piqueld_core::codes::PREVIEW_LIMIT_REACHED,
+                error.to_string(),
+            )
+            .details(json!(reached)),
             other => unreachable!("non-environment storage error: {other}"),
         }
     }
@@ -274,7 +281,8 @@ impl From<StoreError> for ApiError {
             error @ (StoreError::EnvironmentRequired { .. }
             | StoreError::ConfirmationRequired { .. }
             | StoreError::EnvironmentConfigured { .. }
-            | StoreError::PreviewRequiresRepository) => Self::from_environment_error(error),
+            | StoreError::PreviewRequiresRepository
+            | StoreError::PreviewLimitReached(_)) => Self::from_environment_error(error),
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "generation_conflict",

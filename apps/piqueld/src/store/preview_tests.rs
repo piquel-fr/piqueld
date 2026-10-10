@@ -5,8 +5,9 @@ use crate::api::Actor::Daemon;
 use crate::api::{Mutation, MutationResponse, PreviewMutation};
 use piqueld_core::{
     GitBranch, PreviewSlot,
-    api::{CreatedPreview, EnvironmentAccess, SecretAccess},
-    manifest::{SecretMount, parse_template_toml},
+    access::Scope,
+    api::{CreatedPreview, EnvironmentAccess, PreviewLimit, SecretAccess},
+    manifest::{PreviewLimits, SecretMount, parse_template_toml},
 };
 
 /// The `notes` application, repository-backed unless `saved`, whose `web`
@@ -106,6 +107,111 @@ async fn creating_a_preview_is_idempotent_on_branch_and_slot_and_leaves_the_revi
     // Previews never needed or advanced the application revision.
     assert_eq!(store.application(&application).await.unwrap().generation, 1);
     assert_eq!(store.previews(&application).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn concurrent_creations_never_pass_a_preview_limit_and_repeats_never_count() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db"))
+        .await
+        .unwrap()
+        .with_previews(PreviewLimits {
+            max_per_application: 2,
+            ..PreviewLimits::default()
+        });
+    let application = save(&store, false).await;
+
+    let slots = (0..5)
+        .map(|agent| format!("agent-{agent}"))
+        .collect::<Vec<_>>();
+    let results = futures_util::future::join_all(
+        slots
+            .iter()
+            .map(|slot| create(&store, &application, "feat/login", Some(slot))),
+    )
+    .await;
+    let (created, refused): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
+    let created = created.into_iter().map(Result::unwrap).collect::<Vec<_>>();
+    assert_eq!((created.len(), refused.len()), (2, 3));
+    // The error lists the previews counted, so an agent can choose one to delete.
+    let Err(StoreError::PreviewLimitReached(reached)) = &refused[0] else {
+        panic!("{:?}", refused[0]);
+    };
+    assert_eq!(
+        (reached.limit, reached.max),
+        (PreviewLimit::PerApplication, 2)
+    );
+    let mut listed = reached
+        .previews
+        .iter()
+        .map(|counted| {
+            (
+                counted.id.clone(),
+                counted.preview.slug.to_string(),
+                counted.last_deployment.as_ref().unwrap().id.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut expected = created
+        .iter()
+        .map(|created| {
+            (
+                created.preview.id.clone(),
+                created.preview.name.to_string(),
+                created.operation.operation_id.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    listed.sort();
+    expected.sort();
+    assert_eq!(listed, expected);
+
+    // Repeating a creation returns the existing preview, even at the limit.
+    let slot = created[0].preview.preview().unwrap().slot.clone().unwrap();
+    let again = create(&store, &application, "feat/login", Some(slot.as_str()))
+        .await
+        .unwrap();
+    assert!(!again.created);
+
+    // Lowering a limit keeps every preview and refuses new ones; status
+    // shows the overage.
+    let lowered = store.clone().with_previews(PreviewLimits {
+        max_total: 1,
+        ..PreviewLimits::default()
+    });
+    assert!(
+        !create(&lowered, &application, "feat/login", Some(slot.as_str()))
+            .await
+            .unwrap()
+            .created
+    );
+    assert!(matches!(
+        create(&lowered, &application, "feat/other", None).await,
+        Err(StoreError::PreviewLimitReached(reached)) if reached.limit == PreviewLimit::Total
+    ));
+    let usage = lowered.preview_usage(&Scope::All).await.unwrap();
+    assert_eq!((usage.total, usage.limits.max_total), (2, 1));
+    assert_eq!(usage.applications[0].previews, 2);
+
+    // A preview being deleted no longer counts.
+    store
+        .accept(
+            Daemon,
+            Mutation::Preview(PreviewMutation::Delete {
+                id: created[0].preview.id.clone(),
+            }),
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        create(&store, &application, "feat/other", None)
+            .await
+            .unwrap()
+            .created
+    );
 }
 
 #[tokio::test]

@@ -6,6 +6,7 @@
 //! (including test fakes). Mutations pass through unchanged: the controller
 //! serializes them. Cancelling a request drops its permit, allowing the next
 //! waiter to proceed.
+use super::build_queue::BuildQueue;
 use super::{DockerApi, DockerError, DockerTimeout, SwarmState};
 use async_trait::async_trait;
 use piqueld_core::{
@@ -20,18 +21,19 @@ pub(crate) struct LimitedDocker<D> {
     inner: Arc<D>,
     /// Concurrent image resolutions (pulls).
     images: Semaphore,
-    /// Concurrent image builds.
-    builds: Semaphore,
+    /// One image build at a time, environments before previews.
+    builds: BuildQueue,
     /// Concurrent observations and log reads.
     observations: Semaphore,
 }
 impl<D> LimitedDocker<D> {
-    /// Wraps `inner` with 2 image, 1 build, and 8 observation permits.
+    /// Wraps `inner` with 2 image and 8 observation permits, and a queue
+    /// running one build at a time.
     pub(crate) fn new(inner: Arc<D>) -> Self {
         Self {
             inner,
             images: Semaphore::new(2),
-            builds: Semaphore::new(1),
+            builds: BuildQueue::default(),
             observations: Semaphore::new(8),
         }
     }
@@ -110,11 +112,11 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
         build: &super::ImageBuild<'_>,
         log: Option<&crate::build::BuildLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
-        let _permit = self
+        let _turn = self
             .builds
-            .acquire()
+            .turn(build.priority)
             .await
-            .map_err(|_| DockerError::Unavailable("build concurrency gate"))?;
+            .map_err(|_| DockerError::Unavailable("build queue"))?;
         self.inner.build_image_recorded(build, log).await
     }
     async fn build_image(

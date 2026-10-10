@@ -1,9 +1,11 @@
 //! Previews: disposable deployments of a branch. Their status, logs,
 //! deployments, and secrets use the environment methods with their ID.
 pub use piqueld_core::api::{
-    BranchState, CreatePreviewRequest, CreatedPreview, DeletedPreview, PreviewView,
+    ApplicationPreviews, BranchState, CountedPreview, CreatePreviewRequest, CreatedPreview,
+    DeletedPreview, LastDeployment, PreviewLimit, PreviewLimitReached, PreviewUsage, PreviewView,
     PrunePreviewsRequest,
 };
+pub use piqueld_core::manifest::PreviewLimits;
 pub use piqueld_core::{EnvironmentKind, Preview, PreviewSlot, PreviewSlug};
 
 use crate::{AcceptedOperation, Client, ClientError, client::generated_result};

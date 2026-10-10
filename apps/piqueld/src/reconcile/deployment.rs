@@ -16,12 +16,13 @@ impl<D: DockerApi> Controller<D> {
     /// re-read variables or a moving branch. Otherwise the repository is cloned
     /// and the manifest file (at most 2 MiB; `.json` parsed as JSON, anything
     /// else as TOML) is validated, required to keep the application name,
-    /// rendered for `environment` at the fetched commit, and persisted with it.
+    /// rendered for `environment` at the fetched commit, bounded by
+    /// `[previews]` when it is a preview, and persisted with it.
     /// Its own `spec.manifest` must decode but is ignored, even when absent or
     /// invalid: the repository it was fetched from replaces it before
     /// validation, with a `manifest_connection_ignored` warning when it names
-    /// another repository URL or manifest path. Inputs without repository
-    /// backing are marked fetched as-is.
+    /// another repository URL or manifest path. Each `[previews]` bound is a
+    /// warning too. Inputs without repository backing are marked fetched as-is.
     pub(super) async fn deployment_manifest(
         &self,
         operation: &Operation,
@@ -58,7 +59,7 @@ impl<D: DockerApi> Controller<D> {
         // Replaced before validation: `self` sources and `git.*` references
         // need a connection, and the file's own may be absent or invalid.
         let declared = manifest.spec.manifest.replace(backing.clone());
-        let warnings = Self::ignored_connection(declared.as_ref(), backing)
+        let mut warnings = Self::ignored_connection(declared.as_ref(), backing)
             .into_iter()
             .collect::<Vec<_>>();
         let template = manifest
@@ -68,7 +69,7 @@ impl<D: DockerApi> Controller<D> {
         if template.metadata().name != input.template.metadata().name {
             return Err(OperationError::ManifestInvalid);
         }
-        let rendering = template
+        let mut rendering = template
             .render(&RenderContext {
                 target: environment.environment.target(),
                 git: Some(GitRevision {
@@ -78,6 +79,14 @@ impl<D: DockerApi> Controller<D> {
                 deployment: Some(operation.id.clone()),
             })
             .map_err(Self::invalid_manifest)?;
+        warnings.extend(
+            environment
+                .environment
+                .kind
+                .bound(&mut rendering.application, self.store.preview_limits())
+                .into_iter()
+                .map(DiagnosticView::from),
+        );
         self.check_current(operation).await?;
         self.store
             .save_deployment_input(

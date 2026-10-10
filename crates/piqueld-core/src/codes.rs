@@ -128,6 +128,12 @@ pub const VARIABLE_COUNT_EXCESSIVE: &str = "variable_count_excessive";
 pub const VARIABLE_VALUE_EXCESSIVE: &str = "variable_value_excessive";
 /// Previews need an application whose manifest comes from a repository.
 pub const PREVIEW_REQUIRES_REPOSITORY: &str = "preview_requires_repository";
+/// Creating a preview would exceed a `[previews]` count limit.
+pub const PREVIEW_LIMIT_REACHED: &str = "preview_limit_reached";
+/// A preview service runs with a `[previews]` default limit it does not set.
+pub const PREVIEW_LIMITS_DEFAULTED: &str = "preview_limits_defaulted";
+/// A preview service asks for more replicas than `[previews] max_replicas`.
+pub const PREVIEW_REPLICAS_CAPPED: &str = "preview_replicas_capped";
 /// `[spec.environments.<name>]` names no environment of the application.
 pub const ENVIRONMENT_BLOCK_UNKNOWN: &str = "environment_block_unknown";
 /// Manifest that must be literal still references variables.

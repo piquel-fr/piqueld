@@ -326,8 +326,11 @@ fn terminal_progress_is_suspended_for_every_role_and_cleared_on_final_drop() {
 }
 
 #[test]
-fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
-    use piqueld_client::{CertificateStatus, DnsProviderStatus, DnsStatus, SystemStatus};
+fn status_and_dns_refresh_list_dns_providers_certificate_failures_and_preview_overage() {
+    use piqueld_client::{
+        ApplicationPreviews, CertificateStatus, DnsProviderStatus, DnsStatus, PreviewLimits,
+        PreviewUsage, SystemStatus,
+    };
     let status = SystemStatus {
         status: "running".into(),
         api_version: "v1".into(),
@@ -348,6 +351,21 @@ fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
                 expires_at_ms: Some(1),
                 error: Some("ovh create TXT record in zone piquel.fr: HTTP 403".into()),
             }],
+        },
+        // `max_total` was lowered below the existing previews.
+        previews: PreviewUsage {
+            limits: PreviewLimits {
+                max_total: 2,
+                ..PreviewLimits::default()
+            },
+            total: 3,
+            applications: vec![ApplicationPreviews {
+                id: piqueld_client::ApplicationId::parse("app-notes").unwrap(),
+                name: "notes".into(),
+                previews: 3,
+            }],
+            cpu_millis: 1500,
+            memory_bytes: 1_610_612_736,
         },
     };
     let stdout = Capture::default();
@@ -400,6 +418,9 @@ fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
         "Tunnel problem: cloudflared is not connected to Cloudflare",
         "Private listener: apps node not joined (NeedsLogin, no tailnet addresses)",
         "Private listener problem: The apps node needs login",
+        "Previews: 3 of 2 (over the limit: existing previews keep running, new ones are refused)",
+        "Preview usage: 1500 millicores and 1610612736 bytes of limits across preview replicas",
+        "Previews of notes: 3 of 10",
     ] {
         assert!(text.contains(expected), "{text}");
     }

@@ -3,7 +3,7 @@ use crate::{
     cli::Cli,
     output::{DiagnosticReport, HumanWriter},
 };
-use piqueld_client::{ClientError, PlanView, TransportFailure};
+use piqueld_client::{ClientError, PlanView, PreviewLimitReached, TransportFailure};
 use serde_json::Value;
 use std::{fmt, io};
 
@@ -305,7 +305,8 @@ impl<'a> ErrorReport<'a> {
     }
 
     /// Renders error details. Operation failures get a labelled context block and a
-    /// reconcile hint; any other details are printed as raw JSON.
+    /// reconcile hint, and `preview_limit_reached` lists the previews it counts;
+    /// any other details are printed as raw JSON.
     fn details(details: &Value, out: &mut HumanWriter<'_>) -> io::Result<()> {
         // Local and daemon manifest validation share the `ValidationErrors` shape.
         if let Some(errors) = details.get("errors").and_then(Value::as_array) {
@@ -319,6 +320,34 @@ impl<'a> ErrorReport<'a> {
                 ))?;
             }
             return Ok(());
+        }
+        if let Ok(reached) = serde_json::from_value::<PreviewLimitReached>(details.clone()) {
+            for counted in &reached.previews {
+                out.label(
+                    "  Preview",
+                    format_args!(
+                        "{} of branch {}{}, {}",
+                        counted.preview.slug,
+                        counted.preview.branch,
+                        counted
+                            .preview
+                            .slot
+                            .as_ref()
+                            .map_or_else(String::new, |slot| format!(" (slot {slot})")),
+                        counted.last_deployment.as_ref().map_or_else(
+                            || "never deployed".into(),
+                            |deployment| format!(
+                                "last deployed at Unix ms {}",
+                                deployment.created_at_ms
+                            )
+                        ),
+                    ),
+                )?;
+            }
+            return out.label(
+                "  Hint",
+                "delete one with `piquelctl preview delete <APP> <SLUG>`",
+            );
         }
         let Some(operation) = details.get("operation") else {
             return out.label("Details", details);

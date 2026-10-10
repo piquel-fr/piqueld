@@ -202,6 +202,13 @@ pub enum StoreError {
         "previews deploy a branch of the application's manifest repository; connect one with `piquelctl app repository` first"
     )]
     PreviewRequiresRepository,
+    /// Creating a preview would exceed a `[previews]` count limit.
+    #[error(
+        "creating this preview would exceed [previews] {} ({}); delete a preview first",
+        .0.limit,
+        .0.max
+    )]
+    PreviewLimitReached(Box<piqueld_core::api::PreviewLimitReached>),
     /// Renaming would change which `[spec.environments.<name>]` block applies.
     #[error(
         "the saved manifest configures [spec.environments.{environment}]; renaming would change which configuration applies, so remove that block from the manifest first and add it back under the new name after renaming"
@@ -451,6 +458,8 @@ pub struct Store {
     daemon_event_days: u64,
     /// Audit trail retention in days; zero keeps it forever.
     audit_days: u64,
+    /// How many previews may exist and what their services may use.
+    previews: piqueld_core::manifest::PreviewLimits,
 }
 
 impl Store {
@@ -549,6 +558,7 @@ impl Store {
             notifications: crate::config::NotificationConfig::default(),
             daemon_event_days: 0,
             audit_days: 0,
+            previews: piqueld_core::manifest::PreviewLimits::default(),
         };
         store.reencrypt_moved_secrets().await?;
         store.record_missing_releases().await?;

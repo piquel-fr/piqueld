@@ -115,6 +115,28 @@ fn built_in_defaults_are_valid() {
 }
 
 #[test]
+fn preview_bounds_must_be_values_a_manifest_could_set() {
+    let previews = DaemonConfig::from_toml("[previews]\nmax_total = 0\nmax_replicas = 2")
+        .unwrap()
+        .previews;
+    assert_eq!((previews.max_total, previews.max_replicas), (0, 2));
+    for invalid in [
+        "default_cpu_millis = 0",
+        "default_memory_bytes = 0",
+        "max_replicas = 0",
+        "max_replicas = 101",
+    ] {
+        assert!(
+            matches!(
+                DaemonConfig::from_toml(&format!("[previews]\n{invalid}")),
+                Err(ConfigError::Invalid(_))
+            ),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
 fn retention_defaults_are_bounded_and_accept_zero_as_disabled() {
     let defaults = DaemonConfig::default().retention;
     assert_eq!(defaults.finished_operation_days, 10);

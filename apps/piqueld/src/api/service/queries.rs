@@ -153,8 +153,9 @@ impl ApplicationService {
     /// Checks the generation and identity preconditions when supplied (unlike
     /// apply, they are optional). For `environment`, or the application's only
     /// environment when it is omitted, renders the manifest for it at its
-    /// branch (see [`RenderContext::preview`]), builds a runtime plan against its current
-    /// observation, and diffs it against its latest deployment's rendered
+    /// branch (see [`RenderContext::preview`]) and, for a preview, bounds it by
+    /// `[previews]` with a warning per bound, builds a runtime plan against its
+    /// current observation, and diffs it against its latest deployment's rendered
     /// manifest (no baseline after a delete). Without an environment and with
     /// several, diffs the saved manifest without rendering or a runtime plan,
     /// since apply deploys none of them. A new application renders for its
@@ -200,11 +201,16 @@ impl ApplicationService {
             &environment
         {
             let repository = environment.repository();
-            let rendering = render(environment.environment.target(), repository.as_ref())?;
+            let mut rendering = render(environment.environment.target(), repository.as_ref())?;
+            let bounds = environment
+                .environment
+                .kind
+                .bound(&mut rendering.application, self.store.preview_limits());
             let (operation, baseline) = self.latest_deployment(environment.id()).await?;
-            let plan = self
+            let mut plan = self
                 .preview_plan(&rendering.application, environment.id(), Some(environment))
                 .await?;
+            plan.warn(bounds);
             let proposed = rendering.application.spec();
             (
                 operation,
