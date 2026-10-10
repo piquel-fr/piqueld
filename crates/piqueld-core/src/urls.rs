@@ -287,17 +287,28 @@ mod tests {
         assert_eq!(ready.pending, []);
     }
 
-    #[test]
-    fn each_condition_keeps_a_url_pending() {
-        let https = |message: &str| UrlCondition::Https {
+    fn https(message: &str) -> UrlCondition {
+        UrlCondition::Https {
             message: message.into(),
-        };
-        let unchecked =
-            https("Not checked yet: the daemon verifies HTTPS once the gateway serves the route");
-        let web = UrlCondition::Service {
-            service: ServiceName::parse("web").unwrap(),
-        };
-        let cases: [(&str, RouteUrl, Vec<UrlCondition>); 13] = [
+        }
+    }
+
+    /// Asserts each case's URL waits for exactly its conditions.
+    fn assert_pending<const N: usize>(cases: [(&str, RouteUrl, Vec<UrlCondition>); N]) {
+        for (case, url, pending) in cases {
+            let state = if pending.is_empty() {
+                UrlState::Ready
+            } else {
+                UrlState::Pending
+            };
+            assert_eq!(url.state, state, "{case}");
+            assert_eq!(url.pending, pending, "{case}");
+        }
+    }
+
+    #[test]
+    fn listener_problems_outdate_route_checks() {
+        assert_pending([
             (
                 "gateway failed since the route was checked",
                 derive(|_, ingress, _| {
@@ -330,6 +341,17 @@ mod tests {
                 derive(|_, ingress, _| ingress.healthy = false),
                 vec![],
             ),
+        ]);
+    }
+
+    #[test]
+    fn each_condition_keeps_a_url_pending() {
+        let unchecked =
+            https("Not checked yet: the daemon verifies HTTPS once the gateway serves the route");
+        let web = UrlCondition::Service {
+            service: ServiceName::parse("web").unwrap(),
+        };
+        let cases: [(&str, RouteUrl, Vec<UrlCondition>); 9] = [
             (
                 "not applied by the gateway",
                 derive(|applied, _, _| applied.clear()),
@@ -388,15 +410,7 @@ mod tests {
                 vec![web],
             ),
         ];
-        for (case, url, pending) in cases {
-            let state = if pending.is_empty() {
-                UrlState::Ready
-            } else {
-                UrlState::Pending
-            };
-            assert_eq!(url.state, state, "{case}");
-            assert_eq!(url.pending, pending, "{case}");
-        }
+        assert_pending(cases);
     }
 
     #[test]
