@@ -93,6 +93,8 @@ pub const SERVICE_COUNT_EXCESSIVE: &str = "service_count_excessive";
 pub const VOLUME_COUNT_EXCESSIVE: &str = "volume_count_excessive";
 /// Application declares more jobs than allowed.
 pub const JOB_COUNT_EXCESSIVE: &str = "job_count_excessive";
+/// The daemon could not observe an environment's runtime.
+pub const RUNTIME_UNAVAILABLE: &str = "runtime_unavailable";
 /// Route name is used by another route of the application.
 pub const ROUTE_NAME_DUPLICATE: &str = "route_name_duplicate";
 /// Job logical name is duplicated.

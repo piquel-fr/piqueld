@@ -174,7 +174,8 @@ pub(crate) async fn wait_for_accepted(
 /// How ready `wait` waits for a deployment to be.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(crate) enum Readiness {
-    /// The deployment succeeded and every service is observed healthy.
+    /// The deployment succeeded, and its runtime is observed with every
+    /// service healthy.
     Runtime,
     /// Runtime, and every URL of its rendered routes is ready.
     Routes,
@@ -183,8 +184,10 @@ pub(crate) enum Readiness {
 impl Readiness {
     /// What `detail` still lacks, or nothing once it is this ready.
     fn missing(self, detail: &EnvironmentDetailView) -> Result<Option<String>> {
-        if !detail.services_healthy() {
-            return Ok(Some("waiting for healthy services".into()));
+        if !detail.runtime_ready() {
+            return Ok(Some(
+                "waiting for the runtime to be observed healthy".into(),
+            ));
         }
         if matches!(self, Self::Runtime) {
             return Ok(None);
@@ -212,7 +215,8 @@ pub(crate) struct WaitArgs<T: Args> {
     /// A newer deployment ends the wait with exit code 3.
     #[arg(long)]
     deployment: Option<String>,
-    /// `runtime`: it succeeded and its services are observed healthy;
+    /// `runtime`: it succeeded and its runtime is observed with every service
+    /// healthy;
     /// `routes`: also every URL of its routes is ready.
     #[arg(long, value_enum, default_value_t = Readiness::Runtime)]
     ready: Readiness,

@@ -635,13 +635,20 @@ pub struct EnvironmentDetailView {
 }
 
 impl EnvironmentDetailView {
-    /// Whether every service of the current runtime target is observed healthy.
+    /// Whether the runtime was observed and every service of the current
+    /// runtime target is healthy. A target may have no services, so an empty
+    /// service list alone does not mean it was observed.
     #[must_use]
-    pub fn services_healthy(&self) -> bool {
-        self.observed
-            .services
+    pub fn runtime_ready(&self) -> bool {
+        !self
+            .diagnostics
             .iter()
-            .all(ObservedServiceView::healthy)
+            .any(|diagnostic| diagnostic.code == crate::codes::RUNTIME_UNAVAILABLE)
+            && self
+                .observed
+                .services
+                .iter()
+                .all(ObservedServiceView::healthy)
     }
 }
 

@@ -2871,6 +2871,22 @@ fn wait_never_follows_a_newer_deployment_and_fails_or_times_out_with_its_code() 
     }
 }
 
+/// A runtime the daemon could not observe is not ready, even for a target
+/// with no services to wait for.
+#[test]
+fn wait_needs_the_runtime_observed() {
+    let mut unobserved = detail("operation-01", true, "ready");
+    unobserved["observed"]["services"] = json!([]);
+    unobserved["diagnostics"] = json!([{
+        "code": "runtime_unavailable", "message": "Runtime observation is unavailable."
+    }]);
+    let server = wait_server(vec!["succeeded"], vec![unobserved]);
+    let output = run_with_timeout(&server, &["env", "wait", "app-notes-01"], "500ms");
+    server.stop();
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    assert_eq!(support::json_error(&output)["code"], "timeout");
+}
+
 #[test]
 fn deploy_output_carries_the_deployment_fields_agents_need() {
     for no_wait in [true, false] {

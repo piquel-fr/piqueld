@@ -227,9 +227,9 @@ URL that is known is not necessarily ready.
 
 `env wait` and `preview wait` wait for one deployment: `--deployment ID`, or
 the latest one when `wait` starts. They never follow a newer deployment. With
-`--ready runtime` (the default), the deployment must succeed and every service
-of it must be observed healthy (converged, with every desired replica
-healthy); `--ready routes` also waits until every URL is `ready`. If a newer
+`--ready runtime` (the default), the deployment must succeed and its runtime
+must be observed, with every service healthy (converged, with every desired
+replica healthy); `--ready routes` also waits until every URL is `ready`. If a newer
 deployment, or the environment's deletion, supersedes it, `wait` exits 3 with
 `deployment_superseded`; if it
 fails, 5; at the command `--timeout`, 4, which ends only the local wait. Use a

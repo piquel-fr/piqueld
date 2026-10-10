@@ -102,7 +102,7 @@ impl ApplicationService {
                 Ok(observed) => (observed, None),
                 Err(error) => {
                     tracing::warn!(%error,"environment detail observation failed");
-                    (ObservedApplication::default(),Some(DiagnosticView{code:"runtime_unavailable".into(),message:"Runtime observation is unavailable. Saved configuration and deployment history are still available.".into()}))
+                    (ObservedApplication::default(),Some(DiagnosticView{code:piqueld_core::codes::RUNTIME_UNAVAILABLE.into(),message:"Runtime observation is unavailable. Saved configuration and deployment history are still available.".into()}))
                 }
             }
         };
