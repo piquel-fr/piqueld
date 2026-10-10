@@ -701,26 +701,25 @@ report!(CreatedPreviewReport<'_>, self, out, {
         )?,
         None => out.label("Operation", &operation.operation_id)?,
     }
-    self.deployed.render_urls(out)
+    out.urls(self.deployed.urls.iter().flatten())
 });
 
-/// A URL with its state, and what keeps it pending.
-fn url_line(url: &RouteUrl) -> String {
-    let name = url
-        .name
-        .as_ref()
-        .map_or_else(String::new, |name| format!(" ({name})"));
-    match url.state {
-        UrlState::Ready => format!("{}{name} ready", url.url),
-        UrlState::Pending => format!("{}{name} pending: {}", url.url, url.waiting_for()),
-    }
-}
-
-impl Deployed {
-    /// One `URL` label per URL, with its state.
-    pub(crate) fn render_urls(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        for url in self.urls.iter().flatten() {
-            out.label("URL", url_line(url))?;
+impl HumanWriter<'_> {
+    /// One `URL` label per URL, with its name and state, and what keeps it
+    /// pending; every command that shows URLs lists them this way.
+    fn urls<'u>(&mut self, urls: impl IntoIterator<Item = &'u RouteUrl>) -> io::Result<()> {
+        for url in urls {
+            let name = url
+                .name
+                .as_ref()
+                .map_or_else(String::new, |name| format!(" ({name})"));
+            match url.state {
+                UrlState::Ready => self.label("URL", format_args!("{}{name} ready", url.url))?,
+                UrlState::Pending => self.label(
+                    "URL",
+                    format_args!("{}{name} pending: {}", url.url, url.waiting_for()),
+                )?,
+            }
         }
         Ok(())
     }
@@ -732,7 +731,7 @@ report!(Deployed, self, out, {
         "Deployment {} of {} is ready",
         self.deployment_id, self.slug
     ))?;
-    self.render_urls(out)
+    out.urls(self.urls.iter().flatten())
 });
 
 // `url --route`: only the URL, so it can be used as is; `url` warns while
@@ -749,19 +748,7 @@ impl Report for Vec<RouteUrl> {
         if self.is_empty() {
             return out.line("No routes.");
         }
-        out.heading("NAME  URL  STATE")?;
-        for url in self {
-            out.line(format_args!(
-                "{}  {}  {}",
-                url.name.as_ref().map_or("-", |name| name.as_str()),
-                url.url,
-                url.state
-            ))?;
-            if url.state == UrlState::Pending {
-                out.line(format_args!("  waiting for {}", url.waiting_for()))?;
-            }
-        }
-        Ok(())
+        out.urls(self)
     }
 }
 
@@ -874,10 +861,7 @@ report!(EnvironmentShowReport<'_>, self, out, {
     for (name, mounted) in secrets {
         out.label("Secret", format_args!("{name}: {mounted}"))?;
     }
-    for url in self.detail.urls.iter().flatten() {
-        out.label("URL", url_line(url))?;
-    }
-    Ok(())
+    out.urls(self.detail.urls.iter().flatten())
 });
 
 named!(EnvironmentView, environment, names, out, {
@@ -1324,7 +1308,7 @@ pub(crate) struct OperationOutcomeReport<'a> {
 }
 report!(OperationOutcomeReport<'_>, self, out, {
     self.operation.render_human(out)?;
-    self.deployed.render_urls(out)
+    out.urls(self.deployed.urls.iter().flatten())
 });
 
 /// Environment or preview deletion result. `outcome` is present only after

@@ -530,3 +530,31 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
     }
     assert_eq!(text.matches("Waiting for").count(), 1, "{text}");
 }
+
+#[test]
+fn urls_print_one_line_each_with_name_state_and_what_they_wait_for() {
+    let urls: Vec<piqueld_client::RouteUrl> = serde_json::from_value(serde_json::json!([
+        {"name": "web", "url": "https://notes.example.com", "visibility": "public",
+         "service": "web", "port": 3000, "state": "ready", "pending": []},
+        {"name": null, "url": "https://admin.notes.example.com", "visibility": "private",
+         "service": "web", "port": 3000, "state": "pending", "pending": [
+            {"condition": "https", "message": "Ingress is disabled in daemon configuration"},
+            {"condition": "service", "service": "web"}
+        ]}
+    ]))
+    .unwrap();
+    let stdout = Capture::default();
+    let mut console = Console::with_writers(
+        false,
+        false,
+        false,
+        stdout.writer(),
+        Capture::default().writer(),
+    );
+    console.emit(&urls).unwrap();
+    assert_eq!(
+        stdout.text(),
+        "URL: https://notes.example.com (web) ready\n\
+         URL: https://admin.notes.example.com pending: HTTPS (Ingress is disabled in daemon configuration), service web\n"
+    );
+}

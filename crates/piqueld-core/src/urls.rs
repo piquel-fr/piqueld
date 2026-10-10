@@ -89,7 +89,8 @@ impl RouteUrl {
     /// Derives a rendered route's URL and state. It is ready when:
     ///
     /// 1. the gateway acknowledged this exact route (`applied`);
-    /// 2. the listener serving its visibility is healthy now (`ingress`), and
+    /// 2. the listener serving its visibility is enabled and healthy now
+    ///    (`ingress`), and
     ///    the daemon's latest check of this route (same hostname, visibility,
     ///    and target in `ingress.routes`) found it `ready`: DNS resolves to
     ///    that listener, which serves it with a trusted certificate;
@@ -111,10 +112,15 @@ impl RouteUrl {
         if !applied.contains(route) {
             pending.push(UrlCondition::Ingress);
         }
-        // A listener failure observed since the route's check outdates it.
-        // Other applications' network failures do not.
+        // A disabled listener never serves the route, checked or not. A
+        // listener failure observed since the route's check outdates it;
+        // other applications' network failures do not.
         let listener = match (route.visibility, &ingress.public) {
-            (Visibility::Public, _) if !ingress.gateway => Some(&ingress.message),
+            _ if !ingress.enabled => Some("Ingress is disabled in daemon configuration"),
+            (Visibility::Private, _) if !ingress.private.enabled => {
+                Some("Private ingress is disabled in daemon configuration")
+            }
+            (Visibility::Public, _) if !ingress.gateway => Some(ingress.message.as_str()),
             (
                 Visibility::Public,
                 PublicIngressStatus::Tunnel {
@@ -122,17 +128,15 @@ impl RouteUrl {
                     message,
                     ..
                 },
-            ) => Some(message),
+            ) => Some(message.as_str()),
             (Visibility::Public, _) => None,
             (Visibility::Private, _) => {
-                (!ingress.private.healthy).then_some(&ingress.private.message)
+                (!ingress.private.healthy).then_some(ingress.private.message.as_str())
             }
         };
         let https = match status {
-            _ if listener.is_some_and(String::is_empty) => {
-                Some("Its listener is unavailable".into())
-            }
-            _ if let Some(message) = listener => Some(message.clone()),
+            _ if listener.is_some_and(str::is_empty) => Some("Its listener is unavailable".into()),
+            _ if let Some(message) = listener => Some(message.to_owned()),
             Some(status) if status.state == "ready" => None,
             Some(status) => Some(status.message.clone()),
             None => Some(
@@ -293,7 +297,7 @@ mod tests {
         let web = UrlCondition::Service {
             service: ServiceName::parse("web").unwrap(),
         };
-        let cases: [(&str, RouteUrl, Vec<UrlCondition>); 12] = [
+        let cases: [(&str, RouteUrl, Vec<UrlCondition>); 13] = [
             (
                 "gateway failed since the route was checked",
                 derive(|_, ingress, _| {
@@ -312,6 +316,14 @@ mod tests {
                     };
                 }),
                 vec![https("tunnel disconnected")],
+            ),
+            (
+                "ingress disabled, before the route was checked",
+                derive(|_, ingress, _| {
+                    ingress.enabled = false;
+                    ingress.routes.clear();
+                }),
+                vec![https("Ingress is disabled in daemon configuration")],
             ),
             (
                 "another application's network failed",

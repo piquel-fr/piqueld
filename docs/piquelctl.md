@@ -211,11 +211,19 @@ as for environments; deleting and pruning need `apps:delete`.
 
 `env url` and `preview url` print the URL of every route the environment's or
 preview's current deployment renders, with its route name and state: `ready`,
-or `pending` with what it is waiting for. `--route NAME` prints only the URL
-of the [named route](application-manifest.md#routes), and warns on stderr while
-it is pending. The daemon derives the state from what it already observes (see
+or `pending` with what it is waiting for, one line each, as `env show`,
+deployments and `wait` list them:
+
+```text
+URL: https://notes.example.com (web) ready
+URL: https://admin.notes.example.com (admin) pending: HTTPS (No DNS-01 certificate yet)
+```
+
+`--route NAME` prints only the URL of the
+[named route](application-manifest.md#routes), and warns on stderr while it is
+pending. The daemon derives the state from what it already observes (see
 [URL readiness](api.md#url-readiness)); the CLI never probes a URL itself, so a
-URL that is known is not necessarily ready. `env show` lists the same URLs.
+URL that is known is not necessarily ready.
 
 `env wait` and `preview wait` wait for one deployment: `--deployment ID`, or
 the latest one when `wait` starts. They never follow a newer deployment. With

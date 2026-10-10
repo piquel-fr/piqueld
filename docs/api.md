@@ -543,7 +543,8 @@ never probes the URL for a client. A URL is `ready` exactly when nothing in
 1. `ingress`: the gateway acknowledged this exact route (hostname,
    visibility and destination);
 2. `https` (with a `message`): the listener serving the route's visibility is
-   healthy now (the gateway and, in tunnel mode, the tunnel for public routes;
+   enabled (ingress, and private ingress for private routes) and healthy now
+   (the gateway and, in tunnel mode, the tunnel for public routes;
    the apps node for private ones), and the daemon's latest check of this route
    found it `ready`, i.e. DNS answers that listener, which serves the hostname
    with a trusted certificate (a DNS-01 certificate for private routes). A
