@@ -1,3 +1,5 @@
 # `cargo xtask <task>` runs the workspace's development tasks (tools/xtask).
+# Not quiet, so a wait for the build lock (such as `just dev` rebuilding the
+# daemon) or a rebuild of xtask shows up instead of looking like a hang.
 [alias]
-xtask = "run --quiet --package xtask --"
+xtask = "run --package xtask --"
