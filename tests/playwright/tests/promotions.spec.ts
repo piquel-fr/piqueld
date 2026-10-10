@@ -104,10 +104,16 @@ test('deploying and promoting start from a list of environments with their own a
   await expect(promote.getByRole('listitem').getByRole('button')).toHaveText('Promote from staging');
   await expect(promote).toContainText('production');
 
-  // A promoted environment never builds: it promotes from its source.
+  // A promoted environment never builds: it promotes from its source and,
+  // in a chain, into the environments promoted from it.
+  const { generation } = await call(page, 'GET', `applications/${app}`);
+  await call(page, 'POST', `applications/${app}/environments`, { name: 'canary', promote_from: production, expected_generation: generation });
   await page.goto(`/dashboard/applications/${app}/environments/${production}`);
-  await expect(head(page).getByRole('button', { name: 'Promote from staging', exact: true })).toBeVisible();
-  await expect(head(page).getByRole('button', { name: /^(Preview|Deploy)$/ })).toHaveCount(0);
+  await expect(head(page).getByRole('button', { name: /^(Preview|Promote|Promote from staging|Deploy)$/ })).toHaveText(['Promote', 'Promote from staging']);
+  await head(page).getByRole('button', { name: 'Promote', exact: true }).click();
+  const chain = page.getByRole('dialog', { name: 'Promote into an environment' });
+  await expect(chain.getByRole('listitem').locator('.title')).toHaveText(['canary']);
+  await expect(chain.getByRole('listitem').getByRole('button')).toHaveText(['Promote from production']);
 });
 
 test('promoting shows the plan and promotes exactly what was reviewed', async ({ page, account }) => {
@@ -190,18 +196,20 @@ test('an environment builds its own source or receives promoted releases, as one
 test('an environment\'s Secrets tab edits the stored secrets it may mount', async ({ page, account }) => {
   void account;
   const { app, production, staging } = await createPromotion(page);
-  // Production's own key, which staging may not mount and doesn't.
+  // Production's own key, which staging may not mount and doesn't, and one every environment may mount.
   await call(page, 'PUT', `applications/${app}/secrets/production-api-key?environments=${production}`, 'production', { 'X-Expected-Generation': '0' });
+  await call(page, 'PUT', `applications/${app}/secrets/shared?environments=all`, 'shared', { 'X-Expected-Generation': '0' });
 
   await page.goto(`/dashboard/applications/${app}/environments/${staging}`);
   await environmentTab(page, 'Secrets').click();
   const mounted = page.locator('section.card', { has: page.getByRole('heading', { name: 'Mounted secrets', exact: true }) });
   await expect(mounted.getByRole('row').filter({ hasText: 'staging-api-key' })).toContainText('not set');
   const store = page.locator('section.card', { has: page.getByRole('heading', { name: 'Secret store', exact: true }) });
-  await expect(store).toContainText('No stored secret this environment may mount.');
+  await expect(store.getByRole('row').filter({ hasText: 'shared' })).toBeVisible();
   await expect(store).not.toContainText('production-api-key');
 
-  // A new secret may be mounted by this environment only.
+  // A new secret may be mounted by this environment only, even after editing one every environment may mount.
+  await store.getByRole('row').filter({ hasText: 'shared' }).getByRole('button', { name: 'Edit', exact: true }).click();
   const saved = page.waitForRequest(request => request.method() === 'PUT' && request.url().includes(`/applications/${app}/secrets/staging-api-key`));
   await store.getByLabel('Secret name', { exact: true }).fill('staging-api-key');
   await store.getByLabel('Value', { exact: true }).fill('staging');
@@ -214,4 +222,28 @@ test('an environment\'s Secrets tab edits the stored secrets it may mount', asyn
   await page.goto(`/dashboard/applications/${app}/environments/${production}`);
   await environmentTab(page, 'Secrets').click();
   await expect(page.getByText('Its source has no release to promote yet.', { exact: true })).toBeVisible();
+});
+
+test('a preview\'s Secrets tab gives new stored secrets to previews', async ({ page, account }) => {
+  void account;
+  const saved = await call(page, 'POST', 'applications/apply', {
+    manifest: {
+      ...manifest,
+      metadata: { name: 'notes' },
+      spec: { ...manifest.spec, manifest: { path: 'app.toml', repository: { url: 'https://example.com/notes.git', branch: 'main' } } },
+    },
+    expected_generation: 0,
+  });
+  const app = saved.application_id as string;
+  const preview = (await call(page, 'POST', `applications/${app}/previews`, { branch: 'feat/login' })).preview.id as string;
+  await page.goto(`/dashboard/applications/${app}/environments/${preview}`);
+  await environmentTab(page, 'Secrets').click();
+  const store = page.locator('section.card', { has: page.getByRole('heading', { name: 'Secret store', exact: true }) });
+  const request = page.waitForRequest(request => request.method() === 'PUT' && request.url().includes(`/applications/${app}/secrets/preview-key`));
+  await store.getByLabel('Secret name', { exact: true }).fill('preview-key');
+  await store.getByLabel('Value', { exact: true }).fill('preview');
+  await store.getByRole('button', { name: 'Save secret', exact: true }).click();
+  const query = new URL((await request).url()).searchParams;
+  expect([query.get('environments'), query.get('previews')]).toEqual(['', 'true']);
+  await expect(store.getByRole('row').filter({ hasText: 'preview-key' })).toContainText('stored');
 });

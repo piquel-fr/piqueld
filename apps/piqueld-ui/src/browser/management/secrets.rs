@@ -242,24 +242,37 @@ fn StoredSecrets(
                 .map(|s| (s.metadata.generation, s.access.clone()))
         })
     };
-    // Naming a stored secret, or refreshing the list, loads its access.
-    Effect::new(move |_| {
+    // New secrets default to every environment, or on an environment's
+    // page to that environment, or on a preview's to previews.
+    let default_access = move || match scope() {
+        Some(environment) if environment.preview().is_some() => SecretAccess {
+            environments: EnvironmentAccess::Only(BTreeSet::new()),
+            previews: true,
+        },
+        Some(environment) => SecretAccess {
+            environments: EnvironmentAccess::Only(BTreeSet::from([environment.id])),
+            previews: false,
+        },
+        None => SecretAccess::default(),
+    };
+    form.load(&default_access());
+    // Naming a stored secret, or refreshing the list, loads its access;
+    // naming a new one after it starts again from the default.
+    Effect::new(move |editing: Option<bool>| {
         let name = name.get();
-        if let Some(access) = secrets.with(|items| {
+        let access = secrets.with(|items| {
             items
                 .iter()
                 .find(|s| s.metadata.name == name)
                 .map(|s| s.access.clone())
-        }) {
-            form.load(&access);
-        }
-    });
-    if let Some(environment) = mounts.and_then(|_| context.selected_environment()) {
-        form.load(&SecretAccess {
-            environments: EnvironmentAccess::Only(BTreeSet::from([environment.id])),
-            previews: false,
         });
-    }
+        match &access {
+            Some(access) => form.load(access),
+            None if editing == Some(true) => form.load(&default_access()),
+            None => {}
+        }
+        access.is_some()
+    });
     let notify = move || {
         if let Some(changed) = changed {
             changed.run(());
@@ -435,7 +448,7 @@ fn StoredSecrets(
                     <p>
                         {move || {
                             if scope().is_some() {
-                                "Manually set values this environment may mount or mounts, from the application's store, write-only. New ones may be mounted by this environment only, unless you choose otherwise; deploying or promoting it while it mounts a secret it may not use fails before rollout."
+                                "Manually set values this environment may mount or mounts, from the application's store, write-only. New ones may be mounted by this environment only (by previews, on a preview), unless you choose otherwise; deploying or promoting it while it mounts a secret it may not use fails before rollout."
                             } else {
                                 "Manually set values, shared by this application's environments and write-only. Each lists the environments that may mount it; deploying an environment that mounts a secret it may not use fails before rollout."
                             }

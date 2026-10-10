@@ -22,8 +22,8 @@ use piqueld_client::{
 /// generation, then shows the environment's deployments. Without a single target
 /// (an application with several environments or none), Deploy lists the
 /// environments to choose one. A promoted target, which never builds,
-/// offers Promote instead; a tracking one also offers Promote, before
-/// Deploy, into the environments promoted from it. On its own page, Deploy
+/// offers Promote from its source instead. Either also offers Promote,
+/// before its own action, into the environments promoted from it. On its own page, Deploy
 /// doesn't name the environment.
 #[component]
 pub(super) fn DeploymentActions() -> impl IntoView {
@@ -51,6 +51,18 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                 .collect::<Vec<_>>()
         })
     });
+    // Promotes into those environments, from any environment of a chain.
+    let promote_into = move || {
+        view! {
+            <Show when={move || !dependents.with(Vec::is_empty)}>
+                <ChooseEnvironment
+                    label="Promote"
+                    title="Promote into an environment"
+                    environments={dependents}
+                />
+            </Show>
+        }
+    };
     let deploy = move |_| {
         let environment = context.environment_id();
         context.deploy(environment.clone(), move || {
@@ -122,7 +134,12 @@ pub(super) fn DeploymentActions() -> impl IntoView {
         >
             <Show
                 when={move || !promoted.get()}
-                fallback={move || view! { <PromoteAction environment={context.environment_id()} /> }}
+                fallback={move || {
+                    view! {
+                        {promote_into()}
+                        <PromoteAction environment={context.environment_id()} />
+                    }
+                }}
             >
                 <button
                     type="button"
@@ -142,13 +159,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                     {icon(Icon::Eye)}
                     "Preview"
                 </button>
-                <Show when={move || !dependents.with(Vec::is_empty)}>
-                    <ChooseEnvironment
-                        label="Promote"
-                        title="Promote into an environment"
-                        environments={dependents}
-                    />
-                </Show>
+                {promote_into()}
                 <button
                     type="button"
                     class="btn btn-primary"
