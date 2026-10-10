@@ -63,12 +63,16 @@ piquelctl env delete <app> <env>
 piquelctl env deploy <app> [<env>] [--branch <branch> | --commit <sha>]
 piquelctl env reconcile <app> [<env>]
 piquelctl env logs <app> [<env>] [--service <name>]
+piquelctl env wait <app> [<env>] [--deployment <id>] [--ready runtime|routes]
+piquelctl env url <app> [<env>] [--route <name>]
 piquelctl env secret <app> [--env <env>] list|regenerate|delete
 piquelctl preview create <app> --branch <branch> [--slot <slot>]
 piquelctl preview deploy <app> <preview> [--slot <slot>]
 piquelctl preview list <app>
 piquelctl preview show <app> <preview> [--slot <slot>]
 piquelctl preview logs <app> <preview> [--slot <slot>] [--service <name>]
+piquelctl preview wait <app> <preview> [--slot <slot>] [--deployment <id>] [--ready runtime|routes]
+piquelctl preview url <app> <preview> [--slot <slot>] [--route <name>]
 piquelctl preview delete <app> <preview> [--slot <slot>]
 piquelctl preview prune <app> --branch-gone
 piquelctl events --application <application-id> --limit 50
@@ -205,6 +209,33 @@ operations unless `--no-wait`; `delete` and `prune` confirm unless `--yes`.
 Creating, deploying and logs need the `apps:deploy` and `logs:read` permissions
 as for environments; deleting and pruning need `apps:delete`.
 
+`env url` and `preview url` print the URL of every route the environment's or
+preview's current deployment renders, with its route name and state: `ready`,
+or `pending` with what it is waiting for, one line each, as `env show`,
+deployments and `wait` list them:
+
+```text
+URL: https://notes.example.com (web) ready
+URL: https://admin.notes.example.com (admin) pending: HTTPS (No DNS-01 certificate yet)
+```
+
+`--route NAME` prints only the URL of the
+[named route](application-manifest.md#routes), and warns on stderr while it is
+pending. The daemon derives the state from what it already observes (see
+[URL readiness](api.md#url-readiness)); the CLI never probes a URL itself, so a
+URL that is known is not necessarily ready.
+
+`env wait` and `preview wait` wait for one deployment: `--deployment ID`, or
+the latest one when `wait` starts. They never follow a newer deployment. With
+`--ready runtime` (the default), the deployment must succeed and its runtime
+must be observed, with every service healthy (converged, with every desired
+replica healthy); `--ready routes` also waits until every URL is `ready`. If a newer
+deployment, or the environment's deletion, supersedes it, `wait` exits 3 with
+`deployment_superseded`; if it
+fails, 5; at the command `--timeout`, 4, which ends only the local wait. Use a
+longer `--timeout` than the default 30 seconds for builds. On success, `wait`
+prints the deployment like `env deploy` does.
+
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit
 HTTP or HTTPS origin such as `http://127.0.0.1:7845/`; the two transport options are
 mutually exclusive. The default socket is
@@ -250,7 +281,10 @@ written to stderr, so stdout remains valid JSON.
 | `app list` | `{ "items": [{ "application": ApplicationSummary, "environments": [EnvironmentRow] }], "next_cursor": null }` |
 | `app show` | `{ "application": ApplicationView, "environments": [EnvironmentRow] }` |
 | `env list` | `[EnvironmentRow]`, where `EnvironmentRow` is `{ "environment": EnvironmentView, "status": EnvironmentStatusView or null }` |
-| `env show` | `EnvironmentDetailView`, with `"stored": [StoredSecret]` |
+| `env show` | `EnvironmentDetailView` (including its `urls`), with `"stored": [StoredSecret]` |
+| `env url` / `preview url` | `[RouteUrl]` |
+| `env url --route` / `preview url --route` | `RouteUrl` |
+| `env wait` / `preview wait` | `Deployment` |
 | `env create` / `env rename` / `env branch` / `env sync` / `env source` | `EnvironmentView` |
 | `app repository webhook show` | `WebhookView` |
 | `app repository webhook rotate` | `WebhookSecret` |
@@ -271,8 +305,8 @@ written to stderr, so stdout remains valid JSON.
 | `app delete` | `{ "deleted": DeletedApplication, "outcome": "deleted", "volumes_retained": true }` |
 | `env delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": true }` |
 | `env delete` | `{ "accepted": AcceptedOperation, "outcome": "deleted", "volumes_retained": true }` |
-| `preview create --no-wait` | `CreatedPreview` |
-| `preview create` | `CreatedPreview`, with `"outcome": OperationState` |
+| `preview create --no-wait` | `CreatedPreview` and the fields of `Deployment` |
+| `preview create` | `CreatedPreview` and the fields of `Deployment`, with `outcome` and `urls` |
 | `preview list` | `[PreviewView]` |
 | `preview show` | `PreviewView` |
 | `preview deploy` | Same as `env deploy` |
@@ -282,13 +316,97 @@ written to stderr, so stdout remains valid JSON.
 | `preview prune` | `[DeletedPreview]` |
 | `operation --no-wait` | `Operation` |
 | `operation` | `Operation` |
-| `app`/`env` `reconcile` / `deploy` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
-| `app`/`env` `reconcile --no-wait` / `deploy --no-wait` | `AcceptedOperation` |
+| `app`/`env` `reconcile` / `deploy` | `{ "accepted": AcceptedOperation, "operation": Operation }` and the fields of `Deployment`, with `outcome` and `urls` |
+| `app`/`env` `reconcile --no-wait` / `deploy --no-wait` | `AcceptedOperation` (`operation_id`, `environment_id`, `generation`) and the fields of `Deployment` |
 | `events` | `{ "items": [Event], "next_cursor": string or null }` |
 
-The DTO fields and error envelope are defined by the versioned API and the
-`piqueld-client` crate. CLI errors are reported on stderr and never mixed into
-JSON stdout.
+`Deployment` is the CLI's summary of one deployment of an environment or
+preview, flattened into the results above:
+
+| Field | Value |
+| --- | --- |
+| `application_id`, `environment_id` | Stable IDs |
+| `slug` | The environment's name, or the preview's slug (`env.slug`) |
+| `deployment_id`, `operation_id` | The deployment, and the operation that runs it (the same ID) |
+| `release_id` | The release it runs; null until prepared, and for previews |
+| `branch`, `commit` | Where its manifest was read from; null until fetched, and for saved manifests |
+| `outcome` | Its `OperationState`; omitted with `--no-wait` |
+| `urls` | `[RouteUrl]` of its routes once it runs; omitted with `--no-wait` and when it does not run (superseded) |
+
+The DTO fields are defined by the versioned API and the `piqueld-client` crate.
+
+With `--json`, stderr is one JSON object per line too, keyed by its kind:
+`{"info":{"message":…}}`, `{"warning":{"message":…}}`,
+`{"progress":{"task":…,"message":…,"outcome":…}}` (`outcome` once the task
+finished), `{"prompt":{"message":…}}` for a confirmation asked on a terminal,
+and, when the command fails, exactly one
+`{"error":{"code":…,"message":…,"details":…,"request_id":…}}`. An API error keeps the
+daemon's error envelope: its `code`, `message`, `details` and `request_id`.
+Failures the CLI detects itself use the same shape with a stable CLI `code` and
+no `request_id`:
+
+| Code | Exit | Meaning |
+| --- | --- | --- |
+| `usage` | 2 | Invalid arguments |
+| `invalid_input` | 2 | Invalid input, an unknown name, or an unconfirmed action |
+| `invalid_configuration` | 2 | Invalid connection configuration; `details.configuration_source` |
+| `invalid_endpoint` | 2 | A rejected endpoint; `details.endpoint_source` |
+| `connection_failed` | 4 | The daemon could not be reached; `details.endpoint` and `endpoint_source` |
+| `request_timeout` | 4 | A request exceeded `--timeout`; also `details.timeout` and `timeout_source` |
+| `timeout` | 4 | The command exceeded `--timeout`; server-side work goes on |
+| `invalid_response` | 1 | The endpoint does not serve the piqueld API |
+| `conflict` | 3 | An ambiguous name or a blocked plan |
+| `deployment_superseded` | 3 | `wait`'s deployment was superseded; `details.deployment_id` and `superseded_by` |
+| `operation_failed` | 5 | An awaited operation failed; `details.operation` |
+| `interrupted` | 130 | Ctrl-C |
+| `failed` | 1 | Any other failure |
+
+Without `--json`, errors stay human-readable, as below.
+
+## Agents
+
+Agents drive environments and previews with `--json`: stdout is one result
+document, stderr one JSON event per line, and the exit code says what
+happened. A typical run creates, waits, reads the URL and logs, then deletes.
+
+For a preview of a branch:
+
+```sh
+created=$(piquelctl --json preview create notes --branch feat/login --slot agent-2 --no-wait)
+slug=$(jq -r .slug <<<"$created")
+deployment=$(jq -r .deployment_id <<<"$created")
+piquelctl --json --timeout 15m preview wait notes "$slug" --deployment "$deployment" --ready routes
+url=$(piquelctl --json preview url notes "$slug" --route web | jq -r .url)
+piquelctl --json preview logs notes "$slug" --service web --tail 100
+piquelctl --json preview delete notes "$slug" --yes
+```
+
+For an environment, which `env create` adds without deploying:
+
+```sh
+piquelctl --json env create notes staging --branch main --yes
+deployment=$(piquelctl --json env deploy notes staging --yes --no-wait | jq -r .deployment_id)
+piquelctl --json --timeout 15m env wait notes staging --deployment "$deployment" --ready routes
+url=$(piquelctl --json env url notes staging --route web | jq -r .url)
+piquelctl --json env logs notes staging --service web --tail 100
+piquelctl --json env delete notes staging --yes
+```
+
+Passing the `deployment_id` from the deploy or create result makes `wait`
+follow exactly that deployment, even if someone deploys again in between.
+Without `--no-wait`, `deploy` and `create` wait for the deployment
+themselves and return its `outcome` and `urls`, which can still be `pending`:
+`wait --ready routes` is what waits for them to be ready.
+
+Branch on the exit code, then read the `error` event on stderr:
+
+| Exit | Meaning | Typical reaction |
+| --- | --- | --- |
+| 0 | Done; for `wait`, as ready as asked | Continue |
+| 2 | Invalid command or input (`usage`, `invalid_input`, API validation codes) | Fix the command; retrying will not help |
+| 3 | Conflict: `deployment_superseded`, `preview_limit_reached` (its `details` list the previews to delete), a revision precondition | Read the newer state; wait for `details.superseded_by`, or delete a preview |
+| 4 | Unavailable or timed out (`connection_failed`, `timeout`) | Retry the read or `wait`; server-side work was not cancelled |
+| 5 | The deployment failed (`operation_failed`; `details.operation` names the phase and error) | Read `logs`, fix, deploy again |
 
 ## Connection failures
 
@@ -316,9 +434,10 @@ profile files report a location and a safe error category instead.
 These diagnostics use the original request and resolved configuration. They do
 not probe other targets, inspect permissions, or check database, Docker, or Swarm
 readiness. Unexpected HTTP responses and invalid API data include connection
-context; ordinary application errors keep their existing reporting. Diagnostics
-remain human-readable on stderr with `--json` or `--quiet`, and exit codes and
-successful output are unchanged.
+context; ordinary application errors keep their existing reporting. With
+`--json`, the same facts are the error's `details` (see the JSON errors above);
+with `--quiet`, diagnostics stay human-readable. Exit codes and successful
+output are unchanged.
 
 ## Field editing
 
@@ -356,6 +475,7 @@ piquelctl app route add notes notes.example.com web 3000 --visibility public --y
 piquelctl app route add notes admin.notes.example.com admin 8080 --yes
 piquelctl app route redirect notes www.notes.example.com https://notes.example.com --visibility public --yes
 piquelctl app route visibility notes admin.notes.example.com private --yes
+piquelctl app route name notes notes.example.com web --yes
 piquelctl app route list notes
 piquelctl app route remove notes notes.example.com --yes
 piquelctl env visibility notes staging private --yes
@@ -384,9 +504,11 @@ concurrent changes. `route redirect` defaults to status 308 and appends the
 request path and query to the destination; use `--status` and
 `--no-preserve-path` to change that. Routes are private (tailnet only) unless
 added with `--visibility public`; `route visibility` changes an existing route,
+`route add --name` and `route redirect --name` name a new route, `route name`
+names an existing one (or removes its name without `NAME`),
 and `env visibility` caps every route of one environment at `private` (or lifts
 the cap with `public`) in the saved manifest. Deploy after saving to activate or
-remove routing. `route list` shows each deployed route with its environment,
+remove routing. `route list` shows each deployed route with its name, environment,
 effective visibility, state, destination, whether piqueld
 [manages its DNS records](ingress.md#managed-dns-records) (`manual`, `managed`,
 `pending` or `dns_conflict`) and the records its hostname needs, followed by the
@@ -546,7 +668,8 @@ be inspected with `piquelctl operation <id>`.
 The commonly useful exit codes are 0 for success or supersession, 1 for a general error, 2 for
 usage or input errors, 3 for conflicts, 4 for unavailable or timed
 out requests, 5 for a failed operation, and 130 when local operation waiting is
-interrupted.
+interrupted. `wait` uses the same codes, except that supersession is a
+conflict (3): it waits for one deployment, so another one running is not success.
 
 The dashboard provides application management forms and recent application logs. Remote
 registry management and advanced interactive CLI flows remain future work.
@@ -613,7 +736,7 @@ Every event is rendered and flushed as it occurs; output is not collected until
 the command ends. Terminal progress uses independently tracked task rows and
 permanent completion lines. Redirected progress prints meaningful transitions,
 without repeated identical updates. JSON remains a single result document, not
-a progress stream; stderr stays human-readable in JSON mode. Paginated results
+a progress stream; with `--json`, stderr events are JSON lines. Paginated results
 can collect typed records before that document is emitted. If an application's
 status cannot be fetched during `app list`, its status is `null` and a contextual
 warning is emitted immediately; other applications are still returned.
@@ -627,7 +750,8 @@ progress and final error reporting are best effort.
 Internally, command handlers emit typed `Report` values through one `Console`;
 they do not branch on `--json` or `--quiet`. Reports define their JSON type and
 stream human rendering through `HumanWriter`. Contextual errors and warnings
-share a borrowed diagnostic renderer. Task handles may be cloned across workers,
+share a borrowed diagnostic renderer, whose `--json` form is one stderr event;
+every error is one `CliError` with one JSON serialization. Task handles may be cloned across workers,
 but ordinary console writes remain serialized. Only explicit task completion
 prints an outcome; dropping the last unfinished handle clears its transient row
 without claiming the server-side operation was cancelled.

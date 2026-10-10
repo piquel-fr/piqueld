@@ -637,6 +637,11 @@ pub enum SecretEncoding {
 pub struct Route {
     /// Exact public DNS hostname.
     pub hostname: Template,
+    /// Stable name, unique within the application, that selects this route in
+    /// every environment and preview, e.g. `piquelctl env url --route web`.
+    /// Declared after `hostname`, so routes stay ordered by hostname.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Who may connect; `private` (tailnet only) by default. Its environment's
     /// ceiling can make it stricter, never looser.
     #[serde(default)]
@@ -654,11 +659,12 @@ pub struct Route {
 }
 
 impl Route {
-    /// A route proxying `hostname` to a service's internal HTTP port.
+    /// An unnamed route proxying `hostname` to a service's internal HTTP port.
     #[must_use]
     pub fn service(hostname: String, visibility: Visibility, service: String, port: u16) -> Self {
         Self {
             hostname: hostname.into(),
+            name: None,
             visibility,
             service: Some(service),
             port: Some(port),
@@ -666,16 +672,23 @@ impl Route {
         }
     }
 
-    /// A route redirecting `hostname` without reaching a service.
+    /// An unnamed route redirecting `hostname` without reaching a service.
     #[must_use]
     pub fn redirect(hostname: String, visibility: Visibility, redirect: Redirect) -> Self {
         Self {
             hostname: hostname.into(),
+            name: None,
             visibility,
             service: None,
             port: None,
             redirect: Some(redirect),
         }
+    }
+
+    /// This route with `name`, or unnamed.
+    #[must_use]
+    pub fn named(self, name: Option<String>) -> Self {
+        Self { name, ..self }
     }
 }
 

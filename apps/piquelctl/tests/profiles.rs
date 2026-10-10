@@ -309,6 +309,18 @@ fn connection_failures_identify_the_effective_endpoint_source() {
         let output = fixture.run(&args, &env);
         assert_eq!(output.status.code(), Some(4));
         assert_eq!(output.stdout, b"");
+        if args.contains(&"--json") {
+            // The same facts, as data.
+            let error = support::json_error(&output);
+            assert_eq!(error["code"], "connection_failed");
+            assert_eq!(
+                error["details"]["endpoint"],
+                format!("Unix socket {endpoint}")
+            );
+            assert_eq!(error["details"]["endpoint_source"], source);
+            assert!(error["details"].get("timeout").is_none());
+            continue;
+        }
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
             error.contains(&format!("Endpoint source: {source}")),

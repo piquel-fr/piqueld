@@ -149,6 +149,7 @@ impl Ingress {
             health: RwLock::new(IngressStatus {
                 enabled,
                 healthy: false,
+                gateway: false,
                 message: "Waiting for gateway reconciliation".into(),
                 public: PublicIngressStatus::default(),
                 private: PrivateIngressStatus::default(),
@@ -496,6 +497,7 @@ impl Ingress {
         }
         let mut health = self.health.write().await;
         health.healthy = healthy;
+        health.gateway = gateway;
         health.public = public;
         health.private = private;
         health.message = match &result {
@@ -618,6 +620,7 @@ impl Ingress {
                 }
                 RouteStatus {
                     environment_id: id.to_string(),
+                    name: route.name.clone(),
                     hostname: route.hostname.to_string(),
                     visibility: route.visibility,
                     dns_state: dns.state,

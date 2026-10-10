@@ -3,7 +3,8 @@
 //! and `app logs`.
 use crate::{
     cli::{Cli, DeletionFlags, LogArgs, OperationFlags, RevisionArgs},
-    commands::{resolve_application, wait_for_accepted, wait_for_deletion, wait_for_operation},
+    commands::{resolve_application, wait_for_deletion, wait_for_operation},
+    deployments::{Target, UrlArgs, WaitArgs, wait_for_accepted},
     editing::{EditFlags, save_loaded, visibility},
     error::{CliError, ErrorKind, ErrorReport, Result},
     output::{
@@ -117,6 +118,11 @@ pub(crate) enum EnvCommand {
         #[command(flatten)]
         window: LogArgs,
     },
+    /// Wait until a deployment of an environment is ready. Exits 3 if a newer
+    /// deployment supersedes it, 5 if it fails, and 4 at `--timeout`.
+    Wait(WaitArgs<EnvironmentArgs>),
+    /// Print the URLs of an environment's routes, and whether each is ready.
+    Url(UrlArgs<EnvironmentArgs>),
 }
 
 /// An application and, when it has several, one of its environments.
@@ -238,9 +244,10 @@ impl EnvCommand {
                 reconcile(cli, client, console, (&application, &environment), flags).await
             }
             Self::Logs { target, window } => {
-                let (_, environment) = target.resolve(client).await?;
-                logs(console, client, &environment, window).await
+                logs(console, client, &target.resolve(client).await?.1, window).await
             }
+            Self::Wait(args) => args.run(console, client).await,
+            Self::Url(args) => args.run(console, client).await,
         }
     }
 }
@@ -640,6 +647,12 @@ impl EnvironmentArgs {
     }
 }
 
+impl Target for EnvironmentArgs {
+    async fn environment(&self, client: &Client) -> Result<EnvironmentView> {
+        Ok(self.resolve(client).await?.1)
+    }
+}
+
 /// Loads an application and selects one environment: the named one, or the
 /// only one when `environment` is omitted. Never picks one of several silently.
 pub(crate) async fn select(
@@ -763,7 +776,7 @@ pub(crate) async fn deploy(
         )
     })
     .await?;
-    let result = wait_for_accepted(console, client, flags.no_wait, &accepted).await;
+    let result = wait_for_accepted(console, client, environment, flags.no_wait, &accepted).await;
     // The outcome matters more than its warnings, so failing to read them is ignored.
     if !flags.no_wait
         && let Ok(deployments) = client.deployments(environment.id.as_str(), None).await
@@ -805,7 +818,7 @@ pub(crate) async fn reconcile(
         client.reconcile_environment(environment.id.as_str(), flags.expected_generation)
     })
     .await?;
-    wait_for_accepted(console, client, flags.no_wait, &accepted).await
+    wait_for_accepted(console, client, environment, flags.no_wait, &accepted).await
 }
 
 /// Emits a bounded snapshot of runtime logs, warning when the daemon truncated it.

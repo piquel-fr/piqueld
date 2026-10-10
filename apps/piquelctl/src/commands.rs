@@ -9,16 +9,16 @@ use crate::{
     output::{
         Console, TaskOutcome,
         reports::{
-            ApplicationDeletionReport, ApplicationRow, OperationOutcomeReport,
-            SavedDeploymentReport, ShowReport, StatusReport, ValidManifestReport,
+            ApplicationDeletionReport, ApplicationRow, SavedDeploymentReport, ShowReport,
+            StatusReport, ValidManifestReport,
         },
     },
     support::{confirm, looks_like_application_id, manifest_name, read_manifest, retry_transport},
 };
 use futures_util::StreamExt;
 use piqueld_client::{
-    AcceptedOperation, ApplicationSummary, ApplicationView, Client, ClientError,
-    ListApplicationsOptions, Operation, OperationState, Page,
+    ApplicationSummary, ApplicationView, Client, ClientError, ListApplicationsOptions, Operation,
+    OperationState, Page,
 };
 use serde_json::json;
 use std::{
@@ -27,7 +27,9 @@ use std::{
 };
 use tokio::time;
 
-use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_description};
+use crate::support::{
+    DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, SETTLE_INTERVAL, transport_description,
+};
 
 /// Dispatches every connected command. `login` and `profiles` never reach here:
 /// `main` handles them before the timeout supervisor starts.
@@ -484,25 +486,6 @@ async fn delete(
     console.emit(&ApplicationDeletionReport::completed(&deleted))
 }
 
-/// Emits an accepted operation as is with `no_wait`, otherwise waits for it and
-/// emits its outcome.
-pub(crate) async fn wait_for_accepted(
-    console: &mut Console,
-    client: &Client,
-    no_wait: bool,
-    accepted: &AcceptedOperation,
-) -> Result<()> {
-    if no_wait {
-        return console.emit(accepted);
-    }
-    let operation = wait_for_operation(console, client, &accepted.operation_id).await?;
-    console.emit(&OperationOutcomeReport {
-        accepted,
-        outcome: operation.state,
-        operation: &operation,
-    })
-}
-
 /// Shows one operation, polling until it reaches a terminal state unless `--no-wait`.
 async fn operation(console: &mut Console, client: &Client, args: &OperationArgs) -> Result<()> {
     let operation = if args.no_wait {
@@ -607,24 +590,65 @@ pub(crate) async fn wait_for_operation(
     client: &Client,
     operation_id: &str,
 ) -> Result<Operation> {
+    wait_for_operation_until(console, client, operation_id, async |operation| {
+        Ok(Settled::Done(operation))
+    })
+    .await
+}
+
+/// Whether a terminal operation's caller is done waiting.
+pub(crate) enum Settled<T> {
+    Done(T),
+    /// Keep polling; the message is shown as progress.
+    Waiting(String),
+}
+
+/// Polls an operation like [`wait_for_operation`]. Once it succeeded or was
+/// superseded, `settle` decides whether waiting is over; while it is not,
+/// the operation is polled again, so a retry that ends differently counts.
+pub(crate) async fn wait_for_operation_until<T>(
+    console: &mut Console,
+    client: &Client,
+    operation_id: &str,
+    mut settle: impl AsyncFnMut(Operation) -> Result<Settled<T>>,
+) -> Result<T> {
     let progress = console.start_task(operation_id);
     loop {
         let operation = client.operation(operation_id).await?;
-        if operation.state.terminal() {
-            progress.finish(
-                OperationProgress::outcome(&operation),
-                &OperationProgress::message(&operation),
-            );
-            return finish_operation(operation);
-        }
-        progress.update(&OperationProgress::message(&operation));
-        time::sleep(POLL_INTERVAL).await;
+        let pause = if operation.state.terminal() {
+            let outcome = OperationProgress::outcome(&operation);
+            let message = OperationProgress::message(&operation);
+            match finish_operation(operation) {
+                Ok(operation) => match settle(operation).await {
+                    Ok(Settled::Done(value)) => {
+                        progress.finish(outcome, &message);
+                        return Ok(value);
+                    }
+                    Ok(Settled::Waiting(waiting)) => {
+                        progress.update(&waiting);
+                        SETTLE_INTERVAL
+                    }
+                    Err(error) => {
+                        progress.finish(TaskOutcome::Failed, &error.to_string());
+                        return Err(error);
+                    }
+                },
+                Err(error) => {
+                    progress.finish(outcome, &message);
+                    return Err(error);
+                }
+            }
+        } else {
+            progress.update(&OperationProgress::message(&operation));
+            POLL_INTERVAL
+        };
+        time::sleep(pause).await;
     }
 }
 
 /// Accepts `Succeeded` and `Superseded` terminal states; any other state becomes an
 /// operation error whose details carry the full operation for the error report.
-fn finish_operation(operation: Operation) -> Result<Operation> {
+pub(crate) fn finish_operation(operation: Operation) -> Result<Operation> {
     if matches!(
         operation.state,
         OperationState::Succeeded | OperationState::Superseded

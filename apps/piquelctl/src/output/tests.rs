@@ -45,6 +45,11 @@ impl DiagnosticReport for Sample {
         out.label("Error", "failure")?;
         out.label("Hint", "retry")
     }
+    fn event(&self) -> Event<'_> {
+        Event::Warning {
+            message: "failure".into(),
+        }
+    }
 }
 
 #[test]
@@ -70,18 +75,39 @@ fn roles_route_and_flush_before_returning_in_every_mode() {
             console.info("routine").unwrap();
             assert_eq!(stderr.text().contains("routine"), !quiet);
             console.warning("incomplete").unwrap();
-            assert!(stderr.text().contains("Warning: incomplete\n"));
+            assert!(stderr.text().contains(if json {
+                "{\"warning\":{\"message\":\"incomplete\"}}\n"
+            } else {
+                "Warning: incomplete\n"
+            }));
             let before = stderr.flushes();
             console.warning_report(&Sample).unwrap();
             assert_eq!(stderr.flushes(), before + 1, "context is one flushed event");
             console.prompt("Continue? ").unwrap();
-            assert!(stderr.text().ends_with("Continue? "));
+            assert!(stderr.text().ends_with(if json {
+                "{\"prompt\":{\"message\":\"Continue?\"}}\n"
+            } else {
+                "Continue? "
+            }));
             console.error(&Sample);
             let task = console.start_task("task");
             task.update("running");
             task.finish(TaskOutcome::Succeeded, "done");
-            assert_eq!(stderr.text().contains("task:"), !quiet);
+            assert_eq!(
+                stderr.text().contains(if json {
+                    "{\"progress\":{\"task\":\"task\",\"message\":\"done [0s]\",\"outcome\":\"succeeded\"}}"
+                } else {
+                    "task: succeeded · done"
+                }),
+                !quiet
+            );
             assert!(!stdout.text().contains("task"));
+            if json {
+                // Every stderr event is a JSON line.
+                for line in stderr.text().lines() {
+                    serde_json::from_str::<serde_json::Value>(line).unwrap();
+                }
+            }
         }
     }
 }
@@ -380,6 +406,7 @@ fn status_and_dns_refresh_list_images_dns_providers_certificate_failures_and_pre
     let ingress = piqueld_client::system::IngressStatus {
         enabled: true,
         healthy: true,
+        gateway: true,
         message: "Caddy is running".into(),
         public: piqueld_client::system::PublicIngressStatus::Tunnel {
             id: "6ff42ae2-765d-4adf-8112-31c55c1551ef".into(),
@@ -439,6 +466,7 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
     let route = |hostname: &str, visibility, dns, dns_state, state: &str| RouteRow {
         environment: "staging".into(),
         route: RouteStatus {
+            name: None,
             environment_id: "env-1".into(),
             hostname: hostname.into(),
             visibility,
@@ -452,7 +480,7 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
             message: "Waiting for the gateway configuration to be applied".into(),
         },
     };
-    let rows = vec![
+    let mut rows = vec![
         route(
             "admin.example.com",
             Visibility::Private,
@@ -481,6 +509,7 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
             "ready",
         ),
     ];
+    rows[1].route.name = Some(piqueld_client::RouteName::parse("web").unwrap());
     let stdout = Capture::default();
     let mut console = Console::with_writers(
         false,
@@ -492,12 +521,40 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
     console.emit(&rows).unwrap();
     let text = stdout.text();
     for expected in [
-        "admin.example.com  staging  private  pending  web:3000  managed  A/AAAA -> 100.64.0.1, fd7a:115c:a1e0::1",
+        "admin.example.com  -  staging  private  pending  web:3000  managed  A/AAAA -> 100.64.0.1, fd7a:115c:a1e0::1",
         "  Waiting for the gateway configuration to be applied",
-        "example.com  staging  public  ready  web:3000  manual  A/AAAA -> this server's public addresses",
-        "www.example.com  staging  public  ready  web:3000  dns_conflict  CNAME (proxied) -> 6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.com",
+        "example.com  web  staging  public  ready  web:3000  manual  A/AAAA -> this server's public addresses",
+        "www.example.com  -  staging  public  ready  web:3000  dns_conflict  CNAME (proxied) -> 6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.com",
     ] {
         assert!(text.contains(expected), "{text}");
     }
     assert_eq!(text.matches("Waiting for").count(), 1, "{text}");
+}
+
+#[test]
+fn urls_print_one_line_each_with_name_state_and_what_they_wait_for() {
+    let urls: Vec<piqueld_client::RouteUrl> = serde_json::from_value(serde_json::json!([
+        {"name": "web", "url": "https://notes.example.com", "visibility": "public",
+         "service": "web", "port": 3000, "state": "ready", "pending": []},
+        {"name": null, "url": "https://admin.notes.example.com", "visibility": "private",
+         "service": "web", "port": 3000, "state": "pending", "pending": [
+            {"condition": "https", "message": "Ingress is disabled in daemon configuration"},
+            {"condition": "service", "service": "web"}
+        ]}
+    ]))
+    .unwrap();
+    let stdout = Capture::default();
+    let mut console = Console::with_writers(
+        false,
+        false,
+        false,
+        stdout.writer(),
+        Capture::default().writer(),
+    );
+    console.emit(&urls).unwrap();
+    assert_eq!(
+        stdout.text(),
+        "URL: https://notes.example.com (web) ready\n\
+         URL: https://admin.notes.example.com pending: HTTPS (Ingress is disabled in daemon configuration), service web\n"
+    );
 }

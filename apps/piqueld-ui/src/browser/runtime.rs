@@ -1,10 +1,15 @@
-//! Environment runtime overview: lifecycle status, observed services, and diagnostics.
+//! Environment runtime overview: lifecycle status, URLs, observed services,
+//! and diagnostics.
 use super::format::timestamp;
-use super::ui::{Icon, Tone, badge, empty, health_badge, icon, notice, operation_badge, when};
+use super::ui::{
+    Icon, Tone, badge, empty, health_badge, icon, notice, operation_badge, route_name, when,
+};
 use super::{DashboardSignals, dashboard_context, load_detail};
 use crate::state::ApplicationHealth;
 use leptos::prelude::*;
-use piqueld_client::{Client, DiagnosticView, EnvironmentDetailView, ObservedServiceView};
+use piqueld_client::{
+    Client, DiagnosticView, EnvironmentDetailView, ObservedServiceView, RouteUrl, UrlState,
+};
 
 /// Live runtime detail for an environment page's Overview tab.
 #[component]
@@ -51,8 +56,8 @@ pub(super) fn RuntimeOverview() -> impl IntoView {
 }
 
 /// Loaded detail: a stale-data warning if the last detail refresh failed, the
-/// runtime status, observed services, and diagnostics cards, and a button that
-/// reloads only this application's detail.
+/// runtime status, URLs, observed services, and diagnostics cards, and a
+/// button that reloads only this application's detail.
 fn detail_view(
     detail: &EnvironmentDetailView,
     signals: DashboardSignals,
@@ -188,6 +193,35 @@ fn detail_view(
                     <dt>"Updated"</dt>
                     <dd>{timestamp(app.updated_at_ms)}</dd>
                 </dl>
+            </section> <section class="card card-flush" aria-labelledby="urls-title">
+                <header>
+                    <div>
+                        <h3 id="urls-title">"URLs"</h3>
+                        <p>"Routes of the current runtime target, and whether each is reachable."</p>
+                    </div>
+                </header>
+                {match detail.urls.as_deref() {
+                    None => empty("This daemon does not report URLs."),
+                    Some([]) => empty("No routes are deployed in this environment."),
+                    Some(_) => {
+                    view! {
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>"URL"</th>
+                                    <th>"Name"</th>
+                                    <th>"Visibility"</th>
+                                    <th>"Destination"</th>
+                                    <th>"State"</th>
+                                    <th>"Details"</th>
+                                </tr>
+                            </thead>
+                            <tbody>{detail.urls.iter().flatten().map(url_row).collect_view()}</tbody>
+                        </table>
+                    }
+                        .into_any()
+                    }
+                }}
             </section> <section class="card card-flush" aria-labelledby="observed-title">
                 <header>
                     <div>
@@ -240,6 +274,37 @@ fn detail_view(
         </div>
     }
     .into_any()
+}
+
+/// Table row for one URL: a link with its name, state, and what keeps it pending.
+fn url_row(url: &RouteUrl) -> AnyView {
+    let tone = match url.state {
+        UrlState::Ready => Tone::Ok,
+        UrlState::Pending => Tone::Pending,
+    };
+    view! {
+        <tr>
+            <td>
+                <a href={url.url.clone()} target="_blank" rel="noopener noreferrer">
+                    {url.url.clone()}
+                </a>
+            </td>
+            <td>{route_name(url.name.clone())}</td>
+            <td>{url.visibility.to_string()}</td>
+            <td>
+                <code>{url.target.to_string()}</code>
+            </td>
+            <td>{badge(tone, url.state.to_string())}</td>
+            <td class="muted">{waiting_for(url)}</td>
+        </tr>
+    }
+    .into_any()
+}
+
+/// What keeps a URL pending, e.g. `Waiting for: ingress, DNS pending`, or
+/// nothing once it is ready.
+fn waiting_for(url: &RouteUrl) -> Option<String> {
+    (!url.pending.is_empty()).then(|| format!("Waiting for: {}", url.waiting_for()))
 }
 
 fn observed_service_row(service: &ObservedServiceView) -> AnyView {

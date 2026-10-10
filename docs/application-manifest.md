@@ -875,11 +875,20 @@ service repoints its jobs; removing a service removes them.
 
 ```toml
 [[spec.routes]]
+name = "web"
 hostname = "notes.example.com"
 service = "web"
 port = 3000
 visibility = "public"
 ```
+
+`name` is optional. It gives the route a stable name, unique within the
+application, with the same rules as service names (1–63 lowercase letters,
+digits or hyphens, starting with a letter and ending with a letter or digit).
+It cannot reference variables, so it is the same in every environment and
+preview, whatever hostname the route renders there:
+`piquelctl preview url notes feat/login --route web` always prints the `web`
+route's URL. Duplicate names fail with `route_name_duplicate`.
 
 `visibility` is `public` (the internet) or `private` (only the tailnet, on the
 same hostname), and defaults to `private`. `[spec.environments.<name>]

@@ -9,7 +9,7 @@ use piqueld_core::{
     api::{
         ApplicationSummary, ApplicationView, DiagnosticView, EnvironmentDetailView,
         EnvironmentStatusView, EnvironmentView, MAX_APPLICATION_PAGE_SIZE, ManifestChange, Page,
-        PlanView, ServiceRolloutView,
+        PlanView, RouteUrl, ServiceRolloutView,
     },
     compile_application,
     manifest::{RenderContext, RenderTarget, Rendering, RepositoryManifest, ValidatedTemplate},
@@ -102,7 +102,7 @@ impl ApplicationService {
                 Ok(observed) => (observed, None),
                 Err(error) => {
                     tracing::warn!(%error,"environment detail observation failed");
-                    (ObservedApplication::default(),Some(DiagnosticView{code:"runtime_unavailable".into(),message:"Runtime observation is unavailable. Saved configuration and deployment history are still available.".into()}))
+                    (ObservedApplication::default(),Some(DiagnosticView{code:piqueld_core::codes::RUNTIME_UNAVAILABLE.into(),message:"Runtime observation is unavailable. Saved configuration and deployment history are still available.".into()}))
                 }
             }
         };
@@ -126,6 +126,7 @@ impl ApplicationService {
             (None, Some(source)) => self.next_promotion_manifest(source).await?,
             (None, None) => None,
         };
+        let urls = self.urls(&stored, &observed_view.services).await?;
         Ok(EnvironmentDetailView {
             manifest,
             release,
@@ -135,6 +136,7 @@ impl ApplicationService {
             observed: observed_view,
             latest_operation,
             diagnostics,
+            urls: Some(urls),
         })
     }
     /// The manifest a promotion from `source` would deploy next: that of the
@@ -155,6 +157,32 @@ impl ApplicationService {
         Ok(Some(release.release.template().clone().with_name(
             stored.application.application.metadata().name.clone(),
         )))
+    }
+    /// The URL of every route the current runtime target renders, with its
+    /// state derived from the gateway's acknowledged routes, listener health,
+    /// the latest route checks, and `services` as observed.
+    async fn urls(
+        &self,
+        stored: &StoredEnvironment,
+        services: &[piqueld_core::api::ObservedServiceView],
+    ) -> Result<Vec<RouteUrl>, ApplicationError> {
+        let Some(target) = &stored.resolved else {
+            return Ok(Vec::new());
+        };
+        let id = &stored.environment.id;
+        let applied = self.store.applied_routes(id).await?;
+        let mut ingress = match &self.ingress {
+            Some(ingress) => ingress.status().await,
+            None => piqueld_core::api::IngressStatus::default(),
+        };
+        ingress
+            .routes
+            .retain(|status| status.environment_id == id.as_str());
+        Ok(target
+            .routes
+            .iter()
+            .map(|route| RouteUrl::derive(route, &applied, &ingress, services))
+            .collect())
     }
     /// Checks a preview's preconditions: `grants` may save `current` (or
     /// create it when absent), and the optional `expected` generation and

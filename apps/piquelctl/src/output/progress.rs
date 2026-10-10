@@ -1,5 +1,5 @@
 //! Task presentation only: callers supply domain-independent labels and outcomes.
-use super::{Escaped, HumanWriter, SharedWriter};
+use super::{Escaped, Event, HumanWriter, SharedWriter};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::{
     io,
@@ -30,6 +30,8 @@ enum Backend {
     Terminal(MultiProgress),
     /// One permanent line per start, change, and finish (logs, pipes, `TERM=dumb`).
     Plain,
+    /// One `progress` event line per start, change, and finish (`--json`).
+    Json,
     /// Nothing is printed (quiet mode).
     Hidden,
 }
@@ -45,9 +47,11 @@ struct Output {
 }
 
 impl ProgressOutput {
-    pub(super) fn new(writer: SharedWriter, terminal: bool, quiet: bool) -> Self {
+    pub(super) fn new(writer: SharedWriter, terminal: bool, quiet: bool, json: bool) -> Self {
         let backend = if quiet {
             Backend::Hidden
+        } else if json {
+            Backend::Json
         } else if terminal {
             Backend::Terminal(MultiProgress::with_draw_target(ProgressDrawTarget::stderr()))
         } else {
@@ -74,7 +78,6 @@ impl ProgressOutput {
     /// Starts a task: a ticking spinner on terminals, a `label: started` line in plain
     /// mode, or nothing when hidden.
     pub(super) fn start(&self, label: &str) -> ProgressTask {
-        let label = Escaped(label).to_string();
         let bar = match &self.inner.backend {
             Backend::Terminal(multi) => {
                 let bar = multi.add(ProgressBar::new_spinner());
@@ -82,12 +85,12 @@ impl ProgressOutput {
                     ProgressStyle::with_template("{spinner} {prefix}: {msg} [{elapsed}]")
                         .expect("static progress template"),
                 );
-                bar.set_prefix(label.clone());
+                bar.set_prefix(Escaped(label).to_string());
                 bar.enable_steady_tick(Duration::from_millis(100));
                 Some(bar)
             }
-            Backend::Plain => {
-                self.inner.line(&label, "started");
+            Backend::Plain | Backend::Json => {
+                self.inner.line(label, "started", None);
                 None
             }
             Backend::Hidden => None,
@@ -95,7 +98,7 @@ impl ProgressOutput {
         ProgressTask {
             state: Arc::new(Mutex::new(Task {
                 output: Arc::clone(&self.inner),
-                label,
+                label: label.to_owned(),
                 bar,
                 started: Instant::now(),
                 last: None,
@@ -113,8 +116,9 @@ impl Output {
         }
     }
 
-    /// Prints a permanent `label: message` line (best effort, skipped when hidden).
-    fn line(&self, label: &str, message: &str) {
+    /// Prints a permanent `label: message` line, or a `progress` event with
+    /// `--json` (best effort, skipped when hidden).
+    fn line(&self, label: &str, message: &str, outcome: Option<TaskOutcome>) {
         if matches!(self.backend, Backend::Hidden) {
             return;
         }
@@ -125,7 +129,19 @@ impl Output {
                 .writer
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            HumanWriter::new(writer.as_mut()).line(format_args!("{label}: {message}"))?;
+            if matches!(self.backend, Backend::Json) {
+                Event::Progress {
+                    task: label,
+                    message,
+                    outcome: outcome.map(TaskOutcome::text),
+                }
+                .write(writer.as_mut())?;
+            } else {
+                let outcome =
+                    outcome.map_or_else(String::new, |outcome| format!("{} · ", outcome.text()));
+                HumanWriter::new(writer.as_mut())
+                    .line(format_args!("{label}: {outcome}{message}"))?;
+            }
             writer.flush()
         });
     }
@@ -149,16 +165,15 @@ impl ProgressTask {
         if task.finished || matches!(task.output.backend, Backend::Hidden) {
             return;
         }
-        let message = Escaped(message).to_string();
-        if task.last.as_ref() == Some(&message) {
+        if task.last.as_deref() == Some(message) {
             return;
         }
         if let Some(bar) = &task.bar {
-            bar.set_message(message.clone());
+            bar.set_message(Escaped(message).to_string());
         } else {
-            task.output.line(&task.label, &message);
+            task.output.line(&task.label, message, None);
         }
-        task.last = Some(message);
+        task.last = Some(message.to_owned());
     }
 
     /// Clears the spinner and prints the permanent completion line. Idempotent.
@@ -180,12 +195,8 @@ impl ProgressTask {
         }
         task.output.line(
             &task.label,
-            &format!(
-                "{} · {} [{}s]",
-                outcome.text(),
-                Escaped(message),
-                task.started.elapsed().as_secs()
-            ),
+            &format!("{message} [{}s]", task.started.elapsed().as_secs()),
+            Some(outcome),
         );
     }
 }
@@ -193,12 +204,12 @@ impl ProgressTask {
 /// Shared state behind every clone of one `ProgressTask`.
 struct Task {
     output: Arc<Output>,
-    /// Escaped task label.
+    /// Task label, escaped when rendered for humans.
     label: String,
     /// Spinner row, present only on the terminal backend.
     bar: Option<ProgressBar>,
     started: Instant,
-    /// Last escaped message, used to suppress duplicate updates.
+    /// Last message, used to suppress duplicate updates.
     last: Option<String>,
     finished: bool,
 }

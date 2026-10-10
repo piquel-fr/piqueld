@@ -14,6 +14,8 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+pub use crate::urls::{RouteUrl, UrlCondition, UrlState};
+
 /// Versioned prefix used by all API endpoints.
 pub const API_PREFIX: &str = "/api/v1";
 /// Maximum number of application summaries returned in one page.
@@ -625,6 +627,29 @@ pub struct EnvironmentDetailView {
     pub release: Option<ReleaseId>,
     /// Bounded diagnostics from status, runtime, and the latest operation.
     pub diagnostics: Vec<DiagnosticView>,
+    /// The URL of every route the current runtime target renders, and
+    /// whether each is ready; see [`RouteUrl::derive`]. Absent from daemons
+    /// that predate URL readiness, which is not the same as no routes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub urls: Option<Vec<RouteUrl>>,
+}
+
+impl EnvironmentDetailView {
+    /// Whether the runtime was observed and every service of the current
+    /// runtime target is healthy. A target may have no services, so an empty
+    /// service list alone does not mean it was observed.
+    #[must_use]
+    pub fn runtime_ready(&self) -> bool {
+        !self
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == crate::codes::RUNTIME_UNAVAILABLE)
+            && self
+                .observed
+                .services
+                .iter()
+                .all(ObservedServiceView::healthy)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -761,6 +786,18 @@ pub struct DeploymentView {
     pub current_target: bool,
     /// Whether this is the most recent deployment to converge successfully.
     pub last_successful: bool,
+}
+
+impl DeploymentView {
+    /// A system variable's rendered value, e.g. `git.sha`: absent before a
+    /// repository-backed manifest is fetched, and for saved manifests.
+    #[must_use]
+    pub fn system_value(&self, variable: crate::manifest::SystemVariable) -> Option<&str> {
+        match self.variables.get(variable.as_str())? {
+            VariableValue::String(value) => Some(value),
+            VariableValue::Boolean(_) | VariableValue::Integer(_) => None,
+        }
+    }
 }
 
 /// An immutable release of an application, recorded by a successful
@@ -1372,6 +1409,11 @@ pub struct IngressStatus {
     /// stopped), and in tunnel mode whether the tunnel is connected. Public
     /// routes depend only on this.
     pub healthy: bool,
+    /// Whether the gateway accepted its desired configuration (or is
+    /// stopped), whatever one application's network does. Unlike `healthy`,
+    /// another application's failure does not clear it.
+    #[serde(default)]
+    pub gateway: bool,
     /// Safe diagnostic, with detailed causes in daemon logs.
     pub message: String,
     /// How public routes reach the gateway.
@@ -1570,6 +1612,9 @@ pub struct CertificateStatus {
 pub struct RouteStatus {
     /// Owning environment identity.
     pub environment_id: String,
+    /// The route's name, when it has one.
+    #[serde(default)]
+    pub name: Option<crate::RouteName>,
     /// Exact public DNS hostname.
     pub hostname: String,
     /// Effective visibility, which selects the listener serving the route.

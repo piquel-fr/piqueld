@@ -1,14 +1,14 @@
 //! Typed command results. Human-only context never leaks into JSON schemas.
 use super::{HumanWriter, Report};
-use crate::profiles::ProfileSummary;
+use crate::{deployments::Deployed, profiles::ProfileSummary};
 use piqueld_client::{
     AcceptedOperation, AcceptedPromotion, ActionReason, ActionRisk, ApplicationId, ApplicationLogs,
     ApplicationSummary, ApplicationView, BranchState, BuildLogPage, BuildRecord, CreatedPreview,
     DeletedApplication, DeletedPreview, DeploymentOrigin, DnsStatus, EnvironmentDetailView,
     EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event, ImageStatus, MountedSecret,
     Operation, OperationState, Page, PlanView, PreviewUsage, PreviewView, ReleaseAvailability,
-    ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, SavedApplication, SecretMetadata,
-    SecretProblem, ServiceImage, Source, StoredSecret, SystemStatus,
+    ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl, SavedApplication,
+    SecretMetadata, SecretProblem, ServiceImage, Source, StoredSecret, SystemStatus, UrlState,
     sync::{SyncState, WebhookSecret, WebhookView},
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
@@ -209,12 +209,13 @@ impl Report for Vec<RouteRow> {
         if self.is_empty() {
             return out.line("No deployed routes.");
         }
-        out.heading("HOSTNAME  ENVIRONMENT  VISIBILITY  STATE  DESTINATION  DNS  RECORDS")?;
+        out.heading("HOSTNAME  NAME  ENVIRONMENT  VISIBILITY  STATE  DESTINATION  DNS  RECORDS")?;
         for row in self {
             let route = &row.route;
             out.line(format_args!(
-                "{}  {}  {}  {}  {}  {}  {}",
+                "{}  {}  {}  {}  {}  {}  {}  {}",
                 route.hostname,
+                route.name.as_ref().map_or("-", |name| name.as_str()),
                 row.environment,
                 route.visibility,
                 route.state,
@@ -668,14 +669,13 @@ report!(PreviewView, self, out, {
 });
 
 /// `preview create` result: the preview, its deployment, and, after waiting,
-/// how the deployment ended.
+/// how the deployment ended and its URLs.
 #[derive(Serialize)]
 pub(crate) struct CreatedPreviewReport<'a> {
     #[serde(flatten)]
     pub(crate) created: &'a CreatedPreview,
-    /// The deployment's final state; omitted with `--no-wait`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) outcome: Option<OperationState>,
+    #[serde(flatten)]
+    pub(crate) deployed: Deployed,
 }
 report!(CreatedPreviewReport<'_>, self, out, {
     let CreatedPreview {
@@ -694,13 +694,77 @@ report!(CreatedPreviewReport<'_>, self, out, {
             "already exists; not redeployed"
         }
     ))?;
-    match self.outcome {
+    match self.deployed.outcome {
         Some(outcome) => out.label(
             "Operation",
             format_args!("{} {outcome}", operation.operation_id),
-        ),
-        None => out.label("Operation", &operation.operation_id),
+        )?,
+        None => out.label("Operation", &operation.operation_id)?,
     }
+    out.urls(self.deployed.urls.iter().flatten())
+});
+
+impl HumanWriter<'_> {
+    /// One `URL` label per URL, with its name and state, and what keeps it
+    /// pending; every command that shows URLs lists them this way.
+    fn urls<'u>(&mut self, urls: impl IntoIterator<Item = &'u RouteUrl>) -> io::Result<()> {
+        for url in urls {
+            let name = url
+                .name
+                .as_ref()
+                .map_or_else(String::new, |name| format!(" ({name})"));
+            match url.state {
+                UrlState::Ready => self.label("URL", format_args!("{}{name} ready", url.url))?,
+                UrlState::Pending => self.label(
+                    "URL",
+                    format_args!("{}{name} pending: {}", url.url, url.waiting_for()),
+                )?,
+            }
+        }
+        Ok(())
+    }
+}
+
+// `wait` result: the deployment is as ready as asked.
+report!(Deployed, self, out, {
+    out.line(format_args!(
+        "Deployment {} of {} is ready",
+        self.deployment_id, self.slug
+    ))?;
+    out.urls(self.urls.iter().flatten())
+});
+
+// `url --route`: only the URL, so it can be used as is; `url` warns while
+// it is pending.
+report!(RouteUrl, self, out, { out.line(&self.url) });
+
+/// `url` result.
+impl Report for Vec<RouteUrl> {
+    type Json = [RouteUrl];
+    fn json(&self) -> &Self::Json {
+        self
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        if self.is_empty() {
+            return out.line("No routes.");
+        }
+        out.urls(self)
+    }
+}
+
+/// A deploy accepted with `--no-wait`: the accepted operation's fields, and
+/// the deployment's.
+#[derive(Serialize)]
+pub(crate) struct AcceptedDeploymentReport {
+    pub(crate) generation: u64,
+    #[serde(flatten)]
+    pub(crate) deployed: Deployed,
+}
+report!(AcceptedDeploymentReport, self, out, {
+    out.line(format_args!(
+        "Accepted operation {} for environment {}",
+        self.deployed.operation_id, self.deployed.environment_id
+    ))
 });
 
 /// `preview prune` result: the previews whose deletion was accepted, with
@@ -797,7 +861,7 @@ report!(EnvironmentShowReport<'_>, self, out, {
     for (name, mounted) in secrets {
         out.label("Secret", format_args!("{name}: {mounted}"))?;
     }
-    Ok(())
+    out.urls(self.detail.urls.iter().flatten())
 });
 
 named!(EnvironmentView, environment, names, out, {
@@ -1233,15 +1297,18 @@ report!(SavedDeploymentReport<'_>, self, out, {
     self.operation.render_human(out)
 });
 
-/// Accepted reconcile/deploy followed by its awaited outcome; renders like the operation.
+/// Accepted reconcile/deploy followed by its awaited outcome and the
+/// deployment's fields; renders like the operation, with its URLs.
 #[derive(Serialize)]
 pub(crate) struct OperationOutcomeReport<'a> {
     pub(crate) accepted: &'a AcceptedOperation,
-    pub(crate) outcome: OperationState,
-    pub(crate) operation: &'a Operation,
+    pub(crate) operation: Operation,
+    #[serde(flatten)]
+    pub(crate) deployed: Deployed,
 }
 report!(OperationOutcomeReport<'_>, self, out, {
-    self.operation.render_human(out)
+    self.operation.render_human(out)?;
+    out.urls(self.deployed.urls.iter().flatten())
 });
 
 /// Environment or preview deletion result. `outcome` is present only after
