@@ -542,10 +542,12 @@ never probes the URL for a client. A URL is `ready` exactly when nothing in
 
 1. `ingress`: the gateway acknowledged this exact route (hostname,
    visibility and destination);
-2. `https` (with the route status's `message`): the daemon's latest check of
-   this route found it `ready`, i.e. DNS answers the right listener, which serves
-   the hostname with a trusted certificate (a DNS-01 certificate for private
-   routes). A check made before the route changed does not count;
+2. `https` (with a `message`): the listener serving the route's visibility is
+   healthy now (the gateway and, in tunnel mode, the tunnel for public routes;
+   the apps node for private ones), and the daemon's latest check of this route
+   found it `ready`, i.e. DNS answers that listener, which serves the hostname
+   with a trusted certificate (a DNS-01 certificate for private routes). A
+   check made before the route changed does not count;
 3. `dns` (with its `state`): the hostname's managed records are not `pending` or
    `dns_conflict` (`manual` and `managed` records do not keep a URL pending);
 4. `service` (with the `service`): the route's service is observed

@@ -203,7 +203,7 @@ async fn create(
     } else {
         let operation =
             wait_for_operation(console, client, &created.operation.operation_id).await?;
-        Deployed::read(client, &created.preview, operation, None).await?
+        Deployed::read(client, &created.preview, operation).await?
     };
     console.emit(&CreatedPreviewReport {
         created: &created,

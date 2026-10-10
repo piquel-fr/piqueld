@@ -1,7 +1,7 @@
 //! The URLs of an environment's rendered routes and whether each is ready,
 //! derived only from state the daemon already observes. Clients read the
 //! result; none probes a URL or computes readiness itself.
-use crate::api::{DnsRecordState, ObservedServiceView, RouteStatus};
+use crate::api::{DnsRecordState, IngressStatus, ObservedServiceView};
 use crate::manifest::{RouteTarget, ValidatedRoute, Visibility};
 use crate::{Convergence, RouteName, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -35,8 +35,8 @@ pub enum UrlCondition {
     /// The gateway has not acknowledged this exact route yet.
     Ingress,
     /// HTTPS, with the route's certificate, is not verified for this route:
-    /// the daemon's latest route check failed or has not run since the route
-    /// changed.
+    /// its listener is unhealthy now, or the daemon's latest route check
+    /// failed or has not run since the route changed.
     Https {
         /// Why, from the route's status.
         message: String,
@@ -89,19 +89,20 @@ impl RouteUrl {
     /// Derives a rendered route's URL and state. It is ready when:
     ///
     /// 1. the gateway acknowledged this exact route (`applied`);
-    /// 2. the daemon's latest check of this route (same hostname, visibility,
-    ///    and target in `statuses`) found it `ready`: DNS resolves to the
-    ///    right listener, which serves it with a trusted certificate;
+    /// 2. the listener serving its visibility is healthy now (`ingress`), and
+    ///    the daemon's latest check of this route (same hostname, visibility,
+    ///    and target in `ingress.routes`) found it `ready`: DNS resolves to
+    ///    that listener, which serves it with a trusted certificate;
     /// 3. its DNS records are not `pending` or `dns_conflict`;
     /// 4. its service, unless it redirects, is observed healthy.
     #[must_use]
     pub fn derive(
         route: &ValidatedRoute,
         applied: &[ValidatedRoute],
-        statuses: &[RouteStatus],
+        ingress: &IngressStatus,
         services: &[ObservedServiceView],
     ) -> Self {
-        let status = statuses.iter().find(|status| {
+        let status = ingress.routes.iter().find(|status| {
             status.hostname == route.hostname.as_str()
                 && status.visibility == route.visibility
                 && status.target == route.target
@@ -110,16 +111,25 @@ impl RouteUrl {
         if !applied.contains(route) {
             pending.push(UrlCondition::Ingress);
         }
-        match status {
-            Some(status) if status.state == "ready" => {}
-            Some(status) => pending.push(UrlCondition::Https {
-                message: status.message.clone(),
-            }),
-            None => pending.push(UrlCondition::Https {
-                message:
-                    "Not checked yet: the daemon verifies HTTPS once the gateway serves the route"
-                        .into(),
-            }),
+        // A listener failure observed since the route's check outdates it.
+        let (listener_healthy, listener_message) = match route.visibility {
+            Visibility::Public => (ingress.healthy, &ingress.message),
+            Visibility::Private => (ingress.private.healthy, &ingress.private.message),
+        };
+        let https = match status {
+            _ if !listener_healthy && listener_message.is_empty() => {
+                Some("Its listener is unavailable".into())
+            }
+            _ if !listener_healthy => Some(listener_message.clone()),
+            Some(status) if status.state == "ready" => None,
+            Some(status) => Some(status.message.clone()),
+            None => Some(
+                "Not checked yet: the daemon verifies HTTPS once the gateway serves the route"
+                    .into(),
+            ),
+        };
+        if let Some(message) = https {
+            pending.push(UrlCondition::Https { message });
         }
         if let Some(status) = status
             && matches!(
@@ -178,7 +188,7 @@ impl ObservedServiceView {
 #[cfg(test)]
 mod tests {
     use super::{RouteUrl, UrlCondition, UrlState};
-    use crate::api::{DnsRecordState, DnsRecords, ObservedServiceView, RouteStatus};
+    use crate::api::{DnsRecordState, DnsRecords, IngressStatus, ObservedServiceView, RouteStatus};
     use crate::manifest::{RouteTarget, ValidatedRoute, Visibility};
     use crate::{Convergence, RouteName, ServiceName};
 
@@ -224,20 +234,28 @@ mod tests {
 
     /// Derives the URL with one input changed from a ready baseline.
     fn derive(
-        change: impl FnOnce(
-            &mut Vec<ValidatedRoute>,
-            &mut Vec<RouteStatus>,
-            &mut Vec<ObservedServiceView>,
-        ),
+        change: impl FnOnce(&mut Vec<ValidatedRoute>, &mut IngressStatus, &mut Vec<ObservedServiceView>),
     ) -> RouteUrl {
         let route = route();
-        let (mut applied, mut statuses, mut services) = (
+        let (mut applied, mut ingress, mut services) = (
             vec![route.clone()],
-            vec![status(&route)],
+            ingress(status(&route)),
             vec![service(Convergence::Converged, 2)],
         );
-        change(&mut applied, &mut statuses, &mut services);
-        RouteUrl::derive(&route, &applied, &statuses, &services)
+        change(&mut applied, &mut ingress, &mut services);
+        RouteUrl::derive(&route, &applied, &ingress, &services)
+    }
+
+    /// Healthy listeners with one route status.
+    fn ingress(status: RouteStatus) -> IngressStatus {
+        let mut ingress = IngressStatus {
+            enabled: true,
+            healthy: true,
+            routes: vec![status],
+            ..IngressStatus::default()
+        };
+        ingress.private.healthy = true;
+        ingress
     }
 
     #[test]
@@ -259,7 +277,15 @@ mod tests {
         let web = UrlCondition::Service {
             service: ServiceName::parse("web").unwrap(),
         };
-        let cases: [(&str, RouteUrl, Vec<UrlCondition>); 9] = [
+        let cases: [(&str, RouteUrl, Vec<UrlCondition>); 10] = [
+            (
+                "listener failed since the route was checked",
+                derive(|_, ingress, _| {
+                    ingress.healthy = false;
+                    ingress.message = "tunnel disconnected".into();
+                }),
+                vec![https("tunnel disconnected")],
+            ),
             (
                 "not applied by the gateway",
                 derive(|applied, _, _| applied.clear()),
@@ -272,21 +298,21 @@ mod tests {
             ),
             (
                 "HTTPS not verified",
-                derive(|_, statuses, _| {
-                    statuses[0].state = "pending".into();
-                    statuses[0].message = "no certificate".into();
+                derive(|_, ingress, _| {
+                    ingress.routes[0].state = "pending".into();
+                    ingress.routes[0].message = "no certificate".into();
                 }),
                 vec![https("no certificate")],
             ),
             (
                 "never checked",
-                derive(|_, statuses, _| statuses.clear()),
+                derive(|_, ingress, _| ingress.routes.clear()),
                 vec![unchecked.clone()],
             ),
             (
                 "checked before its target changed",
-                derive(|_, statuses, _| {
-                    statuses[0].target = RouteTarget::Service {
+                derive(|_, ingress, _| {
+                    ingress.routes[0].target = RouteTarget::Service {
                         service: ServiceName::parse("api").unwrap(),
                         port: 80.try_into().unwrap(),
                     };
@@ -295,14 +321,14 @@ mod tests {
             ),
             (
                 "DNS records pending",
-                derive(|_, statuses, _| statuses[0].dns_state = DnsRecordState::Pending),
+                derive(|_, ingress, _| ingress.routes[0].dns_state = DnsRecordState::Pending),
                 vec![UrlCondition::Dns {
                     state: DnsRecordState::Pending,
                 }],
             ),
             (
                 "DNS conflict",
-                derive(|_, statuses, _| statuses[0].dns_state = DnsRecordState::DnsConflict),
+                derive(|_, ingress, _| ingress.routes[0].dns_state = DnsRecordState::DnsConflict),
                 vec![UrlCondition::Dns {
                     state: DnsRecordState::DnsConflict,
                 }],
@@ -335,7 +361,12 @@ mod tests {
         };
         let mut status = status(&redirect);
         status.dns_state = DnsRecordState::Manual;
-        let url = RouteUrl::derive(&redirect, std::slice::from_ref(&redirect), &[status], &[]);
+        let url = RouteUrl::derive(
+            &redirect,
+            std::slice::from_ref(&redirect),
+            &ingress(status),
+            &[],
+        );
         assert_eq!(url.state, UrlState::Ready);
     }
 }

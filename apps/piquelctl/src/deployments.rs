@@ -86,21 +86,16 @@ impl Deployed {
         }
     }
 
-    /// Reads the deployment that ended as `operation` and, unless given, the
-    /// environment's detail, for [`Self::finished`].
+    /// Reads the deployment that ended as `operation`, which decided the
+    /// command's outcome, and the environment's detail, for [`Self::finished`].
     pub(crate) async fn read(
         client: &Client,
         environment: &EnvironmentView,
         operation: Operation,
-        detail: Option<EnvironmentDetailView>,
     ) -> Result<Self> {
         let mut deployment = find_deployment(client, environment, &operation.id).await?;
-        // The operation was read last; the deployment's copy may predate it.
         deployment.operation = operation;
-        let detail = match detail {
-            Some(detail) => detail,
-            None => client.environment_detail(environment.id.as_str()).await?,
-        };
+        let detail = client.environment_detail(environment.id.as_str()).await?;
         Ok(Self::finished(environment, &deployment, &detail))
     }
 }
@@ -170,7 +165,7 @@ pub(crate) async fn wait_for_accepted(
     let operation = wait_for_operation(console, client, &accepted.operation_id).await?;
     console.emit(&OperationOutcomeReport {
         accepted,
-        deployed: Deployed::read(client, environment, operation.clone(), None).await?,
+        deployed: Deployed::read(client, environment, operation.clone()).await?,
         operation,
     })
 }
@@ -230,11 +225,13 @@ impl<T: Args + Target> WaitArgs<T> {
     pub(crate) async fn run(&self, console: &mut Console, client: &Client) -> Result<()> {
         let environment = &self.target.environment(client).await?;
         let id = self.deployment(client, environment).await?;
-        let (operation, detail) =
+        let (deployment, detail) =
             wait_for_operation_until(console, client, &id, async |operation| {
                 if operation.state == OperationState::Superseded {
                     return Err(superseded(&id, None));
                 }
+                // Read before the detail, so the detail is the newest evidence.
+                let mut deployment = find_deployment(client, environment, &id).await?;
                 let detail = client.environment_detail(environment.id.as_str()).await?;
                 // The detail's copy of the operation is the one its runtime
                 // state goes with: a retry may have started or failed since.
@@ -252,13 +249,14 @@ impl<T: Args + Target> WaitArgs<T> {
                 if latest.state == OperationState::Superseded {
                     return Err(superseded(&id, None));
                 }
+                deployment.operation = latest;
                 Ok(match self.ready.missing(&detail)? {
                     Some(missing) => Settled::Waiting(missing),
-                    None => Settled::Done((latest, detail)),
+                    None => Settled::Done((deployment, detail)),
                 })
             })
             .await?;
-        console.emit(&Deployed::read(client, environment, operation, Some(detail)).await?)
+        console.emit(&Deployed::finished(environment, &deployment, &detail))
     }
 
     /// The deployment to wait for: `--deployment`, checked to be one of

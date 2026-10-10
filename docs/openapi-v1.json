@@ -10253,7 +10253,7 @@
             "type": "object"
           },
           {
-            "description": "HTTPS, with the route's certificate, is not verified for this route:\nthe daemon's latest route check failed or has not run since the route\nchanged.",
+            "description": "HTTPS, with the route's certificate, is not verified for this route:\nits listener is unhealthy now, or the daemon's latest route check\nfailed or has not run since the route changed.",
             "properties": {
               "condition": {
                 "enum": [

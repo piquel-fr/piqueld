@@ -159,8 +159,8 @@ impl ApplicationService {
         )))
     }
     /// The URL of every route the current runtime target renders, with its
-    /// state derived from the gateway's acknowledged routes, the latest route
-    /// checks, and `services` as observed.
+    /// state derived from the gateway's acknowledged routes, listener health,
+    /// the latest route checks, and `services` as observed.
     async fn urls(
         &self,
         stored: &StoredEnvironment,
@@ -171,15 +171,17 @@ impl ApplicationService {
         };
         let id = &stored.environment.id;
         let applied = self.store.applied_routes(id).await?;
-        let mut statuses = match &self.ingress {
-            Some(ingress) => ingress.status().await.routes,
-            None => Vec::new(),
+        let mut ingress = match &self.ingress {
+            Some(ingress) => ingress.status().await,
+            None => piqueld_core::api::IngressStatus::default(),
         };
-        statuses.retain(|status| status.environment_id == id.as_str());
+        ingress
+            .routes
+            .retain(|status| status.environment_id == id.as_str());
         Ok(target
             .routes
             .iter()
-            .map(|route| RouteUrl::derive(route, &applied, &statuses, services))
+            .map(|route| RouteUrl::derive(route, &applied, &ingress, services))
             .collect())
     }
     /// Checks a preview's preconditions: `grants` may save `current` (or

@@ -200,9 +200,10 @@ fn detail_view(
                         <p>"Routes of the current runtime target, and whether each is reachable."</p>
                     </div>
                 </header>
-                {if detail.urls.as_deref().unwrap_or_default().is_empty() {
-                    empty("No routes are deployed in this environment.")
-                } else {
+                {match detail.urls.as_deref() {
+                    None => empty("This daemon does not report URLs."),
+                    Some([]) => empty("No routes are deployed in this environment."),
+                    Some(_) => {
                     view! {
                         <table class="table">
                             <thead>
@@ -219,6 +220,7 @@ fn detail_view(
                         </table>
                     }
                         .into_any()
+                    }
                 }}
             </section> <section class="card card-flush" aria-labelledby="observed-title">
                 <header>
