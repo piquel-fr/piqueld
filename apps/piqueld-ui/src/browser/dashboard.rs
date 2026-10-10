@@ -435,7 +435,7 @@ fn preview_card(usage: Option<&PreviewUsage>) -> AnyView {
         tone,
         label,
         &format!(
-            "{} of {} previews.{applications} Their replicas are limited to {} millicores and {} in total.{unlimited} Services without limits get {} millicores and {}, at most {} replicas.",
+            "{} of {} previews.{applications} Their replicas are limited to {} millicores and {} in total.{unlimited} Services without limits get {} millicores and {}, and replicas are capped at {}.",
             usage.total,
             limits.max_total,
             usage.cpu_millis,

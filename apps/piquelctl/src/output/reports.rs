@@ -162,7 +162,7 @@ report!(PreviewUsage, self, out, {
     out.label(
         "Preview services",
         format_args!(
-            "{} millicores and {} bytes unless they set limits, at most {} replicas",
+            "{} millicores and {} bytes unless they set limits; replicas capped at {}",
             limits.default_cpu_millis, limits.default_memory_bytes, limits.max_replicas
         ),
     )?;
