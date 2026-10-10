@@ -47,22 +47,66 @@ pub struct Event {
     /// Correlated API request identity.
     #[serde(default)]
     pub request_id: Option<String>,
-    /// Account whose API request caused this event, including runtime actions
-    /// of the operation it requested.
+    /// Who caused this event, including runtime actions of the operation it
+    /// requested; absent for the daemon's own work.
     #[serde(default)]
-    pub actor_user_id: Option<String>,
-    /// Credential that authenticated that request.
-    #[serde(default)]
-    pub actor_credential_id: Option<String>,
-    /// The host operator, when it made that request instead of an account.
-    #[serde(default)]
-    pub actor_operator: Option<crate::auth::HostOperator>,
-    /// The automated actor that caused it instead, e.g. `sync:poll`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub actor_system: Option<crate::sync::SystemActor>,
+    pub actor: Option<EventActor>,
     /// Safe, independently readable failure details.
     #[serde(default)]
     pub diagnostic: Option<crate::observability::Diagnostic>,
     /// Unix timestamp in milliseconds.
     pub created_at_ms: i64,
+}
+
+/// Who caused an event: exactly one kind of actor.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EventActor {
+    /// An account's API request.
+    Account {
+        /// The account.
+        user_id: String,
+        /// The credential that authenticated the request, when there was one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_id: Option<String>,
+    },
+    /// The host operator, instead of an account.
+    Operator {
+        /// Its Unix user.
+        operator: crate::auth::HostOperator,
+        /// The browser session it acted through, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
+    /// An automated actor of the daemon, e.g. `sync:poll`.
+    System {
+        /// Which one.
+        actor: crate::sync::SystemActor,
+    },
+}
+
+impl EventActor {
+    /// The credential or host operator session the request used, which the
+    /// audit trail is filtered by.
+    #[must_use]
+    pub fn credential_id(&self) -> Option<&str> {
+        match self {
+            Self::Account { credential_id, .. } => credential_id.as_deref(),
+            Self::Operator { session_id, .. } => session_id.as_deref(),
+            Self::System { .. } => None,
+        }
+    }
+}
+
+/// ```text
+/// user-01…    host operator (uid 0)    sync:poll
+/// ```
+impl std::fmt::Display for EventActor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Account { user_id, .. } => formatter.write_str(user_id),
+            Self::Operator { operator, .. } => operator.fmt(formatter),
+            Self::System { actor } => actor.fmt(formatter),
+        }
+    }
 }

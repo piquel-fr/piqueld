@@ -113,11 +113,11 @@ after the request; each action keeps the actor it started under, even if
 someone else restarts the operation meanwhile. Events written directly by a request carry them too: secret
 writes and deletions (including the deletion's runtime action, even when a
 restart interrupts it), environment changes, the start and end of commands
-run with `app exec`, secret key recovery, and diagnostics for failed requests. Events show them as `actor_user_id` and `actor_credential_id`, or,
-for the host operator, `actor_operator` with its Unix user ID and its browser
-session (if any) as `actor_credential_id`. Deployments sync starts on push
-carry `actor_system`, `sync:poll` or `sync:webhook`, instead. All are empty for
-the daemon's other own work.
+run with `app exec`, secret key recovery, and diagnostics for failed requests. Events show them as one `actor`, tagged by `kind`: `account` with
+`user_id` and `credential_id`, `operator` with the host operator's Unix user
+ID and its browser session (if any) as `session_id`, or, for deployments sync
+starts on push, `system` with `actor` `sync:poll` or `sync:webhook`. `actor` is
+absent for the daemon's other own work.
 
 The metrics listener exports `piqueld_access_denied_total`, the number of
 refused API requests since the daemon started.

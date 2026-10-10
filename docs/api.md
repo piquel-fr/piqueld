@@ -81,7 +81,7 @@ of its last deployment (`commit`, `at_ms`), which sync follows from.
 `PreviewView.sync` is `following` while the application syncs and once the
 preview was deployed, and `ApplicationView.sync_check` is the last listing of the repository's
 branches (`checked_at_ms`, and `error` when it failed). Sync deployments are
-ordinary operations whose events carry `actor_system`, `sync:poll` or
+ordinary operations whose events carry a `system` actor, `sync:poll` or
 `sync:webhook`, with a `branch_synced` event naming the commit. GitHub
 deliveries never reach this API; see [push webhooks](ingress.md#push-webhooks).
 

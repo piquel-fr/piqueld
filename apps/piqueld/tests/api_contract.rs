@@ -2860,8 +2860,13 @@ async fn exec_rechecks_grants_when_the_command_starts() {
         .await
         .unwrap()
         .items;
-    assert_eq!(started[0].actor_user_id.as_deref(), Some("operator"));
-    assert_eq!(started[0].actor_credential_id.as_deref(), Some("operator"));
+    assert_eq!(
+        started[0].actor,
+        Some(piqueld_core::EventActor::Account {
+            user_id: "operator".into(),
+            credential_id: Some("operator".into()),
+        })
+    );
     let mut connection = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!(
         "sqlite:{}",
         database.display()

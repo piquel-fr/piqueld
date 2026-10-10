@@ -2,9 +2,10 @@
 use super::access::{Visibility, scope_json};
 use super::{ApplicationId, EnvironmentId, Store, StoreError, new_id, now_ms, page_limit};
 use piqueld_core::{
-    Event,
+    Event, EventActor,
     api::Page,
     observability::{Diagnostic, EventFilter, EventScope},
+    sync::SystemActor,
 };
 use sqlx::{QueryBuilder, Sqlite, Transaction};
 
@@ -441,6 +442,33 @@ struct EventRow {
 }
 
 impl EventRow {
+    /// Who caused the event, from its actor columns, of which at most one
+    /// kind is set: an account (with its credential), the host operator
+    /// (with its browser session), or a system actor. A credential alone,
+    /// or several kinds, is corruption.
+    fn actor(
+        user_id: Option<String>,
+        credential_id: Option<String>,
+        operator_uid: Option<i64>,
+        system: Option<String>,
+    ) -> Result<Option<EventActor>, StoreError> {
+        Ok(match (user_id, operator_uid, system) {
+            (None, None, None) if credential_id.is_none() => None,
+            (Some(user_id), None, None) => Some(EventActor::Account {
+                user_id,
+                credential_id,
+            }),
+            (None, Some(uid), None) => Some(EventActor::Operator {
+                operator: Store::host_operator(uid)?,
+                session_id: credential_id,
+            }),
+            (None, None, Some(system)) if credential_id.is_none() => Some(EventActor::System {
+                actor: SystemActor::parse(&system).ok_or(StoreError::Corrupt)?,
+            }),
+            _ => return Err(StoreError::Corrupt),
+        })
+    }
+
     /// Builds a keyset-paginated event query after (or, descending, before)
     /// `cursor`, fetching `fetch` rows that `visible` allows.
     /// Optional predicates are assembled from fixed column names; every value is bound.
@@ -568,18 +596,12 @@ impl EventRow {
                 .transpose()
                 .map_err(StoreError::corrupt)?,
             request_id: self.request_id,
-            actor_user_id: self.actor_user_id,
-            actor_credential_id: self.actor_credential_id,
-            actor_operator: self
-                .actor_operator_uid
-                .map(Store::host_operator)
-                .transpose()?,
-            actor_system: self
-                .actor_system
-                .map(|system| {
-                    piqueld_core::sync::SystemActor::parse(&system).ok_or(StoreError::Corrupt)
-                })
-                .transpose()?,
+            actor: Self::actor(
+                self.actor_user_id,
+                self.actor_credential_id,
+                self.actor_operator_uid,
+                self.actor_system,
+            )?,
             diagnostic: self
                 .diagnostic_json
                 .map(|json| serde_json::from_str(&json))

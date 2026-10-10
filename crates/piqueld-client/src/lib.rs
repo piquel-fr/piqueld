@@ -69,7 +69,7 @@ pub use piqueld_core::{
     ValidatedApplication, ValidationError, ValidationErrors,
 };
 pub use piqueld_core::{
-    ApplicationState, Convergence, Event, Operation, OperationKind, OperationState,
+    ApplicationState, Convergence, Event, EventActor, Operation, OperationKind, OperationState,
 };
 pub use previews::{
     ApplicationPreviews, BranchState, CountedPreview, CreatePreviewRequest, CreatedPreview,

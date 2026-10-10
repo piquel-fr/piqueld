@@ -528,7 +528,8 @@ pub(crate) mod tests {
         // A gone branch keeps its preview.
         assert!(fixture.service.store.get(&gone).await.is_ok());
 
-        // Nothing is listed again before the interval elapses.
+        // Nothing is listed again before the interval elapses, counted from
+        // when the pass ended.
         fixture
             .service
             .sync_due(&lister, &mut schedule, now + Duration::from_secs(59))
@@ -536,7 +537,7 @@ pub(crate) mod tests {
         assert_eq!(lister.listings(), 1);
         fixture
             .service
-            .sync_due(&lister, &mut schedule, now + Duration::from_secs(61))
+            .sync_due(&lister, &mut schedule, now + Duration::from_secs(90))
             .await;
         assert_eq!(lister.listings(), 2);
         assert_eq!(fixture.synced(&production).await.len(), 1);
@@ -561,7 +562,8 @@ pub(crate) mod tests {
             .unwrap();
         assert!(check.error.unwrap().contains("ls-remote failed"));
 
-        // Retried after 60 s, then after 120 s more.
+        // Retried after 60 s, then after 120 s more. Deadlines count from
+        // when a pass ended, so the checks after them leave slack for slow runs.
         fixture
             .service
             .sync_due(&lister, &mut schedule, now + Duration::from_secs(59))
@@ -569,7 +571,7 @@ pub(crate) mod tests {
         assert_eq!(lister.listings(), 1);
         fixture
             .service
-            .sync_due(&lister, &mut schedule, now + Duration::from_secs(61))
+            .sync_due(&lister, &mut schedule, now + Duration::from_secs(90))
             .await;
         assert_eq!(lister.listings(), 2);
         fixture
@@ -581,7 +583,7 @@ pub(crate) mod tests {
         *lister.heads.lock().unwrap() = Some(vec![("main", NEW)]);
         fixture
             .service
-            .sync_due(&lister, &mut schedule, now + Duration::from_secs(182))
+            .sync_due(&lister, &mut schedule, now + Duration::from_secs(240))
             .await;
         assert_eq!(fixture.synced(&production).await.len(), 1);
         let check = fixture

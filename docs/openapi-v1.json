@@ -3489,20 +3489,15 @@
                 "nullable": true,
                 "type": "string"
               },
-              "actor_credential_id": {
-                "description": "Credential that authenticated that request.",
-                "nullable": true,
-                "type": "string"
-              },
-              "actor_operator": {
+              "actor": {
                 "oneOf": [
                   {
                     "allOf": [
                       {
-                        "$ref": "#/components/schemas/HostOperator"
+                        "$ref": "#/components/schemas/EventActor"
                       }
                     ],
-                    "description": "The host operator, when it made that request instead of an account."
+                    "description": "Who caused this event, including runtime actions of the operation it\nrequested; absent for the daemon's own work."
                   },
                   {
                     "enum": [
@@ -3512,30 +3507,6 @@
                     "type": "string"
                   }
                 ]
-              },
-              "actor_system": {
-                "oneOf": [
-                  {
-                    "allOf": [
-                      {
-                        "$ref": "#/components/schemas/SystemActor"
-                      }
-                    ],
-                    "description": "The automated actor that caused it instead, e.g. `sync:poll`."
-                  },
-                  {
-                    "enum": [
-                      null
-                    ],
-                    "nullable": true,
-                    "type": "string"
-                  }
-                ]
-              },
-              "actor_user_id": {
-                "description": "Account whose API request caused this event, including runtime actions\nof the operation it requested.",
-                "nullable": true,
-                "type": "string"
               },
               "application_id": {
                 "oneOf": [
@@ -4280,20 +4251,15 @@
                       "nullable": true,
                       "type": "string"
                     },
-                    "actor_credential_id": {
-                      "description": "Credential that authenticated that request.",
-                      "nullable": true,
-                      "type": "string"
-                    },
-                    "actor_operator": {
+                    "actor": {
                       "oneOf": [
                         {
                           "allOf": [
                             {
-                              "$ref": "#/components/schemas/HostOperator"
+                              "$ref": "#/components/schemas/EventActor"
                             }
                           ],
-                          "description": "The host operator, when it made that request instead of an account."
+                          "description": "Who caused this event, including runtime actions of the operation it\nrequested; absent for the daemon's own work."
                         },
                         {
                           "enum": [
@@ -4303,30 +4269,6 @@
                           "type": "string"
                         }
                       ]
-                    },
-                    "actor_system": {
-                      "oneOf": [
-                        {
-                          "allOf": [
-                            {
-                              "$ref": "#/components/schemas/SystemActor"
-                            }
-                          ],
-                          "description": "The automated actor that caused it instead, e.g. `sync:poll`."
-                        },
-                        {
-                          "enum": [
-                            null
-                          ],
-                          "nullable": true,
-                          "type": "string"
-                        }
-                      ]
-                    },
-                    "actor_user_id": {
-                      "description": "Account whose API request caused this event, including runtime actions\nof the operation it requested.",
-                      "nullable": true,
-                      "type": "string"
                     },
                     "application_id": {
                       "oneOf": [
@@ -5947,20 +5889,15 @@
             "nullable": true,
             "type": "string"
           },
-          "actor_credential_id": {
-            "description": "Credential that authenticated that request.",
-            "nullable": true,
-            "type": "string"
-          },
-          "actor_operator": {
+          "actor": {
             "oneOf": [
               {
                 "allOf": [
                   {
-                    "$ref": "#/components/schemas/HostOperator"
+                    "$ref": "#/components/schemas/EventActor"
                   }
                 ],
-                "description": "The host operator, when it made that request instead of an account."
+                "description": "Who caused this event, including runtime actions of the operation it\nrequested; absent for the daemon's own work."
               },
               {
                 "enum": [
@@ -5970,30 +5907,6 @@
                 "type": "string"
               }
             ]
-          },
-          "actor_system": {
-            "oneOf": [
-              {
-                "allOf": [
-                  {
-                    "$ref": "#/components/schemas/SystemActor"
-                  }
-                ],
-                "description": "The automated actor that caused it instead, e.g. `sync:poll`."
-              },
-              {
-                "enum": [
-                  null
-                ],
-                "nullable": true,
-                "type": "string"
-              }
-            ]
-          },
-          "actor_user_id": {
-            "description": "Account whose API request caused this event, including runtime actions\nof the operation it requested.",
-            "nullable": true,
-            "type": "string"
           },
           "application_id": {
             "oneOf": [
@@ -6142,6 +6055,81 @@
           "created_at_ms"
         ],
         "type": "object"
+      },
+      "EventActor": {
+        "description": "Who caused an event: exactly one kind of actor.",
+        "oneOf": [
+          {
+            "description": "An account's API request.",
+            "properties": {
+              "credential_id": {
+                "description": "The credential that authenticated the request, when there was one.",
+                "nullable": true,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "account"
+                ],
+                "type": "string"
+              },
+              "user_id": {
+                "description": "The account.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The host operator, instead of an account.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "operator"
+                ],
+                "type": "string"
+              },
+              "operator": {
+                "$ref": "#/components/schemas/HostOperator",
+                "description": "Its Unix user."
+              },
+              "session_id": {
+                "description": "The browser session it acted through, if any.",
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "operator",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An automated actor of the daemon, e.g. `sync:poll`.",
+            "properties": {
+              "actor": {
+                "$ref": "#/components/schemas/SystemActor",
+                "description": "Which one."
+              },
+              "kind": {
+                "enum": [
+                  "system"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "actor",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "EventScope": {
         "description": "Ownership of historical data, independent of its contextual application and environment.",
