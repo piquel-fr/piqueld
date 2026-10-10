@@ -337,6 +337,7 @@ fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
         dns: DnsStatus {
             providers: vec![DnsProviderStatus {
                 kind: "ovh".into(),
+                manage_records: true,
                 zones: vec!["piquel.fr".into()],
                 healthy: true,
                 message: "Zones discovered".into(),
@@ -386,12 +387,12 @@ fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
     console.emit(&status.dns).unwrap();
     let text = stdout.text();
     assert_eq!(
-        text.matches("ovh (healthy): piquel.fr").count(),
+        text.matches("ovh (healthy, manages route records): piquel.fr")
+            .count(),
         2,
         "{text}"
     );
     for expected in [
-        "ovh (healthy): piquel.fr",
         "*.piquel.fr for admin.piquel.fr (expires at Unix ms 1)",
         "ovh create TXT record in zone piquel.fr: HTTP 403",
         "Public listener: healthy: Caddy is running",
@@ -409,15 +410,16 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
     use crate::output::reports::RouteRow;
     use piqueld_client::{
         RouteTarget, Visibility,
-        system::{DnsRecords, RouteStatus},
+        system::{DnsRecordState, DnsRecords, RouteStatus},
     };
-    let route = |hostname: &str, visibility, dns, state: &str| RouteRow {
+    let route = |hostname: &str, visibility, dns, dns_state, state: &str| RouteRow {
         environment: "staging".into(),
         route: RouteStatus {
             environment_id: "env-1".into(),
             hostname: hostname.into(),
             visibility,
             dns,
+            dns_state,
             target: serde_json::from_value::<RouteTarget>(
                 serde_json::json!({"service":"web","port":3000}),
             )
@@ -433,12 +435,16 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
             DnsRecords::TailnetAddresses {
                 addresses: vec!["100.64.0.1".into(), "fd7a:115c:a1e0::1".into()],
             },
+            DnsRecordState::Managed,
             "pending",
         ),
         route(
             "example.com",
             Visibility::Public,
-            DnsRecords::ServerAddresses,
+            DnsRecords::ServerAddresses {
+                addresses: Vec::new(),
+            },
+            DnsRecordState::Manual,
             "ready",
         ),
         route(
@@ -447,6 +453,7 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
             DnsRecords::TunnelCname {
                 target: "6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.com".into(),
             },
+            DnsRecordState::DnsConflict,
             "ready",
         ),
     ];
@@ -461,10 +468,10 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
     console.emit(&rows).unwrap();
     let text = stdout.text();
     for expected in [
-        "admin.example.com  staging  private  pending  web:3000  A/AAAA -> 100.64.0.1, fd7a:115c:a1e0::1",
+        "admin.example.com  staging  private  pending  web:3000  managed  A/AAAA -> 100.64.0.1, fd7a:115c:a1e0::1",
         "  Waiting for the gateway configuration to be applied",
-        "example.com  staging  public  ready  web:3000  A/AAAA -> this server's public addresses",
-        "www.example.com  staging  public  ready  web:3000  CNAME (proxied) -> 6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.com",
+        "example.com  staging  public  ready  web:3000  manual  A/AAAA -> this server's public addresses",
+        "www.example.com  staging  public  ready  web:3000  dns_conflict  CNAME (proxied) -> 6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.com",
     ] {
         assert!(text.contains(expected), "{text}");
     }

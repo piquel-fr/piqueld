@@ -2,7 +2,9 @@
 use super::super::ui::{Icon, Tone, badge, empty, icon, notice, remove_button};
 use super::{dirty_group, editor, save_actions};
 use leptos::prelude::*;
-use piqueld_client::{Redirect, RedirectStatus, Route, Visibility, edit::ApplicationEdit};
+use piqueld_client::{
+    Redirect, RedirectStatus, Route, Visibility, edit::ApplicationEdit, system::DnsRecordState,
+};
 
 /// One editable route row. Both destinations keep their fields so switching
 /// between them does not discard typed values.
@@ -115,6 +117,16 @@ const fn route_tone(state: &str) -> Tone {
         b"failed" => Tone::Bad,
         b"pending" => Tone::Pending,
         _ => Tone::Neutral,
+    }
+}
+
+/// Badge tone of a route's DNS record state.
+const fn dns_tone(state: DnsRecordState) -> Tone {
+    match state {
+        DnsRecordState::Managed => Tone::Ok,
+        DnsRecordState::Pending => Tone::Pending,
+        DnsRecordState::DnsConflict => Tone::Bad,
+        DnsRecordState::Manual => Tone::Neutral,
     }
 }
 
@@ -397,6 +409,7 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                             <th>"Visibility"</th>
                                             <th>"Destination"</th>
                                             <th>"DNS records"</th>
+                                            <th>"DNS"</th>
                                             <th>"State"</th>
                                             <th>"Details"</th>
                                         </tr>
@@ -417,6 +430,9 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                         </td>
                                                         <td>
                                                             <code>{route.dns.to_string()}</code>
+                                                        </td>
+                                                        <td>
+                                                            {badge(dns_tone(route.dns_state), route.dns_state.to_string())}
                                                         </td>
                                                         <td>
                                                             {badge(route_tone(&route.state), route.state.clone())}

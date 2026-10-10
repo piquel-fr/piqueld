@@ -143,16 +143,17 @@ impl Report for Vec<RouteRow> {
         if self.is_empty() {
             return out.line("No deployed routes.");
         }
-        out.heading("HOSTNAME  ENVIRONMENT  VISIBILITY  STATE  DESTINATION  DNS")?;
+        out.heading("HOSTNAME  ENVIRONMENT  VISIBILITY  STATE  DESTINATION  DNS  RECORDS")?;
         for row in self {
             let route = &row.route;
             out.line(format_args!(
-                "{}  {}  {}  {}  {}  {}",
+                "{}  {}  {}  {}  {}  {}  {}",
                 route.hostname,
                 row.environment,
                 route.visibility,
                 route.state,
                 route.target,
+                route.dns_state,
                 route.dns
             ))?;
             if route.state != "ready" {
@@ -170,12 +171,17 @@ report!(DnsStatus, self, out, {
         out.label(
             "DNS provider",
             format_args!(
-                "{} ({}): {}",
+                "{} ({}{}): {}",
                 provider.kind,
                 if provider.healthy {
                     "healthy"
                 } else {
                     "unhealthy"
+                },
+                if provider.manage_records {
+                    ", manages route records"
+                } else {
+                    ""
                 },
                 if provider.zones.is_empty() {
                     "no zones".into()

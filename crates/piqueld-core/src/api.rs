@@ -1121,13 +1121,18 @@ pub struct PrivateIngressStatus {
     pub message: String,
 }
 
-/// The records a route's hostname needs. piqueld does not create them;
-/// operators copy them to their DNS provider.
+/// The records a route's hostname needs. piqueld creates them where its DNS
+/// provider manages records (see [`DnsRecordState`]); otherwise operators
+/// copy them to their DNS provider.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DnsRecords {
     /// Public routes: A/AAAA records to this server's public addresses.
-    ServerAddresses,
+    ServerAddresses {
+        /// `[ingress] public_addresses`; empty when not configured.
+        #[serde(default)]
+        addresses: Vec<String>,
+    },
     /// Public routes in tunnel mode: a proxied CNAME record to the tunnel.
     TunnelCname {
         /// `<tunnel-id>.cfargotunnel.com`.
@@ -1141,22 +1146,60 @@ pub enum DnsRecords {
     },
 }
 
-/// `A/AAAA -> this server's public addresses`, the tunnel's CNAME, or the
-/// tailnet addresses.
+/// `A/AAAA -> 192.0.2.1`, the tunnel's CNAME, or the tailnet addresses.
 impl std::fmt::Display for DnsRecords {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ServerAddresses => {
+            Self::ServerAddresses { addresses } if addresses.is_empty() => {
                 formatter.write_str("A/AAAA -> this server's public addresses")
             }
             Self::TunnelCname { target } => write!(formatter, "CNAME (proxied) -> {target}"),
             Self::TailnetAddresses { addresses } if addresses.is_empty() => {
                 formatter.write_str("A/AAAA -> the apps node's tailnet addresses, once it joins")
             }
-            Self::TailnetAddresses { addresses } => {
+            Self::ServerAddresses { addresses } | Self::TailnetAddresses { addresses } => {
                 write!(formatter, "A/AAAA -> {}", addresses.join(", "))
             }
         }
+    }
+}
+
+/// Who keeps a route's DNS records current.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DnsRecordState {
+    /// The operator: no provider with `manage_records` hosts the hostname's
+    /// zone, or a direct public route has no `[ingress] public_addresses`.
+    #[default]
+    Manual,
+    /// piqueld created the records and keeps them current.
+    Managed,
+    /// piqueld will manage the records but has not written them yet: the
+    /// gateway has not applied the route, the apps node has no addresses
+    /// yet, or the provider failed and the change is retried.
+    Pending,
+    /// A record piqueld does not own already exists at the hostname. piqueld
+    /// never overwrites it; remove it to let piqueld manage the hostname.
+    DnsConflict,
+}
+
+impl DnsRecordState {
+    /// Wire representation.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Managed => "managed",
+            Self::Pending => "pending",
+            Self::DnsConflict => "dns_conflict",
+        }
+    }
+}
+
+/// `manual`, `managed`, `pending` or `dns_conflict`.
+impl std::fmt::Display for DnsRecordState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -1194,6 +1237,9 @@ pub struct DnsStatus {
 pub struct DnsProviderStatus {
     /// Provider kind, such as `cloudflare` or `ovh`.
     pub kind: String,
+    /// piqueld manages routes' DNS records in this provider's zones.
+    #[serde(default)]
+    pub manage_records: bool,
     /// Zones discovered through the provider's API, including conflicting ones.
     pub zones: Vec<String>,
     /// The latest discovery succeeded and no zone is claimed by another provider.
@@ -1226,6 +1272,9 @@ pub struct RouteStatus {
     pub visibility: crate::manifest::Visibility,
     /// The records the hostname needs.
     pub dns: DnsRecords,
+    /// Whether piqueld manages those records.
+    #[serde(default)]
+    pub dns_state: DnsRecordState,
     /// Backend service or redirect.
     #[serde(flatten)]
     pub target: crate::manifest::RouteTarget,

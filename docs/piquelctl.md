@@ -153,7 +153,8 @@ a daemon's [tailnet node](configuration.md#tailnet-node) at
 `https://piqueld.<tailnet>.ts.net`; loopback HTTP and Unix sockets need no opt-in.
 When the daemon runs a tailnet node, `status` also reports its login state,
 certificate expiry, and whether `auth.public_url` matches the node. It also lists
-each [DNS provider](configuration.md#dns-providers) with its zones and health,
+each [DNS provider](configuration.md#dns-providers) with its zones, health and
+whether it manages route records,
 and each DNS-01 certificate with its hostnames, expiry and last error.
 `piquelctl dns refresh` checks the providers' credentials and zones now instead
 of at the next hourly discovery, then prints the same DNS lines.
@@ -311,8 +312,10 @@ added with `--visibility public`; `route visibility` changes an existing route,
 and `env visibility` caps every route of one environment at `private` (or lifts
 the cap with `public`) in the saved manifest. Deploy after saving to activate or
 remove routing. `route list` shows each deployed route with its environment,
-effective visibility, state, destination and the DNS records its hostname needs,
-followed by the cause while it is not ready. `piquelctl status` also shows the
+effective visibility, state, destination, whether piqueld
+[manages its DNS records](ingress.md#managed-dns-records) (`manual`, `managed`,
+`pending` or `dns_conflict`) and the records its hostname needs, followed by the
+cause while it is not ready. `piquelctl status` also shows the
 public and private listeners: the ingress mode (ports 80/443, or the Cloudflare
 Tunnel's ID and whether it is connected), and the apps node's name, state and tailnet
 addresses.

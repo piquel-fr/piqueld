@@ -19,8 +19,8 @@ enabled = true
 Docker Engine 28+ with API 1.48+ is required. Ports 80 and 443 must be free and
 reachable from the internet, unless public routes go through a
 [Cloudflare Tunnel](#cloudflare-tunnel). Create an A record for the server's public
-IPv4 address; add AAAA only if public IPv6 actually reaches the gateway. DNS changes
-are manual. Caddy obtains and renews certificates for public routes without
+IPv4 address; add AAAA only if public IPv6 actually reaches the gateway, or let
+piqueld [manage DNS records](#managed-dns-records). Caddy obtains and renews certificates for public routes without
 DNS-provider credentials; see [DNS-01 certificates](#dns-01-certificates) for
 the rest.
 
@@ -175,8 +175,9 @@ disabled.
 
 ### DNS for private routes
 
-DNS records are created manually. Each private hostname needs A and AAAA records
-pointing at the apps node's tailnet addresses, which status and `piquelctl app
+Unless piqueld [manages them](#managed-dns-records), DNS records are created
+manually. Each private hostname needs A and AAAA records pointing at the apps
+node's tailnet addresses, which status and `piquelctl app
 route list` show. A wildcard per environment (for example `staging.piquel.fr`
 plus `*.staging.piquel.fr`) means new routes need no DNS change. Names are not
 secret: they appear in public DNS and certificate transparency logs; only
@@ -259,8 +260,8 @@ from the gateway.
 
 ### DNS for tunnel routes
 
-DNS records are created manually. Each public hostname needs a proxied (orange
-cloud) CNAME record to `<tunnel-id>.cfargotunnel.com`, which route status and
+Unless piqueld [manages them](#managed-dns-records), DNS records are created
+manually. Each public hostname needs a proxied (orange cloud) CNAME record to `<tunnel-id>.cfargotunnel.com`, which route status and
 `piquelctl app route list` show:
 
 ```text
@@ -339,6 +340,79 @@ is within 14 days of expiry. `piquelctl status` and the dashboard's system statu
 show each provider with its kind, zones and health, and each certificate with its
 hostnames, expiry and last error.
 
+## Managed DNS records
+
+piqueld can create and maintain each route's DNS records through the
+[DNS providers](configuration.md#dns-providers) that set `manage_records`:
+
+```toml
+[ingress]
+enabled = true
+public_addresses = ["203.0.113.10", "2001:db8::10"]
+
+[[dns.providers]]
+kind = "cloudflare"
+api_token_file = "cloudflare-dns-token"
+manage_records = true
+```
+
+It is off by default: zones of other providers stay manual. A hostname belongs to
+the provider with the longest matching zone, as for certificates.
+
+| Route | Records |
+| --- | --- |
+| private | A and AAAA to the apps node's tailnet addresses |
+| public, [tunnel](#cloudflare-tunnel) | a proxied CNAME to `<tunnel-id>.cfargotunnel.com` (the zone must be on Cloudflare: OVH cannot proxy, so such routes stay `pending`) |
+| public, direct | A and AAAA to `[ingress] public_addresses`; without any, these records stay manual |
+
+Private routes never get public addresses. Managed records are exact hostnames,
+never wildcards: existing manual wildcards keep working, and the more specific
+managed records override them.
+
+**Ownership.** piqueld only changes records it owns. Before writing a hostname's
+records, it creates a `_piqueld.<hostname>` TXT record holding the installation ID.
+A hostname that already has A, AAAA or CNAME records without that ownership record,
+or that another installation also claims, is never written: its route reports
+`dns_conflict`, with the existing records, until the operator removes them.
+Other record types at the hostname, such as MX or TXT, are left alone. Claimed
+hostnames are also kept in SQLite until their records are deleted, so a route
+removed while the daemon was down is still cleaned up.
+
+**Lifecycle.** Records follow the routes the gateway has applied. A new route's
+records are written once the gateway serves it, and a removed route's records and
+ownership record are deleted only after the gateway has withdrawn it. A visibility
+change withdraws the route first, so its records are deleted, then written again
+with the new targets once the gateway serves it on its new listener. After a
+restart, records only change once the gateway has applied the daemon's
+configuration, so switching to tunnel mode repoints records only once the gateway
+runs in that mode. Disabling ingress deletes the records piqueld manages once the
+gateway has stopped. A route waiting for the gateway, or
+a private route while the apps node has no tailnet addresses, keeps its current
+records. Removing `public_addresses` or `manage_records` leaves existing records
+in place, unmanaged.
+
+**Reconciliation.** Every 10 seconds piqueld computes the desired records from
+the applied routes, the ingress mode and the apps node's addresses, without
+calling providers. When they change, and every 5 minutes otherwise, it reads each
+managed hostname's records and repairs any drift. Address changes of the apps
+node are therefore followed within seconds. A failed provider call, including a
+rate limit, leaves that hostname `pending` and is retried after a minute. A route
+the gateway changes during a pass waits for the next one. OVH changes take effect
+once the zone is refreshed; a failed refresh is retried even when nothing else
+changed. Changes
+are written in place where the record type stays the same; a CNAME replacing
+addresses (or the reverse) is written after the old records are deleted.
+
+Each change is a daemon-scoped journal action with the `ingress_dns_create`,
+`ingress_dns_update` or `ingress_dns_delete` phase, so it appears in Events;
+failures record a `dns_records_failed` diagnostic. Passes that change nothing
+record no history.
+
+Each route reports its `dns_state`: `manual`, `managed`, `pending` or
+`dns_conflict`, in the API, `piquelctl app route list` and the dashboard's Routes
+tab. `piquelctl status` and the dashboard's system status show which providers
+manage records.
+
 ## Traffic and isolation
 
 The piqueld website and API are never served through ingress; routes can only
@@ -409,7 +483,8 @@ tunnel's connection in tunnel mode; `public` reports the mode (`direct` or `tunn
 with the tunnel ID and whether it is connected); `private` reports
 the private listener separately: the apps node's login state, `MagicDNS` name and
 tailnet addresses. A broken node degrades only private routes. Each route reports
-its effective `visibility` and the `dns` records its hostname needs. `routes` lists
+its effective `visibility`, the `dns` records its hostname needs, and whether
+piqueld [manages them](#managed-dns-records) (`dns_state`). `routes` lists
 only the routes of applications the caller can
 [read](authorization.md#what-callers-see).
 

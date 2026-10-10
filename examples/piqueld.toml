@@ -41,6 +41,10 @@ auto_initialize_swarm = true
 # Requires Docker 28+ and free public ports 80/443, unless [ingress.tunnel] is
 # enabled. Restart to apply.
 enabled = false
+# This server's public addresses. Where a DNS provider sets manage_records,
+# direct public routes get A/AAAA records to them; without any, those records
+# stay manual. Unused in tunnel mode.
+public_addresses = []
 
 # Private routes, served to the tailnet through a second tailnet node, the apps
 # node: a Tailscale container beside the gateway, named
@@ -65,11 +69,13 @@ enabled = false
 directory = "https://acme-v02.api.letsencrypt.org/directory"
 # email = "admin@example.com"
 
-# DNS provider accounts used for DNS-01. Credentials are only read from files;
-# relative paths resolve against $CREDENTIALS_DIRECTORY.
+# DNS provider accounts used for DNS-01 and, with manage_records, routes'
+# A/AAAA/CNAME records. Credentials are only read from files; relative paths
+# resolve against $CREDENTIALS_DIRECTORY.
 # [[dns.providers]]
 # kind = "cloudflare"
 # api_token_file = "/tmp/piqueld-dev-cloudflare-token" # Zone:Read and DNS:Edit
+# manage_records = false
 #
 # [[dns.providers]]
 # kind = "ovh"

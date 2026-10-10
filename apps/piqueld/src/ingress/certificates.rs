@@ -26,7 +26,10 @@
 use super::{Ingress, wire::Journaled};
 use crate::{
     config::AcmeConfig,
-    dns::{Dns, RecordId, Zone, ZoneError},
+    dns::{
+        Dns, ZoneError,
+        provider::{Record, RecordId, Zone},
+    },
 };
 use anyhow::{Context, Result, bail};
 use instant_acme::{
@@ -740,7 +743,13 @@ impl Ingress {
                     let provider = dns.provider(*provider);
                     *record = Some(
                         provider
-                            .create_txt(dns.http(), zone, &challenge_name, &value)
+                            .upsert(
+                                dns.http(),
+                                zone,
+                                &challenge_name,
+                                None,
+                                &Record::Txt(value.clone()),
+                            )
                             .await?,
                     );
                     provider.publish(dns.http(), zone).await?;

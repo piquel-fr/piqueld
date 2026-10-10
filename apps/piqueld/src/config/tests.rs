@@ -217,7 +217,8 @@ fn dns_providers_accept_credentials_only_from_files() {
     let path = |name: &str| directory.path().join(name).display().to_string();
     let source = format!(
         "[ingress.acme]\nemail = 'admin@example.com'\n\
-         [[dns.providers]]\nkind = 'cloudflare'\napi_token_file = '{}'\n\
+         [ingress]\npublic_addresses = ['203.0.113.10', '2001:db8::10']\n\
+         [[dns.providers]]\nkind = 'cloudflare'\napi_token_file = '{}'\nmanage_records = true\n\
          [[dns.providers]]\nkind = 'ovh'\nendpoint = 'ovh-eu'\napplication_key_file = '{}'\n\
          application_secret_file = '{}'\nconsumer_key_file = '{}'",
         path("cf"),
@@ -231,27 +232,34 @@ fn dns_providers_accept_credentials_only_from_files() {
             .dns
             .providers
             .iter()
-            .map(crate::dns::DnsProvider::kind)
+            .map(|config| (config.provider.kind(), config.manage_records))
             .collect::<Vec<_>>(),
-        ["cloudflare", "ovh"]
+        [("cloudflare", true), ("ovh", false)]
     );
     let view = config.view();
     let dns = &view.groups["DNS providers"];
     assert_eq!(
         dns["1. cloudflare"],
-        format!("API token from {}", path("cf"))
+        format!("API token from {}; manages route records", path("cf"))
     );
     assert!(
-        dns["2. ovh"].starts_with("ovh-eu, application key from"),
+        dns["2. ovh"].starts_with("ovh-eu, application key from")
+            && dns["2. ovh"].ends_with("; route records are manual"),
         "{dns:?}"
     );
     assert_eq!(view.groups["Ingress"]["ACME email"], "admin@example.com");
+    assert_eq!(
+        view.groups["Ingress"]["Public addresses"],
+        "203.0.113.10, 2001:db8::10"
+    );
     let shown = format!("{view:?} {config:?}");
     assert!(!shown.contains("-value"), "{shown}");
 
     for invalid in [
         "[[dns.providers]]\nkind = 'cloudflare'\napi_token = 'inline'",
         "[[dns.providers]]\nkind = 'route53'",
+        "[[dns.providers]]\nkind = 'cloudflare'\napi_token_file = '/x'\nmanage_record = true",
+        "[ingress]\npublic_addresses = ['example.com']",
         "[[dns.providers]]\nkind = 'ovh'\nendpoint = 'ovh-mars'",
         "[ingress.acme]\ndirectory = 'http://acme.example.com/directory'",
         "[ingress.acme]\nemail = 'not an email'",
