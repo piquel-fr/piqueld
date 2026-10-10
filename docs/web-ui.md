@@ -37,7 +37,11 @@ manifest it deploys mounts and where the value comes from: generated for the
 environment, the application's secret store (with its version), missing from the
 store, which would fail the next deploy with `secret_missing`, not allowed by the
 secret's access list, which would fail it with `secret_access_denied`, or discarded by key recovery, which fails it with
-`secret_unavailable` until the value is replaced. Below it, the environment's generated values
+`secret_unavailable` until the value is replaced. Each of those rows fixes itself in place:
+**Store** saves a missing value that only this environment may mount, **Replace** stores a
+new version of a discarded one, and **Allow this environment** adds it to the secret's access
+list; each applies from the next deployment or promotion. A promoted environment not
+promoted into yet lists what the release its source runs mounts. Below it, the environment's generated values
 can be regenerated for the next deployment, or deleted so a later deployment
 generates new ones. Deletion confirms the environment
 name, retains its Docker volumes, and leaves the application and other
@@ -82,10 +86,11 @@ fetched from it, so Preview is disabled until its first deployment. A service's 
 environment's logs, or links to each environment's logs.
 
 A promoted environment never builds, so its page and its Environments row offer
-**Promote** instead of Preview and Deploy. Promote first plans the promotion of
+**Promote from <source>** instead of Preview and Deploy, and its source's page
+offers **Promote to <environment>** next to Deploy. Either first plans the promotion of
 its source environment's current release and shows it: where the release comes
 from, the release itself (commit, each service's image, availability), the
-changes against the environment's latest deployment, new (empty) volumes, the
+changes against the environment's current deployment, new (empty) volumes, the
 runtime actions, and every secret that is missing or that the environment may
 not use. **Promote release** is disabled while a secret is listed, and promotes
 exactly the source deployment that was planned: if the source deployed again

@@ -316,24 +316,84 @@ impl EnvironmentRow {
     }
 }
 
-/// Where an environment deploys from: `saved`, the branch it follows, e.g.
-/// `main` or `main@<commit>`, or `promoted from <name>`, naming the source
-/// among `environments` (by ID once it is gone).
-fn source(source: &EnvironmentSource, environments: &[EnvironmentView]) -> String {
-    match source {
-        EnvironmentSource::Saved => "saved".into(),
-        EnvironmentSource::Branch(branch) => branch.to_string(),
-        EnvironmentSource::Promoted(from) => {
-            let name = environments
-                .iter()
-                .find(|environment| environment.id == from.environment)
-                .map_or_else(
-                    || from.environment.to_string(),
-                    |source| source.name.to_string(),
-                );
-            format!("promoted from {name}")
+/// The application's environments, to name the ones sources and
+/// deployment origins refer to by ID.
+#[derive(Clone, Copy)]
+pub(crate) struct Names<'a>(pub(crate) &'a [EnvironmentView]);
+
+impl Names<'_> {
+    /// Environment `id`'s name, or its ID once it is gone.
+    fn environment(self, id: &str) -> String {
+        self.0
+            .iter()
+            .find(|environment| environment.id.as_str() == id)
+            .map_or_else(|| id.to_owned(), |environment| environment.name.to_string())
+    }
+
+    /// Where an environment deploys from: `saved`, the branch it follows,
+    /// e.g. `main` or `main@<commit>`, or `promoted from <name>`.
+    fn source(self, source: &EnvironmentSource) -> String {
+        match source {
+            EnvironmentSource::Saved => "saved".into(),
+            EnvironmentSource::Branch(branch) => branch.to_string(),
+            EnvironmentSource::Promoted(from) => {
+                format!(
+                    "promoted from {}",
+                    self.environment(from.environment.as_str())
+                )
+            }
         }
     }
+
+    /// Where an environment deploys from, in a sentence: the saved
+    /// manifest, branch `main`, or releases promoted from `staging`.
+    fn describe(self, source: &EnvironmentSource) -> String {
+        match source {
+            EnvironmentSource::Promoted(from) => format!(
+                "releases promoted from {}",
+                self.environment(from.environment.as_str())
+            ),
+            EnvironmentSource::Saved | EnvironmentSource::Branch(_) => source.to_string(),
+        }
+    }
+
+    /// Where a deployment came from, in a phrase.
+    fn origin(self, origin: &DeploymentOrigin) -> String {
+        match origin {
+            DeploymentOrigin::Build => "built from its source".into(),
+            DeploymentOrigin::Promotion {
+                environment,
+                deployment,
+            } => format!(
+                "promoted from {}'s deployment {deployment}",
+                self.environment(environment.as_str())
+            ),
+            DeploymentOrigin::Release => "deployed again by release ID".into(),
+        }
+    }
+}
+
+/// A report whose human rendering names environments; its JSON is the
+/// value's own.
+pub(crate) struct Named<'a, T> {
+    pub(crate) value: &'a T,
+    pub(crate) names: Names<'a>,
+}
+
+// Implements `Report` for `Named<T>`, rendering with `names` in scope.
+macro_rules! named {
+    ($ty:ty, $value:ident, $names:ident, $out:ident, $body:block) => {
+        impl Report for Named<'_, $ty> {
+            type Json = $ty;
+            fn json(&self) -> &$ty {
+                self.value
+            }
+            fn render_human(&self, $out: &mut HumanWriter<'_>) -> io::Result<()> {
+                let ($value, $names) = (self.value, self.names);
+                $body
+            }
+        }
+    };
 }
 
 impl Report for Vec<EnvironmentRow> {
@@ -356,7 +416,7 @@ impl Report for Vec<EnvironmentRow> {
                 "{}  {}  {}  {}  {}",
                 environment.name,
                 row.state(),
-                source(&environment.source, &environments),
+                Names(&environments).source(&environment.source),
                 environment
                     .resolved_generation
                     .map_or_else(|| "none".to_owned(), |v| v.to_string()),
@@ -437,7 +497,7 @@ report!(ShowReport<'_>, self, out, {
                 row.environment.name,
                 row.environment.id,
                 row.state(),
-                source(&row.environment.source, &environments)
+                Names(&environments).source(&row.environment.source)
             ),
         )?;
     }
@@ -698,7 +758,7 @@ report!(EnvironmentShowReport<'_>, self, out, {
     )?;
     out.label(
         "Source",
-        source(&environment.source, &application.environments),
+        Names(&application.environments).source(&environment.source),
     )?;
     let connection = application.application.spec().manifest.as_ref();
     out.label(
@@ -740,13 +800,17 @@ report!(EnvironmentShowReport<'_>, self, out, {
     Ok(())
 });
 
-report!(EnvironmentView, self, out, {
+named!(EnvironmentView, environment, names, out, {
     out.line(format_args!(
         "Environment {} ({}), deploys from {}{}.",
-        self.name,
-        self.id,
-        self.source,
-        if self.sync { ", opted into sync" } else { "" }
+        environment.name,
+        environment.id,
+        names.describe(&environment.source),
+        if environment.sync {
+            ", opted into sync"
+        } else {
+            ""
+        }
     ))
 });
 
@@ -804,123 +868,117 @@ report!(BuildLogPage, self, out, {
 });
 
 // Each release with where its manifest came from and each service's image.
-report!(Page<ReleaseView>, self, out, {
-    if self.items.is_empty() {
+named!(Page<ReleaseView>, page, names, out, {
+    if page.items.is_empty() {
         out.line("No releases.")?;
     }
-    for release in &self.items {
-        release.render_human(out)?;
+    for release in &page.items {
+        names.release(out, release)?;
     }
-    if let Some(cursor) = &self.next_cursor {
+    if let Some(cursor) = &page.next_cursor {
         out.label("Next cursor", cursor)?;
     }
     Ok(())
 });
 
-// One release: its commit, image availability, each service's image and
-// provenance, and every deployment that received it.
-report!(ReleaseView, self, out, {
-    out.line(format_args!(
-        "{}  {}  created {}",
-        self.id,
-        self.release.commit().map_or_else(
-            || "saved manifest".to_owned(),
-            |commit| format!("commit {commit}")
-        ),
-        self.created_at_ms
-    ))?;
-    if let Some(availability) = &self.availability {
-        let services = |missing: &[ServiceImage]| {
-            missing
-                .iter()
-                .map(|image| image.service.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        out.label(
-            "  Images",
-            match availability {
-                ReleaseAvailability::Present => "all present".into(),
-                ReleaseAvailability::Pullable { missing } => format!(
-                    "missing for {}; deploying it pulls them again by digest",
-                    services(missing)
-                ),
-                ReleaseAvailability::Unavailable { missing } => format!(
-                    "missing for {}; it can't be deployed again",
-                    services(missing)
-                ),
-            },
-        )?;
-    }
-    for (service, source) in self.release.sources() {
-        out.label(
-            &format!("  {service}"),
-            match source {
-                ResolvedSource::Image {
-                    requested,
-                    digest_reference,
-                } => format!("{digest_reference} (pulled {requested})"),
-                ResolvedSource::Git {
-                    requested,
-                    commit,
-                    image_id,
-                    ..
-                } => format!(
-                    "{image_id} (built from {} at {commit})",
-                    repository(requested)
-                ),
-            },
-        )?;
-    }
-    for promotion in &self.promotions {
-        out.label(
-            "  Deployed to",
-            format_args!(
-                "{} as {}, {}",
-                promotion.environment_id,
-                promotion.deployment_id,
-                origin(&promotion.origin)
+impl Names<'_> {
+    /// One release: its commit, image availability, each service's image
+    /// and provenance, and every deployment that received it.
+    fn release(self, out: &mut HumanWriter<'_>, release: &ReleaseView) -> io::Result<()> {
+        out.line(format_args!(
+            "{}  {}  created {}",
+            release.id,
+            release.release.commit().map_or_else(
+                || "saved manifest".to_owned(),
+                |commit| format!("commit {commit}")
             ),
-        )?;
+            release.created_at_ms
+        ))?;
+        if let Some(availability) = &release.availability {
+            let services = |missing: &[ServiceImage]| {
+                missing
+                    .iter()
+                    .map(|image| image.service.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            out.label(
+                "  Images",
+                match availability {
+                    ReleaseAvailability::Present => "all present".into(),
+                    ReleaseAvailability::Pullable { missing } => format!(
+                        "missing for {}; deploying it pulls them again by digest",
+                        services(missing)
+                    ),
+                    ReleaseAvailability::Unavailable { missing } => format!(
+                        "missing for {}; it can't be deployed again",
+                        services(missing)
+                    ),
+                },
+            )?;
+        }
+        for (service, source) in release.release.sources() {
+            out.label(
+                &format!("  {service}"),
+                match source {
+                    ResolvedSource::Image {
+                        requested,
+                        digest_reference,
+                    } => format!("{digest_reference} (pulled {requested})"),
+                    ResolvedSource::Git {
+                        requested,
+                        commit,
+                        image_id,
+                        ..
+                    } => format!(
+                        "{image_id} (built from {} at {commit})",
+                        repository(requested)
+                    ),
+                },
+            )?;
+        }
+        for promotion in &release.promotions {
+            out.label(
+                "  Deployed to",
+                format_args!(
+                    "{} as {}, {}",
+                    self.environment(promotion.environment_id.as_str()),
+                    promotion.deployment_id,
+                    self.origin(&promotion.origin)
+                ),
+            )?;
+        }
+        Ok(())
     }
-    Ok(())
-});
+}
 
-// A plan's release: the release, where it comes from, the volumes it
-// creates empty, and every secret the environment can't use yet.
-report!(ReleasePlan, self, out, {
-    out.blank()?;
-    out.heading("Release:")?;
-    self.release.render_human(out)?;
-    out.label("  Origin", origin(&self.origin))?;
-    for volume in &self.new_volumes {
-        out.label("  New volume", format_args!("{volume} (created empty)"))?;
-    }
-    for problem in &self.secrets {
-        let (secret, problem) = match problem {
-            SecretProblem::Missing { secret } => (secret, "missing from the application's store"),
-            SecretProblem::AccessDenied { secret } => {
-                (secret, "its access list excludes this environment")
-            }
-            SecretProblem::Unavailable { secret } => {
-                (secret, "key recovery discarded its value; store a new one")
-            }
-            SecretProblem::Deleting { secret } => (secret, "it is being deleted"),
-        };
-        out.label("  Secret", format_args!("{secret}: {problem}"))?;
-    }
-    Ok(())
-});
-
-/// Where a deployment came from, in a phrase.
-fn origin(origin: &DeploymentOrigin) -> String {
-    match origin {
-        DeploymentOrigin::Build => "built from its source".into(),
-        DeploymentOrigin::Promotion {
-            environment,
-            deployment,
-        } => format!("promoted from {environment}'s deployment {deployment}"),
-        DeploymentOrigin::Release => "deployed again by release ID".into(),
+impl Names<'_> {
+    /// A plan's release: the release, where it comes from, the volumes it
+    /// creates empty, and every secret the environment can't use yet.
+    fn release_plan(self, out: &mut HumanWriter<'_>, plan: &ReleasePlan) -> io::Result<()> {
+        out.blank()?;
+        out.heading("Release:")?;
+        self.release(out, &plan.release)?;
+        out.label("  Origin", self.origin(&plan.origin))?;
+        for volume in &plan.new_volumes {
+            out.label("  New volume", format_args!("{volume} (created empty)"))?;
+        }
+        for problem in &plan.secrets {
+            let (secret, problem) = match problem {
+                SecretProblem::Missing { secret } => {
+                    (secret, "missing from the application's store")
+                }
+                SecretProblem::AccessDenied { secret } => {
+                    (secret, "its access list excludes this environment")
+                }
+                SecretProblem::Unavailable { secret } => {
+                    (secret, "key recovery discarded its value; store a new one")
+                }
+                SecretProblem::Deleting { secret } => (secret, "it is being deleted"),
+            };
+            out.label("  Secret", format_args!("{secret}: {problem}"))?;
+        }
+        Ok(())
     }
 }
 
@@ -939,6 +997,8 @@ pub(crate) struct PromotionReport<'a> {
     outcome: Option<OperationState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     operation: Option<&'a Operation>,
+    #[serde(skip)]
+    names: Names<'a>,
 }
 
 impl<'a> PromotionReport<'a> {
@@ -953,6 +1013,7 @@ impl<'a> PromotionReport<'a> {
             origin: &accepted.origin,
             outcome: None,
             operation: None,
+            names: Names(&application.environments),
         }
     }
 
@@ -968,8 +1029,8 @@ report!(PromotionReport<'_>, self, out, {
     out.line(format_args!(
         "Promoting release {} into environment {}: {}, deployment {}.",
         self.release_id,
-        self.environment_id,
-        origin(self.origin),
+        self.names.environment(self.environment_id),
+        self.names.origin(self.origin),
         self.deployment_id
     ))?;
     match self.operation {
@@ -1306,109 +1367,115 @@ impl Report for ManifestReport {
     }
 }
 
-// Plan rendering: manifest changes, an action summary with per-action risk and
-// reason, then diagnostics.
-report!(PlanView, self, out, {
-    out.label("Application", &self.application_id)?;
-    if self.identical {
-        out.blank()?;
-        out.line(if self.operation.is_some() {
-            "Configuration matches the latest deployment snapshot."
-        } else {
-            "Configuration matches the saved configuration."
-        })?;
-    }
-    if !self.changes.is_empty() {
-        out.blank()?;
-        out.heading("Changes:")?;
-        for change in &self.changes {
-            let (marker, value) = match (&change.before, &change.after) {
-                (None, Some(after)) => ('+', Configuration::value(after)),
-                (Some(before), None) => ('-', Configuration::value(before)),
-                (Some(before), Some(after)) => (
-                    '~',
-                    format!(
-                        "{} → {}",
-                        Configuration::value(before),
-                        Configuration::value(after)
+impl Names<'_> {
+    /// Renders a plan: manifest changes, an action summary with per-action
+    /// risk and reason, a release's, then diagnostics.
+    fn plan(self, out: &mut HumanWriter<'_>, plan: &PlanView) -> io::Result<()> {
+        out.label("Application", &plan.application_id)?;
+        if plan.identical {
+            out.blank()?;
+            out.line(if plan.operation.is_some() {
+                "Configuration matches the latest deployment snapshot."
+            } else {
+                "Configuration matches the saved configuration."
+            })?;
+        }
+        if !plan.changes.is_empty() {
+            out.blank()?;
+            out.heading("Changes:")?;
+            for change in &plan.changes {
+                let (marker, value) = match (&change.before, &change.after) {
+                    (None, Some(after)) => ('+', Configuration::value(after)),
+                    (Some(before), None) => ('-', Configuration::value(before)),
+                    (Some(before), Some(after)) => (
+                        '~',
+                        format!(
+                            "{} → {}",
+                            Configuration::value(before),
+                            Configuration::value(after)
+                        ),
                     ),
-                ),
-                (None, None) => ('~', "absent".into()),
-            };
-            out.change(marker, &change.field, &value)?;
+                    (None, None) => ('~', "absent".into()),
+                };
+                out.change(marker, &change.field, &value)?;
+            }
         }
-    }
-    let summary = self.plan.summary();
-    out.blank()?;
-    out.label(
-        "Actions",
-        format_args!(
-            "{} total · {} runtime mutations · {} destructive · {} blocking",
-            summary.action_count,
-            summary.mutation_count,
-            summary.destructive_count,
-            summary.blocking_conflicts
-        ),
-    )?;
-    for (index, action) in self.plan.actions.iter().enumerate() {
-        let mut description = action.human_description().to_ascii_lowercase();
-        if let Some(first) = description.get_mut(..1) {
-            first.make_ascii_uppercase();
-        }
-        out.line(format_args!("  {:>2}. {description}", index + 1))?;
-        let risk = match action.kind.risk() {
-            ActionRisk::None => "no risk",
-            ActionRisk::Availability => "availability",
-            ActionRisk::DataAdjacent => "data-adjacent",
-            ActionRisk::Destructive => "destructive",
-        };
-        let reason = match &action.reason {
-            ActionReason::Missing => "missing".into(),
-            ActionReason::Drift { fields } if fields.is_empty() => "drift".into(),
-            ActionReason::Drift { fields } => format!("drift ({})", fields.join(", ")),
-            ActionReason::Obsolete => "obsolete".into(),
-            ActionReason::ConvergencePending => "convergence pending".into(),
-            ActionReason::ResolutionRequired => "resolution required".into(),
-            ActionReason::ApplicationDeletion => "application deletion".into(),
-            ActionReason::VolumeRetentionPolicy => "volume retention policy".into(),
-        };
-        out.line(format_args!("      {risk} · {reason}"))?;
-    }
-    if let Some(release) = &self.release {
-        release.render_human(out)?;
-    }
-    Configuration::variables(out, &self.variables)?;
-    if !self.rollouts.is_empty() {
-        out.blank()?;
-        out.heading("Rollout:")?;
-        for rollout in &self.rollouts {
-            out.line(format_args!(
-                "  {}: {} ({}) · monitor {}s",
-                rollout.service,
-                rollout.order,
-                rollout.order_source.as_str(),
-                rollout.monitor_seconds
-            ))?;
-        }
-    }
-    for diagnostic in &self.plan.diagnostics {
+        let summary = plan.plan.summary();
         out.blank()?;
         out.label(
-            "Diagnostic",
-            format_args!("{} [{}]", diagnostic.code, diagnostic.resource),
+            "Actions",
+            format_args!(
+                "{} total · {} runtime mutations · {} destructive · {} blocking",
+                summary.action_count,
+                summary.mutation_count,
+                summary.destructive_count,
+                summary.blocking_conflicts
+            ),
         )?;
-        out.line(format_args!(
-            "  {}{}",
-            diagnostic.message,
-            if diagnostic.blocking {
-                " (blocking)"
-            } else {
-                ""
+        for (index, action) in plan.plan.actions.iter().enumerate() {
+            let mut description = action.human_description().to_ascii_lowercase();
+            if let Some(first) = description.get_mut(..1) {
+                first.make_ascii_uppercase();
             }
-        ))?;
+            out.line(format_args!("  {:>2}. {description}", index + 1))?;
+            let risk = match action.kind.risk() {
+                ActionRisk::None => "no risk",
+                ActionRisk::Availability => "availability",
+                ActionRisk::DataAdjacent => "data-adjacent",
+                ActionRisk::Destructive => "destructive",
+            };
+            let reason = match &action.reason {
+                ActionReason::Missing => "missing".into(),
+                ActionReason::Drift { fields } if fields.is_empty() => "drift".into(),
+                ActionReason::Drift { fields } => format!("drift ({})", fields.join(", ")),
+                ActionReason::Obsolete => "obsolete".into(),
+                ActionReason::ConvergencePending => "convergence pending".into(),
+                ActionReason::ResolutionRequired => "resolution required".into(),
+                ActionReason::ApplicationDeletion => "application deletion".into(),
+                ActionReason::VolumeRetentionPolicy => "volume retention policy".into(),
+            };
+            out.line(format_args!("      {risk} · {reason}"))?;
+        }
+        if let Some(release) = &plan.release {
+            self.release_plan(out, release)?;
+        }
+        Configuration::variables(out, &plan.variables)?;
+        if !plan.rollouts.is_empty() {
+            out.blank()?;
+            out.heading("Rollout:")?;
+            for rollout in &plan.rollouts {
+                out.line(format_args!(
+                    "  {}: {} ({}) · monitor {}s",
+                    rollout.service,
+                    rollout.order,
+                    rollout.order_source.as_str(),
+                    rollout.monitor_seconds
+                ))?;
+            }
+        }
+        for diagnostic in &plan.plan.diagnostics {
+            out.blank()?;
+            out.label(
+                "Diagnostic",
+                format_args!("{} [{}]", diagnostic.code, diagnostic.resource),
+            )?;
+            out.line(format_args!(
+                "  {}{}",
+                diagnostic.message,
+                if diagnostic.blocking {
+                    " (blocking)"
+                } else {
+                    ""
+                }
+            ))?;
+        }
+        Ok(())
     }
-    Ok(())
-});
+}
+
+report!(PlanView, self, out, { Names(&[]).plan(out, self) });
+
+named!(PlanView, plan, names, out, { names.plan(out, plan) });
 
 /// Human rendering of plan change values, which the daemon sends as JSON text.
 struct Configuration;

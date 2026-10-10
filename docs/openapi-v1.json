@@ -3423,7 +3423,7 @@
                         "$ref": "#/components/schemas/ApplicationTemplate"
                       }
                     ],
-                    "description": "The manifest this environment deploys, with references unresolved: the\nlast one fetched from its branch, or the application's saved manifest.\nAbsent until a repository-backed environment's first fetch."
+                    "description": "The manifest this environment deploys, with references unresolved: the\nlast one fetched from its branch, the application's saved manifest, or\nthat of the release last promoted into it. Before a promoted\nenvironment's first promotion, that of the release its source runs,\nwhich promoting would deploy. Absent until a repository-backed\nenvironment's first fetch."
                   },
                   {
                     "enum": [
@@ -5709,7 +5709,7 @@
                     "$ref": "#/components/schemas/ApplicationTemplate"
                   }
                 ],
-                "description": "The manifest this environment deploys, with references unresolved: the\nlast one fetched from its branch, or the application's saved manifest.\nAbsent until a repository-backed environment's first fetch."
+                "description": "The manifest this environment deploys, with references unresolved: the\nlast one fetched from its branch, the application's saved manifest, or\nthat of the release last promoted into it. Before a promoted\nenvironment's first promotion, that of the release its source runs,\nwhich promoting would deploy. Absent until a repository-backed\nenvironment's first fetch."
               },
               {
                 "enum": [

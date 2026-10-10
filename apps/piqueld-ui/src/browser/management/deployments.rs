@@ -22,7 +22,8 @@ use piqueld_client::{
 /// generation, then shows the environment's deployments. Without a single target
 /// (an application with several environments or none), Deploy opens the
 /// Environments tab to choose one. A promoted target, which never builds,
-/// offers Promote instead.
+/// offers Promote instead; a tracking one also promotes into every
+/// environment promoted from it.
 #[component]
 pub(super) fn DeploymentActions() -> impl IntoView {
     let context = editor();
@@ -33,6 +34,22 @@ pub(super) fn DeploymentActions() -> impl IntoView {
             .selected_environment()
             .is_some_and(|environment| environment.source.promoted_from().is_some())
     });
+    // Environments promoted from this one, which its page promotes into.
+    let dependents = move || {
+        let current = context.environment.get();
+        context.saved.with(|saved| {
+            saved
+                .environments
+                .iter()
+                .filter(|environment| {
+                    !environment.delete_intent
+                        && environment.source.promoted_from().map(|id| id.as_str())
+                            == current.as_deref()
+                })
+                .map(|environment| environment.id.to_string())
+                .collect::<Vec<_>>()
+        })
+    };
     let deploy = move |_| {
         let environment = context.environment_id();
         context.deploy(environment.clone(), move || {
@@ -120,6 +137,9 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                             .map_or_else(|| "Deploy".into(), |env| format!("Deploy to {}", env.name))
                     }}
                 </button>
+                <For each={dependents} key={String::clone} let:id>
+                    <PromoteAction environment={id} />
+                </For>
             </Show>
         </Show>
         <DeploymentPreview preview={preview} />
@@ -153,11 +173,21 @@ pub(super) fn PromoteAction(
     } else {
         "Promote"
     };
+    // A promotion names its source, except on that source's own page,
+    // where it names where it goes.
     let label = move || {
-        format!(
-            "{verb} to {}",
-            context.environment_name(&environment.get_value())
-        )
+        let target = environment.get_value();
+        let elsewhere = context.environment_page()
+            && context.environment.get().as_deref() != Some(target.as_str());
+        let source = context.saved.with(|saved| {
+            saved
+                .deployable(&target)
+                .and_then(|environment| environment.source.promoted_from().cloned())
+        });
+        match source.filter(|_| verb == "Promote" && !elsewhere) {
+            Some(source) => format!("Promote from {}", context.environment_name(source.as_str())),
+            None => format!("{verb} to {}", context.environment_name(&target)),
+        }
     };
     let deleting = move || {
         context.saved.with(|saved| {
@@ -234,7 +264,7 @@ pub(super) fn PromoteAction(
             on:click={inspect}
         >
             {icon(Icon::Rocket)}
-            {move || if compact { verb.to_owned() } else { label() }}
+            {label}
         </button>
         <Modal
             title="Promotion preview"

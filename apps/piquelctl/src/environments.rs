@@ -8,7 +8,9 @@ use crate::{
     error::{CliError, ErrorKind, ErrorReport, Result},
     output::{
         Console,
-        reports::{DeletionReport, EnvironmentRow, EnvironmentShowReport, PromotionReport},
+        reports::{
+            DeletionReport, EnvironmentRow, EnvironmentShowReport, Named, Names, PromotionReport,
+        },
     },
     support::{confirm, retry_transport},
 };
@@ -262,10 +264,14 @@ pub(crate) struct SyncArgs {
 impl SyncArgs {
     /// Opts the environment in or out of its application's sync.
     async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
-        let (_, environment) = select(client, &self.application, Some(&self.environment)).await?;
+        let (application, environment) =
+            select(client, &self.application, Some(&self.environment)).await?;
         let id = environment.id.as_str();
         let environment = retry_transport(|| client.set_environment_sync(id, self.enabled)).await?;
-        console.emit(&environment)
+        console.emit(&Named {
+            value: &environment,
+            names: Names(&application.environments),
+        })
     }
 }
 
@@ -368,7 +374,10 @@ impl CreateArgs {
             )
         })
         .await?;
-        console.emit(&environment)
+        console.emit(&Named {
+            value: &environment,
+            names: Names(&application.environments),
+        })
     }
 }
 
@@ -400,7 +409,10 @@ async fn set_branch(
         client.set_environment_branch(environment.id.as_str(), &request, change.force)
     })
     .await?;
-    console.emit(&environment)
+    console.emit(&Named {
+        value: &environment,
+        names: Names(&application.environments),
+    })
 }
 
 /// The ID of `source`, an environment of `application` named or identified
@@ -472,7 +484,10 @@ impl SourceArgs {
             client.set_environment_source(environment.id.as_str(), &request, self.change.force)
         })
         .await?;
-        console.emit(&environment)
+        console.emit(&Named {
+            value: &environment,
+            names: Names(&application.environments),
+        })
     }
 }
 
@@ -513,7 +528,10 @@ impl PromoteArgs {
         let id = environment.id.as_str();
         if self.plan {
             let plan = client.plan_promotion(id, &request).await?;
-            console.emit(&plan)?;
+            console.emit(&Named {
+                value: &plan,
+                names: Names(&application.environments),
+            })?;
             if plan.plan.is_blocked() {
                 return Err(CliError::blocked_plan(&plan));
             }
@@ -609,7 +627,10 @@ async fn rename(
         client.rename_environment(environment.id.as_str(), &request, change.force)
     })
     .await?;
-    console.emit(&environment)
+    console.emit(&Named {
+        value: &environment,
+        names: Names(&application.environments),
+    })
 }
 
 impl EnvironmentArgs {

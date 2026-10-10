@@ -307,7 +307,9 @@ impl EditorContext {
     /// Shows `environment`'s deployments: the Deployments tab on its own
     /// page, otherwise by navigating there.
     fn show_deployments(self, environment: &str, navigate: impl Fn(&str, NavigateOptions)) {
-        if self.environment_page() {
+        if self.environment_page()
+            && self.environment.get_untracked().as_deref() == Some(environment)
+        {
             self.tab.set("Deployments");
         } else {
             let href = format!("{}?tab=deployments", self.environment_href(environment));

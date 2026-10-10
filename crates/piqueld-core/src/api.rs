@@ -607,8 +607,11 @@ pub struct EnvironmentDetailView {
     /// Its application and shared desired configuration.
     pub application: ApplicationView,
     /// The manifest this environment deploys, with references unresolved: the
-    /// last one fetched from its branch, or the application's saved manifest.
-    /// Absent until a repository-backed environment's first fetch.
+    /// last one fetched from its branch, the application's saved manifest, or
+    /// that of the release last promoted into it. Before a promoted
+    /// environment's first promotion, that of the release its source runs,
+    /// which promoting would deploy. Absent until a repository-backed
+    /// environment's first fetch.
     pub manifest: Option<ApplicationTemplate>,
     /// Durable environment lifecycle status.
     pub status: EnvironmentStatusView,

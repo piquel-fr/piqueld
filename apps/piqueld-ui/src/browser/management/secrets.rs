@@ -623,12 +623,22 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                     MountedSecret::Missing => Tone::Warn,
                     MountedSecret::Denied | MountedSecret::Unavailable => Tone::Bad,
                 };
+                let fix = view! {
+                    <MountedSecretFix
+                        name={name.clone()}
+                        state={source.clone()}
+                        stored={stored}
+                        feedback={feedback}
+                        reload={reload_stored}
+                    />
+                };
                 view! {
                     <tr>
                         <td>
                             <strong>{name}</strong>
                         </td>
                         <td>{badge(tone, source.to_string())}</td>
+                        <td class="actions">{fix}</td>
                     </tr>
                 }
             })
@@ -685,7 +695,7 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                     <div>
                         <h3>"Mounted secrets"</h3>
                         <p>
-                            "Where each secret this environment's manifest mounts comes from. Stored values are set in the application's Secrets tab."
+                            "Where each secret this environment's manifest mounts comes from. Store a missing value, or allow this environment to mount one, here or in the application's Secrets tab."
                         </p>
                     </div>
                     <button
@@ -706,7 +716,18 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                     <div class="table-wrap">
                         {move || match mounted() {
                             None => {
-                                empty("Deploy this environment to fetch the secrets its branch mounts.")
+                                empty(
+                                    if context
+                                        .selected_environment()
+                                        .is_some_and(|environment| {
+                                            environment.source.promoted_from().is_some()
+                                        })
+                                    {
+                                        "Its source has no release to promote yet."
+                                    } else {
+                                        "Deploy this environment to fetch the secrets its branch mounts."
+                                    },
+                                )
                             }
                             Some(rows) if rows.is_empty() => {
                                 empty("No secrets are mounted in this environment.")
@@ -718,6 +739,7 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                                             <tr>
                                                 <th>"Name"</th>
                                                 <th>"Value"</th>
+                                                <th></th>
                                             </tr>
                                         </thead>
                                         <tbody>{mounted_rows()}</tbody>
@@ -767,6 +789,133 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                 </div>
             </section>
         </div>
+    }
+}
+
+/// Fixes a mounted secret the environment page's environment can't use, in
+/// place: stores a missing value that only this environment may mount,
+/// replaces a value key recovery discarded, or adds this environment to a
+/// stored secret's access list. Nothing to fix renders nothing. Changes
+/// apply to its next deployment or promotion.
+#[component]
+fn MountedSecretFix(
+    name: String,
+    state: MountedSecret,
+    stored: RwSignal<Vec<StoredSecret>>,
+    feedback: Feedback,
+    reload: Callback<()>,
+) -> impl IntoView {
+    let context = editor();
+    let name = StoredValue::new(name);
+    let value = RwSignal::new(String::new());
+    let environment = move || EnvironmentId::parse(context.environment_id()).ok();
+    let current = move || {
+        stored.with_untracked(|items| {
+            items
+                .iter()
+                .find(|secret| secret.metadata.name == name.get_value())
+                .cloned()
+        })
+    };
+    let finish = move |result: Result<StoredSecret, ClientError>| {
+        match result {
+            Ok(_) => feedback.succeed("Saved. It applies to this environment's next deployment."),
+            Err(e) => feedback.fail(client_error_message(&e), &e),
+        }
+        reload.run(());
+        context.busy.set(false);
+    };
+    // Stores the typed value: a new secret only this environment may mount,
+    // or a new version of a discarded one, keeping its access list.
+    let store = move |_| {
+        let Some(environment) = environment() else {
+            return;
+        };
+        let bytes = value.get_untracked().into_bytes();
+        if bytes.is_empty() {
+            return;
+        }
+        value.set(String::new());
+        let existing = current();
+        let generation = existing
+            .as_ref()
+            .map_or(0, |secret| secret.metadata.generation);
+        let access = existing.is_none().then(|| SecretAccess {
+            environments: EnvironmentAccess::Only(BTreeSet::from([environment])),
+            previews: false,
+        });
+        let (application, name) = (context.id(), name.get_value());
+        context.busy.set(true);
+        feedback.clear();
+        spawn_local(async move {
+            finish(
+                Client::browser()
+                    .put_stored_secret(&application, &name, generation, bytes, access.as_ref())
+                    .await,
+            );
+        });
+    };
+    let allow = move |_| {
+        let (Some(environment), Some(secret)) = (environment(), current()) else {
+            return;
+        };
+        let mut allowed = match secret.access.environments {
+            EnvironmentAccess::Only(allowed) => allowed,
+            EnvironmentAccess::All => BTreeSet::new(),
+        };
+        allowed.insert(environment);
+        let access = SecretAccess {
+            environments: EnvironmentAccess::Only(allowed),
+            previews: secret.access.previews,
+        };
+        let (application, name) = (context.id(), name.get_value());
+        context.busy.set(true);
+        feedback.clear();
+        spawn_local(async move {
+            finish(
+                Client::browser()
+                    .set_secret_access(&application, &name, &access)
+                    .await,
+            );
+        });
+    };
+    let blocked = move || context.blocked();
+    match state {
+        MountedSecret::Missing | MountedSecret::Unavailable => {
+            let action = if state == MountedSecret::Missing {
+                "Store"
+            } else {
+                "Replace"
+            };
+            view! {
+                <div class="form-actions">
+                    <input
+                        type="password"
+                        autocomplete="off"
+                        placeholder="Value"
+                        aria-label={format!("Value of {}", name.get_value())}
+                        prop:value={move || value.get()}
+                        on:input={move |e| value.set(event_target_value(&e))}
+                    />
+                    <button
+                        type="button"
+                        class="btn btn-sm"
+                        disabled={move || blocked() || value.with(String::is_empty)}
+                        on:click={store}
+                    >
+                        {action}
+                    </button>
+                </div>
+            }
+            .into_any()
+        }
+        MountedSecret::Denied => view! {
+            <button type="button" class="btn btn-sm" disabled={blocked} on:click={allow}>
+                "Allow this environment"
+            </button>
+        }
+        .into_any(),
+        MountedSecret::Generated | MountedSecret::Stored { .. } => ().into_any(),
     }
 }
 
