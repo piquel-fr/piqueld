@@ -326,7 +326,7 @@ impl<'a> ErrorReport<'a> {
                 out.label(
                     "  Preview",
                     format_args!(
-                        "{} of branch {}{}, {}",
+                        "{} of branch {}{}, {}{}",
                         counted.preview.slug,
                         counted.preview.branch,
                         counted
@@ -341,6 +341,7 @@ impl<'a> ErrorReport<'a> {
                                 deployment.created_at_ms
                             )
                         ),
+                        if counted.deleting { " (deleting)" } else { "" },
                     ),
                 )?;
             }

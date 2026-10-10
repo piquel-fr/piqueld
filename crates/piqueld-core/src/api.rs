@@ -382,6 +382,8 @@ pub struct CountedPreview {
     pub application_id: ApplicationId,
     /// Its branch, slot, and slug.
     pub preview: Preview,
+    /// Whether its deletion is in progress. It counts until it is gone.
+    pub deleting: bool,
     /// Its newest deployment; absent before its first.
     pub last_deployment: Option<LastDeployment>,
 }
@@ -400,15 +402,22 @@ pub struct LastDeployment {
 pub struct PreviewUsage {
     /// The configured limits.
     pub limits: PreviewLimits,
-    /// Previews of every application. Above `limits.max_total` once the
-    /// limit is lowered: existing previews keep running, new ones are refused.
+    /// Previews of every application, including those being deleted. Above
+    /// `limits.max_total` once the limit is lowered: existing previews keep
+    /// running, new ones are refused.
     pub total: u32,
     /// Readable applications with previews, in name order.
     pub applications: Vec<ApplicationPreviews>,
-    /// CPU limits in millicores, summed over every preview's deployed replicas.
+    /// CPU limits in millicores, summed over the deployed replicas that have
+    /// both limits.
     pub cpu_millis: u64,
-    /// Memory limits in bytes, summed over every preview's deployed replicas.
+    /// Memory limits in bytes, summed over the deployed replicas that have
+    /// both limits.
     pub memory_bytes: u64,
+    /// Deployed replicas missing a CPU or memory limit: deployed before the
+    /// limits applied, until their preview is redeployed.
+    #[serde(default)]
+    pub unlimited_replicas: u64,
 }
 
 /// One application's previews against `max_per_application`.

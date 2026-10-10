@@ -49,6 +49,8 @@ use utoipa::{OpenApi, ToResponse};
         Envelope<bool>,
         Route,
         RoutesValue,
+        // `details` of `preview_limit_reached`.
+        piqueld_core::api::PreviewLimitReached,
         // The first message of the exec WebSocket.
         piqueld_core::exec::ExecRequest
     ))

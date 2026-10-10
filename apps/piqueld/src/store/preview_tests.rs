@@ -193,7 +193,7 @@ async fn concurrent_creations_never_pass_a_preview_limit_and_repeats_never_count
     assert_eq!((usage.total, usage.limits.max_total), (2, 1));
     assert_eq!(usage.applications[0].previews, 2);
 
-    // A preview being deleted no longer counts.
+    // A preview being deleted counts until it is gone.
     store
         .accept(
             Daemon,
@@ -206,12 +206,12 @@ async fn concurrent_creations_never_pass_a_preview_limit_and_repeats_never_count
         )
         .await
         .unwrap();
-    assert!(
-        create(&store, &application, "feat/other", None)
-            .await
-            .unwrap()
-            .created
-    );
+    let Err(StoreError::PreviewLimitReached(reached)) =
+        create(&store, &application, "feat/other", None).await
+    else {
+        panic!("a preview being deleted still counts");
+    };
+    assert!(reached.previews.iter().any(|counted| counted.deleting));
 }
 
 #[tokio::test]

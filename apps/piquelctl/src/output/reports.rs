@@ -147,6 +147,15 @@ report!(PreviewUsage, self, out, {
             self.cpu_millis, self.memory_bytes
         ),
     )?;
+    if self.unlimited_replicas > 0 {
+        out.label(
+            "Unlimited replicas",
+            format_args!(
+                "{} preview replicas deployed before the limits applied run without them until redeployed",
+                self.unlimited_replicas
+            ),
+        )?;
+    }
     out.label(
         "Preview services",
         format_args!(

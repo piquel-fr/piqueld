@@ -414,12 +414,20 @@ fn preview_card(usage: &PreviewUsage) -> AnyView {
             )
         })
         .collect::<String>();
+    let unlimited = if usage.unlimited_replicas > 0 {
+        format!(
+            " {} replicas deployed before the limits applied run without them until redeployed.",
+            usage.unlimited_replicas
+        )
+    } else {
+        String::new()
+    };
     status_card(
         "Previews",
         tone,
         label,
         &format!(
-            "{} of {} previews.{applications} Their replicas are limited to {} millicores and {} in total. Services without limits get {} millicores and {}, at most {} replicas.",
+            "{} of {} previews.{applications} Their replicas are limited to {} millicores and {} in total.{unlimited} Services without limits get {} millicores and {}, at most {} replicas.",
             usage.total,
             limits.max_total,
             usage.cpu_millis,

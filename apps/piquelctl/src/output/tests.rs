@@ -366,6 +366,7 @@ fn status_and_dns_refresh_list_dns_providers_certificate_failures_and_preview_ov
             }],
             cpu_millis: 1500,
             memory_bytes: 1_610_612_736,
+            unlimited_replicas: 2,
         },
     };
     let stdout = Capture::default();
@@ -421,6 +422,7 @@ fn status_and_dns_refresh_list_dns_providers_certificate_failures_and_preview_ov
         "Previews: 3 of 2 (over the limit: existing previews keep running, new ones are refused)",
         "Preview usage: 1500 millicores and 1610612736 bytes of limits across preview replicas",
         "Previews of notes: 3 of 10",
+        "Unlimited replicas: 2 preview replicas deployed before the limits applied",
     ] {
         assert!(text.contains(expected), "{text}");
     }

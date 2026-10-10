@@ -112,11 +112,7 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
         build: &super::ImageBuild<'_>,
         log: Option<&crate::build::BuildLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
-        let _turn = self
-            .builds
-            .turn(build.priority)
-            .await
-            .map_err(|_| DockerError::Unavailable("build queue"))?;
+        let _turn = self.builds.turn(build.priority).await;
         self.inner.build_image_recorded(build, log).await
     }
     async fn build_image(

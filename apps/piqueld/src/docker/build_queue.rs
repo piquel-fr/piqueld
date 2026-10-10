@@ -56,17 +56,14 @@ impl BuildQueue {
     /// Waits for a build's turn, which lasts until the returned [`Turn`] is
     /// dropped. Cancelling the wait leaves the queue.
     ///
-    /// # Errors
-    /// Fails only if the queue drops a waiting build, which it never does.
-    pub(crate) async fn turn(
-        &self,
-        priority: BuildPriority,
-    ) -> Result<Turn<'_>, oneshot::error::RecvError> {
+    /// # Panics
+    /// Panics if the queue drops a waiting build, which it never does.
+    pub(crate) async fn turn(&self, priority: BuildPriority) -> Turn<'_> {
         let receiver = {
             let mut waiting = self.lock();
             if !waiting.running {
                 waiting.running = true;
-                return Ok(Turn(self));
+                return Turn(self);
             }
             let (sender, receiver) = oneshot::channel();
             match priority {
@@ -80,9 +77,11 @@ impl BuildQueue {
             receiver,
             woken: false,
         };
-        (&mut wait.receiver).await?;
+        (&mut wait.receiver)
+            .await
+            .expect("the queue wakes every build it keeps");
         wait.woken = true;
-        Ok(Turn(self))
+        Turn(self)
     }
 
     fn lock(&self) -> MutexGuard<'_, Waiting> {
@@ -158,47 +157,47 @@ mod tests {
     #[tokio::test]
     async fn environment_builds_go_ahead_of_waiting_preview_builds_but_never_interrupt_them() {
         let queue = BuildQueue::default();
-        let running = queue.turn(Preview).await.unwrap();
+        let running = queue.turn(Preview).await;
         let mut preview = pin!(queue.turn(Preview));
         let mut environment = pin!(queue.turn(Environment));
         assert!(poll!(&mut preview).is_pending());
         // The running preview build keeps its turn.
         assert!(poll!(&mut environment).is_pending());
         drop(running);
-        let environment = environment.await.unwrap();
+        let environment = environment.await;
         assert!(poll!(&mut preview).is_pending());
         drop(environment);
-        drop(preview.await.unwrap());
+        drop(preview.await);
         // A cancelled build leaves its queue.
-        let running = queue.turn(Environment).await.unwrap();
+        let running = queue.turn(Environment).await;
         let mut cancelled = Box::pin(queue.turn(Environment));
         let mut waiting = pin!(queue.turn(Preview));
         assert!(poll!(&mut cancelled).is_pending());
         assert!(poll!(&mut waiting).is_pending());
         drop(cancelled);
         drop(running);
-        waiting.await.unwrap();
+        waiting.await;
     }
 
     #[tokio::test]
     async fn a_stream_of_environment_builds_never_starves_a_waiting_preview_build() {
         let queue = BuildQueue::default();
-        let mut running = queue.turn(Environment).await.unwrap();
+        let mut running = queue.turn(Environment).await;
         let mut preview = pin!(queue.turn(Preview));
         assert!(poll!(&mut preview).is_pending());
         for _ in 0..ENVIRONMENT_BURST {
             let mut next = Box::pin(queue.turn(Environment));
             assert!(poll!(&mut next).is_pending());
             drop(running);
-            running = next.await.unwrap();
+            running = next.await;
             assert!(poll!(&mut preview).is_pending());
         }
         let mut environment = pin!(queue.turn(Environment));
         assert!(poll!(&mut environment).is_pending());
         drop(running);
-        let preview = preview.await.unwrap();
+        let preview = preview.await;
         assert!(poll!(&mut environment).is_pending());
         drop(preview);
-        environment.await.unwrap();
+        environment.await;
     }
 }

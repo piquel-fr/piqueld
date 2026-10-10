@@ -1359,6 +1359,53 @@
         ],
         "type": "string"
       },
+      "CountedPreview": {
+        "description": "A preview counted against a `[previews]` limit.",
+        "properties": {
+          "application_id": {
+            "$ref": "#/components/schemas/ApplicationId",
+            "description": "Owning application."
+          },
+          "deleting": {
+            "description": "Whether its deletion is in progress. It counts until it is gone.",
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/components/schemas/EnvironmentId",
+            "description": "Stable preview identifier."
+          },
+          "last_deployment": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/LastDeployment"
+                  }
+                ],
+                "description": "Its newest deployment; absent before its first."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "preview": {
+            "$ref": "#/components/schemas/Preview",
+            "description": "Its branch, slot, and slug."
+          }
+        },
+        "required": [
+          "id",
+          "application_id",
+          "preview",
+          "deleting"
+        ],
+        "type": "object"
+      },
       "CpuValue": {
         "additionalProperties": false,
         "properties": {
@@ -6245,6 +6292,25 @@
         ],
         "type": "object"
       },
+      "LastDeployment": {
+        "description": "When a deployment was requested.",
+        "properties": {
+          "created_at_ms": {
+            "description": "Request timestamp in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "description": "Deployment (and operation) identifier.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at_ms"
+        ],
+        "type": "object"
+      },
       "LogRecord": {
         "description": "One line of workload output with replica identity.",
         "properties": {
@@ -7315,6 +7381,42 @@
         },
         "type": "object"
       },
+      "PreviewLimit": {
+        "description": "A `[previews]` count limit.",
+        "enum": [
+          "per_application",
+          "total"
+        ],
+        "type": "string"
+      },
+      "PreviewLimitReached": {
+        "description": "Details of `preview_limit_reached`: the limit creating another preview\nwould exceed, and the previews it counts, so a caller can choose which\nto delete.",
+        "properties": {
+          "limit": {
+            "$ref": "#/components/schemas/PreviewLimit",
+            "description": "The limit reached."
+          },
+          "max": {
+            "description": "Its configured value.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "previews": {
+            "description": "The previews it counts that the caller may read, oldest deployment\nfirst.",
+            "items": {
+              "$ref": "#/components/schemas/CountedPreview"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "limit",
+          "max",
+          "previews"
+        ],
+        "type": "object"
+      },
       "PreviewLimits": {
         "additionalProperties": false,
         "description": "How many previews may exist, and what each preview service may use.\n\nCounts are checked when a preview is created, so lowering one below the\ncurrent count keeps every existing preview running and only refuses new\nones. Bounds apply when a preview's manifest is rendered, so a preview\npicks up changed bounds on its next deployment.",
@@ -7376,7 +7478,7 @@
             "type": "array"
           },
           "cpu_millis": {
-            "description": "CPU limits in millicores, summed over every preview's deployed replicas.",
+            "description": "CPU limits in millicores, summed over the deployed replicas that have\nboth limits.",
             "format": "int64",
             "minimum": 0,
             "type": "integer"
@@ -7386,14 +7488,20 @@
             "description": "The configured limits."
           },
           "memory_bytes": {
-            "description": "Memory limits in bytes, summed over every preview's deployed replicas.",
+            "description": "Memory limits in bytes, summed over the deployed replicas that have\nboth limits.",
             "format": "int64",
             "minimum": 0,
             "type": "integer"
           },
           "total": {
-            "description": "Previews of every application. Above `limits.max_total` once the\nlimit is lowered: existing previews keep running, new ones are refused.",
+            "description": "Previews of every application, including those being deleted. Above\n`limits.max_total` once the limit is lowered: existing previews keep\nrunning, new ones are refused.",
             "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unlimited_replicas": {
+            "description": "Deployed replicas missing a CPU or memory limit: deployed before the\nlimits applied, until their preview is redeployed.",
+            "format": "int64",
             "minimum": 0,
             "type": "integer"
           }
@@ -11525,7 +11633,7 @@
         "x-piqueld-access": "apps:read"
       },
       "post": {
-        "description": "Creates and deploys a preview of `branch` of the application's manifest\nrepository, distinguished by `slot` when several previews share a branch.\nRepeating the request returns the existing preview of that branch and\nslot with its latest operation, without redeploying it. Applications\nwithout a manifest repository fail with `preview_requires_repository`.\nNeeds no application revision.",
+        "description": "Creates and deploys a preview of `branch` of the application's manifest\nrepository, distinguished by `slot` when several previews share a branch.\nRepeating the request returns the existing preview of that branch and\nslot with its latest operation, without redeploying it. Applications\nwithout a manifest repository fail with `preview_requires_repository`.\nA new preview beyond a `[previews]` limit fails with 409\n`preview_limit_reached`, whose `details` are a `PreviewLimitReached`\nlisting the previews it counts. Needs no application revision.",
         "operationId": "createPreview",
         "parameters": [
           {

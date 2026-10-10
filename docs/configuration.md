@@ -143,8 +143,9 @@ Creating a preview that would take its application's previews past
 `max_per_application`, or the installation's past `max_total`, fails with
 `preview_limit_reached`. The error lists the previews counted, with their
 branch, slot, slug and last deployment, so a caller can delete one. Previews
-being deleted no longer count, and repeating the creation of an existing
-preview always succeeds. The check runs in the creating transaction, so
+being deleted count until they are gone, since their resources are not freed
+before then, and repeating the creation of an existing preview always
+succeeds. The check runs in the creating transaction, so
 concurrent creations cannot pass a limit together. Zero refuses every new
 preview.
 
@@ -159,7 +160,8 @@ replicas.
 Lowering a limit never deletes or redeploys anything. Previews over a lowered
 count keep running and only new ones are refused; `piquelctl status` and the
 dashboard show the overage. Previews pick up changed resource bounds on their
-next deployment. Previews are never deleted automatically.
+next deployment; until then, previews deployed before the limits existed run
+without them, which status reports as unlimited replicas. Previews are never deleted automatically.
 
 `[build_history]` bounds persisted build output: `log_max_bytes` defaults to
 4194304 (maximum 64 MiB), and `log_retention_days` to 30 (1–3650). Build metadata

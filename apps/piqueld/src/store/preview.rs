@@ -151,7 +151,8 @@ impl Store {
     /// Refuses `created`, the preview just inserted into `application`, when
     /// it takes the application's previews past `max_per_application`, or
     /// the installation's past `max_total`, listing the others it counts.
-    /// Previews being deleted are not counted. Writers run one transaction
+    /// Previews being deleted count until they are gone, since their
+    /// resources are not freed before then. Writers run one transaction
     /// at a time, so concurrent creations count each other's previews.
     /// Counts already over a lowered limit only refuse new previews.
     async fn check_preview_limits_on(
@@ -161,7 +162,7 @@ impl Store {
         limits: &PreviewLimits,
     ) -> Result<(), StoreError> {
         let counts = sqlx::query!(
-            r#"SELECT COUNT(*) AS "total!: i64",COALESCE(SUM(application_id=?1),0) AS "own!: i64" FROM environments WHERE kind='preview' AND delete_intent=0"#,
+            r#"SELECT COUNT(*) AS "total!: i64",COALESCE(SUM(application_id=?1),0) AS "own!: i64" FROM environments WHERE kind='preview'"#,
             application
         )
         .fetch_one(&mut **tx)
@@ -179,7 +180,7 @@ impl Store {
             return Ok(());
         };
         let previews = sqlx::query!(
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "slug!",e.branch AS "branch!",e.preview_slot,d.id AS "deployment_id?",d.created_at_ms AS "deployed_at_ms?" FROM environments e LEFT JOIN deployments d ON d.id=(SELECT MAX(id) FROM deployments WHERE environment_id=e.id) WHERE e.kind='preview' AND e.delete_intent=0 AND e.id!=?2 AND (?1 IS NULL OR e.application_id=?1) ORDER BY COALESCE(d.created_at_ms,e.created_at_ms),e.id"#,
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "slug!",e.branch AS "branch!",e.preview_slot,e.delete_intent AS "deleting!: bool",d.id AS "deployment_id?",d.created_at_ms AS "deployed_at_ms?" FROM environments e LEFT JOIN deployments d ON d.id=(SELECT MAX(id) FROM deployments WHERE environment_id=e.id) WHERE e.kind='preview' AND e.id!=?2 AND (?1 IS NULL OR e.application_id=?1) ORDER BY COALESCE(d.created_at_ms,e.created_at_ms),e.id"#,
             scope,
             created
         )
@@ -201,6 +202,7 @@ impl Store {
                         .map_err(StoreError::corrupt)?,
                     slug: PreviewSlug::parse(row.slug).map_err(StoreError::corrupt)?,
                 },
+                deleting: row.deleting,
                 last_deployment: row.deployment_id.zip(row.deployed_at_ms).map(
                     |(id, created_at_ms)| LastDeployment { id, created_at_ms },
                 ),
@@ -316,13 +318,14 @@ impl Store {
     /// Previews against the `[previews]` limits: the installation's count
     /// and the CPU and memory limits of their deployed replicas, and the
     /// count of each `readable` application with previews. Previews being
-    /// deleted are not counted, as when creating one.
+    /// deleted count until they are gone, as when creating one. Replicas
+    /// deployed before a limit applied run without it until redeployed.
     ///
     /// # Errors
     /// Returns a storage or decoding error.
     pub async fn preview_usage(&self, readable: &Scope) -> Result<PreviewUsage, StoreError> {
         let rows = sqlx::query!(
-            r#"SELECT e.application_id AS "id!",a.name AS "name!",e.resolved_json FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.kind='preview' AND e.delete_intent=0 ORDER BY a.name"#
+            r#"SELECT e.application_id AS "id!",a.name AS "name!",e.resolved_json FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.kind='preview' ORDER BY a.name"#
         )
         .fetch_all(&self.pool)
         .await
@@ -353,12 +356,18 @@ impl Store {
             for service in target.iter().flat_map(|target| &target.services) {
                 let replicas = u64::from(service.replicas);
                 let limits = service.resources.as_ref();
-                let cpu = limits.and_then(|limits| limits.cpu_millis).unwrap_or(0);
-                let memory = limits.and_then(|limits| limits.memory_bytes).unwrap_or(0);
-                usage.cpu_millis += replicas * u64::from(cpu);
-                usage.memory_bytes = usage
-                    .memory_bytes
-                    .saturating_add(replicas.saturating_mul(memory));
+                match (
+                    limits.and_then(|limits| limits.cpu_millis),
+                    limits.and_then(|limits| limits.memory_bytes),
+                ) {
+                    (Some(cpu), Some(memory)) => {
+                        usage.cpu_millis += replicas * u64::from(cpu);
+                        usage.memory_bytes = usage
+                            .memory_bytes
+                            .saturating_add(replicas.saturating_mul(memory));
+                    }
+                    _ => usage.unlimited_replicas += replicas,
+                }
             }
         }
         Ok(usage)
