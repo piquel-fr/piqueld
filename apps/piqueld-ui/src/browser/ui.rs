@@ -30,6 +30,7 @@ pub(super) enum Icon {
     Rocket,
     Package,
     Key,
+    Copy,
 }
 
 impl Icon {
@@ -91,6 +92,9 @@ impl Icon {
             Self::Key => {
                 r#"<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>"#
             }
+            Self::Copy => {
+                r#"<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>"#
+            }
         }
     }
 }
@@ -108,6 +112,28 @@ pub(super) fn icon(icon: Icon) -> AnyView {
             aria-hidden="true"
             inner_html={icon.markup()}
         ></svg>
+    }
+    .into_any()
+}
+
+/// A small button copying `text` to the clipboard, labelled `label` for
+/// assistive technology, that says "Copied" once it did.
+pub(super) fn copy_button(label: &'static str, text: String) -> AnyView {
+    let copied = RwSignal::new(false);
+    let copy = move |_| {
+        let text = text.clone();
+        leptos::task::spawn_local(async move {
+            let written = window().navigator().clipboard().write_text(&text);
+            if wasm_bindgen_futures::JsFuture::from(written).await.is_ok() {
+                copied.set(true);
+            }
+        });
+    };
+    view! {
+        <button type="button" class="btn btn-sm" aria-label={label} title={label} on:click={copy}>
+            {icon(Icon::Copy)}
+            {move || if copied.get() { "Copied" } else { "Copy" }}
+        </button>
     }
     .into_any()
 }

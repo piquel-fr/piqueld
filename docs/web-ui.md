@@ -313,8 +313,8 @@ given number of seconds, or GitHub webhooks. While it is on, the card shows the
 last check of the repository's branches and why it failed. With webhooks, a
 **GitHub webhook** card shows the payload URL to configure (or that the daemon
 must set `ingress.webhook_hostname`), the content type and event, and whether a
-secret exists. **Generate secret** creates one and shows it once in a copyable
-field; **Rotate secret** confirms first, since the previous secret stops
+secret exists. **Generate secret** creates one and shows it once, with a
+**Copy** button, as the payload URL has; **Rotate secret** confirms first, since the previous secret stops
 verifying at once. On an environment's Overview, the **Source** card says
 whether pushes deploy it (following, off, pinned, not opted in, or waiting
 for a deployment, with the reason) and the branch head of its last

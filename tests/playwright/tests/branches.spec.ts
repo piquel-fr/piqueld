@@ -247,6 +247,12 @@ test('an application deploys on push by polling or webhook, and an environment o
   await webhook.getByRole('button', { name: 'Generate secret', exact: true }).click();
   const { secret } = (await (await generated).json()).data;
   await expect(webhook.locator('.secret-box')).toHaveText(secret);
+  // It copies to the clipboard in one click.
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const copy = webhook.getByRole('button', { name: 'Copy secret', exact: true });
+  await copy.click();
+  await expect(copy).toHaveText('Copied');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(secret);
   await expect(webhook.getByRole('button', { name: 'Rotate secret', exact: true })).toBeVisible();
   // It is shown only once.
   await page.reload();

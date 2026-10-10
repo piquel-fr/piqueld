@@ -1,6 +1,8 @@
 //! Saved configuration forms and service editors.
 use super::super::client_error_message;
-use super::super::ui::{Icon, Modal, Tone, icon, notice, remove_button, text_input, when};
+use super::super::ui::{
+    Icon, Modal, Tone, copy_button, icon, notice, remove_button, text_input, when,
+};
 use super::{dirty_group, editor, save_actions};
 use crate::editor::{Section, ServiceForm};
 use leptos::prelude::*;
@@ -348,7 +350,14 @@ fn WebhookSettings() -> impl IntoView {
                                         .url
                                         .map_or_else(
                                             || view! { <span class="muted">"None"</span> }.into_any(),
-                                            |url| view! { <code>{url}</code> }.into_any(),
+                                            |url| {
+                                                view! {
+                                                    <code>{url.clone()}</code>
+                                                    " "
+                                                    {copy_button("Copy payload URL", url)}
+                                                }
+                                                    .into_any()
+                                            },
                                         )}
                                 </dd>
                                 <dt>"Content type"</dt>
@@ -382,7 +391,8 @@ fn WebhookSettings() -> impl IntoView {
                                 Tone::Ok,
                                 view! {
                                     "Copy this secret into GitHub now; it will not be shown again."
-                                    <pre class="secret-box">{secret}</pre>
+                                    <pre class="secret-box">{secret.clone()}</pre>
+                                    {copy_button("Copy secret", secret)}
                                 },
                             )
                         })
