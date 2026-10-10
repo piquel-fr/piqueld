@@ -10,6 +10,9 @@
 //! | `tunnel`, instead of `public` | `:8080` HTTP (not published) | public routes, from `cloudflared` |
 //! | `private`, `private_http` | `:8443`, `:8081` (not published) | private routes |
 //!
+//! With `ingress.webhook_hostname`, the public listener also forwards that
+//! hostname's webhook path, and nothing else, to the daemon's webhook socket.
+//!
 //! A hostname appears only on its own listener, and each HTTPS server's TLS
 //! policy accepts only its own hostnames, so a forged Host or SNI for a
 //! private route on the public listener gets no certificate and a 404. The
@@ -35,10 +38,11 @@
 //! 404 handler.
 
 use super::{
-    Ingress,
+    Ingress, WEBHOOK_SOCKET,
     node::{PRIVATE_HTTP_PORT, PRIVATE_HTTPS_PORT, TAILNET_RANGES},
     tunnel::TUNNEL_PORT,
 };
+use crate::api::{WEBHOOK_BODY_LIMIT, WEBHOOK_PATH};
 use crate::store::ingress::RoutingTable;
 use anyhow::Result;
 use piqueld_core::{
@@ -150,6 +154,21 @@ impl Ingress {
                     .push(json!({"match":[{"host":[host]}],"handle":[handler],"terminal":true}));
                 listener.redirects.push(json!({"match":[{"host":[host]}],"handle":[{"handler":"static_response","status_code":308,"headers":{"Location":["https://{http.request.host}{http.request.uri}"]}}],"terminal":true}));
             }
+        }
+        // Only the webhook path reaches the daemon, through its own socket,
+        // which serves nothing else. Its other paths fall through to the 404.
+        if let Some(host) = self.webhook_hostname() {
+            let host = host.as_str();
+            public.hosts.push(host.to_owned());
+            public.https.push(json!({
+                "match":[{"host":[host],"path":[format!("{WEBHOOK_PATH}*")]}],
+                "handle":[
+                    {"handler":"request_body","max_size":WEBHOOK_BODY_LIMIT},
+                    {"handler":"reverse_proxy","upstreams":[{"dial":format!("unix//control/{WEBHOOK_SOCKET}")}]}
+                ],
+                "terminal":true
+            }));
+            public.redirects.push(json!({"match":[{"host":[host]}],"handle":[{"handler":"static_response","status_code":308,"headers":{"Location":["https://{http.request.host}{http.request.uri}"]}}],"terminal":true}));
         }
         // The Unix admin endpoint is private to the daemon. Strict SNI matching
         // prevents a TLS connection for one hostname from selecting another host.

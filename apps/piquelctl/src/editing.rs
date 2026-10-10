@@ -15,7 +15,44 @@ use piqueld_client::{
     RedirectStatus, RepositoryManifest, Rollout, RolloutOrder, Route, SavedApplication, Service,
     Source, SourceRepository, Template, Typed, Variable, Visibility, Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit, Variables},
+    sync::RepositorySync,
 };
+
+/// How an application follows pushes, before `--interval` applies to `poll`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SyncMode {
+    Off,
+    Poll,
+    Webhook,
+}
+
+impl SyncMode {
+    /// Parses `off`, `poll`, or `webhook`, listing them in help and completions.
+    fn parser() -> impl TypedValueParser<Value = Self> {
+        clap::builder::PossibleValuesParser::new(["off", "poll", "webhook"]).map(
+            |value| match value.as_str() {
+                "poll" => Self::Poll,
+                "webhook" => Self::Webhook,
+                _ => Self::Off,
+            },
+        )
+    }
+
+    /// The setting, polling every `interval` seconds, by default 300.
+    fn with_interval(self, interval: Option<u32>) -> Result<RepositorySync> {
+        match (self, interval) {
+            (Self::Poll, interval) => Ok(RepositorySync::Poll {
+                interval_seconds: interval.unwrap_or(RepositorySync::DEFAULT_INTERVAL),
+            }),
+            (_, Some(_)) => Err(CliError::new(
+                ErrorKind::Input,
+                "--interval applies only to `poll`",
+            )),
+            (Self::Off, None) => Ok(RepositorySync::Off),
+            (Self::Webhook, None) => Ok(RepositorySync::Webhook),
+        }
+    }
+}
 
 /// Parses `public` or `private`, listing both in help and completions.
 pub(crate) fn visibility() -> impl TypedValueParser<Value = Visibility> {
@@ -488,6 +525,13 @@ pub(crate) enum RepositoryCommand {
         /// Pin a full commit hash instead of following the branch.
         #[arg(long)]
         commit: Option<String>,
+        /// Deploy on push: `poll` lists the branches every `--interval`
+        /// seconds, `webhook` when GitHub reports a push.
+        #[arg(long = "sync", value_parser = SyncMode::parser(), default_value = "off")]
+        sync: SyncMode,
+        /// Seconds between polls, from 60 to 86400; 300 by default.
+        #[arg(long)]
+        interval: Option<u32>,
     },
     /// Stop fetching from Git and retain saved configuration for local editing.
     Disconnect(RepositoryTarget),
@@ -495,6 +539,44 @@ pub(crate) enum RepositoryCommand {
     Url(RepositoryText),
     /// Change the manifest file path every environment reads.
     Path(RepositoryText),
+    /// Deploy on push: every preview, and every environment that opted in
+    /// with `env sync` and follows an unpinned branch, redeploys when its
+    /// branch moves past the head of its last deployment. `poll` lists the branches every `--interval`
+    /// seconds; `webhook` lists them when GitHub reports a push (see
+    /// `app repository webhook`); `off` deploys only when asked.
+    Sync {
+        #[command(flatten)]
+        target: RepositoryTarget,
+        #[arg(value_parser = SyncMode::parser())]
+        mode: SyncMode,
+        /// Seconds between polls, from 60 to 86400; 300 by default.
+        #[arg(long)]
+        interval: Option<u32>,
+    },
+    /// Show or generate the GitHub webhook that reports pushes to sync.
+    Webhook {
+        #[command(subcommand)]
+        command: WebhookCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum WebhookCommand {
+    /// Show the payload URL to configure in GitHub, and when the secret was
+    /// generated.
+    Show {
+        /// Application name or stable ID.
+        app: String,
+    },
+    /// Generate a new webhook secret, replacing the previous one, and print
+    /// it. It is shown only once.
+    Rotate {
+        /// Application name or stable ID.
+        app: String,
+        /// Skip interactive confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -936,6 +1018,8 @@ impl RepositoryCommand {
                 path,
                 branch,
                 commit,
+                sync,
+                interval,
             } => (
                 target,
                 ApplicationEdit::Repository(Some(RepositoryManifest {
@@ -945,8 +1029,18 @@ impl RepositoryCommand {
                         commit: commit.clone(),
                     },
                     path: path.clone(),
+                    sync: sync.with_interval(*interval)?,
                 })),
             ),
+            Self::Sync {
+                target,
+                mode,
+                interval,
+            } => (
+                target,
+                ApplicationEdit::RepositorySync(mode.with_interval(*interval)?),
+            ),
+            Self::Webhook { command } => return command.run(cli, client, console).await,
             Self::Disconnect(target) => (target, ApplicationEdit::Repository(None)),
             Self::Url(args) => (
                 &args.target,
@@ -958,6 +1052,37 @@ impl RepositoryCommand {
             ),
         };
         save(cli, client, console, &target.app, &target.flags, &edit).await
+    }
+}
+
+impl WebhookCommand {
+    /// Shows the webhook, or confirms and generates a new secret.
+    async fn run(&self, cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
+        match self {
+            Self::Show { app } => {
+                let application = resolve_application(client, app).await?;
+                console.emit(
+                    &client
+                        .webhook(application.application.id().as_str())
+                        .await?,
+                )
+            }
+            Self::Rotate { app, yes } => {
+                let application = resolve_application(client, app).await?;
+                confirm(
+                    console,
+                    cli.noninteractive,
+                    *yes,
+                    &format!(
+                        "Generate a new webhook secret for application {:?}? The current one stops verifying at once. [y/N] ",
+                        application.application.metadata().name
+                    ),
+                )
+                .await?;
+                let id = application.application.id().as_str();
+                console.emit(&client.generate_webhook_secret(id).await?)
+            }
+        }
     }
 }
 

@@ -2,9 +2,10 @@
 use super::access::{Visibility, scope_json};
 use super::{ApplicationId, EnvironmentId, Store, StoreError, new_id, now_ms, page_limit};
 use piqueld_core::{
-    Event,
+    Event, EventActor,
     api::Page,
     observability::{Diagnostic, EventFilter, EventScope},
+    sync::SystemActor,
 };
 use sqlx::{QueryBuilder, Sqlite, Transaction};
 
@@ -437,9 +438,37 @@ struct EventRow {
     actor_user_id: Option<String>,
     actor_credential_id: Option<String>,
     actor_operator_uid: Option<i64>,
+    actor_system: Option<String>,
 }
 
 impl EventRow {
+    /// Who caused the event, from its actor columns, of which at most one
+    /// kind is set: an account (with its credential), the host operator
+    /// (with its browser session), or a system actor. A credential alone,
+    /// or several kinds, is corruption.
+    fn actor(
+        user_id: Option<String>,
+        credential_id: Option<String>,
+        operator_uid: Option<i64>,
+        system: Option<String>,
+    ) -> Result<Option<EventActor>, StoreError> {
+        Ok(match (user_id, operator_uid, system) {
+            (None, None, None) if credential_id.is_none() => None,
+            (Some(user_id), None, None) => Some(EventActor::Account {
+                user_id,
+                credential_id,
+            }),
+            (None, Some(uid), None) => Some(EventActor::Operator {
+                operator: Store::host_operator(uid)?,
+                session_id: credential_id,
+            }),
+            (None, None, Some(system)) if credential_id.is_none() => Some(EventActor::System {
+                actor: SystemActor::parse(&system).ok_or(StoreError::Corrupt)?,
+            }),
+            _ => return Err(StoreError::Corrupt),
+        })
+    }
+
     /// Builds a keyset-paginated event query after (or, descending, before)
     /// `cursor`, fetching `fetch` rows that `visible` allows.
     /// Optional predicates are assembled from fixed column names; every value is bound.
@@ -453,8 +482,8 @@ impl EventRow {
         let mut query = QueryBuilder::new(
             "SELECT id, application_id, environment_id, operation_id, generation, attempt, kind, message, error_code, \
              phase, resource, created_at_ms, scope, action_id, retry, retry_delay_ms, duration_ms, \
-             request_id, diagnostic_json, actor_user_id, actor_credential_id, actor_operator_uid \
-             FROM events WHERE id",
+             request_id, diagnostic_json, actor_user_id, actor_credential_id, actor_operator_uid, \
+             actor_system FROM events WHERE id",
         );
         query
             .push(if filter.descending { " < " } else { " > " })
@@ -567,12 +596,12 @@ impl EventRow {
                 .transpose()
                 .map_err(StoreError::corrupt)?,
             request_id: self.request_id,
-            actor_user_id: self.actor_user_id,
-            actor_credential_id: self.actor_credential_id,
-            actor_operator: self
-                .actor_operator_uid
-                .map(Store::host_operator)
-                .transpose()?,
+            actor: Self::actor(
+                self.actor_user_id,
+                self.actor_credential_id,
+                self.actor_operator_uid,
+                self.actor_system,
+            )?,
             diagnostic: self
                 .diagnostic_json
                 .map(|json| serde_json::from_str(&json))

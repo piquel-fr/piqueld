@@ -1,33 +1,42 @@
 //! Saved configuration forms and service editors.
-use super::super::ui::{Icon, Modal, Tone, icon, notice, remove_button, text_input};
+use super::super::client_error_message;
+use super::super::ui::{
+    Icon, Modal, Tone, copy_button, icon, notice, remove_button, text_input, when,
+};
 use super::{dirty_group, editor, save_actions};
 use crate::editor::{Section, ServiceForm};
 use leptos::prelude::*;
 use piqueld_client::{
-    ApplicationView, GitRepository, Mount, RepositoryManifest, Rollout, Service, Source, Typed,
-    Volume,
+    ApplicationView, Client, GitRepository, Mount, RepositoryManifest, Rollout, Service, Source,
+    Typed, Volume,
     edit::{ApplicationEdit, ServiceEdit, ServiceGeneral, ServiceProcess},
+    sync::RepositorySync,
 };
 use std::collections::BTreeMap;
 
 /// Toggle and fields for loading the application's configuration from a Git
-/// manifest on deploy. The draft is `(enabled, manifest)`; saving is refused
-/// while other form groups have unsaved edits.
+/// manifest on deploy, and for deploying it on push. The draft is `(enabled,
+/// manifest, poll interval as typed)`; saving is refused while other form
+/// groups have unsaved edits.
 #[component]
 pub(super) fn RepositorySettings() -> impl IntoView {
     let context = editor();
     let backing = context.manifest().spec.manifest;
-    let draft = RwSignal::new((
-        backing.is_some(),
-        backing.unwrap_or(RepositoryManifest {
-            repository: GitRepository {
-                url: String::new(),
-                branch: "main".into(),
-                commit: None,
-            },
-            path: "infra/piqueld/app.toml".into(),
-        }),
-    ));
+    let enabled = backing.is_some();
+    let manifest = backing.unwrap_or(RepositoryManifest {
+        repository: GitRepository {
+            url: String::new(),
+            branch: "main".into(),
+            commit: None,
+        },
+        path: "infra/piqueld/app.toml".into(),
+        sync: RepositorySync::Off,
+    });
+    let interval = match manifest.sync {
+        RepositorySync::Poll { interval_seconds } => interval_seconds,
+        RepositorySync::Off | RepositorySync::Webhook => RepositorySync::DEFAULT_INTERVAL,
+    };
+    let draft = RwSignal::new((enabled, manifest, interval.to_string()));
     let baseline = RwSignal::new(draft.get_untracked());
     // Once connected, each environment follows its own branch, changed on its page.
     let connected = move || baseline.get().0;
@@ -37,11 +46,39 @@ pub(super) fn RepositorySettings() -> impl IntoView {
             .dirty
             .with(|groups| groups.iter().any(|group| group != "repository"))
     };
+    // How the saved connection syncs; `None` while disconnected.
+    let saved_sync = move || {
+        context.saved.with(|saved| {
+            saved
+                .application
+                .spec()
+                .manifest
+                .as_ref()
+                .map(|manifest| manifest.sync)
+        })
+    };
+    let polling = move || matches!(draft.get().1.sync, RepositorySync::Poll { .. });
     let save = move || {
         if other_edits() {
             return;
         }
         let value = draft.get_untracked();
+        // A valid typed interval is already in `sync`; a malformed one is not.
+        let range = RepositorySync::MIN_INTERVAL..=RepositorySync::MAX_INTERVAL;
+        if matches!(value.1.sync, RepositorySync::Poll { .. })
+            && !value
+                .2
+                .trim()
+                .parse::<u32>()
+                .is_ok_and(|seconds| range.contains(&seconds))
+        {
+            context.set_error(Some(format!(
+                "The poll interval must be a whole number of seconds from {} to {}.",
+                range.start(),
+                range.end()
+            )));
+            return;
+        }
         context.save(
             ApplicationEdit::Repository(value.0.then_some(value.1)),
             Callback::new(move |_| baseline.set(draft.get_untracked())),
@@ -100,9 +137,266 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                             |v| v.1.path.clone(),
                             |v, s| v.1.path = s,
                         )}
+                        <label class="field">
+                            <span>"Deploy on push"</span>
+                            <select
+                                prop:value={move || match draft.get().1.sync {
+                                    RepositorySync::Off => "off",
+                                    RepositorySync::Poll { .. } => "poll",
+                                    RepositorySync::Webhook => "webhook",
+                                }}
+                                on:change={move |event| {
+                                    let mode = event_target_value(&event);
+                                    draft
+                                        .update(|v| {
+                                            v.1.sync = match mode.as_str() {
+                                                "poll" => RepositorySync::Poll {
+                                                    interval_seconds: v
+                                                        .2
+                                                        .trim()
+                                                        .parse()
+                                                        .unwrap_or(RepositorySync::DEFAULT_INTERVAL),
+                                                },
+                                                "webhook" => RepositorySync::Webhook,
+                                                _ => RepositorySync::Off,
+                                            };
+                                        });
+                                }}
+                            >
+                                <option value="off">"Off: deploy only when asked"</option>
+                                <option value="poll">"Poll: check the branches on an interval"</option>
+                                <option value="webhook">"Webhook: when GitHub reports a push"</option>
+                            </select>
+                        </label>
+                        <Show when={polling}>
+                            <label class="field">
+                                <span>"Poll interval (seconds)"</span>
+                                <input
+                                    type="number"
+                                    min={RepositorySync::MIN_INTERVAL}
+                                    max={RepositorySync::MAX_INTERVAL}
+                                    prop:value={move || draft.with(|v| v.2.clone())}
+                                    on:input={move |event| {
+                                        let text = event_target_value(&event);
+                                        draft
+                                            .update(|v| {
+                                                if let (
+                                                    RepositorySync::Poll { interval_seconds },
+                                                    Ok(seconds),
+                                                ) = (&mut v.1.sync, text.trim().parse())
+                                                {
+                                                    *interval_seconds = seconds;
+                                                }
+                                                v.2 = text;
+                                            });
+                                    }}
+                                />
+                            </label>
+                        </Show>
                     </div>
+                    <p class="hint" hidden={move || !draft.get().0}>
+                        "When on, pushes deploy every preview, and every environment that opted in on its page and follows an unpinned branch, once it was deployed."
+                    </p>
                     {save_actions(draft, baseline, save, other_edits)}
                 </fieldset>
+                <Show when={move || saved_sync().is_some_and(|sync| !sync.is_off())}>
+                    <SyncCheck />
+                </Show>
+            </div>
+        </section>
+        <Show when={move || saved_sync() == Some(RepositorySync::Webhook)}>
+            <WebhookSettings />
+        </Show>
+    }
+}
+
+/// When sync last listed the repository's branches, and why it failed.
+#[component]
+fn SyncCheck() -> impl IntoView {
+    let context = editor();
+    // Loaded when shown and on Refresh: dashboard polling only reloads the
+    // application when its configuration changes, which a check does not.
+    let loaded = LocalResource::new(move || {
+        let id = context.id();
+        async move {
+            Client::browser()
+                .application(&id)
+                .await
+                .map(|application| application.sync_check)
+                .ok()
+        }
+    });
+    let check = move || {
+        loaded
+            .get()
+            .flatten()
+            .unwrap_or_else(|| context.saved.with(|saved| saved.sync_check.clone()))
+    };
+    view! {
+        <dl class="kv">
+            <dt>"Last sync check"</dt>
+            <dd>
+                {move || {
+                    check()
+                        .map_or_else(
+                            || view! { <span class="muted">"Not yet"</span> }.into_any(),
+                            |check| when(check.checked_at_ms),
+                        )
+                }}
+                " "
+                <button type="button" class="btn btn-sm" on:click={move |_| loaded.refetch()}>
+                    {icon(Icon::Refresh)}
+                    "Refresh"
+                </button>
+            </dd>
+        </dl>
+        {move || {
+            check()
+                .and_then(|check| check.error)
+                .map(|error| {
+                    notice(
+                        Tone::Bad,
+                        format!(
+                            "Sync could not list the repository's branches: {error}. It retries with backoff.",
+                        ),
+                    )
+                })
+        }}
+    }
+}
+
+/// What to configure in GitHub for an application syncing on push webhooks:
+/// the payload URL, and a secret generated on demand and shown only once.
+/// Rotating confirms first, since the previous secret stops verifying at once.
+#[component]
+fn WebhookSettings() -> impl IntoView {
+    let context = editor();
+    let data = LocalResource::new(move || {
+        let id = context.id();
+        async move {
+            Client::browser()
+                .webhook(&id)
+                .await
+                .map_err(|error| client_error_message(&error))
+        }
+    });
+    // The secret just generated: never retrievable again.
+    let generated = RwSignal::new(None::<String>);
+    let created = move || {
+        data.get()
+            .and_then(Result::ok)
+            .and_then(|webhook| webhook.secret_created_at_ms)
+    };
+    let generate = move |_| {
+        if created().is_some()
+            && !window()
+                .confirm_with_message(
+                    "Rotate the webhook secret? The current secret stops verifying deliveries at once, until GitHub is updated with the new one.",
+                )
+                .unwrap_or(false)
+        {
+            return;
+        }
+        let application = context.id();
+        context.mutate(
+            move |client| {
+                let application = application.clone();
+                async move { client.generate_webhook_secret(&application).await }
+            },
+            move |secret| {
+                generated.set(Some(secret.secret));
+                data.refetch();
+            },
+        );
+    };
+    view! {
+        <section class="card">
+            <header>
+                <div>
+                    <h3>"GitHub webhook"</h3>
+                    <p>
+                        "Add a webhook to the repository in GitHub with these settings. Each push makes piqueld list the branches itself; the payload is only authenticated, never trusted."
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    class="btn"
+                    disabled={move || context.blocked() || data.get().is_none()}
+                    on:click={generate}
+                >
+                    {icon(Icon::Key)}
+                    {move || if created().is_some() { "Rotate secret" } else { "Generate secret" }}
+                </button>
+            </header>
+            <div class="stack-sm">
+                {move || match data.get() {
+                    None => view! { <p class="hint">"Loading…"</p> }.into_any(),
+                    Some(Err(error)) => notice(Tone::Bad, error),
+                    Some(Ok(webhook)) => {
+                        view! {
+                            {webhook
+                                .url
+                                .is_none()
+                                .then(|| {
+                                    notice(
+                                        Tone::Warn,
+                                        "This daemon does not receive webhooks: set ingress.webhook_hostname in its configuration to get a payload URL.",
+                                    )
+                                })}
+                            <dl class="kv">
+                                <dt>"Payload URL"</dt>
+                                <dd>
+                                    {webhook
+                                        .url
+                                        .map_or_else(
+                                            || view! { <span class="muted">"None"</span> }.into_any(),
+                                            |url| {
+                                                view! {
+                                                    <code>{url.clone()}</code>
+                                                    " "
+                                                    {copy_button("Copy payload URL", url)}
+                                                }
+                                                    .into_any()
+                                            },
+                                        )}
+                                </dd>
+                                <dt>"Content type"</dt>
+                                <dd>
+                                    <code>"application/json"</code>
+                                </dd>
+                                <dt>"Events"</dt>
+                                <dd>"Just the push event"</dd>
+                                <dt>"Secret"</dt>
+                                <dd>
+                                    {webhook
+                                        .secret_created_at_ms
+                                        .map_or_else(
+                                            || {
+                                                view! { <span class="muted">"None yet: generate one"</span> }
+                                                    .into_any()
+                                            },
+                                            |at| view! { "Generated " {when(at)} }.into_any(),
+                                        )}
+                                </dd>
+                            </dl>
+                        }
+                            .into_any()
+                    }
+                }}
+                {move || {
+                    generated
+                        .get()
+                        .map(|secret| {
+                            notice(
+                                Tone::Ok,
+                                view! {
+                                    "Copy this secret into GitHub now; it will not be shown again."
+                                    <pre class="secret-box">{secret.clone()}</pre>
+                                    {copy_button("Copy secret", secret)}
+                                },
+                            )
+                        })
+                }}
             </div>
         </section>
     }

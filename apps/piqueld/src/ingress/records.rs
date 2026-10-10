@@ -7,6 +7,9 @@
 //! public route, direct    A/AAAA -> [ingress] public_addresses (else manual)
 //! ```
 //!
+//! The webhook hostname, `[ingress] webhook_hostname`, gets a public route's
+//! records.
+//!
 //! **Ordering.** Records follow the routes the gateway has acknowledged
 //! ([`Store::applied_table`](crate::store::Store::applied_table)), so they
 //! are written once the gateway serves a route and deleted or repointed only
@@ -35,7 +38,7 @@ use crate::dns::provider::{DnsProvider, Found, Record, RecordId, Zone};
 use anyhow::{Context, Result};
 use piqueld_core::{
     api::DnsRecordState,
-    manifest::{Hostname, ValidatedRoute, Visibility},
+    manifest::{Hostname, Visibility},
     observability::DiagnosticCode,
 };
 use std::{
@@ -204,8 +207,14 @@ impl Ingress {
             .collect();
         if self.enabled {
             for route in self.store.applied_table().await?.into_values().flatten() {
-                let desired = self.desired_records(&route, &addresses);
+                let desired = self.desired_records(route.visibility, &addresses);
                 wanted.insert(route.hostname, desired);
+            }
+            // The webhook hostname is served on the public listener, like a
+            // public route, from the gateway's own configuration.
+            if let Some(hostname) = self.webhook_hostname() {
+                let desired = self.desired_records(Visibility::Public, &addresses);
+                wanted.insert(hostname.clone(), desired);
             }
             for route in self.store.routing_table().await?.into_values().flatten() {
                 wanted
@@ -255,11 +264,12 @@ impl Ingress {
         Ok(plan)
     }
 
-    /// The records an applied route needs, or `None` when they are manual: a
-    /// direct public route without `[ingress] public_addresses`. Private
-    /// routes only ever get the apps node's tailnet `addresses`.
-    fn desired_records(&self, route: &ValidatedRoute, addresses: &[IpAddr]) -> Option<Desired> {
-        let addresses = match (route.visibility, &self.tunnel) {
+    /// The records a hostname served with `visibility` needs, or `None` when
+    /// they are manual: a direct public one without `[ingress]
+    /// public_addresses`. Private ones only ever get the apps node's tailnet
+    /// `addresses`.
+    fn desired_records(&self, visibility: Visibility, addresses: &[IpAddr]) -> Option<Desired> {
+        let addresses = match (visibility, &self.tunnel) {
             (Visibility::Private, _) if self.node.is_none() => {
                 return Some(Desired::Pending(
                     "Private ingress is disabled, so the route is not served",

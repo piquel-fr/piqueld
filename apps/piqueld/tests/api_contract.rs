@@ -2661,6 +2661,7 @@ async fn downloaded_manifest_round_trips_saved_configuration_without_docker() {
             commit: None,
         },
         path: "infra/app.toml".into(),
+        sync: piqueld_core::sync::RepositorySync::Off,
     });
     let saved = api.client.apply_application(&request).await.unwrap();
     let response = router(
@@ -2859,8 +2860,13 @@ async fn exec_rechecks_grants_when_the_command_starts() {
         .await
         .unwrap()
         .items;
-    assert_eq!(started[0].actor_user_id.as_deref(), Some("operator"));
-    assert_eq!(started[0].actor_credential_id.as_deref(), Some("operator"));
+    assert_eq!(
+        started[0].actor,
+        Some(piqueld_core::EventActor::Account {
+            user_id: "operator".into(),
+            credential_id: Some("operator".into()),
+        })
+    );
     let mut connection = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!(
         "sqlite:{}",
         database.display()
@@ -3643,6 +3649,7 @@ async fn field_edits_validate_atomically_and_preserve_git_ownership() {
             commit: None,
         },
         path: "app.toml".into(),
+        sync: piqueld_core::sync::RepositorySync::Off,
     }));
     api.client
         .edit_application(id, &repository, &options)

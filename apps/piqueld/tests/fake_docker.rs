@@ -2461,6 +2461,7 @@ mod repository_deployments {
                     commit: None,
                 },
                 path: path.into(),
+                sync: piqueld_core::sync::RepositorySync::Off,
             });
             application
         }
@@ -2634,6 +2635,46 @@ mod repository_deployments {
             let current = harness.store.get(&first.environment_id).await.unwrap();
             assert_eq!(current.repository(), initial.spec.manifest);
         }
+    }
+
+    /// Every deployment of a branch records its head for sync to follow from.
+    #[tokio::test]
+    async fn deployments_record_the_branch_head_sync_follows_from() {
+        let repository = RepositoryFixture::new();
+        let harness = ControllerHarness::new().await;
+        let main = repository.manifest("app.json");
+        repository.write("app.json", &main);
+        let first = repository.commit();
+        let production = harness
+            .applications()
+            .apply(main.clone().validate_template().unwrap(), Some(0))
+            .await
+            .unwrap();
+        harness.finish(&production).await;
+        let production = production.environment_id;
+        let synced = async || {
+            harness
+                .store
+                .get(&production)
+                .await
+                .unwrap()
+                .environment
+                .synced
+                .map(|head| head.commit)
+        };
+        // A deployment of its branch records the head it fetched.
+        assert_eq!(synced().await.as_deref(), Some(first.as_str()));
+        // A one-off deployment of an older commit records the branch's head
+        // then, so it stays until the branch moves.
+        let second = repository.commit();
+        let deployed = RepositoryFixture::deploy_revision(
+            &harness,
+            &production,
+            Some(ManifestRevision::Commit(first.clone())),
+        )
+        .await;
+        assert_eq!(deployed.state, OperationState::Succeeded);
+        assert_eq!(synced().await.as_deref(), Some(second.as_str()));
     }
 
     /// Environments following different branches each deploy their own

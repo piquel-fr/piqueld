@@ -275,6 +275,7 @@ impl TrackedBranch {
                 commit: self.commit.clone(),
             },
             path: connection.path.clone(),
+            sync: connection.sync,
         }
     }
 }

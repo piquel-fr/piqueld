@@ -93,6 +93,7 @@ fn repository() -> RepositoryManifest {
             commit: None,
         },
         path: "piqueld.toml".into(),
+        sync: crate::sync::RepositorySync::Off,
     }
 }
 

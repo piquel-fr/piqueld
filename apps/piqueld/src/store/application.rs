@@ -192,7 +192,7 @@ impl Store {
         id: &str,
     ) -> Result<Vec<EnvironmentView>, StoreError> {
         sqlx::query_as!(EnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.preview_slot,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!" FROM environments e WHERE e.application_id=?1 AND e.kind='environment' ORDER BY e.name"#,id)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!" FROM environments e WHERE e.application_id=?1 AND e.kind='environment' ORDER BY e.name"#,id)
             .fetch_all(connection).await.map_err(StoreError::database)?
             .into_iter().map(EnvironmentRow::decode).collect()
     }
@@ -236,11 +236,28 @@ impl Store {
     /// branch `spec.manifest` names, and disconnecting returns every environment
     /// to the saved manifest, forgetting what was fetched. Previews keep their
     /// branch: they cannot deploy until a repository is connected again.
+    /// Leaving `previous_url` forgets the heads sync followed from, so nothing
+    /// follows the new repository before its next deployment.
     pub(super) async fn follow_connection_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &ApplicationTemplate,
+        previous_url: Option<&str>,
     ) -> Result<(), StoreError> {
         let id = application.id().as_str();
+        let url = application
+            .spec()
+            .manifest
+            .as_ref()
+            .map(|connection| connection.repository.url.as_str());
+        if url != previous_url {
+            sqlx::query!(
+                "UPDATE environments SET synced_commit=NULL,synced_at_ms=NULL WHERE application_id=?1",
+                id
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(StoreError::database)?;
+        }
         let source = EnvironmentSource::select(application.spec().manifest.as_ref(), None)?;
         match source.branch() {
             Some(branch) => {

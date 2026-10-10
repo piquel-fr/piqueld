@@ -37,6 +37,9 @@ pub enum Actor<'a> {
     },
     /// A signed-in caller.
     Account(Caller<'a>),
+    /// An automated actor of the daemon, such as sync; never restricted
+    /// but recorded as itself.
+    System(piqueld_core::sync::SystemActor),
 }
 
 /// Who caused a record: an account and the credential it used, or the host
@@ -49,6 +52,8 @@ pub struct Attribution<'a> {
     pub credential_id: Option<&'a str>,
     /// The host operator, when it acted instead of an account.
     pub operator: Option<HostOperator>,
+    /// The automated actor, when one acted instead.
+    pub system: Option<piqueld_core::sync::SystemActor>,
 }
 
 impl<'a> Actor<'a> {
@@ -61,11 +66,17 @@ impl<'a> Actor<'a> {
                 user_id: None,
                 credential_id: session,
                 operator: Some(operator),
+                system: None,
             },
             Self::Account(caller) => Attribution {
                 user_id: Some(caller.user_id),
                 credential_id: Some(caller.credential_id),
                 operator: None,
+                system: None,
+            },
+            Self::System(system) => Attribution {
+                system: Some(system),
+                ..Attribution::default()
             },
         }
     }
@@ -87,7 +98,7 @@ impl Actor<'_> {
         db: &mut SqliteConnection,
     ) -> Result<Option<Authority>, StoreError> {
         match self {
-            Self::Daemon | Self::Operator { session: None, .. } => Ok(None),
+            Self::Daemon | Self::System(_) | Self::Operator { session: None, .. } => Ok(None),
             Self::Operator {
                 session: Some(id), ..
             } => {
@@ -444,6 +455,14 @@ mod tests {
     use crate::api::{Actor, Mutation, MutationResponse};
     use piqueld_core::access::{AppPermission, Preset};
 
+    /// The actor `alice`'s `session` credential records as.
+    fn alice() -> piqueld_core::EventActor {
+        piqueld_core::EventActor::Account {
+            user_id: "alice".into(),
+            credential_id: Some("session".into()),
+        }
+    }
+
     /// Saves an empty application named `name`, returning its ID.
     async fn application(store: &Store, name: &str) -> ApplicationId {
         let manifest = piqueld_core::manifest::parse_template_toml(&format!(
@@ -609,8 +628,11 @@ mod tests {
             .unwrap()
             .items;
         assert_eq!(shared.len(), 2, "started and succeeded");
-        assert!(shared.iter().all(|event| event.application_id.is_none()
-            && event.actor_user_id.as_deref() == Some("alice")));
+        assert!(
+            shared
+                .iter()
+                .all(|event| event.application_id.is_none() && event.actor == Some(alice()))
+        );
         let restart = "UPDATE operations SET actor_user_id='bob' WHERE id=?1";
         sqlx::query(restart)
             .bind(id)
@@ -626,13 +648,7 @@ mod tests {
         // The transition wrote at least one event after acceptance.
         assert!(events.len() > accepted, "{events:?}");
         for event in events {
-            assert_eq!(
-                event.actor_user_id.as_deref(),
-                Some("alice"),
-                "{}",
-                event.kind
-            );
-            assert_eq!(event.actor_credential_id.as_deref(), Some("session"));
+            assert_eq!(event.actor, Some(alice()), "{}", event.kind);
         }
     }
 
@@ -713,12 +729,7 @@ mod tests {
                 .any(|event| event.environment_id.is_some() && event.operation_id.is_none())
         );
         for event in events {
-            assert_eq!(
-                event.actor_user_id.as_deref(),
-                Some("alice"),
-                "{}",
-                event.kind
-            );
+            assert_eq!(event.actor, Some(alice()), "{}", event.kind);
         }
     }
 

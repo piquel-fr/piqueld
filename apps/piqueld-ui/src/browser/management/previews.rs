@@ -1,8 +1,11 @@
 //! Previews: disposable deployments of one branch of the application's
-//! manifest repository, listed with their status and where their branch is.
-//! Each opens on the environment page, with the actions and cards below.
+//! manifest repository, listed with their status, where their branch is, and
+//! whether pushes redeploy them. Each opens on the environment page, with the
+//! actions and cards below.
 use super::super::client_error_message;
+use super::super::format::commit;
 use super::super::ui::{Icon, Modal, Tone, badge, empty, health_badge, icon, notice, text_input};
+use super::environments::{last_synced, sync_badge};
 use super::{EditorContext, editor};
 use crate::state::ApplicationHealth;
 use leptos::prelude::*;
@@ -54,13 +57,15 @@ impl EditorContext {
 /// Badge for where a preview's branch is, with the commits or the reason the
 /// repository could not be read.
 fn branch_state(state: &BranchState) -> (AnyView, Option<String>) {
-    // Full commit IDs are too wide to show.
-    let short = |commit: &str| commit.get(..12).unwrap_or(commit).to_owned();
     let (tone, detail) = match state {
-        BranchState::Exists { head } => (Tone::Ok, Some(format!("at {}", short(head)))),
+        BranchState::Exists { head } => (Tone::Ok, Some(format!("at {}", commit(head)))),
         BranchState::Moved { head, deployed } => (
             Tone::Warn,
-            Some(format!("to {}, deployed {}", short(head), short(deployed))),
+            Some(format!(
+                "to {}, deployed {}",
+                commit(head),
+                commit(deployed)
+            )),
         ),
         BranchState::Gone => (Tone::Bad, None),
         BranchState::Unknown { message } => (Tone::Neutral, Some(message.clone())),
@@ -306,8 +311,9 @@ fn NewPreview() -> impl IntoView {
     }
 }
 
-/// One preview's row, opening its page, with its slug, slot, branch state, and
-/// status. Delete runs `deleted` once accepted.
+/// One preview's row, opening its page, with its slug, slot, branch state,
+/// sync state with the head it last synced, and status. Delete runs `deleted`
+/// once accepted.
 #[component]
 fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
     let context = editor();
@@ -323,6 +329,12 @@ fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
     };
     let (branch_badge, branch_detail) = branch_state(&view.branch);
     let bounded = bounds_badge(&view.bounds);
+    let (sync, sync_reason) = sync_badge(view.sync);
+    let synced = view.preview.synced.clone().map(|head| {
+        view! {
+            <span class="meta">"synced " {last_synced(Some(head))}</span>
+        }
+    });
     let deleting = view.preview.delete_intent;
     let status = if deleting {
         badge(Tone::Warn, "Deleting")
@@ -337,7 +349,9 @@ fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
             </span>
             <span class="meta">{branch_detail}</span>
             {bounded}
+            {synced}
             {branch_badge}
+            <span title={sync_reason}>{sync}</span>
             <span title={view.status.message}>{status}</span>
             <button
                 type="button"
@@ -393,7 +407,7 @@ pub(super) fn PreviewActions() -> impl IntoView {
 }
 
 /// A preview's branch, slot, slug, and ID, with its URLs, branch state, and
-/// `[previews]` bounds read when the page opens and on refresh.
+/// `[previews]` bounds and sync state read when the page opens and on refresh.
 #[component]
 pub(super) fn PreviewSettings() -> impl IntoView {
     let context = editor();
@@ -476,6 +490,19 @@ pub(super) fn PreviewSettings() -> impl IntoView {
                             .into_any()
                     })}
                 </dd>
+                <dt>"Deploy on push"</dt>
+                <dd>
+                    {loaded(|view| {
+                        let (badge, reason) = sync_badge(view.sync);
+                        view! {
+                            {badge}
+                            <div class="muted">{reason}</div>
+                        }
+                            .into_any()
+                    })}
+                </dd>
+                <dt>"Last synced"</dt>
+                <dd>{loaded(|view| last_synced(view.preview.synced))}</dd>
                 <dt>"URLs"</dt>
                 <dd>{loaded(|view| urls(view.hostnames))}</dd>
                 <dt>"Bounds"</dt>

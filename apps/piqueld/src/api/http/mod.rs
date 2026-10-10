@@ -45,6 +45,8 @@ mod previews;
 mod secrets;
 mod system;
 mod ui;
+mod webhooks;
+pub use webhooks::webhook_router;
 
 use crate::api::ApplicationError;
 pub use crate::api::ApplicationService as ApiState;
@@ -744,6 +746,9 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Deploy) => environments::reconcile))
         .routes(granted!(App(Write) => environments::rename))
         .routes(granted!(App(Write) => environments::branch))
+        .routes(granted!(App(Write) => environments::sync))
+        .routes(granted!(App(Read) => webhooks::get))
+        .routes(granted!(App(Write) => webhooks::generate_secret))
         .routes(granted!(App(Deploy) => previews::create))
         .routes(granted!(App(Read) => previews::list))
         .routes(granted!(App(Read) => previews::get))

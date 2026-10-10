@@ -1384,3 +1384,69 @@ async fn the_private_listener_stays_off_while_application_pools_overlap_the_tail
     assert!(!private_listener_with_pool("100.64.0.0/10").await);
     assert!(!private_listener_with_pool("not a pool").await);
 }
+
+#[tokio::test]
+async fn the_webhook_hostname_forwards_only_its_webhook_path_to_the_daemon() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let hooks = Hostname::parse("hooks.example.com").unwrap();
+    let ingress = private_ingress(&directory)
+        .await
+        .with_webhooks(Some(hooks.clone()));
+    let configuration = ingress.build_configuration(&RoutingTable::new(), None, None);
+    let public = &configuration["apps"]["http"]["servers"]["public"];
+    assert_eq!(
+        public["tls_connection_policies"][0]["match"]["sni"],
+        json!([hooks.as_str()])
+    );
+    let routes = public["routes"].as_array().unwrap();
+    // The webhook path goes to the daemon's socket, bounded like the
+    // daemon's own limit; every other path reaches the final 404.
+    assert_eq!(routes.len(), 2);
+    assert_eq!(
+        routes[0]["match"],
+        json!([{"host":[hooks.as_str()],"path":["/hooks/github/*"]}])
+    );
+    assert_eq!(
+        routes[0]["handle"],
+        json!([
+            {"handler":"request_body","max_size":crate::api::WEBHOOK_BODY_LIMIT},
+            {"handler":"reverse_proxy","upstreams":[{"dial":"unix//control/webhooks.sock"}]}
+        ])
+    );
+    assert_eq!(routes[1]["handle"][0]["status_code"], 404);
+
+    let listener = ingress.bind_webhooks().await.unwrap().unwrap();
+    let path = directory.path().join("ingress/control/webhooks.sock");
+    assert_eq!(
+        listener.local_addr().unwrap().as_pathname(),
+        Some(path.as_path())
+    );
+    // Only the daemon's user, which the gateway runs as, may connect.
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+        0
+    );
+    // Without managed ingress the socket is still served, for another proxy
+    // running as the daemon's user, but the gateway routes nothing to it.
+    drop(listener);
+    let disabled = Ingress::new(
+        false,
+        &directory.path().join("docker.sock"),
+        directory.path(),
+        ingress.store.clone(),
+    )
+    .unwrap()
+    .with_webhooks(Some(hooks));
+    assert!(disabled.bind_webhooks().await.unwrap().is_some());
+    assert_eq!(disabled.webhook_hostname(), None);
+    // Without a webhook hostname, there is no socket.
+    let none = Ingress::new(
+        true,
+        &directory.path().join("docker.sock"),
+        directory.path(),
+        ingress.store.clone(),
+    )
+    .unwrap();
+    assert!(none.bind_webhooks().await.unwrap().is_none());
+}

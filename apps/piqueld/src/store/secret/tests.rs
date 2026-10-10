@@ -727,7 +727,9 @@ async fn developer_events(
         .unwrap()
         .items
         .into_iter()
-        .filter(|event| event.actor_user_id.as_deref() == Some("dev"))
+        .filter(|event| {
+            matches!(&event.actor, Some(piqueld_core::EventActor::Account { user_id, .. }) if user_id == "dev")
+        })
         .map(|event| event.kind)
         .collect()
 }

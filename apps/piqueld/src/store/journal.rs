@@ -24,6 +24,7 @@ pub(crate) struct JournalAction {
     actor_user_id: Option<String>,
     actor_credential_id: Option<String>,
     actor_operator_uid: Option<i64>,
+    actor_system: Option<String>,
 }
 impl JournalAction {
     /// A daemon-scoped action outside any operation, starting now.
@@ -40,6 +41,7 @@ impl JournalAction {
             actor_user_id: None,
             actor_credential_id: None,
             actor_operator_uid: None,
+            actor_system: None,
         }
     }
 }
@@ -100,6 +102,7 @@ impl Store {
             actor_user_id: actor.user_id.map(str::to_owned),
             actor_credential_id: actor.credential_id.map(str::to_owned),
             actor_operator_uid: actor.operator_uid().map(i64::from),
+            actor_system: actor.system.map(|system| system.as_str().to_owned()),
             ..JournalAction::daemon(phase, resource)
         };
         Self::start_action_on(&mut tx, &action).await?;
@@ -114,7 +117,7 @@ impl Store {
         operation: Option<&str>,
     ) -> Result<(), StoreError> {
         let actor = sqlx::query!(
-            "SELECT actor_user_id,actor_credential_id,actor_operator_uid FROM operations WHERE id=?1",
+            "SELECT actor_user_id,actor_credential_id,actor_operator_uid,actor_system FROM operations WHERE id=?1",
             operation,
         )
         .fetch_optional(&mut **tx)
@@ -124,6 +127,7 @@ impl Store {
             action.actor_user_id = actor.actor_user_id;
             action.actor_credential_id = actor.actor_credential_id;
             action.actor_operator_uid = actor.actor_operator_uid;
+            action.actor_system = actor.actor_system;
         }
         Ok(())
     }
@@ -134,8 +138,8 @@ impl Store {
     ) -> Result<(), StoreError> {
         sqlx::query!(
             "INSERT INTO active_actions(id,operation_id,environment_id,generation,phase,resource,attempt,started_at_ms,
-            actor_user_id,actor_credential_id,actor_operator_uid)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            actor_user_id,actor_credential_id,actor_operator_uid,actor_system)
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
             action.id,
             action.operation_id,
             action.environment_id,
@@ -147,6 +151,7 @@ impl Store {
             action.actor_user_id,
             action.actor_credential_id,
             action.actor_operator_uid,
+            action.actor_system,
         )
         .execute(&mut **tx)
         .await
@@ -303,8 +308,8 @@ impl Store {
         sqlx::query!(
             "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,
             error_code,phase,resource,created_at_ms,scope,action_id,retry,duration_ms,diagnostic_id,
-            diagnostic_json,actor_user_id,actor_credential_id,actor_operator_uid)
-            VALUES((SELECT application_id FROM environments WHERE id=?1),?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+            diagnostic_json,actor_user_id,actor_credential_id,actor_operator_uid,actor_system)
+            VALUES((SELECT application_id FROM environments WHERE id=?1),?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
             action.environment_id,
             action.operation_id,
             action.generation,
@@ -324,6 +329,7 @@ impl Store {
             action.actor_user_id,
             action.actor_credential_id,
             action.actor_operator_uid,
+            action.actor_system,
         )
         .execute(&mut **tx)
         .await
@@ -341,12 +347,12 @@ impl Store {
         let now = now_ms();
         sqlx::query!(
             "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,phase,
-            resource,created_at_ms,scope,action_id,retry,actor_user_id,actor_credential_id,actor_operator_uid)
+            resource,created_at_ms,scope,action_id,retry,actor_user_id,actor_credential_id,actor_operator_uid,actor_system)
             SELECT (SELECT application_id FROM environments WHERE id=active_actions.environment_id),
             environment_id,operation_id,generation,attempt,'action_outcome_unknown',
             'Execution was interrupted before its result was committed; reconciliation will inspect current runtime state',
             phase,resource,?1,CASE WHEN environment_id IS NULL THEN 'daemon' ELSE 'application' END,
-            id,retry,actor_user_id,actor_credential_id,actor_operator_uid
+            id,retry,actor_user_id,actor_credential_id,actor_operator_uid,actor_system
             FROM active_actions
             WHERE ?2 IS NULL OR operation_id=?2",
             now,

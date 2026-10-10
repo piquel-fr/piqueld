@@ -55,6 +55,8 @@ pub(crate) enum SecretOwner<'a> {
     Application(&'a ApplicationId),
     /// The verifier proving the master key matches the database.
     KeyVerifier,
+    /// The secret GitHub signs an application's push webhooks with.
+    Webhook(&'a ApplicationId),
 }
 
 impl<'a> SecretOwner<'a> {
@@ -65,6 +67,7 @@ impl<'a> SecretOwner<'a> {
             Self::Environment(id) => ("piqueld-secret-v1", id.as_str()),
             Self::Application(id) => ("piqueld-application-secret-v1", id.as_str()),
             Self::KeyVerifier => ("piqueld-secret-v1", "piqueld"),
+            Self::Webhook(id) => ("piqueld-webhook-secret-v1", id.as_str()),
         }
     }
 }

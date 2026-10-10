@@ -3,10 +3,10 @@ use crate::{Client, ClientError, SavedApplication, client::generated_result};
 use piqueld_core::{
     edit::{
         ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, HealthValue, JobsValue,
-        MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositoryValue,
-        ResourcesValue, RolloutValue, RoutesValue, SecondsValue, SecretsValue, ServiceEdit,
-        ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue, TemplateValue,
-        TemplatesValue, VariablesValue, VisibilityValue, VolumesValue,
+        MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositorySyncValue,
+        RepositoryValue, ResourcesValue, RolloutValue, RoutesValue, SecondsValue, SecretsValue,
+        ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue,
+        TemplateValue, TemplatesValue, VariablesValue, VisibilityValue, VolumesValue,
     },
     manifest::{Mount, Service, Volume},
 };
@@ -37,6 +37,7 @@ edit_method!(set_manifest_repository, (id), request: RepositoryValue);
 edit_method!(disconnect_manifest_repository, (id));
 edit_method!(set_manifest_repository_url, (id), request: StringValue);
 edit_method!(set_manifest_repository_path, (id), request: StringValue);
+edit_method!(set_manifest_repository_sync, (id), request: RepositorySyncValue);
 edit_method!(add_application_service, (id), request: Service);
 edit_method!(add_application_volume, (id), request: Volume);
 edit_method!(remove_application_service, (id, service));
@@ -128,6 +129,9 @@ impl Client {
             }
             ApplicationEdit::RepositoryPath(value) => {
                 send!(set_manifest_repository_path, StringValue, value.clone())
+            }
+            ApplicationEdit::RepositorySync(value) => {
+                send!(set_manifest_repository_sync, RepositorySyncValue, *value)
             }
             ApplicationEdit::AddService(value) => {
                 self.add_application_service(id, value, options).await

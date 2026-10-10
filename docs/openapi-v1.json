@@ -710,6 +710,25 @@
             "description": "Hash of the normalized desired specification.",
             "type": "string"
           },
+          "sync_check": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/SyncCheck"
+                  }
+                ],
+                "description": "The last time sync listed its repository's branches; absent until it\ndid, and while sync is off."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "updated_at_ms": {
             "description": "Last update timestamp in Unix milliseconds.",
             "format": "int64",
@@ -2757,6 +2776,25 @@
                 "description": "Hash of the normalized desired specification.",
                 "type": "string"
               },
+              "sync_check": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/SyncCheck"
+                      }
+                    ],
+                    "description": "The last time sync listed its repository's branches; absent until it\ndid, and while sync is off."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
               "updated_at_ms": {
                 "description": "Last update timestamp in Unix milliseconds.",
                 "format": "int64",
@@ -3394,6 +3432,29 @@
                 "$ref": "#/components/schemas/EnvironmentSource",
                 "description": "Where deployments come from; a preview's branch."
               },
+              "sync": {
+                "description": "Whether this environment opted into its application's sync (see\n[`Self::sync_state`]). Previews follow their application's setting.",
+                "type": "boolean"
+              },
+              "synced": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/SyncedHead"
+                      }
+                    ],
+                    "description": "The branch head as of its last deployment, by sync or of its own\nbranch; absent before its first."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
               "updated_at_ms": {
                 "description": "Last update timestamp in Unix milliseconds.",
                 "format": "int64",
@@ -3428,20 +3489,15 @@
                 "nullable": true,
                 "type": "string"
               },
-              "actor_credential_id": {
-                "description": "Credential that authenticated that request.",
-                "nullable": true,
-                "type": "string"
-              },
-              "actor_operator": {
+              "actor": {
                 "oneOf": [
                   {
                     "allOf": [
                       {
-                        "$ref": "#/components/schemas/HostOperator"
+                        "$ref": "#/components/schemas/EventActor"
                       }
                     ],
-                    "description": "The host operator, when it made that request instead of an account."
+                    "description": "Who caused this event, including runtime actions of the operation it\nrequested; absent for the daemon's own work."
                   },
                   {
                     "enum": [
@@ -3451,11 +3507,6 @@
                     "type": "string"
                   }
                 ]
-              },
-              "actor_user_id": {
-                "description": "Account whose API request caused this event, including runtime actions\nof the operation it requested.",
-                "nullable": true,
-                "type": "string"
               },
               "application_id": {
                 "oneOf": [
@@ -4200,20 +4251,15 @@
                       "nullable": true,
                       "type": "string"
                     },
-                    "actor_credential_id": {
-                      "description": "Credential that authenticated that request.",
-                      "nullable": true,
-                      "type": "string"
-                    },
-                    "actor_operator": {
+                    "actor": {
                       "oneOf": [
                         {
                           "allOf": [
                             {
-                              "$ref": "#/components/schemas/HostOperator"
+                              "$ref": "#/components/schemas/EventActor"
                             }
                           ],
-                          "description": "The host operator, when it made that request instead of an account."
+                          "description": "Who caused this event, including runtime actions of the operation it\nrequested; absent for the daemon's own work."
                         },
                         {
                           "enum": [
@@ -4223,11 +4269,6 @@
                           "type": "string"
                         }
                       ]
-                    },
-                    "actor_user_id": {
-                      "description": "Account whose API request caused this event, including runtime actions\nof the operation it requested.",
-                      "nullable": true,
-                      "type": "string"
                     },
                     "application_id": {
                       "oneOf": [
@@ -4821,13 +4862,18 @@
               "status": {
                 "$ref": "#/components/schemas/EnvironmentStatusView",
                 "description": "Its reconciliation status."
+              },
+              "sync": {
+                "$ref": "#/components/schemas/SyncState",
+                "description": "Whether pushes to its branch redeploy it: `following` while its\napplication syncs and once it was deployed."
               }
             },
             "required": [
               "preview",
               "status",
               "hostnames",
-              "branch"
+              "branch",
+              "sync"
             ],
             "type": "object"
           }
@@ -5207,13 +5253,18 @@
                 "status": {
                   "$ref": "#/components/schemas/EnvironmentStatusView",
                   "description": "Its reconciliation status."
+                },
+                "sync": {
+                  "$ref": "#/components/schemas/SyncState",
+                  "description": "Whether pushes to its branch redeploy it: `following` while its\napplication syncs and once it was deployed."
                 }
               },
               "required": [
                 "preview",
                 "status",
                 "hostnames",
-                "branch"
+                "branch",
+                "sync"
               ],
               "type": "object"
             },
@@ -5296,6 +5347,65 @@
               "description": "A manually set secret in an application's store: its metadata and access,\nnever its value."
             },
             "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_WebhookSecret": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "A newly generated webhook secret. It is shown only in this response.",
+            "properties": {
+              "created_at_ms": {
+                "description": "When it was generated, in Unix milliseconds.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "secret": {
+                "description": "Secret to configure in GitHub, which signs each delivery with it.",
+                "type": "string"
+              },
+              "url": {
+                "description": "Payload URL to configure in GitHub, when exposed.",
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "secret",
+              "created_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_WebhookView": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Where GitHub sends an application's push webhooks, and its secret.",
+            "properties": {
+              "secret_created_at_ms": {
+                "description": "When the current secret was generated; absent until one is.",
+                "format": "int64",
+                "nullable": true,
+                "type": "integer"
+              },
+              "url": {
+                "description": "Payload URL to configure in GitHub; absent until the daemon sets\n`ingress.webhook_hostname`.",
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "type": "object"
           }
         },
         "required": [
@@ -5636,6 +5746,20 @@
         ],
         "type": "object"
       },
+      "EnvironmentSyncRequest": {
+        "additionalProperties": false,
+        "description": "Opts one environment into or out of its application's sync.",
+        "properties": {
+          "enabled": {
+            "description": "Whether pushes deploy it while its application syncs.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
       "EnvironmentValue": {
         "additionalProperties": false,
         "properties": {
@@ -5691,6 +5815,29 @@
             "$ref": "#/components/schemas/EnvironmentSource",
             "description": "Where deployments come from; a preview's branch."
           },
+          "sync": {
+            "description": "Whether this environment opted into its application's sync (see\n[`Self::sync_state`]). Previews follow their application's setting.",
+            "type": "boolean"
+          },
+          "synced": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/SyncedHead"
+                  }
+                ],
+                "description": "The branch head as of its last deployment, by sync or of its own\nbranch; absent before its first."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "updated_at_ms": {
             "description": "Last update timestamp in Unix milliseconds.",
             "format": "int64",
@@ -5742,20 +5889,15 @@
             "nullable": true,
             "type": "string"
           },
-          "actor_credential_id": {
-            "description": "Credential that authenticated that request.",
-            "nullable": true,
-            "type": "string"
-          },
-          "actor_operator": {
+          "actor": {
             "oneOf": [
               {
                 "allOf": [
                   {
-                    "$ref": "#/components/schemas/HostOperator"
+                    "$ref": "#/components/schemas/EventActor"
                   }
                 ],
-                "description": "The host operator, when it made that request instead of an account."
+                "description": "Who caused this event, including runtime actions of the operation it\nrequested; absent for the daemon's own work."
               },
               {
                 "enum": [
@@ -5765,11 +5907,6 @@
                 "type": "string"
               }
             ]
-          },
-          "actor_user_id": {
-            "description": "Account whose API request caused this event, including runtime actions\nof the operation it requested.",
-            "nullable": true,
-            "type": "string"
           },
           "application_id": {
             "oneOf": [
@@ -5918,6 +6055,81 @@
           "created_at_ms"
         ],
         "type": "object"
+      },
+      "EventActor": {
+        "description": "Who caused an event: exactly one kind of actor.",
+        "oneOf": [
+          {
+            "description": "An account's API request.",
+            "properties": {
+              "credential_id": {
+                "description": "The credential that authenticated the request, when there was one.",
+                "nullable": true,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "account"
+                ],
+                "type": "string"
+              },
+              "user_id": {
+                "description": "The account.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The host operator, instead of an account.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "operator"
+                ],
+                "type": "string"
+              },
+              "operator": {
+                "$ref": "#/components/schemas/HostOperator",
+                "description": "Its Unix user."
+              },
+              "session_id": {
+                "description": "The browser session it acted through, if any.",
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "operator",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An automated actor of the daemon, e.g. `sync:poll`.",
+            "properties": {
+              "actor": {
+                "$ref": "#/components/schemas/SystemActor",
+                "description": "Which one."
+              },
+              "kind": {
+                "enum": [
+                  "system"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "actor",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "EventScope": {
         "description": "Ownership of historical data, independent of its contextual application and environment.",
@@ -7628,13 +7840,18 @@
           "status": {
             "$ref": "#/components/schemas/EnvironmentStatusView",
             "description": "Its reconciliation status."
+          },
+          "sync": {
+            "$ref": "#/components/schemas/SyncState",
+            "description": "Whether pushes to its branch redeploy it: `following` while its\napplication syncs and once it was deployed."
           }
         },
         "required": [
           "preview",
           "status",
           "hostnames",
-          "branch"
+          "branch",
+          "sync"
         ],
         "type": "object"
       },
@@ -8101,11 +8318,84 @@
           "repository": {
             "$ref": "#/components/schemas/GitRepository",
             "description": "Repository and revision containing the manifest."
+          },
+          "sync": {
+            "$ref": "#/components/schemas/RepositorySync",
+            "description": "How environments and previews follow pushes. Like the rest of\n`spec.manifest`, ignored in fetched files."
           }
         },
         "required": [
           "repository",
           "path"
+        ],
+        "type": "object"
+      },
+      "RepositorySync": {
+        "description": "How an application follows pushes to its manifest repository. Applies to\nevery preview, and to every environment following an unpinned branch that\nopted in.",
+        "oneOf": [
+          {
+            "description": "Deploy only when asked.",
+            "properties": {
+              "mode": {
+                "enum": [
+                  "off"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "List the branch heads every `interval_seconds`.",
+            "properties": {
+              "interval_seconds": {
+                "description": "Seconds between listings, from 60 to 86400.",
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "mode": {
+                "enum": [
+                  "poll"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "List the branch heads when GitHub reports a push.",
+            "properties": {
+              "mode": {
+                "enum": [
+                  "webhook"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "RepositorySyncValue": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/RepositorySync",
+            "description": "New value; null explicitly clears an optional setting."
+          }
+        },
+        "required": [
+          "value"
         ],
         "type": "object"
       },
@@ -9126,6 +9416,63 @@
         ],
         "type": "object"
       },
+      "SyncCheck": {
+        "description": "The last time sync listed an application's branches, and why it failed.",
+        "properties": {
+          "checked_at_ms": {
+            "description": "When the listing finished, in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "error": {
+            "description": "Why the repository could not be listed; sync retries with backoff.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "checked_at_ms"
+        ],
+        "type": "object"
+      },
+      "SyncState": {
+        "description": "Whether pushes deploy an environment or preview, and why not.",
+        "enum": [
+          "following",
+          "off",
+          "pinned",
+          "not_opted_in",
+          "awaiting_deployment"
+        ],
+        "type": "string"
+      },
+      "SyncedHead": {
+        "description": "The branch head as of an environment's or preview's last deployment, by\nsync or of its own branch. Sync deploys once the branch moves past it.",
+        "properties": {
+          "at_ms": {
+            "description": "When sync found it, in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "commit": {
+            "description": "Full commit hash.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "commit",
+          "at_ms"
+        ],
+        "type": "object"
+      },
+      "SystemActor": {
+        "description": "The automated actors piqueld records on what they caused, next to\naccounts and the host operator.",
+        "enum": [
+          "sync:poll",
+          "sync:webhook"
+        ],
+        "type": "string"
+      },
       "SystemStatus": {
         "description": "Current control-plane status.",
         "properties": {
@@ -10098,6 +10445,47 @@
         "required": [
           "value"
         ],
+        "type": "object"
+      },
+      "WebhookSecret": {
+        "description": "A newly generated webhook secret. It is shown only in this response.",
+        "properties": {
+          "created_at_ms": {
+            "description": "When it was generated, in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "secret": {
+            "description": "Secret to configure in GitHub, which signs each delivery with it.",
+            "type": "string"
+          },
+          "url": {
+            "description": "Payload URL to configure in GitHub, when exposed.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "secret",
+          "created_at_ms"
+        ],
+        "type": "object"
+      },
+      "WebhookView": {
+        "description": "Where GitHub sends an application's push webhooks, and its secret.",
+        "properties": {
+          "secret_created_at_ms": {
+            "description": "When the current secret was generated; absent until one is.",
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "url": {
+            "description": "Payload URL to configure in GitHub; absent until the daemon sets\n`ingress.webhook_hostname`.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
         "type": "object"
       }
     },
@@ -12638,6 +13026,181 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/StringValue"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved and deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "x-piqueld-access": "apps:write"
+      }
+    },
+    "/api/v1/applications/{id}/repository/sync": {
+      "put": {
+        "operationId": "set_manifest_repository_sync",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required inspected generation unless force is set.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass the revision check.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "in": "query",
+            "name": "deploy",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepositorySyncValue"
               }
             }
           },
@@ -20162,6 +20725,176 @@
         "x-piqueld-access": "apps:write"
       }
     },
+    "/api/v1/applications/{id}/webhook": {
+      "get": {
+        "description": "The URL to configure in GitHub, absent until the daemon serves\n`ingress.webhook_hostname`, and when the current secret was generated.\nThe secret itself is only shown when generated.",
+        "operationId": "getWebhook",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_WebhookView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Gets an application's webhook payload URL.",
+        "x-piqueld-access": "apps:read"
+      }
+    },
+    "/api/v1/applications/{id}/webhook/secret": {
+      "post": {
+        "description": "Replaces the previous secret, which stops verifying at once, and returns\nthe new one. It is never shown again: configure it in GitHub as the\nwebhook's secret, with content type `application/json`.",
+        "operationId": "generateWebhookSecret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_WebhookSecret"
+                }
+              }
+            },
+            "description": "Secret generated"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Generates an application's webhook secret.",
+        "x-piqueld-access": "apps:write"
+      }
+    },
     "/api/v1/audit": {
       "get": {
         "description": "Refused requests, writes, and sensitive reads are recorded with their\naccount, credential, address, and outcome. With `audit:read`, every\naccount's trail is visible; otherwise only the caller's own account's, or\nonly its own requests for a scoped credential like an API token, which\nmust not see what its account does beyond the token's grants. Follow\n`next_cursor` to load older requests.",
@@ -22713,6 +23446,124 @@
         },
         "summary": "Get environment status",
         "x-piqueld-access": "apps:read"
+      }
+    },
+    "/api/v1/environments/{id}/sync": {
+      "put": {
+        "description": "While its application syncs (`spec.manifest.sync`), pushes to the branch\nan environment follows deploy it once it opted in and was deployed. Pinned\nenvironments never sync. Previews follow their application and are\n`NotFound` here. Needs no application revision: nothing the environment\ndeploys changes. Opting in while the application syncs also needs\n`apps:deploy`, since pushes then deploy the environment.",
+        "operationId": "setEnvironmentSync",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentSyncRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_EnvironmentView"
+                }
+              }
+            },
+            "description": "Environment sync changed"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Opts an environment into or out of its application's sync.",
+        "x-piqueld-access": "apps:write"
       }
     },
     "/api/v1/events": {

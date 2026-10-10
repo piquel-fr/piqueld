@@ -7,7 +7,7 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_params_map, use_query_map};
 use piqueld_client::{
-    Client, Event,
+    Client, Event, EventActor,
     observability::{DaemonStats, DeliveryState, EventFilter, EventScope},
 };
 
@@ -296,6 +296,10 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
             .map(|ms| duration(i64::try_from(ms).unwrap_or(i64::MAX))),
         event.error_code.clone(),
         event.action_id.clone().map(|id| format!("action {id}")),
+        match &event.actor {
+            Some(actor @ EventActor::System { .. }) => Some(format!("by {actor}")),
+            _ => None,
+        },
     ];
     view! {
         <article class="event">
@@ -323,8 +327,9 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
                         }
                     }
                     {event
-                        .actor_credential_id
-                        .clone()
+                        .actor
+                        .as_ref()
+                        .and_then(EventActor::credential_id)
                         .map(|id| {
                             view! {
                                 <A href={format!("/dashboard/audit?credential={id}")}>

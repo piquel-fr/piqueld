@@ -64,21 +64,37 @@ impl Heads {
         })
     }
 
+    /// Heads listed some other way, for tests.
+    #[cfg(test)]
+    pub(crate) fn new(url: &str, branches: impl IntoIterator<Item = (String, String)>) -> Self {
+        Self {
+            url: url.to_owned(),
+            branches: branches.into_iter().collect(),
+        }
+    }
+
     /// The repository listed, which a branch state only describes.
     pub(crate) fn url(&self) -> &str {
         &self.url
     }
 
+    /// The commit at `branch`'s head, unless the repository has no such branch.
+    pub(crate) fn head(&self, branch: &str) -> Option<&str> {
+        self.branches.get(branch).map(String::as_str)
+    }
+
     /// Where `branch` is compared with `fetched`, the commit a preview last
     /// fetched its manifest from.
     pub(crate) fn state(&self, branch: &str, fetched: Option<&str>) -> BranchState {
-        match (self.branches.get(branch), fetched) {
+        match (self.head(branch), fetched) {
             (None, _) => BranchState::Gone,
             (Some(head), Some(deployed)) if head != deployed => BranchState::Moved {
-                head: head.clone(),
+                head: head.to_owned(),
                 deployed: deployed.to_owned(),
             },
-            (Some(head), _) => BranchState::Exists { head: head.clone() },
+            (Some(head), _) => BranchState::Exists {
+                head: head.to_owned(),
+            },
         }
     }
 }

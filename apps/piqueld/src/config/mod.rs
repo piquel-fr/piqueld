@@ -302,6 +302,12 @@ pub struct IngressConfig {
     pub private: PrivateIngressConfig,
     /// The Cloudflare Tunnel that replaces ports 80/443 for public routes.
     pub tunnel: TunnelConfig,
+    /// Public hostname serving GitHub push webhooks for sync. The daemon
+    /// serves them on a socket in the gateway's control mount, which the
+    /// public listener or the tunnel forwards the webhook path to while
+    /// ingress is enabled. No application may route the hostname or its
+    /// subdomains.
+    pub webhook_hostname: Option<piqueld_core::manifest::Hostname>,
 }
 
 /// The apps tailnet node: a Tailscale container that carries private routes'
@@ -881,6 +887,13 @@ impl DaemonConfig {
             (
                 "ACME email",
                 ingress.acme.email.clone().unwrap_or_else(|| "none".into()),
+            ),
+            (
+                "Webhook hostname",
+                ingress
+                    .webhook_hostname
+                    .as_ref()
+                    .map_or_else(|| "none".into(), ToString::to_string),
             ),
         ]
     }

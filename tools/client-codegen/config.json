@@ -544,6 +544,26 @@
       "schema": "Envelope_SecretKeyRecovery",
       "name": "EnvelopeSecretKeyRecovery",
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::SecretKeyRecovery>"
+    },
+    {
+      "schema": "RepositorySyncValue",
+      "name": "RepositorySyncValue",
+      "rustType": "piqueld_core::edit::RepositorySyncValue"
+    },
+    {
+      "schema": "EnvironmentSyncRequest",
+      "name": "EnvironmentSyncRequest",
+      "rustType": "piqueld_core::sync::EnvironmentSyncRequest"
+    },
+    {
+      "schema": "Envelope_WebhookView",
+      "name": "EnvelopeWebhookView",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::sync::WebhookView>"
+    },
+    {
+      "schema": "Envelope_WebhookSecret",
+      "name": "EnvelopeWebhookSecret",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::sync::WebhookSecret>"
     }
   ]
 }

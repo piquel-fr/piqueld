@@ -51,7 +51,13 @@ impl ApplicationService {
         let application = self.store.application(id).await?;
         let environments = self.store.environments(id).await?;
         let previews = self.store.previews(id).await?;
-        Ok(application_view(application, environments, previews))
+        let sync_check = self.store.sync_check(id).await?;
+        Ok(application_view(
+            application,
+            environments,
+            previews,
+            sync_check,
+        ))
     }
     /// Reads an environment's metadata.
     /// # Errors
@@ -114,11 +120,12 @@ impl ApplicationService {
         let environments = self.store.environments(application).await?;
         let previews = self.store.previews(application).await?;
         let release = self.store.current_release(id).await?;
+        let sync_check = self.store.sync_check(application).await?;
         Ok(EnvironmentDetailView {
             manifest: stored.manifest().cloned(),
             release,
             environment: stored.environment,
-            application: application_view(stored.application, environments, previews),
+            application: application_view(stored.application, environments, previews, sync_check),
             status,
             observed: observed_view,
             latest_operation,

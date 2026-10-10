@@ -45,6 +45,12 @@ enabled = false
 # direct public routes get A/AAAA records to them; without any, those records
 # stay manual. Unused in tunnel mode.
 public_addresses = []
+# Public hostname on which the gateway forwards GitHub push webhooks, and only
+# them, to piqueld, for applications syncing with `webhook`. It gets a public
+# route's DNS records; applications may not route it or its subdomains.
+# Without ingress, the daemon still serves the webhook socket for another proxy
+# running as its user. Restart to apply.
+# webhook_hostname = "hooks.example.com"
 
 # Private routes, served to the tailnet through a second tailnet node, the apps
 # node: a Tailscale container beside the gateway, named

@@ -19,13 +19,13 @@ struct LegacyDelete<'a> {
 }
 
 /// A mutation's outcome inside its transaction.
-struct Accepted {
+pub(super) struct Accepted {
     /// Response returned to the caller and stored for replay.
-    response: MutationResponse,
+    pub(super) response: MutationResponse,
     /// Whether the controller has new work.
-    wake: bool,
+    pub(super) wake: bool,
     /// Environments whose hostname reservations may have changed.
-    environments: Vec<EnvironmentId>,
+    pub(super) environments: Vec<EnvironmentId>,
 }
 
 impl Store {
@@ -160,24 +160,27 @@ impl Store {
         first_event: i64,
     ) -> Result<(), StoreError> {
         let operator = by.operator_uid();
+        let system = by.system.map(piqueld_core::sync::SystemActor::as_str);
         sqlx::query!(
-            "UPDATE operations SET actor_user_id=?1,actor_credential_id=?2,actor_operator_uid=?3
+            "UPDATE operations SET actor_user_id=?1,actor_credential_id=?2,actor_operator_uid=?3,actor_system=?5
              WHERE state='requested'
              AND id IN (SELECT operation_id FROM events WHERE id>=?4 AND operation_id IS NOT NULL)",
             by.user_id,
             by.credential_id,
             operator,
-            first_event
+            first_event,
+            system
         )
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
         sqlx::query!(
-            "UPDATE events SET actor_user_id=?1,actor_credential_id=?2,actor_operator_uid=?3 WHERE id>=?4",
+            "UPDATE events SET actor_user_id=?1,actor_credential_id=?2,actor_operator_uid=?3,actor_system=?5 WHERE id>=?4",
             by.user_id,
             by.credential_id,
             operator,
-            first_event
+            first_event,
+            system
         )
         .execute(&mut **tx)
         .await
@@ -186,7 +189,8 @@ impl Store {
     }
 
     /// Checks that a caller holding `grants` may submit `mutation` against the
-    /// current application (see `Grants::require_change`), and returns whether
+    /// current application and its repository connection (see
+    /// `Grants::require_change` and `Mutation::required`), and returns whether
     /// it creates one. Changes to an environment are checked on its application;
     /// an unknown environment is hidden unless the caller could act on any.
     /// When `replaying`, a save naming an existing application also passes with
@@ -212,6 +216,8 @@ impl Store {
             }) => Some(id.clone()),
             Mutation::RenameEnvironment { id, .. }
             | Mutation::SetBranch { id, .. }
+            | Mutation::SetSync { id, .. }
+            | Mutation::Sync(crate::api::ListedHead { id, .. })
             | Mutation::Deploy { id, .. }
             | Mutation::Delete { id }
             | Mutation::Reconcile { id }
@@ -227,7 +233,14 @@ impl Store {
             (Some(id), _) => Target::Id(id),
             (None, _) => Target::Unknown,
         };
-        let required = mutation.required();
+        // Whether sync deploys the change depends on the current connection.
+        let connection = match &application {
+            Some(id) => Self::application_on(tx, id.as_str())
+                .await?
+                .and_then(|current| current.application.spec().manifest.clone()),
+            None => None,
+        };
+        let required = mutation.required(connection.as_ref());
         match grants.require_change(required, target) {
             Err(_) if replaying && matches!(target, Target::Named(_)) => {
                 grants.require_change(required, Target::New)
@@ -378,11 +391,11 @@ impl Store {
             Mutation::Deploy { id, revision } => {
                 let current = Self::checked_environment_on(tx, &id, expected).await?;
                 // Only the captured snapshot changes; the fetched manifest replaces it.
-                let application = current.candidate(revision.as_ref())?;
-                let operation = Self::request_deploy_on(tx, &current).await?;
-                Self::insert_deployment_on(tx, &operation, &application).await?;
+                let operation = Self::deploy_revision_on(tx, &current, revision.as_ref()).await?;
                 Ok(Self::operation_accepted(&operation))
             }
+            Mutation::SetSync { id, enabled } => Self::set_sync_on(tx, id, enabled, now).await,
+            Mutation::Sync(listed) => Self::sync_on(tx, listed, now).await,
             Mutation::Delete { id } => {
                 let current = Self::checked_environment_on(tx, &id, expected).await?;
                 let operation = match Self::latest_operation_on(tx, &id).await? {
@@ -508,7 +521,7 @@ impl Store {
     /// Loads an environment after checking the revision precondition against
     /// its application's revision. Previews are `NotFound`: environment
     /// changes never act on them.
-    async fn checked_environment_on(
+    pub(super) async fn checked_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &EnvironmentId,
         expected: Option<u64>,
@@ -571,7 +584,7 @@ impl Store {
     }
 
     /// Responds with the current state of a created or renamed environment.
-    async fn environment_accepted(
+    pub(super) async fn environment_accepted(
         tx: &mut Transaction<'_, Sqlite>,
         id: EnvironmentId,
     ) -> Result<Accepted, StoreError> {
@@ -598,7 +611,7 @@ impl Store {
     }
 
     /// Fetches an environment's newest operation inside `tx`.
-    async fn latest_operation_on(
+    pub(super) async fn latest_operation_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &EnvironmentId,
     ) -> Result<Option<Operation>, StoreError> {
@@ -638,7 +651,8 @@ impl Store {
             ApplicationEdit::Name(_) => "name",
             ApplicationEdit::Repository(_)
             | ApplicationEdit::RepositoryUrl(_)
-            | ApplicationEdit::RepositoryPath(_) => "repository",
+            | ApplicationEdit::RepositoryPath(_)
+            | ApplicationEdit::RepositorySync(_) => "repository",
             ApplicationEdit::AddService(_) | ApplicationEdit::RemoveService(_) => "services",
             ApplicationEdit::Service { .. } => "service",
             ApplicationEdit::AddVolume(_)

@@ -338,6 +338,8 @@ pub(super) async fn accept_mutation(
         MutationResponse::Preview(preview) if preview.created => Ok(accepted(preview)),
         MutationResponse::Preview(preview) => Ok(ok(preview).into_response()),
         MutationResponse::Deleted(deleted) => Ok(accepted(deleted)),
+        // Only sync submits the mutations answered with this.
+        MutationResponse::Synced(_) => Err(crate::store::StoreError::Corrupt.into()),
     }
 }
 

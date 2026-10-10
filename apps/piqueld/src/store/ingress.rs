@@ -759,7 +759,7 @@ mod tests {
         let rendering = environment.render(&fetched, &operation.id).unwrap();
         assert!(matches!(
             store
-                .save_deployment_input(&operation, &fetched, &rendering, None, &[])
+                .save_deployment_input(&operation, &fetched, &rendering, (None, None), &[])
                 .await,
             Err(StoreError::HostnameConflict { .. })
         ));

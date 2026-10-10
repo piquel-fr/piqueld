@@ -46,6 +46,7 @@ value_request! {
     RoutesValue: Vec<Route>;
     JobsValue: Vec<Job>;
     RepositoryValue: Option<RepositoryManifest>;
+    RepositorySyncValue: crate::sync::RepositorySync;
     VisibilityValue: Visibility;
 }
 
@@ -80,6 +81,8 @@ pub enum ApplicationEdit {
     RepositoryUrl(String),
     /// Change the manifest path.
     RepositoryPath(String),
+    /// Change how environments and previews follow pushes.
+    RepositorySync(crate::sync::RepositorySync),
     /// Add a new service, rejecting duplicate names.
     AddService(Box<Service>),
     /// Remove a service declaration.
@@ -257,7 +260,10 @@ impl ApplicationEdit {
     pub const fn is_repository_setting(&self) -> bool {
         matches!(
             self,
-            Self::Repository(_) | Self::RepositoryUrl(_) | Self::RepositoryPath(_)
+            Self::Repository(_)
+                | Self::RepositoryUrl(_)
+                | Self::RepositoryPath(_)
+                | Self::RepositorySync(_)
         )
     }
 
@@ -287,6 +293,7 @@ impl ApplicationEdit {
             }
             Self::RepositoryUrl(value) => Self::repository(manifest)?.repository.url = value,
             Self::RepositoryPath(value) => Self::repository(manifest)?.path = value,
+            Self::RepositorySync(value) => Self::repository(manifest)?.sync = value,
             Self::AddService(service) => {
                 if manifest
                     .spec

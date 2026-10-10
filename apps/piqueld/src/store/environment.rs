@@ -175,7 +175,8 @@ impl Store {
             source.branch().and_then(TrackedBranch::commit),
         );
         sqlx::query!(
-            "UPDATE environments SET branch=?1,pinned_commit=?2,updated_at_ms=?3 WHERE id=?4",
+            // What sync found on the former branch says nothing about this one.
+            "UPDATE environments SET branch=?1,pinned_commit=?2,synced_commit=NULL,synced_at_ms=NULL,updated_at_ms=?3 WHERE id=?4",
             name,
             commit,
             now,
@@ -458,7 +459,7 @@ impl Store {
         id: &str,
     ) -> Result<Option<StoredEnvironment>, StoreError> {
         sqlx::query_as!(StoredEnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.preview_slot,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?1"#,id)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?1"#,id)
             .fetch_optional(connection).await.map_err(StoreError::database)?
             .map(StoredEnvironmentRow::decode).transpose()
     }
@@ -495,7 +496,7 @@ impl Store {
             .transpose()?
             .unwrap_or("");
         let mut rows = sqlx::query_as!(StoredEnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.preview_slot,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id>?1 ORDER BY e.id LIMIT ?2"#,after,fetch_limit)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id>?1 ORDER BY e.id LIMIT ?2"#,after,fetch_limit)
             .fetch_all(&self.pool).await.map_err(StoreError::database)?;
         let has_more = rows.len() > limit;
         rows.truncate(limit);

@@ -19,10 +19,10 @@ use piqueld_core::{
     api::{Envelope, SavedApplication},
     edit::{
         ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, HealthValue, JobsValue,
-        MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositoryValue,
-        ResourcesValue, RolloutValue, RoutesValue, SecondsValue, SecretsValue, ServiceEdit,
-        ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue, TemplateValue,
-        TemplatesValue, VariablesValue, VisibilityValue, VolumesValue,
+        MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositorySyncValue,
+        RepositoryValue, ResourcesValue, RolloutValue, RoutesValue, SecondsValue, SecretsValue,
+        ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue,
+        TemplateValue, TemplatesValue, VariablesValue, VisibilityValue, VolumesValue,
     },
     manifest::{Mount, Service, Volume},
 };
@@ -123,6 +123,7 @@ async fn disconnect_manifest_repository(
     .await
 }
 edit_endpoint!(set_manifest_repository_url, put, "/api/v1/applications/{id}/repository/url", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::RepositoryUrl(body.value));
+edit_endpoint!(set_manifest_repository_sync, put, "/api/v1/applications/{id}/repository/sync", (id: String = "id"), RepositorySyncValue, body::<RepositorySyncValue>, |_, body: RepositorySyncValue| ApplicationEdit::RepositorySync(body.value));
 edit_endpoint!(set_manifest_repository_path, put, "/api/v1/applications/{id}/repository/path", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::RepositoryPath(body.value));
 edit_endpoint!(add_application_service, post, "/api/v1/applications/{id}/services", (id: String = "id"), Service, body::<Service>, |_, body: Service| ApplicationEdit::AddService(Box::new(body)));
 edit_endpoint!(add_application_volume, post, "/api/v1/applications/{id}/volumes", (id: String = "id"), Volume, body::<Volume>, |_, body: Volume| ApplicationEdit::AddVolume(body));
@@ -321,6 +322,7 @@ pub(super) fn router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Write) => set_manifest_repository))
         .routes(granted!(App(Write) => disconnect_manifest_repository))
         .routes(granted!(App(Write) => set_manifest_repository_url))
+        .routes(granted!(App(Write) => set_manifest_repository_sync))
         .routes(granted!(App(Write) => set_manifest_repository_path))
         .routes(granted!(App(Write) => add_application_service))
         .routes(granted!(App(Write) => add_application_volume))

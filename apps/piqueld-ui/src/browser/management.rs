@@ -630,20 +630,22 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
             }
         }
     });
-    // The listing has no previews; take them from the detail it reloads.
+    // The listing has no previews or sync check; take them from the detail it reloads.
     Effect::new(move |_| {
         signals.detail.with(|detail| {
             let Some(application) = detail.as_ref().map(|detail| &detail.application) else {
                 return;
             };
             if application.application.id().as_str() == context.id()
-                && context
-                    .saved
-                    .with_untracked(|saved| saved.previews != application.previews)
+                && context.saved.with_untracked(|saved| {
+                    saved.previews != application.previews
+                        || saved.sync_check != application.sync_check
+                })
             {
-                context
-                    .saved
-                    .update(|saved| saved.previews.clone_from(&application.previews));
+                context.saved.update(|saved| {
+                    saved.previews.clone_from(&application.previews);
+                    saved.sync_check.clone_from(&application.sync_check);
+                });
             }
         });
     });

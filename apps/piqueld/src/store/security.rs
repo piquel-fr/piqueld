@@ -253,6 +253,7 @@ impl Store {
                     user_id: Some(user_id),
                     credential_id: Some(credential_id),
                     operator: None,
+                    system: None,
                 };
                 Self::security_event_on(&mut tx, SecurityEvent::NewAddress, &message, actor)
                     .await?;

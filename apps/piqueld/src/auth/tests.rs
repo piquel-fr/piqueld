@@ -1579,10 +1579,14 @@ async fn operator_sign_in_links_work_once_and_act_as_the_operator() {
         .items
         .into_iter()
         .filter(|event| event.kind == "operator_sign_in_issued")
-        .map(|event| (event.message.unwrap(), event.actor_operator))
+        .map(|event| (event.message.unwrap(), event.actor))
         .collect::<Vec<_>>();
     let message = "A host operator sign-in link was issued over the Unix socket to uid 1000";
-    assert_eq!(issued, vec![(message.to_owned(), Some(operator)); 2]);
+    let actor = piqueld_core::EventActor::Operator {
+        operator,
+        session_id: None,
+    };
+    assert_eq!(issued, vec![(message.to_owned(), Some(actor)); 2]);
 }
 
 /// Granting `admin` everywhere and creating a never-expiring or `admin`

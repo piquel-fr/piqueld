@@ -10,7 +10,7 @@ pub use environment::{EnvironmentKind, EnvironmentSource, Preview, TrackedBranch
 pub mod event;
 pub mod exec;
 pub mod identity;
-pub use event::Event;
+pub use event::{Event, EventActor};
 pub mod manifest;
 pub mod names;
 pub use names::{
@@ -26,6 +26,7 @@ pub use release::{BuildFingerprint, BuildInputs, Release};
 pub mod resource;
 pub mod retention;
 pub use retention::{LocalImages, ReleaseAvailability, RetentionRoot, ServiceImage};
+pub mod sync;
 
 pub use identity::{
     ApplicationId, ApplicationIdError, EnvironmentId, EnvironmentIdError, ReleaseId,
