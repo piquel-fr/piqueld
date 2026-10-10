@@ -222,7 +222,8 @@ the latest one when `wait` starts. They never follow a newer deployment. With
 `--ready runtime` (the default), the deployment must succeed and every service
 of it must be observed healthy (converged, with every desired replica
 healthy); `--ready routes` also waits until every URL is `ready`. If a newer
-deployment supersedes it, `wait` exits 3 with `deployment_superseded`; if it
+deployment, or the environment's deletion, supersedes it, `wait` exits 3 with
+`deployment_superseded`; if it
 fails, 5; at the command `--timeout`, 4, which ends only the local wait. Use a
 longer `--timeout` than the default 30 seconds for builds. On success, `wait`
 prints the deployment like `env deploy` does.

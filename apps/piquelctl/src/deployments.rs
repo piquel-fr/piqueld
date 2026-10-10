@@ -101,7 +101,8 @@ impl Deployed {
 }
 
 /// Whether the environment's runtime target is `deployment`'s: no newer
-/// operation was accepted since.
+/// operation was accepted since. Every operation but a deletion is a
+/// deployment, and a deletion ends the deployment too.
 fn runs(detail: &EnvironmentDetailView, deployment: &str) -> bool {
     detail
         .latest_operation
