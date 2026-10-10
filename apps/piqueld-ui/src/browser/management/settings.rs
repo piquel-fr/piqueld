@@ -61,13 +61,20 @@ pub(super) fn RepositorySettings() -> impl IntoView {
             return;
         }
         let value = draft.get_untracked();
-        // A valid typed interval is already in `sync`; only a malformed one is not.
+        // A valid typed interval is already in `sync`; a malformed one is not.
+        let range = RepositorySync::MIN_INTERVAL..=RepositorySync::MAX_INTERVAL;
         if matches!(value.1.sync, RepositorySync::Poll { .. })
-            && value.2.trim().parse::<u32>().is_err()
+            && !value
+                .2
+                .trim()
+                .parse::<u32>()
+                .is_ok_and(|seconds| range.contains(&seconds))
         {
-            context.set_error(Some(
-                "The poll interval must be a whole number of seconds.".into(),
-            ));
+            context.set_error(Some(format!(
+                "The poll interval must be a whole number of seconds from {} to {}.",
+                range.start(),
+                range.end()
+            )));
             return;
         }
         context.save(
