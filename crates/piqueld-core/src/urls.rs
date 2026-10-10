@@ -1,7 +1,7 @@
 //! The URLs of an environment's rendered routes and whether each is ready,
 //! derived only from state the daemon already observes. Clients read the
 //! result; none probes a URL or computes readiness itself.
-use crate::api::{DnsRecordState, IngressStatus, ObservedServiceView};
+use crate::api::{DnsRecordState, IngressStatus, ObservedServiceView, PublicIngressStatus};
 use crate::manifest::{RouteTarget, ValidatedRoute, Visibility};
 use crate::{Convergence, RouteName, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -112,15 +112,27 @@ impl RouteUrl {
             pending.push(UrlCondition::Ingress);
         }
         // A listener failure observed since the route's check outdates it.
-        let (listener_healthy, listener_message) = match route.visibility {
-            Visibility::Public => (ingress.healthy, &ingress.message),
-            Visibility::Private => (ingress.private.healthy, &ingress.private.message),
+        // Other applications' network failures do not.
+        let listener = match (route.visibility, &ingress.public) {
+            (Visibility::Public, _) if !ingress.gateway => Some(&ingress.message),
+            (
+                Visibility::Public,
+                PublicIngressStatus::Tunnel {
+                    connected: false,
+                    message,
+                    ..
+                },
+            ) => Some(message),
+            (Visibility::Public, _) => None,
+            (Visibility::Private, _) => {
+                (!ingress.private.healthy).then_some(&ingress.private.message)
+            }
         };
         let https = match status {
-            _ if !listener_healthy && listener_message.is_empty() => {
+            _ if listener.is_some_and(String::is_empty) => {
                 Some("Its listener is unavailable".into())
             }
-            _ if !listener_healthy => Some(listener_message.clone()),
+            _ if let Some(message) = listener => Some(message.clone()),
             Some(status) if status.state == "ready" => None,
             Some(status) => Some(status.message.clone()),
             None => Some(
@@ -188,7 +200,10 @@ impl ObservedServiceView {
 #[cfg(test)]
 mod tests {
     use super::{RouteUrl, UrlCondition, UrlState};
-    use crate::api::{DnsRecordState, DnsRecords, IngressStatus, ObservedServiceView, RouteStatus};
+    use crate::api::{
+        DnsRecordState, DnsRecords, IngressStatus, ObservedServiceView, PublicIngressStatus,
+        RouteStatus,
+    };
     use crate::manifest::{RouteTarget, ValidatedRoute, Visibility};
     use crate::{Convergence, RouteName, ServiceName};
 
@@ -251,6 +266,7 @@ mod tests {
         let mut ingress = IngressStatus {
             enabled: true,
             healthy: true,
+            gateway: true,
             routes: vec![status],
             ..IngressStatus::default()
         };
@@ -277,14 +293,30 @@ mod tests {
         let web = UrlCondition::Service {
             service: ServiceName::parse("web").unwrap(),
         };
-        let cases: [(&str, RouteUrl, Vec<UrlCondition>); 10] = [
+        let cases: [(&str, RouteUrl, Vec<UrlCondition>); 12] = [
             (
-                "listener failed since the route was checked",
+                "gateway failed since the route was checked",
                 derive(|_, ingress, _| {
-                    ingress.healthy = false;
-                    ingress.message = "tunnel disconnected".into();
+                    ingress.gateway = false;
+                    ingress.message = "gateway down".into();
+                }),
+                vec![https("gateway down")],
+            ),
+            (
+                "tunnel disconnected since the route was checked",
+                derive(|_, ingress, _| {
+                    ingress.public = PublicIngressStatus::Tunnel {
+                        id: "tunnel".into(),
+                        connected: false,
+                        message: "tunnel disconnected".into(),
+                    };
                 }),
                 vec![https("tunnel disconnected")],
+            ),
+            (
+                "another application's network failed",
+                derive(|_, ingress, _| ingress.healthy = false),
+                vec![],
             ),
             (
                 "not applied by the gateway",
@@ -345,7 +377,12 @@ mod tests {
             ),
         ];
         for (case, url, pending) in cases {
-            assert_eq!(url.state, UrlState::Pending, "{case}");
+            let state = if pending.is_empty() {
+                UrlState::Ready
+            } else {
+                UrlState::Pending
+            };
+            assert_eq!(url.state, state, "{case}");
             assert_eq!(url.pending, pending, "{case}");
         }
     }

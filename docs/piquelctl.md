@@ -329,9 +329,9 @@ The DTO fields are defined by the versioned API and the `piqueld-client` crate.
 With `--json`, stderr is one JSON object per line too, keyed by its kind:
 `{"info":{"message":…}}`, `{"warning":{"message":…}}`,
 `{"progress":{"task":…,"message":…,"outcome":…}}` (`outcome` once the task
-finished), and, when the command fails, exactly one
-`{"error":{"code":…,"message":…,"details":…,"request_id":…}}`. Interactive
-prompts, which only appear on a terminal, stay human. An API error keeps the
+finished), `{"prompt":{"message":…}}` for a confirmation asked on a terminal,
+and, when the command fails, exactly one
+`{"error":{"code":…,"message":…,"details":…,"request_id":…}}`. An API error keeps the
 daemon's error envelope: its `code`, `message`, `details` and `request_id`.
 Failures the CLI detects itself use the same shape with a stable CLI `code` and
 no `request_id`:

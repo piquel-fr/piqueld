@@ -84,7 +84,11 @@ fn roles_route_and_flush_before_returning_in_every_mode() {
             console.warning_report(&Sample).unwrap();
             assert_eq!(stderr.flushes(), before + 1, "context is one flushed event");
             console.prompt("Continue? ").unwrap();
-            assert!(stderr.text().ends_with("Continue? "));
+            assert!(stderr.text().ends_with(if json {
+                "{\"prompt\":{\"message\":\"Continue?\"}}\n"
+            } else {
+                "Continue? "
+            }));
             console.error(&Sample);
             let task = console.start_task("task");
             task.update("running");
@@ -99,8 +103,8 @@ fn roles_route_and_flush_before_returning_in_every_mode() {
             );
             assert!(!stdout.text().contains("task"));
             if json {
-                // Every stderr event but the interactive prompt is a JSON line.
-                for line in stderr.text().replace("Continue? ", "").lines() {
+                // Every stderr event is a JSON line.
+                for line in stderr.text().lines() {
                     serde_json::from_str::<serde_json::Value>(line).unwrap();
                 }
             }
@@ -402,6 +406,7 @@ fn status_and_dns_refresh_list_images_dns_providers_certificate_failures_and_pre
     let ingress = piqueld_client::system::IngressStatus {
         enabled: true,
         healthy: true,
+        gateway: true,
         message: "Caddy is running".into(),
         public: piqueld_client::system::PublicIngressStatus::Tunnel {
             id: "6ff42ae2-765d-4adf-8112-31c55c1551ef".into(),

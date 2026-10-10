@@ -1402,6 +1402,11 @@ pub struct IngressStatus {
     /// stopped), and in tunnel mode whether the tunnel is connected. Public
     /// routes depend only on this.
     pub healthy: bool,
+    /// Whether the gateway accepted its desired configuration (or is
+    /// stopped), whatever one application's network does. Unlike `healthy`,
+    /// another application's failure does not clear it.
+    #[serde(default)]
+    pub gateway: bool,
     /// Safe diagnostic, with detailed causes in daemon logs.
     pub message: String,
     /// How public routes reach the gateway.

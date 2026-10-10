@@ -2,8 +2,7 @@
 //!
 //! Results use stdout; every other role uses stderr. Quiet suppresses human
 //! results, info and progress, but preserves JSON, warnings, prompts and errors.
-//! With `--json`, every stderr event except an interactive prompt is one
-//! [`Event`] line. Each event is rendered and flushed before returning,
+//! With `--json`, every stderr event is one [`Event`] line. Each event is rendered and flushed before returning,
 //! coordinated with active progress. `main` reports clap's usage errors itself.
 
 mod progress;
@@ -50,6 +49,8 @@ pub(crate) enum Event<'a> {
     Info { message: String },
     /// A degraded, incomplete, or surprising result.
     Warning { message: String },
+    /// An interactive question, answered on stdin.
+    Prompt { message: String },
     /// A task's progress; `outcome` is set once it finished.
     Progress {
         task: &'a str,
@@ -221,10 +222,14 @@ impl Console {
         })
     }
 
-    /// Interactive questions on stderr, always flushed, never quieted, and
-    /// human even with `--json`: they only appear on a terminal.
+    /// Interactive questions on stderr, always flushed and never quieted;
+    /// a `prompt` event with `--json`.
     /// The caller enforces --yes/noninteractive policy before invoking this.
     pub(crate) fn prompt(&mut self, message: &str) -> Result<()> {
+        if self.json {
+            let message = message.trim_end().to_owned();
+            return self.write_stderr(|writer| Event::Prompt { message }.write(writer));
+        }
         self.write_human(|out| out.value(message))
     }
 

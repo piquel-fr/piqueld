@@ -6657,6 +6657,10 @@
             "description": "Effective read-only daemon setting.",
             "type": "boolean"
           },
+          "gateway": {
+            "description": "Whether the gateway accepted its desired configuration (or is\nstopped), whatever one application's network does. Unlike `healthy`,\nanother application's failure does not clear it.",
+            "type": "boolean"
+          },
           "healthy": {
             "description": "Whether the gateway has accepted its desired configuration (or is\nstopped), and in tunnel mode whether the tunnel is connected. Public\nroutes depend only on this.",
             "type": "boolean"
