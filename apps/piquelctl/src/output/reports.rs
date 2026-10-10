@@ -143,14 +143,15 @@ impl Report for Vec<RouteRow> {
         if self.is_empty() {
             return out.line("No deployed routes.");
         }
-        out.heading("HOSTNAME  ENVIRONMENT  VISIBILITY  STATE  DESTINATION  DNS")?;
+        out.heading("HOSTNAME  ENVIRONMENT  VISIBILITY  IDENTITY  STATE  DESTINATION  DNS")?;
         for row in self {
             let route = &row.route;
             out.line(format_args!(
-                "{}  {}  {}  {}  {}  {}",
+                "{}  {}  {}  {}  {}  {}  {}",
                 route.hostname,
                 row.environment,
-                route.visibility,
+                route.access.visibility(),
+                if route.access.identity() { "yes" } else { "no" },
                 route.state,
                 route.target,
                 route.dns

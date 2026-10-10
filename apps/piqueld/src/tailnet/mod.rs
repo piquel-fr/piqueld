@@ -11,7 +11,7 @@ mod whois;
 
 pub use node::{Node, NodeListener};
 pub use proxy::ProxyListener;
-pub use whois::{TailnetLookup, Whois};
+pub use whois::{TailnetLookup, Whois, WhoisSource};
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;

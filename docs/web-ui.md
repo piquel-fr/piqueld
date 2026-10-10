@@ -102,7 +102,9 @@ Jobs inherit the referenced service's startup dependencies, which start or
 update and become healthy first. Other services wait for all jobs to succeed;
 dependency changes remain if a job fails. The Routes tab
 edits hostnames, each pointing at a service port or a redirect with a public or
-private visibility, and shows each deployed route's effective visibility, the DNS
+private visibility, with a "Tailnet identity" toggle on private routes that passes
+the connecting device's [tailnet identity](ingress.md#tailnet-identity) to the
+backend, and shows each deployed route's effective visibility, identity, the DNS
 records its hostname needs, HTTPS readiness and diagnostics in every environment
 and preview.
 Each environment's Overview sets its visibility ceiling, and system status shows

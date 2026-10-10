@@ -852,7 +852,8 @@ impl Scenario {
     }
 
     /// Backends see Caddy's forwarded client address from a peer inside the
-    /// injected ingress range; a client-supplied forwarding header is discarded.
+    /// injected ingress range; client-supplied forwarding and identity headers
+    /// are discarded.
     async fn forwarded_client_addresses(&self) {
         let id = deploy(
             &self.store,
@@ -860,7 +861,7 @@ impl Scenario {
             application(
                 "three",
                 "three.example.test",
-                "{http.request.remote.host} {http.request.header.X-Forwarded-For} {env.PIQUELD_INGRESS_PROXIES}",
+                "{http.request.remote.host} {http.request.header.X-Forwarded-For} {env.PIQUELD_INGRESS_PROXIES} {http.request.header.Piqueld-User-Login}",
             ),
         )
         .await;
@@ -868,13 +869,14 @@ impl Scenario {
             .client
             .get(self.url("three.example.test"))
             .header("X-Forwarded-For", "203.0.113.9")
+            .header("Piqueld-User-Login", "mallory@example.com")
             .send()
             .await
             .unwrap()
             .text()
             .await
             .unwrap();
-        let [peer, forwarded, proxies] = body.split(' ').collect::<Vec<_>>()[..] else {
+        let [peer, forwarded, proxies, ""] = body.split(' ').collect::<Vec<_>>()[..] else {
             panic!("unexpected backend response: {body}");
         };
         let peer: std::net::Ipv4Addr = peer.parse().unwrap();
@@ -1167,16 +1169,16 @@ async fn private_ingress(directory: &tempfile::TempDir) -> Ingress {
         })
 }
 
-#[tokio::test]
-async fn each_listener_serves_only_its_own_routes() {
-    let directory = tempfile::tempdir().unwrap();
-    let ingress = private_ingress(&directory).await;
+/// A public route at `www.example.com` and a private route with identity at
+/// `admin.example.com`.
+fn public_and_private_routes() -> RoutingTable {
     let routes = |visibility: &str, host: &str| {
         let mut manifest = application("one", host, "body").to_manifest();
         manifest.spec.routes[0].visibility = visibility.parse().unwrap();
+        manifest.spec.routes[0].identity = visibility == "private";
         manifest.validate().unwrap().spec().routes.clone()
     };
-    let table: crate::store::ingress::RoutingTable = [
+    [
         (
             EnvironmentId::parse("env-public").unwrap(),
             routes("public", "www.example.com"),
@@ -1186,7 +1188,22 @@ async fn each_listener_serves_only_its_own_routes() {
             routes("private", "admin.example.com"),
         ),
     ]
-    .into();
+    .into()
+}
+
+/// Peers trusted in configuration tests: the apps node and the host.
+fn edge_trust() -> configuration::PrivateTrust {
+    configuration::PrivateTrust {
+        node: "172.20.0.3".parse().unwrap(),
+        host: vec!["172.20.0.1".parse().unwrap()],
+    }
+}
+
+#[tokio::test]
+async fn each_listener_serves_only_its_own_routes() {
+    let directory = tempfile::tempdir().unwrap();
+    let ingress = private_ingress(&directory).await;
+    let table = public_and_private_routes();
     let hosts = |server: &serde_json::Value| {
         server["routes"]
             .as_array()
@@ -1195,8 +1212,7 @@ async fn each_listener_serves_only_its_own_routes() {
             .filter_map(|route| route["match"][0]["host"][0].as_str().map(str::to_owned))
             .collect::<std::collections::BTreeSet<_>>()
     };
-    let edge = ["172.20.0.0/16".to_owned()];
-    let configuration = ingress.build_configuration(&table, Some(&edge), None);
+    let configuration = ingress.build_configuration(&table, Some(&edge_trust()), None);
     let servers = &configuration["apps"]["http"]["servers"];
     for (https, http, host) in [
         ("public", "public_http", "www.example.com"),
@@ -1211,15 +1227,16 @@ async fn each_listener_serves_only_its_own_routes() {
         );
     }
     // Applications reach the private listener over their networks, so only
-    // tailnet client addresses, set by edge peers' PROXY headers, complete TLS.
-    let tailnet = json!({"ranges":["100.64.0.0/10", "fd7a:115c:a1e0::/48"]});
+    // tailnet client addresses, set by the apps node's PROXY headers, and the
+    // host, which probes it, complete TLS.
+    let clients = json!({"ranges":["100.64.0.0/10", "fd7a:115c:a1e0::/48", "172.20.0.1/32"]});
     assert_eq!(
         servers["private"]["tls_connection_policies"][0]["match"]["remote_ip"],
-        tailnet
+        clients
     );
     assert_eq!(
         servers["private_http"]["routes"][0]["match"],
-        json!([{"not":[{"remote_ip":tailnet}]}])
+        json!([{"not":[{"remote_ip":clients}]}])
     );
     assert!(
         servers["public"]["tls_connection_policies"][0]["match"]
@@ -1228,7 +1245,9 @@ async fn each_listener_serves_only_its_own_routes() {
     );
     assert_eq!(servers["public"]["listen"], json!([":443"]));
     assert_eq!(servers["private"]["listen"], json!([":8443"]));
-    let wrapper = json!({"wrapper":"proxy_protocol","allow":edge,"fallback_policy":"ignore"});
+    // Only the apps node, not the rest of the edge network, sets client addresses.
+    let wrapper =
+        json!({"wrapper":"proxy_protocol","allow":["172.20.0.3/32"],"fallback_policy":"ignore"});
     assert_eq!(
         servers["private"]["listener_wrappers"],
         json!([wrapper, {"wrapper":"tls"}])
@@ -1256,6 +1275,70 @@ async fn each_listener_serves_only_its_own_routes() {
     assert_eq!(
         hosts(&servers["public"]),
         ["www.example.com".to_owned()].into()
+    );
+}
+
+#[tokio::test]
+async fn identity_headers_are_stripped_everywhere_and_set_only_by_the_daemon() {
+    let directory = tempfile::tempdir().unwrap();
+    let ingress = private_ingress(&directory).await;
+    let configuration =
+        ingress.build_configuration(&public_and_private_routes(), Some(&edge_trust()), None);
+    let servers = &configuration["apps"]["http"]["servers"];
+    // Every listener strips client-supplied identity headers first.
+    let strip =
+        json!({"handle":[{"handler":"headers","request":{"delete":["Piqueld-*", "Piqueld_*"]}}]});
+    for server in ["public", "public_http", "private"] {
+        assert_eq!(servers[server]["routes"][0], strip, "{server}");
+    }
+    assert_eq!(servers["private_http"]["routes"][1], strip);
+    // The identity route asks the daemon before proxying, and answers 503 when
+    // it cannot; the public route proxies directly.
+    let handlers = |server: &str, host: &str| {
+        servers[server]["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|route| {
+                route["match"][0]["host"][0] == host && route["match"][0].get("path").is_none()
+            })
+            .unwrap()["handle"]
+            .clone()
+    };
+    let identity = handlers("private", "admin.example.com");
+    let subroute = &identity[0];
+    assert_eq!(subroute["handler"], "subroute");
+    // Requests naming identity headers in `Connection` are refused first.
+    assert_eq!(
+        subroute["routes"][0]["match"][0]["header_regexp"]["Connection"]["pattern"],
+        "(?i)piqueld"
+    );
+    let [forward_auth, backend] = &subroute["routes"][1]["handle"].as_array().unwrap()[..] else {
+        panic!("forward-auth, then the backend: {subroute}");
+    };
+    assert_eq!(
+        forward_auth["upstreams"],
+        json!([{"dial":"unix//control/identity.sock"}])
+    );
+    assert_eq!(
+        forward_auth["headers"]["request"]["set"]["Piqueld-Client"],
+        json!(["{http.request.remote.host}"])
+    );
+    assert_eq!(
+        forward_auth["handle_response"][0]["routes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(backend["handler"], "reverse_proxy");
+    assert_eq!(
+        subroute["errors"]["routes"][0]["handle"][0]["status_code"],
+        503
+    );
+    assert_eq!(
+        handlers("public", "www.example.com")[0]["handler"],
+        "reverse_proxy"
     );
 }
 
@@ -1303,18 +1386,71 @@ async fn the_apps_node_forwards_to_the_private_listener_without_privileges() {
 }
 
 #[tokio::test]
-async fn disabled_private_ingress_is_unconfirmed_until_the_node_is_removed() {
+async fn disabled_private_ingress_keeps_the_node_while_the_gateway_may_trust_it() {
     let engine = FailingEngine::start().await;
     engine.ingress.synchronize().await.unwrap_err();
-    // The gateway failed, but removing the node was still attempted.
+    // The gateway failed to reload, so it may still trust the node's
+    // address: the node is kept, and its removal is not confirmed.
     let private = engine.ingress.status().await.private;
     assert!(!private.enabled && !private.healthy);
     assert!(
         private
             .message
-            .starts_with("Removing the apps node is not confirmed"),
+            .starts_with("Removing the apps node waits for the gateway"),
         "{}",
         private.message
+    );
+}
+
+#[tokio::test]
+async fn the_apps_node_outlives_a_gateway_that_could_not_be_removed() {
+    use axum::response::IntoResponse;
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("docker.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+    let ingress = Ingress::new(false, &socket, directory.path(), store).unwrap();
+    let (gateway, node) = (ingress.name.clone(), ingress.node_name());
+    let labels = ingress.labels();
+    let removed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let engine = axum::Router::new()
+        .route(
+            "/containers/{name}/json",
+            axum::routing::get(
+                move |axum::extract::Path(name): axum::extract::Path<String>| {
+                    let (labels, exists) = (labels.clone(), name == gateway || name == node);
+                    async move {
+                        if exists {
+                            axum::Json(json!({"Id":name,"Config":{"Labels":labels}}))
+                                .into_response()
+                        } else {
+                            hyper::StatusCode::NOT_FOUND.into_response()
+                        }
+                    }
+                },
+            ),
+        )
+        .route(
+            "/containers/{id}",
+            axum::routing::delete({
+                let removed = Arc::clone(&removed);
+                move |axum::extract::Path(id): axum::extract::Path<String>| async move {
+                    removed.lock().unwrap().push(id.clone());
+                    // The gateway cannot be removed.
+                    if id.ends_with("-tailscale") {
+                        hyper::StatusCode::NO_CONTENT
+                    } else {
+                        hyper::StatusCode::INTERNAL_SERVER_ERROR
+                    }
+                }
+            }),
+        );
+    let server = tokio::spawn(async move { axum::serve(listener, engine).await });
+    ingress.stop_gateway().await.unwrap_err();
+    server.abort();
+    assert_eq!(
+        *removed.lock().unwrap(),
+        std::slice::from_ref(&ingress.name)
     );
 }
 
@@ -1345,6 +1481,64 @@ async fn disabled_ingress_confirms_the_node_stopped_only_once_removed() {
     );
 }
 
+/// The addresses the private listener accepts PROXY headers from, on an
+/// engine whose apps node at `172.20.0.3` has the current spec or not, and
+/// runs or not.
+async fn trusted_node(current: bool, running: bool) -> Option<serde_json::Value> {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("docker.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+    let ingress = Ingress::new(true, &socket, directory.path(), store)
+        .unwrap()
+        .with_private(&crate::config::PrivateIngressConfig {
+            enabled: true,
+            ..Default::default()
+        });
+    let mut labels = ingress.node_spec(ingress.node.as_ref().unwrap())["Labels"].clone();
+    if !current {
+        labels["io.piqueld.ingress-configuration"] = "outdated".into();
+    }
+    let node = json!({
+        "Id":"node","Config":{"Labels":labels},"State":{"Running":running},
+        "NetworkSettings":{"Networks":{&ingress.name:{"IPAddress":"172.20.0.3"}}}
+    });
+    let engine = axum::Router::new()
+        .route(
+            &format!("/containers/{}/json", ingress.node_name()),
+            axum::routing::get(move || async move { axum::Json(node) }),
+        )
+        .route(
+            "/info",
+            axum::routing::get(|| async {
+                axum::Json(json!({"Swarm":{"Cluster":{"DefaultAddrPool":["10.0.0.0/8"]}}}))
+            }),
+        )
+        .fallback(|| async {
+            axum::Json(
+                json!({"IPAM":{"Config":[{"Subnet":"172.20.0.0/16","Gateway":"172.20.0.1"}]}}),
+            )
+        });
+    let server = tokio::spawn(async move { axum::serve(listener, engine).await });
+    let configuration = ingress.configuration(&RoutingTable::new()).await.unwrap();
+    server.abort();
+    configuration["apps"]["http"]["servers"]
+        .get("private")
+        .map(|private| private["listener_wrappers"][0]["allow"].clone())
+}
+
+#[tokio::test]
+async fn only_a_running_current_apps_node_is_trusted() {
+    assert_eq!(
+        trusted_node(true, true).await,
+        Some(json!(["172.20.0.3/32"]))
+    );
+    // A node about to be replaced, or stopped, may lose its address to
+    // another edge network peer, so the private listener stays off.
+    assert_eq!(trusted_node(false, true).await, None);
+    assert_eq!(trusted_node(true, false).await, None);
+}
+
 /// Whether the private listener is configured on an engine whose Swarm
 /// allocates application networks from `pool`.
 async fn private_listener_with_pool(pool: &'static str) -> bool {
@@ -1358,15 +1552,19 @@ async fn private_listener_with_pool(pool: &'static str) -> bool {
                 axum::Json(json!({"Swarm":{"Cluster":{"DefaultAddrPool":[pool]}}}))
             }),
         )
-        .fallback(|| async { axum::Json(json!({"IPAM":{"Config":[{"Subnet":"172.20.0.0/16"}]}})) });
+        .fallback(|| async { axum::Json(json!({})) });
     let server = tokio::spawn(async move { axum::serve(listener, engine).await });
     let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
-    let ingress = Ingress::new(true, &socket, directory.path(), store)
+    let mut ingress = Ingress::new(true, &socket, directory.path(), store)
         .unwrap()
         .with_private(&crate::config::PrivateIngressConfig {
             enabled: true,
             ..Default::default()
         });
+    ingress.trust = Some(configuration::PrivateTrust {
+        node: "172.20.0.3".parse().unwrap(),
+        host: Vec::new(),
+    });
     let configuration = ingress.configuration(&RoutingTable::new()).await.unwrap();
     server.abort();
     configuration["apps"]["http"]["servers"]

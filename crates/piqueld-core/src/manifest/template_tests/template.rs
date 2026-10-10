@@ -326,6 +326,7 @@ fn saved_hostnames_skip_missing_invalid_and_deployment_only_values() {
     .map(|hostname| Route {
         hostname: hostname.into(),
         visibility: Visibility::Private,
+        identity: false,
         service: Some("web".into()),
         port: Some(80),
         redirect: None,

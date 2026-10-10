@@ -1222,8 +1222,10 @@ pub struct RouteStatus {
     pub environment_id: String,
     /// Exact public DNS hostname.
     pub hostname: String,
-    /// Effective visibility, which selects the listener serving the route.
-    pub visibility: crate::manifest::Visibility,
+    /// Effective visibility, which selects the listener serving the route,
+    /// and whether the backend receives the client's tailnet identity.
+    #[serde(flatten)]
+    pub access: crate::manifest::RouteAccess,
     /// The records the hostname needs.
     pub dns: DnsRecords,
     /// Backend service or redirect.

@@ -637,6 +637,7 @@ visibility = "public"
 hostname = "admin.${{{{ vars.domain }}}}"
 service = "web"
 port = 3000
+identity = true
 "#
     ));
     let exported = parse_template_toml(&template.export_toml().unwrap())
@@ -651,25 +652,48 @@ port = 3000
             .spec()
             .routes
             .iter()
-            .map(|route| (route.hostname.to_string(), route.visibility))
+            .map(|route| (route.hostname.to_string(), route.access))
             .collect::<Vec<_>>()
     };
+    let identity = RouteAccess::Private { identity: true };
     // Environments without a block, or with `public`, restrict nothing.
     for environment in ["production", "preview"] {
         assert_eq!(
             visibilities(environment),
             [
-                ("admin.piquel.fr".into(), Visibility::Private),
-                ("piquel.fr".into(), Visibility::Public),
+                ("admin.piquel.fr".into(), identity),
+                ("piquel.fr".into(), RouteAccess::Public),
             ]
         );
     }
+    // A ceiling makes public routes private without giving them identity.
     assert_eq!(
         visibilities("staging"),
         [
-            ("admin.staging.piquel.fr".into(), Visibility::Private),
-            ("staging.piquel.fr".into(), Visibility::Private),
+            ("admin.staging.piquel.fr".into(), identity),
+            (
+                "staging.piquel.fr".into(),
+                RouteAccess::Private { identity: false }
+            ),
         ]
+    );
+    // Identity needs the route's own visibility to be private, even where a
+    // ceiling would make it private.
+    let public = template.export_toml().unwrap().replacen(
+        "visibility = \"public\"\n",
+        "visibility = \"public\"\nidentity = true\n",
+        1,
+    );
+    let errors = parse_template_toml(&public).unwrap_err();
+    assert_eq!(
+        codes_and_paths(&errors),
+        [("route_identity_public", "spec.routes[0].identity")]
+    );
+    assert!(
+        errors.0[0]
+            .message
+            .starts_with("route ${{ vars.domain }}: identity requires"),
+        "{errors:?}"
     );
 }
 
@@ -832,7 +856,8 @@ visibility = "public"
             .application
             .spec()
             .routes[0]
-            .visibility
+            .access
+            .visibility()
     };
     assert_eq!(visibility(""), Visibility::Private);
     assert_eq!(
@@ -843,7 +868,7 @@ visibility = "public"
     let template = template(&format!("{VARIABLES}{routes}"));
     let rendered = render(&template, "production").unwrap();
     assert_eq!(
-        rendered.application.spec().routes[0].visibility,
+        rendered.application.spec().routes[0].access.visibility(),
         Visibility::Public
     );
 }

@@ -12,8 +12,9 @@ use crate::{
 use clap::{Args, Subcommand, builder::TypedValueParser};
 use piqueld_client::{
     ApplicationView, Build, Client, GitRepository, HealthCheck, Job, JobRun, Mount, Redirect,
-    RedirectStatus, RepositoryManifest, Rollout, RolloutOrder, Route, SavedApplication, Service,
-    Source, SourceRepository, Template, Typed, Variable, Visibility, Volume,
+    RedirectStatus, RepositoryManifest, Rollout, RolloutOrder, Route, RouteAccess,
+    SavedApplication, Service, Source, SourceRepository, Template, Typed, Variable, Visibility,
+    Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit, Variables},
 };
 
@@ -21,6 +22,11 @@ use piqueld_client::{
 pub(crate) fn visibility() -> impl TypedValueParser<Value = Visibility> {
     clap::builder::PossibleValuesParser::new(["public", "private"])
         .map(|value| value.parse().expect("every listed value parses"))
+}
+
+/// Parses `on` or `off`, listing both in help and completions.
+fn on_off() -> impl TypedValueParser<Value = bool> {
+    clap::builder::PossibleValuesParser::new(["on", "off"]).map(|value| value == "on")
 }
 
 // Flags shared by every edit: deployment, generation precondition, and confirmation.
@@ -371,6 +377,10 @@ pub(crate) struct AddRouteArgs {
     /// ceiling can make it stricter.
     #[arg(long, default_value = "private", value_parser = visibility())]
     visibility: Visibility,
+    /// Pass the connecting device's tailnet identity to the service in
+    /// `Piqueld-*` headers. Private routes only.
+    #[arg(long)]
+    identity: bool,
 }
 #[derive(Debug, Args)]
 pub(crate) struct RedirectRouteArgs {
@@ -387,6 +397,15 @@ pub(crate) struct RedirectRouteArgs {
     /// Who may connect: everyone, or only tailnet devices.
     #[arg(long, default_value = "private", value_parser = visibility())]
     visibility: Visibility,
+}
+#[derive(Debug, Args)]
+pub(crate) struct RouteIdentityArgs {
+    #[command(flatten)]
+    target: RouteTarget,
+    /// `on` to pass the connecting device's tailnet identity to the backend
+    /// in `Piqueld-*` headers, `off` to stop. Private routes only.
+    #[arg(action = clap::ArgAction::Set, value_parser = on_off())]
+    identity: bool,
 }
 #[derive(Debug, Args)]
 pub(crate) struct RouteVisibilityArgs {
@@ -411,6 +430,8 @@ pub(crate) enum RouteCommand {
     /// Change who may connect to a route. Changing it withdraws the route from
     /// its old listener as the next deployment starts.
     Visibility(RouteVisibilityArgs),
+    /// Turn passing the tailnet identity to a private route's backend on or off.
+    Identity(RouteIdentityArgs),
     /// Remove an HTTPS route by hostname.
     Remove(RouteTarget),
 }
@@ -799,6 +820,7 @@ impl RouteCommand {
             Self::Add(args) => &args.target,
             Self::Redirect(args) => &args.target,
             Self::Visibility(args) => &args.target,
+            Self::Identity(args) => &args.target,
             Self::Remove(target) => target,
         };
         let current = resolve_application(client, &target.app).await?;
@@ -815,17 +837,21 @@ impl RouteCommand {
                 format!("route {:?} was not found", target.hostname),
             )
         };
+        let existing = routes
+            .iter()
+            .position(|route| route.hostname.as_str() == hostname);
         match self {
             Self::List { .. } => unreachable!("listing returned above"),
             Self::Add(args) => routes.push(Route::service(
                 target.hostname.clone(),
-                args.visibility,
+                RouteAccess::new(args.visibility, args.identity)
+                    .map_err(|error| CliError::new(ErrorKind::Input, error.to_string()))?,
                 args.service.clone(),
                 args.port,
             )),
             Self::Redirect(args) => routes.push(Route::redirect(
                 target.hostname.clone(),
-                args.visibility,
+                args.visibility.into(),
                 Redirect {
                     to: args.to.clone(),
                     status: args.status,
@@ -833,18 +859,14 @@ impl RouteCommand {
                 },
             )),
             Self::Visibility(args) => {
-                routes
-                    .iter_mut()
-                    .find(|route| route.hostname.as_str() == hostname)
-                    .ok_or_else(not_found)?
-                    .visibility = args.visibility;
+                routes[existing.ok_or_else(not_found)?].visibility = args.visibility;
+            }
+            // A public route's identity is refused when saving, naming it.
+            Self::Identity(args) => {
+                routes[existing.ok_or_else(not_found)?].identity = args.identity;
             }
             Self::Remove(_) => {
-                let count = routes.len();
-                routes.retain(|route| route.hostname.as_str() != hostname);
-                if routes.len() == count {
-                    return Err(not_found());
-                }
+                routes.remove(existing.ok_or_else(not_found)?);
             }
         }
         save_loaded(

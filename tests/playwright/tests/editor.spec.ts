@@ -87,10 +87,18 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await page.getByLabel('Hostname', { exact: true }).fill('shop.example.com');
   await page.getByRole('combobox', { name: 'Service', exact: true }).selectOption('web');
   await page.getByLabel('HTTP port', { exact: true }).fill('8080');
+  await page.getByLabel('Tailnet identity', { exact: true }).check();
   await save(page);
   await page.reload();
   await tab(page, 'Routes').click();
   await expect(page.getByLabel('Hostname', { exact: true })).toHaveValue('shop.example.com');
+  await expect(page.getByLabel('Tailnet identity', { exact: true })).toBeChecked();
+  // Identity is offered only on private routes.
+  await page.getByRole('combobox', { name: 'Visibility', exact: true }).selectOption('public');
+  await expect(page.getByLabel('Tailnet identity', { exact: true })).toHaveCount(0);
+  await page.getByRole('combobox', { name: 'Visibility', exact: true }).selectOption('private');
+  await expect(page.getByLabel('Tailnet identity', { exact: true })).not.toBeChecked();
+  await page.getByLabel('Tailnet identity', { exact: true }).check();
 
   await tab(page, 'Environments').click();
   await page.getByRole('button', { name: 'New environment', exact: true }).click();

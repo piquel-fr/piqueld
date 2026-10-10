@@ -405,18 +405,18 @@ fn status_and_dns_refresh_list_dns_providers_and_certificate_failures() {
 }
 
 #[test]
-fn route_list_shows_visibility_dns_records_and_unready_causes() {
+fn route_list_shows_visibility_identity_dns_records_and_unready_causes() {
     use crate::output::reports::RouteRow;
     use piqueld_client::{
-        RouteTarget, Visibility,
+        RouteAccess, RouteTarget,
         system::{DnsRecords, RouteStatus},
     };
-    let route = |hostname: &str, visibility, dns, state: &str| RouteRow {
+    let route = |hostname: &str, access, dns, state: &str| RouteRow {
         environment: "staging".into(),
         route: RouteStatus {
             environment_id: "env-1".into(),
             hostname: hostname.into(),
-            visibility,
+            access,
             dns,
             target: serde_json::from_value::<RouteTarget>(
                 serde_json::json!({"service":"web","port":3000}),
@@ -429,7 +429,7 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
     let rows = vec![
         route(
             "admin.example.com",
-            Visibility::Private,
+            RouteAccess::Private { identity: true },
             DnsRecords::TailnetAddresses {
                 addresses: vec!["100.64.0.1".into(), "fd7a:115c:a1e0::1".into()],
             },
@@ -437,13 +437,13 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
         ),
         route(
             "example.com",
-            Visibility::Public,
+            RouteAccess::Public,
             DnsRecords::ServerAddresses,
             "ready",
         ),
         route(
             "www.example.com",
-            Visibility::Public,
+            RouteAccess::Public,
             DnsRecords::TunnelCname {
                 target: "6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.com".into(),
             },
@@ -461,10 +461,10 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
     console.emit(&rows).unwrap();
     let text = stdout.text();
     for expected in [
-        "admin.example.com  staging  private  pending  web:3000  A/AAAA -> 100.64.0.1, fd7a:115c:a1e0::1",
+        "admin.example.com  staging  private  yes  pending  web:3000  A/AAAA -> 100.64.0.1, fd7a:115c:a1e0::1",
         "  Waiting for the gateway configuration to be applied",
-        "example.com  staging  public  ready  web:3000  A/AAAA -> this server's public addresses",
-        "www.example.com  staging  public  ready  web:3000  CNAME (proxied) -> 6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.com",
+        "example.com  staging  public  no  ready  web:3000  A/AAAA -> this server's public addresses",
+        "www.example.com  staging  public  no  ready  web:3000  CNAME (proxied) -> 6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.com",
     ] {
         assert!(text.contains(expected), "{text}");
     }

@@ -493,6 +493,10 @@
           "$ref": "#/definitions/Template",
           "description": "Exact public DNS hostname."
         },
+        "identity": {
+          "description": "Passes the connecting device's tailnet identity to the backend in\n`Piqueld-*` request headers. Requires the route's own `visibility` to\nbe `private`.",
+          "type": "boolean"
+        },
         "port": {
           "description": "Internal HTTP backend port.",
           "format": "int32",

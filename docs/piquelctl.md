@@ -277,9 +277,10 @@ piquelctl app service mount set notes web data /var/lib/data --yes
 piquelctl app service mount remove notes web /var/lib/data --yes
 piquelctl app volume remove notes data --yes
 piquelctl app route add notes notes.example.com web 3000 --visibility public --yes
-piquelctl app route add notes admin.notes.example.com admin 8080 --yes
+piquelctl app route add notes admin.notes.example.com admin 8080 --identity --yes
 piquelctl app route redirect notes www.notes.example.com https://notes.example.com --visibility public --yes
 piquelctl app route visibility notes admin.notes.example.com private --yes
+piquelctl app route identity notes admin.notes.example.com off --yes
 piquelctl app route list notes
 piquelctl app route remove notes notes.example.com --yes
 piquelctl env visibility notes staging private --yes
@@ -309,9 +310,13 @@ request path and query to the destination; use `--status` and
 `--no-preserve-path` to change that. Routes are private (tailnet only) unless
 added with `--visibility public`; `route visibility` changes an existing route,
 and `env visibility` caps every route of one environment at `private` (or lifts
-the cap with `public`) in the saved manifest. Deploy after saving to activate or
-remove routing. `route list` shows each deployed route with its environment,
-effective visibility, state, destination and the DNS records its hostname needs,
+the cap with `public`) in the saved manifest. `--identity` on `route add`, and
+`route identity <app> <hostname> on|off` on an existing route, pass the
+connecting device's [tailnet identity](ingress.md#tailnet-identity) to a private
+route's backend; saving refuses it on a public route. Deploy after saving to
+activate or remove routing. `route list` shows each deployed route with its
+environment, effective visibility, whether it passes identity, state,
+destination and the DNS records its hostname needs,
 followed by the cause while it is not ready. `piquelctl status` also shows the
 public and private listeners: the ingress mode (ports 80/443, or the Cloudflare
 Tunnel's ID and whether it is connected), and the apps node's name, state and tailnet

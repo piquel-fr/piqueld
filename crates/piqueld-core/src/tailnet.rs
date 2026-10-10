@@ -79,6 +79,8 @@ pub struct TailnetPeer {
     /// Login name of the node's user; absent for tagged nodes, which belong
     /// to no user.
     pub login: Option<String>,
+    /// Display name of the node's user, when it has one.
+    pub name: Option<String>,
     /// The node's name.
     pub node: String,
     /// The node's tags, such as `tag:ci`.
@@ -103,11 +105,13 @@ mod tests {
     fn bindings_match_users_or_tags() {
         let laptop = TailnetPeer {
             login: Some("alice@example.com".into()),
+            name: Some("Alice".into()),
             node: "laptop".into(),
             tags: Vec::new(),
         };
         let runner = TailnetPeer {
             login: None,
+            name: None,
             node: "runner".into(),
             tags: vec!["tag:ci".into(), "tag:prod".into()],
         };

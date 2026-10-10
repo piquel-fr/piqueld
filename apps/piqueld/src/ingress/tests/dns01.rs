@@ -2,6 +2,7 @@
 //! Both run inside the isolated Docker daemon; the harness publishes their ports.
 //! The certificates serve a private route on the private listener, which this
 //! test reaches through a relay adding a PROXY header, as the apps node does.
+//! The route passes tailnet identities, which a fake whois provides.
 use super::Scenario;
 use crate::{
     config::AcmeConfig,
@@ -9,8 +10,10 @@ use crate::{
     ingress::{
         Ingress,
         certificates::{CertificateName, Certificates, Challenge},
+        configuration::PrivateTrust,
         node::proxy_relay,
     },
+    tailnet::TailnetLookup,
 };
 use hickory_resolver::{
     Resolver,
@@ -18,7 +21,9 @@ use hickory_resolver::{
     net::runtime::TokioRuntimeProvider,
 };
 use hyper::Method;
-use piqueld_core::{event::Event, manifest::Hostname, observability::EventFilter};
+use piqueld_core::{
+    event::Event, manifest::Hostname, observability::EventFilter, tailnet::TailnetPeer,
+};
 use serde_json::json;
 use std::{collections::BTreeSet, net::SocketAddr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -30,6 +35,24 @@ const CHALLTESTSRV_IMAGE: &str = "ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1
 
 fn port(variable: &str) -> u16 {
     std::env::var(variable).unwrap().parse().unwrap()
+}
+
+/// Knows one tailnet user, at [`KNOWN_CLIENT`]; other addresses are unknown.
+struct FakeWhois;
+
+/// A tailnet client the fake whois identifies.
+const KNOWN_CLIENT: &str = "100.64.0.9:41000";
+
+#[async_trait::async_trait]
+impl TailnetLookup for FakeWhois {
+    async fn whois(&self, peer: SocketAddr, _fresh: bool) -> Option<TailnetPeer> {
+        (peer.ip() == KNOWN_CLIENT.parse::<SocketAddr>().unwrap().ip()).then(|| TailnetPeer {
+            login: Some("zoe@example.com".into()),
+            name: Some("Zoë".into()),
+            node: "laptop".into(),
+            tags: Vec::new(),
+        })
+    }
 }
 
 fn hosts(names: &[&str]) -> BTreeSet<Hostname> {
@@ -177,6 +200,16 @@ impl Scenario {
         ingress.issuer.clone_from(&self.gateway.issuer);
         ingress.extra_hosts.clone_from(&self.gateway.extra_hosts);
         ingress.private_port = self.gateway.private_port;
+        // This host plays the apps node, whose tailnet clients the fake knows.
+        let host = std::env::var("PIQUELD_DOCKER_HOST_ADDRESS")
+            .unwrap()
+            .parse()
+            .unwrap();
+        ingress.trust = Some(PrivateTrust {
+            node: host,
+            host: vec![host],
+        });
+        ingress.node.as_mut().unwrap().whois = Arc::new(FakeWhois);
         ingress.certificates = Certificates::new(
             dns,
             AcmeConfig {
@@ -235,12 +268,15 @@ impl Scenario {
     }
 
     /// A loopback port relaying to the private listener with a PROXY header
-    /// naming a tailnet client, like the apps node.
+    /// naming the known tailnet client, like the apps node.
     async fn relay(&self) -> (u16, tokio::task::JoinSet<()>) {
+        self.relay_as(KNOWN_CLIENT).await
+    }
+
+    /// A relay naming `client` instead.
+    async fn relay_as(&self, client: &str) -> (u16, tokio::task::JoinSet<()>) {
         let private = SocketAddr::from(([127, 0, 0, 1], self.gateway.private_port.unwrap()));
-        let (relay, task) = proxy_relay(private, "100.64.0.9:41000".parse().unwrap())
-            .await
-            .unwrap();
+        let (relay, task) = proxy_relay(private, client.parse().unwrap()).await.unwrap();
         (relay.port(), task)
     }
 
@@ -294,6 +330,51 @@ impl Scenario {
         (exited["StatusCode"].as_i64().unwrap(), output)
     }
 
+    /// Identity routes fail closed: an unknown client, or a daemon that does
+    /// not answer, gets a 503 rather than the backend.
+    async fn identity_routes_fail_closed(
+        &self,
+        identity: tokio::task::JoinHandle<()>,
+        serving: CancellationToken,
+    ) {
+        let status = |relay: u16| async move {
+            self.untrusted("admin.example.test", relay)
+                .await
+                .unwrap()
+                .status()
+        };
+        let (unknown, _unknown) = self.relay_as("100.64.0.10:41000").await;
+        assert_eq!(status(unknown).await, 503);
+        serving.cancel();
+        identity.await.unwrap();
+        let (known, _known) = self.relay().await;
+        assert_eq!(status(known).await, 503);
+    }
+
+    /// Other edge network peers, unlike the apps node, cannot set the client
+    /// address: a forged PROXY header leaves their own, which is refused TLS.
+    async fn edge_peers_cannot_pose_as_tailnet_clients(&self, ingress: &Ingress) {
+        let gateway = self.gateway.container().await.unwrap().unwrap();
+        let address = gateway["NetworkSettings"]["Networks"][&ingress.name]["IPAddress"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        self.pull(CURL_IMAGE).await;
+        let forged = [
+            "-sk",
+            "--max-time",
+            "5",
+            "--haproxy-protocol",
+            "--haproxy-clientip",
+            "100.64.0.9",
+            "--resolve",
+            &format!("admin.example.test:8443:{address}"),
+            "https://admin.example.test:8443/",
+        ]
+        .map(String::from);
+        assert_ne!(self.curl(&ingress.name, &forged).await.0, 0);
+    }
+
     /// Applications reach the gateway's private listener over their ingress
     /// network, but complete TLS for a private route neither directly nor
     /// with a forged PROXY header. Public routes stay reachable as a control.
@@ -332,17 +413,19 @@ impl Scenario {
         assert_ne!(self.curl(&network, &forged).await.0, 0);
     }
 
-    /// Deploys `admin.example.test` publicly, then makes it private: the
-    /// change withdraws it from the public listener.
+    /// Deploys `admin.example.test` publicly, then makes it private with
+    /// identity: the change withdraws it from the public listener. Its
+    /// backend echoes the client address and identity it receives.
     async fn deploy_private_route(&self) -> piqueld_core::EnvironmentId {
         let admin = |visibility: &str| {
             let mut manifest = super::application(
                 "admin",
                 "admin.example.test",
-                "{http.request.header.X-Forwarded-For}",
+                "{http.request.header.X-Forwarded-For} {http.request.header.Piqueld-User-Login} {http.request.header.Piqueld-User-Name} {http.request.header.Piqueld-Node}",
             )
             .to_manifest();
             manifest.spec.routes[0].visibility = visibility.parse().unwrap();
+            manifest.spec.routes[0].identity = visibility == "private";
             manifest
                 .validate()
                 .unwrap()
@@ -370,7 +453,8 @@ impl Scenario {
     }
 
     /// The private listener serves only private routes, with their DNS-01
-    /// certificate, and backends see the PROXY header's client address.
+    /// certificate, and backends see the PROXY header's client address and
+    /// its tailnet identity, never a client's own `Piqueld-*` headers.
     async fn private_listener_serves_private_routes(&self, ingress: &Ingress) {
         let private = self.gateway.private_port.unwrap();
         assert!(
@@ -378,14 +462,35 @@ impl Scenario {
             "a public route completed TLS on the private listener"
         );
         let (relay, _relay) = self.relay().await;
-        let body = self
-            .untrusted("admin.example.test", relay)
-            .await
-            .unwrap()
-            .text()
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .http1_only()
+            .danger_accept_invalid_certs(true)
+            .resolve(
+                "admin.example.test",
+                SocketAddr::from(([127, 0, 0, 1], relay)),
+            )
+            .build()
+            .unwrap();
+        let request = || client.get(format!("https://admin.example.test:{relay}/"));
+        let response = request()
+            .header("Piqueld-User-Login", "mallory@example.com")
+            .header("Piqueld_User_Name", "Mallory")
+            .send()
             .await
             .unwrap();
-        assert_eq!(body, "100.64.0.9");
+        assert_eq!(
+            response.text().await.unwrap(),
+            "100.64.0.9 zoe@example.com =?utf-8?b?Wm/Dqw==?= laptop"
+        );
+        // Naming identity headers as hop-by-hop would have the backend proxy
+        // drop them, so such requests are refused.
+        let hop_by_hop = request()
+            .header("Connection", "keep-alive, Piqueld-User-Login")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(hop_by_hop.status(), 400);
         // The apps node runs hardened beside the gateway and answers on its
         // LocalAPI, logged in or not.
         let node = ingress
@@ -445,12 +550,20 @@ impl Scenario {
         let root = self.start_pebble().await;
         let root_path = self.directory.path().join("pebble.minica.pem");
         tokio::fs::write(&root_path, &root).await.unwrap();
-        let ingress = self.pebble_ingress(&root_path);
+        let ingress = Arc::new(self.pebble_ingress(&root_path));
+        let serving = CancellationToken::new();
+        let identity = tokio::spawn({
+            let (ingress, serving) = (Arc::clone(&ingress), serving.clone());
+            async move { ingress.serve_identity(&serving).await }
+        });
         let admin = self.deploy_private_route().await;
         let desired = hosts(&["admin.example.test", "www.example.test", "example.test"]);
         let now = crate::store::now_ms();
         let expires = self.dns01_issue(&ingress, &desired, now).await;
         self.private_listener_serves_private_routes(&ingress).await;
+        self.edge_peers_cannot_pose_as_tailnet_clients(&ingress)
+            .await;
+        self.identity_routes_fail_closed(identity, serving).await;
         self.applications_cannot_reach_private_routes(&admin).await;
         self.dns01_renew(&ingress, &desired, expires).await;
         self.dns01_failure(&ingress, now).await;

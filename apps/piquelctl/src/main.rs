@@ -166,6 +166,13 @@ mod tests {
         support::looks_like_application_id,
     };
 
+    /// Clap's own consistency checks, which otherwise panic only once a
+    /// faulty command runs.
+    #[test]
+    fn every_command_is_well_formed() {
+        <Cli as clap::CommandFactory>::command().debug_assert();
+    }
+
     #[test]
     fn parser_covers_the_initial_command_surface() {
         let cases = [
@@ -185,6 +192,16 @@ mod tests {
                 "--yes",
             ],
             vec!["piquelctl", "app", "delete", "notes", "--yes", "--no-wait"],
+            vec![
+                "piquelctl",
+                "app",
+                "route",
+                "identity",
+                "notes",
+                "admin.example.com",
+                "off",
+                "--yes",
+            ],
             vec!["piquelctl", "operation", "operation-01", "--no-wait"],
             vec![
                 "piquelctl",

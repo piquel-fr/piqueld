@@ -56,9 +56,9 @@ pub use piqueld_core::manifest::{
     ApplicationManifest, ApplicationSpec, ApplicationTemplate, Build, EnvironmentConfig,
     GitRepository, HealthCheck, Job, JobRun, ManifestRepository, ManifestRevision, Metadata, Mount,
     Redirect, RedirectStatus, RepositoryManifest, ResourceLimits, Rollout, RolloutOrder,
-    RolloutOrderSource, Route, RouteTarget, SecretMount, SecretSource, Service, Source,
-    SourceRepository, Template, Typed, ValidatedBuild, ValidatedRollout, ValidatedSource, Variable,
-    VariableValue, Visibility, Volume,
+    RolloutOrderSource, Route, RouteAccess, RouteTarget, SecretMount, SecretSource, Service,
+    Source, SourceRepository, Template, Typed, ValidatedBuild, ValidatedRollout, ValidatedSource,
+    Variable, VariableValue, Visibility, Volume,
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{

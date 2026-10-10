@@ -631,7 +631,7 @@ mod tests {
         };
         ApplicationEdit::Routes(vec![Route::service(
             "app.example.com".into(),
-            crate::manifest::Visibility::Public,
+            crate::manifest::RouteAccess::Public,
             "web".into(),
             3000,
         )])

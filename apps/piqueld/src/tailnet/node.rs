@@ -241,7 +241,7 @@ impl Node {
 
     /// Identifies peers connecting through this node.
     #[must_use]
-    pub fn whois(&self) -> std::sync::Arc<super::Whois> {
+    pub fn whois(&self) -> std::sync::Arc<dyn super::TailnetLookup> {
         std::sync::Arc::new(super::Whois::new(self.monitor.cli.clone()))
     }
 

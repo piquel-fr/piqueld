@@ -96,7 +96,8 @@ impl Scenario {
                 assert_eq!(response.version(), version);
                 assert_eq!(response.text().await.unwrap(), "persistent backend");
             }
-            configuration["apps"]["http"]["servers"]["public_http"]["routes"][0]["handle"][0]["headers"]
+            // Route 0 strips identity headers; route 1 is the first redirect.
+            configuration["apps"]["http"]["servers"]["public_http"]["routes"][1]["handle"][0]["headers"]
                 ["X-Reload"] = serde_json::json!([revision.to_string()]);
             self.gateway
                 .caddy
