@@ -99,6 +99,12 @@ daemon_event_days = 90
 log_max_bytes = 4194304
 log_retention_days = 30
 
+[images]
+# Successful deployments per environment whose built images are kept for
+# restores, besides what environments and previews run or are deploying.
+keep_deployments = 3
+cleanup_interval_seconds = 3600
+
 # Metrics have a separate listener with no administrative API routes.
 [metrics]
 listen = [] # Example: ["127.0.0.1:7846"]

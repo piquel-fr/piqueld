@@ -12,7 +12,9 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::{
     Client, PreviewUsage,
-    system::{CertificateStatus, DependencyStatus, DnsProviderStatus, PublicIngressStatus},
+    system::{
+        CertificateStatus, DependencyStatus, DnsProviderStatus, ImageStatus, PublicIngressStatus,
+    },
 };
 
 #[component]
@@ -270,6 +272,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                         })
                     }}
                     {move || signals.system.get().map(|system| preview_card(system.previews.as_ref()))}
+                    {move || signals.system.get().map(|system| images_card(&system.images))}
                     {move || {
                         signals.system.get().map(|system| {
                             system
@@ -445,6 +448,30 @@ fn preview_card(usage: Option<&PreviewUsage>) -> AnyView {
             limits.max_replicas,
         ),
     )
+}
+
+/// Card for the images this installation built: how many cleanup kept, and
+/// what it removed since the daemon started.
+fn images_card(images: &ImageStatus) -> AnyView {
+    match images.cleaned_at_ms {
+        Some(at) => status_card(
+            "Built images",
+            Tone::Ok,
+            "Cleaned up",
+            &format!(
+                "{} kept. Cleanup removed {} of images since the daemon started, last {}.",
+                images.images,
+                super::format::bytes(images.reclaimed_bytes),
+                super::format::timestamp(at)
+            ),
+        ),
+        None => status_card(
+            "Built images",
+            Tone::Pending,
+            "Not cleaned up",
+            "Cleanup hasn't run since the daemon started.",
+        ),
+    }
 }
 
 /// Card for one DNS-01 certificate: its name, hostnames, expiry and last error.

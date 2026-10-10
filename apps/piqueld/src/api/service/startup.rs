@@ -29,8 +29,8 @@ impl ApplicationService {
     /// 3. Connect Docker, interrupt stale actions, and ensure a Swarm manager
     ///    (journaled as an `ensure_swarm` action).
     /// 4. Build the ingress, reconciliation controller, and service.
-    /// 5. Spawn one task joining reconciliation, ingress, notification
-    ///    observation, and webhook delivery.
+    /// 5. Spawn one task joining reconciliation, image cleanup, ingress,
+    ///    notification observation, and webhook delivery.
     /// # Errors
     /// Returns contextual storage, Docker connection, or Swarm initialization errors.
     pub async fn start(
@@ -101,8 +101,10 @@ impl ApplicationService {
         let wake = Arc::new(Notify::new());
         let reconciler = Controller::new(docker, Arc::clone(&store))
             .with_config(&config.reconciliation)
+            .with_images(&config.images)
             .with_ingress(Arc::clone(&ingress));
         let service = Self::new(store, reconciler.runtime(Arc::clone(&wake)))
+            .with_image_status(reconciler.image_status())
             .with_configuration(config.view())
             .with_ingress(Arc::clone(&ingress));
         let scan_interval = Duration::from_secs(config.reconciliation.scan_interval_seconds);
@@ -126,8 +128,9 @@ impl ApplicationService {
                 cancellation.cancel();
                 result
             };
-            let (result, (), (), ()) = tokio::join!(
+            let (result, (), (), (), ()) = tokio::join!(
                 reconcile,
+                reconciler.run_image_cleanup(cancellation.child_token()),
                 ingress.run(cancellation.child_token()),
                 background.observe_notifications(scan_seconds, cancellation.child_token()),
                 background.deliver_notifications(webhook_client, cancellation.child_token())

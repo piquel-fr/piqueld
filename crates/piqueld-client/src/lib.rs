@@ -63,8 +63,8 @@ pub use piqueld_core::manifest::{
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{
     ApplicationId, ApplicationName, BuildFingerprint, BuildInputs, EnvironmentId, Release,
-    ReleaseId, ResolvedSource, ServiceName, TomlDiagnostic, ValidatedApplication, ValidationError,
-    ValidationErrors,
+    ReleaseAvailability, ReleaseId, ResolvedSource, ServiceImage, ServiceName, TomlDiagnostic,
+    ValidatedApplication, ValidationError, ValidationErrors,
 };
 pub use piqueld_core::{
     ApplicationState, Convergence, Event, Operation, OperationKind, OperationState,
@@ -74,7 +74,9 @@ pub use previews::{
     DeletedPreview, EnvironmentKind, LastDeployment, Preview, PreviewLimit, PreviewLimitReached,
     PreviewLimits, PreviewSlot, PreviewSlug, PreviewUsage, PreviewView, PrunePreviewsRequest,
 };
-pub use system::{CertificateStatus, DnsProviderStatus, DnsStatus, SystemStatus, TailnetStatus};
+pub use system::{
+    CertificateStatus, DnsProviderStatus, DnsStatus, ImageStatus, SystemStatus, TailnetStatus,
+};
 
 use http::StatusCode;
 use thiserror::Error;

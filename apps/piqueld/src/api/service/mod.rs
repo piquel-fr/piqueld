@@ -272,6 +272,8 @@ pub struct ApplicationService {
     /// Managed ingress state, reported by readiness and used by plan previews.
     ingress: Option<Arc<crate::ingress::Ingress>>,
     tailnet: Option<tokio::sync::watch::Receiver<piqueld_core::api::TailnetStatus>>,
+    /// The built images as of the last cleanup; `None` without a controller.
+    images: Option<tokio::sync::watch::Receiver<piqueld_core::api::ImageStatus>>,
     /// Effective host settings exposed read-only; `None` unless attached at startup.
     configuration: Option<Arc<piqueld_core::api::HostConfiguration>>,
     store: Arc<Store>,
@@ -301,6 +303,7 @@ impl ApplicationService {
             configuration: None,
             ingress: None,
             tailnet: None,
+            images: None,
             denials: Arc::default(),
             audit_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG)),
             anonymous_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG / 2)),
@@ -315,6 +318,16 @@ impl ApplicationService {
         status: Option<tokio::sync::watch::Receiver<piqueld_core::api::TailnetStatus>>,
     ) -> Self {
         self.tailnet = status;
+        self
+    }
+
+    /// Reports image cleanup's latest status.
+    #[must_use]
+    pub fn with_image_status(
+        mut self,
+        status: tokio::sync::watch::Receiver<piqueld_core::api::ImageStatus>,
+    ) -> Self {
+        self.images = Some(status);
         self
     }
 

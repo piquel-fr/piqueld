@@ -10,8 +10,8 @@ use piqueld::api::Actor::Daemon;
 
 use async_trait::async_trait;
 use piqueld::docker::{
-    DockerApi, DockerError, ImageBuild, ImageSource, JobOutput, JobRuns, JobStatus, SwarmState,
-    resolve_image_digest,
+    DockerApi, DockerError, ImageBuild, ImageSource, JobOutput, JobRuns, JobStatus, LocalImage,
+    SwarmState, resolve_image_digest,
 };
 use piqueld::reconcile::Controller;
 use piqueld::store::Store;
@@ -80,6 +80,10 @@ struct FakeDocker {
     fail_job_cleanup: Arc<AtomicBool>,
     /// Blocks removing an operation's own run while held.
     hold_job_cleanup: Arc<Mutex<()>>,
+    /// The engine's images; builds and pulls add theirs.
+    local_images: Arc<Mutex<Vec<LocalImage>>>,
+    /// Holds builds once their image exists, until released.
+    build_gate: Option<Arc<ResolutionGate>>,
 }
 
 /// A started job with the services, networks, and volumes it could see.
@@ -184,6 +188,14 @@ impl FakeDocker {
     /// Arms the registry to re-point the tag after each remaining pull.
     async fn arm_tag_flips(&self, flips: usize) {
         self.registry.lock().await.flips_remaining = flips;
+    }
+
+    /// Adds `image` unless an image with its ID exists.
+    async fn add_image(&self, image: LocalImage) {
+        let mut images = self.local_images.lock().await;
+        if !images.iter().any(|existing| existing.id == image.id) {
+            images.push(image);
+        }
     }
 
     fn ownership_matches(
@@ -316,7 +328,23 @@ impl DockerApi for FakeDocker {
             return Err(DockerError::Request("build Docker image"));
         }
         self.registry.lock().await.pull("git-build");
-        Ok(Sha256Digest::parse(format!("sha256:{}", "b".repeat(64))).unwrap())
+        let id = Sha256Digest::parse(format!("sha256:{}", "b".repeat(64))).unwrap();
+        self.add_image(LocalImage {
+            id: id.clone(),
+            repo_digests: Vec::new(),
+            labels: BTreeMap::from([
+                (MANAGED_LABEL.into(), "true".into()),
+                (INSTANCE_LABEL.into(), build.owner.to_string()),
+            ]),
+            size: 100,
+            used: false,
+        })
+        .await;
+        if let Some(gate) = &self.build_gate {
+            gate.entered.notify_one();
+            gate.release.notified().await;
+        }
+        Ok(id)
     }
     /// Build output is not recorded.
     async fn build_image_recorded(
@@ -350,13 +378,43 @@ impl DockerApi for FakeDocker {
             gate.entered.notify_one();
             gate.release.notified().await;
         }
-        resolve_image_digest(
+        let digest = resolve_image_digest(
             &RegistryView {
                 registry: Arc::clone(&self.registry),
             },
             reference,
         )
-        .await
+        .await?;
+        let (_, id) = digest.split_once('@').unwrap();
+        self.add_image(LocalImage {
+            id: Sha256Digest::parse(id).unwrap(),
+            repo_digests: vec![piqueld_core::RepositoryDigest::parse(digest.clone()).unwrap()],
+            labels: BTreeMap::new(),
+            size: 50,
+            used: false,
+        })
+        .await;
+        Ok(digest)
+    }
+
+    async fn images(&self) -> Result<Vec<LocalImage>, DockerError> {
+        Ok(self.local_images.lock().await.clone())
+    }
+
+    async fn remove_image(
+        &self,
+        instance: &InstanceId,
+        id: &Sha256Digest,
+    ) -> Result<(), DockerError> {
+        let mut images = self.local_images.lock().await;
+        if images
+            .iter()
+            .any(|image| image.id == *id && !image.built_by(instance))
+        {
+            return Err(DockerError::OwnershipConflict);
+        }
+        images.retain(|image| image.id != *id);
+        Ok(())
     }
 
     async fn observe(
@@ -4735,4 +4793,168 @@ async fn blocked_deployment_runs_no_jobs() {
         (OperationState::Failed, Some("ownership_conflict".into()))
     );
     assert_eq!(harness.started_jobs().await, [] as [String; 0]);
+}
+
+/// Image retention: cleanup removes only this installation's unretained
+/// builds, never while a preparation may record one, and deployments that
+/// use a retained image again find it or fail naming it.
+mod image_retention {
+    use super::*;
+    use piqueld::reconcile::ImagesInUse;
+    use piqueld_core::{ServiceName, api::ImageStatus};
+
+    /// A local image with ID `byte`s and `labels`.
+    fn image(byte: char, labels: &[(&str, &str)]) -> LocalImage {
+        LocalImage {
+            id: Sha256Digest::parse(format!("sha256:{}", byte.to_string().repeat(64))).unwrap(),
+            repo_digests: Vec::new(),
+            labels: labels
+                .iter()
+                .map(|(key, value)| ((*key).into(), (*value).into()))
+                .collect(),
+            size: 10,
+            used: false,
+        }
+    }
+
+    impl ControllerHarness {
+        /// Deploys the fixture with `web` built from Git, as image `b`s.
+        async fn deploy_git_build(&self, fixture: &git_fixture::GitBuildFixture) -> Operation {
+            let mut input = manifest();
+            input.spec.services[0].source = fixture.source.clone();
+            self.applications()
+                .apply(input.validate_template().unwrap(), Some(0))
+                .await
+                .unwrap()
+        }
+
+        /// IDs of the images left in the engine.
+        async fn image_ids(&self) -> Vec<char> {
+            self.docker
+                .local_images
+                .lock()
+                .await
+                .iter()
+                .map(|image| image.id.as_str().chars().last().unwrap())
+                .collect()
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_only_this_installations_unretained_builds() {
+        let harness = ControllerHarness::new().await;
+        let fixture = git_fixture::GitBuildFixture::new();
+        let operation = harness.deploy_git_build(&fixture).await;
+        harness.finish(&operation).await;
+        let ours = harness.store.instance_id().to_owned();
+        let owned = [(MANAGED_LABEL, "true"), (INSTANCE_LABEL, ours.as_str())];
+        let used = LocalImage {
+            used: true,
+            ..image('f', &owned)
+        };
+        harness.docker.local_images.lock().await.extend([
+            image('c', &owned),
+            // Another installation or development instance on the same engine.
+            image(
+                'd',
+                &[(MANAGED_LABEL, "true"), (INSTANCE_LABEL, "instance-other")],
+            ),
+            // Built by hand, or by piqueld before builds were labelled.
+            image('e', &[]),
+            used,
+        ]);
+
+        assert!(harness.controller.clean_images().await.unwrap());
+        // `b` runs in production; `f` is a stopped container's.
+        assert_eq!(harness.image_ids().await, ['b', 'd', 'e', 'f']);
+        let status = harness.controller.image_status().borrow().clone();
+        assert_eq!((status.images, status.reclaimed_bytes), (2, 10));
+        let events = harness.store.events(None, None, 100).await.unwrap().items;
+        let removed = events
+            .iter()
+            .filter(|event| {
+                event.phase.as_deref() == Some("remove_image") && event.kind == "action_succeeded"
+            })
+            .filter_map(|event| event.resource.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(removed, [image('c', &[]).id.as_str()]);
+    }
+
+    #[tokio::test]
+    async fn an_image_built_for_a_deployment_in_preparation_survives_cleanup() {
+        let mut harness = ControllerHarness::new().await;
+        let gate = Arc::new(ResolutionGate::default());
+        harness.docker = Arc::new(FakeDocker {
+            build_gate: Some(Arc::clone(&gate)),
+            ..FakeDocker::default()
+        });
+        harness.controller =
+            Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
+        let fixture = git_fixture::GitBuildFixture::new();
+        let operation = harness.deploy_git_build(&fixture).await;
+        let cancellation = CancellationToken::new();
+        let scan = harness.controller.scan(&cancellation);
+        tokio::pin!(scan);
+        tokio::select! {
+            () = gate.entered.notified() => {}
+            result = &mut scan => panic!("scan finished before building: {result:?}"),
+        }
+        // Built, but no retention root records it yet: cleanup waits.
+        assert_eq!(harness.image_ids().await, ['b']);
+        assert!(!harness.controller.clean_images().await.unwrap());
+        assert_eq!(harness.image_ids().await, ['b']);
+        assert_eq!(
+            harness.controller.image_status().borrow().clone(),
+            ImageStatus::default()
+        );
+
+        gate.release.notify_one();
+        scan.await.unwrap();
+        assert_eq!(
+            harness.store.operation(&operation.id).await.unwrap().state,
+            OperationState::Succeeded
+        );
+        assert!(harness.controller.clean_images().await.unwrap());
+        assert_eq!(harness.image_ids().await, ['b']);
+    }
+
+    #[tokio::test]
+    async fn missing_images_are_pulled_again_by_digest_or_reported_unavailable() {
+        let harness = ControllerHarness::new().await;
+        let in_use: ImagesInUse<'_> = harness.controller.images_in_use().await;
+        let web = ServiceName::parse("web").unwrap();
+        let pulled = harness.resolutions.sources[&web].clone();
+        let digest = pulled.repository_digest().unwrap().to_string();
+
+        harness
+            .controller
+            .ensure_images(&in_use, [(&web, &pulled)])
+            .await
+            .unwrap();
+        assert_eq!(harness.docker.registry.lock().await.pulls[&digest], 1);
+
+        let api = ServiceName::parse("api").unwrap();
+        let built = ResolvedSource::Git {
+            requested: piqueld_core::manifest::ValidatedSource::Image {
+                image: "unused".into(),
+            },
+            commit: "a".repeat(40),
+            image_id: image('c', &[]).id,
+        };
+        let error = harness
+            .controller
+            .ensure_images(&in_use, [(&web, &pulled), (&api, &built)])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "image_unavailable");
+        assert_eq!(
+            error.message(),
+            format!(
+                "service api's image sha256:{} is no longer present, and a build can't be pulled again",
+                "c".repeat(64)
+            )
+        );
+        // `web` was present this time.
+        assert_eq!(harness.docker.registry.lock().await.pulls[&digest], 1);
+    }
 }

@@ -76,6 +76,8 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
         application: &NormalizedApplication,
         resolutions: &piqueld_core::ResolutionSet,
     ) -> Result<ResolvedApplication, BoundaryError>;
+    /// Lists the images present in the local engine.
+    async fn local_images(&self) -> Result<piqueld_core::LocalImages, BoundaryError>;
     /// Checks Docker availability without preparing images or changing runtime resources.
     async fn check_available(&self) -> Result<(), BoundaryError>;
     /// Captures current runtime state for a stored environment.

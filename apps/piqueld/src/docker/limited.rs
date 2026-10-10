@@ -134,6 +134,22 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
             })
             .await
     }
+    /// Listing images counts as an observation.
+    async fn images(&self) -> Result<Vec<super::LocalImage>, DockerError> {
+        let _permit = self
+            .observations
+            .acquire()
+            .await
+            .expect("semaphore is never closed");
+        self.inner.images().await
+    }
+    async fn remove_image(
+        &self,
+        instance: &piqueld_core::InstanceId,
+        id: &piqueld_core::Sha256Digest,
+    ) -> Result<(), DockerError> {
+        self.inner.remove_image(instance, id).await
+    }
     async fn ensure_network(&self, value: &DesiredNetwork) -> Result<(), DockerError> {
         self.inner.ensure_network(value).await
     }

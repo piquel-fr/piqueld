@@ -10,6 +10,7 @@ mod build;
 mod deployment;
 mod environment;
 mod event;
+mod images;
 pub(crate) mod ingress;
 mod jobs;
 mod journal;

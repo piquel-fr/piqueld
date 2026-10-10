@@ -48,7 +48,9 @@ impl ApplicationService {
         Ok(self.store.deployments(id, cursor, 3).await?)
     }
 
-    /// Lists an application's releases, newest first, twenty per page.
+    /// Lists an application's releases, newest first, twenty per page, with
+    /// whether each one's images are still present. Availability is left out
+    /// when Docker can't be asked.
     /// # Errors
     /// Returns pagination, absence, or storage errors.
     pub async fn releases(
@@ -56,7 +58,16 @@ impl ApplicationService {
         id: &ApplicationId,
         cursor: Option<&str>,
     ) -> Result<Page<ReleaseView>, ApplicationError> {
-        Ok(self.store.releases(id, cursor, 20).await?)
+        let mut page = self.store.releases(id, cursor, 20).await?;
+        match self.runtime.local_images().await {
+            Ok(present) => {
+                for release in &mut page.items {
+                    release.availability = Some(present.availability(release.release.sources()));
+                }
+            }
+            Err(error) => tracing::warn!(?error, "release availability unknown"),
+        }
+        Ok(page)
     }
 
     /// Lists retained attempts for a deployment owned by this environment.

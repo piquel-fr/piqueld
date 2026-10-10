@@ -151,6 +151,47 @@ preparation deadline still bounds the entire checkout/build/resolve phase.
 Raw service update retries share one absolute request deadline. Cancelling a
 request aborts its connection driver, and timeout errors retain their cause.
 
+## Image retention
+
+Git builds are labelled `io.piqueld.managed=true` and
+`io.piqueld.instance=<instance ID>`, the installation's identity. Image cleanup
+removes only images with both labels for its own installation, so development
+instances and other installations sharing the Docker Engine never lose images,
+and images built by hand or before these labels existed are left alone, as are
+pulled registry images. An image ID covers its labels, so they can't change
+under it; removal still rechecks them, then removes the image by ID, without
+force and without its untagged parents. Cleanup never runs a broad prune.
+
+An image is kept while a retention root uses it:
+
+- what each environment and preview currently runs;
+- each environment's and preview's latest deployment, in progress or retried
+  with its prepared target until a newer one replaces it;
+- each environment's last `images.keep_deployments` successful deployments
+  (default 3), for restores; previews keep none;
+- the current release of every environment a promoted environment promotes
+  from, once promotion exists.
+
+Images a container uses, even a stopped one, are kept too. Cleanup runs after
+each operation finishes and every `images.cleanup_interval_seconds` (default
+3600). Each removal is a journaled `remove_image` daemon action whose resource
+is the image ID; a failed removal keeps the image and cleanup moves on.
+`piquelctl status` and the dashboard report how many built images cleanup kept
+and the total size of those it removed since the daemon started. Removing an
+image frees only layers no other image shares, so less space may be reclaimed.
+
+Preparations and cleanup share a lock. Each preparation holds it shared from
+before it chooses, pulls, or builds images until its prepared target is saved,
+when they are retention roots. Cleanup takes it exclusively while it reads the
+roots and removes images, and skips its turn while any preparation holds it,
+so it never removes an image a preparation is about to record, including one
+Docker's build cache returned unchanged, and never delays a deployment for
+more than its removals. Deployments that use a retained image again, such as
+restores and promotion, check that it is still present first: a missing
+registry image is pulled again by its digest, and a missing build, or a pull
+that fails, fails with `image_unavailable` naming the service and image.
+`app releases` shows whether each release's images are present.
+
 ## Ingress coordination
 
 Runtime targets retain portable route intent regardless of global ingress enablement.

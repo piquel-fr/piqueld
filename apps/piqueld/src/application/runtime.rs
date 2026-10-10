@@ -220,6 +220,13 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
         })?
     }
 
+    async fn local_images(&self) -> Result<piqueld_core::LocalImages, BoundaryError> {
+        let images = DockerTimeout::Request
+            .run("list images", self.docker.images())
+            .await?;
+        Ok(crate::docker::LocalImage::present(&images))
+    }
+
     async fn check_available(&self) -> Result<(), BoundaryError> {
         DockerTimeout::Request
             .run("check Docker availability", self.docker.ensure_swarm(false))
@@ -347,7 +354,14 @@ impl<D: DockerApi> ApplicationRuntime<D> {
         docker: &D,
     ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
         let Some((store, operation)) = &self.progress else {
-            return crate::git::Checkout::prepare(repository, build, self.priority, docker).await;
+            return crate::git::Checkout::prepare(
+                repository,
+                build,
+                &self.instance_id,
+                self.priority,
+                docker,
+            )
+            .await;
         };
         let attempt = crate::build::BuildAttempt::start(
             Arc::clone(store),
@@ -361,6 +375,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
         let result = crate::git::Checkout::prepare_recorded(
             repository,
             build,
+            &self.instance_id,
             self.priority,
             docker,
             Some(&attempt.log),

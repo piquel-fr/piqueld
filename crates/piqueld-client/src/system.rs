@@ -1,7 +1,7 @@
 pub use piqueld_core::api::{
     CertificateStatus, DependencyStatus, DnsProviderStatus, DnsRecordState, DnsRecords, DnsStatus,
-    IngressStatus, PrivateIngressStatus, PublicIngressStatus, ReadinessStatus, RouteStatus,
-    SystemStatus, TailnetStatus,
+    ImageStatus, IngressStatus, PrivateIngressStatus, PublicIngressStatus, ReadinessStatus,
+    RouteStatus, SystemStatus, TailnetStatus,
 };
 
 use crate::{

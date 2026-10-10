@@ -31,6 +31,8 @@ pub struct Controller<D> {
     /// Managed ingress; without it, routes are staged and acknowledged directly.
     ingress: Option<Arc<crate::ingress::Ingress>>,
     retry: RetryPolicy,
+    /// Image cleanup, and the lock preparations hold against it.
+    images: images::ImageRetention,
 }
 
 impl<D> Controller<D> {
@@ -44,6 +46,7 @@ impl<D> Controller<D> {
             store,
             ingress: None,
             retry: RetryPolicy::default(),
+            images: images::ImageRetention::default(),
         }
     }
 
@@ -64,6 +67,13 @@ impl<D> Controller<D> {
     pub fn with_config(mut self, config: &crate::config::ReconciliationConfig) -> Self {
         self.prepare_timeout = Duration::from_secs(config.prepare_timeout_seconds);
         self.retry.convergence_timeout = Duration::from_secs(config.convergence_timeout_seconds);
+        self
+    }
+
+    /// Applies the daemon's image retention configuration.
+    #[must_use]
+    pub fn with_images(mut self, config: &crate::config::ImagesConfig) -> Self {
+        self.images = images::ImageRetention::new(config);
         self
     }
 
@@ -196,4 +206,6 @@ mod actions;
 mod controller;
 mod coordinator;
 mod deployment;
+mod images;
+pub use images::ImagesInUse;
 mod jobs;

@@ -877,9 +877,10 @@ async fn git_build_runs_as_a_local_swarm_image() {
         .unwrap()
         .normalize(ApplicationId::parse("git-local-build").unwrap());
     let environment = EnvironmentId::default_for(app.id());
+    let owner = InstanceId::parse("git-build-test").unwrap();
     let runtime = piqueld::application::ApplicationRuntime::new(
         std::sync::Arc::new(docker.clone()),
-        InstanceId::parse("git-build-test").unwrap(),
+        owner.clone(),
         std::sync::Arc::new(tokio::sync::Notify::new()),
         Duration::from_mins(2),
     );
@@ -911,4 +912,32 @@ async fn git_build_runs_as_a_local_swarm_image() {
         .remove_service(target.services[0].name.as_str(), &target.services[0].labels)
         .await
         .unwrap();
+
+    // The build carries its installation's labels: another installation
+    // can't remove it, and its own can once no container uses it.
+    let id = piqueld_core::Sha256Digest::parse(target.services[0].image.as_str()).unwrap();
+    let built = || async {
+        docker
+            .images()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|image| image.id == id)
+    };
+    let other = InstanceId::parse("another-installation").unwrap();
+    let image = built().await.expect("the build is listed by its ID");
+    assert!(image.built_by(&owner) && !image.built_by(&other));
+    assert!(matches!(
+        docker.remove_image(&other, &id).await,
+        Err(DockerError::OwnershipConflict)
+    ));
+    tokio::time::timeout(Duration::from_mins(1), async {
+        while built().await.is_some_and(|image| image.used) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("the removed service's containers go");
+    docker.remove_image(&owner, &id).await.unwrap();
+    assert!(built().await.is_none());
 }
