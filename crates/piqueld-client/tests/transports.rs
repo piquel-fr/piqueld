@@ -28,6 +28,7 @@ async fn status() -> Json<Envelope<SystemStatus>> {
             instance_id: "instance-test".into(),
             tailscale: piqueld_core::api::TailnetStatus::default(),
             dns: piqueld_core::api::DnsStatus::default(),
+            previews: None,
         },
     })
 }

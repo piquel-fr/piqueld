@@ -3,6 +3,7 @@
 pub(crate) mod dependencies;
 pub mod domain;
 pub mod input;
+pub mod limits;
 pub mod rollout;
 pub mod routes;
 pub mod template;
@@ -14,6 +15,7 @@ pub use domain::{
     HealthExecution, SecretSource, ValidatedBuild, ValidatedHealthCheck, ValidatedResourceLimits,
     ValidatedSecretMount, ValidatedSource,
 };
+pub use limits::{PreviewLimits, PreviewLimitsError};
 pub use rollout::{Rollout, RolloutOrder, RolloutOrderSource, RolloutPolicy, ValidatedRollout};
 pub use routes::{
     Hostname, RedirectStatus, RedirectUrl, RouteTarget, ValidatedRedirect, ValidatedRoute,

@@ -186,10 +186,16 @@ impl crate::Plan {
         self.sort_diagnostics();
     }
 
+    /// Adds `diagnostics`, keeping every diagnostic in resource order.
+    pub fn warn(&mut self, diagnostics: impl IntoIterator<Item = PlanDiagnostic>) {
+        self.diagnostics.extend(diagnostics);
+        self.sort_diagnostics();
+    }
+
     /// Warns about each service of `application` whose explicit start-first
     /// order lets the old and new task write the same volume at once.
     pub fn warn_rollouts(&mut self, application: &NormalizedApplication) {
-        self.diagnostics.extend(
+        self.warn(
             application
                 .spec()
                 .services
@@ -203,7 +209,6 @@ impl crate::Plan {
                     blocking: false,
                 }),
         );
-        self.sort_diagnostics();
     }
 
     /// Removes sensitive configuration from an informational preview's runtime actions.

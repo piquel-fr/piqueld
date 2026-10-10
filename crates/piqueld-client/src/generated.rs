@@ -1115,7 +1115,9 @@ impl Client {
     Repeating the request returns the existing preview of that branch and
     slot with its latest operation, without redeploying it. Applications
     without a manifest repository fail with `preview_requires_repository`.
-    Needs no application revision.
+    A new preview beyond a `[previews]` limit fails with 409
+    `preview_limit_reached`, whose `details` are a `PreviewLimitReached`
+    listing the previews it counts. Needs no application revision.
 
     Sends a `POST` request to `/api/v1/applications/{id}/previews`
 
@@ -8671,7 +8673,8 @@ impl Client {
     /*Get daemon status
 
     DNS providers and certificates are empty without `system:read`; see
-    [`redact_dns`].
+    [`redact_dns`]. Preview counts per application list only readable
+    applications.
 
     Sends a `GET` request to `/api/v1/system/status`
 

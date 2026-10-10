@@ -7,10 +7,13 @@
 //! deployment of one branch, configured by `[spec.previews]`.
 
 use crate::manifest::{
-    GitRepository, RepositoryManifest, ValidationError, ValidationErrors, valid_git_branch,
-    valid_git_commit,
+    GitRepository, PreviewLimits, RepositoryManifest, ValidationError, ValidationErrors,
+    valid_git_branch, valid_git_commit,
 };
-use crate::{ApplicationName, EnvironmentName, GitBranch, PreviewSlot, PreviewSlug};
+use crate::{
+    ApplicationName, EnvironmentName, GitBranch, NormalizedApplication, PlanDiagnostic,
+    PreviewSlot, PreviewSlug,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use utoipa::ToSchema;
@@ -40,6 +43,21 @@ impl EnvironmentKind {
         match self {
             Self::Environment => true,
             Self::Preview(_) => false,
+        }
+    }
+
+    /// Bounds the configuration a deployment of this kind renders, returning
+    /// a warning for every service it changed. Previews get `limits`' default
+    /// CPU and memory limits and replica cap; environments are never bounded.
+    #[must_use]
+    pub fn bound(
+        &self,
+        application: &mut NormalizedApplication,
+        limits: &PreviewLimits,
+    ) -> Vec<PlanDiagnostic> {
+        match self {
+            Self::Environment => Vec::new(),
+            Self::Preview(_) => limits.bound(application),
         }
     }
 }

@@ -2,7 +2,7 @@
 use super::access::Holder;
 use super::{Actor, Operation, OperationKind, Store, StoreError, StoredApplication, now_ms};
 use crate::api::{Mutation, MutationResponse, PreviewMutation};
-use piqueld_core::access::{Grants, Target};
+use piqueld_core::access::{AppPermission, Grants, Target};
 use piqueld_core::api::{
     AcceptedOperation, CreatedPreview, DeletedApplication, RenamedApplication,
 };
@@ -99,7 +99,22 @@ impl Store {
                 *expected_application_id = None;
             }
         }
-        let accepted = Self::execute_mutation(&mut tx, mutation, expected_generation, now).await?;
+        let accepted = match self
+            .execute_mutation(&mut tx, mutation, expected_generation, now)
+            .await
+        {
+            // Lists only the previews the caller may read.
+            Err(StoreError::PreviewLimitReached(mut reached)) => {
+                if let Some(authority) = &caller {
+                    let readable = authority.grants.app_scope(AppPermission::Read);
+                    reached
+                        .previews
+                        .retain(|preview| readable.contains(&preview.application_id));
+                }
+                return Err(StoreError::PreviewLimitReached(reached));
+            }
+            accepted => accepted?,
+        };
         // Scoped credentials hand out no lasting access, so an application
         // they create gives their account no creator grants.
         if creating
@@ -290,6 +305,7 @@ impl Store {
     /// precondition against its application (an absent one counts as revision
     /// zero), then dispatches to the transactional handler.
     async fn execute_mutation(
+        &self,
         tx: &mut Transaction<'_, Sqlite>,
         mutation: Mutation,
         expected: Option<u64>,
@@ -393,7 +409,7 @@ impl Store {
             }
             // Boxed: preview changes would otherwise grow every acceptance future.
             Mutation::Preview(mutation) => {
-                Box::pin(Self::execute_preview_on(tx, mutation, now)).await
+                Box::pin(self.execute_preview_on(tx, mutation, now)).await
             }
         }
     }
@@ -401,6 +417,7 @@ impl Store {
     /// Creates, deploys, or deletes a preview. Previews are found by ID only
     /// among previews, and never check or advance the application revision.
     async fn execute_preview_on(
+        &self,
         tx: &mut Transaction<'_, Sqlite>,
         mutation: PreviewMutation,
         now: i64,
@@ -412,8 +429,15 @@ impl Store {
                 slot,
             } => {
                 let current = Self::checked_application_on(tx, &application, None).await?;
-                let (id, created) =
-                    Self::create_preview_on(tx, &current, &branch, slot.as_ref(), now).await?;
+                let (id, created) = Self::create_preview_on(
+                    tx,
+                    &current,
+                    &branch,
+                    slot.as_ref(),
+                    &self.previews,
+                    now,
+                )
+                .await?;
                 let preview = Self::preview_on(tx, &id).await?;
                 let operation = match Self::latest_operation_on(tx, &id).await? {
                     Some(operation) if !created => operation,

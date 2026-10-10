@@ -8,7 +8,8 @@ use super::{ApiState, ok};
 /// Gets daemon status.
 ///
 /// DNS providers and certificates are empty without `system:read`; see
-/// [`redact_dns`].
+/// [`redact_dns`]. Preview counts per application list only readable
+/// applications.
 #[utoipa::path(
     get,
     path = "/api/v1/system/status",
@@ -22,7 +23,9 @@ pub(super) async fn status(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
 ) -> impl IntoResponse {
-    let mut status = state.system_status().await;
+    let mut status = state
+        .system_status(&identity.grants.app_scope(AppPermission::Read))
+        .await;
     redact_dns(&identity, &mut status.dns);
     ok(status)
 }

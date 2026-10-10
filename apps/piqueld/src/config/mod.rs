@@ -9,6 +9,7 @@ pub use observability::{MetricsConfig, NotificationConfig, WebhookDestination, W
 pub use tunnel::{TunnelConfig, TunnelConfigError, TunnelCredentials};
 
 use piqueld_core::TomlDiagnostic;
+use piqueld_core::manifest::PreviewLimits;
 use serde::Deserialize;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
@@ -41,6 +42,8 @@ pub struct DaemonConfig {
     pub metrics: MetricsConfig,
     /// Global webhook notification settings.
     pub notifications: NotificationConfig,
+    /// How many previews may exist and what their services may use.
+    pub previews: PreviewLimits,
 }
 
 impl DaemonConfig {
@@ -84,9 +87,13 @@ impl DaemonConfig {
     /// Checks cross-field and range invariants that serde cannot express:
     /// notification settings, non-zero ports, distinct absolute state directories,
     /// the public origin, the Docker socket path, `server.allowed_hosts` DNS
-    /// hostname syntax, and timeout and build-log bounds.
+    /// hostname syntax, timeout and build-log bounds, and preview bounds a
+    /// manifest could set itself.
     fn validate(&self) -> Result<(), ConfigError> {
         self.notifications.validate()?;
+        self.previews
+            .validate()
+            .map_err(|error| ConfigError::Invalid(error.to_string()))?;
         if self
             .metrics
             .listen
@@ -725,6 +732,7 @@ impl DaemonConfig {
         })
         .collect();
         groups.insert("Retention".into(), self.retention_view());
+        groups.insert("Previews".into(), self.previews_view());
         groups.insert("Authentication".into(), self.auth_view());
         groups.insert("Tailscale".into(), self.tailscale_view());
         groups.insert("Private ingress".into(), self.private_ingress_view());
@@ -733,6 +741,30 @@ impl DaemonConfig {
         groups.insert("Observability".into(), self.observability_view());
         piqueld_core::api::HostConfiguration { groups }
     }
+    /// Builds the `Previews` group.
+    fn previews_view(&self) -> std::collections::BTreeMap<String, String> {
+        let previews = &self.previews;
+        std::collections::BTreeMap::from([
+            (
+                "Per application".into(),
+                previews.max_per_application.to_string(),
+            ),
+            ("Installation-wide".into(), previews.max_total.to_string()),
+            (
+                "Default CPU (millicores)".into(),
+                previews.default_cpu_millis.to_string(),
+            ),
+            (
+                "Default memory (bytes)".into(),
+                previews.default_memory_bytes.to_string(),
+            ),
+            (
+                "Replicas per service".into(),
+                previews.max_replicas.to_string(),
+            ),
+        ])
+    }
+
     /// Builds the `Retention` group.
     fn retention_view(&self) -> std::collections::BTreeMap<String, String> {
         let (retention, builds) = (&self.retention, &self.build_history);

@@ -34,7 +34,9 @@ const MAX_PROCESS_ELEMENTS: usize = 128;
 const MAX_PROCESS_ELEMENT_BYTES: usize = 4_096;
 const MAX_MOUNTS_PER_SERVICE: usize = 32;
 const MAX_HEALTHCHECK_INTERVAL_SECONDS: u32 = 3_600;
-const MAX_CPU_MILLIS: u32 = 1_048_576;
+pub(super) const MAX_CPU_MILLIS: u32 = 1_048_576;
+/// Accepted replica counts of a service.
+pub(super) const REPLICAS: std::ops::RangeInclusive<u16> = 1..=100;
 const MAX_GENERATED_SECRETS: usize = 64;
 /// Accepted raw byte counts for random generated secrets, before encoding.
 const RANDOM_SECRET_BYTES: std::ops::RangeInclusive<u16> = 16..=512;
@@ -772,13 +774,17 @@ fn validate_services(
         if service
             .replicas
             .literal()
-            .is_some_and(|replicas| !(1..=100).contains(replicas))
+            .is_some_and(|replicas| !REPLICAS.contains(replicas))
         {
             error(
                 errors,
                 codes::REPLICAS_OUT_OF_RANGE,
                 &format!("{base}.replicas"),
-                "replicas must be between 1 and 100",
+                &format!(
+                    "replicas must be between {} and {}",
+                    REPLICAS.start(),
+                    REPLICAS.end()
+                ),
             );
         }
         if let Source::Image { image } = &service.source

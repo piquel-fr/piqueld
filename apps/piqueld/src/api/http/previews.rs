@@ -26,7 +26,9 @@ use piqueld_core::{ApplicationId, EnvironmentId, GitBranch, PreviewSlot};
 /// Repeating the request returns the existing preview of that branch and
 /// slot with its latest operation, without redeploying it. Applications
 /// without a manifest repository fail with `preview_requires_repository`.
-/// Needs no application revision.
+/// A new preview beyond a `[previews]` limit fails with 409
+/// `preview_limit_reached`, whose `details` are a `PreviewLimitReached`
+/// listing the previews it counts. Needs no application revision.
 #[utoipa::path(post,path="/api/v1/applications/{id}/previews",operation_id="createPreview",
     params(("id"=String,Path),("Idempotency-Key"=Option<String>,Header)),
     request_body=CreatePreviewRequest,

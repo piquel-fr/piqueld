@@ -72,6 +72,8 @@ pub struct BollardDocker {
 
 mod timeout;
 pub(crate) use timeout::DockerTimeout;
+mod build_queue;
+pub use build_queue::BuildPriority;
 mod engine;
 mod exec;
 pub use exec::{Exec, ExecIo};
@@ -148,6 +150,8 @@ pub struct ImageBuild<'a> {
     pub args: &'a BTreeMap<String, String>,
     /// Optional multi-stage target.
     pub target: Option<&'a str>,
+    /// The queue it waits in for the one build that runs at a time.
+    pub priority: BuildPriority,
 }
 
 impl ImageBuild<'_> {
@@ -398,6 +402,7 @@ mod tests {
             context: PathBuf::from("."),
             args: &args,
             target: Some("runtime"),
+            priority: BuildPriority::Environment,
         };
         assert_eq!(
             build.options().collect::<Vec<_>>(),

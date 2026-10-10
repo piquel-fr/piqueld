@@ -42,7 +42,8 @@ impl ApplicationService {
                 .await
                 .context("failed to open control-plane state")?
                 .with_build_history(config.build_history.clone())
-                .with_observability(config),
+                .with_observability(config)
+                .with_previews(config.previews.clone()),
         );
         info!(path = %config.server.database_path().display(), "opened control-plane state");
         let auth = crate::auth::Auth::initialize(&store, config).await?;

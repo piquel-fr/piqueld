@@ -49,7 +49,10 @@ The **Previews** tab lists the application's
 [previews](application-manifest.md#previews), never shown among its
 environments: each preview's branch, slug, slot, branch state (exists, moved
 or gone, with shortened commits, or unknown with the repository error), and
-status (or **Deleting**) with its status message on hover.
+status (or **Deleting**) with its status message on hover. A **Bounded**
+badge marks a preview whose deployment runs a service with the
+[`[previews]`](configuration.md#previews) default limits or fewer replicas than
+its manifest asks for, listed on hover.
 The list loads when the tab opens and on **Refresh**, not on a timer, since
 each load runs `git ls-remote` on the manifest repository. **New preview** asks
 for a branch and an optional slot, which tells apart several previews of one
@@ -65,7 +68,7 @@ page don't block them.
 
 Each row opens the preview's page, which has an environment page's tabs.
 Its Overview shows the preview's branch, slot, slug, and ID, with its branch
-state and URLs read on load and on **Refresh**, then its runtime, its variables
+state, URLs and bounds read on load and on **Refresh**, then its runtime, its variables
 rendered for previews, and a card to delete it. **Redeploy** deploys the head
 of its branch again.
 
@@ -106,9 +109,11 @@ private visibility, and shows each deployed route's effective visibility, the DN
 records its hostname needs, whether piqueld
 [manages them](ingress.md#managed-dns-records) (`manual`, `managed`, `pending` or
 `dns_conflict`), HTTPS readiness and diagnostics in every environment and preview.
-Each environment's Overview sets its visibility ceiling, system status shows which
-DNS providers manage route records, and it shows
-the Cloudflare Tunnel's ID and connection state in tunnel mode, and the private listener
+Each environment's Overview sets its visibility ceiling. System status shows a
+Previews card with the previews against their limits, installation-wide and for
+each readable application, flagged at or over a limit, and the CPU and memory
+limits of their deployed replicas. It also shows which DNS providers manage
+route records, the Cloudflare Tunnel's ID and connection state in tunnel mode, and the private listener
 with the apps tailnet node's name and addresses. Saving routes updates only the route field;
 Deploy activates the change. Services lists saved services, with their observed
 health merged in when the application has one environment. The Secrets tab

@@ -5,9 +5,9 @@ use piqueld_client::{
     AcceptedOperation, ActionReason, ActionRisk, ApplicationLogs, ApplicationSummary,
     ApplicationView, BranchState, BuildLogPage, BuildRecord, CreatedPreview, DeletedApplication,
     DeletedPreview, DnsStatus, EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView,
-    EnvironmentView, Event, MountedSecret, Operation, OperationState, Page, PlanView, PreviewView,
-    ReleaseView, ResolvedSource, SavedApplication, SecretMetadata, Source, StoredSecret,
-    SystemStatus,
+    EnvironmentView, Event, MountedSecret, Operation, OperationState, Page, PlanView, PreviewUsage,
+    PreviewView, ReleaseView, ResolvedSource, SavedApplication, SecretMetadata, Source,
+    StoredSecret, SystemStatus,
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
 use serde::Serialize;
@@ -122,9 +122,58 @@ impl Report for StatusReport<'_> {
                 }
             }
         }
+        match &s.previews {
+            Some(previews) => previews.render_human(out)?,
+            None => out.label("Previews", "unavailable: the daemon could not count them")?,
+        }
         s.dns.render_human(out)
     }
 }
+
+// Previews against their limits, then each readable application's. A count
+// over its limit, after the limit was lowered, is flagged.
+report!(PreviewUsage, self, out, {
+    let limits = &self.limits;
+    let count = |count: u32, max: u32| {
+        let over = if count > max {
+            " (over the limit: existing previews keep running, new ones are refused)"
+        } else {
+            ""
+        };
+        format!("{count} of {max}{over}")
+    };
+    out.label("Previews", count(self.total, limits.max_total))?;
+    out.label(
+        "Preview usage",
+        format_args!(
+            "{} millicores and {} bytes of limits across preview replicas",
+            self.cpu_millis, self.memory_bytes
+        ),
+    )?;
+    if self.unlimited_replicas > 0 {
+        out.label(
+            "Unlimited replicas",
+            format_args!(
+                "{} preview replicas deployed before the limits applied run without them until redeployed",
+                self.unlimited_replicas
+            ),
+        )?;
+    }
+    out.label(
+        "Preview services",
+        format_args!(
+            "{} millicores and {} bytes unless they set limits; replicas capped at {}",
+            limits.default_cpu_millis, limits.default_memory_bytes, limits.max_replicas
+        ),
+    )?;
+    for application in &self.applications {
+        out.label(
+            &format!("Previews of {}", application.name),
+            count(application.previews, limits.max_per_application),
+        )?;
+    }
+    Ok(())
+});
 
 /// One deployed route of `route list`, with its environment's name.
 #[derive(Serialize)]
@@ -481,6 +530,9 @@ report!(PreviewView, self, out, {
     }
     if let Some(message) = &self.status.message {
         out.label("Message", message)?;
+    }
+    for bound in &self.bounds {
+        out.label("Bounded", &bound.message)?;
     }
     Ok(())
 });

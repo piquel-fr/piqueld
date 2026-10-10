@@ -206,13 +206,15 @@ impl Checkout {
         Ok(path)
     }
 
-    /// Pin a checkout and resolve its paths before building its local image.
+    /// Pin a checkout and resolve its paths before building its local image,
+    /// queued with `priority`.
     pub(crate) async fn prepare(
         repository: &GitRepository,
         build: &piqueld_core::manifest::ValidatedBuild,
+        priority: crate::docker::BuildPriority,
         docker: &impl crate::docker::DockerApi,
     ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
-        Self::prepare_recorded(repository, build, docker, None).await
+        Self::prepare_recorded(repository, build, priority, docker, None).await
     }
     /// Same as [`Checkout::prepare`], streaming Git and Docker output into `log`
     /// and recording the resolved commit on it when supplied. Returns the commit and
@@ -220,6 +222,7 @@ impl Checkout {
     pub(crate) async fn prepare_recorded(
         repository: &GitRepository,
         build: &piqueld_core::manifest::ValidatedBuild,
+        priority: crate::docker::BuildPriority,
         docker: &impl crate::docker::DockerApi,
         log: Option<&crate::build::BuildLog>,
     ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
@@ -238,6 +241,7 @@ impl Checkout {
             context: checkout.path(context).await?,
             args,
             target: target.as_deref(),
+            priority,
         };
         let image = docker
             .build_image_recorded(&build, log)

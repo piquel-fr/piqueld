@@ -10,7 +10,8 @@ use leptos_router::NavigateOptions;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{
-    BranchState, Client, CreatePreviewRequest, EnvironmentView, PreviewView, PrunePreviewsRequest,
+    BranchState, Client, CreatePreviewRequest, DiagnosticView, EnvironmentView, PreviewView,
+    PrunePreviewsRequest,
 };
 
 impl EditorContext {
@@ -65,6 +66,31 @@ fn branch_state(state: &BranchState) -> (AnyView, Option<String>) {
         BranchState::Unknown { message } => (Tone::Neutral, Some(message.clone())),
     };
     (badge(tone, state.to_string()), detail)
+}
+
+/// Badge for a preview whose deployed target `[previews]` bounded, with how
+/// in its title: services given default limits or fewer replicas.
+fn bounds_badge(bounds: &[DiagnosticView]) -> Option<AnyView> {
+    (!bounds.is_empty()).then(|| {
+        let title = bounds
+            .iter()
+            .map(|bound| bound.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        view! { <span title={title}>{badge(Tone::Neutral, "Bounded")}</span> }.into_any()
+    })
+}
+
+/// Lists how `[previews]` bounded a preview's deployed target.
+fn bounds(bounds: Vec<DiagnosticView>) -> AnyView {
+    if bounds.is_empty() {
+        return view! { <span class="muted">"None"</span> }.into_any();
+    }
+    bounds
+        .into_iter()
+        .map(|bound| view! { <div>{bound.message}</div> })
+        .collect_view()
+        .into_any()
 }
 
 /// Links to the hostnames a preview's deployed target routes.
@@ -296,6 +322,7 @@ fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
         None => name.clone(),
     };
     let (branch_badge, branch_detail) = branch_state(&view.branch);
+    let bounded = bounds_badge(&view.bounds);
     let deleting = view.preview.delete_intent;
     let status = if deleting {
         badge(Tone::Warn, "Deleting")
@@ -309,6 +336,7 @@ fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
                 <small>{subtitle}</small>
             </span>
             <span class="meta">{branch_detail}</span>
+            {bounded}
             {branch_badge}
             <span title={view.status.message}>{status}</span>
             <button
@@ -364,8 +392,8 @@ pub(super) fn PreviewActions() -> impl IntoView {
     }
 }
 
-/// A preview's branch, slot, slug, and ID, with its URLs and branch state
-/// read when the page opens and on refresh.
+/// A preview's branch, slot, slug, and ID, with its URLs, branch state, and
+/// `[previews]` bounds read when the page opens and on refresh.
 #[component]
 pub(super) fn PreviewSettings() -> impl IntoView {
     let context = editor();
@@ -450,6 +478,8 @@ pub(super) fn PreviewSettings() -> impl IntoView {
                 </dd>
                 <dt>"URLs"</dt>
                 <dd>{loaded(|view| urls(view.hostnames))}</dd>
+                <dt>"Bounds"</dt>
+                <dd>{loaded(|view| bounds(view.bounds))}</dd>
             </dl>
         </section>
     }

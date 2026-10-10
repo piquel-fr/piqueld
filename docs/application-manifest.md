@@ -574,6 +574,14 @@ dropped. Deleting the preview removes all of them, with their data, and checks
 that none is left before the preview is gone; a deletion that cannot remove one
 is retried. Environment volumes are retained, as always.
 
+**Resources.** The daemon's [`[previews]` limits](configuration.md#previews)
+bound every preview, so the same manifest serves environments and previews.
+Each CPU or memory limit a service leaves unset gets the preview default, and
+replicas above `max_replicas` are capped; explicit limits are kept. Both are
+warnings on the preview's plan and deployment, never errors. Environments are
+never bounded. Creating a preview beyond `max_per_application` or `max_total`
+fails with `preview_limit_reached`.
+
 **Lifetime.** Previews are never deleted automatically. `preview list` and
 `preview show` report each branch's state, read on demand with `git ls-remote`:
 `exists` (at the deployed commit, or before the first fetch), `moved` (the
