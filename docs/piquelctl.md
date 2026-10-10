@@ -52,9 +52,11 @@ piquelctl app releases <name-or-id> [--cursor <cursor>]
 piquelctl app repository sync <name-or-id> off|poll|webhook [--interval <seconds>]
 piquelctl app repository webhook show|rotate <name-or-id>
 piquelctl env list <app>
-piquelctl env create <app> <name> [--branch <branch> [--commit <sha>]]
+piquelctl env create <app> <name> [--branch <branch> [--commit <sha>] | --promote-from <env>]
 piquelctl env branch <app> <env> <branch> [--commit <sha>]
 piquelctl env sync <app> <env> on|off
+piquelctl env source <app> <env> (--promote-from <env> | --tracking)
+piquelctl env promote <app> <env> [--deployment <id> | --release <id>] [--plan]
 piquelctl env show <app> [<env>]
 piquelctl env rename <app> <env> <new-name>
 piquelctl env delete <app> <env>
@@ -94,8 +96,8 @@ branch, by default the one `spec.manifest` names, and `--commit` pins a commit.
 `env branch` points an existing environment at another branch, or pins or
 unpins (without `--commit`) a commit; nothing is redeployed until its next
 deployment. Both fail with `manifest_repository_required` for applications
-without a repository. `env list` and `env show` report the source as `saved` or
-as the branch, e.g. `main` or `main@<commit>`.
+without a repository. `env list` and `env show` report the source as `saved`,
+as the branch, e.g. `main` or `main@<commit>`, or as `promoted from <name>`.
 
 [Deploying on push](application-manifest.md#deploying-on-push) is a repository
 setting: `app repository sync APP poll [--interval SECONDS]` lists the branches
@@ -144,7 +146,39 @@ deployed again (image cleanup keeps each environment's last
 and build inputs. `env show` reports the release the
 environment's current target runs (`none` before its first prepared
 deployment). Deployments prepared before upgrading record theirs when the
-daemon first starts.
+daemon first starts. Each release also lists the deployments that received it
+by promotion or by release ID.
+
+A [promoted environment](application-manifest.md#promoted-environments) never
+builds: it only receives releases from another environment of the
+application. `env create --promote-from ENV` creates one, and
+`env source APP ENV --promote-from ENV` converts an existing one (name or ID);
+`env source --tracking` returns it to the saved manifest or the branch
+`spec.manifest` names, and `env branch` to another branch. These deploy nothing,
+take `--yes`, `--force` and `--expected-generation` like `env branch`, and fail
+with `promotion_cycle` or `promotion_source_invalid` for an impossible source.
+`env delete` of an environment others promote from fails with
+`promotion_source_in_use`, naming them. `env deploy` and `app deploy` of a
+promoted environment fail with `environment_promoted`.
+
+`env promote APP ENV` deploys the release of the source environment's current
+deployment, after confirmation (`--yes`), and waits for it unless `--no-wait`.
+`--deployment ID` refuses to promote anything but that deployment
+(`promotion_source_changed` once the source moved on); `--release ID` deploys an
+earlier release of the application with the environment's current secrets.
+`--expected-generation N` pins the application revision; by default the
+inspected one is sent. It fails, before deploying anything, with
+`promotion_source_not_ready` unless the source's current deployment succeeded
+and runs healthy now, `release_incompatible`, `image_unavailable`, or
+`secrets_unavailable` listing every unusable secret. `env source --promote-from`
+fails with `application_busy` while a deployment of the environment is in
+progress.
+`environment_not_promoted` means the environment builds its own source.
+`env promote --plan` prints the release and its provenance and images, its
+origin, the rendered changes, the runtime plan, new (empty) volumes, and each
+unusable secret, without changing anything. It exits with the conflict code 3
+when the plan is blocked or lists secrets. `--release ID --plan` plans an
+earlier release for any environment.
 
 A [preview](application-manifest.md#previews) is a disposable deployment of
 one branch of a repository-backed application. `preview` commands address a
@@ -217,9 +251,12 @@ written to stderr, so stdout remains valid JSON.
 | `app show` | `{ "application": ApplicationView, "environments": [EnvironmentRow] }` |
 | `env list` | `[EnvironmentRow]`, where `EnvironmentRow` is `{ "environment": EnvironmentView, "status": EnvironmentStatusView or null }` |
 | `env show` | `EnvironmentDetailView`, with `"stored": [StoredSecret]` |
-| `env create` / `env rename` / `env branch` / `env sync` | `EnvironmentView` |
+| `env create` / `env rename` / `env branch` / `env sync` / `env source` | `EnvironmentView` |
 | `app repository webhook show` | `WebhookView` |
 | `app repository webhook rotate` | `WebhookSecret` |
+| `env promote --no-wait` | `{ "application_id": string, "environment_id": string, "deployment_id": string, "operation_id": string, "release_id": string, "origin": DeploymentOrigin }`; the deployment and operation IDs are equal |
+| `env promote` | Same, with `"outcome": OperationState` and `"operation": Operation` |
+| `env promote --plan` | `PlanView`, with `release` |
 | `app logs` / `env logs` | `ApplicationLogs` |
 | `app validate` | `{ "application": string }` |
 | `app exec` | None; the command's raw output |

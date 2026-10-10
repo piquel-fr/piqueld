@@ -184,6 +184,13 @@ impl RuntimeBoundary for FakeRuntime {
         Err(piqueld::docker::DockerError::Unavailable("list images").into())
     }
 
+    async fn reuse_images(
+        &self,
+        _: &BTreeMap<piqueld_core::ServiceName, piqueld_core::ResolvedSource>,
+    ) -> Result<piqueld::reconcile::ImagesInUse, BoundaryError> {
+        Err(piqueld::docker::DockerError::Unavailable("list images").into())
+    }
+
     async fn check_available(&self) -> Result<(), BoundaryError> {
         if self.unavailable.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(piqueld::docker::DockerError::Unavailable("observe application").into());
@@ -4557,7 +4564,7 @@ impl GrantFixture {
         let create = piqueld::api::Mutation::CreateEnvironment {
             application: piqueld_core::ApplicationId::parse(application).unwrap(),
             name: piqueld_core::EnvironmentName::parse(name).unwrap(),
-            branch: None,
+            source: None,
         };
         let Ok(piqueld::api::MutationResponse::Environment(environment)) =
             self.state.accept(Daemon, create, None, true, None).await
@@ -6102,7 +6109,7 @@ async fn two_environments(
     let create = |name: &str| Mutation::CreateEnvironment {
         application: application.clone(),
         name: piqueld_core::EnvironmentName::parse(name).unwrap(),
-        branch: None,
+        source: None,
     };
     let MutationResponse::Environment(staging) = service
         .accept(

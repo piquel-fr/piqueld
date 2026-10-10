@@ -37,7 +37,10 @@ repository-backed ones: each such environment follows its own branch of the
 application's repository, optionally pinned to a commit (`"commit"`). The repository URL and
 manifest path stay on the application (`spec.manifest`). Connecting a repository
 points every environment at the branch `spec.manifest` names; disconnecting
-returns them to the saved manifest.
+returns them to the saved manifest. A
+[promoted environment](application-manifest.md#promoted-environments) has
+`{ "type": "promoted", "environment": "env-..." }`, naming by ID the environment
+it receives releases from; repository changes leave it promoted.
 
 A repository-backed environment deploys the manifest last fetched from its
 branch, which `EnvironmentDetailView.manifest` returns (null before its first
@@ -54,8 +57,8 @@ is `{ "type": "preview", "branch": "feat/login", "slot": "agent-2", "slug":
 "notes-feat-login-agent-2-503aa8" }`; environments have `{ "type": "environment" }`.
 A preview's `name` is its slug and its `source` is its branch. Application
 views list previews separately in `previews`, never in `environments`, and the
-environment mutation endpoints (deploy, rename, branch, delete, reconcile)
-return 404 for a preview's ID, as the preview endpoints do for an
+environment mutation endpoints (deploy, rename, branch, source, promote, delete,
+reconcile) return 404 for a preview's ID, as the preview endpoints do for an
 environment's. The environment read endpoints (`detail`, `status`,
 `deployments`, `logs`, `secrets`) accept a preview's ID. Preview creation,
 deployment and deletion take no `expected_generation` and never advance the
@@ -101,11 +104,14 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/applications/apply` | Save configuration by name; `?deploy=true` also deploys its only environment |
 | DELETE | `/api/v1/applications/{id}` | Request deletion of every environment and preview; no body. `environments=a,b` must name every environment when there are several |
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment |
-| POST | `/api/v1/applications/{id}/environments` | Add an environment: `{ "name": "staging", "branch": "main", "commit": null, "expected_generation": 3 }`; `branch` defaults to the one `spec.manifest` names and requires a repository-backed application |
+| POST | `/api/v1/applications/{id}/environments` | Add an environment: `{ "name": "staging", "branch": "main", "commit": null, "expected_generation": 3 }`; `branch` defaults to the one `spec.manifest` names and requires a repository-backed application. `"promote_from": "env-..."` instead creates a promoted environment; it excludes `branch` and `commit` (400 `source_invalid`) |
 | PUT | `/api/v1/environments/{id}/branch` | Follow another branch, or pin or unpin a commit, without redeploying: `{ "branch": "release", "commit": null, "expected_generation": 3 }` |
 | PUT | `/api/v1/environments/{id}/sync` | Opt an environment into or out of its application's sync: `{ "enabled": true }`; needs no `expected_generation`, and opting in while it syncs needs `apps:deploy` too. 404 for previews, which follow their application |
 | GET | `/api/v1/applications/{id}/webhook` | `WebhookView`: the payload URL to configure in GitHub (absent until the daemon sets `ingress.webhook_hostname`) and when the secret was generated |
 | POST | `/api/v1/applications/{id}/webhook/secret` | Generate a new webhook secret, replacing the previous one (`apps:write`); the `WebhookSecret` response is the only time it is shown |
+| PUT | `/api/v1/environments/{id}/source` | Make the environment promoted, `{ "promote_from": "env-...", "expected_generation": 3 }`, or, with `promote_from` null, track the saved manifest or the branch `spec.manifest` names again; deploys nothing |
+| POST | `/api/v1/environments/{id}/promote` | Promote a release into a promoted environment: `{ "deployment": null, "release": null, "expected_generation": 3 }`; 202 with `AcceptedPromotion` |
+| POST | `/api/v1/environments/{id}/promote/plan` | Plan that promotion, or an earlier `release` for any environment, without changing anything; `PlanView` with `release` |
 | GET | `/api/v1/environments/{id}` | Environment metadata |
 | GET | `/api/v1/environments/{id}/detail` | Environment, application intent, resolved generation, current release, observed runtime, operation, diagnostics |
 | GET | `/api/v1/environments/{id}/status` | Intent progress and separate runtime health |
@@ -210,8 +216,8 @@ creation require preconditions unless the endpoint is explicitly
 called with the query parameter `force=true`. Missing preconditions return 400
 `precondition_required`. Apply requires generation zero to create an absent name,
 or both the inspected application ID and generation to update an existing name.
-Deploy and delete require `expected_generation` in its query; renames and
-environment creation take it in JSON.
+Deploy and delete require `expected_generation` in its query; renames,
+environment creation, source changes and promotions take it in JSON.
 Revision mismatches return 409 `generation_conflict`; identity mismatches return
 409 `identity_conflict`. Checks and acceptance are atomic.
 
@@ -263,7 +269,8 @@ History endpoints accept `cursor` for subsequent pages.
 
 Each successful preparation in an environment that builds its own source (one
 deploying the saved manifest or following a branch) records an immutable
-release, and the deployment's `release` names it. A `ReleaseView` holds the
+release, and the deployment's `release` names it; a promotion's deployment
+names the release it received. A `ReleaseView` holds the
 captured manifest with references unresolved (`release.template`), the commit it
 was read from when repository-backed (`release.commit`), each service's
 provenance and image (`release.sources`: the registry digest of an image pulled
@@ -294,8 +301,61 @@ rebuilding: its own manifest renders with that environment's variables, and
 every build input must render exactly as in its fingerprint. Otherwise the
 release is incompatible there (`release_incompatible`, naming each field, e.g.
 `web.source.build.args.VITE_ORIGIN`), typically because a build argument bakes
-in one environment's domain. Promotion uses this; until then no endpoint
-deploys a release.
+in one environment's domain. Promotion uses this.
+
+A [promoted environment](application-manifest.md#promoted-environments) never
+builds or fetches: deploying it returns 409 `environment_promoted`, making an
+environment promoted returns 409 `application_busy` while a deployment of it
+is requested or running, and retrying an earlier deployment that never
+prepared fails with that diagnostic. Its source must be another live environment of the application,
+never a preview (422 `promotion_source_invalid`, `details.environment`), and
+must not promote from it, directly or through others (422 `promotion_cycle`,
+`details.environments` lists the chain). Deleting an environment others promote
+from returns 409 `promotion_source_in_use`, naming them in
+`details.environments`.
+
+`POST /api/v1/environments/{id}/promote` takes the source's current deployment
+by default; `deployment` requires it to still be that one, and `release`
+deploys an earlier release of the application instead, with the environment's
+current secrets and no source check. Both together return 400
+`promotion_invalid`. Like Deploy, it requires `expected_generation` unless
+forced, needs `apps:deploy`, and supersedes pending work; it never advances the
+application revision. Before anything is captured, it checks that the source's
+current deployment succeeded and its services run as deployed and healthy now (409
+`promotion_source_not_ready`, `details.environment`), that the release
+instantiates for the environment (422 `release_incompatible`), that its images
+are present or can be pulled again by digest (409 `image_unavailable`), and
+that every stored secret it mounts exists and allows the environment (409
+`secrets_unavailable`, with every problem in `details.secrets` as
+`{ "problem": "missing" | "access_denied" | "unavailable" | "deleting", "secret": name }`;
+`unavailable` is a stored value key recovery discarded, and `deleting` covers
+generated secrets too). A request repeating an accepted one's
+`Idempotency-Key` returns its response before any check. Acceptance checks
+the source again in its transaction: a source whose current deployment is no
+longer the requested or checked one returns 409 `promotion_source_changed` with
+`details.environment` and `details.deployment`. Promoting into an environment
+that builds its own source returns 409 `environment_not_promoted`.
+
+The release's own manifest is rendered with the environment's
+`[spec.environments.<name>]` block and variables from that manifest and
+compiled with the release's images, and the prepared target is saved with the
+accepted deployment, so the controller only rolls it out. `AcceptedPromotion`
+is an `AcceptedOperation` with the pinned `release_id` and its `origin`.
+`DeploymentView.origin` records where every deployment came from:
+`{ "type": "build" }`, `{ "type": "promotion", "environment": "env-...",
+"deployment": "operation-..." }`, or `{ "type": "release" }` for a release
+deployed by ID. `ReleaseView.promotions` lists, newest first, the deployments
+that received the release (`environment_id`, `deployment_id`, `origin`,
+`created_at_ms`).
+
+`POST /api/v1/environments/{id}/promote/plan` takes the same body, ignores
+`expected_generation`, and needs `apps:read`. It applies the source checks and
+`release_incompatible`, then returns a `PlanView` whose `changes` compare the
+rendered release with the environment's current deployment and whose `plan`
+compares it with the observed runtime. Its `release` is a `ReleasePlan`: the
+`ReleaseView` with `availability`, the `origin`, `new_volumes` that would be
+created empty, and every unusable secret in `secrets`, which do not fail the
+plan. Plans of an earlier `release` work for any environment.
 
 Mutation endpoints accept an optional `Idempotency-Key` (1–128 ASCII letters,
 digits, `-`, `_`, `.`, or `:`). The CLI generates one UUID per command and reuses
@@ -328,8 +388,9 @@ while that manifest has a `[spec.environments.<name>]` block for the old or new
 name. Creating an environment with a `branch`, or changing the branch of one,
 for an application without a manifest repository fails with 422
 `manifest_repository_required`; an invalid branch or commit fails with
-`git_branch_invalid` or `git_commit_invalid`. Changing a branch advances the
-application revision and leaves that environment unresolved until it deploys.
+`git_branch_invalid` or `git_commit_invalid`. Changing a branch or source
+advances the application revision and leaves that environment unresolved until
+it deploys or is promoted into.
 
 Deleting an application requests deletion of each environment and preview and
 returns 202 with `DeletedApplication` (`application_id`, `generation`, and one

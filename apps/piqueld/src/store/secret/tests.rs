@@ -603,7 +603,7 @@ async fn sibling_environment_deletions_do_not_block_another_environments_deploym
             Mutation::CreateEnvironment {
                 application: app.id().clone(),
                 name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
-                branch: None,
+                source: None,
             },
             Some(1),
             false,

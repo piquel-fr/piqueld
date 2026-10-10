@@ -3,19 +3,22 @@
 //! and `app logs`.
 use crate::{
     cli::{Cli, DeletionFlags, LogArgs, OperationFlags, RevisionArgs},
-    commands::{resolve_application, wait_for_accepted, wait_for_deletion},
+    commands::{resolve_application, wait_for_accepted, wait_for_deletion, wait_for_operation},
     editing::{EditFlags, save_loaded, visibility},
     error::{CliError, ErrorKind, ErrorReport, Result},
     output::{
         Console,
-        reports::{DeletionReport, EnvironmentRow, EnvironmentShowReport},
+        reports::{
+            DeletionReport, EnvironmentRow, EnvironmentShowReport, Named, Names, PromotionReport,
+        },
     },
     support::{confirm, retry_transport},
 };
 use clap::{Args, Subcommand, builder::TypedValueParser};
 use piqueld_client::{
     ApplicationView, Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest,
-    EnvironmentRequest, EnvironmentStatusView, EnvironmentView, Visibility, edit::ApplicationEdit,
+    EnvironmentRequest, EnvironmentSourceRequest, EnvironmentStatusView, EnvironmentView,
+    PromoteRequest, Visibility, edit::ApplicationEdit,
 };
 
 // `env` subcommands; `///` on variants and fields is user-facing help.
@@ -28,21 +31,13 @@ pub(crate) enum EnvCommand {
     },
     /// Add an environment. It deploys the application's saved manifest or, when
     /// the application is repository-backed, the manifest on its own branch.
-    Create {
-        /// Application name or stable ID.
-        application: String,
-        /// New environment name, unique within the application.
-        name: String,
-        /// Branch of the manifest repository to follow; defaults to the one
-        /// `spec.manifest` names.
-        #[arg(long)]
-        branch: Option<String>,
-        /// Pin this full commit instead of following the branch head.
-        #[arg(long, requires = "branch")]
-        commit: Option<String>,
-        #[command(flatten)]
-        change: ChangeFlags,
-    },
+    Create(CreateArgs),
+    /// Make an environment receive releases promoted from another one instead
+    /// of building, or track its own source again. Nothing is deployed.
+    Source(SourceArgs),
+    /// Deploy a release into a promoted environment without building: by
+    /// default the one its source environment currently runs.
+    Promote(PromoteArgs),
     /// Point an environment of a repository-backed application at another
     /// branch, or pin or unpin its commit. Its next deployment fetches it.
     Branch {
@@ -164,21 +159,9 @@ impl EnvCommand {
     ) -> Result<()> {
         match self {
             Self::List { application } => list(cli, client, console, application).await,
-            Self::Create {
-                application,
-                name,
-                branch,
-                commit,
-                change,
-            } => {
-                let request = CreateEnvironmentRequest {
-                    name: name.clone(),
-                    branch: branch.clone(),
-                    commit: commit.clone(),
-                    expected_generation: None,
-                };
-                create(cli, client, console, application, request, change).await
-            }
+            Self::Create(args) => args.run(cli, client, console).await,
+            Self::Source(args) => args.run(cli, client, console).await,
+            Self::Promote(args) => args.run(cli, client, console).await,
             Self::Branch {
                 application,
                 environment,
@@ -281,10 +264,14 @@ pub(crate) struct SyncArgs {
 impl SyncArgs {
     /// Opts the environment in or out of its application's sync.
     async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
-        let (_, environment) = select(client, &self.application, Some(&self.environment)).await?;
+        let (application, environment) =
+            select(client, &self.application, Some(&self.environment)).await?;
         let id = environment.id.as_str();
         let environment = retry_transport(|| client.set_environment_sync(id, self.enabled)).await?;
-        console.emit(&environment)
+        console.emit(&Named {
+            value: &environment,
+            names: Names(&application.environments),
+        })
     }
 }
 
@@ -330,37 +317,68 @@ async fn list(cli: &Cli, client: &Client, console: &mut Console, application: &s
     console.emit(&rows)
 }
 
-/// Confirms and adds an environment, conditioned on the inspected application revision.
-async fn create(
-    cli: &Cli,
-    client: &Client,
-    console: &mut Console,
-    application: &str,
-    mut request: CreateEnvironmentRequest,
-    change: &ChangeFlags,
-) -> Result<()> {
-    let application = resolve_application(client, application).await?;
-    confirm(
-        console,
-        cli.noninteractive,
-        change.yes,
-        &format!(
-            "Create environment {:?} of application {:?}? [y/N] ",
-            request.name,
-            application.application.metadata().name
-        ),
-    )
-    .await?;
-    request.expected_generation = change.expected(&application);
-    let environment = retry_transport(|| {
-        client.create_environment(
-            application.application.id().as_str(),
-            &request,
-            change.force,
+/// `env create` arguments.
+#[derive(Debug, Args)]
+pub(crate) struct CreateArgs {
+    /// Application name or stable ID.
+    application: String,
+    /// New environment name, unique within the application.
+    name: String,
+    /// Branch of the manifest repository to follow; defaults to the one
+    /// `spec.manifest` names.
+    #[arg(long)]
+    branch: Option<String>,
+    /// Pin this full commit instead of following the branch head.
+    #[arg(long, requires = "branch")]
+    commit: Option<String>,
+    /// Never build: only receive releases promoted from this environment
+    /// (name or stable ID) with `env promote`.
+    #[arg(long, value_name = "ENV", conflicts_with = "branch")]
+    promote_from: Option<String>,
+    #[command(flatten)]
+    change: ChangeFlags,
+}
+
+impl CreateArgs {
+    /// Confirms and adds the environment, conditioned on the inspected
+    /// application revision.
+    async fn run(&self, cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
+        let application = resolve_application(client, &self.application).await?;
+        let request = CreateEnvironmentRequest {
+            name: self.name.clone(),
+            branch: self.branch.clone(),
+            commit: self.commit.clone(),
+            promote_from: self
+                .promote_from
+                .as_deref()
+                .map(|source| promotion_source(&application, source))
+                .transpose()?,
+            expected_generation: self.change.expected(&application),
+        };
+        confirm(
+            console,
+            cli.noninteractive,
+            self.change.yes,
+            &format!(
+                "Create environment {:?} of application {:?}? [y/N] ",
+                request.name,
+                application.application.metadata().name
+            ),
         )
-    })
-    .await?;
-    console.emit(&environment)
+        .await?;
+        let environment = retry_transport(|| {
+            client.create_environment(
+                application.application.id().as_str(),
+                &request,
+                self.change.force,
+            )
+        })
+        .await?;
+        console.emit(&Named {
+            value: &environment,
+            names: Names(&application.environments),
+        })
+    }
 }
 
 /// Confirms and points an environment at another branch, conditioned on the
@@ -391,7 +409,175 @@ async fn set_branch(
         client.set_environment_branch(environment.id.as_str(), &request, change.force)
     })
     .await?;
-    console.emit(&environment)
+    console.emit(&Named {
+        value: &environment,
+        names: Names(&application.environments),
+    })
+}
+
+/// The ID of `source`, an environment of `application` named or identified
+/// as a promotion source.
+fn promotion_source(application: &ApplicationView, source: &str) -> Result<String> {
+    application
+        .environment(source)
+        .map(|environment| environment.id.to_string())
+        .ok_or_else(|| {
+            CliError::new(
+                ErrorKind::Input,
+                format!(
+                    "environment {source:?} of application {:?} was not found",
+                    application.application.metadata().name
+                ),
+            )
+        })
+}
+
+/// `env source` arguments.
+#[derive(Debug, Args)]
+pub(crate) struct SourceArgs {
+    /// Application name or stable ID.
+    application: String,
+    /// Environment name or stable ID.
+    environment: String,
+    /// Receive releases promoted from this environment (name or stable ID).
+    #[arg(long, value_name = "ENV", required_unless_present = "tracking")]
+    promote_from: Option<String>,
+    /// Stop promoting: build the saved manifest, or the branch `spec.manifest`
+    /// names, again. `env branch` picks another branch.
+    #[arg(long, conflicts_with = "promote_from")]
+    tracking: bool,
+    #[command(flatten)]
+    change: ChangeFlags,
+}
+
+impl SourceArgs {
+    /// Confirms and changes where the environment's releases come from,
+    /// conditioned on the inspected application revision.
+    async fn run(&self, cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
+        let (application, environment) =
+            select(client, &self.application, Some(&self.environment)).await?;
+        let promote_from = self
+            .promote_from
+            .as_deref()
+            .map(|source| promotion_source(&application, source))
+            .transpose()?;
+        let change = match &self.promote_from {
+            Some(source) => format!("receive releases promoted from {source:?}"),
+            None => "build from its own source again".into(),
+        };
+        confirm(
+            console,
+            cli.noninteractive,
+            self.change.yes,
+            &format!(
+                "Make environment {:?} of application {:?} {change}? [y/N] ",
+                environment.name.as_str(),
+                application.application.metadata().name,
+            ),
+        )
+        .await?;
+        let request = EnvironmentSourceRequest {
+            promote_from,
+            expected_generation: self.change.expected(&application),
+        };
+        let environment = retry_transport(|| {
+            client.set_environment_source(environment.id.as_str(), &request, self.change.force)
+        })
+        .await?;
+        console.emit(&Named {
+            value: &environment,
+            names: Names(&application.environments),
+        })
+    }
+}
+
+/// `env promote` arguments.
+#[derive(Debug, Args)]
+pub(crate) struct PromoteArgs {
+    /// Application name or stable ID.
+    application: String,
+    /// Promoted environment name or stable ID.
+    environment: String,
+    /// Promote this deployment of the source; refused once it is no longer the
+    /// source's current one.
+    #[arg(long, value_name = "ID")]
+    deployment: Option<String>,
+    /// Deploy this earlier release instead, with the environment's current secrets.
+    #[arg(long, value_name = "ID", conflicts_with = "deployment")]
+    release: Option<String>,
+    /// Show what would be deployed, and what is missing, without deploying.
+    #[arg(long)]
+    plan: bool,
+    #[command(flatten)]
+    flags: OperationFlags,
+}
+
+impl PromoteArgs {
+    /// Plans, or confirms and promotes, the selected release, guarded by the
+    /// expected generation, defaulting to the current one. Waits unless
+    /// `--no-wait`. A plan listing unusable secrets fails as a conflict,
+    /// since promoting would.
+    async fn run(&self, cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
+        let (application, environment) =
+            select(client, &self.application, Some(&self.environment)).await?;
+        let mut request = PromoteRequest {
+            deployment: self.deployment.clone(),
+            release: self.release.clone(),
+            expected_generation: None,
+        };
+        let id = environment.id.as_str();
+        if self.plan {
+            let plan = client.plan_promotion(id, &request).await?;
+            console.emit(&Named {
+                value: &plan,
+                names: Names(&application.environments),
+            })?;
+            if plan.plan.is_blocked() {
+                return Err(CliError::blocked_plan(&plan));
+            }
+            if let Some(release) = plan.release.as_ref().filter(|r| !r.secrets.is_empty()) {
+                return Err(CliError::new(
+                    ErrorKind::Conflict,
+                    format!(
+                        "{} secret(s) are missing or not allowed for environment {}",
+                        release.secrets.len(),
+                        environment.name
+                    ),
+                )
+                .with_details(serde_json::json!({"secrets": release.secrets})));
+            }
+            return Ok(());
+        }
+        let what = match (&self.release, &self.deployment) {
+            (Some(release), _) => format!("release {release}"),
+            (None, Some(deployment)) => format!("deployment {deployment}'s release"),
+            (None, None) => "the source's current release".into(),
+        };
+        confirm(
+            console,
+            cli.noninteractive,
+            self.flags.yes,
+            &format!(
+                "Promote {what} into environment {:?} of application {:?}? [y/N] ",
+                environment.name.as_str(),
+                application.application.metadata().name
+            ),
+        )
+        .await?;
+        request.expected_generation = Some(
+            self.flags
+                .expected_generation
+                .unwrap_or(application.generation),
+        );
+        let accepted = retry_transport(|| client.promote_environment(id, &request, false)).await?;
+        let report = PromotionReport::new(&application, &accepted);
+        if self.flags.no_wait {
+            return console.emit(&report);
+        }
+        let operation =
+            wait_for_operation(console, client, &accepted.operation.operation_id).await?;
+        console.emit(&report.finished(&operation))
+    }
 }
 
 /// Shows one environment, the manifest it deploys, and its status, warning
@@ -441,7 +627,10 @@ async fn rename(
         client.rename_environment(environment.id.as_str(), &request, change.force)
     })
     .await?;
-    console.emit(&environment)
+    console.emit(&Named {
+        value: &environment,
+        names: Names(&application.environments),
+    })
 }
 
 impl EnvironmentArgs {

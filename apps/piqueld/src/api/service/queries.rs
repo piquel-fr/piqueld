@@ -121,8 +121,13 @@ impl ApplicationService {
         let previews = self.store.previews(application).await?;
         let release = self.store.current_release(id).await?;
         let sync_check = self.store.sync_check(application).await?;
+        let manifest = match (stored.manifest(), stored.environment.source.promoted_from()) {
+            (Some(manifest), _) => Some(manifest.clone()),
+            (None, Some(source)) => self.next_promotion_manifest(source).await?,
+            (None, None) => None,
+        };
         Ok(EnvironmentDetailView {
-            manifest: stored.manifest().cloned(),
+            manifest,
             release,
             environment: stored.environment,
             application: application_view(stored.application, environments, previews, sync_check),
@@ -131,6 +136,25 @@ impl ApplicationService {
             latest_operation,
             diagnostics,
         })
+    }
+    /// The manifest a promotion from `source` would deploy next: that of the
+    /// release `source` currently runs, under the application's current
+    /// name; `None` before it ran one.
+    async fn next_promotion_manifest(
+        &self,
+        source: &EnvironmentId,
+    ) -> Result<Option<piqueld_core::manifest::ApplicationTemplate>, StoreError> {
+        let Some(release) = self.store.current_release(source).await? else {
+            return Ok(None);
+        };
+        let stored = self.store.get(source).await?;
+        let release = self
+            .store
+            .release(&stored.environment.application_id, &release)
+            .await?;
+        Ok(Some(release.release.template().clone().with_name(
+            stored.application.application.metadata().name.clone(),
+        )))
     }
     /// Checks a preview's preconditions: `grants` may save `current` (or
     /// create it when absent), and the optional `expected` generation and
@@ -207,7 +231,7 @@ impl ApplicationService {
         let (operation, identical, changes, rendering, mut plan) = if let Some(environment) =
             &environment
         {
-            let repository = environment.repository();
+            let repository = environment.tracking()?.repository();
             let mut rendering = render(environment.environment.target(), repository.as_ref())?;
             let bounds = environment
                 .environment
@@ -277,6 +301,7 @@ impl ApplicationService {
             plan,
             rollouts,
             variables,
+            release: None,
         })
     }
     /// The environment's latest operation and, unless it deletes, the

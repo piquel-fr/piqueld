@@ -1,12 +1,13 @@
 //! Environment lifecycle, deployments, status, history, and logs.
 pub use piqueld_core::api::{
-    CreateEnvironmentRequest, EnvironmentBranchRequest, EnvironmentDetailView, EnvironmentRequest,
-    EnvironmentStatusView, EnvironmentView,
+    AcceptedPromotion, CreateEnvironmentRequest, DeploymentOrigin, EnvironmentBranchRequest,
+    EnvironmentDetailView, EnvironmentRequest, EnvironmentSourceRequest, EnvironmentStatusView,
+    EnvironmentView, PromoteRequest, ReleasePlan, ReleasePromotion, SecretProblem,
 };
-pub use piqueld_core::{EnvironmentName, EnvironmentSource, TrackedBranch};
+pub use piqueld_core::{EnvironmentName, EnvironmentSource, PromotedFrom, TrackedBranch};
 
 use crate::{
-    AcceptedOperation, Client, ClientError, DeploymentView, ManifestRevision, Page,
+    AcceptedOperation, Client, ClientError, DeploymentView, ManifestRevision, Page, PlanView,
     client::generated_result,
 };
 
@@ -95,6 +96,56 @@ impl Client {
         )
         .await
         .map(|response| response.data)
+    }
+
+    /// Makes an environment promoted from another, or returns it to tracking
+    /// its own source, without deploying it.
+    /// # Errors
+    /// Returns transport, API, decoding, source, or generation errors.
+    pub async fn set_environment_source(
+        &self,
+        id: &str,
+        request: &EnvironmentSourceRequest,
+        force: bool,
+    ) -> Result<EnvironmentView, ClientError> {
+        generated_result(
+            self.generated
+                .set_environment_source(id, force.then_some(true), None, request)
+                .await,
+        )
+        .await
+        .map(|response| response.data)
+    }
+
+    /// Promotes a release into a promoted environment, pinning it at acceptance.
+    /// # Errors
+    /// Returns transport, API, decoding, precondition, or generation errors.
+    pub async fn promote_environment(
+        &self,
+        id: &str,
+        request: &PromoteRequest,
+        force: bool,
+    ) -> Result<AcceptedPromotion, ClientError> {
+        generated_result(
+            self.generated
+                .promote_environment(id, force.then_some(true), None, request)
+                .await,
+        )
+        .await
+        .map(|response| response.data)
+    }
+
+    /// Plans promoting a release into an environment without changing anything.
+    /// # Errors
+    /// Returns transport, API, decoding, or precondition errors.
+    pub async fn plan_promotion(
+        &self,
+        id: &str,
+        request: &PromoteRequest,
+    ) -> Result<PlanView, ClientError> {
+        generated_result(self.generated.plan_promotion(id, request).await)
+            .await
+            .map(|response| response.data)
     }
 
     /// Deletes an environment's services and networks, retaining its volumes,

@@ -487,7 +487,7 @@ mod tests {
         let staging = Mutation::CreateEnvironment {
             application: piqueld_core::ApplicationId::parse(&saved.application_id).unwrap(),
             name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
-            branch: None,
+            source: None,
         };
         assert!(matches!(
             store.accept(crate::store::Actor::Daemon, staging, None, true, None).await,
@@ -530,7 +530,7 @@ mod tests {
         let staging = Mutation::CreateEnvironment {
             application: application.clone(),
             name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
-            branch: None,
+            source: None,
         };
         let (MutationResponse::Environment(staging), _) = store
             .accept(crate::api::Actor::Daemon, staging, None, true, None)

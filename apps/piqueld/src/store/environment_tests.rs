@@ -395,7 +395,7 @@ async fn repository_backed_environments_take_their_branch_from_the_connection() 
     for id in ["app-saved-01", "env-saved-staging"] {
         let environment = store.get(&EnvironmentId::parse(id).unwrap()).await.unwrap();
         assert_eq!(environment.environment.source, EnvironmentSource::Saved);
-        assert_eq!(environment.fetched, None);
+        assert_eq!(environment.own, None);
         assert_eq!(environment.manifest(), Some(&saved));
     }
 }

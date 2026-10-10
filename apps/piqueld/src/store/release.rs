@@ -4,10 +4,10 @@
 use super::{Store, StoreError, new_id, page_limit};
 use piqueld_core::{
     ApplicationId, EnvironmentId, Release, ReleaseId,
-    api::{Page, ReleaseView},
+    api::{Page, ReleasePromotion, ReleaseView},
     resource::ResolvedApplication,
 };
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 /// `releases` row shared by the first-page and cursor page queries.
 struct ReleaseRow {
@@ -19,9 +19,28 @@ struct ReleaseRow {
 }
 
 impl ReleaseRow {
-    fn view(self) -> Result<ReleaseView, StoreError> {
+    /// Decodes the release, with every deployment that received it.
+    async fn view(self, connection: &mut SqliteConnection) -> Result<ReleaseView, StoreError> {
         let release: Release =
             serde_json::from_str(&self.release_json).map_err(StoreError::corrupt)?;
+        let promotions = sqlx::query!(
+            r#"SELECT id AS "id!",environment_id,origin_json,created_at_ms FROM deployments WHERE release_id=?1 AND json_extract(origin_json,'$.type')!='build' ORDER BY id DESC"#,
+            self.id
+        )
+        .fetch_all(connection)
+        .await
+        .map_err(StoreError::database)?
+        .into_iter()
+        .map(|row| {
+            Ok(ReleasePromotion {
+                environment_id: EnvironmentId::parse(row.environment_id)
+                    .map_err(StoreError::corrupt)?,
+                deployment_id: row.id,
+                origin: serde_json::from_str(&row.origin_json).map_err(StoreError::corrupt)?,
+                created_at_ms: row.created_at_ms,
+            })
+        })
+        .collect::<Result<_, StoreError>>()?;
         Ok(ReleaseView {
             id: ReleaseId::parse(self.id).map_err(StoreError::corrupt)?,
             application_id: ApplicationId::parse(self.application_id)
@@ -32,6 +51,7 @@ impl ReleaseRow {
             fingerprint: release.fingerprint(),
             release,
             availability: None,
+            promotions,
         })
     }
 }
@@ -135,17 +155,10 @@ impl Store {
         &self,
         id: &EnvironmentId,
     ) -> Result<Option<ReleaseId>, StoreError> {
-        let id = id.as_str();
-        sqlx::query_scalar!(
-            "SELECT d.release_id FROM deployments d JOIN operations o ON o.id=d.id WHERE d.environment_id=?1 AND o.promoted=1 ORDER BY d.id DESC LIMIT 1",
-            id
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(StoreError::database)?
-        .flatten()
-        .map(|release| ReleaseId::parse(release).map_err(StoreError::corrupt))
-        .transpose()
+        Ok(self
+            .current_deployment(id)
+            .await?
+            .and_then(|current| current.release))
     }
 
     /// Lists an application's releases, newest first.
@@ -163,6 +176,7 @@ impl Store {
             .map(|v| v.strip_prefix("v1:").ok_or(StoreError::InvalidInput))
             .transpose()?;
         let application = application.as_str();
+        let mut snapshot = self.pool.begin().await.map_err(StoreError::database)?;
         let mut rows = sqlx::query_as!(
             ReleaseRow,
             r#"SELECT id AS "id!",application_id,content_hash,release_json,created_at_ms FROM releases WHERE application_id=?1 AND (?2 IS NULL OR id<?2) ORDER BY id DESC LIMIT ?3"#,
@@ -170,7 +184,7 @@ impl Store {
             before,
             limit_sql
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *snapshot)
         .await
         .map_err(StoreError::database)?;
         let more = rows.len() > limit;
@@ -178,13 +192,35 @@ impl Store {
         let next_cursor = more
             .then(|| rows.last().map(|row| format!("v1:{}", row.id)))
             .flatten();
-        Ok(Page {
-            items: rows
-                .into_iter()
-                .map(ReleaseRow::view)
-                .collect::<Result<_, _>>()?,
-            next_cursor,
-        })
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            items.push(row.view(&mut snapshot).await?);
+        }
+        Ok(Page { items, next_cursor })
+    }
+
+    /// Reads release `id` of `application`; `NotFound` for another's.
+    /// # Errors
+    /// Returns storage, decoding, or absence errors.
+    pub async fn release(
+        &self,
+        application: &ApplicationId,
+        id: &ReleaseId,
+    ) -> Result<ReleaseView, StoreError> {
+        let mut snapshot = self.pool.begin().await.map_err(StoreError::database)?;
+        let (application, id) = (application.as_str(), id.as_str());
+        sqlx::query_as!(
+            ReleaseRow,
+            r#"SELECT id AS "id!",application_id,content_hash,release_json,created_at_ms FROM releases WHERE id=?1 AND application_id=?2"#,
+            id,
+            application
+        )
+        .fetch_optional(&mut *snapshot)
+        .await
+        .map_err(StoreError::database)?
+        .ok_or(StoreError::NotFound)?
+        .view(&mut snapshot)
+        .await
     }
 }
 

@@ -11,8 +11,8 @@ use crate::manifest::{
     valid_git_branch, valid_git_commit,
 };
 use crate::{
-    ApplicationName, EnvironmentName, GitBranch, NormalizedApplication, PlanDiagnostic,
-    PreviewSlot, PreviewSlug,
+    ApplicationName, EnvironmentId, EnvironmentName, GitBranch, NormalizedApplication,
+    PlanDiagnostic, PreviewSlot, PreviewSlug,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -134,10 +134,12 @@ impl PreviewSlug {
 
 /// Where an environment's deployments come from.
 ///
-/// Environments of an application without a manifest repository deploy its
-/// saved manifest. Environments of a repository-backed application each
-/// follow a branch of that repository: its URL and manifest path belong to
-/// the application, the branch to the environment.
+/// Tracking environments build what they deploy. Those of an application
+/// without a manifest repository deploy its saved manifest. Those of a
+/// repository-backed application each follow a branch of that repository:
+/// its URL and manifest path belong to the application, the branch to the
+/// environment. A promoted environment never builds or fetches: it only
+/// receives releases promoted from another environment.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentSource {
@@ -145,6 +147,17 @@ pub enum EnvironmentSource {
     Saved,
     /// The manifest file on a branch of the application's manifest repository.
     Branch(TrackedBranch),
+    /// Releases promoted from another environment of the application.
+    Promoted(PromotedFrom),
+}
+
+/// The environment a promoted environment receives releases from. Stored by
+/// ID, so renaming either keeps it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromotedFrom {
+    /// The source environment; never a preview.
+    pub environment: EnvironmentId,
 }
 
 impl EnvironmentSource {
@@ -179,8 +192,17 @@ impl EnvironmentSource {
     #[must_use]
     pub const fn branch(&self) -> Option<&TrackedBranch> {
         match self {
-            Self::Saved => None,
             Self::Branch(branch) => Some(branch),
+            Self::Saved | Self::Promoted(_) => None,
+        }
+    }
+
+    /// The environment it receives releases from, if promoted.
+    #[must_use]
+    pub const fn promoted_from(&self) -> Option<&EnvironmentId> {
+        match self {
+            Self::Promoted(from) => Some(&from.environment),
+            Self::Saved | Self::Branch(_) => None,
         }
     }
 }
@@ -188,13 +210,16 @@ impl EnvironmentSource {
 /// Describes the source in a sentence.
 ///
 /// ```text
-/// the saved manifest    branch main    branch main@0123…
+/// the saved manifest    branch main    branch main@0123…    releases promoted from env-…
 /// ```
 impl std::fmt::Display for EnvironmentSource {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Saved => formatter.write_str("the saved manifest"),
             Self::Branch(branch) => write!(formatter, "branch {branch}"),
+            Self::Promoted(from) => {
+                write!(formatter, "releases promoted from {}", from.environment)
+            }
         }
     }
 }

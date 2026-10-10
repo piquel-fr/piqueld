@@ -631,7 +631,10 @@ impl Client {
     manifest or, when the application is repository-backed, the manifest on
     `branch` (by default the branch `spec.manifest` names), optionally pinned
     to `commit`. A branch for an application without a repository fails with
-    `manifest_repository_required`. The inspected application
+    `manifest_repository_required`. With `promote_from`, it never builds and
+    only receives releases promoted from that environment, which must be
+    another environment of the application, never a preview
+    (`promotion_source_invalid`). The inspected application
     `expected_generation` goes in the JSON body.
 
     Sends a `POST` request to `/api/v1/applications/{id}/environments`
@@ -7613,6 +7616,184 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Promotes a release into a promoted environment
+
+    Deploys the release of the source environment's current deployment
+    (which must be `deployment` when given), or an earlier `release`, without
+    building or fetching. The release is pinned at acceptance: its own
+    manifest is rendered with this environment's `[spec.environments.<name>]`
+    block and variables, and its images deployed as recorded. Refused unless
+    the source deployment is current and succeeded and its services are
+    healthy now (`promotion_source_not_ready`, `promotion_source_changed`),
+    the release's build inputs render as they did for it
+    (`release_incompatible`), its images are present or can be pulled again
+    (`image_unavailable`), and every secret it mounts exists and allows this
+    environment (`secrets_unavailable`, listing all of them). The inspected
+    application `expected_generation` goes in the JSON body.
+
+    Sends a `POST` request to `/api/v1/environments/{id}/promote`
+
+    Arguments:
+    - `id`
+    - `force`: Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn promote_environment<'a>(
+        &'a self,
+        id: &'a str,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::api::PromoteRequest,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::AcceptedPromotion>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/promote",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "promote_environment",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            502u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Plans a promotion, or deploying an earlier release, without changing
+    anything
+
+    Shows the release and its provenance and image availability, the
+    rendered diff against the environment's latest deployment, the runtime
+    plan, new (empty) volumes, and every secret that is missing or that the
+    environment may not use. The source must be promotable, as for
+    `promoteEnvironment`; an earlier `release` may be planned for any
+    environment. `expected_generation` is ignored.
+
+    Sends a `POST` request to `/api/v1/environments/{id}/promote/plan`
+
+    */
+    pub async fn plan_promotion<'a>(
+        &'a self,
+        id: &'a str,
+        body: &'a piqueld_core::api::PromoteRequest,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::PlanView>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/promote/plan",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "plan_promotion",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            502u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Reconciles an environment
 
     Returns 202 with a durable operation that repairs the runtime to match the
@@ -7963,6 +8144,96 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Changes where an environment's releases come from
+
+    With `promote_from`, the environment never builds or fetches again: it
+    only receives releases promoted from that environment, by ID, which must
+    be another live environment of the application, never a preview
+    (`promotion_source_invalid`), and must not promote from it, directly or
+    through others (`promotion_cycle`). Without it, a promoted environment
+    tracks the saved manifest, or the branch `spec.manifest` names, again.
+    Nothing is deployed. The inspected application `expected_generation`
+    goes in the JSON body.
+
+    Sends a `PUT` request to `/api/v1/environments/{id}/source`
+
+    Arguments:
+    - `id`
+    - `force`: Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_environment_source<'a>(
+        &'a self,
+        id: &'a str,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::api::EnvironmentSourceRequest,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::EnvironmentView>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/source",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_environment_source",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             503u16 => Err(Error::ErrorResponse(

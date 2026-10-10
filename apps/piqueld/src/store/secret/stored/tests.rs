@@ -72,7 +72,7 @@ async fn fixture() -> (tempfile::TempDir, Store, EnvironmentId, EnvironmentId) {
             Mutation::CreateEnvironment {
                 application: template.id().clone(),
                 name: EnvironmentName::parse("staging").unwrap(),
-                branch: None,
+                source: None,
             },
             Some(1),
             false,

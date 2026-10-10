@@ -38,6 +38,12 @@ impl RuntimeBoundary for Runtime {
     async fn local_images(&self) -> Result<piqueld_core::LocalImages, BoundaryError> {
         Err(DockerError::Unavailable("browser fixture").into())
     }
+    async fn reuse_images(
+        &self,
+        _: &std::collections::BTreeMap<piqueld_core::ServiceName, piqueld_core::ResolvedSource>,
+    ) -> Result<piqueld::reconcile::ImagesInUse, BoundaryError> {
+        Err(DockerError::Unavailable("browser fixture").into())
+    }
     async fn observe(&self, _: &StoredEnvironment) -> Result<ObservedApplication, BoundaryError> {
         Ok(ObservedApplication::default())
     }

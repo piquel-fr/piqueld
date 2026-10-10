@@ -66,7 +66,7 @@ test('each environment of a repository-backed application follows its own branch
   const staging = new URL(page.url()).pathname.split('/').pop()!;
 
   const branch = page.getByLabel('Branch', { exact: true });
-  const change = page.getByRole('button', { name: 'Change branch', exact: true });
+  const change = page.getByRole('button', { name: 'Save source', exact: true });
   await expect(branch).toHaveValue('release');
   await expect(change).toBeDisabled();
   // Surrounding whitespace names the same branch.
@@ -107,7 +107,7 @@ test('an environment page reads the manifest last fetched from its branch', asyn
     }
   });
   const deployed = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${staging}/deploy?`));
-  await page.locator('.detail-head').getByRole('button', { name: 'Deploy to staging', exact: true }).click();
+  await page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true }).click();
   expect((await deployed).status()).toBe(202);
   await page.reload();
 

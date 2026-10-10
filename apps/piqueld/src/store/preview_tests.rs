@@ -275,7 +275,7 @@ async fn previews_need_a_repository_and_environment_changes_never_reach_them() {
                 Mutation::CreateEnvironment {
                     application: application.clone(),
                     name: preview.name.clone(),
-                    branch: None,
+                    source: None,
                 },
                 generation,
                 false,

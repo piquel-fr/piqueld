@@ -1,7 +1,7 @@
 //! Atomic acceptance: compare current intent, write the change and its replay receipt together.
 use super::access::Holder;
 use super::{Actor, Operation, OperationKind, Store, StoreError, StoredApplication, now_ms};
-use crate::api::{Mutation, MutationResponse, PreviewMutation};
+use crate::api::{Mutation, MutationResponse, PreviewMutation, PromotionMutation};
 use piqueld_core::access::{AppPermission, Grants, Target};
 use piqueld_core::api::{
     AcceptedOperation, CreatedPreview, DeletedApplication, RenamedApplication,
@@ -16,6 +16,19 @@ use sqlx::{Sqlite, SqliteConnection, Transaction};
 struct LegacyDelete<'a> {
     kind: &'static str,
     id: &'a ApplicationId,
+}
+
+/// An authorized request: a replay, or one to execute.
+enum Checked {
+    /// The response stored for the request it repeats.
+    Replay(MutationResponse),
+    /// A new request.
+    New {
+        /// The caller's authority; `None` for the daemon and the host operator.
+        caller: Option<super::access::Authority>,
+        /// Whether it creates an application.
+        creating: bool,
+    },
 }
 
 /// A mutation's outcome inside its transaction.
@@ -60,34 +73,29 @@ impl Store {
     ) -> Result<(MutationResponse, bool), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_ms();
-        let fingerprint = Self::mutation_fingerprint(&mutation, expected_generation, force)?;
-        let legacy = Self::legacy_fingerprint(&mutation, expected_generation, force)?;
-        let caller = actor.load(&mut tx).await?;
         let first_event =
             sqlx::query_scalar!(r#"SELECT COALESCE(MAX(id),0)+1 AS "id!: i64" FROM events"#)
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(StoreError::database)?;
-        let owner = caller.as_ref().map(|authority| authority.user_id.as_str());
-        let replay = Self::replay_on(
+        let fingerprint = Self::mutation_fingerprint(&mutation, expected_generation, force)?;
+        let checked = Self::check_request_on(
             &mut tx,
+            actor,
+            &mutation,
+            [
+                Some(&fingerprint),
+                Self::legacy_fingerprint(&mutation, expected_generation, force)?.as_ref(),
+            ],
             request_id,
-            owner,
-            [Some(&fingerprint), legacy.as_ref()],
             now,
         )
-        .await;
-        let replaying = matches!(replay, Ok(Some(_)));
-        let creating = match &caller {
-            Some(authority) => {
-                Self::authorize_mutation_on(&mut tx, &authority.grants, &mutation, replaying)
-                    .await?
-            }
-            None => false,
+        .await?;
+        let (caller, creating) = match checked {
+            Checked::Replay(response) => return Ok((response, false)),
+            Checked::New { caller, creating } => (caller, creating),
         };
-        if let Some(response) = replay? {
-            return Ok((response, false));
-        }
+        let owner = caller.as_ref().map(|authority| authority.user_id.as_str());
         // Replay the original acceptance before applying an override to current intent.
         if force {
             expected_generation = None;
@@ -146,6 +154,67 @@ impl Store {
         )
         .await?;
         Ok((accepted.response, accepted.wake))
+    }
+
+    /// Returns the stored response when `request_id` replays a request with
+    /// one of `fingerprints` that `actor` may still submit (see
+    /// `check_request_on`), so callers can return it before checking
+    /// preconditions that may have changed since it was accepted.
+    pub(crate) async fn replay(
+        &self,
+        actor: Actor<'_>,
+        mutation: &Mutation,
+        expected_generation: Option<u64>,
+        force: bool,
+        request_id: Option<&str>,
+    ) -> Result<Option<MutationResponse>, StoreError> {
+        if request_id.is_none() {
+            return Ok(None);
+        }
+        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let fingerprint = Self::mutation_fingerprint(mutation, expected_generation, force)?;
+        let checked = Self::check_request_on(
+            &mut tx,
+            actor,
+            mutation,
+            [Some(&fingerprint), None],
+            request_id,
+            now_ms(),
+        )
+        .await?;
+        Ok(match checked {
+            Checked::Replay(response) => Some(response),
+            Checked::New { .. } => None,
+        })
+    }
+
+    /// Loads `actor`'s authority and checks that it may submit `mutation`
+    /// against the current application, before any replay, then returns the
+    /// stored response when `request_id` replays one of `fingerprints` (see
+    /// `replay_on`). Replaying a save may also pass the check a creation
+    /// passes, since it may have created that application.
+    async fn check_request_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        actor: Actor<'_>,
+        mutation: &Mutation,
+        fingerprints: [Option<&String>; 2],
+        request_id: Option<&str>,
+        now: i64,
+    ) -> Result<Checked, StoreError> {
+        let caller = actor.load(tx).await?;
+        let owner = caller.as_ref().map(|authority| authority.user_id.as_str());
+        let replay = Self::replay_on(tx, request_id, owner, fingerprints, now).await;
+        let replaying = matches!(replay, Ok(Some(_)));
+        let creating = match &caller {
+            Some(authority) => {
+                Self::authorize_mutation_on(tx, &authority.grants, mutation, replaying).await?
+            }
+            None => false,
+        };
+        Ok(match replay? {
+            Some(response) => Checked::Replay(response),
+            None => Checked::New { caller, creating },
+        })
     }
 
     /// Records who requested a mutation (an account and its credential, or
@@ -218,6 +287,9 @@ impl Store {
             | Mutation::SetBranch { id, .. }
             | Mutation::SetSync { id, .. }
             | Mutation::Sync(crate::api::ListedHead { id, .. })
+            | Mutation::Promotion(
+                PromotionMutation::SetSource { id, .. } | PromotionMutation::Promote { id, .. },
+            )
             | Mutation::Deploy { id, .. }
             | Mutation::Delete { id }
             | Mutation::Reconcile { id }
@@ -372,10 +444,10 @@ impl Store {
             Mutation::CreateEnvironment {
                 application,
                 name,
-                branch,
+                source,
             } => {
                 let current = Self::checked_application_on(tx, &application, expected).await?;
-                let id = Self::create_environment_on(tx, &current, &name, branch, now).await?;
+                let id = Self::create_environment_on(tx, &current, &name, source, now).await?;
                 Self::environment_accepted(tx, id).await
             }
             Mutation::RenameEnvironment { id, name } => {
@@ -390,7 +462,6 @@ impl Store {
             }
             Mutation::Deploy { id, revision } => {
                 let current = Self::checked_environment_on(tx, &id, expected).await?;
-                // Only the captured snapshot changes; the fetched manifest replaces it.
                 let operation = Self::deploy_revision_on(tx, &current, revision.as_ref()).await?;
                 Ok(Self::operation_accepted(&operation))
             }
@@ -398,13 +469,9 @@ impl Store {
             Mutation::Sync(listed) => Self::sync_on(tx, listed, now).await,
             Mutation::Delete { id } => {
                 let current = Self::checked_environment_on(tx, &id, expected).await?;
-                let operation = match Self::latest_operation_on(tx, &id).await? {
-                    Some(operation)
-                        if current.delete_intent() && operation.kind == OperationKind::Delete =>
-                    {
-                        operation
-                    }
-                    _ => Self::delete_environment_on(tx, &current).await?,
+                let operation = match Self::pending_deletion_on(tx, &current).await? {
+                    Some(operation) => operation,
+                    None => Self::delete_environment_on(tx, &current).await?,
                 };
                 Ok(Self::operation_accepted(&operation))
             }
@@ -420,9 +487,47 @@ impl Store {
                 };
                 Ok(Self::operation_accepted(&operation))
             }
+            Mutation::Promotion(mutation) => self.promotion_on(tx, mutation, expected, now).await,
             // Boxed: preview changes would otherwise grow every acceptance future.
             Mutation::Preview(mutation) => {
                 Box::pin(self.execute_preview_on(tx, mutation, now)).await
+            }
+        }
+    }
+
+    /// Changes where an environment's releases come from, or promotes a
+    /// release into a promoted environment, after checking the revision
+    /// precondition against its application.
+    async fn promotion_on(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        mutation: PromotionMutation,
+        expected: Option<u64>,
+        now: i64,
+    ) -> Result<Accepted, StoreError> {
+        match mutation {
+            PromotionMutation::SetSource { id, promote_from } => {
+                let current = Self::checked_environment_on(tx, &id, expected).await?;
+                Self::set_promotion_on(tx, &current, promote_from, now).await?;
+                Self::environment_accepted(tx, id).await
+            }
+            PromotionMutation::Promote { id, promotion, .. } => {
+                let promotion = promotion.ok_or(StoreError::InvalidInput)?;
+                let current = Self::checked_environment_on(tx, &id, expected).await?;
+                let instance = piqueld_core::InstanceId::parse(self.instance_id())
+                    .map_err(StoreError::corrupt)?;
+                // Boxed: it would otherwise grow every acceptance future.
+                let operation =
+                    Box::pin(self.accept_promotion_on(tx, &current, &promotion, instance)).await?;
+                Ok(Accepted {
+                    response: MutationResponse::Promotion(piqueld_core::api::AcceptedPromotion {
+                        operation: AcceptedOperation::from(&operation),
+                        release_id: promotion.release,
+                        origin: promotion.origin,
+                    }),
+                    wake: true,
+                    environments: vec![id],
+                })
             }
         }
     }
@@ -479,6 +584,7 @@ impl Store {
                 let preview = Self::preview_on(tx, &id).await?;
                 // A branch gone from one repository says nothing about another.
                 if preview
+                    .tracking()?
                     .repository()
                     .is_none_or(|current| current.repository.url != repository)
                 {
@@ -494,16 +600,24 @@ impl Store {
         tx: &mut Transaction<'_, Sqlite>,
         preview: &super::StoredEnvironment,
     ) -> Result<Accepted, StoreError> {
-        let id = preview.id();
-        let operation = match Self::latest_operation_on(tx, id).await? {
-            Some(operation)
-                if preview.delete_intent() && operation.kind == OperationKind::Delete =>
-            {
-                operation
-            }
-            _ => Self::request_delete_on(tx, id).await?,
+        let operation = match Self::pending_deletion_on(tx, preview).await? {
+            Some(operation) => operation,
+            None => Self::request_delete_on(tx, preview.id()).await?,
         };
         Ok(Self::operation_accepted(&operation))
+    }
+
+    /// The deletion already requested for `environment`, which a repeated
+    /// request returns rather than requesting another.
+    async fn pending_deletion_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        environment: &super::StoredEnvironment,
+    ) -> Result<Option<Operation>, StoreError> {
+        Ok(Self::latest_operation_on(tx, environment.id())
+            .await?
+            .filter(|operation| {
+                environment.delete_intent() && operation.kind == OperationKind::Delete
+            }))
     }
 
     /// Loads an application after checking the revision precondition, so a
@@ -707,9 +821,7 @@ impl Store {
             let environment = Self::environment_on(tx, environment.as_str())
                 .await?
                 .ok_or(StoreError::NotFound)?;
-            let operation = Self::request_deploy_on(tx, &environment).await?;
-            Self::insert_deployment_on(tx, &operation, &environment.candidate(None)?).await?;
-            saved.operation_id = Some(operation.id);
+            saved.operation_id = Some(Self::deploy_revision_on(tx, &environment, None).await?.id);
         }
         Ok(())
     }
@@ -972,7 +1084,7 @@ mod tests {
             let create = Mutation::CreateEnvironment {
                 application: application.clone(),
                 name: EnvironmentName::parse(name).unwrap(),
-                branch: None,
+                source: None,
             };
             let (MutationResponse::Environment(environment), _) = store
                 .accept(Actor::Daemon, create, None, true, None)

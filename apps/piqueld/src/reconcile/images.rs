@@ -5,18 +5,20 @@ use crate::docker::LocalImage;
 use piqueld_core::{
     InstanceId, ServiceImage, ServiceName, api::ImageStatus, resource::ResolvedSource,
 };
-use std::time::Duration;
-use tokio::sync::{Notify, RwLock, RwLockReadGuard, watch};
+use std::{sync::Arc, time::Duration};
+use tokio::sync::{Notify, OwnedRwLockReadGuard, RwLock, watch};
 use tokio_util::sync::CancellationToken;
 
 /// Cleanup's schedule and state, and the lock that keeps it from removing an
 /// image a preparation is about to record.
 pub(super) struct ImageRetention {
-    /// Held shared by each preparation, from before it resolves or builds
-    /// images until its target is saved, and exclusively by cleanup while it
-    /// reads the retention roots and removes images. Cleanup only tries to
-    /// take it, so it never delays a deployment for long.
-    in_use: RwLock<()>,
+    /// Held shared by each preparation and promotion, from before it
+    /// resolves, builds, or checks images until its target is saved, and
+    /// exclusively by cleanup while it reads the retention roots and removes
+    /// images. Cleanup only tries to take it, so it never delays a
+    /// deployment for long. Shared with the runtime boundary, which accepts
+    /// promotions.
+    in_use: Arc<RwLock<()>>,
     /// Successful deployments per environment whose images are kept.
     keep_deployments: u32,
     /// Time between periodic cleanups.
@@ -35,7 +37,7 @@ impl Default for ImageRetention {
 impl ImageRetention {
     pub(super) fn new(config: &crate::config::ImagesConfig) -> Self {
         Self {
-            in_use: RwLock::new(()),
+            in_use: Arc::default(),
             keep_deployments: config.keep_deployments,
             interval: Duration::from_secs(config.cleanup_interval_seconds),
             requested: Notify::new(),
@@ -52,39 +54,35 @@ impl ImageRetention {
 /// Proof that cleanup isn't running and won't start: hold it from before
 /// choosing the images a deployment uses until its target is saved, after
 /// which its images are retention roots.
-pub struct ImagesInUse<'a> {
-    _guard: RwLockReadGuard<'a, ()>,
+pub struct ImagesInUse {
+    _guard: OwnedRwLockReadGuard<()>,
 }
 
-impl<D: DockerApi> Controller<D> {
-    /// Keeps cleanup from removing images until the returned guard drops.
-    pub async fn images_in_use(&self) -> ImagesInUse<'_> {
-        ImagesInUse {
-            _guard: self.images.in_use.read().await,
+impl ImagesInUse {
+    /// Keeps cleanup, which takes `lock` exclusively, from removing images
+    /// until the returned guard drops.
+    pub async fn hold(lock: Arc<RwLock<()>>) -> Self {
+        Self {
+            _guard: lock.read_owned().await,
         }
     }
 
-    /// The images this installation built, as of the last cleanup.
-    #[must_use]
-    pub fn image_status(&self) -> watch::Receiver<ImageStatus> {
-        self.images.status.subscribe()
-    }
-
-    /// Makes sure every image of `sources` is present before a deployment
-    /// uses it again, pulling a missing registry image again by its digest.
-    /// Restoring a deployment (#172) and promoting a release (#132) call it,
-    /// holding `in_use` until they saved their target.
+    /// Makes sure every image of `sources` is present in `docker` before a
+    /// deployment uses it again, pulling a missing registry image again by
+    /// its digest. Promoting a release calls it through the runtime boundary
+    /// (see `RuntimeBoundary::reuse_images`), and restoring a deployment
+    /// (#172) will too, keeping this guard until they saved their target.
     ///
     /// # Errors
     /// `ImageUnavailable`, naming the service and image, for the first
     /// missing image that is a build or that can't be pulled; Docker errors
     /// when images can't be listed.
-    pub async fn ensure_images<'a>(
+    pub async fn ensure<'a>(
         &self,
-        _in_use: &ImagesInUse<'_>,
+        docker: &impl DockerApi,
         sources: impl IntoIterator<Item = (&'a ServiceName, &'a ResolvedSource)>,
     ) -> Result<(), OperationError> {
-        let present = LocalImage::present(&self.docker.images().await?);
+        let present = LocalImage::present(&docker.images().await?);
         for (service, source) in present.missing(sources) {
             let image = ServiceImage {
                 service: service.clone(),
@@ -96,7 +94,7 @@ impl<D: DockerApi> Controller<D> {
                     source: None,
                 });
             };
-            if let Err(error) = self.docker.resolve_image(digest.as_str()).await {
+            if let Err(error) = docker.resolve_image(digest.as_str()).await {
                 return Err(OperationError::ImageUnavailable {
                     image,
                     source: Some(error),
@@ -104,6 +102,25 @@ impl<D: DockerApi> Controller<D> {
             }
         }
         Ok(())
+    }
+}
+
+impl<D: DockerApi> Controller<D> {
+    /// Keeps cleanup from removing images until the returned guard drops.
+    pub async fn images_in_use(&self) -> ImagesInUse {
+        ImagesInUse::hold(Arc::clone(&self.images.in_use)).await
+    }
+
+    /// The lock preparations and promotions hold against cleanup, for the
+    /// runtime boundary.
+    pub(super) fn images_lock(&self) -> Arc<RwLock<()>> {
+        Arc::clone(&self.images.in_use)
+    }
+
+    /// The images this installation built, as of the last cleanup.
+    #[must_use]
+    pub fn image_status(&self) -> watch::Receiver<ImageStatus> {
+        self.images.status.subscribe()
     }
 
     /// Removes each image this installation built that no retention root

@@ -51,7 +51,7 @@ impl Store {
         id: &str,
     ) -> Result<Vec<EnvironmentView>, StoreError> {
         sqlx::query_as!(EnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!" FROM environments e WHERE e.application_id=?1 AND e.kind='preview' ORDER BY e.name"#,id)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.promoted_from,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!" FROM environments e WHERE e.application_id=?1 AND e.kind='preview' ORDER BY e.name"#,id)
             .fetch_all(connection).await.map_err(StoreError::database)?
             .into_iter().map(EnvironmentRow::decode).collect()
     }
@@ -236,7 +236,7 @@ impl Store {
         tx: &mut Transaction<'_, Sqlite>,
         preview: &StoredEnvironment,
     ) -> Result<Operation, StoreError> {
-        if preview.repository().is_none() {
+        if preview.tracking()?.repository().is_none() {
             return Err(StoreError::PreviewRequiresRepository);
         }
         Self::deploy_revision_on(tx, preview, None).await

@@ -209,10 +209,18 @@ impl AccessForm {
 /// The application's secret store: manually set values (never read back),
 /// their versions and access lists. Writes are guarded by generation and
 /// clear the value field as soon as they are submitted; after a failure,
-/// actions stay disabled until the list is refreshed.
+/// actions stay disabled until the list is refreshed. On an environment's
+/// page, given the secrets its manifest `mounts`, it lists only the secrets
+/// that environment may mount or mounts, and new ones default to it alone;
+/// `changed` runs after every write.
 #[component]
-fn StoredSecrets() -> impl IntoView {
+fn StoredSecrets(
+    #[prop(optional, into)] mounts: Option<Signal<BTreeSet<String>>>,
+    #[prop(optional)] changed: Option<Callback<()>>,
+) -> impl IntoView {
     let context = editor();
+    // The environment page's environment, when scoped to it.
+    let scope = move || mounts.and_then(|_| context.selected_environment());
     let secrets = RwSignal::new(Vec::<StoredSecret>::new());
     let ready = RwSignal::new(false);
     let feedback = Feedback::new();
@@ -234,18 +242,42 @@ fn StoredSecrets() -> impl IntoView {
                 .map(|s| (s.metadata.generation, s.access.clone()))
         })
     };
-    // Naming a stored secret, or refreshing the list, loads its access.
-    Effect::new(move |_| {
+    // New secrets default to every environment, or on an environment's
+    // page to that environment, or on a preview's to previews.
+    let default_access = move || match scope() {
+        Some(environment) if environment.preview().is_some() => SecretAccess {
+            environments: EnvironmentAccess::Only(BTreeSet::new()),
+            previews: true,
+        },
+        Some(environment) => SecretAccess {
+            environments: EnvironmentAccess::Only(BTreeSet::from([environment.id])),
+            previews: false,
+        },
+        None => SecretAccess::default(),
+    };
+    form.load(&default_access());
+    // Naming a stored secret, or refreshing the list, loads its access;
+    // naming a new one after it starts again from the default.
+    Effect::new(move |editing: Option<bool>| {
         let name = name.get();
-        if let Some(access) = secrets.with(|items| {
+        let access = secrets.with(|items| {
             items
                 .iter()
                 .find(|s| s.metadata.name == name)
                 .map(|s| s.access.clone())
-        }) {
-            form.load(&access);
+        });
+        match &access {
+            Some(access) => form.load(access),
+            None if editing == Some(true) => form.load(&default_access()),
+            None => {}
         }
+        access.is_some()
     });
+    let notify = move || {
+        if let Some(changed) = changed {
+            changed.run(());
+        }
+    };
     let saved = move |secret: StoredSecret, message: &str| {
         secrets.update(|items| {
             items.retain(|s| s.metadata.name != secret.metadata.name);
@@ -253,6 +285,7 @@ fn StoredSecrets() -> impl IntoView {
             items.sort_by(|a, b| a.metadata.name.cmp(&b.metadata.name));
         });
         feedback.succeed(message);
+        notify();
     };
     let failed = move |e: ClientError| {
         ready.set(false);
@@ -335,16 +368,30 @@ fn StoredSecrets() -> impl IntoView {
                 Ok(()) => {
                     secrets.update(|items| items.retain(|s| s.metadata.name != secret.name));
                     feedback.succeed("Secret deleted.");
+                    notify();
                 }
                 Err(e) => failed(e),
             }
             context.busy.set(false);
         });
     });
-    let rows = move || {
-        let environments = context.saved.with(|saved| saved.environments.clone());
+    // Every secret, or on an environment's page the ones it may mount or mounts.
+    let shown = move || {
+        let scope = scope();
+        let mounts = mounts.map(|mounts| mounts.get()).unwrap_or_default();
         secrets
             .get()
+            .into_iter()
+            .filter(|secret| {
+                scope.as_ref().is_none_or(|environment| {
+                    secret.access.allows(environment) || mounts.contains(&secret.metadata.name)
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let rows = move || {
+        let environments = context.saved.with(|saved| saved.environments.clone());
+        shown()
             .into_iter()
             .map(|secret| {
                 let selected = secret.clone();
@@ -399,7 +446,13 @@ fn StoredSecrets() -> impl IntoView {
                 <div>
                     <h3>"Secret store"</h3>
                     <p>
-                        "Manually set values, shared by this application's environments and write-only. Each lists the environments that may mount it; deploying an environment that mounts a secret it may not use fails before rollout."
+                        {move || {
+                            if scope().is_some() {
+                                "Manually set values this environment may mount or mounts, from the application's store, write-only. New ones may be mounted by this environment only (by previews, on a preview), unless you choose otherwise; deploying or promoting it while it mounts a secret it may not use fails before rollout."
+                            } else {
+                                "Manually set values, shared by this application's environments and write-only. Each lists the environments that may mount it; deploying an environment that mounts a secret it may not use fails before rollout."
+                            }
+                        }}
                     </p>
                 </div>
                 <button
@@ -426,9 +479,13 @@ fn StoredSecrets() -> impl IntoView {
                 }}
                 <div class="table-wrap">
                     {move || {
-                        if secrets.with(Vec::is_empty) {
+                        if shown().is_empty() {
                             if ready.get() {
-                                empty("No secrets stored for this application.")
+                                empty(if scope().is_some() {
+                                    "No stored secret this environment may mount."
+                                } else {
+                                    "No secrets stored for this application."
+                                })
                             } else {
                                 empty("Loading secrets…")
                             }
@@ -613,6 +670,13 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
         let template = context.environment_manifest()?;
         Some(stored.with(|stored| MountedSecret::list(&template, &environment, stored)))
     };
+    let mounted_names = Signal::derive(move || {
+        mounted()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<BTreeSet<_>>()
+    });
     let mounted_rows = move || {
         mounted()
             .unwrap_or_default()
@@ -685,7 +749,7 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                     <div>
                         <h3>"Mounted secrets"</h3>
                         <p>
-                            "Where each secret this environment's manifest mounts comes from. Stored values are set in the application's Secrets tab."
+                            "Where each secret this environment's manifest mounts comes from. Set stored values below."
                         </p>
                     </div>
                     <button
@@ -706,7 +770,18 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                     <div class="table-wrap">
                         {move || match mounted() {
                             None => {
-                                empty("Deploy this environment to fetch the secrets its branch mounts.")
+                                empty(
+                                    if context
+                                        .selected_environment()
+                                        .is_some_and(|environment| {
+                                            environment.source.promoted_from().is_some()
+                                        })
+                                    {
+                                        "Its source has no release to promote yet."
+                                    } else {
+                                        "Deploy this environment to fetch the secrets its branch mounts."
+                                    },
+                                )
                             }
                             Some(rows) if rows.is_empty() => {
                                 empty("No secrets are mounted in this environment.")
@@ -729,6 +804,7 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                     </div>
                 </div>
             </section>
+            <StoredSecrets mounts={mounted_names} changed={reload_stored} />
             <section class="card">
                 <header>
                     <div>

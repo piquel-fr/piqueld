@@ -1,16 +1,18 @@
-//! Deployment actions, preview dialog, history, and snapshot inspection.
+//! Deployment and promotion actions, plan dialogs, history, and snapshot
+//! inspection.
 use super::super::format::timestamp;
 use super::super::ui::{
     Icon, Modal, Tabs, Tone, badge, empty, icon, notice, operation_badge, when,
 };
+use super::releases::ReleaseCard;
 use super::{client_error_message, editor};
 use crate::browser::Alive;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_router::NavigateOptions;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{
-    ApplyApplicationRequest, Client, DeploymentView, Page, Source, ValidatedRollout,
+    ApplyApplicationRequest, Client, DeploymentOrigin, DeploymentView, EnvironmentView, Page,
+    PlanView, PromoteRequest, SecretProblem, Source, ValidatedRollout,
 };
 
 /// "Preview" and "Deploy" buttons for the editor's target environment. Preview
@@ -18,23 +20,53 @@ use piqueld_client::{
 /// fetched one when it follows a branch; cleared whenever the saved view or
 /// target changes); Deploy starts a deployment of the saved
 /// generation, then shows the environment's deployments. Without a single target
-/// (an application with several environments or none), Deploy opens the
-/// Environments tab to choose one.
+/// (an application with several environments or none), Deploy lists the
+/// environments to choose one. A promoted target, which never builds,
+/// offers Promote from its source instead. Either also offers Promote,
+/// before its own action, into the environments promoted from it. On its own page, Deploy
+/// doesn't name the environment.
 #[component]
 pub(super) fn DeploymentActions() -> impl IntoView {
     let context = editor();
-    let preview = RwSignal::new(None::<piqueld_client::PlanView>);
-    let navigate = use_navigate();
+    let preview = RwSignal::new(None::<PlanView>);
+    let navigate = StoredValue::new(use_navigate());
+    let promoted = Memo::new(move |_| {
+        context
+            .selected_environment()
+            .is_some_and(|environment| environment.source.promoted_from().is_some())
+    });
+    // Environments promoted from this one, which its page promotes into.
+    let dependents = Signal::derive(move || {
+        let current = context.environment.get();
+        context.saved.with(|saved| {
+            saved
+                .environments
+                .iter()
+                .filter(|environment| {
+                    !environment.delete_intent
+                        && environment.source.promoted_from().map(|id| id.as_str())
+                            == current.as_deref()
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+    });
+    // Promotes into those environments, from any environment of a chain.
+    let promote_into = move || {
+        view! {
+            <Show when={move || !dependents.with(Vec::is_empty)}>
+                <ChooseEnvironment
+                    label="Promote"
+                    title="Promote into an environment"
+                    environments={dependents}
+                />
+            </Show>
+        }
+    };
     let deploy = move |_| {
         let environment = context.environment_id();
-        let href = format!("{}?tab=deployments", context.environment_href(&environment));
-        let navigate = navigate.clone();
-        context.deploy(environment, move || {
-            if context.environment_page() {
-                context.tab.set("Deployments");
-            } else {
-                navigate(&href, NavigateOptions::default());
-            }
+        context.deploy(environment.clone(), move || {
+            context.show_deployments(&environment, navigate.get_value());
         });
     };
     let inspect = move |_| {
@@ -70,59 +102,400 @@ pub(super) fn DeploymentActions() -> impl IntoView {
         <Show
             when={move || context.environment.get().is_some()}
             fallback={move || {
+                let environments = Signal::derive(move || {
+                    context.saved.with(|saved| saved.environments.clone())
+                });
                 view! {
-                    <button
-                        type="button"
-                        class="btn btn-primary"
-                        title="Choose an environment to deploy"
-                        on:click={move |_| context.tab.set("Environments")}
+                    // Without environments, Deploy leads to creating one.
+                    <Show
+                        when={move || !environments.with(Vec::is_empty)}
+                        fallback={move || {
+                            view! {
+                                <button
+                                    type="button"
+                                    class="btn btn-primary"
+                                    title="Create an environment to deploy"
+                                    on:click={move |_| context.tab.set("Environments")}
+                                >
+                                    {icon(Icon::Rocket)}
+                                    "Deploy"
+                                </button>
+                            }
+                        }}
                     >
-                        {icon(Icon::Rocket)}
-                        "Deploy…"
-                    </button>
+                        <ChooseEnvironment
+                            label="Deploy"
+                            title="Deploy an environment"
+                            environments={environments}
+                        />
+                    </Show>
                 }
             }}
         >
-            <button
-                type="button"
-                class="btn"
-                disabled={move || {
-                    context.environment_action_blocked() || context.environment_manifest().is_none()
-                }}
-                on:click={inspect}
-                title={move || {
-                    if context.environment_manifest().is_some() {
-                        "Show what deploying this environment's manifest would change"
-                    } else {
-                        "Deploy this environment to fetch its manifest from its branch first"
+            <Show
+                when={move || !promoted.get()}
+                fallback={move || {
+                    view! {
+                        {promote_into()}
+                        <PromoteAction environment={context.environment_id()} />
                     }
                 }}
             >
-                {icon(Icon::Eye)}
-                "Preview"
-            </button>
-            <button
-                type="button"
-                class="btn btn-primary"
-                disabled={move || context.environment_action_blocked()}
-                on:click={deploy.clone()}
-            >
-                {icon(Icon::Rocket)}
-                {move || {
-                    context
-                        .selected_environment()
-                        .map_or_else(|| "Deploy".into(), |env| format!("Deploy to {}", env.name))
-                }}
-            </button>
+                <button
+                    type="button"
+                    class="btn"
+                    disabled={move || {
+                        context.environment_action_blocked() || context.environment_manifest().is_none()
+                    }}
+                    on:click={inspect}
+                    title={move || {
+                        if context.environment_manifest().is_some() {
+                            "Show what deploying this environment's manifest would change"
+                        } else {
+                            "Deploy this environment to fetch its manifest from its branch first"
+                        }
+                    }}
+                >
+                    {icon(Icon::Eye)}
+                    "Preview"
+                </button>
+                {promote_into()}
+                <button
+                    type="button"
+                    class="btn btn-primary"
+                    disabled={move || context.environment_action_blocked()}
+                    on:click={deploy}
+                >
+                    {icon(Icon::Rocket)}
+                    // Its own page names the environment already.
+                    {move || match context.selected_environment() {
+                        Some(environment) if !context.environment_page() => {
+                            format!("Deploy to {}", environment.name)
+                        }
+                        _ => "Deploy".into(),
+                    }}
+                </button>
+            </Show>
         </Show>
         <DeploymentPreview preview={preview} />
+    }
+}
+
+/// `environment`'s own action: Deploy for one that builds its source, or
+/// Promote for a promoted one (see `PromoteAction`). Either shows its
+/// deployments once accepted, then runs `done`.
+#[component]
+pub(super) fn EnvironmentAction(
+    environment: EnvironmentView,
+    #[prop(optional)] compact: bool,
+    #[prop(default = None)] done: Option<Callback<()>>,
+) -> impl IntoView {
+    let context = editor();
+    let id = environment.id.to_string();
+    if environment.source.promoted_from().is_some() {
+        return view! { <PromoteAction environment={id} compact={compact} done={done} /> }
+            .into_any();
+    }
+    let navigate = StoredValue::new(use_navigate());
+    let deleting = environment.delete_intent;
+    let label = format!("Deploy to {}", environment.name);
+    let id = StoredValue::new(id);
+    view! {
+        <button
+            type="button"
+            class={if compact { "btn btn-sm" } else { "btn btn-primary" }}
+            aria-label={label.clone()}
+            disabled={move || context.action_blocked() || deleting}
+            on:click={move |_| {
+                context
+                    .deploy(
+                        id.get_value(),
+                        move || {
+                            context.show_deployments(&id.get_value(), navigate.get_value());
+                            if let Some(done) = done {
+                                done.run(());
+                            }
+                        },
+                    );
+            }}
+        >
+            {icon(Icon::Rocket)}
+            {if compact { "Deploy".to_owned() } else { label.clone() }}
+        </button>
+    }
+    .into_any()
+}
+
+/// A `label`led button opening a dialog that lists `environments`, each
+/// with its own action (see `EnvironmentAction`), so one can be chosen:
+/// "Deploy" over an application's environments, "Promote" over the
+/// environments promoted from the shown one. Closes once an action was
+/// accepted.
+#[component]
+pub(super) fn ChooseEnvironment(
+    label: &'static str,
+    title: &'static str,
+    environments: Signal<Vec<EnvironmentView>>,
+) -> impl IntoView {
+    let context = editor();
+    let opened = RwSignal::new(false);
+    let close = Callback::new(move |()| opened.set(false));
+    view! {
+        <button
+            type="button"
+            class="btn btn-primary"
+            disabled={move || environments.with(Vec::is_empty)}
+            on:click={move |_| opened.set(true)}
+        >
+            {icon(Icon::Rocket)}
+            {label}
+        </button>
+        <Modal title={title} opened={opened} busy={context.busy}>
+            <ul class="list">
+                {move || {
+                    environments
+                        .get()
+                        .into_iter()
+                        .map(|environment| {
+                            view! {
+                                <li class="list-row">
+                                    <span class="title">{environment.name.to_string()}</span>
+                                    <EnvironmentAction
+                                        environment={environment}
+                                        compact=true
+                                        done={Some(close)}
+                                    />
+                                </li>
+                            }
+                        })
+                        .collect_view()
+                }}
+            </ul>
+        </Modal>
+    }
+}
+
+/// "Promote" button for a promoted environment, or with `release` "Deploy"
+/// of that earlier release into it. It plans the promotion and shows that
+/// plan; confirming promotes exactly what was reviewed (the source deployment
+/// it planned, which the daemon refuses if the source has moved on since, or
+/// the release), then shows the environment's deployments. Confirmation
+/// stays disabled while the release mounts secrets the environment lacks or
+/// may not use. `compact` is the smaller list-row button; `done` runs once the
+/// promotion was accepted.
+#[component]
+pub(super) fn PromoteAction(
+    environment: String,
+    #[prop(optional)] release: Option<String>,
+    #[prop(optional)] compact: bool,
+    #[prop(default = None)] done: Option<Callback<()>>,
+) -> impl IntoView {
+    let context = editor();
+    let environment = StoredValue::new(environment);
+    let selection = StoredValue::new(PromoteRequest {
+        release,
+        ..PromoteRequest::default()
+    });
+    let plan = RwSignal::new(None::<PlanView>);
+    let opened = RwSignal::new(false);
+    let navigate = use_navigate();
+    let verb = if selection.with_value(|selection| selection.release.is_some()) {
+        "Deploy"
+    } else {
+        "Promote"
+    };
+    // A promotion names its source; deploying a release names its target.
+    let label = move || {
+        let target = environment.get_value();
+        let source = context.saved.with(|saved| {
+            saved
+                .deployable(&target)
+                .and_then(|environment| environment.source.promoted_from().cloned())
+        });
+        match source.filter(|_| verb == "Promote") {
+            Some(source) => format!("Promote from {}", context.environment_name(source.as_str())),
+            None => format!("{verb} to {}", context.environment_name(&target)),
+        }
+    };
+    let deleting = move || {
+        context.saved.with(|saved| {
+            saved
+                .deployable(&environment.get_value())
+                .is_none_or(|environment| environment.delete_intent)
+        })
+    };
+    let inspect = move |_| {
+        context.busy.set(true);
+        context.set_error(None);
+        spawn_local(async move {
+            match Client::browser()
+                .plan_promotion(&environment.get_value(), &selection.get_value())
+                .await
+            {
+                Ok(view) => {
+                    plan.set(Some(view));
+                    opened.set(true);
+                }
+                Err(error) => context.set_error(Some(client_error_message(&error))),
+            }
+            context.busy.set(false);
+        });
+    };
+    // The selection pinned to the reviewed source deployment and application
+    // revision, if the plan can be promoted.
+    let promotable = move || {
+        plan.with(|plan| {
+            let plan = plan.as_ref()?;
+            let release = plan.release.as_ref()?;
+            if !release.secrets.is_empty() {
+                return None;
+            }
+            let mut request = selection.get_value();
+            if let DeploymentOrigin::Promotion { deployment, .. } = &release.origin {
+                request.deployment = Some(deployment.clone());
+            }
+            request.expected_generation = Some(plan.generation);
+            Some(request)
+        })
+    };
+    let confirm = move |_| {
+        let Some(request) = promotable() else {
+            return;
+        };
+        let navigate = navigate.clone();
+        context.mutate(
+            move |client| {
+                let request = request.clone();
+                async move {
+                    client
+                        .promote_environment(&environment.get_value(), &request, false)
+                        .await
+                }
+            },
+            move |_| {
+                opened.set(false);
+                plan.set(None);
+                context
+                    .notice
+                    .set("Promotion accepted. Follow its progress below.".into());
+                context.show_deployments(&environment.get_value(), navigate);
+                context.dashboard.with_value(|d| d.refresh.run(()));
+                if let Some(done) = done {
+                    done.run(());
+                }
+            },
+        );
+    };
+    view! {
+        <button
+            type="button"
+            class={if compact { "btn btn-sm" } else { "btn btn-primary" }}
+            aria-label={label}
+            disabled={move || context.action_blocked() || deleting()}
+            on:click={inspect}
+        >
+            {icon(Icon::Rocket)}
+            {label}
+        </button>
+        <Modal
+            title="Promotion preview"
+            opened={opened}
+            wide=true
+            busy={context.busy}
+            on_close={Callback::new(move |()| plan.set(None))}
+        >
+            {move || plan.get().map(|plan| view! { <PromotionPlan plan={plan} /> })}
+            {move || context.error.get().map(|error| notice(Tone::Bad, error))}
+            <div class="form-actions">
+                <button
+                    type="button"
+                    class="btn btn-primary"
+                    // A failed promotion stays blocked until inspected again.
+                    disabled={move || {
+                        context.action_blocked()
+                            || context.error.with(Option::is_some)
+                            || promotable().is_none()
+                    }}
+                    on:click={confirm}
+                >
+                    {icon(Icon::Rocket)}
+                    {format!("{verb} release")}
+                </button>
+            </div>
+        </Modal>
+    }
+}
+
+/// A promotion plan: the release and where it comes from, the volumes it
+/// adds, every secret the environment lacks for it, and what deploying it
+/// changes.
+#[component]
+fn PromotionPlan(plan: PlanView) -> impl IntoView {
+    let context = editor();
+    let release = plan.release.clone().map(|release| {
+        let volumes = if release.new_volumes.is_empty() {
+            "None".to_owned()
+        } else {
+            release.new_volumes.join(", ")
+        };
+        let secrets = (!release.secrets.is_empty()).then(|| {
+            view! {
+                <div class="stack-sm">
+                    {release
+                        .secrets
+                        .iter()
+                        .map(|problem| {
+                            notice(
+                                Tone::Bad,
+                                match problem {
+                                    SecretProblem::Missing { secret } => {
+                                        format!("Secret {secret} is missing from the application's store.")
+                                    }
+                                    SecretProblem::AccessDenied { secret } => {
+                                        format!("Secret {secret} does not allow this environment.")
+                                    }
+                                    SecretProblem::Unavailable { secret } => {
+                                        format!("Secret {secret} lost its value in key recovery; store a new version.")
+                                    }
+                                    SecretProblem::Deleting { secret } => {
+                                        format!("Secret {secret} is being deleted; finish or abandon the deletion.")
+                                    }
+                                },
+                            )
+                        })
+                        .collect_view()}
+                    <p class="hint">
+                        "Resolve each secret problem in the Secrets tab before promoting."
+                    </p>
+                </div>
+            }
+        });
+        view! {
+            <section class="stack-sm">
+                <div class="section-header">
+                    <h3>"Release"</h3>
+                </div>
+                <dl class="kv">
+                    <dt>"Origin"</dt>
+                    <dd>{context.describe_origin(&release.origin)}</dd>
+                    <dt>"New volumes"</dt>
+                    <dd>{volumes}</dd>
+                </dl>
+                {secrets}
+                {view! { <ReleaseCard release={release.release} planned=true /> }.into_any()}
+            </section>
+        }
+    });
+    view! {
+        {release}
+        <PlanDetails plan={plan} />
     }
 }
 
 /// Panel showing a deployment plan: configuration changes, planned runtime
 /// actions and plan diagnostics.
 #[component]
-fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> impl IntoView {
+fn DeploymentPreview(preview: RwSignal<Option<PlanView>>) -> impl IntoView {
     let opened = RwSignal::new(false);
     Effect::new(move |_| opened.set(preview.get().is_some()));
     view! {
@@ -148,138 +521,147 @@ fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> imp
                             <p class="hint">
                                 "Image tags and runtime state may change before the deployment runs."
                             </p>
-                            <section>
-                                <div class="section-header">
-                                    <h3>"Configuration changes"</h3>
-                                </div>
-                                {if plan.changes.is_empty() {
-                                    view! {
-                                        <p class="hint">
-                                            "No configuration changes since the last deployment."
-                                        </p>
-                                    }
-                                        .into_any()
-                                } else {
-                                    plan.changes
-                                        .into_iter()
-                                        .map(|change| {
-                                            view! {
-                                                <div class="diff-row">
-                                                    <code>{change.field}</code>
-                                                    <span class="before">
-                                                        {change.before.unwrap_or_else(|| "absent".into())}
-                                                    </span>
-                                                    <span class="arrow" aria-hidden="true">
-                                                        "→"
-                                                    </span>
-                                                    <span class="after">
-                                                        {change.after.unwrap_or_else(|| "absent".into())}
-                                                    </span>
-                                                </div>
-                                            }
-                                        })
-                                        .collect_view()
-                                        .into_any()
-                                }}
-                            </section>
-                            {(!plan.variables.is_empty())
-                                .then(|| {
-                                    view! {
-                                        <section>
-                                            <div class="section-header">
-                                                <h3>"Variables"</h3>
-                                            </div>
-                                            <dl class="kv">
-                                                {plan
-                                                    .variables
-                                                    .iter()
-                                                    .map(|(reference, value)| {
-                                                        view! {
-                                                            <dt>
-                                                                <code>{reference.clone()}</code>
-                                                            </dt>
-                                                            <dd>{value.to_string()}</dd>
-                                                        }
-                                                    })
-                                                    .collect_view()}
-                                            </dl>
-                                        </section>
-                                    }
-                                })}
-                            <section>
-                                <div class="section-header">
-                                    <h3>"Planned actions"</h3>
-                                </div>
-                                {if plan.plan.actions.is_empty() {
-                                    view! { <p class="hint">"No runtime actions are required."</p> }
-                                        .into_any()
-                                } else {
-                                    view! {
-                                        <ul class="stack-sm">
-                                            {plan
-                                                .plan
-                                                .actions
-                                                .into_iter()
-                                                .map(|action| {
-                                                    view! {
-                                                        <li class="btn-group">
-                                                            {badge(Tone::Neutral, action.kind.name().replace('_', " "))}
-                                                            <code>{action.kind.resource_name().to_owned()}</code>
-                                                        </li>
-                                                    }
-                                                })
-                                                .collect_view()}
-                                        </ul>
-                                    }
-                                        .into_any()
-                                }}
-                            </section>
-                            <section>
-                                <div class="section-header">
-                                    <h3>"Rollout"</h3>
-                                </div>
-                                <ul class="stack-sm">
-                                    {plan
-                                        .rollouts
-                                        .into_iter()
-                                        .map(|rollout| {
-                                            view! {
-                                                <li class="btn-group">
-                                                    <code>{rollout.service}</code>
-                                                    {badge(Tone::Neutral, rollout.order.as_str())}
-                                                    <span class="hint">
-                                                        {format!(
-                                                            "{} · monitor {}s",
-                                                            rollout.order_source.as_str(),
-                                                            rollout.monitor_seconds,
-                                                        )}
-                                                    </span>
-                                                </li>
-                                            }
-                                        })
-                                        .collect_view()}
-                                </ul>
-                            </section>
-                            {(!plan.plan.diagnostics.is_empty())
-                                .then(|| {
-                                    view! {
-                                        <div class="stack-sm">
-                                            {plan
-                                                .plan
-                                                .diagnostics
-                                                .into_iter()
-                                                .map(|d| notice(
-                                                    Tone::Warn,
-                                                    format!("{}: {}", d.resource, d.message),
-                                                ))
-                                                .collect_view()}
-                                        </div>
-                                    }
-                                })}
+                            <PlanDetails plan={plan} />
                         }
                     })
             }}
         </Modal>
+    }
+}
+
+/// What deploying a plan changes: configuration changes, variable values,
+/// planned runtime actions, rollouts, and plan diagnostics.
+#[component]
+fn PlanDetails(plan: PlanView) -> impl IntoView {
+    view! {
+        <section>
+            <div class="section-header">
+                <h3>"Configuration changes"</h3>
+            </div>
+            {if plan.changes.is_empty() {
+                view! {
+                    <p class="hint">
+                        "No configuration changes since the last deployment."
+                    </p>
+                }
+                    .into_any()
+            } else {
+                plan.changes
+                    .into_iter()
+                    .map(|change| {
+                        view! {
+                            <div class="diff-row">
+                                <code>{change.field}</code>
+                                <span class="before">
+                                    {change.before.unwrap_or_else(|| "absent".into())}
+                                </span>
+                                <span class="arrow" aria-hidden="true">
+                                    "→"
+                                </span>
+                                <span class="after">
+                                    {change.after.unwrap_or_else(|| "absent".into())}
+                                </span>
+                            </div>
+                        }
+                    })
+                    .collect_view()
+                    .into_any()
+            }}
+        </section>
+        {(!plan.variables.is_empty())
+            .then(|| {
+                view! {
+                    <section>
+                        <div class="section-header">
+                            <h3>"Variables"</h3>
+                        </div>
+                        <dl class="kv">
+                            {plan
+                                .variables
+                                .iter()
+                                .map(|(reference, value)| {
+                                    view! {
+                                        <dt>
+                                            <code>{reference.clone()}</code>
+                                        </dt>
+                                        <dd>{value.to_string()}</dd>
+                                    }
+                                })
+                                .collect_view()}
+                        </dl>
+                    </section>
+                }
+            })}
+        <section>
+            <div class="section-header">
+                <h3>"Planned actions"</h3>
+            </div>
+            {if plan.plan.actions.is_empty() {
+                view! { <p class="hint">"No runtime actions are required."</p> }
+                    .into_any()
+            } else {
+                view! {
+                    <ul class="stack-sm">
+                        {plan
+                            .plan
+                            .actions
+                            .into_iter()
+                            .map(|action| {
+                                view! {
+                                    <li class="btn-group">
+                                        {badge(Tone::Neutral, action.kind.name().replace('_', " "))}
+                                        <code>{action.kind.resource_name().to_owned()}</code>
+                                    </li>
+                                }
+                            })
+                            .collect_view()}
+                    </ul>
+                }
+                    .into_any()
+            }}
+        </section>
+        <section>
+            <div class="section-header">
+                <h3>"Rollout"</h3>
+            </div>
+            <ul class="stack-sm">
+                {plan
+                    .rollouts
+                    .into_iter()
+                    .map(|rollout| {
+                        view! {
+                            <li class="btn-group">
+                                <code>{rollout.service}</code>
+                                {badge(Tone::Neutral, rollout.order.as_str())}
+                                <span class="hint">
+                                    {format!(
+                                        "{} · monitor {}s",
+                                        rollout.order_source.as_str(),
+                                        rollout.monitor_seconds,
+                                    )}
+                                </span>
+                            </li>
+                        }
+                    })
+                    .collect_view()}
+            </ul>
+        </section>
+        {(!plan.plan.diagnostics.is_empty())
+            .then(|| {
+                view! {
+                    <div class="stack-sm">
+                        {plan
+                            .plan
+                            .diagnostics
+                            .into_iter()
+                            .map(|d| notice(
+                                Tone::Warn,
+                                format!("{}: {}", d.resource, d.message),
+                            ))
+                            .collect_view()}
+                    </div>
+                }
+            })}
     }
 }
 
@@ -405,7 +787,8 @@ pub(super) fn merge_history(
 /// lazily the first time their tab is opened.
 #[component]
 pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
-    let application = editor().id();
+    let context = editor();
+    let application = context.id();
     let initial = deployment.get_untracked();
     let op = initial.operation;
     let selected = leptos_router::hooks::use_query_map()
@@ -465,7 +848,7 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
                     tab.get() != "Details"
                 }}>
                     {move || {
-                        let DeploymentView { operation: op, release, .. } = deployment.get();
+                        let DeploymentView { operation: op, release, origin, .. } = deployment.get();
                         let release = release
                             .map(|release| {
                                 let href = format!(
@@ -488,6 +871,8 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
                                     </dd>
                                     <dt>"Release"</dt>
                                     <dd>{release}</dd>
+                                    <dt>"Origin"</dt>
+                                    <dd>{context.describe_origin(&origin)}</dd>
                                     <dt>"Kind"</dt>
                                     <dd>{op.kind.as_str()}</dd>
                                     <dt>"Generation"</dt>

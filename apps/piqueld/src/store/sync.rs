@@ -174,14 +174,17 @@ impl Store {
         Ok(SyncOutcome::Deployed(AcceptedOperation::from(&operation)))
     }
 
-    /// Starts a deployment of an environment or preview from its source, at
-    /// `revision` when given.
+    /// Starts a deployment of what a tracking environment or preview builds,
+    /// at `revision` when given: requests it (see `request_deploy_on`) and
+    /// captures its candidate manifest, which fetching replaces.
+    /// `environment_promoted` for a promoted environment.
     pub(super) async fn deploy_revision_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
         revision: Option<&ManifestRevision>,
     ) -> Result<super::Operation, StoreError> {
-        let application = environment.candidate(revision)?;
+        // Only the captured snapshot changes; the fetched manifest replaces it.
+        let application = environment.tracking()?.candidate(revision)?;
         let operation = Self::request_deploy_on(tx, environment).await?;
         Self::insert_deployment_on(tx, &operation, &application).await?;
         Ok(operation)
@@ -199,7 +202,12 @@ impl Store {
         let Some(current) = Self::environment_on(tx, id.as_str()).await? else {
             return Ok(());
         };
-        let tracks = current.repository().is_some_and(|repository| {
+        // A promoted environment follows no branch.
+        let repository = current
+            .tracking()
+            .ok()
+            .and_then(|tracking| tracking.repository());
+        let tracks = repository.is_some_and(|repository| {
             repository.repository.url == head.url
                 && repository.repository.branch == head.branch
                 && repository.repository.commit.is_none()
@@ -505,7 +513,7 @@ impl Store {
         tx.commit().await.unwrap();
         drop(writer);
         // As fetching its own branch's head does.
-        if let Some(repository) = current.repository() {
+        if let Some(repository) = current.tracking().unwrap().repository() {
             let head = BranchHead {
                 url: repository.repository.url,
                 branch: repository.repository.branch,
@@ -880,7 +888,7 @@ mod tests {
         let create = Mutation::CreateEnvironment {
             application: application.clone(),
             name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
-            branch: None,
+            source: None,
         };
         let branch = Mutation::SetBranch {
             id: id.clone(),

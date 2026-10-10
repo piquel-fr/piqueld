@@ -33,6 +33,9 @@ pub enum OperationError {
     /// The environment mounts a stored secret its access list excludes.
     #[error("{0}")]
     SecretAccessDenied(#[source] crate::store::StoreError),
+    /// A build or fetch was requested for an environment that is now promoted.
+    #[error("{0}")]
+    EnvironmentPromoted(#[source] crate::store::StoreError),
     /// Repository input could not be located or decoded.
     #[error("{}", if *.not_found { "manifest not found" } else { "repository manifest is invalid or its application name does not match" })]
     ManifestInput {
@@ -144,6 +147,7 @@ impl OperationError {
             Self::SecretUnavailable { .. } => DiagnosticCode::SecretUnavailable,
             Self::SecretMissing(_) => DiagnosticCode::SecretMissing,
             Self::SecretAccessDenied(_) => DiagnosticCode::SecretAccessDenied,
+            Self::EnvironmentPromoted(_) => DiagnosticCode::EnvironmentPromoted,
             Self::ManifestInput {
                 not_found: true, ..
             }
@@ -248,6 +252,9 @@ impl From<crate::store::StoreError> for OperationError {
             error @ crate::store::StoreError::SecretAccessDenied { .. } => {
                 Self::SecretAccessDenied(error)
             }
+            error @ crate::store::StoreError::Promotion(
+                crate::store::PromotionError::Promoted { .. },
+            ) => Self::EnvironmentPromoted(error),
             error @ (crate::store::StoreError::HostnameConflict { .. }
             | crate::store::StoreError::SharedHostnameConflict { .. }) => {
                 Self::HostnameConflict(error)
@@ -413,6 +420,7 @@ impl crate::application::BoundaryError {
                 DiagnosticCode::ApplicationCompilationFailed,
                 "Resolved application could not be compiled".into(),
             ),
+            Self::ImageUnavailable(error) => (error.diagnostic_code(), error.message()),
         };
         let source: &(dyn std::error::Error + 'static) = match self {
             Self::GitBuild(error) => error.as_ref(),

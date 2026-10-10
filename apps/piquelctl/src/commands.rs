@@ -168,7 +168,10 @@ async fn app(
             let releases = client
                 .releases(app.application.id().as_str(), cursor.as_deref())
                 .await?;
-            console.emit(&releases)
+            console.emit(&crate::output::reports::Named {
+                value: &releases,
+                names: crate::output::reports::Names(&app.environments),
+            })
         }
     }
 }

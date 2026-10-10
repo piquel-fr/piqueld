@@ -1,12 +1,15 @@
 //! Environments: deployable units with their own operations, status, and
-//! resolved targets, deploying their application's shared manifest.
+//! resolved targets, deploying their application's shared manifest or
+//! releases promoted from another environment.
 use super::{
     ApplicationId, EnvironmentId, EnvironmentPage, EnvironmentStatus, Operation, OperationKind,
     ResolvedApplication, Store, StoreError, StoredEnvironment, StoredEnvironmentRow, now_ms,
     page_limit,
 };
+use crate::api::SourceChoice;
 use piqueld_core::{
-    EnvironmentKind, EnvironmentName, EnvironmentSource, TrackedBranch, manifest::RenderTarget,
+    EnvironmentKind, EnvironmentName, EnvironmentSource, PromotedFrom, TrackedBranch,
+    manifest::RenderTarget,
 };
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
@@ -23,18 +26,15 @@ impl Store {
         now: i64,
     ) -> Result<(), StoreError> {
         let (application, id, name) = (application.as_str(), id.as_str(), name.as_str());
-        let branch = source.branch();
-        let (commit, branch) = (
-            branch.and_then(TrackedBranch::commit),
-            branch.map(TrackedBranch::branch),
-        );
+        let (branch, commit, promoted_from) = Self::source_columns(source);
         sqlx::query!(
-            "INSERT INTO environments(id,application_id,name,branch,pinned_commit,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?6)",
+            "INSERT INTO environments(id,application_id,name,branch,pinned_commit,promoted_from,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?7)",
             id,
             application,
             name,
             branch,
             commit,
+            promoted_from,
             now
         )
         .execute(&mut **tx)
@@ -54,23 +54,46 @@ impl Store {
         Ok(())
     }
 
+    /// The `branch`, `pinned_commit`, and `promoted_from` columns of `source`.
+    fn source_columns(source: &EnvironmentSource) -> (Option<&str>, Option<&str>, Option<&str>) {
+        let branch = source.branch();
+        (
+            branch.map(TrackedBranch::branch),
+            branch.and_then(TrackedBranch::commit),
+            source.promoted_from().map(EnvironmentId::as_str),
+        )
+    }
+
     /// Creates an environment of a live application under a freshly generated
-    /// ID, advancing the application revision. It follows `branch`, by default
-    /// the one `spec.manifest` names, when the application is
+    /// ID, advancing the application revision. It promotes from another
+    /// environment (see `check_promotion_source_on`), or follows a branch, by
+    /// default the one `spec.manifest` names, when the application is
     /// repository-backed. Applications being deleted are `Busy`.
     pub(super) async fn create_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &super::StoredApplication,
         name: &EnvironmentName,
-        branch: Option<TrackedBranch>,
+        source: Option<SourceChoice>,
         now: i64,
     ) -> Result<EnvironmentId, StoreError> {
         if application.delete_intent {
             return Err(StoreError::Busy);
         }
         let template = &application.application;
-        let source = EnvironmentSource::select(template.spec().manifest.as_ref(), branch)?;
+        let connection = template.spec().manifest.as_ref();
+        let source = match source {
+            Some(SourceChoice::PromoteFrom(environment)) => {
+                EnvironmentSource::Promoted(PromotedFrom { environment })
+            }
+            Some(SourceChoice::Branch(branch)) => {
+                EnvironmentSource::select(connection, Some(branch))?
+            }
+            None => EnvironmentSource::select(connection, None)?,
+        };
         let id = EnvironmentId::parse(super::new_id("env")).map_err(StoreError::corrupt)?;
+        if let Some(from) = source.promoted_from() {
+            Self::check_promotion_source_on(tx, template.id(), (&id, name), from).await?;
+        }
         Self::insert_environment_on(tx, template.id(), &id, name, &source, now).await?;
         Self::bump_generation_on(
             tx,
@@ -150,35 +173,88 @@ impl Store {
         .await
     }
 
-    /// Points an environment of a repository-backed application at `branch`,
-    /// advancing the application revision. Nothing is fetched or deployed: the
-    /// environment no longer reports its configuration as resolved until its
-    /// next deployment. Environments being deleted are `Busy`.
+    /// Points an environment of a repository-backed application at `branch`
+    /// (see `set_source_on`).
     pub(super) async fn set_branch_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
         branch: TrackedBranch,
         now: i64,
     ) -> Result<(), StoreError> {
+        let connection = environment.application.application.spec().manifest.as_ref();
+        let source = EnvironmentSource::select(connection, Some(branch))?;
+        Self::set_source_on(tx, environment, source, now).await
+    }
+
+    /// Makes an environment promoted from `promote_from` (see
+    /// `check_promotion_source_on`), or, without one, returns it to tracking
+    /// the application's saved manifest or the branch `spec.manifest` names
+    /// (see `set_source_on`).
+    pub(super) async fn set_promotion_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        environment: &StoredEnvironment,
+        promote_from: Option<EnvironmentId>,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let source = match promote_from {
+            Some(from) => {
+                Self::check_promotion_source_on(
+                    tx,
+                    &environment.environment.application_id,
+                    (environment.id(), &environment.environment.name),
+                    &from,
+                )
+                .await?;
+                EnvironmentSource::Promoted(PromotedFrom { environment: from })
+            }
+            None if environment.environment.source.promoted_from().is_some() => {
+                let connection = environment.application.application.spec().manifest.as_ref();
+                EnvironmentSource::select(connection, None)?
+            }
+            // Already tracking: keep its branch.
+            None => environment.environment.source.clone(),
+        };
+        Self::set_source_on(tx, environment, source, now).await
+    }
+
+    /// Changes where an environment deploys from, advancing the application
+    /// revision. Nothing is fetched or deployed: the environment no longer
+    /// reports its configuration as resolved until its next deployment or
+    /// promotion. Environments being deleted are `Busy`, and so are
+    /// environments with a deployment in progress becoming promoted: that
+    /// deployment may already be fetching or building.
+    async fn set_source_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        environment: &StoredEnvironment,
+        source: EnvironmentSource,
+        now: i64,
+    ) -> Result<(), StoreError> {
         if environment.delete_intent() {
             return Err(StoreError::Busy);
         }
-        let connection = environment.application.application.spec().manifest.as_ref();
-        let source = EnvironmentSource::select(connection, Some(branch))?;
         let previous = &environment.environment.source;
         if source == *previous {
             return Ok(());
         }
         let id = environment.id().as_str();
-        let (name, commit) = (
-            source.branch().map(TrackedBranch::branch),
-            source.branch().and_then(TrackedBranch::commit),
-        );
+        let deploying = sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM operations WHERE environment_id=?1 AND state IN ('requested','running'))",
+            id
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(StoreError::database)?
+            != 0;
+        if deploying && source.promoted_from().is_some() {
+            return Err(StoreError::Busy);
+        }
+        let (branch, commit, promoted_from) = Self::source_columns(&source);
         sqlx::query!(
             // What sync found on the former branch says nothing about this one.
-            "UPDATE environments SET branch=?1,pinned_commit=?2,synced_commit=NULL,synced_at_ms=NULL,updated_at_ms=?3 WHERE id=?4",
-            name,
+            "UPDATE environments SET branch=?1,pinned_commit=?2,promoted_from=?3,synced_commit=NULL,synced_at_ms=NULL,updated_at_ms=?4 WHERE id=?5",
+            branch,
             commit,
+            promoted_from,
             now,
             id
         )
@@ -186,11 +262,13 @@ impl Store {
         .await
         .map_err(StoreError::database)?;
         let message = format!(
-            "environment {} deploys from {source} instead of {previous}",
-            environment.environment.name
+            "environment {} deploys from {} instead of {}",
+            environment.environment.name,
+            Self::describe_source_on(tx, &source).await?,
+            Self::describe_source_on(tx, previous).await?,
         );
         sqlx::query!(
-            "INSERT INTO events(application_id,environment_id,kind,message,created_at_ms) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'environment_branch_changed',?2,?3)",
+            "INSERT INTO events(application_id,environment_id,kind,message,created_at_ms) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'environment_source_changed',?2,?3)",
             id,
             message,
             now
@@ -205,6 +283,25 @@ impl Store {
             Some(environment.id()),
         )
         .await
+    }
+
+    /// Describes `source` in a sentence, naming a promotion source.
+    async fn describe_source_on(
+        connection: &mut SqliteConnection,
+        source: &EnvironmentSource,
+    ) -> Result<String, StoreError> {
+        let Some(from) = source.promoted_from() else {
+            return Ok(source.to_string());
+        };
+        let id = from.as_str();
+        let name = sqlx::query_scalar!("SELECT name FROM environments WHERE id=?1", id)
+            .fetch_optional(connection)
+            .await
+            .map_err(StoreError::database)?;
+        Ok(format!(
+            "releases promoted from {}",
+            name.as_deref().unwrap_or(id)
+        ))
     }
 
     /// Persists an environment's deletion intent and requests its delete
@@ -234,11 +331,13 @@ impl Store {
     }
 
     /// Requests deletion of one environment and advances its application
-    /// revision, since environment names select configuration.
+    /// revision, since environment names select configuration. Refused while
+    /// live environments promote from it.
     pub(super) async fn delete_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
     ) -> Result<Operation, StoreError> {
+        Self::check_promotion_dependents_on(tx, environment.id()).await?;
         let operation = Self::request_delete_on(tx, environment.id()).await?;
         Self::bump_generation_on(
             tx,
@@ -459,7 +558,7 @@ impl Store {
         id: &str,
     ) -> Result<Option<StoredEnvironment>, StoreError> {
         sqlx::query_as!(StoredEnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?1"#,id)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.promoted_from,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?1"#,id)
             .fetch_optional(connection).await.map_err(StoreError::database)?
             .map(StoredEnvironmentRow::decode).transpose()
     }
@@ -496,7 +595,7 @@ impl Store {
             .transpose()?
             .unwrap_or("");
         let mut rows = sqlx::query_as!(StoredEnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id>?1 ORDER BY e.id LIMIT ?2"#,after,fetch_limit)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.promoted_from,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id>?1 ORDER BY e.id LIMIT ?2"#,after,fetch_limit)
             .fetch_all(&self.pool).await.map_err(StoreError::database)?;
         let has_more = rows.len() > limit;
         rows.truncate(limit);

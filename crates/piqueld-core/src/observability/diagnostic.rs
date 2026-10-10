@@ -84,6 +84,8 @@ diagnostic_codes! {
     SecretMissing => "secret_missing",
     /// An environment mounts a stored secret its access list excludes.
     SecretAccessDenied => "secret_access_denied",
+    /// A deployment would build or fetch for a promoted environment.
+    EnvironmentPromoted => "environment_promoted",
     /// A Docker request failed local validation.
     ValidationFailed => "validation_failed",
     /// The runtime plan cannot execute safely.
@@ -111,6 +113,8 @@ const INSPECT_DIAGNOSTIC: &str =
 const DNS_RECORDS_RETRY: &str = "Check DNS provider credentials, permissions and route DNS states. Records are reconciled again within minutes.";
 /// Guidance for deployments whose retained image is gone.
 const IMAGE_UNAVAILABLE: &str = "The image was removed and could not be pulled again. Deploy a release whose images are present, or deploy again to rebuild.";
+/// Guidance for builds requested before their environment was made promoted.
+const ENVIRONMENT_PROMOTED: &str = "The environment was made promoted after this deployment was requested, and promoted environments never build. Promote a release into it instead.";
 /// Guidance for transient failures that reconciliation retries on its own.
 const AUTOMATIC_RETRY: &str =
     "Reconciliation will retry. Inspect the affected resource if the failure persists.";
@@ -160,6 +164,7 @@ impl DiagnosticCode {
                 "Check the image reference and registry credentials, then retry the deployment.",
             ),
             Self::ImageUnavailable => (Application, false, IMAGE_UNAVAILABLE),
+            Self::EnvironmentPromoted => (Application, false, ENVIRONMENT_PROMOTED),
             Self::GitBuildFailed => (
                 Application,
                 false,
