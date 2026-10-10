@@ -12,14 +12,31 @@ use std::{
 struct State {
     records: BTreeMap<u64, (String, Record)>,
     next: u64,
-    /// Every call fails while set, as during a provider outage.
-    failing: bool,
-    /// Changes wait for a publish, like OVH's, while set.
-    staging: bool,
-    /// Publishing fails while set.
-    failing_publish: bool,
+    /// The real provider whose behaviour it mimics.
+    mimics: Mimics,
+    /// Which calls fail, if any.
+    outage: Option<Outage>,
     /// Every change made through the provider, such as `delete A 192.0.2.1`.
     changes: Vec<String>,
+}
+
+/// The real provider a [`TestProvider`] behaves like.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum Mimics {
+    /// Changes apply at once, and CNAME records can be proxied.
+    #[default]
+    Cloudflare,
+    /// Changes wait for a publish, and proxied records are refused.
+    Ovh,
+}
+
+/// Calls that fail, as during a provider outage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Outage {
+    /// Every call.
+    All,
+    /// Only publishing.
+    Publish,
 }
 
 /// An in-memory provider serving fixed zones.
@@ -54,7 +71,7 @@ impl TestProvider {
 
     fn state(&self) -> Result<std::sync::MutexGuard<'_, State>, ApiError> {
         let state = self.state.lock().unwrap();
-        if state.failing {
+        if state.outage == Some(Outage::All) {
             return Err(ApiError::Unsupported("provider unavailable"));
         }
         Ok(state)
@@ -83,19 +100,14 @@ impl TestProvider {
         std::mem::take(&mut self.state.lock().unwrap().changes)
     }
 
-    /// Makes every call fail, or succeed again.
-    pub(crate) fn fail(&self, failing: bool) {
-        self.state.lock().unwrap().failing = failing;
+    /// Makes `outage` calls fail, or none.
+    pub(crate) fn fail(&self, outage: Option<Outage>) {
+        self.state.lock().unwrap().outage = outage;
     }
 
-    /// Makes changes wait for a publish, like OVH's.
-    pub(crate) fn stage(&self) {
-        self.state.lock().unwrap().staging = true;
-    }
-
-    /// Makes publishing fail, or succeed again.
-    pub(crate) fn fail_publish(&self, failing: bool) {
-        self.state.lock().unwrap().failing_publish = failing;
+    /// Behaves like `mimics`.
+    pub(crate) fn mimic(&self, mimics: Mimics) {
+        self.state.lock().unwrap().mimics = mimics;
     }
 
     /// The records named `name`, as the provider lists them.
@@ -155,10 +167,10 @@ impl TestProvider {
     /// Records a publish of staged changes.
     fn published(&self) -> Result<(), ApiError> {
         let mut state = self.state()?;
-        if !state.staging {
+        if state.mimics != Mimics::Ovh {
             return Ok(());
         }
-        if state.failing_publish {
+        if state.outage == Some(Outage::Publish) {
             return Err(ApiError::Unsupported("publish failed"));
         }
         state.changes.push("publish".into());
@@ -205,8 +217,12 @@ impl Provider for TestProvider {
         std::future::ready(self.remove(id))
     }
 
+    fn proxies(&self) -> bool {
+        self.state.lock().unwrap().mimics == Mimics::Cloudflare
+    }
+
     fn stages_changes(&self) -> bool {
-        self.state.lock().unwrap().staging
+        self.state.lock().unwrap().mimics == Mimics::Ovh
     }
 
     fn publish(

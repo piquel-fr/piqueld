@@ -58,6 +58,11 @@ pub(crate) trait Provider {
         id: &RecordId,
     ) -> Result<(), ApiError>;
 
+    /// Whether it can store proxied CNAME records, which tunnel routes need.
+    fn proxies(&self) -> bool {
+        false
+    }
+
     /// Whether changes wait for [`Self::publish`].
     fn stages_changes(&self) -> bool {
         false
@@ -410,6 +415,12 @@ impl DnsProvider {
                 error => Err(error),
             })
             .map_err(self.error("delete record", Some(zone)))
+    }
+
+    /// Whether it can store proxied CNAME records; only Cloudflare can.
+    #[must_use]
+    pub fn proxies(&self) -> bool {
+        dispatch!(self, provider => provider.proxies())
     }
 
     /// Whether changes wait for [`Self::publish`]; only OVH stages them.

@@ -116,6 +116,10 @@ impl Provider for Cloudflare {
         "cloudflare"
     }
 
+    fn proxies(&self) -> bool {
+        true
+    }
+
     /// Lists zones 50 per page. Names that are not public hostnames are skipped.
     async fn zones(&self, http: &reqwest::Client) -> Result<Vec<Zone>, ApiError> {
         let zones: Vec<Object> = self.list(http, "/zones?per_page=50").await?;

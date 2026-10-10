@@ -61,6 +61,14 @@ enum Desired {
     Removed,
 }
 
+impl Desired {
+    /// Whether it includes a proxied CNAME record.
+    fn proxied(&self) -> bool {
+        matches!(self, Self::Records(records)
+            if records.iter().any(|record| matches!(record, Record::Cname { proxied: true, .. })))
+    }
+}
+
 /// What piqueld does with one hostname's records.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Plan {
@@ -226,6 +234,14 @@ impl Ingress {
             let owner = dns.zone_for(&hostname).await;
             let entry = match (desired, owner) {
                 (Some(desired), Ok((provider, zone))) if dns.manages_records(provider) => {
+                    // Writing them would fail on every pass.
+                    let desired = if desired.proxied() && !dns.provider(provider).proxies() {
+                        Desired::Pending(
+                            "Tunnel routes need a proxied CNAME, which only a Cloudflare zone can hold. Move the zone to Cloudflare",
+                        )
+                    } else {
+                        desired
+                    };
                     Plan::Managed {
                         provider,
                         zone,

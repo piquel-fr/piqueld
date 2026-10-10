@@ -1,7 +1,10 @@
 use super::*;
 use crate::{
     config::TunnelCredentials,
-    dns::provider::{DnsProvider, DnsProviderConfig, test_provider::TestProvider},
+    dns::provider::{
+        DnsProvider, DnsProviderConfig,
+        test_provider::{Mimics, Outage, TestProvider},
+    },
     ingress::tests::{application, request_deployment},
     store::Store,
 };
@@ -392,12 +395,12 @@ async fn failures_keep_records_and_unmanaged_zones_stay_manual() {
     let (id, route) = harness.route("www.example.com", "public").await;
     harness.stage(&id, std::slice::from_ref(&route), true).await;
     harness.apply().await;
-    harness.provider.fail(true);
+    harness.provider.fail(Some(Outage::All));
     assert!(!harness.pass().await, "a failed pass is retried sooner");
     let failed = harness.state("www.example.com");
     assert_eq!(failed.state, DnsRecordState::Pending);
     assert!(failed.message.unwrap().contains("retries"));
-    harness.provider.fail(false);
+    harness.provider.fail(None);
     assert!(harness.pass().await);
     assert_eq!(
         harness.state("www.example.com").state,
@@ -482,7 +485,7 @@ async fn names_another_installation_claims_are_never_changed() {
 #[tokio::test]
 async fn staged_changes_are_published_after_a_failed_publish() {
     let harness = Harness::new(true).await;
-    harness.provider.stage();
+    harness.provider.mimic(Mimics::Ovh);
     let (id, route) = harness.route("www.example.com", "public").await;
     harness.stage(&id, &[route], true).await;
     harness.apply().await;
@@ -491,11 +494,11 @@ async fn staged_changes_are_published_after_a_failed_publish() {
     // The route is removed, but publishing its deletion fails.
     harness.stage(&id, &[], true).await;
     harness.apply().await;
-    harness.provider.fail_publish(true);
+    harness.provider.fail(Some(Outage::Publish));
     assert!(!harness.pass().await);
     harness.provider.changes();
     // Nothing is left to delete; the deletion is still published, once.
-    harness.provider.fail_publish(false);
+    harness.provider.fail(None);
     assert!(harness.pass().await);
     assert_eq!(harness.provider.changes(), ["publish"]);
     assert!(harness.store.dns_records().await.unwrap().is_empty());
@@ -523,4 +526,26 @@ async fn a_route_changed_during_a_pass_waits_for_the_next_one() {
         harness.state("www.example.com").state,
         DnsRecordState::Pending
     );
+}
+
+#[tokio::test]
+async fn tunnel_routes_wait_in_zones_that_cannot_proxy() {
+    let harness = Harness::new(true).await;
+    harness.provider.mimic(Mimics::Ovh);
+    let (id, route) = harness.route("www.example.com", "public").await;
+    harness.stage(&id, &[route], true).await;
+    harness.apply().await;
+    let tunnel = harness
+        .restart(Some(TunnelCredentials {
+            id: TUNNEL.parse().unwrap(),
+            file: "{}".into(),
+        }))
+        .await;
+    tunnel.converged();
+    // Nothing is claimed or written, and the pass does not fail.
+    assert!(Harness::pass_of(&tunnel).await);
+    harness.unchanged();
+    let state = tunnel.route_dns(&Hostname::parse("www.example.com").unwrap());
+    assert_eq!(state.state, DnsRecordState::Pending);
+    assert!(state.message.unwrap().contains("Cloudflare"));
 }

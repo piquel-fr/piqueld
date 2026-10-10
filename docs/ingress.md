@@ -362,7 +362,7 @@ the provider with the longest matching zone, as for certificates.
 | Route | Records |
 | --- | --- |
 | private | A and AAAA to the apps node's tailnet addresses |
-| public, [tunnel](#cloudflare-tunnel) | a proxied CNAME to `<tunnel-id>.cfargotunnel.com` (the zone must be on Cloudflare: OVH cannot proxy) |
+| public, [tunnel](#cloudflare-tunnel) | a proxied CNAME to `<tunnel-id>.cfargotunnel.com` (the zone must be on Cloudflare: OVH cannot proxy, so such routes stay `pending`) |
 | public, direct | A and AAAA to `[ingress] public_addresses`; without any, these records stay manual |
 
 Private routes never get public addresses. Managed records are exact hostnames,
