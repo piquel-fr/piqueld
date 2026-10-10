@@ -248,6 +248,33 @@ mod tests {
         }
     }
 
+    // Clap stores arguments by id, so a subcommand argument sharing a global's
+    // id silently overwrites it (`app repository connect <URL>` once replaced `--url`).
+    #[test]
+    fn subcommand_arguments_never_reuse_global_ids() {
+        fn check(command: &clap::Command, globals: &[String], path: &str) {
+            for subcommand in command.get_subcommands() {
+                let path = format!("{path} {}", subcommand.get_name());
+                for argument in subcommand.get_arguments() {
+                    let id = argument.get_id().as_str();
+                    assert!(
+                        !globals.iter().any(|global| global == id),
+                        "`{path}` argument `{id}` shadows a global argument",
+                    );
+                }
+                check(subcommand, globals, &path);
+            }
+        }
+        let command = <Cli as clap::CommandFactory>::command();
+        let globals: Vec<String> = command
+            .get_arguments()
+            .filter(|argument| argument.is_global_set())
+            .map(|argument| argument.get_id().to_string())
+            .collect();
+        assert!(globals.iter().any(|global| global == "url"));
+        check(&command, &globals, "piquelctl");
+    }
+
     #[test]
     fn timeout_parser_accepts_bounded_units() {
         assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));

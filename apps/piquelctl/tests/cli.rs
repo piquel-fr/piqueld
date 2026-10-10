@@ -2125,6 +2125,43 @@ fn git_service_creation_does_not_require_a_placeholder_image() {
     assert_eq!(server.finish().len(), 2);
 }
 
+// Runs over TCP so the global `--url` endpoint and the positional repository
+// URL are both given.
+#[test]
+fn repository_connect_sends_the_repository_without_replacing_the_endpoint() {
+    let server = start_server(false, 2, |request| {
+        if request.method == "GET" {
+            return Reply::json(app_view("app-notes-01", "notes"));
+        }
+        assert_eq!(request.method, "PUT");
+        assert_eq!(
+            request.path,
+            "/api/v1/applications/app-notes-01/repository?deploy=false&expected_generation=1&force=false"
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&request.body).unwrap(),
+            json!({"value":{"repository":{"url":"https://example.com/app.git","branch":"release"},"path":"piquel.toml"}})
+        );
+        Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
+    });
+    let output = run(
+        &server,
+        &[
+            "app",
+            "repository",
+            "connect",
+            "app-notes-01",
+            "https://example.com/app.git",
+            "piquel.toml",
+            "--branch",
+            "release",
+            "--yes",
+        ],
+    );
+    assert_eq!(assert_json_success(&output)["generation"], 2);
+    assert_eq!(server.finish().len(), 2);
+}
+
 #[test]
 fn secret_key_recovery_requires_confirmation() {
     let server = start_server(false, 1, |request| {

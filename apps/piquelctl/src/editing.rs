@@ -477,6 +477,8 @@ pub(crate) enum RepositoryCommand {
         #[command(flatten)]
         target: RepositoryTarget,
         /// Git clone URL or host path.
+        // A distinct id keeps clap from storing this in the global `--url` endpoint.
+        #[arg(id = "repository_url", value_name = "URL")]
         url: String,
         /// Manifest file path relative to the repository root.
         path: String,
