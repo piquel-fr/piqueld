@@ -316,14 +316,17 @@ impl Mutation {
     /// environment's, for environment changes), whose repository connection
     /// is currently `connection`: `Write`, and `Deploy` too for saves and
     /// edits that deploy, and for changes sync then deploys (see
-    /// [`Self::deploys_on_push`]). Previews need `Deploy` to create and
-    /// deploy, and `Delete` to delete.
+    /// [`Self::deploys_on_push`]). Previews need `previews:deploy` to create
+    /// and deploy, and `previews:delete` to delete, which `Deploy` and
+    /// `Delete` include.
     #[must_use]
     pub fn required(
         &self,
         connection: Option<&RepositoryManifest>,
     ) -> &'static [piqueld_core::access::AppPermission] {
-        use piqueld_core::access::AppPermission::{Delete, Deploy, Write};
+        use piqueld_core::access::AppPermission::{
+            Delete, Deploy, PreviewsDelete, PreviewsDeploy, Write,
+        };
         match self {
             Self::Save { deploy: true, .. } | Self::Edit { deploy: true, .. } => &[Write, Deploy],
             _ if self.deploys_on_push(connection) => &[Write, Deploy],
@@ -338,16 +341,15 @@ impl Mutation {
             Self::Deploy { .. }
             | Self::Promotion(PromotionMutation::Promote { .. })
             | Self::Reconcile { .. }
-            | Self::Sync(_)
-            | Self::Preview(
+            | Self::Sync(_) => &[Deploy],
+            Self::Preview(
                 PreviewMutation::Create { .. }
                 | PreviewMutation::Deploy { .. }
                 | PreviewMutation::Local { .. },
-            ) => &[Deploy],
-            Self::DeleteApplication { .. }
-            | Self::Delete { .. }
-            | Self::Preview(PreviewMutation::Delete { .. } | PreviewMutation::Prune { .. }) => {
-                &[Delete]
+            ) => &[PreviewsDeploy],
+            Self::DeleteApplication { .. } | Self::Delete { .. } => &[Delete],
+            Self::Preview(PreviewMutation::Delete { .. } | PreviewMutation::Prune { .. }) => {
+                &[PreviewsDelete]
             }
         }
     }

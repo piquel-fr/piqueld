@@ -137,8 +137,9 @@ impl Actor<'_> {
     }
 
     /// Checks an application permission on the application owning
-    /// `environment`. An unknown environment is hidden unless the caller holds
-    /// the permission on every application.
+    /// `environment`, where previews permissions also apply when it is a
+    /// preview. An unknown environment is hidden unless the caller holds the
+    /// permission on every application.
     pub(crate) async fn require_on_environment(
         self,
         db: &mut SqliteConnection,
@@ -148,12 +149,38 @@ impl Actor<'_> {
         let Some(authority) = self.load(db).await? else {
             return Ok(());
         };
-        let application = Store::environment_application_on(db, environment).await?;
-        let target = application.as_ref().map_or(Target::Unknown, Target::Id);
+        let owner = Store::environment_owner_on(db, environment).await?;
         authority
             .grants
-            .require_change(&[permission], target)
+            .require_change(&[permission], EnvironmentOwner::target(owner.as_ref()))
             .map_err(StoreError::Denied)
+    }
+}
+
+/// The application owning an environment, and whether the environment is
+/// one of its previews.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnvironmentOwner {
+    /// Owning application.
+    pub application: ApplicationId,
+    /// Whether the environment is a preview.
+    pub preview: bool,
+}
+
+impl EnvironmentOwner {
+    /// What a request about the environment is checked on: a preview,
+    /// where previews permissions also apply, or its application. An
+    /// environment that does not exist is [`Target::Unknown`].
+    #[must_use]
+    pub fn target(owner: Option<&Self>) -> Target<'_> {
+        match owner {
+            Some(Self {
+                application,
+                preview: true,
+            }) => Target::Preview(application),
+            Some(Self { application, .. }) => Target::Id(application),
+            None => Target::Unknown,
+        }
     }
 }
 

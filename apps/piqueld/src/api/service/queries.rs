@@ -68,14 +68,15 @@ impl ApplicationService {
     ) -> Result<EnvironmentView, ApplicationError> {
         Ok(self.store.get(id).await?.environment)
     }
-    /// The application owning an environment, if the environment exists.
+    /// The application owning an environment, and whether it is a preview,
+    /// if the environment exists.
     /// # Errors
     /// Returns storage errors.
-    pub async fn environment_application(
+    pub async fn environment_owner(
         &self,
         id: &EnvironmentId,
-    ) -> Result<Option<ApplicationId>, ApplicationError> {
-        Ok(self.store.environment_application(id).await?)
+    ) -> Result<Option<crate::store::EnvironmentOwner>, ApplicationError> {
+        Ok(self.store.environment_owner(id).await?)
     }
     /// Reads persisted deployment progress and runtime health.
     /// # Errors

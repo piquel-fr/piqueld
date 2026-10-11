@@ -2,9 +2,9 @@
 //! resolved targets, deploying their application's shared manifest or
 //! releases promoted from another environment.
 use super::{
-    ApplicationId, EnvironmentId, EnvironmentPage, EnvironmentStatus, Operation, OperationKind,
-    ResolvedApplication, Store, StoreError, StoredEnvironment, StoredEnvironmentRow, now_ms,
-    page_limit,
+    ApplicationId, EnvironmentId, EnvironmentOwner, EnvironmentPage, EnvironmentStatus, Operation,
+    OperationKind, ResolvedApplication, Store, StoreError, StoredEnvironment, StoredEnvironmentRow,
+    now_ms, page_limit,
 };
 use crate::api::SourceChoice;
 use piqueld_core::{
@@ -520,35 +520,42 @@ impl Store {
         .ok_or(StoreError::NotFound)
     }
 
-    /// The application owning environment `id`, if it exists.
+    /// The application owning environment `id`, and whether it is a
+    /// preview, if it exists.
     ///
     /// # Errors
     /// Returns a storage error.
-    pub async fn environment_application(
+    pub async fn environment_owner(
         &self,
         id: &EnvironmentId,
-    ) -> Result<Option<ApplicationId>, StoreError> {
-        Self::environment_application_on(
+    ) -> Result<Option<EnvironmentOwner>, StoreError> {
+        Self::environment_owner_on(
             &mut *self.pool.acquire().await.map_err(StoreError::database)?,
             id,
         )
         .await
     }
 
-    /// [`Self::environment_application`] on an existing connection or transaction.
-    pub(crate) async fn environment_application_on(
+    /// [`Self::environment_owner`] on an existing connection or transaction.
+    pub(crate) async fn environment_owner_on(
         connection: &mut SqliteConnection,
         id: &EnvironmentId,
-    ) -> Result<Option<ApplicationId>, StoreError> {
+    ) -> Result<Option<EnvironmentOwner>, StoreError> {
         let id = id.as_str();
-        sqlx::query_scalar!(
-            r#"SELECT application_id AS "application_id!" FROM environments WHERE id=?1"#,
+        sqlx::query!(
+            r#"SELECT application_id AS "application_id!",kind='preview' AS "preview!: bool" FROM environments WHERE id=?1"#,
             id
         )
         .fetch_optional(connection)
         .await
         .map_err(StoreError::database)?
-        .map(|id| ApplicationId::parse(id).map_err(StoreError::corrupt))
+        .map(|row| {
+            Ok(EnvironmentOwner {
+                application: ApplicationId::parse(row.application_id)
+                    .map_err(StoreError::corrupt)?,
+                preview: row.preview,
+            })
+        })
         .transpose()
     }
 

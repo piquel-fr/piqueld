@@ -76,7 +76,6 @@ pub(super) struct OutputQuery {
 #[utoipa::path(get,path="/api/v1/builds/{id}/logs",operation_id="buildLogs",params(("id"=i64,Path),OutputQuery), responses((status=200,description="Bounded build output",body=Envelope<BuildLogPage>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn logs(
     State(state): State<ApiState>,
-    Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<i64>,
     query: Result<Query<OutputQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -87,8 +86,5 @@ pub(super) async fn logs(
             "invalid build log query",
         )
     })?;
-    identity
-        .grants
-        .require_app(AppPermission::LogsRead, &state.build_application(id).await?)?;
     Ok(ok(state.build_logs(id, query.before, query.stream).await?))
 }
