@@ -68,11 +68,12 @@ fn branch_state(state: &BranchState) -> (AnyView, Option<String>) {
             )),
         ),
         BranchState::Gone => (Tone::Bad, None),
+        // The badge says it runs a local snapshot; Deploys details it.
         BranchState::Local { head } => (
             Tone::Neutral,
             Some(head.as_ref().map_or_else(
-                || "a local snapshot; the branch was never pushed".into(),
-                |head| format!("a local snapshot; the branch is at {}", commit(head)),
+                || "never pushed".into(),
+                |head| format!("branch at {}", commit(head)),
             )),
         ),
         BranchState::Unknown { message } => (Tone::Neutral, Some(message.clone())),
