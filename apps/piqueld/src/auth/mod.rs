@@ -94,9 +94,23 @@ pub struct TokenPolicy {
     /// Longest lifetime in days (`auth.max_token_days`); `None` allows
     /// tokens that never expire.
     pub max_days: Option<u32>,
-    /// Whether the daemon runs a tailnet node (`tailscale.enabled`), without
-    /// which a token bound to a tailnet identity could never be used.
+    /// Whether the daemon identifies tailnet peers, through its tailnet node
+    /// (`tailscale.enabled`) or the apps node behind its dashboard hostname
+    /// (`ingress.private.dashboard_hostname`), without which a token bound to
+    /// a tailnet identity could never be used.
     pub tailnet: bool,
+}
+
+impl TokenPolicy {
+    /// The limits `config` sets.
+    #[must_use]
+    pub fn new(config: &crate::config::DaemonConfig) -> Self {
+        Self {
+            max_days: config.auth.max_token_days,
+            tailnet: config.tailscale.enabled
+                || config.ingress.private.dashboard_hostname.is_some(),
+        }
+    }
 }
 
 impl Auth {
@@ -110,10 +124,7 @@ impl Auth {
         store: &crate::store::Store,
         config: &crate::config::DaemonConfig,
     ) -> anyhow::Result<Self> {
-        let tokens = TokenPolicy {
-            max_days: config.auth.max_token_days,
-            tailnet: config.tailscale.enabled,
-        };
+        let tokens = TokenPolicy::new(config);
         let auth = Self::configured(store, config.public_url(), tokens)?;
         let path = config.server.data_dir.join("setup-link");
         auth.prepare_setup(&path).await?;

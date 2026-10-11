@@ -191,10 +191,12 @@ token or login.
 
 ### Tailnet-bound tokens
 
-With the daemon's [tailnet node](configuration.md#tailnet-node) enabled, a
-token can be bound to a tailnet user or tag. It is then accepted only through
-that node, from a device signed in as that user or carrying that tag, as
-reported by the node's `tailscaled` on every request (and again when an
+With the daemon's [tailnet node](configuration.md#tailnet-node) enabled, or a
+[dashboard hostname](ingress.md#dashboard-hostname) set, a token can be bound to
+a tailnet user or tag. It is then accepted only through that node, or that
+hostname, from a device signed in as that user or carrying that tag, as
+reported by the node's `tailscaled` (the apps node's, for the dashboard
+hostname) on every request (and again when an
 `app exec` command starts), so removing a tag or signing a device out takes
 effect immediately. Anywhere else, including the Unix socket,
 plain TCP listeners, and other tailnet devices, it is refused with 401
@@ -207,8 +209,8 @@ piquelctl token create laptop --preset read-only --tailnet alice@example.com
 ```
 
 Tagged devices belong to no user, so a user binding never matches them; bind
-those tokens to a tag. Creating a bound token without the tailnet node is
-refused, since it could never be used.
+those tokens to a tag. Creating a bound token without the tailnet node or a
+dashboard hostname is refused, since it could never be used.
 
 ## Upgrading
 
