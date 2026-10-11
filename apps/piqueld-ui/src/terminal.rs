@@ -145,9 +145,11 @@ impl vt100::Callbacks for Replies {
         match (i1, c, param) {
             // Device status: "OK".
             (None, 'n', Some(5)) => self.0.extend_from_slice(b"\x1b[0n"),
-            // Cursor position, 1-based.
+            // Cursor position, 1-based. A cursor waiting to wrap past the
+            // last column, which `vt100` reports as the width, is still in it.
             (None, 'n', Some(6)) => {
                 let (row, col) = screen.cursor_position();
+                let col = col.min(screen.size().1.saturating_sub(1));
                 self.0
                     .extend_from_slice(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
             }
@@ -432,6 +434,8 @@ mod tests {
         assert_eq!(terminal.write(b"ab\x1b["), b"");
         assert_eq!(terminal.write(b"6n"), b"\x1b[1;3R");
         assert_eq!(terminal.write(b"\x1b[c"), b"\x1b[?1;2c");
+        // A full line leaves the cursor waiting to wrap, still in the last column.
+        assert_eq!(terminal.write(b"\r1234567890\x1b[6n"), b"\x1b[1;10R");
     }
 
     #[test]
