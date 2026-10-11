@@ -9909,13 +9909,13 @@
         "description": "How large a snapshot `piquelctl preview deploy --local` uploads may be,\nso it can refuse one before writing it.",
         "properties": {
           "max_files": {
-            "description": "The most files it may have.",
+            "description": "The most files and directories it may have.",
             "format": "int64",
             "minimum": 0,
             "type": "integer"
           },
           "max_tree_bytes": {
-            "description": "The most bytes its files may take: `[checkouts] max_bytes`.",
+            "description": "The most bytes its files may take, each file and directory charged\n[`Self::file_cost`]: `[checkouts] max_bytes`.",
             "format": "int64",
             "minimum": 0,
             "type": "integer"

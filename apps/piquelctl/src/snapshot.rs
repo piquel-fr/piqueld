@@ -283,11 +283,20 @@ impl Worktree {
                 sizes.push((metadata.len(), path));
             }
         }
+        // Directories are charged a block each, like empty files.
+        let directories = sizes
+            .iter()
+            .flat_map(|(_, path)| Path::new(path).ancestors().skip(1))
+            .filter(|directory| !directory.as_os_str().is_empty())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len() as u64;
         let total = sizes
             .iter()
             .map(|(size, _)| SnapshotLimits::file_cost(*size))
-            .sum::<u64>();
-        if total <= limits.max_tree_bytes && sizes.len() as u64 <= limits.max_files {
+            .sum::<u64>()
+            .saturating_add(directories.saturating_mul(SnapshotLimits::file_cost(0)));
+        let entries = sizes.len() as u64 + directories;
+        if total <= limits.max_tree_bytes && entries <= limits.max_files {
             return Ok(());
         }
         sizes.sort_unstable_by(|a, b| b.cmp(a));
@@ -300,9 +309,9 @@ impl Worktree {
         Err(CliError::new(
             ErrorKind::Input,
             format!(
-                "the snapshot's {} files take {}, more than the daemon checks out ({} files, {}); \
-                 ignore what the preview doesn't need. Largest: {largest}",
-                sizes.len(),
+                "the snapshot's {entries} files and directories take {}, more than the daemon \
+                 checks out ({} entries, {}); ignore what the preview doesn't need. \
+                 Largest: {largest}",
                 Size(total),
                 limits.max_files,
                 Size(limits.max_tree_bytes),

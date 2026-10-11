@@ -114,7 +114,7 @@ impl Heads {
 pub(crate) struct Listings {
     /// Each repository being listed, with its last listing and when it
     /// finished.
-    repositories: std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<Option<Listed>>>>>,
+    repositories: std::sync::Mutex<BTreeMap<String, Arc<Repository>>>,
     /// Permits to list.
     listing: Semaphore,
 }
@@ -139,40 +139,66 @@ impl Listings {
     /// of a read that was already listing them.
     pub(crate) async fn list(&self, url: &str) -> Arc<anyhow::Result<Heads>> {
         let requested = std::time::Instant::now();
-        let repository = Arc::clone(
-            self.repositories
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entry(url.to_owned())
-                .or_default(),
-        );
-        let heads = {
-            let mut last = repository.lock().await;
-            match &*last {
-                Some((finished, heads)) if *finished > requested => Arc::clone(heads),
-                _ => {
-                    let heads = match self.listing.acquire().await {
-                        Ok(_listing) => Heads::list(url).await,
-                        Err(error) => Err(error.into()),
-                    };
-                    let heads = Arc::new(heads);
-                    *last = Some((std::time::Instant::now(), Arc::clone(&heads)));
-                    heads
-                }
-            }
+        let reader = Reader {
+            listings: self,
+            url,
+            repository: Some(Arc::clone(self.lock().entry(url.to_owned()).or_default())),
         };
-        let mut repositories = self
-            .repositories
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Reads take and drop their handle under this lock, so the last read
-        // to finish sees only the map's and its own, and removes it.
-        let last = Arc::strong_count(&repository) == 2;
-        drop(repository);
-        if last {
-            repositories.remove(url);
+        let mut last = reader.repository().lock().await;
+        if let Some((finished, heads)) = &*last
+            && *finished > requested
+        {
+            return Arc::clone(heads);
         }
+        let heads = match self.listing.acquire().await {
+            Ok(_listing) => Heads::list(url).await,
+            Err(error) => Err(error.into()),
+        };
+        let heads = Arc::new(heads);
+        *last = Some((std::time::Instant::now(), Arc::clone(&heads)));
         heads
+    }
+
+    /// The repositories being listed.
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Arc<Repository>>> {
+        self.repositories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// A repository's last listing, and when it finished.
+type Repository = tokio::sync::Mutex<Option<Listed>>;
+
+/// A read of [`Listings`], which removes its repository's entry when it
+/// is the last to finish, or is cancelled.
+struct Reader<'a> {
+    listings: &'a Listings,
+    url: &'a str,
+    /// Taken only when dropped.
+    repository: Option<Arc<Repository>>,
+}
+
+impl Reader<'_> {
+    /// The repository being read.
+    fn repository(&self) -> &Repository {
+        self.repository
+            .as_deref()
+            .expect("taken only when the reader is dropped")
+    }
+}
+
+impl Drop for Reader<'_> {
+    fn drop(&mut self) {
+        let mut repositories = self.listings.lock();
+        // Readers take and drop their handle under this lock, so the last
+        // to finish sees only the map's and its own, and removes it.
+        if let Some(repository) = self.repository.take()
+            && Arc::strong_count(&repository) == 2
+        {
+            drop(repository);
+            repositories.remove(self.url);
+        }
     }
 }
 
@@ -297,9 +323,9 @@ impl Checkouts {
             }
             .into());
         }
-        let permits = u32::try_from(bytes.div_ceil(Self::MIB).max(1))
-            .context("count the checkout's disk permits")?;
-        let disk = Arc::clone(&self.disk).acquire_many_owned(permits).await?;
+        let disk = Arc::clone(&self.disk)
+            .acquire_many_owned(Self::permits(bytes)?)
+            .await?;
         let info = root.join(".git/info");
         tokio::fs::create_dir_all(&info)
             .await
@@ -331,6 +357,7 @@ impl Checkouts {
         if !output.status.success() || !valid_git_commit(&commit) {
             bail!("Git did not resolve a full commit hash");
         }
+        let disk = self.settle(directory.path(), disk).await?;
         Ok(Checkout {
             directory,
             _disk: disk,
@@ -338,9 +365,37 @@ impl Checkouts {
         })
     }
 
+    /// Checks the disk a checkout in `directory` takes against `disk`, its
+    /// reservation, which an estimate may fall short of: it is topped up
+    /// without waiting, or the checkout is refused.
+    async fn settle(
+        &self,
+        directory: &Path,
+        mut disk: OwnedSemaphorePermit,
+    ) -> anyhow::Result<OwnedSemaphorePermit> {
+        let needed = Self::permits(Self::disk_usage(directory).await?)?;
+        let held =
+            u32::try_from(disk.num_permits()).context("count the checkout's disk permits")?;
+        if let Some(more) = needed.checked_sub(held).filter(|more| *more > 0) {
+            let more = Arc::clone(&self.disk)
+                .try_acquire_many_owned(more)
+                .map_err(|_| TreeTooLarge {
+                    limit: self.max_bytes,
+                })?;
+            disk.merge(more);
+        }
+        Ok(disk)
+    }
+
+    /// The permits of `disk` that `bytes` take.
+    fn permits(bytes: u64) -> anyhow::Result<u32> {
+        u32::try_from(bytes.div_ceil(Self::MIB).max(1)).context("count the checkout's disk permits")
+    }
+
     /// The bytes `revision`'s working tree takes in the repository at
-    /// `repository`, each file charged `SnapshotLimits::file_cost`, read
-    /// from object headers without writing a file.
+    /// `repository`, each file and directory charged
+    /// `SnapshotLimits::file_cost`, read from object headers without
+    /// writing a file.
     ///
     /// # Errors
     /// Returns a Git failure, or [`TreeTooLarge`] when it takes more than
@@ -349,20 +404,21 @@ impl Checkouts {
         let too_large = || TreeTooLarge {
             limit: self.max_bytes,
         };
-        // A line is at most 20 digits and a newline, so a larger output
-        // has more than `FILES` lines.
+        // A line is at most a type, 20 digits, and two separators, so a
+        // larger output has more than `FILES` lines.
         let mut command = Checkout::command();
         command.arg("-C").arg(repository).args([
             "ls-tree",
             "-r",
-            "--format=%(objectsize)",
+            "-t",
+            "--format=%(objecttype) %(objectsize)",
             "--end-of-options",
             revision,
         ]);
         let output = crate::command::LoggedCommand::output(
             &mut command,
             "measure Git tree",
-            Self::FILES * 21,
+            Self::FILES * 28,
         )
         .await
         .map_err(
@@ -373,9 +429,13 @@ impl Checkouts {
         )?;
         let output = String::from_utf8(output).context("decode Git tree sizes")?;
         let mut bytes = 0_u64;
-        for (files, size) in output.lines().enumerate() {
-            // Submodules print `-`: an empty directory is checked out.
-            let cost = piqueld_core::api::SnapshotLimits::file_cost(size.parse().unwrap_or(0));
+        for (files, entry) in output.lines().enumerate() {
+            // Directories and submodules take a block, whatever their size.
+            let size = match entry.split_once(' ') {
+                Some(("blob", size)) => size.parse().context("parse a Git blob size")?,
+                _ => 0,
+            };
+            let cost = piqueld_core::api::SnapshotLimits::file_cost(size);
             bytes = bytes.saturating_add(cost);
             if files >= Self::FILES || bytes > self.max_bytes {
                 return Err(too_large().into());
@@ -422,7 +482,11 @@ impl Checkouts {
         .await;
         if pinned.is_err() {
             crate::command::LoggedCommand::run_recorded(
-                &mut fetch(&["--unshallow", "origin"]),
+                &mut fetch(&[
+                    "--unshallow",
+                    "origin",
+                    "+refs/heads/*:refs/remotes/origin/*",
+                ]),
                 "fetch Git history",
                 log,
             )
@@ -787,6 +851,10 @@ mod tests {
         assert!(first.as_ref().as_ref().unwrap().head("main").is_some());
         let later = listings.list(&url).await;
         assert!(!Arc::ptr_eq(&first, &later));
+        // A cancelled read takes part too.
+        let cancelled = listings.list(&url);
+        drop(tokio::time::timeout(Duration::ZERO, cancelled).await);
+        assert!(listings.repositories.lock().unwrap().is_empty());
         // Nothing is kept once no read waits.
         assert!(listings.repositories.lock().unwrap().is_empty());
     }
@@ -808,6 +876,27 @@ mod tests {
             tokio::fs::read_to_string(dockerfile).await.unwrap(),
             "$Id$\n"
         );
+    }
+
+    /// Directories are charged too: a deep tree of tiny files takes far
+    /// more than its files' bytes.
+    #[tokio::test]
+    async fn checkouts_charge_their_directories() {
+        let repository = tempfile::tempdir().unwrap();
+        let source = fixture(repository.path()).await;
+        for directory in 0..50 {
+            let path = repository.path().join(format!("{directory}/a/b/c"));
+            tokio::fs::create_dir_all(&path).await.unwrap();
+            tokio::fs::write(path.join("f"), "x").await.unwrap();
+        }
+        let head = commit(repository.path(), "FROM scratch\n").await;
+        let checkouts = checkouts(repository.path(), 1 << 30).await;
+        let tree = checkouts
+            .measure(Path::new(&source.url), &head)
+            .await
+            .unwrap();
+        // 51 files and 200 directories, a block each and their index share.
+        assert_eq!(tree, 251 * (4096 + 256));
     }
 
     /// A download that grows past its limit is stopped, and one that

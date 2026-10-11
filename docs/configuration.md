@@ -249,15 +249,17 @@ max_bytes = 4294967296
 working tree, take at once. Clones are shallow, so a checkout's history is
 about one compressed copy of its tree. At most four clones run at once, and
 one is stopped once it has downloaded more than a quarter of `max_bytes`.
-Each tree is then measured before its files are written, each file charged
-its size in whole 4 KiB blocks, at least one, plus 256 bytes for Git's index
-and directories; the history counts as the disk it takes. A checkout waits
-until it fits beside the others, and one larger than `max_bytes`, or with
-more than 500,000 files, fails. Clones still downloading are not counted, so
+Each tree is then measured before its files are written, each file and
+directory charged its size in whole 4 KiB blocks, at least one, plus 256
+bytes for Git's index; the history counts as the disk it takes. A checkout
+waits until it fits beside the others, and one larger than `max_bytes`, or with
+more than 500,000 files and directories, fails. Once checked out, the disk a
+checkout really takes is compared with what it was charged: a checkout that
+takes more than the budget has room for fails. Clones still downloading are not counted, so
 checkouts take at most twice `max_bytes`. Files are checked out as
 committed: the repository's attributes cannot run filters such as LFS's, or
 convert encodings, line endings or `$Id$`. A pinned commit that the server
-won't serve by itself is found in the default branch's history. `GET /api/v1/system/status` reports the limit, so `piquelctl
+won't serve by itself is found in the history of every branch. `GET /api/v1/system/status` reports the limit, so `piquelctl
 preview deploy --local` can refuse a snapshot that would not fit before
 packing it.
 

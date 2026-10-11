@@ -703,21 +703,22 @@ pub struct SystemStatus {
 pub struct SnapshotLimits {
     /// The largest bundle an upload may carry: `[snapshots] max_upload_bytes`.
     pub max_upload_bytes: u64,
-    /// The most bytes its files may take, each charged
+    /// The most bytes its files may take, each file and directory charged
     /// [`Self::file_cost`]: `[checkouts] max_bytes`.
     pub max_tree_bytes: u64,
-    /// The most files it may have.
+    /// The most files and directories it may have.
     pub max_files: u64,
 }
 
 impl SnapshotLimits {
     /// Filesystem block size files are charged in.
     const BLOCK: u64 = 4096;
-    /// Each file's share of Git's index and of directories.
+    /// Each file's share of Git's index.
     const METADATA: u64 = 256;
 
-    /// The disk a checked-out file of `size` bytes is charged: whole
-    /// blocks, at least one, and its share of the index and directories.
+    /// The disk a checked-out file of `size` bytes, or a directory of
+    /// none, is charged: whole blocks, at least one, and its share of the
+    /// index.
     ///
     /// ```
     /// use piqueld_core::api::SnapshotLimits;

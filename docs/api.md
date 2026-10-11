@@ -153,7 +153,7 @@ means it could not fetch them: push the base, or send a complete bundle. The bod
 streamed to the daemon's data directory and refused with `413
 snapshot_too_large` (with `details.limit`) once it exceeds `[snapshots]
 max_upload_bytes`, which is separate from the 2 MiB limit of other bodies,
-and also once its files take more than `[checkouts] max_bytes`, or number
+and also once its files and directories take more than `[checkouts] max_bytes`, or number
 more than 500,000, which `details.limit` then names.
 `SystemStatus.snapshots` reports these limits. The daemon receives two uploads
 at a time, each holding its slot until its deployment is accepted; a body that sends nothing for 30
