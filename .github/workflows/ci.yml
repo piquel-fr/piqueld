@@ -297,8 +297,12 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
-          primary-key: nix-x86_64-linux-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock') }}
-          restore-prefixes-first-match: nix-x86_64-linux-
+          # Keys are immutable, so each main build saves a fresh one; the
+          # newest one with the same lockfiles restores first.
+          primary-key: nix-x86_64-linux-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock') }}-${{ github.sha }}
+          restore-prefixes-first-match: |
+            nix-x86_64-linux-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock') }}-
+            nix-x86_64-linux-
           save: true # TEMP: measure warm runs
           gc-max-store-size-linux: 4G
           purge: true
