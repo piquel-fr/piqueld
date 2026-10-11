@@ -2,7 +2,7 @@
 
 use crate::manifest::dependencies::StartupOrder;
 use crate::resource::{
-    Convergence, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
+    Convergence, DesiredJob, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
     ResolutionRequirement, ResolvedApplication,
 };
 use crate::{EnvironmentId, InstanceId};
@@ -75,6 +75,8 @@ pub enum ActionReason {
     ApplicationDeletion,
     /// The volume is intentionally retained.
     VolumeRetentionPolicy,
+    /// A before-rollout job runs, or needs exclusive use of a volume.
+    DeploymentJob,
 }
 
 /// Concrete action that can appear in a runtime plan.
@@ -133,6 +135,12 @@ pub enum ActionKind {
         /// Canonical volume name intentionally left in place.
         name: String,
     },
+    /// Run a before-rollout job to completion. Only previews list jobs:
+    /// deployments run them before planning the rollout.
+    RunJob {
+        /// Manifest-level job name.
+        job: String,
+    },
 }
 
 impl ActionKind {
@@ -150,6 +158,7 @@ impl ActionKind {
             | Self::WaitForServiceRemoval { service }
             | Self::ResolveImage { service, .. }
             | Self::BuildGit { service } => service,
+            Self::RunJob { job } => job,
         }
     }
 
@@ -166,7 +175,7 @@ impl ActionKind {
     #[must_use]
     pub const fn risk(&self) -> ActionRisk {
         match self {
-            Self::EnsureVolume { .. } => ActionRisk::DataAdjacent,
+            Self::EnsureVolume { .. } | Self::RunJob { .. } => ActionRisk::DataAdjacent,
             Self::EnsureService { .. } => ActionRisk::Availability,
             Self::RemoveService { .. } | Self::RemoveNetwork { .. } => ActionRisk::Destructive,
             Self::BuildGit { .. }
@@ -211,6 +220,7 @@ impl ActionKind {
             Self::RemoveService { .. } => "remove_service",
             Self::RemoveNetwork { .. } => "remove_network",
             Self::RetainVolume { .. } => "retain_volume",
+            Self::RunJob { .. } => "run_job",
         }
     }
 }
@@ -228,6 +238,7 @@ impl fmt::Display for ActionKind {
             Self::RemoveService { name } => ("REMOVE SERVICE", name.as_str()),
             Self::RemoveNetwork { name } => ("REMOVE NETWORK", name.as_str()),
             Self::RetainVolume { name } => ("RETAIN VOLUME", name.as_str()),
+            Self::RunJob { job } => ("RUN JOB", job.as_str()),
         };
         write!(formatter, "{verb} {resource}")
     }
@@ -512,9 +523,55 @@ impl Plan {
             .filter(|action| action.kind.mutates_runtime())
     }
 
+    /// The next action before `job` can run, given this rollout plan toward
+    /// `target`: shared networks and volumes, then the job's startup
+    /// dependencies, then removal of every other service that mounts one of
+    /// the job's exclusive volumes. `None` once the job may start.
+    #[must_use]
+    pub fn next_job_preparation(
+        &self,
+        target: &ResolvedApplication,
+        job: &DesiredJob,
+        observed: &ObservedApplication,
+    ) -> Option<PlanAction> {
+        let dependencies = target.job_dependencies(job);
+        let prerequisite = self.actions.iter().find(|action| match &action.kind {
+            ActionKind::EnsureNetwork { .. } | ActionKind::EnsureVolume { .. } => true,
+            ActionKind::EnsureService { service } => {
+                dependencies.contains(service.logical_name.as_str())
+            }
+            ActionKind::WaitForService { service } => target.services.iter().any(|desired| {
+                desired.name.as_str() == service
+                    && dependencies.contains(desired.logical_name.as_str())
+            }),
+            _ => false,
+        });
+        prerequisite.cloned().or_else(|| {
+            observed
+                .services
+                .iter()
+                .find(|service| {
+                    service
+                        .mounts
+                        .iter()
+                        .any(|mount| job.holds_volume(&mount.volume_name))
+                })
+                .map(|service| {
+                    PlanAction::new(
+                        ActionKind::RemoveService {
+                            name: service.name.clone(),
+                        },
+                        ActionReason::DeploymentJob,
+                    )
+                })
+        })
+    }
+
     /// Filters old-target repair actions that would revert or remove prepared
-    /// job prerequisites. A prerequisite's wait remains only while it is still
-    /// converging, so it gates active dependents without blocking their repair.
+    /// job prerequisites, or restart a service stopped so a job could use its
+    /// volumes exclusively. A prerequisite's wait remains only while it is
+    /// still converging, so it gates active dependents without blocking their
+    /// repair. Applies only while the deployment may still roll out.
     pub fn preserve_job_prerequisites(
         &mut self,
         prepared: &ResolvedApplication,
@@ -529,16 +586,39 @@ impl Plan {
             .services
             .iter()
             .filter(|service| dependencies.contains(service.logical_name.as_str()))
-            .map(|service| service.name.as_str())
+            .map(|service| service.name.to_string())
+            .collect::<BTreeSet<_>>();
+        // The previous version of a stopped service must not write a volume
+        // a job is changing, nor data the job already changed.
+        let stopped = self
+            .actions
+            .iter()
+            .filter_map(|action| match &action.kind {
+                ActionKind::EnsureService { service }
+                    if service.mounts.iter().any(|mount| {
+                        prepared
+                            .jobs
+                            .iter()
+                            .any(|job| job.holds_volume(mount.volume_name.as_str()))
+                    }) =>
+                {
+                    Some(service.name.to_string())
+                }
+                _ => None,
+            })
             .collect::<BTreeSet<_>>();
         self.actions.retain(|action| match &action.kind {
-            ActionKind::EnsureService { service } => !services.contains(service.name.as_str()),
-            ActionKind::RemoveService { name } => !services.contains(name.as_str()),
+            ActionKind::EnsureService { service } => {
+                !services.contains(service.name.as_str())
+                    && !stopped.contains(service.name.as_str())
+            }
+            ActionKind::RemoveService { name } => !services.contains(name),
             ActionKind::WaitForService { service } => {
-                !services.contains(service.as_str())
-                    || !observed.services.iter().any(|found| {
-                        found.name == *service && found.convergence == Convergence::Converged
-                    })
+                !stopped.contains(service)
+                    && (!services.contains(service)
+                        || !observed.services.iter().any(|found| {
+                            found.name == *service && found.convergence == Convergence::Converged
+                        }))
             }
             ActionKind::RemoveNetwork { name } => {
                 prepared.jobs.is_empty()

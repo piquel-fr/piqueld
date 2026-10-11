@@ -8,9 +8,9 @@ use crate::{
     ApplicationName, DockerConfigName, DockerNetworkName, DockerServiceName, DockerVolumeName,
     EnvironmentId, JobName, ResourceKind, ServiceName, VolumeName, docker_resource_name,
     manifest::{
-        FileMode, FileSource, JobRun, NormalizedApplication, RepositoryFiles, RolloutPolicy,
-        SourceRepository, ValidatedHealthCheck, ValidatedResourceLimits, ValidatedRollout,
-        ValidatedSource, valid_image_reference,
+        FileMode, FileSource, JobRun, JobVolumeAccess, NormalizedApplication, RepositoryFiles,
+        RolloutPolicy, SourceRepository, ValidatedHealthCheck, ValidatedResourceLimits,
+        ValidatedRollout, ValidatedSource, valid_image_reference,
     },
 };
 use crate::{BuildInputs, ImageReference, ImmutableImage, Release, RepositoryDigest};
@@ -524,7 +524,8 @@ pub struct DesiredJob {
     /// Seconds the job may run before the deployment fails.
     pub timeout_seconds: u32,
     /// The referenced service's container settings with the job's command,
-    /// Docker name, and labels. Health checks never apply to jobs.
+    /// Docker name, and labels. Health checks never apply to jobs. Mounts are
+    /// read-only unless the job has exclusive volume access.
     pub container: DesiredService,
 }
 
@@ -539,6 +540,23 @@ impl DesiredJob {
         !labels.contains_key(SERVICE_LABEL)
             && labels.get(JOB_LABEL).map(String::as_str) == Some(self.logical_name.as_str())
             && self.container.name == DockerServiceName::for_job(&application, &self.logical_name)
+    }
+
+    /// Volumes the job writes. No other container may use them while it runs,
+    /// so services mounting them stop first. Empty for read-only jobs.
+    pub fn exclusive_volumes(&self) -> impl Iterator<Item = &DockerVolumeName> {
+        self.container
+            .mounts
+            .iter()
+            .filter(|mount| !mount.read_only)
+            .map(|mount| &mount.volume_name)
+    }
+
+    /// Whether the job holds `volume`, a Docker volume name, exclusively.
+    #[must_use]
+    pub fn holds_volume(&self, volume: &str) -> bool {
+        self.exclusive_volumes()
+            .any(|exclusive| exclusive.as_str() == volume)
     }
 
     /// Returns this job's run for `operation`.
@@ -1151,6 +1169,11 @@ fn compile_job(
     container
         .labels
         .insert(JOB_LABEL.into(), job.name.to_string());
+    if job.volume_access == JobVolumeAccess::ReadOnly {
+        for mount in &mut container.mounts {
+            mount.read_only = true;
+        }
+    }
     DesiredJob {
         logical_name: job.name.clone(),
         run: job.run,

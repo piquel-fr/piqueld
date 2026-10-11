@@ -2,7 +2,7 @@
 use super::super::ui::{Icon, empty, icon, remove_button};
 use super::{dirty_group, editor, save_actions};
 use leptos::prelude::*;
-use piqueld_client::{Job, JobRun, edit::ApplicationEdit};
+use piqueld_client::{Job, JobRun, JobVolumeAccess, edit::ApplicationEdit};
 
 /// One editable job. The command keeps one element per row, without shell parsing.
 #[derive(Clone, PartialEq)]
@@ -11,6 +11,7 @@ struct JobDraft {
     service: String,
     command: Vec<String>,
     timeout: String,
+    volume_access: JobVolumeAccess,
 }
 
 impl Default for JobDraft {
@@ -20,6 +21,7 @@ impl Default for JobDraft {
             service: String::new(),
             command: vec![String::new()],
             timeout: Job::DEFAULT_TIMEOUT_SECONDS.to_string(),
+            volume_access: JobVolumeAccess::default(),
         }
     }
 }
@@ -45,6 +47,7 @@ impl JobDraft {
                 .timeout
                 .parse()
                 .map_err(|_| "Job timeout must be a whole number of seconds")?,
+            volume_access: self.volume_access,
         })
     }
 }
@@ -56,6 +59,7 @@ impl From<Job> for JobDraft {
             service: job.service,
             command: job.command.iter().map(ToString::to_string).collect(),
             timeout: job.timeout_seconds.to_string(),
+            volume_access: job.volume_access,
         }
     }
 }
@@ -188,7 +192,7 @@ pub(super) fn JobSettings() -> impl IntoView {
                 <div>
                     <h3>"Jobs"</h3>
                     <p>
-                        "Each deployment runs these commands to completion, in order, after preparing images. A job reuses its service's image, environment, secrets, and volume mounts, and waits for that service's startup dependencies to be healthy. Dependencies start or update first; other services roll out only after all jobs succeed. A failed job stops the deployment; dependency changes remain. Each command element is one row; no shell parsing is applied."
+                        "Each deployment runs these commands to completion, in order, after preparing images. A job reuses its service's image, environment, secrets, and volume mounts, and waits for that service's startup dependencies to be healthy. Dependencies start or update first; other services roll out only after all jobs succeed. A failed job stops the deployment and dependencies return to the running deployment. Volumes are read-only unless the job has exclusive access, which stops every service using its writable volumes until the rollout. Each command element is one row; no shell parsing is applied."
                     </p>
                 </div>
             </header>
@@ -251,6 +255,20 @@ pub(super) fn JobSettings() -> impl IntoView {
                                                 edit(draft, index, |j| j.timeout = event_target_value(&event));
                                             }}
                                         />
+                                    </label>
+                                    <label class="field" style="max-width:200px">
+                                        <span>"Volume access"</span>
+                                        <select
+                                            prop:value={move || field(draft, index, |j| j.volume_access.as_str())}
+                                            on:change={move |event| {
+                                                if let Ok(access) = event_target_value(&event).parse() {
+                                                    edit(draft, index, |j| j.volume_access = access);
+                                                }
+                                            }}
+                                        >
+                                            <option value={JobVolumeAccess::ReadOnly.as_str()}>"Read-only"</option>
+                                            <option value={JobVolumeAccess::Exclusive.as_str()}>"Exclusive"</option>
+                                        </select>
                                     </label>
                                     <div class="btn-group">
                                         <button

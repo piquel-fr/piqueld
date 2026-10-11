@@ -1,6 +1,8 @@
 //! Typed values owned by validated applications, exposed through immutable accessors.
 
-use super::input::{self, GitRepository, JobRun, RepositoryManifest, SourceRepository};
+use super::input::{
+    self, GitRepository, JobRun, JobVolumeAccess, RepositoryManifest, SourceRepository,
+};
 use super::variables::{Template, Typed};
 use super::{RolloutPolicy, ValidatedRollout, ValidationError, ValidationErrors};
 use crate::{ApplicationName, JobName, ServiceName, VolumeName, codes};
@@ -49,6 +51,8 @@ pub struct ValidatedJob {
     pub run: JobRun,
     /// Seconds the job may run before the deployment fails.
     pub timeout_seconds: u32,
+    /// How the job may use the service's volumes.
+    pub volume_access: JobVolumeAccess,
 }
 
 /// Validated service source.
@@ -611,6 +615,7 @@ impl ValidatedJob {
             command: Template::into_texts(value.command, &format!("{path}.command"))?,
             run: value.run,
             timeout_seconds: value.timeout_seconds,
+            volume_access: value.volume_access,
         })
     }
 
@@ -626,6 +631,7 @@ impl ValidatedJob {
                 .collect(),
             run: self.run,
             timeout_seconds: self.timeout_seconds,
+            volume_access: self.volume_access,
         }
     }
 }

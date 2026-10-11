@@ -541,6 +541,7 @@ piquelctl app route list notes
 piquelctl app route remove notes notes.example.com --yes
 piquelctl env visibility notes staging private --yes
 piquelctl app job set notes migrate web --timeout-seconds 600 --yes -- notes migrate
+piquelctl app job set notes migrate web --volume-access exclusive --yes -- notes migrate
 piquelctl app job move notes migrate 1 --yes
 piquelctl app job remove notes migrate --yes
 piquelctl app variable set notes domain piquel.fr --yes
@@ -585,15 +586,17 @@ addresses. It also counts the previews against their limits, installation-wide
 and for each application you may read, flags a count left over a lowered limit,
 and sums the CPU and memory limits of the previews' deployed replicas.
 `job set` adds a job after the existing ones, or replaces the job with that name
-in place, keeping its timeout unless `--timeout-seconds` is given (300 for a new
-job). `job move` sets a job's 1-based position in the run order. Jobs run in
+in place, keeping its timeout and volume access unless `--timeout-seconds` or
+`--volume-access` is given (300 seconds and `read-only` for a new job).
+`read-only` mounts the service's volumes read-only; `exclusive` keeps writable
+volumes writable and stops every service mounting them until the rollout. `job move` sets a job's 1-based position in the run order. Jobs run in
 their saved order before each rollout; like routes, job edits
 preserve the other jobs and use the inspected generation.
 Each job inherits its referenced service's `depends_on`: those services and
 their transitive dependencies start or update and pass health checks before
 the job runs. Configure dependencies with `app service depends-on`. Other
-services wait for all jobs to succeed; a failed job does not roll back its
-dependencies. Jobs of dependency services must come earlier in the saved order.
+services wait for all jobs to succeed; after a failed job, repair rolls its
+dependencies back and restarts the services an exclusive job stopped. Jobs of dependency services must come earlier in the saved order.
 
 `app variable set` sets a variable's default, or with `--env NAME` its value in
 the environment named `NAME`, whether or not that environment exists yet, or

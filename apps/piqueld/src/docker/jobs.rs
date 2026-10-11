@@ -16,11 +16,14 @@ use piqueld_core::{
     api::LogStream,
     resource::{APPLICATION_LABEL, INSTANCE_LABEL, JOB_LABEL, JOB_OPERATION_LABEL, MANAGED_LABEL},
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Output retained from one job run; build history applies its own cap too.
 const JOB_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
 /// Delay between checks that a removed run's container has stopped.
 const JOB_STOP_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Label carrying when a run's timeout expires, in Unix milliseconds.
+const JOB_DEADLINE_LABEL: &str = "io.piqueld.job-deadline";
 
 impl BollardDocker {
     /// Converts a service specification into a single-completion job without
@@ -55,8 +58,9 @@ impl BollardDocker {
         spec
     }
 
-    /// Classifies a run's task status; tasks that have not stopped are running.
-    fn job_task_status(status: TaskStatus) -> JobStatus {
+    /// Classifies a run's task status; tasks that have not stopped are running
+    /// until `deadline`.
+    fn job_task_status(status: TaskStatus, deadline: Option<SystemTime>) -> JobStatus {
         let exit_code = match status.state {
             Some(TaskState::COMPLETE) => {
                 return JobStatus::Finished {
@@ -71,7 +75,7 @@ impl BollardDocker {
             Some(
                 TaskState::REJECTED | TaskState::SHUTDOWN | TaskState::ORPHANED | TaskState::REMOVE,
             ) => None,
-            _ => return JobStatus::Running,
+            _ => return JobStatus::Running { deadline },
         };
         JobStatus::Finished {
             exit_code,
@@ -79,7 +83,9 @@ impl BollardDocker {
         }
     }
 
-    /// Replaces any existing service of the job with this operation's run.
+    /// Replaces any existing service of the job with this operation's run,
+    /// labelled with when its timeout expires. Starts it only once no other
+    /// container uses the volumes the job holds exclusively.
     pub(super) async fn create_job(&self, job: &DesiredJobRun) -> Result<(), DockerError> {
         if !job.has_valid_identity() {
             return Err(DockerError::OwnershipConflict);
@@ -90,9 +96,38 @@ impl BollardDocker {
             .await?;
         self.wait_jobs_stopped(ownership, Some(job.logical_name.as_str()), JobRuns::All)
             .await?;
+        self.wait_volumes_released(job).await?;
         let node_id = self.local_node_id().await?;
-        let spec = Self::job_spec(self.runtime_service_spec(&job.container, &node_id).await?);
+        let mut spec = Self::job_spec(self.runtime_service_spec(&job.container, &node_id).await?);
+        let deadline = SystemTime::now() + Duration::from_secs(u64::from(job.timeout_seconds));
+        let deadline = deadline
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| DockerError::Validation("job deadline"))?
+            .as_millis();
+        spec.labels
+            .get_or_insert_with(Default::default)
+            .insert(JOB_DEADLINE_LABEL.into(), deadline.to_string());
         self.create_service_wire(&spec).await
+    }
+
+    /// Waits until no running container mounts a volume `job` holds
+    /// exclusively. Swarm stops the containers of removed services
+    /// asynchronously; the caller's request timeout bounds the wait.
+    async fn wait_volumes_released(&self, job: &DesiredJobRun) -> Result<(), DockerError> {
+        for volume in job.exclusive_volumes() {
+            let options = ListContainersOptionsBuilder::default()
+                .filters(&HashMap::from([("volume", vec![volume.to_string()])]))
+                .build();
+            while !Self::map_request(
+                "list volume containers",
+                self.docker.list_containers(Some(options.clone())).await,
+            )?
+            .is_empty()
+            {
+                tokio::time::sleep(JOB_STOP_POLL_INTERVAL).await;
+            }
+        }
+        Ok(())
     }
 
     /// Waits until no selected container of the application's jobs, or of
@@ -138,8 +173,12 @@ impl BollardDocker {
         }
     }
 
-    /// Returns the tasks of the operation's run, or `None` when it has no run.
-    async fn job_run_tasks(&self, job: &DesiredJobRun) -> Result<Option<Vec<Task>>, DockerError> {
+    /// Returns the deadline and tasks of the operation's run, or `None` when it
+    /// has no run.
+    async fn job_run_tasks(
+        &self,
+        job: &DesiredJobRun,
+    ) -> Result<Option<(Option<SystemTime>, Vec<Task>)>, DockerError> {
         let name = job.container.name.as_str();
         let service = match self
             .docker
@@ -156,6 +195,10 @@ impl BollardDocker {
         if labels.get(JOB_OPERATION_LABEL).map(String::as_str) != Some(job.operation()) {
             return Ok(None);
         }
+        let deadline = labels
+            .get(JOB_DEADLINE_LABEL)
+            .and_then(|deadline| deadline.parse().ok())
+            .map(|deadline| UNIX_EPOCH + Duration::from_millis(deadline));
         if !Self::owns_resource(labels, &job.container.labels, ResourceKind::Job, name) {
             return Err(DockerError::OwnershipConflict);
         }
@@ -172,7 +215,7 @@ impl BollardDocker {
                 ))
                 .await,
         )
-        .map(Some)
+        .map(|tasks| Some((deadline, tasks)))
     }
 
     /// Reads the progress of the operation's run of the job.
@@ -180,10 +223,12 @@ impl BollardDocker {
         // A single-completion job without restarts schedules exactly one task.
         Ok(match self.job_run_tasks(job).await? {
             None => JobStatus::Missing,
-            Some(tasks) => tasks
+            Some((deadline, tasks)) => tasks
                 .into_iter()
                 .find_map(|task| task.status)
-                .map_or(JobStatus::Running, Self::job_task_status),
+                .map_or(JobStatus::Running { deadline }, |status| {
+                    Self::job_task_status(status, deadline)
+                }),
         })
     }
 
@@ -198,7 +243,7 @@ impl BollardDocker {
             .job_run_tasks(job)
             .await?
             .into_iter()
-            .flatten()
+            .flat_map(|(_, tasks)| tasks)
             .find_map(|task| task.status?.container_status?.container_id);
         let Some(container) = container else {
             return Ok(JobOutput::default());
@@ -354,34 +399,33 @@ mod tests {
             }),
             ..Default::default()
         };
+        let deadline = Some(std::time::UNIX_EPOCH);
         assert_eq!(
-            BollardDocker::job_task_status(status(TaskState::RUNNING, None, None)),
-            JobStatus::Running
+            BollardDocker::job_task_status(status(TaskState::RUNNING, None, None), deadline),
+            JobStatus::Running { deadline }
         );
         assert_eq!(
-            BollardDocker::job_task_status(status(TaskState::COMPLETE, Some(0), None)),
+            BollardDocker::job_task_status(status(TaskState::COMPLETE, Some(0), None), deadline),
             JobStatus::Finished {
                 exit_code: Some(0),
                 error: None
             }
         );
         assert_eq!(
-            BollardDocker::job_task_status(status(
-                TaskState::FAILED,
-                Some(3),
-                Some("task: non-zero exit (3)")
-            )),
+            BollardDocker::job_task_status(
+                status(TaskState::FAILED, Some(3), Some("task: non-zero exit (3)")),
+                deadline
+            ),
             JobStatus::Finished {
                 exit_code: Some(3),
                 error: Some("task: non-zero exit (3)".into())
             }
         );
         assert_eq!(
-            BollardDocker::job_task_status(status(
-                TaskState::REJECTED,
-                None,
-                Some("executable file not found")
-            )),
+            BollardDocker::job_task_status(
+                status(TaskState::REJECTED, None, Some("executable file not found")),
+                deadline
+            ),
             JobStatus::Finished {
                 exit_code: None,
                 error: Some("executable file not found".into())

@@ -1574,6 +1574,7 @@ impl Names<'_> {
                 ActionReason::ResolutionRequired => "resolution required".into(),
                 ActionReason::ApplicationDeletion => "application deletion".into(),
                 ActionReason::VolumeRetentionPolicy => "volume retention policy".into(),
+                ActionReason::DeploymentJob => "deployment job".into(),
             };
             out.line(format_args!("      {risk} · {reason}"))?;
         }

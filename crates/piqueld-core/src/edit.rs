@@ -701,6 +701,7 @@ mod tests {
             command: vec!["migrate".into()],
             run: JobRun::BeforeRollout,
             timeout_seconds: 300,
+            volume_access: crate::manifest::JobVolumeAccess::ReadOnly,
         }])
         .apply(&mut manifest)
         .unwrap();

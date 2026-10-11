@@ -912,6 +912,7 @@ service = "auth"             # reuse the new image, env, secrets and mounts
 command = ["auth-service", "migrate"]
 run = "before-rollout"
 timeout_seconds = 300        # default
+volume_access = "read-only"  # default, or "exclusive"
 ```
 
 A job reuses the prepared image, environment, secret files, volume mounts,
@@ -922,6 +923,17 @@ answer for the service's network name. `before-rollout` is currently the only
 run point: jobs run in declared order after every source is prepared and before
 the deployment is promoted. Missing networks and volumes are created first, and
 a deployment whose plan is blocked runs no jobs.
+
+A job mounts every volume read-only by default, because the previous version
+of its service keeps running while it does. A migration that writes a volume,
+such as one changing a SQLite database, declares `volume_access =
+"exclusive"`. Its service's writable volumes then stay writable, and once the
+job's dependencies are ready, every service that mounts one of them stops.
+The job starts only after their containers have exited, and the services
+start again with the rollout. Exclusive access requires the service to mount
+a writable volume, and the job's startup dependencies cannot mount it, or
+validation fails with `job_volume_access_invalid`. Plans warn with
+`job_stops_services`, naming the services that stop.
 
 Jobs inherit their referenced service's `depends_on`. Before each job, those
 services and their transitive dependencies start or update to the prepared
@@ -941,19 +953,27 @@ their inherited dependency list.
 
 A non-zero exit, a rejected task, or exceeding `timeout_seconds` (1–86,400) fails
 the deployment with `job_failed` or `job_timeout`. Services outside the job's
-startup dependencies keep their previous configuration; dependencies may have
-already started or updated and are not rolled back. Active-target repair does
-not revert or remove those prerequisites while the deployment is unpromoted.
-The application stays degraded, and failed jobs are not retried
-automatically; deploy again after fixing the cause. Each job succeeds at most
-once per deployment: a retried deployment skips jobs that already succeeded,
-and after a daemon restart, or when Docker could not report a job's status, a
-still-running job is resumed rather than started again, with a fresh timeout.
+startup dependencies keep their previous configuration. While the deployment
+can still continue, active-target repair keeps the dependencies it started or
+updated and the services stopped for an exclusive job. Once a job has failed or
+the deployment was cancelled, and the job's container has stopped, repair
+returns them to the running deployment: dependencies roll back and stopped
+services start again. Data the job changed is not reverted. The application
+stays degraded, and failed jobs are not retried automatically; deploy again
+after fixing the cause. Each job succeeds at most once per deployment: a
+retried deployment skips jobs that already succeeded, and after a daemon
+restart, or when Docker could not report a job's status, a still-running job is
+resumed rather than started again. Its timeout counts from when it started, so
+resuming never extends it.
 Retrying a promoted deployment or repairing drift never runs jobs. A deployment
 that is superseded or cancelled stops its running job, and the next deployment
 stops any job an earlier one left behind. Each run, its bounded output, and
 Docker's explanation of a failed task are kept in the application's build
 history; output past 1 MiB per run is dropped and the run is marked truncated.
+
+Plans list each job as a `run_job` action after the actions that prepare it,
+and change lists show job settings as `jobs.<name>.<field>`, with commands
+redacted like service commands.
 
 Besides applying a manifest, jobs can be edited with `piquelctl app job`, the
 dashboard's Jobs tab, or `PUT /api/v1/applications/{id}/jobs`. Renaming a

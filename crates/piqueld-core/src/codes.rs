@@ -105,6 +105,10 @@ pub const JOB_SERVICE_MISSING: &str = "job_service_missing";
 pub const JOB_DEPENDENCY_ORDER_INVALID: &str = "job_dependency_order_invalid";
 /// Job timeout is outside its supported range.
 pub const JOB_TIMEOUT_INVALID: &str = "job_timeout_invalid";
+/// An exclusive job has no writable volume, or a startup dependency mounts one.
+pub const JOB_VOLUME_ACCESS_INVALID: &str = "job_volume_access_invalid";
+/// An exclusive job stops the services sharing its volumes until rollout.
+pub const JOB_STOPS_SERVICES: &str = "job_stops_services";
 
 /// Template text has a `${{` without a well-formed `namespace.name` reference.
 pub const TEMPLATE_INVALID: &str = "template_invalid";

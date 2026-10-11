@@ -1,9 +1,11 @@
 //! Manifest differences describe user intent without requiring Docker observation.
+use crate::manifest::dependencies::StartupOrder;
 use crate::{
-    DiagnosticSeverity, NormalizedApplication, PlanDiagnostic,
+    ActionKind, ActionReason, DiagnosticSeverity, DockerServiceName, EnvironmentId,
+    NormalizedApplication, PlanAction, PlanDiagnostic,
     api::{ManifestChange, ServiceRolloutView},
     codes,
-    manifest::{ApplicationSpec, FileSource, files::content_digest},
+    manifest::{ApplicationSpec, FileSource, JobVolumeAccess, files::content_digest},
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -71,17 +73,18 @@ impl ManifestChange {
             .collect()
     }
 
-    /// Flattens a specification into comparable field paths. Services contribute
-    /// one entry per top-level setting except `name`, and one per file, keyed
-    /// by target, which summarizes inline content by size and digest; routes
-    /// are keyed by hostname, volumes only record presence, and variables are
-    /// keyed by name.
+    /// Flattens a specification into comparable field paths. Services and jobs
+    /// contribute one entry per top-level setting except `name`, and services
+    /// one per file, keyed by target, which summarizes inline content by size
+    /// and digest; routes are keyed by hostname, volumes only record presence,
+    /// and variables are keyed by name.
     ///
     /// ```text
     /// manifest                              -> repository manifest settings
     /// services.web.replicas                 -> 3
     /// services.web.files./etc/app.yaml      -> "path: app.yaml, mode: 0444"
     /// services.web.files./etc/motd          -> "content: 5 bytes, sha256:2cf24dba5fb0, mode: 0444"
+    /// jobs.migrate.service                  -> "web"
     /// routes.app.example.com                -> {"service":"web","port":3000}
     /// volumes.data                          -> "present (retained if removed)"
     /// variables.domain                      -> "example.com"
@@ -148,6 +151,11 @@ impl ManifestChange {
             fields.insert(path, Value::Object(route));
         }
         entries("volumes", "name", &mut fields);
+        for (path, job) in entries("jobs", "name", &mut fields) {
+            for (key, value) in job {
+                fields.insert(format!("{path}.{key}"), value);
+            }
+        }
         if let Value::Object(variables) = take("variables") {
             for (name, value) in variables {
                 fields.insert(format!("variables.{name}"), value);
@@ -269,6 +277,73 @@ impl crate::Plan {
         );
     }
 
+    /// Lists each job where a deployment runs it: after source resolution,
+    /// networks, volumes, and the job's startup dependencies, before any other
+    /// service change. Warns about the services each exclusive job stops.
+    /// Deployments run jobs before planning their rollout, so only previews
+    /// list them.
+    pub fn add_jobs(&mut self, application: &NormalizedApplication, environment: &EnvironmentId) {
+        let spec = application.spec();
+        let mut remaining = std::mem::take(&mut self.actions);
+        for job in &spec.jobs {
+            let dependencies = spec.services.dependencies_of(job.service.as_str());
+            let dependencies = spec
+                .services
+                .iter()
+                .filter(|service| dependencies.contains(service.name.as_str()))
+                .map(|service| DockerServiceName::for_service(environment, &service.name))
+                .collect::<BTreeSet<_>>();
+            let prepares = |action: &PlanAction| match &action.kind {
+                ActionKind::EnsureService { service } => dependencies.contains(&service.name),
+                ActionKind::WaitForService { service } => dependencies
+                    .iter()
+                    .any(|dependency| dependency.as_str() == service),
+                ActionKind::RemoveService { .. }
+                | ActionKind::RemoveNetwork { .. }
+                | ActionKind::WaitForServiceRemoval { .. } => false,
+                _ => true,
+            };
+            let (prerequisites, rest): (Vec<_>, Vec<_>) = remaining.into_iter().partition(prepares);
+            self.actions.extend(prerequisites);
+            self.actions.push(PlanAction::new(
+                ActionKind::RunJob {
+                    job: job.name.to_string(),
+                },
+                ActionReason::DeploymentJob,
+            ));
+            remaining = rest;
+        }
+        self.actions.extend(remaining);
+        self.warn(spec.jobs.iter().filter_map(|job| {
+            let volumes = spec
+                .services
+                .iter()
+                .find(|service| service.name == job.service)?
+                .mounts
+                .iter()
+                .filter(|mount| job.volume_access == JobVolumeAccess::Exclusive && !mount.read_only)
+                .map(|mount| &mount.volume)
+                .collect::<BTreeSet<_>>();
+            let services = spec
+                .services
+                .iter()
+                .filter(|service| service.mounts.iter().any(|mount| volumes.contains(&mount.volume)))
+                .map(|service| service.name.as_str())
+                .collect::<Vec<_>>();
+            (!services.is_empty()).then(|| PlanDiagnostic {
+                code: codes::JOB_STOPS_SERVICES.into(),
+                severity: DiagnosticSeverity::Warning,
+                resource: job.name.to_string(),
+                message: format!(
+                    "job {} uses its volumes exclusively: {} stop before it runs and stay stopped until the rollout",
+                    job.name,
+                    services.join(", ")
+                ),
+                blocking: false,
+            })
+        }));
+    }
+
     /// Removes sensitive configuration from an informational preview's runtime actions.
     /// Execution always recomputes its own plan from the unredacted desired target.
     pub fn redact_configuration(&mut self) {
@@ -340,5 +415,64 @@ TOKEN="old-secret"
         assert!(!json.contains("new-secret"));
         assert!(json.contains("redacted"));
         assert!(ManifestChange::between(Some(&original), &original).is_empty());
+    }
+
+    #[test]
+    fn changes_show_new_and_changed_jobs() {
+        let input = r#"api_version="piqueld.dev/v1alpha1"
+kind="Application"
+[metadata]
+name="example"
+[[spec.services]]
+name="web"
+[spec.services.source]
+type="image"
+image="example:1"
+"#;
+        let id = crate::ApplicationId::parse("app-example-01").unwrap();
+        let original = crate::parse_toml(input).unwrap().normalize(id.clone());
+        let with_job = |command: &str| {
+            let mut manifest = original.to_manifest();
+            manifest.spec.jobs = vec![crate::manifest::Job {
+                name: "migrate".into(),
+                service: "web".into(),
+                command: vec![command.into()],
+                run: crate::manifest::JobRun::BeforeRollout,
+                timeout_seconds: 300,
+                volume_access: JobVolumeAccess::ReadOnly,
+            }];
+            manifest
+                .validate()
+                .unwrap()
+                .normalize(id.clone())
+                .spec()
+                .to_input()
+        };
+        let original = original.spec().to_input();
+        let fields = |changes: Vec<ManifestChange>| {
+            changes
+                .into_iter()
+                .map(|change| (change.field, change.before.is_some()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            fields(ManifestChange::between(
+                Some(&original),
+                &with_job("migrate")
+            )),
+            [
+                ("jobs.migrate.command".to_owned(), false),
+                ("jobs.migrate.run".to_owned(), false),
+                ("jobs.migrate.service".to_owned(), false),
+                ("jobs.migrate.timeout_seconds".to_owned(), false),
+            ]
+        );
+        assert_eq!(
+            fields(ManifestChange::between(
+                Some(&with_job("migrate")),
+                &with_job("upgrade")
+            )),
+            [("jobs.migrate.command".to_owned(), true)]
+        );
     }
 }

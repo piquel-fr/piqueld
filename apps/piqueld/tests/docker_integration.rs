@@ -881,7 +881,9 @@ impl SwarmScenario {
         tokio::time::timeout(Duration::from_mins(1), async {
             loop {
                 match docker.job_status(job).await.unwrap() {
-                    JobStatus::Running => tokio::time::sleep(Duration::from_millis(250)).await,
+                    JobStatus::Running { .. } => {
+                        tokio::time::sleep(Duration::from_millis(250)).await
+                    }
                     status => return status,
                 }
             }

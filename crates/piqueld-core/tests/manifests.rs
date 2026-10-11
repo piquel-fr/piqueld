@@ -1088,6 +1088,7 @@ fn dependency_jobs_must_precede_jobs_that_start_their_services() {
             command: vec!["initialize".into()],
             run: piqueld_core::manifest::JobRun::BeforeRollout,
             timeout_seconds: 300,
+            volume_access: piqueld_core::manifest::JobVolumeAccess::ReadOnly,
         })
         .collect();
     manifest.clone().validate().unwrap();
@@ -1101,6 +1102,63 @@ fn dependency_jobs_must_precede_jobs_that_start_their_services() {
                 .iter()
                 .any(|error| error.code == codes::JOB_DEPENDENCY_ORDER_INVALID
                     && error.path == format!("spec.jobs[{dependency}].service"))
+        );
+    }
+}
+
+#[test]
+fn exclusive_jobs_need_a_writable_volume_their_dependencies_do_not_mount() {
+    let manifest = parse_toml(&format!(
+        "{}\n[[spec.services]]\nname = \"db\"\n[spec.services.source]\n\
+         type = \"image\"\nimage = \"postgres:17\"\n\
+         [[spec.volumes]]\nname = \"data\"\n\
+         [[spec.jobs]]\nname = \"migrate\"\nservice = \"web\"\n\
+         command = [\"notes\", \"migrate\"]\nrun = \"before-rollout\"\n",
+        valid_manifest("notes")
+    ))
+    .unwrap()
+    .normalize(ApplicationId::parse("app-notes-01").unwrap())
+    .to_manifest();
+    let mount = |read_only| piqueld_core::manifest::Mount {
+        volume: "data".into(),
+        target: "/data".into(),
+        read_only,
+    };
+    // Mount flags of web and db, and the number of errors expected.
+    for (web, db, errors) in [
+        (Some(false), None, 0),
+        (Some(true), None, 1),
+        (None, None, 1),
+        (Some(false), Some(true), 1),
+    ] {
+        let mut input = manifest.clone();
+        input.spec.jobs[0].volume_access = piqueld_core::manifest::JobVolumeAccess::Exclusive;
+        for service in &mut input.spec.services {
+            let (mounted, depends_on) = if service.name == "web" {
+                (web, vec!["db".into()])
+            } else {
+                (db, Vec::new())
+            };
+            service.mounts = mounted.map(mount).into_iter().collect();
+            service.depends_on = depends_on;
+        }
+        let found = input
+            .validate()
+            .err()
+            .map(|errors| errors.0)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|error| (error.code, error.path))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            found,
+            vec![
+                (
+                    codes::JOB_VOLUME_ACCESS_INVALID.to_owned(),
+                    "spec.jobs[0].volume_access".to_owned()
+                );
+                errors
+            ]
         );
     }
 }

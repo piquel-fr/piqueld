@@ -330,6 +330,10 @@
           "format": "int32",
           "minimum": 0,
           "type": "integer"
+        },
+        "volume_access": {
+          "$ref": "#/definitions/JobVolumeAccess",
+          "description": "How the job may use the service's volumes."
         }
       },
       "required": [
@@ -344,6 +348,14 @@
       "description": "Deployment point at which a job runs.",
       "enum": [
         "before-rollout"
+      ],
+      "type": "string"
+    },
+    "JobVolumeAccess": {
+      "description": "How a job may use the volumes its service mounts.",
+      "enum": [
+        "read-only",
+        "exclusive"
       ],
       "type": "string"
     },

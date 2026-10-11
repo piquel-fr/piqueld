@@ -20,6 +20,16 @@ impl Dependent for super::Service {
     }
 }
 
+impl Dependent for super::domain::ValidatedService {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    fn dependencies(&self) -> impl Iterator<Item = &str> {
+        self.depends_on.iter().map(crate::ServiceName::as_str)
+    }
+}
+
 impl Dependent for crate::resource::DesiredService {
     fn name(&self) -> &str {
         self.logical_name.as_str()

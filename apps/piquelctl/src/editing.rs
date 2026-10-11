@@ -12,9 +12,9 @@ use crate::{
 use clap::{Args, Subcommand, builder::TypedValueParser};
 use piqueld_client::{
     ApplicationView, Build, Client, FileMode, FileSource, GitRepository, HealthCheck, Job, JobRun,
-    Mount, Redirect, RedirectStatus, RepositoryManifest, Rollout, RolloutOrder, Route,
-    SavedApplication, Service, ServiceFile, Source, SourceRepository, Template, Typed, Variable,
-    Visibility, Volume,
+    JobVolumeAccess, Mount, Redirect, RedirectStatus, RepositoryManifest, Rollout, RolloutOrder,
+    Route, SavedApplication, Service, ServiceFile, Source, SourceRepository, Template, Typed,
+    Variable, Visibility, Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit, Variables},
     sync::RepositorySync,
 };
@@ -58,6 +58,11 @@ impl SyncMode {
 /// Parses `public` or `private`, listing both in help and completions.
 pub(crate) fn visibility() -> impl TypedValueParser<Value = Visibility> {
     clap::builder::PossibleValuesParser::new(["public", "private"])
+        .map(|value| value.parse().expect("every listed value parses"))
+}
+
+fn volume_access() -> impl TypedValueParser<Value = JobVolumeAccess> {
+    clap::builder::PossibleValuesParser::new(JobVolumeAccess::ALL.map(JobVolumeAccess::as_str))
         .map(|value| value.parse().expect("every listed value parses"))
 }
 
@@ -593,6 +598,12 @@ pub(crate) struct SetJobArgs {
     /// current timeout, or 300 for a new job.
     #[arg(long)]
     timeout_seconds: Option<u32>,
+    /// read-only mounts every volume read-only, so the job runs beside the
+    /// services. exclusive keeps writable volumes writable and stops every
+    /// service mounting them until the rollout. Defaults to the job's current
+    /// access, or read-only for a new job.
+    #[arg(long, value_parser = volume_access())]
+    volume_access: Option<JobVolumeAccess>,
     /// Command elements after --, replacing the service's command and arguments.
     #[arg(last = true, required = true)]
     command: Vec<Template>,
@@ -1110,6 +1121,10 @@ impl JobCommand {
                         .timeout_seconds
                         .or_else(|| existing.map(|index| jobs[index].timeout_seconds))
                         .unwrap_or(Job::DEFAULT_TIMEOUT_SECONDS),
+                    volume_access: args
+                        .volume_access
+                        .or_else(|| existing.map(|index| jobs[index].volume_access))
+                        .unwrap_or_default(),
                 };
                 match existing {
                     Some(index) => jobs[index] = job,
