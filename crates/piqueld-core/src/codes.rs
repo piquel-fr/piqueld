@@ -138,6 +138,15 @@ pub const PREVIEW_LIMIT_REACHED: &str = "preview_limit_reached";
 pub const PREVIEW_LIMITS_DEFAULTED: &str = "preview_limits_defaulted";
 /// A preview service asks for more replicas than `[previews] max_replicas`.
 pub const PREVIEW_REPLICAS_CAPPED: &str = "preview_replicas_capped";
+/// A local snapshot bundle is larger than `[snapshots] max_upload_bytes`.
+pub const SNAPSHOT_TOO_LARGE: &str = "snapshot_too_large";
+/// A local snapshot upload is not a valid Git bundle of one snapshot commit.
+pub const SNAPSHOT_INVALID: &str = "snapshot_invalid";
+/// The base commit a thin snapshot bundle needs cannot be fetched from the
+/// application's repository; upload a complete bundle instead.
+pub const SNAPSHOT_BASE_UNAVAILABLE: &str = "snapshot_base_unavailable";
+/// A local snapshot upload stalled, or took too long to receive.
+pub const SNAPSHOT_TIMED_OUT: &str = "snapshot_timed_out";
 /// `[spec.environments.<name>]` names no environment of the application.
 pub const ENVIRONMENT_BLOCK_UNKNOWN: &str = "environment_block_unknown";
 /// Manifest that must be literal still references variables.

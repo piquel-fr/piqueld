@@ -47,6 +47,8 @@ pub struct DaemonConfig {
     pub notifications: NotificationConfig,
     /// How many previews may exist and what their services may use.
     pub previews: PreviewLimits,
+    /// Snapshots of local worktrees, uploaded by `preview deploy --local`.
+    pub snapshots: SnapshotsConfig,
 }
 
 impl DaemonConfig {
@@ -458,6 +460,24 @@ impl Default for BuildHistoryConfig {
     }
 }
 
+/// Snapshots of local worktrees, uploaded by `preview deploy --local`. Kept
+/// apart from `[previews]`, whose limits the API also reports.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SnapshotsConfig {
+    /// Largest Git bundle one upload may carry, in bytes.
+    pub max_upload_bytes: std::num::NonZeroU64,
+}
+
+impl Default for SnapshotsConfig {
+    fn default() -> Self {
+        Self {
+            max_upload_bytes: std::num::NonZeroU64::new(256 * 1024 * 1024)
+                .expect("the default upload limit is not zero"),
+        }
+    }
+}
+
 /// Retention and cleanup of the images this installation builds.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -784,6 +804,13 @@ impl DaemonConfig {
         .collect();
         groups.insert("Retention".into(), self.retention_view());
         groups.insert("Previews".into(), self.previews_view());
+        groups.insert(
+            "Local snapshots".into(),
+            std::collections::BTreeMap::from([(
+                "Largest upload (bytes)".into(),
+                self.snapshots.max_upload_bytes.to_string(),
+            )]),
+        );
         groups.insert(
             "Images".into(),
             std::collections::BTreeMap::from([

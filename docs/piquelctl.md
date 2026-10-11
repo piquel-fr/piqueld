@@ -68,6 +68,7 @@ piquelctl env url <app> [<env>] [--route <name>]
 piquelctl env secret <app> [--env <env>] list|regenerate|delete
 piquelctl preview create <app> --branch <branch> [--slot <slot>]
 piquelctl preview deploy <app> <preview> [--slot <slot>]
+piquelctl preview deploy <app> --local [--branch <branch>] [--slot <slot>]
 piquelctl preview list <app>
 piquelctl preview show <app> <preview> [--slot <slot>]
 piquelctl preview logs <app> <preview> [--slot <slot>] [--service <name>]
@@ -191,13 +192,14 @@ preview by stable ID, then slug, then branch with `--slot` for a slotted one;
 creates and deploys the preview of `--branch` and `--slot`, or returns the
 existing one and its latest deployment without redeploying it, and fails with
 `preview_requires_repository` for other applications. `preview deploy`
-redeploys the head of its branch. None of them needs the application revision.
+redeploys the head of its branch, replacing a local snapshot the preview runs.
+None of them needs the application revision.
 `preview create` fails with `preview_limit_reached` when a new preview would
 exceed the daemon's [`[previews]` limits](configuration.md#previews), listing
 the previews it counts with their branch, slot, slug and last deployment so you
 can delete one; repeating an existing creation always succeeds.
 `preview list` and `preview show` report each branch as `exists`, `moved`,
-`gone` or `unknown`, read with `git ls-remote`; `show` also lists the
+`gone`, `local` or `unknown`, read with `git ls-remote`; `show` also lists the
 preview's URLs, and each service its deployment runs with default limits or
 fewer replicas than its manifest asks for. `preview delete` removes the preview and every volume it
 created, after confirmation. `preview prune --branch-gone` lists the previews
@@ -208,6 +210,36 @@ with a warning. `preview create`, `deploy`, `delete` and `prune` wait for their
 operations unless `--no-wait`; `delete` and `prune` confirm unless `--yes`.
 Creating, deploying and logs need the `apps:deploy` and `logs:read` permissions
 as for environments; deleting and pruning need `apps:delete`.
+
+`preview deploy <app> --local` deploys the Git worktree of the current
+directory without pushing it: its committed, uncommitted and untracked files,
+except ignored ones. It deploys to the preview of the current branch and
+`--slot`, creating it first if needed exactly as `preview create` does, within
+the same limits; on a detached `HEAD`, name the branch with `--branch`. The
+snapshot is a commit on top of `HEAD` made with a temporary index and object
+directory, so the branch, index, working tree, stash, refs and objects of the
+repository never change. It is uploaded as a Git bundle: thin against the
+nearest ancestor of `HEAD` that a remote-tracking branch has, which the daemon
+fetches from the application's repository, or with the whole history when there
+is none or the daemon cannot fetch it (`snapshot_base_unavailable`, after which
+the CLI uploads the complete bundle once). Bundles over the daemon's
+[`snapshots.max_upload_bytes`](configuration.md#local-snapshots) fail with `snapshot_too_large`,
+and bundles Git cannot verify with `snapshot_invalid`. The daemon reads the
+manifest from the snapshot at the application's manifest path and builds
+`repository = "self"` services from it, like any preview deployment, with the
+same build priority and limits. Submodules, nested repositories, SHA-256
+repositories, partial clones, and files staging would pass through a configured Git filter
+driver, such as LFS's, are refused, since those filters write into the
+repository. A large first upload may need a longer `--timeout`; the daemon
+gives up on a body that stalls for 30 seconds, or after 10 minutes
+(`snapshot_timed_out`). Uploading needs `apps:deploy`.
+
+A preview that runs or is deploying a local snapshot reports its branch as
+`local`, with the branch's head if it was pushed: `preview prune` never deletes
+it, so delete it with `preview delete`. Deploy on push leaves the snapshot
+running until the branch's head moves, or, for a branch never pushed, until it
+is pushed; then it deploys that head. `preview show` and the deployment history
+show the snapshot commit and its base.
 
 `env url` and `preview url` print the URL of every route the environment's or
 preview's current deployment renders, with its route name and state: `ready`,
@@ -310,6 +342,8 @@ written to stderr, so stdout remains valid JSON.
 | `preview list` | `[PreviewView]` |
 | `preview show` | `PreviewView` |
 | `preview deploy` | Same as `env deploy` |
+| `preview deploy --local --no-wait` | `CreatedPreview` and the fields of `Deployment`, with `local` true |
+| `preview deploy --local` | `CreatedPreview` and the fields of `Deployment`, with `local` true, `outcome` and `urls` |
 | `preview logs` | `ApplicationLogs` |
 | `preview delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": false }` |
 | `preview delete` | `{ "accepted": AcceptedOperation, "outcome": "deleted", "volumes_retained": false }` |
@@ -329,7 +363,9 @@ preview, flattened into the results above:
 | `slug` | The environment's name, or the preview's slug (`env.slug`) |
 | `deployment_id`, `operation_id` | The deployment, and the operation that runs it (the same ID) |
 | `release_id` | The release it runs; null until prepared, and for previews |
-| `branch`, `commit` | Where its manifest was read from; null until fetched, and for saved manifests |
+| `branch`, `commit` | Where its manifest was read from; null until fetched, and for saved manifests. For a local snapshot, the snapshot commit |
+| `local` | Whether it deploys a snapshot of a local worktree (`preview deploy --local`) |
+| `base` | The commit of the application's repository a local snapshot was uploaded against; null when it was uploaded whole, and for other deployments |
 | `outcome` | Its `OperationState`; omitted with `--no-wait` |
 | `urls` | `[RouteUrl]` of its routes once it runs; omitted with `--no-wait` and when it does not run (superseded) |
 
@@ -381,6 +417,17 @@ piquelctl --json preview logs notes "$slug" --service web --tail 100
 piquelctl --json preview delete notes "$slug" --yes
 ```
 
+To test uncommitted work without pushing it, from the worktree:
+
+```sh
+deployed=$(piquelctl --json preview deploy notes --local --slot agent-2 --no-wait)
+slug=$(jq -r .slug <<<"$deployed")
+piquelctl --json --timeout 15m preview wait notes "$slug" --deployment "$(jq -r .deployment_id <<<"$deployed")" --ready routes
+```
+
+Its result has `local: true`, the snapshot `commit` and its `base`. Run it
+again after each change; each run deploys a new snapshot to the same preview.
+
 For an environment, which `env create` adds without deploying:
 
 ```sh
@@ -403,7 +450,7 @@ Branch on the exit code, then read the `error` event on stderr:
 | Exit | Meaning | Typical reaction |
 | --- | --- | --- |
 | 0 | Done; for `wait`, as ready as asked | Continue |
-| 2 | Invalid command or input (`usage`, `invalid_input`, API validation codes) | Fix the command; retrying will not help |
+| 2 | Invalid command or input (`usage`, `invalid_input`, API validation codes, `snapshot_too_large`, `snapshot_invalid`) | Fix the command; retrying will not help |
 | 3 | Conflict: `deployment_superseded`, `preview_limit_reached` (its `details` list the previews to delete), a revision precondition | Read the newer state; wait for `details.superseded_by`, or delete a preview |
 | 4 | Unavailable or timed out (`connection_failed`, `timeout`) | Retry the read or `wait`; server-side work was not cancelled |
 | 5 | The deployment failed (`operation_failed`; `details.operation` names the phase and error) | Read `logs`, fix, deploy again |

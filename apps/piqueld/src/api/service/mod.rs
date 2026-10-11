@@ -22,7 +22,7 @@ pub use exec::ExecSession;
 pub use history::ManifestExport;
 use piqueld_core::{
     ApplicationId, EnvironmentId, EnvironmentName, GitBranch, PreviewSlot, TrackedBranch,
-    api::{PromotionSelection, SecretAccess, SecretMetadata, StoredSecret},
+    api::{LocalSnapshot, PromotionSelection, SecretAccess, SecretMetadata, StoredSecret},
     manifest::{ApplicationTemplate, RepositoryManifest, ValidatedTemplate},
 };
 use std::sync::Arc;
@@ -61,6 +61,9 @@ pub enum ApplicationError {
     /// The manifest repository could not be read, so no branch is known gone.
     #[error("the manifest repository could not be read")]
     RepositoryUnavailable(#[source] anyhow::Error),
+    /// An uploaded local snapshot was refused.
+    #[error(transparent)]
+    Snapshot(#[from] crate::git::snapshot::SnapshotError),
 }
 
 pub use crate::store::Actor;
@@ -253,6 +256,24 @@ pub enum PreviewMutation {
         /// Stable preview ID.
         id: EnvironmentId,
     },
+    /// Deploy a snapshot of a local worktree of `branch`, already received
+    /// (see `Snapshots`), to the preview of `branch` and `slot`, creating it
+    /// first as `Create` does. Refused with `IdentityConflict` once the
+    /// application reads another repository than `repository`, which the
+    /// snapshot's base was fetched from.
+    Local {
+        /// Stable application ID.
+        application: ApplicationId,
+        /// Branch of the application's manifest repository.
+        branch: GitBranch,
+        /// Distinguishes several previews of one branch.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        slot: Option<PreviewSlot>,
+        /// URL of the repository the snapshot was received for.
+        repository: String,
+        /// The snapshot.
+        snapshot: LocalSnapshot,
+    },
     /// Delete a preview with every volume it created.
     Delete {
         /// Stable preview ID.
@@ -318,9 +339,11 @@ impl Mutation {
             | Self::Promotion(PromotionMutation::Promote { .. })
             | Self::Reconcile { .. }
             | Self::Sync(_)
-            | Self::Preview(PreviewMutation::Create { .. } | PreviewMutation::Deploy { .. }) => {
-                &[Deploy]
-            }
+            | Self::Preview(
+                PreviewMutation::Create { .. }
+                | PreviewMutation::Deploy { .. }
+                | PreviewMutation::Local { .. },
+            ) => &[Deploy],
             Self::DeleteApplication { .. }
             | Self::Delete { .. }
             | Self::Preview(PreviewMutation::Delete { .. } | PreviewMutation::Prune { .. }) => {

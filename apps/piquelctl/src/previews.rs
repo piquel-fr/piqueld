@@ -1,6 +1,8 @@
 //! `piquelctl preview`: disposable deployments of a branch. A preview is
 //! addressed by its stable ID, its slug, or its branch and `--slot`, in that
 //! order. Creating, deploying, and deleting one need no application revision.
+use crate::output::TaskOutcome;
+use crate::snapshot::Worktree;
 use crate::{
     cli::{Cli, LogArgs},
     commands::{resolve_application, wait_for_deletion, wait_for_operation},
@@ -15,8 +17,8 @@ use crate::{
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
-    ApplicationView, BranchState, Client, CreatePreviewRequest, EnvironmentView,
-    PrunePreviewsRequest,
+    ApplicationView, BranchState, Client, ClientError, CreatePreviewRequest, EnvironmentView,
+    PrunePreviewsRequest, codes,
 };
 
 // `preview` subcommands; `///` on variants and fields is user-facing help.
@@ -37,14 +39,9 @@ pub(crate) enum PreviewCommand {
         #[arg(long)]
         no_wait: bool,
     },
-    /// Deploy the head of a preview's branch again.
-    Deploy {
-        #[command(flatten)]
-        target: PreviewArgs,
-        /// Return after the daemon accepts the deployment.
-        #[arg(long)]
-        no_wait: bool,
-    },
+    /// Deploy the head of a preview's branch again, or with `--local` a
+    /// snapshot of the current Git worktree.
+    Deploy(DeployArgs),
     /// List an application's previews with their status and branch state.
     List {
         /// Application name or stable ID.
@@ -82,6 +79,33 @@ pub(crate) enum PreviewCommand {
         #[command(flatten)]
         flags: PreviewDeletionFlags,
     },
+}
+
+/// What `preview deploy` deploys, and where.
+#[derive(Debug, Args)]
+pub(crate) struct DeployArgs {
+    /// Application name or stable ID.
+    application: String,
+    /// Preview ID, slug, or branch. With `--local`, the preview of the
+    /// current branch is used instead.
+    #[arg(required_unless_present = "local", conflicts_with = "local")]
+    preview: Option<String>,
+    /// The preview's slot, when addressing it by branch or with `--local`.
+    #[arg(long)]
+    slot: Option<String>,
+    /// Deploy a snapshot of the current Git worktree: its committed,
+    /// uncommitted, and untracked files, except ignored ones. Creates the
+    /// preview of its branch and `--slot` if needed. Never changes the
+    /// repository.
+    #[arg(long)]
+    local: bool,
+    /// The branch the snapshot is deployed as, instead of the current one;
+    /// required when HEAD is detached.
+    #[arg(long, requires = "local")]
+    branch: Option<String>,
+    /// Return after the daemon accepts the deployment.
+    #[arg(long)]
+    no_wait: bool,
 }
 
 /// An application and one of its previews.
@@ -155,12 +179,7 @@ impl PreviewCommand {
                 };
                 create(client, console, application, &request, *no_wait).await
             }
-            Self::Deploy { target, no_wait } => {
-                let (_, preview) = target.resolve(client).await?;
-                let accepted =
-                    retry_transport(|| client.deploy_preview(preview.id.as_str())).await?;
-                wait_for_accepted(console, client, &preview, *no_wait, &accepted).await
-            }
+            Self::Deploy(args) => args.run(client, console).await,
             Self::List { application } => {
                 let application = resolve_application(client, application).await?;
                 let previews = client
@@ -183,6 +202,94 @@ impl PreviewCommand {
                 application, flags, ..
             } => prune(cli, client, console, application, flags).await,
         }
+    }
+}
+
+impl DeployArgs {
+    /// Deploys the preview's branch head, or a snapshot of the worktree.
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let Some(preview) = self.preview.clone().filter(|_| !self.local) else {
+            return self.deploy_local(client, console).await;
+        };
+        let target = PreviewArgs {
+            application: self.application.clone(),
+            preview,
+            slot: self.slot.clone(),
+        };
+        let (_, preview) = target.resolve(client).await?;
+        let accepted = retry_transport(|| client.deploy_preview(preview.id.as_str())).await?;
+        wait_for_accepted(console, client, &preview, self.no_wait, &accepted).await
+    }
+
+    /// Snapshots the current worktree (see `snapshot`), uploads it thin
+    /// against a base the repository likely has, or complete when the
+    /// daemon cannot fetch that base, then waits for its deployment unless
+    /// `--no-wait`. The upload is not retried: the daemon may already have
+    /// received it.
+    async fn deploy_local(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let worktree = Worktree::current().await?;
+        let branch = match &self.branch {
+            Some(branch) => branch.clone(),
+            None => worktree.branch().await?.ok_or_else(|| {
+                CliError::new(
+                    ErrorKind::Input,
+                    "HEAD is detached; name the preview's branch with --branch",
+                )
+            })?,
+        };
+        let application = resolve_application(client, &self.application).await?;
+        let id = application.application.id().as_str();
+        let progress = console.start_task("snapshot");
+        let uploaded = async {
+            progress.update("committing the worktree");
+            let snapshot = worktree.snapshot(&branch).await?;
+            let mut bundle = snapshot.bundle(true).await?;
+            loop {
+                progress.update(&bundle.describe());
+                let file = tokio::fs::File::open(&bundle.path)
+                    .await
+                    .map_err(|error| CliError::new(ErrorKind::General, error.to_string()))?;
+                let upload = client
+                    .deploy_local_preview(
+                        id,
+                        (&branch, self.slot.as_deref()),
+                        (file, bundle.length),
+                    )
+                    .await;
+                match upload {
+                    Err(ClientError::Api { error, .. })
+                        if error.code == codes::SNAPSHOT_BASE_UNAVAILABLE
+                            && bundle.snapshot.base.is_some() =>
+                    {
+                        bundle = snapshot.bundle(false).await?;
+                    }
+                    upload => return Ok::<_, CliError>((upload?, bundle.snapshot)),
+                }
+            }
+        }
+        .await;
+        let (created, snapshot) = match uploaded {
+            Ok(uploaded) => {
+                progress.finish(TaskOutcome::Succeeded, "uploaded");
+                uploaded
+            }
+            Err(error) => {
+                progress.finish(TaskOutcome::Failed, &error.to_string());
+                return Err(error);
+            }
+        };
+        let deployed = if self.no_wait {
+            Deployed::accepted(&created.preview, &created.operation.operation_id)
+                .snapshot(&branch, &snapshot)
+        } else {
+            let operation =
+                wait_for_operation(console, client, &created.operation.operation_id).await?;
+            Deployed::read(client, &created.preview, operation).await?
+        };
+        console.emit(&CreatedPreviewReport {
+            created: &created,
+            deployed,
+        })
     }
 }
 

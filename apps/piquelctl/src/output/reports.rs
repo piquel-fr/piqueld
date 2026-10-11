@@ -5,10 +5,11 @@ use piqueld_client::{
     AcceptedOperation, AcceptedPromotion, ActionReason, ActionRisk, ApplicationId, ApplicationLogs,
     ApplicationSummary, ApplicationView, BranchState, BuildLogPage, BuildRecord, CreatedPreview,
     DeletedApplication, DeletedPreview, DeploymentOrigin, DnsStatus, EnvironmentDetailView,
-    EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event, ImageStatus, MountedSecret,
-    Operation, OperationState, Page, PlanView, PreviewUsage, PreviewView, ReleaseAvailability,
-    ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl, SavedApplication,
-    SecretMetadata, SecretProblem, ServiceImage, Source, StoredSecret, SystemStatus, UrlState,
+    EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event, ImageStatus, LocalSnapshot,
+    MountedSecret, Operation, OperationState, Page, PlanView, PreviewUsage, PreviewView,
+    ReleaseAvailability, ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl,
+    SavedApplication, SecretMetadata, SecretProblem, ServiceImage, Source, StoredSecret,
+    SystemStatus, UrlState,
     sync::{SyncState, WebhookSecret, WebhookView},
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
@@ -370,6 +371,7 @@ impl Names<'_> {
                 self.environment(environment.as_str())
             ),
             DeploymentOrigin::Release => "deployed again by release ID".into(),
+            DeploymentOrigin::Local(snapshot) => snapshot_origin(snapshot),
         }
     }
 }
@@ -569,16 +571,39 @@ fn preview_branch(preview: &EnvironmentView) -> String {
 ///
 /// ```text
 /// following, last synced 0123456789abcdef0123456789abcdef01234567
+/// following, last synced before the branch was pushed
 /// off (not opted in)
 /// ```
 fn sync(state: SyncState, environment: &EnvironmentView) -> String {
     match (state, &environment.synced) {
-        (SyncState::Following, Some(synced)) => {
-            format!("following, last synced {}", synced.commit)
-        }
+        (SyncState::Following, Some(synced)) => match &synced.commit {
+            Some(commit) => format!("following, last synced {commit}"),
+            None => "following, last synced before the branch was pushed".into(),
+        },
         (SyncState::Following, None) => "following".into(),
         (SyncState::Off, _) => "off".into(),
         (state, _) => format!("off ({state})"),
+    }
+}
+
+/// A local snapshot's provenance in a phrase.
+///
+/// ```text
+/// local snapshot 0123456789ab on 89abcdef0123
+/// local snapshot 0123456789ab, uploaded complete
+/// ```
+fn snapshot_origin(snapshot: &LocalSnapshot) -> String {
+    let short = |commit: &str| commit[..commit.len().min(12)].to_owned();
+    match &snapshot.base {
+        Some(base) => format!(
+            "local snapshot {} on {}",
+            short(&snapshot.commit),
+            short(base)
+        ),
+        None => format!(
+            "local snapshot {}, uploaded complete",
+            short(&snapshot.commit)
+        ),
     }
 }
 
@@ -590,6 +615,12 @@ fn branch_state(state: &BranchState) -> String {
             format!("moved to {head} (deployed {deployed})")
         }
         BranchState::Gone => "gone".into(),
+        BranchState::Local { head: Some(head) } => {
+            format!("local snapshot deployed; the branch is at {head}")
+        }
+        BranchState::Local { head: None } => {
+            "local snapshot deployed; the branch was never pushed".into()
+        }
         BranchState::Unknown { message } => format!("unknown: {message}"),
     }
 }
@@ -623,7 +654,8 @@ impl Report for Vec<PreviewView> {
                 preview
                     .synced
                     .as_ref()
-                    .map_or("-", |synced| &synced.commit[..synced.commit.len().min(12)]),
+                    .and_then(|synced| synced.commit.as_deref())
+                    .map_or("-", |commit| &commit[..commit.len().min(12)]),
                 view.latest_operation
                     .as_ref()
                     .map_or_else(|| "none".to_owned(), |op| format!("{} {}", op.state, op.id)),
@@ -649,6 +681,9 @@ report!(PreviewView, self, out, {
         self.status.runtime_health.as_deref().unwrap_or("unknown"),
     )?;
     out.label("Branch", branch_state(&self.branch))?;
+    if let DeploymentOrigin::Local(snapshot) = &self.origin {
+        out.label("Deploys", snapshot_origin(snapshot))?;
+    }
     out.label("Sync", sync(self.sync, preview))?;
     if let Some(operation) = &self.latest_operation {
         out.label(
@@ -688,12 +723,19 @@ report!(CreatedPreviewReport<'_>, self, out, {
         preview.name,
         preview_branch(preview),
         preview.id,
-        if *created {
-            "created"
-        } else {
-            "already exists; not redeployed"
+        match (*created, self.deployed.local) {
+            (true, _) => "created",
+            (false, true) => "exists",
+            (false, false) => "already exists; not redeployed",
         }
     ))?;
+    if let (true, Some(commit)) = (self.deployed.local, &self.deployed.commit) {
+        let snapshot = LocalSnapshot {
+            commit: commit.clone(),
+            base: self.deployed.base.clone(),
+        };
+        out.label("Deploys", snapshot_origin(&snapshot))?;
+    }
     match self.deployed.outcome {
         Some(outcome) => out.label(
             "Operation",

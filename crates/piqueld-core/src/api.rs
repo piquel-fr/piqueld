@@ -315,6 +315,15 @@ pub enum BranchState {
     },
     /// The repository answered and has no such branch.
     Gone,
+    /// The preview runs or is deploying a snapshot of a local worktree
+    /// (`preview deploy --local`), so the branch may never have been
+    /// pushed. Never counts as gone.
+    Local {
+        /// Commit at the branch head; absent while the repository has no
+        /// such branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        head: Option<String>,
+    },
     /// The repository could not be read. Never counts as gone.
     Unknown {
         /// Why the repository could not be read.
@@ -328,6 +337,7 @@ impl std::fmt::Display for BranchState {
             Self::Exists { .. } => formatter.write_str("exists"),
             Self::Moved { .. } => formatter.write_str("moved"),
             Self::Gone => formatter.write_str("gone"),
+            Self::Local { .. } => formatter.write_str("local"),
             Self::Unknown { .. } => formatter.write_str("unknown"),
         }
     }
@@ -346,6 +356,12 @@ pub struct PreviewView {
     pub hostnames: Vec<String>,
     /// Where its branch is now.
     pub branch: BranchState,
+    /// Where what it runs came from, or, until a deployment was prepared,
+    /// its latest deployment: built from its branch, or a local snapshot;
+    /// `build` before its first. A failed redeployment of its branch keeps
+    /// a local snapshot it runs.
+    #[serde(default)]
+    pub origin: DeploymentOrigin,
     /// How `[previews]` bounded its deployed target: services that run with
     /// default limits or fewer replicas than their manifest asks for.
     #[serde(default)]
@@ -857,6 +873,22 @@ pub enum DeploymentOrigin {
     },
     /// An earlier release, deployed again by ID.
     Release,
+    /// A snapshot of a local worktree, uploaded to a preview with
+    /// `preview deploy --local`, and built like its branch would be.
+    Local(LocalSnapshot),
+}
+
+/// A snapshot of a local worktree: a commit of its committed, uncommitted,
+/// and untracked files, except ignored ones, on top of its `HEAD`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct LocalSnapshot {
+    /// The snapshot commit, whose parent is the worktree's `HEAD`.
+    pub commit: String,
+    /// The commit of the application's repository it was uploaded against:
+    /// the nearest ancestor of `HEAD` the repository has. Absent when the
+    /// whole history was uploaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
 }
 
 /// What `env promote` deploys into a promoted environment. Either way the

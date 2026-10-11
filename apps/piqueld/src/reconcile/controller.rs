@@ -530,7 +530,8 @@ impl<D: DockerApi> Controller<D> {
         )
         .with_progress(Arc::clone(&self.store), operation.id.clone())
         .with_build_priority(&application.environment.kind);
-        let manifest = self.deployment_manifest(operation, tracking).await?;
+        let (manifest, snapshot) = self.deployment_manifest(operation, tracking).await?;
+        let runtime = runtime.with_snapshot(snapshot);
         // A rename changes display metadata without rewriting deployment history.
         let manifest =
             manifest.with_name(application.application.application.metadata().name.clone());

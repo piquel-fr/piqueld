@@ -191,18 +191,21 @@ impl Client {
         self
     }
 
-    /// Posts a raw TOML body to `path` and decodes a JSON response.
+    /// Posts a raw `body` of `content_type` to `path` and decodes a JSON
+    /// response.
     ///
-    /// Used for endpoints whose TOML media type Progenitor cannot generate. It
-    /// reproduces the generated pipeline by hand: `prepare_request` for auth,
-    /// timeout, and idempotency, `observe_response`, the response size cap, and
-    /// `ErrorBody` decoding for non-success statuses.
-    pub(crate) async fn send_toml<T: DeserializeOwned>(
+    /// Used for endpoints whose media types Progenitor cannot generate, or
+    /// whose bodies need headers it cannot set, such as a streamed body's
+    /// `Content-Length`. It reproduces the generated pipeline by hand:
+    /// `prepare_request` for auth, timeout, and idempotency,
+    /// `observe_response`, the response size cap, and `ErrorBody` decoding
+    /// for non-success statuses.
+    pub(crate) async fn send<T: DeserializeOwned>(
         &self,
         path: &str,
         query: &[(&str, String)],
         headers: &[(&str, String)],
-        body: &str,
+        (content_type, body): (&str, reqwest::Body),
     ) -> Result<T, ClientError> {
         let url = format!("{}{path}", self.generated.baseurl);
         let mut builder = self
@@ -211,9 +214,9 @@ impl Client {
             .post(url)
             .header(reqwest::header::ACCEPT, "application/json")
             .header("api-version", "v1")
-            .header(reqwest::header::CONTENT_TYPE, "application/toml")
+            .header(reqwest::header::CONTENT_TYPE, content_type)
             .query(query)
-            .body(body.to_owned());
+            .body(body);
         for (name, value) in headers {
             builder = builder.header(*name, value);
         }
@@ -314,7 +317,7 @@ impl ClientState {
 /// Applies `ClientState` to an outgoing request: enforces the auth transport
 /// policy, sets the timeout, attaches the bearer token, and adds the request ID as
 /// `idempotency-key` on non-GET/HEAD requests that do not already carry one.
-/// Shared by the generated `pre` hook and `Client::send_toml`.
+/// Shared by the generated `pre` hook and `Client::send`.
 fn prepare_request(state: &ClientState, request: &mut reqwest::Request) -> Result<(), String> {
     state.validate_auth_transport(request.url())?;
     // reqwest passes this duration to the signed 32-bit browser timer.

@@ -137,6 +137,13 @@ fn preview_bounds_must_be_values_a_manifest_could_set() {
 }
 
 #[test]
+fn snapshot_uploads_need_a_nonzero_limit() {
+    let config = DaemonConfig::from_toml("[snapshots]\nmax_upload_bytes = 4096").unwrap();
+    assert_eq!(config.snapshots.max_upload_bytes.get(), 4096);
+    assert!(DaemonConfig::from_toml("[snapshots]\nmax_upload_bytes = 0").is_err());
+}
+
+#[test]
 fn retention_defaults_are_bounded_and_accept_zero_as_disabled() {
     let defaults = DaemonConfig::default().retention;
     assert_eq!(defaults.finished_operation_days, 10);

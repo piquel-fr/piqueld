@@ -80,7 +80,8 @@ deployed before the limits applied, which run without them until redeployed.
 [Deploying on push](application-manifest.md#deploying-on-push) is configured by
 `spec.manifest.sync`. Environment views carry `sync`, true once an environment
 opted in (previews follow their application), and `synced`, the branch head as
-of its last deployment (`commit`, `at_ms`), which sync follows from.
+of its last deployment (`commit`, `at_ms`), which sync follows from; `commit`
+is absent when a local snapshot was deployed before its branch was pushed.
 `PreviewView.sync` is `following` while the application syncs and once the
 preview was deployed, and `ApplicationView.sync_check` is the last listing of the repository's
 branches (`checked_at_ms`, and `error` when it failed). Sync deployments are
@@ -122,15 +123,57 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/environments/{id}/rename` | Rename an environment without redeployment: `{ "name": "...", "expected_generation": 3 }` |
 | DELETE | `/api/v1/environments/{id}` | Request deletion of one environment; no body |
 | POST | `/api/v1/environments/{id}/reconcile` | Retry the latest operation with its saved inputs once it has ended or failed; an operation still in progress is returned unchanged |
-| GET | `/api/v1/applications/{id}/previews` | Previews with status, latest operation, hostnames and branch state (`exists`, `moved`, `gone` or `unknown`), from one `git ls-remote` |
+| GET | `/api/v1/applications/{id}/previews` | Previews with status, latest operation, hostnames, the `origin` of what they run and branch state (`exists`, `moved`, `gone`, `local` or `unknown`), from one `git ls-remote` |
 | POST | `/api/v1/applications/{id}/previews` | Create and deploy a preview: `{ "branch": "feat/login", "slot": "agent-2" }`; 202 with `CreatedPreview` (`preview`, `operation`, `created: true`), or 200 with the existing preview of that branch and slot and its latest operation (`created: false`), never redeploying it. 409 `preview_requires_repository` without a manifest repository, `preview_limit_reached` over a `[previews]` limit |
+| POST | `/api/v1/applications/{id}/previews/local?branch=…&slot=…` | Deploy a [local snapshot](#local-snapshots): the body is a Git bundle (`application/octet-stream`); 202 with `CreatedPreview`. 408 `snapshot_timed_out`, 413 `snapshot_too_large`, 422 `snapshot_invalid` or `snapshot_base_unavailable` |
 | POST | `/api/v1/applications/{id}/previews/prune` | Delete each listed preview whose branch is confirmed gone: `{ "previews": [preview IDs] }`; returns the `DeletedPreview`s and keeps the rest. 502 `repository_unavailable`, deleting nothing, when the repository cannot be read |
 | GET | `/api/v1/previews/{id}` | One `PreviewView` |
-| POST | `/api/v1/previews/{id}/deploy` | Deploy the head of the preview's branch; 202 with `AcceptedOperation` |
+| POST | `/api/v1/previews/{id}/deploy` | Deploy the head of the preview's branch, replacing a local snapshot it runs; 202 with `AcceptedOperation` |
 | DELETE | `/api/v1/previews/{id}` | Delete the preview and every volume it created; 202 with `AcceptedOperation` |
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
 | GET | `/api/v1/environments/{id}/exec` | WebSocket streaming a command in a running service task |
+
+### Local snapshots
+
+`POST /api/v1/applications/{id}/previews/local?branch=feat/login&slot=agent-2`
+deploys a snapshot of a local worktree, which `piquelctl preview deploy
+--local` makes, to the preview of `branch` and `slot`. It needs `apps:deploy`
+and no `expected_generation`, and creates the preview first if needed, as
+`POST /api/v1/applications/{id}/previews` does: idempotently, within the
+`[previews]` limits. The response is always 202 with `CreatedPreview`, whose
+`created` says whether the preview was new, and a new deployment.
+
+The body is a Git bundle, sent as `application/octet-stream` with its
+`Content-Length`, of exactly one ref pointing at the snapshot commit. A thin
+bundle needs prerequisites (at most 64), which the daemon fetches from the
+application's repository: its base and, for a history with merges, ancestors
+of that base. `422 snapshot_base_unavailable` (with `details.prerequisites`)
+means it could not fetch them, and a complete bundle should be sent instead. The body is
+streamed to the daemon's data directory and refused with `413
+snapshot_too_large` (with `details.limit`) once it exceeds `[snapshots]
+max_upload_bytes`, which is separate from the 2 MiB limit of other bodies.
+The daemon receives two uploads at a time; a body that sends nothing for 30
+seconds, or an upload not received within 10 minutes, fails with `408
+snapshot_timed_out`. The
+bundle is received into a new repository of its own: a malformed header, a
+bundle `git bundle verify` rejects, an object that fails Git's checks,
+prerequisites that are not all ancestors of one of them, the base, or a
+snapshot that does not descend from its base is `422 snapshot_invalid`.
+
+The deployment's `origin` is `{ "type": "local", "commit": …, "base": … }`
+(`base` absent for a complete bundle). It reads its manifest from the snapshot
+at the application's manifest path, renders `git.sha` as the snapshot commit,
+and builds `repository = "self"` services from the snapshot, through the
+preview's usual path, `[previews]` bounds and build priority included. It
+records the branch's head, or its absence, for deploy on push, so a snapshot
+stays until its branch moves or is first pushed. `PreviewView.origin` is the
+origin of what the preview runs (of its latest deployment before one was
+prepared), and its `branch` is `{ "state": "local", "head": … }` (`head`
+absent while the branch was never pushed) while it runs or deploys a local
+snapshot, even after a redeployment of its branch failed; pruning keeps such
+previews. Snapshots no preview's latest deployment uses are removed on the next
+full reconciliation scan.
 
 ### Field endpoints
 
@@ -343,8 +386,9 @@ accepted deployment, so the controller only rolls it out. `AcceptedPromotion`
 is an `AcceptedOperation` with the pinned `release_id` and its `origin`.
 `DeploymentView.origin` records where every deployment came from:
 `{ "type": "build" }`, `{ "type": "promotion", "environment": "env-...",
-"deployment": "operation-..." }`, or `{ "type": "release" }` for a release
-deployed by ID. `ReleaseView.promotions` lists, newest first, the deployments
+"deployment": "operation-..." }`, `{ "type": "release" }` for a release
+deployed by ID, or `{ "type": "local", "commit": "...", "base": "..." }` for a
+[local snapshot](#local-snapshots) deployed to a preview. `ReleaseView.promotions` lists, newest first, the deployments
 that received the release (`environment_id`, `deployment_id`, `origin`,
 `created_at_ms`).
 

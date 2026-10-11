@@ -1,4 +1,8 @@
-//! Isolated Git checkouts. No shared mutable repository or credential store.
+//! Isolated Git checkouts and branch listings, and the snapshots of local
+//! worktrees deployments check out instead (see [`snapshot`]). No shared
+//! mutable repository or credential store.
+
+pub(crate) mod snapshot;
 
 use anyhow::{Context, bail};
 use piqueld_core::api::BranchState;

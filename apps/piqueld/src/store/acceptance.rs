@@ -280,9 +280,14 @@ impl Store {
             | Mutation::CreateEnvironment {
                 application: id, ..
             }
-            | Mutation::Preview(PreviewMutation::Create {
-                application: id, ..
-            }) => Some(id.clone()),
+            | Mutation::Preview(
+                PreviewMutation::Create {
+                    application: id, ..
+                }
+                | PreviewMutation::Local {
+                    application: id, ..
+                },
+            ) => Some(id.clone()),
             Mutation::RenameEnvironment { id, .. }
             | Mutation::SetBranch { id, .. }
             | Mutation::SetSync { id, .. }
@@ -546,30 +551,36 @@ impl Store {
                 branch,
                 slot,
             } => {
-                let current = Self::checked_application_on(tx, &application, None).await?;
-                let (id, created) = Self::create_preview_on(
-                    tx,
-                    &current,
-                    &branch,
-                    slot.as_ref(),
-                    &self.previews,
-                    now,
-                )
-                .await?;
-                let preview = Self::preview_on(tx, &id).await?;
-                let operation = match Self::latest_operation_on(tx, &id).await? {
+                let (preview, created) = self
+                    .find_preview_on(tx, &application, &branch, slot.as_ref(), now)
+                    .await?;
+                let operation = match Self::latest_operation_on(tx, preview.id()).await? {
                     Some(operation) if !created => operation,
                     _ => Self::deploy_preview_on(tx, &preview).await?,
                 };
-                Ok(Accepted {
-                    response: MutationResponse::Preview(Box::new(CreatedPreview {
-                        preview: preview.environment,
-                        operation: AcceptedOperation::from(&operation),
-                        created,
-                    })),
-                    wake: created,
-                    environments: vec![id],
-                })
+                Ok(Self::preview_accepted(
+                    preview, &operation, created, created,
+                ))
+            }
+            PreviewMutation::Local {
+                application,
+                branch,
+                slot,
+                repository,
+                snapshot,
+            } => {
+                let (preview, created) = self
+                    .find_preview_on(tx, &application, &branch, slot.as_ref(), now)
+                    .await?;
+                if preview
+                    .tracking()?
+                    .repository()
+                    .is_some_and(|current| current.repository.url != repository)
+                {
+                    return Err(StoreError::IdentityConflict);
+                }
+                let operation = Self::deploy_snapshot_on(tx, &preview, &snapshot).await?;
+                Ok(Self::preview_accepted(preview, &operation, created, true))
             }
             PreviewMutation::Deploy { id } => {
                 let preview = Self::preview_on(tx, &id).await?;
@@ -582,16 +593,54 @@ impl Store {
             }
             PreviewMutation::Prune { id, repository } => {
                 let preview = Self::preview_on(tx, &id).await?;
-                // A branch gone from one repository says nothing about another.
+                // A branch gone from one repository says nothing about
+                // another, nor about a local snapshot it runs or deploys.
                 if preview
                     .tracking()?
                     .repository()
                     .is_none_or(|current| current.repository.url != repository)
+                    || Self::preview_origins_on(tx, &id).await?.local()
                 {
                     return Err(StoreError::IdentityConflict);
                 }
                 Self::delete_preview_on(tx, &preview).await
             }
+        }
+    }
+
+    /// The preview of `branch` and `slot` of `application`, created first
+    /// if needed (see `create_preview_on`), and whether it was.
+    async fn find_preview_on(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        application: &ApplicationId,
+        branch: &piqueld_core::GitBranch,
+        slot: Option<&piqueld_core::PreviewSlot>,
+        now: i64,
+    ) -> Result<(super::StoredEnvironment, bool), StoreError> {
+        let current = Self::checked_application_on(tx, application, None).await?;
+        let (id, created) =
+            Self::create_preview_on(tx, &current, branch, slot, &self.previews, now).await?;
+        Ok((Self::preview_on(tx, &id).await?, created))
+    }
+
+    /// Responds with `preview`, whether this request `created` it, and its
+    /// `operation`, waking the controller when it was `deployed` now.
+    fn preview_accepted(
+        preview: super::StoredEnvironment,
+        operation: &Operation,
+        created: bool,
+        deployed: bool,
+    ) -> Accepted {
+        let id = preview.id().clone();
+        Accepted {
+            wake: deployed,
+            response: MutationResponse::Preview(Box::new(CreatedPreview {
+                preview: preview.environment,
+                operation: AcceptedOperation::from(operation),
+                created,
+            })),
+            environments: vec![id],
         }
     }
 

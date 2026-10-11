@@ -349,6 +349,11 @@ in
             default = 1;
             description = "Most replicas a preview service runs; manifests asking for more are capped with a warning.";
           };
+          snapshots.max_upload_bytes = lib.mkOption {
+            type = lib.types.ints.positive;
+            default = 268435456;
+            description = "Largest Git bundle `piquelctl preview deploy --local` may upload; larger ones fail with snapshot_too_large.";
+          };
           metrics.listen = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [ ];

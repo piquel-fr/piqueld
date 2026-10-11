@@ -24,8 +24,11 @@ pub(crate) struct BranchHead {
     pub(crate) url: String,
     /// The tracked branch.
     pub(crate) branch: String,
-    /// Full commit hash at its head.
-    pub(crate) commit: String,
+    /// Full commit hash at its head; `None` when the repository has no such
+    /// branch, which only a local snapshot records (see [`SyncedHead`]).
+    ///
+    /// [`SyncedHead`]: piqueld_core::sync::SyncedHead
+    pub(crate) commit: Option<String>,
 }
 
 /// An application that syncs, with everything following its pushes.
@@ -93,9 +96,10 @@ impl Store {
     ///    the head of then. A failing deployment is superseded instead, since
     ///    the push may fix it.
     /// 3. The head of its last deployment (see [`Self::save_deployment_input`]),
-    ///    and anything before its first, is `Current`. A one-off deployment
-    ///    records the branch's head then, so it stays until the branch moves;
-    ///    a rollback is a move.
+    ///    and anything before its first, is `Current`. A one-off deployment,
+    ///    or a local snapshot's, records the branch's head then, so it stays
+    ///    until the branch moves; a rollback is a move, and so is a branch
+    ///    first pushed after a local snapshot of it was deployed.
     /// 4. Otherwise deploys exactly `head` and records it: `Deployed`,
     ///    waking the controller. A failed one is not retried until the
     ///    branch moves again.
@@ -158,7 +162,7 @@ impl Store {
             .environment
             .synced
             .as_ref()
-            .is_none_or(|synced| synced.commit == head)
+            .is_none_or(|synced| synced.commit.as_deref() == Some(head))
         {
             return Ok(SyncOutcome::Current);
         }
@@ -170,7 +174,7 @@ impl Store {
         .await?;
         let message = format!("branch {branch} moved to {head}");
         Self::operation_event(tx, &operation.id, "branch_synced", Some(&message), now).await?;
-        Self::record_synced_on(tx, id, head, now).await?;
+        Self::record_synced_on(tx, id, Some(head), now).await?;
         Ok(SyncOutcome::Deployed(AcceptedOperation::from(&operation)))
     }
 
@@ -213,7 +217,7 @@ impl Store {
                 && repository.repository.commit.is_none()
         });
         if tracks {
-            Self::record_synced_on(tx, id, &head.commit, now).await?;
+            Self::record_synced_on(tx, id, head.commit.as_deref(), now).await?;
         }
         Ok(())
     }
@@ -237,14 +241,15 @@ impl Store {
         .unwrap_or(false))
     }
 
-    /// Records `head` as the branch head of `id`'s last deployment.
+    /// Records `head` as the branch head of `id`'s last deployment, stored
+    /// as an empty commit when the branch was absent.
     async fn record_synced_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &EnvironmentId,
-        head: &str,
+        head: Option<&str>,
         now: i64,
     ) -> Result<(), StoreError> {
-        let id = id.as_str();
+        let (id, head) = (id.as_str(), head.unwrap_or_default());
         sqlx::query!(
             "UPDATE environments SET synced_commit=?1,synced_at_ms=?2 WHERE id=?3",
             head,
@@ -517,7 +522,7 @@ impl Store {
             let head = BranchHead {
                 url: repository.repository.url,
                 branch: repository.repository.branch,
-                commit: commit.into(),
+                commit: Some(commit.into()),
             };
             let (_writer, mut tx) = self.begin_immediate().await.unwrap();
             Self::record_branch_head_on(&mut tx, id, &head, super::now_ms())
@@ -676,7 +681,7 @@ mod tests {
                 .synced
                 .unwrap()
                 .commit,
-            B
+            Some(B.into())
         );
 
         // A push while that deployment runs waits for it instead of
@@ -939,7 +944,7 @@ mod tests {
             let head = BranchHead {
                 url: url.into(),
                 branch: branch.into(),
-                commit: C.into(),
+                commit: Some(C.into()),
             };
             let store = &store;
             let id = id.clone();
@@ -963,7 +968,7 @@ mod tests {
                 .synced
                 .unwrap()
                 .commit,
-            A
+            Some(A.into())
         );
         record("https://example.com/notes.git", "main").await;
         assert_eq!(
@@ -975,7 +980,7 @@ mod tests {
                 .synced
                 .unwrap()
                 .commit,
-            C
+            Some(C.into())
         );
         // A deployment remembers the branch it was requested for, so one
         // queued before a branch change never records the new branch's head.
@@ -998,5 +1003,132 @@ mod tests {
         let queued = store.operation(&queued.operation_id).await.unwrap();
         let input = store.deployment_input(&queued).await.unwrap().unwrap();
         assert_eq!(input.tracked_branch.as_deref(), Some("main"));
+    }
+
+    /// Deploys a local snapshot to the preview of `main` in slot `agent` of
+    /// `application`, and finishes it as the controller would, having found
+    /// `main` at `head`, or absent. Returns the preview.
+    async fn snapshot_deployed(
+        store: &Store,
+        application: &ApplicationId,
+        head: Option<&str>,
+    ) -> EnvironmentId {
+        let mutation = Mutation::Preview(crate::api::PreviewMutation::Local {
+            application: application.clone(),
+            branch: piqueld_core::GitBranch::parse("main").unwrap(),
+            slot: Some(piqueld_core::PreviewSlot::parse("agent").unwrap()),
+            repository: "https://example.com/notes.git".into(),
+            snapshot: piqueld_core::api::LocalSnapshot {
+                commit: C.into(),
+                base: None,
+            },
+        });
+        let (MutationResponse::Preview(created), _) = store
+            .accept(Actor::Daemon, mutation, None, false, None)
+            .await
+            .unwrap()
+        else {
+            panic!("preview")
+        };
+        let (id, operation) = (created.preview.id, created.operation.operation_id);
+        let (_writer, mut tx) = store.begin_immediate().await.unwrap();
+        sqlx::query(
+            "UPDATE deployment_inputs SET fetched=1,repository_commit=?1 WHERE operation_id=?2",
+        )
+        .bind(C)
+        .bind(&operation)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE operations SET state='succeeded',finished_at_ms=1 WHERE id=?1")
+            .bind(&operation)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let head = BranchHead {
+            url: "https://example.com/notes.git".into(),
+            branch: "main".into(),
+            commit: head.map(str::to_owned),
+        };
+        Store::record_branch_head_on(&mut tx, &id, &head, 1)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        id
+    }
+
+    /// A local snapshot differs from its branch head, which sync must not
+    /// take for a move: it stays until the branch really moves, or, for a
+    /// branch never pushed, until it is pushed.
+    #[tokio::test]
+    async fn local_snapshots_stay_until_their_branch_moves_or_is_first_pushed() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let environment = notes(&store).await;
+        let application = store
+            .get(&environment)
+            .await
+            .unwrap()
+            .environment
+            .application_id;
+
+        // The branch is at A, so the snapshot stays while it is.
+        let preview = snapshot_deployed(&store, &application, Some(A)).await;
+        assert!(matches!(
+            sync(&store, &preview, A).await,
+            SyncOutcome::Current
+        ));
+        assert_eq!(operations(&store, &preview).await, 1);
+        let SyncOutcome::Deployed(pushed) = sync(&store, &preview, B).await else {
+            panic!("deployed")
+        };
+        assert_eq!(
+            store
+                .preview_origins(&preview)
+                .await
+                .unwrap()
+                .latest
+                .unwrap(),
+            piqueld_core::api::DeploymentOrigin::Build
+        );
+        sqlx::query("UPDATE operations SET state='succeeded',finished_at_ms=1 WHERE id=?1")
+            .bind(&pushed.operation_id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
+        // Never pushed: following, and the first push deploys.
+        let preview = snapshot_deployed(&store, &application, None).await;
+        let synced = store.get(&preview).await.unwrap().environment;
+        assert_eq!(synced.synced.as_ref().unwrap().commit, None);
+        assert_eq!(
+            synced.sync_state(
+                store
+                    .application(&application)
+                    .await
+                    .unwrap()
+                    .application
+                    .spec()
+                    .manifest
+                    .as_ref()
+            ),
+            piqueld_core::sync::SyncState::Following
+        );
+        assert!(matches!(
+            sync(&store, &preview, B).await,
+            SyncOutcome::Deployed(_)
+        ));
+        assert_eq!(
+            store
+                .get(&preview)
+                .await
+                .unwrap()
+                .environment
+                .synced
+                .unwrap()
+                .commit
+                .as_deref(),
+            Some(B)
+        );
     }
 }

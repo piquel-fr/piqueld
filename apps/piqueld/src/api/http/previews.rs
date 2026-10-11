@@ -4,13 +4,13 @@
 use super::applications::accept_mutation;
 use super::environments::environment_request;
 use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
-use crate::api::{Mutation, PreviewMutation};
+use crate::api::{Mutation, MutationResponse, PreviewMutation};
 use crate::auth::Identity;
 use axum::{
     Extension,
-    body::Bytes,
-    extract::{State, rejection::BytesRejection},
-    http::HeaderMap,
+    body::{Body, Bytes},
+    extract::{Query, State, rejection::BytesRejection, rejection::QueryRejection},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use piqueld_core::api::{
@@ -51,6 +51,88 @@ pub(super) async fn create(
         slot: request.slot.map(PreviewSlot::parse).transpose()?,
     });
     accept_mutation(&state, &identity, mutation, None, false, &headers).await
+}
+
+/// Which preview a local snapshot deploys to.
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in=Query)]
+pub(super) struct LocalPreviewQuery {
+    /// The worktree's branch of the manifest repository.
+    branch: String,
+    /// Distinguishes several previews of one branch.
+    slot: Option<String>,
+}
+
+/// A Git bundle, sent as raw bytes; it only documents the request body.
+#[derive(utoipa::ToSchema)]
+#[schema(value_type = String, format = Binary)]
+pub(super) struct GitBundle(std::marker::PhantomData<()>);
+
+/// Deploys a snapshot of a local worktree to a preview.
+///
+/// The body is a Git bundle of one snapshot commit, at most `[snapshots]
+/// max_upload_bytes`: either thin, needing commits the application's
+/// repository has (its base and, for merges, ancestors of it), which the
+/// daemon fetches, or complete.
+/// It is verified and unbundled into a repository of its own. The preview
+/// of `branch` and `slot` is created first if needed, as `createPreview`
+/// does, and deploys the snapshot's manifest, building `"self"` sources from
+/// it. Fails with 413 `snapshot_too_large`, 422 `snapshot_invalid`, or 422
+/// `snapshot_base_unavailable`, whose `details.prerequisites` names the
+/// commits it needs; upload a complete bundle then. A body that stalls for
+/// 30 seconds, or an upload not received within 10 minutes, fails with 408
+/// `snapshot_timed_out`. Needs no application revision.
+#[utoipa::path(post,path="/api/v1/applications/{id}/previews/local",operation_id="deployLocalPreview",
+    params(("id"=String,Path),LocalPreviewQuery,("Idempotency-Key"=Option<String>,Header)),
+    request_body(content=inline(GitBundle),content_type="application/octet-stream",description="Git bundle of the snapshot commit"),
+    responses((status=202,description="Snapshot received and its deployment accepted",body=Envelope<CreatedPreview>),
+    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
+    (status=408,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),
+    (status=413,response=inline(ApiErrorResponse)),
+    (status=415,response=inline(ApiErrorResponse)),(status=422,response=inline(ApiErrorResponse)),
+    (status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn deploy_local(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
+    ApiPath(id): ApiPath<String>,
+    query: Result<Query<LocalPreviewQuery>, QueryRejection>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response, ApiError> {
+    if super::content_type(&headers) != Some("application/octet-stream") {
+        return Err(ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "content_type_unsupported",
+            "Content-Type must be application/octet-stream",
+        ));
+    }
+    let Query(query) = query.map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "query_invalid",
+            "branch is required, and branch and slot may appear once",
+        )
+    })?;
+    let preview = (
+        ApplicationId::parse(id)?,
+        GitBranch::parse(query.branch)?,
+        query.slot.map(PreviewSlot::parse).transpose()?,
+    );
+    let length = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok()?.parse().ok());
+    let request_id = super::optional_header(&headers, "idempotency-key")?;
+    let deployed = state.deploy_snapshot(
+        identity.actor(),
+        preview,
+        (body.into_data_stream(), length),
+        request_id.as_deref(),
+    );
+    match Box::pin(deployed).await? {
+        MutationResponse::Preview(preview) => Ok(super::accepted(preview)),
+        _ => Err(crate::store::StoreError::Corrupt.into()),
+    }
 }
 
 /// Lists an application's previews.

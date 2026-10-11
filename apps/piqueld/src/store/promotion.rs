@@ -460,7 +460,9 @@ impl Store {
                 }
             }
             DeploymentOrigin::Release => {}
-            DeploymentOrigin::Build => return Err(StoreError::InvalidInput),
+            DeploymentOrigin::Build | DeploymentOrigin::Local(_) => {
+                return Err(StoreError::InvalidInput);
+            }
         }
         let release =
             Self::release_on(tx, &target.environment.application_id, &promotion.release).await?;

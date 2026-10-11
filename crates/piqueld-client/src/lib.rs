@@ -34,6 +34,8 @@ pub mod exec;
 pub use piqueld_core::access;
 /// Audit trail contracts.
 pub use piqueld_core::audit;
+/// Stable API error and diagnostic codes.
+pub use piqueld_core::codes;
 /// Tailnet identities and the token bindings they satisfy.
 pub use piqueld_core::tailnet;
 
@@ -75,8 +77,9 @@ pub use piqueld_core::{
 };
 pub use previews::{
     ApplicationPreviews, BranchState, CountedPreview, CreatePreviewRequest, CreatedPreview,
-    DeletedPreview, EnvironmentKind, LastDeployment, Preview, PreviewLimit, PreviewLimitReached,
-    PreviewLimits, PreviewSlot, PreviewSlug, PreviewUsage, PreviewView, PrunePreviewsRequest,
+    DeletedPreview, EnvironmentKind, LastDeployment, LocalSnapshot, Preview, PreviewLimit,
+    PreviewLimitReached, PreviewLimits, PreviewSlot, PreviewSlug, PreviewUsage, PreviewView,
+    PrunePreviewsRequest,
 };
 pub use system::{
     CertificateStatus, DnsProviderStatus, DnsStatus, ImageStatus, SystemStatus, TailnetStatus,

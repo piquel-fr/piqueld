@@ -10,7 +10,7 @@
 use super::{Operation, Store, StoreError, now_ms};
 use piqueld_core::{
     EnvironmentKind,
-    api::DiagnosticView,
+    api::{DeploymentOrigin, DiagnosticView},
     manifest::{ApplicationTemplate, Rendering},
 };
 use sqlx::{Sqlite, Transaction};
@@ -24,6 +24,9 @@ pub(crate) struct DeploymentInput {
     pub(crate) commit: Option<String>,
     /// The branch its environment tracked, unpinned, when it was requested.
     pub(crate) tracked_branch: Option<String>,
+    /// Where the deployment comes from: a local snapshot is fetched from
+    /// its own repository instead of the branch.
+    pub(crate) origin: DeploymentOrigin,
 }
 
 impl Store {
@@ -54,7 +57,7 @@ impl Store {
         operation: &Operation,
     ) -> Result<Option<DeploymentInput>, StoreError> {
         sqlx::query!(
-            "SELECT application_json,fetched,repository_commit,tracked_branch FROM deployment_inputs WHERE operation_id=?1",
+            r#"SELECT i.application_json,i.fetched,i.repository_commit,i.tracked_branch,COALESCE(d.origin_json,'{"type":"build"}') AS "origin_json!: String" FROM deployment_inputs i LEFT JOIN deployments d ON d.id=i.operation_id WHERE i.operation_id=?1"#,
             operation.id
         )
         .fetch_optional(&self.pool)
@@ -67,6 +70,7 @@ impl Store {
                 fetched: row.fetched != 0,
                 commit: row.repository_commit,
                 tracked_branch: row.tracked_branch,
+                origin: serde_json::from_str(&row.origin_json).map_err(StoreError::corrupt)?,
             })
         })
         .transpose()

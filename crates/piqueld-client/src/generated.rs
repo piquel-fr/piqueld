@@ -1192,6 +1192,113 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Deploys a snapshot of a local worktree to a preview
+
+    The body is a Git bundle of one snapshot commit, at most `[snapshots]
+    max_upload_bytes`: either thin, needing commits the application's
+    repository has (its base and, for merges, ancestors of it), which the
+    daemon fetches, or complete.
+    It is verified and unbundled into a repository of its own. The preview
+    of `branch` and `slot` is created first if needed, as `createPreview`
+    does, and deploys the snapshot's manifest, building `"self"` sources from
+    it. Fails with 413 `snapshot_too_large`, 422 `snapshot_invalid`, or 422
+    `snapshot_base_unavailable`, whose `details.prerequisites` names the
+    commits it needs; upload a complete bundle then. A body that stalls for
+    30 seconds, or an upload not received within 10 minutes, fails with 408
+    `snapshot_timed_out`. Needs no application revision.
+
+    Sends a `POST` request to `/api/v1/applications/{id}/previews/local`
+
+    Arguments:
+    - `id`
+    - `branch`: The worktree's branch of the manifest repository.
+    - `slot`: Distinguishes several previews of one branch.
+    - `idempotency_key`
+    - `body`: Git bundle of the snapshot commit
+    */
+    pub async fn deploy_local_preview<'a, B: Into<reqwest::Body>>(
+        &'a self,
+        id: &'a str,
+        branch: &'a str,
+        slot: Option<&'a str>,
+        idempotency_key: Option<&'a str>,
+        body: B,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::CreatedPreview>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/previews/local",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .header(
+                ::reqwest::header::CONTENT_TYPE,
+                ::reqwest::header::HeaderValue::from_static("application/octet-stream"),
+            )
+            .body(body)
+            .query(&progenitor_client::QueryParam::new("branch", &branch))
+            .query(&progenitor_client::QueryParam::new("slot", &slot))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "deploy_local_preview",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            408u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Deletes previews whose branch is gone
 
     Deletes each listed preview whose branch the manifest repository confirms

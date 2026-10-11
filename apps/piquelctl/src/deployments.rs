@@ -12,9 +12,9 @@ use crate::{
 };
 use clap::{Args, ValueEnum};
 use piqueld_client::{
-    AcceptedOperation, ApplicationId, Client, DeploymentView, EnvironmentDetailView, EnvironmentId,
-    EnvironmentName, EnvironmentView, Operation, OperationKind, OperationState, ReleaseId,
-    RouteUrl, SystemVariable, UrlState,
+    AcceptedOperation, ApplicationId, Client, DeploymentOrigin, DeploymentView,
+    EnvironmentDetailView, EnvironmentId, EnvironmentName, EnvironmentView, LocalSnapshot,
+    Operation, OperationKind, OperationState, ReleaseId, RouteUrl, SystemVariable, UrlState,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -33,9 +33,14 @@ pub(crate) struct Deployed {
     /// The release its prepared target runs; null until prepared, and for previews.
     pub(crate) release_id: Option<ReleaseId>,
     /// Branch and commit its manifest was read from; null until fetched, and
-    /// for saved manifests.
+    /// for saved manifests. For a local snapshot, the snapshot commit.
     pub(crate) branch: Option<String>,
     pub(crate) commit: Option<String>,
+    /// Whether it deploys a snapshot of a local worktree.
+    pub(crate) local: bool,
+    /// The commit of the application's repository a local snapshot was
+    /// uploaded against; null for complete uploads and other deployments.
+    pub(crate) base: Option<String>,
     /// How it ended; omitted with `--no-wait`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) outcome: Option<OperationState>,
@@ -57,8 +62,22 @@ impl Deployed {
             release_id: None,
             branch: None,
             commit: None,
+            local: false,
+            base: None,
             outcome: None,
             urls: None,
+        }
+    }
+
+    /// Marks the deployment as one of `snapshot`, uploaded from a local
+    /// worktree of `branch`.
+    pub(crate) fn snapshot(self, branch: &str, snapshot: &LocalSnapshot) -> Self {
+        Self {
+            branch: Some(branch.to_owned()),
+            commit: Some(snapshot.commit.clone()),
+            local: true,
+            base: snapshot.base.clone(),
+            ..self
         }
     }
 
@@ -70,7 +89,13 @@ impl Deployed {
         detail: &EnvironmentDetailView,
     ) -> Self {
         let id = &deployment.operation.id;
+        let snapshot = match &deployment.origin {
+            DeploymentOrigin::Local(snapshot) => Some(snapshot),
+            _ => None,
+        };
         Self {
+            local: snapshot.is_some(),
+            base: snapshot.and_then(|snapshot| snapshot.base.clone()),
             release_id: deployment.release.clone(),
             branch: deployment
                 .system_value(SystemVariable::GitBranch)

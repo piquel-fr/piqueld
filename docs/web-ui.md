@@ -52,7 +52,8 @@ another environment.
 The **Previews** tab lists the application's
 [previews](application-manifest.md#previews), never shown among its
 environments: each preview's branch, slug, slot, branch state (exists, moved
-or gone, with shortened commits, or unknown with the repository error), and
+or gone, with shortened commits; local while it runs a local snapshot, with
+the branch head or "never pushed"; or unknown with the repository error), and
 status (or **Deleting**) with its status message on hover. A **Bounded**
 badge marks a preview whose deployment runs a service with the
 [`[previews]`](configuration.md#previews) default limits or fewer replicas than
@@ -73,9 +74,15 @@ page don't block them.
 
 Each row opens the preview's page, which has an environment page's tabs.
 Its Overview shows the preview's branch, slot, slug, and ID, with its branch
-state and bounds read on load and on **Refresh**, then its runtime and URLs, its variables
-rendered for previews, and a card to delete it. **Redeploy** deploys the head
-of its branch again.
+state, what it deploys and its bounds read on load and on **Refresh**, then its
+runtime and URLs, its variables rendered for previews, and a card to delete it.
+**Deploys** is the head of its branch, or, after `piquelctl preview deploy
+--local`, the local snapshot's commit and the base it was uploaded against,
+with what **Redeploy branch head** does then. **Redeploy branch head** always
+deploys the head of its branch from the repository, replacing a local snapshot;
+for a branch never pushed it fails until the branch is pushed. Snapshots are
+only uploaded from a worktree with the CLI. Deployment history shows a local
+snapshot's origin as "Local snapshot <commit> on <base>".
 
 **Preview** and **Deploy to <environment>** on an environment page target that
 environment. On the application page they target its only environment; with
@@ -166,7 +173,8 @@ and Attempts sections. Attempts load when first opened; refresh and older-attemp
 controls appear below the list. Operation IDs appear only in deployment Details,
 next to the deployment's release, which links to it in the application's
 Releases tab, and its origin: built from the environment's source, promoted
-from another environment's deployment, or a release deployed again. The
+from another environment's deployment, a release deployed again, or, for a
+preview, a local snapshot with its commit and base. The
 environment's Overview links to the release its current target runs. Current target, last successful deployment, and observed runtime health
 are distinct. History remains until the environment is deleted. Deploying an
 empty application removes its runtime services and network. Removing volumes or
@@ -355,7 +363,8 @@ secret exists. **Generate secret** creates one and shows it once, with a
 verifying at once. On an environment's Overview, the **Source** card says
 whether pushes deploy it (following, off, pinned, not opted in, or waiting
 for a deployment, with the reason) and the branch head of its last
-deployment; **Deploy on push** opts it in without a saved revision, and
+deployment ("Not pushed" when a local snapshot was deployed before its branch
+existed); **Deploy on push** opts it in without a saved revision, and
 **Stop deploying on push** opts it out. A
 preview's page shows the same, without the opt-out. Events caused by sync name
 `sync:poll` or `sync:webhook` as their requester.

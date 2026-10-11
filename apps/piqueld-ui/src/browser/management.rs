@@ -12,7 +12,7 @@ mod services;
 mod settings;
 mod variables;
 
-use super::format::timestamp;
+use super::format::{commit, timestamp};
 use super::runtime::RuntimeOverview;
 use super::ui::{
     Icon, Modal, PageHeader, Tabs, Tone, badge, health_badge, icon, notice, text_input,
@@ -187,7 +187,8 @@ impl EditorContext {
         }
     }
     /// Where a deployment came from: "Built", "Promoted from staging
-    /// (deployment …)", or "Release redeployed".
+    /// (deployment …)", "Release redeployed", or "Local snapshot 0123456 on
+    /// 89abcde".
     fn describe_origin(self, origin: &DeploymentOrigin) -> String {
         match origin {
             DeploymentOrigin::Build => "Built".into(),
@@ -199,6 +200,17 @@ impl EditorContext {
                 self.environment_name(environment.as_str())
             ),
             DeploymentOrigin::Release => "Release redeployed".into(),
+            DeploymentOrigin::Local(snapshot) => match &snapshot.base {
+                Some(base) => format!(
+                    "Local snapshot {} on {}",
+                    commit(&snapshot.commit),
+                    commit(base)
+                ),
+                None => format!(
+                    "Local snapshot {}, uploaded complete",
+                    commit(&snapshot.commit)
+                ),
+            },
         }
     }
     fn name(self) -> String {
