@@ -283,7 +283,10 @@ impl Worktree {
                 sizes.push((metadata.len(), path));
             }
         }
-        let total = sizes.iter().map(|(size, _)| size).sum::<u64>();
+        let total = sizes
+            .iter()
+            .map(|(size, _)| SnapshotLimits::file_cost(*size))
+            .sum::<u64>();
         if total <= limits.max_tree_bytes && sizes.len() as u64 <= limits.max_files {
             return Ok(());
         }
@@ -543,7 +546,9 @@ impl Snapshot<'_> {
     }
 
     /// Stages the worktree into the snapshot's index, keeping the tracked
-    /// `ignored` files, NUL-separated, as committed.
+    /// `ignored` files, NUL-separated, as committed: they are reset to
+    /// `HEAD` and marked assume-unchanged first, so staging never reads
+    /// their local content.
     async fn stage(&self, ignored: String) -> Result<()> {
         let staged = |arguments: &[&str]| self.staged(arguments);
         // `git add` skips files marked assume-unchanged, so the snapshot
@@ -565,10 +570,6 @@ impl Snapshot<'_> {
                 "stage files marked assume-unchanged",
             )?;
         }
-        Git::checked(
-            staged(&["add", "--all"]).output().await,
-            "stage the worktree",
-        )?;
         if !ignored.is_empty() {
             // Names, not pathspecs: an ignored file may be named `:(exclude)x`.
             let reset = staged(&[
@@ -583,7 +584,31 @@ impl Snapshot<'_> {
                 Git::with_input(reset, ignored).await,
                 "keep ignored files as committed",
             )?;
+            // Marked so `git add` never reads their local content.
+            let committed = Git::checked(
+                staged(&[
+                    "ls-files",
+                    "-z",
+                    "--cached",
+                    "--ignored",
+                    "--exclude-standard",
+                ])
+                .output()
+                .await,
+                "list tracked ignored files",
+            )?;
+            if !committed.is_empty() {
+                let mark = staged(&["update-index", "--assume-unchanged", "-z", "--stdin"]);
+                Git::checked(
+                    Git::with_input(mark, committed).await,
+                    "keep ignored files as committed",
+                )?;
+            }
         }
+        Git::checked(
+            staged(&["add", "--all"]).output().await,
+            "stage the worktree",
+        )?;
         Ok(())
     }
 
@@ -824,16 +849,20 @@ mod tests {
             &work,
             "echo committed > ':(exclude)x' && git --literal-pathspecs add ':(exclude)x'
              git commit -qm magic && printf ':(exclude)x\n' >> .gitignore
-             head -c 8192 /dev/zero > ':(exclude)x' && git rm -q --cached .env && rm .env",
+             head -c 1048576 /dev/zero > ':(exclude)x' && git rm -q --cached .env && rm .env",
         );
         let worktree = Worktree::at(&work).await.unwrap();
         let limits = SnapshotLimits {
             max_upload_bytes: 1 << 20,
-            max_tree_bytes: 4096,
+            max_tree_bytes: 1 << 16,
             max_files: 100,
         };
         let snapshot = worktree.snapshot("feat/x", Some(&limits)).await.unwrap();
         snapshot.bundle(History::Thin).await.unwrap();
+        // Its local content was never even staged.
+        let local = sh(&work, "git hash-object -- ':(exclude)x'");
+        let object = snapshot.objects().join(&local[..2]).join(&local[2..]);
+        assert!(!object.exists());
         let snapshot_git = format!(
             "git --git-dir={}",
             snapshot.directory.path().join("bundle.git").display()

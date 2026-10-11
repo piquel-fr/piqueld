@@ -249,7 +249,9 @@ max_bytes = 4294967296
 working tree, take at once. Clones are shallow, so a checkout's history is
 about one compressed copy of its tree. At most four clones run at once, and
 one is stopped once it has downloaded more than a quarter of `max_bytes`.
-Each tree is then measured before its files are written: a checkout waits
+Each tree is then measured before its files are written, each file charged
+its size in whole 4 KiB blocks, at least one, plus 256 bytes for Git's index
+and directories; the history counts as the disk it takes. A checkout waits
 until it fits beside the others, and one larger than `max_bytes`, or with
 more than 500,000 files, fails. Clones still downloading are not counted, so
 checkouts take at most twice `max_bytes`. Files are checked out as

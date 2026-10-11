@@ -146,26 +146,30 @@ impl Listings {
                 .entry(url.to_owned())
                 .or_default(),
         );
-        let mut last = repository.lock().await;
-        if let Some((finished, heads)) = &*last
-            && *finished > requested
-        {
-            return Arc::clone(heads);
-        }
-        let heads = match self.listing.acquire().await {
-            Ok(_listing) => Heads::list(url).await,
-            Err(error) => Err(error.into()),
+        let heads = {
+            let mut last = repository.lock().await;
+            match &*last {
+                Some((finished, heads)) if *finished > requested => Arc::clone(heads),
+                _ => {
+                    let heads = match self.listing.acquire().await {
+                        Ok(_listing) => Heads::list(url).await,
+                        Err(error) => Err(error.into()),
+                    };
+                    let heads = Arc::new(heads);
+                    *last = Some((std::time::Instant::now(), Arc::clone(&heads)));
+                    heads
+                }
+            }
         };
-        let heads = Arc::new(heads);
-        *last = Some((std::time::Instant::now(), Arc::clone(&heads)));
-        drop(last);
         let mut repositories = self
             .repositories
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Only the map and this read hold it: no read waits to share it.
-        // Reads take it from the map under this lock, so none can meanwhile.
-        if Arc::strong_count(&repository) == 2 {
+        // Reads take and drop their handle under this lock, so the last read
+        // to finish sees only the map's and its own, and removes it.
+        let last = Arc::strong_count(&repository) == 2;
+        drop(repository);
+        if last {
             repositories.remove(url);
         }
         heads
@@ -335,7 +339,8 @@ impl Checkouts {
     }
 
     /// The bytes `revision`'s working tree takes in the repository at
-    /// `repository`, read from object headers without writing a file.
+    /// `repository`, each file charged `SnapshotLimits::file_cost`, read
+    /// from object headers without writing a file.
     ///
     /// # Errors
     /// Returns a Git failure, or [`TreeTooLarge`] when it takes more than
@@ -369,8 +374,9 @@ impl Checkouts {
         let output = String::from_utf8(output).context("decode Git tree sizes")?;
         let mut bytes = 0_u64;
         for (files, size) in output.lines().enumerate() {
-            // Submodules print `-`; they are never checked out.
-            bytes = bytes.saturating_add(size.parse().unwrap_or(0));
+            // Submodules print `-`: an empty directory is checked out.
+            let cost = piqueld_core::api::SnapshotLimits::file_cost(size.parse().unwrap_or(0));
+            bytes = bytes.saturating_add(cost);
             if files >= Self::FILES || bytes > self.max_bytes {
                 return Err(too_large().into());
             }
@@ -427,7 +433,7 @@ impl Checkouts {
 
     /// Runs `transfer`, which downloads into `directory`, and stops it,
     /// with its process group, once the directory takes more than `limit`
-    /// bytes.
+    /// bytes; one that finishes larger fails too.
     ///
     /// # Errors
     /// Returns `transfer`'s error, or [`TreeTooLarge`].
@@ -446,16 +452,27 @@ impl Checkouts {
                 }
             }
         };
-        tokio::select! {
-            result = transfer => result,
-            too_large = watch => Err(too_large.into()),
+        let transferred = tokio::select! {
+            result = transfer => result?,
+            too_large = watch => return Err(too_large.into()),
+        };
+        // A transfer may finish between checks.
+        match Self::disk_usage(directory).await {
+            Ok(bytes) if bytes <= limit => Ok(transferred),
+            Ok(_) => Err(TreeTooLarge { limit }.into()),
+            Err(error) => {
+                tracing::warn!(?error, "measuring a Git download failed");
+                Err(TreeTooLarge { limit }.into())
+            }
         }
     }
 
-    /// The bytes of the files under `directory`, which Git may be writing.
+    /// The disk allocated to `directory` and everything under it, which
+    /// Git may be writing.
     async fn disk_usage(directory: &Path) -> anyhow::Result<u64> {
         let directory = directory.to_owned();
         tokio::task::spawn_blocking(move || {
+            use std::os::unix::fs::MetadataExt;
             let gone = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
             let (mut bytes, mut directories) = (0_u64, vec![directory]);
             while let Some(directory) = directories.pop() {
@@ -469,9 +486,11 @@ impl Checkouts {
                             Err(error) if gone(&error) => continue,
                             metadata => metadata?,
                         };
-                    match metadata {
-                        (path, metadata) if metadata.is_dir() => directories.push(path),
-                        (_, metadata) => bytes = bytes.saturating_add(metadata.len()),
+                    let (path, metadata) = metadata;
+                    // `blocks` counts 512-byte units, whatever the block size.
+                    bytes = bytes.saturating_add(metadata.blocks().saturating_mul(512));
+                    if metadata.is_dir() {
+                        directories.push(path);
                     }
                 }
             }
@@ -764,6 +783,7 @@ mod tests {
                 .ok()
                 .unwrap();
         assert!(Arc::ptr_eq(&first, &second));
+        assert!(listings.repositories.lock().unwrap().is_empty());
         assert!(first.as_ref().as_ref().unwrap().head("main").is_some());
         let later = listings.list(&url).await;
         assert!(!Arc::ptr_eq(&first, &later));
@@ -790,22 +810,26 @@ mod tests {
         );
     }
 
-    /// A download that grows past its limit is stopped.
+    /// A download that grows past its limit is stopped, and one that
+    /// finishes past it, before it is checked, fails.
     #[tokio::test]
     async fn downloads_past_their_limit_are_stopped() {
         let directory = tempfile::tempdir().unwrap();
-        let download = async {
-            tokio::fs::write(directory.path().join("pack"), [0; 64])
-                .await
-                .unwrap();
+        let pack = directory.path().join("pack");
+        let stalled = async {
+            tokio::fs::write(&pack, vec![0; 8192]).await.unwrap();
             std::future::pending::<anyhow::Result<()>>().await
         };
-        let stopped = Checkouts::bounded(directory.path(), 32, download).await;
-        assert!(
-            stopped
-                .unwrap_err()
-                .downcast_ref::<TreeTooLarge>()
-                .is_some()
-        );
+        let finished = async {
+            tokio::fs::write(&pack, vec![0; 8192]).await.unwrap();
+            anyhow::Ok(())
+        };
+        for result in [
+            Checkouts::bounded(directory.path(), 4096, stalled).await,
+            Checkouts::bounded(directory.path(), 4096, finished).await,
+        ] {
+            let error = result.unwrap_err();
+            assert!(error.downcast_ref::<TreeTooLarge>().is_some(), "{error:#}");
+        }
     }
 }
