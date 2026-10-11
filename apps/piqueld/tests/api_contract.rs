@@ -2895,12 +2895,19 @@ async fn exec_rechecks_grants_when_the_command_starts() {
         credential_id: "operator",
         user_id: "operator",
     });
-    assert!(
-        state
-            .exec(caller, &environment, &request, "operator")
-            .await
-            .is_ok()
-    );
+    let session = state
+        .exec(caller, &environment, &request, "operator")
+        .await
+        .unwrap();
+    // The start is recorded once the command runs; without input it exits.
+    let (_, input) = tokio::sync::mpsc::channel(1);
+    let (output, _output) = tokio::sync::mpsc::channel(1);
+    let io = piqueld::docker::ExecIo {
+        input,
+        output,
+        stop: tokio_util::sync::CancellationToken::new(),
+    };
+    assert_eq!(session.run(io).await.unwrap(), 0);
     let filter = piqueld_core::observability::EventFilter {
         kind: Some("command_started".into()),
         ..Default::default()
@@ -5087,8 +5094,8 @@ async fn exec_sessions_end_once_access_is_lost() {
     server.abort();
 }
 
-/// Access lost while a command is being created is noticed before it runs,
-/// even if it would finish at once.
+/// Access lost while a command is being created is noticed before it runs
+/// or is recorded as started, even if it would finish at once.
 #[tokio::test]
 async fn exec_rechecks_access_once_the_command_is_created() {
     use futures_util::{SinkExt, StreamExt};
@@ -5120,6 +5127,17 @@ async fn exec_rechecks_access_once_the_command_is_created() {
         matches!(&outputs[..], [ExecOutput::Failed { status: 401, .. }]),
         "{outputs:?}"
     );
+    // History does not claim the command started.
+    let filter = piqueld_core::observability::EventFilter {
+        kind: Some("command_started".into()),
+        ..Default::default()
+    };
+    let started = f
+        .state
+        .filtered_events(&filter, &piqueld::store::Visibility::ALL, None, 10)
+        .await
+        .unwrap();
+    assert!(started.items.is_empty());
     server.abort();
 }
 

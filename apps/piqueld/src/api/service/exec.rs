@@ -6,7 +6,7 @@ use piqueld_core::{
     exec::ExecRequest,
 };
 
-/// A created command whose start is already recorded in history.
+/// A created command, recorded in history once it runs.
 pub struct ExecSession {
     owner: ApplicationService,
     /// Resolved when the command starts, so its completion stays in the
@@ -15,6 +15,8 @@ pub struct ExecSession {
     environment: EnvironmentId,
     service: ServiceName,
     exec: Exec,
+    /// Who started the command, as history names them.
+    who: String,
     /// Account and credential, or host operator and its session, that
     /// started the command, which its completion is attributed to as well.
     actor_user_id: Option<String>,
@@ -23,10 +25,10 @@ pub struct ExecSession {
 }
 
 impl ApplicationService {
-    /// Creates a command in one running task of `request.service` and records
-    /// `who` started it. The command itself may contain secrets and is
-    /// never recorded. `actor` needs `apps:exec` on the environment's
-    /// application now, not only when it connected.
+    /// Creates a command in one running task of `request.service`, which
+    /// records `who` started it once it runs. The command itself may contain
+    /// secrets and is never recorded. `actor` needs `apps:exec` on the
+    /// environment's application now, not only when it connected.
     /// # Errors
     /// Returns refusal, not found, a service without running tasks, runtime or
     /// storage errors.
@@ -50,22 +52,13 @@ impl ApplicationService {
             .await?
             .ok_or(ApplicationError::ServiceNotRunning)?;
         let attribution = actor.attribution();
-        self.store
-            .record_environment_event(
-                attribution,
-                &application,
-                environment,
-                "command_started",
-                &format!("{who} started a command in task {}", exec.task),
-                request.service.as_str(),
-            )
-            .await?;
         Ok(ExecSession {
             owner: self.clone(),
             application,
             environment: environment.clone(),
             service: request.service.clone(),
             exec,
+            who: who.to_owned(),
             actor_user_id: attribution.user_id.map(str::to_owned),
             actor_credential_id: attribution.credential_id.map(str::to_owned),
             actor_operator: attribution.operator,
@@ -89,16 +82,32 @@ impl ApplicationService {
 }
 
 impl ExecSession {
-    /// Streams the command until it exits, then records its exit code.
+    /// Records the command's start, streams it until it exits, then records
+    /// its exit code.
     /// # Errors
-    /// Returns runtime errors, including a disconnected client.
+    /// Returns storage errors recording the start, and runtime errors,
+    /// including a disconnected client.
     pub async fn run(self, io: ExecIo) -> Result<i64, ApplicationError> {
+        self.record(
+            "command_started",
+            &format!("{} started a command in task {}", self.who, self.exec.task),
+        )
+        .await?;
         let result = self.owner.runtime.run_exec(&self.exec, io).await;
         let message = match &result {
             Ok(code) => format!("Command in task {} exited with code {code}", self.exec.task),
             Err(_) => format!("Command stream in task {} failed", self.exec.task),
         };
-        if let Err(error) = self
+        if let Err(error) = self.record("command_finished", &message).await {
+            tracing::error!(?error, task = %self.exec.task, "could not record command completion");
+        }
+        Ok(result?)
+    }
+
+    /// Records `kind` with `message` in the environment's history, attributed
+    /// to whoever started the command.
+    async fn record(&self, kind: &str, message: &str) -> Result<(), ApplicationError> {
+        Ok(self
             .owner
             .store
             .record_environment_event(
@@ -110,14 +119,10 @@ impl ExecSession {
                 },
                 &self.application,
                 &self.environment,
-                "command_finished",
-                &message,
+                kind,
+                message,
                 self.service.as_str(),
             )
-            .await
-        {
-            tracing::error!(?error, task = %self.exec.task, "could not record command completion");
-        }
-        Ok(result?)
+            .await?)
     }
 }

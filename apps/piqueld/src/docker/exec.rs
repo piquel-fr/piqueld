@@ -189,10 +189,12 @@ impl BollardDocker {
             }
             std::future::pending::<Infallible>().await
         };
+        // A stop wins over input still queued, which must not reach the command.
         tokio::select! {
+            biased;
+            () = stop.cancelled() => return Err(DockerError::Request("exec stopped by its client transport")),
             result = forward_output => result?,
             never = forward_input => match never {},
-            () = stop.cancelled() => return Err(DockerError::Request("exec stopped by its client transport")),
         }
         self.docker
             .inspect_exec(&exec.id)
