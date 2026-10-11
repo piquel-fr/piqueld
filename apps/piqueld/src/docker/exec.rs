@@ -33,7 +33,7 @@ pub struct ExecIo {
     /// Command output. Only [`ExecOutput::Stdout`] and [`ExecOutput::Stderr`] are sent.
     pub output: mpsc::Sender<ExecOutput>,
     /// Cancelled by the transport to stop streaming, e.g. when the client
-    /// is gone or lost access.
+    /// is gone or lost access. A command already stopped is never started.
     pub stop: CancellationToken,
 }
 

@@ -86,7 +86,7 @@ impl RuntimeBoundary for FakeRuntime {
     }
 
     /// Only `web` has a running task. A command named `block` never reads
-    /// its input, one named `hang` echoes it but never stops, and one named
+    /// its input, one named `hang` echoes it but never stops or exits, and one named
     /// `slow` takes two seconds to create.
     async fn create_exec(
         &self,
@@ -131,6 +131,9 @@ impl RuntimeBoundary for FakeRuntime {
             while let Some(ExecInput::Stdin(data)) = input.recv().await {
                 read += data.len();
                 output.send(ExecOutput::Stdout(data)).await.unwrap();
+            }
+            if exec.id == "exec-hang" {
+                return std::future::pending().await;
             }
             output
                 .send(ExecOutput::Stderr(b"closed".to_vec()))

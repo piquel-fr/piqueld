@@ -1,6 +1,6 @@
 //! One-off commands in running service tasks, recorded in environment history.
 use super::{Actor, ApplicationError, ApplicationService};
-use crate::docker::{Exec, ExecIo};
+use crate::docker::{DockerError, Exec, ExecIo};
 use piqueld_core::{
     ApplicationId, EnvironmentId, ServiceName, access::AppPermission, auth::HostOperator,
     exec::ExecRequest,
@@ -93,7 +93,12 @@ impl ExecSession {
             &format!("{} started a command in task {}", self.who, self.exec.task),
         )
         .await?;
-        let result = self.owner.runtime.run_exec(&self.exec, io).await;
+        // A stop noticed while the start was recorded never starts it.
+        let result = if io.stop.is_cancelled() {
+            Err(DockerError::Request("exec stopped before it started").into())
+        } else {
+            self.owner.runtime.run_exec(&self.exec, io).await
+        };
         let message = match &result {
             Ok(code) => format!("Command in task {} exited with code {code}", self.exec.task),
             Err(_) => format!("Command stream in task {} failed", self.exec.task),
