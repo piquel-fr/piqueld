@@ -213,7 +213,9 @@ impl Drop for Reader<'_> {
 pub(crate) struct Checkouts {
     /// Where checkouts are made: `<data_dir>/checkouts`, emptied at startup.
     root: PathBuf,
-    /// Permits to clone, held until the clone is measured and checked out.
+    /// Permits to clone, held until the clone is checked out, even while it
+    /// waits for `disk`: its download isn't counted there yet, so these
+    /// bound what waiting clones take.
     cloning: Semaphore,
     /// One permit per MiB of history and working tree, held by each
     /// [`Checkout`].
