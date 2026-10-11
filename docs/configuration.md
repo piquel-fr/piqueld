@@ -92,7 +92,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `previews.default_cpu_millis` | `500` |
 | `previews.default_memory_bytes` | `536870912` (512 MiB) |
 | `previews.max_replicas` | `1` |
-| `previews.max_upload_bytes` | `268435456` (256 MiB) |
+| `snapshots.max_upload_bytes` | `268435456` (256 MiB) |
 | `images.keep_deployments` | `3` (successful deployments per environment whose built images are kept) |
 | `images.cleanup_interval_seconds` | `3600` (`1..=86400`; cleanup also runs after each operation) |
 
@@ -155,7 +155,6 @@ max_total = 30
 default_cpu_millis = 500
 default_memory_bytes = 536870912
 max_replicas = 1
-max_upload_bytes = 268435456
 ```
 
 Creating a preview that would take its application's previews past
@@ -182,14 +181,6 @@ dashboard show the overage. Previews pick up changed resource bounds on their
 next deployment; until then, previews deployed before the limits existed run
 without them, which status reports as unlimited replicas. Previews are never deleted automatically.
 
-`max_upload_bytes` bounds the Git bundle `piquelctl preview deploy --local`
-uploads, which is streamed to `<data_dir>/snapshots` and refused with 413
-`snapshot_too_large` once it exceeds the limit. It is separate from the 2 MiB
-limit of other request bodies. Bundles are usually thin, carrying only what
-the application's repository lacks, so the limit mostly matters for branches
-whose history the repository does not have. `<data_dir>/snapshots` keeps only
-the snapshots previews' latest deployments use; the others are removed on the
-next full reconciliation scan. It need not be backed up.
 
 `[build_history]` bounds persisted build output: `log_max_bytes` defaults to
 4194304 (maximum 64 MiB), and `log_retention_days` to 30 (1–3650). Build metadata
@@ -209,6 +200,27 @@ images are never removed. See
 keep_deployments = 3
 cleanup_interval_seconds = 3600
 ```
+
+## Local snapshots
+
+`[snapshots]` bounds the snapshots of local worktrees that
+`piquelctl preview deploy --local` uploads:
+
+```toml
+[snapshots]
+max_upload_bytes = 268435456
+```
+
+`max_upload_bytes`, at least 1, bounds the Git bundle `piquelctl preview deploy --local`
+uploads, which is streamed to `<data_dir>/snapshots` and refused with 413
+`snapshot_too_large` once it exceeds the limit. It is separate from the 2 MiB
+limit of other request bodies. Bundles are usually thin, carrying only what
+the application's repository lacks, so the limit mostly matters for branches
+whose history the repository does not have. `<data_dir>/snapshots` keeps only
+the snapshots previews' latest deployments use; the others are removed on the
+next full reconciliation scan. It need not be backed up. It is a section of its
+own, rather than part of `[previews]`, because the API reports the
+`[previews]` limits and older clients reject fields they don't know.
 
 ## TCP listen modes and Tailscale
 

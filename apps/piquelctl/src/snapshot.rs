@@ -155,6 +155,25 @@ impl Worktree {
                 .args(arguments);
             command
         };
+        // `git add` skips files marked assume-unchanged, so the snapshot
+        // would keep their committed content; only the copy's marks go.
+        let index_entries = Git::checked(
+            staged(&["ls-files", "-v", "-z"]).output().await,
+            "list the index",
+        )?;
+        let assumed = index_entries
+            .split('\0')
+            .filter_map(|entry| entry.split_once(' '))
+            .filter(|(tag, _)| tag.bytes().all(|tag| tag.is_ascii_lowercase()))
+            .map(|(_, path)| path)
+            .collect::<Vec<_>>();
+        if !assumed.is_empty() {
+            let clear = staged(&["update-index", "--no-assume-unchanged", "-z", "--stdin"]);
+            Git::checked(
+                Git::with_input(clear, assumed.join("\0")).await,
+                "stage files marked assume-unchanged",
+            )?;
+        }
         Git::checked(
             staged(&["add", "--all"]).output().await,
             "stage the worktree",
@@ -266,11 +285,7 @@ impl Worktree {
             "list the worktree's files",
         )?;
         let mut check = Git::command(&self.root);
-        check
-            .args(["check-attr", "--stdin", "-z", "filter"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+        check.args(["check-attr", "--stdin", "-z", "filter"]);
         let attributes = Git::checked(Git::with_input(check, files).await, "read the filters")?;
         // `<path>\0filter\0<driver>\0`, for every file.
         let filtered = attributes
@@ -446,13 +461,17 @@ impl Git {
         command
     }
 
-    /// Runs `command`, whose standard streams are piped, with `input` on
-    /// its standard input.
+    /// Runs `command` with `input` on its standard input, capturing its
+    /// output like `Command::output`.
     async fn with_input(
         mut command: tokio::process::Command,
         input: String,
     ) -> std::io::Result<Output> {
-        let mut child = command.spawn()?;
+        let mut child = command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
         let mut stdin = child.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
         // Written concurrently with reading the output, so neither pipe fills.
         let write =
@@ -519,8 +538,9 @@ mod tests {
     }
 
     /// A clone of a two-commit repository, with an unpushed commit, a
-    /// modified, a staged, an untracked, and an ignored file. It splits its
-    /// index and has a hook that runs whenever the index changes.
+    /// modified file marked assume-unchanged, a staged, an untracked, and an
+    /// ignored file. It splits its index and has a hook that runs whenever
+    /// the index changes.
     fn fixture(root: &Path) -> PathBuf {
         sh(
             root,
@@ -532,7 +552,8 @@ mod tests {
              printf '#!/bin/sh\ntouch hook-ran\n' > .git/hooks/post-index-change
              chmod +x .git/hooks/post-index-change
              echo ignored > .gitignore && git add . && git commit -qm unpushed
-             echo changed > app.toml && echo staged > staged.txt && git add staged.txt
+             echo changed > app.toml && git update-index --assume-unchanged app.toml
+             echo staged > staged.txt && git add staged.txt
              echo untracked > untracked.txt && echo secret > ignored && rm hook-ran",
         );
         root.join("work")
@@ -559,6 +580,12 @@ mod tests {
             &format!("{snapshot_git} ls-tree -r --name-only {}", snapshot.commit),
         );
         assert_eq!(files, ".gitignore\napp.toml\nstaged.txt\nuntracked.txt");
+        // Edits hidden from `git status` by assume-unchanged are included.
+        let manifest = sh(
+            &work,
+            &format!("{snapshot_git} show {}:app.toml", snapshot.commit),
+        );
+        assert_eq!(manifest, "changed");
         let parent = sh(
             &work,
             &format!("{snapshot_git} rev-parse {}^", snapshot.commit),

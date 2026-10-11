@@ -223,7 +223,7 @@ nearest ancestor of `HEAD` that a remote-tracking branch has, which the daemon
 fetches from the application's repository, or with the whole history when there
 is none or the daemon cannot fetch it (`snapshot_base_unavailable`, after which
 the CLI uploads the complete bundle once). Bundles over the daemon's
-[`max_upload_bytes`](configuration.md#previews) fail with `snapshot_too_large`,
+[`snapshots.max_upload_bytes`](configuration.md#local-snapshots) fail with `snapshot_too_large`,
 and bundles Git cannot verify with `snapshot_invalid`. The daemon reads the
 manifest from the snapshot at the application's manifest path and builds
 `repository = "self"` services from it, like any preview deployment, with the

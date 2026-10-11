@@ -530,6 +530,8 @@ pub struct Store {
     /// Snapshots uploaded from local worktrees, kept next to the database
     /// in `snapshots/`.
     snapshots: std::sync::Arc<crate::git::snapshot::Snapshots>,
+    /// Largest snapshot bundle an upload may carry (`[snapshots]`).
+    max_upload_bytes: std::num::NonZeroU64,
 }
 
 impl Store {
@@ -634,6 +636,7 @@ impl Store {
                     .await
                     .map_err(StoreError::PathSource)?,
             ),
+            max_upload_bytes: crate::config::SnapshotsConfig::default().max_upload_bytes,
         };
         store.reencrypt_moved_secrets().await?;
         store.record_missing_releases().await?;

@@ -33,6 +33,18 @@ impl Store {
         &self.previews
     }
 
+    /// Applies the daemon's `[snapshots] max_upload_bytes`.
+    #[must_use]
+    pub const fn with_snapshot_uploads(mut self, max_upload_bytes: std::num::NonZeroU64) -> Self {
+        self.max_upload_bytes = max_upload_bytes;
+        self
+    }
+
+    /// The largest local snapshot bundle an upload may carry, in bytes.
+    pub(crate) const fn max_upload_bytes(&self) -> u64 {
+        self.max_upload_bytes.get()
+    }
+
     /// Snapshots uploaded from local worktrees.
     pub(crate) fn snapshots(&self) -> &crate::git::snapshot::Snapshots {
         &self.snapshots

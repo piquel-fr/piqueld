@@ -151,7 +151,7 @@ application's repository: its base and, for a history with merges, ancestors
 of that base. `422 snapshot_base_unavailable` (with `details.prerequisites`)
 means it could not fetch them, and a complete bundle should be sent instead. The body is
 streamed to the daemon's data directory and refused with `413
-snapshot_too_large` (with `details.limit`) once it exceeds `[previews]
+snapshot_too_large` (with `details.limit`) once it exceeds `[snapshots]
 max_upload_bytes`, which is separate from the 2 MiB limit of other bodies.
 The daemon receives two uploads at a time; a body that sends nothing for 30
 seconds, or an upload not received within 10 minutes, fails with `408

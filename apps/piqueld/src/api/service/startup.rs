@@ -39,15 +39,7 @@ impl ApplicationService {
         config: &DaemonConfig,
         cancellation: CancellationToken,
     ) -> anyhow::Result<(Self, crate::auth::Auth, JoinHandle<Result<(), StoreError>>)> {
-        let store = Arc::new(
-            Store::open(config.server.database_path())
-                .await
-                .context("failed to open control-plane state")?
-                .with_build_history(config.build_history.clone())
-                .with_observability(config)
-                .with_previews(config.previews.clone()),
-        );
-        info!(path = %config.server.database_path().display(), "opened control-plane state");
+        let store = Self::open_store(config).await?;
         let auth = crate::auth::Auth::initialize(&store, config).await?;
         let reserved = Self::installation_hostnames(config)?;
         for hostname in store.reserve_installation_hostnames(&reserved).await? {
@@ -140,6 +132,19 @@ impl ApplicationService {
             result
         });
         Ok((service, auth, controller))
+    }
+
+    /// Opens the control-plane state with the daemon's settings.
+    async fn open_store(config: &DaemonConfig) -> anyhow::Result<Arc<Store>> {
+        let store = Store::open(config.server.database_path())
+            .await
+            .context("failed to open control-plane state")?
+            .with_build_history(config.build_history.clone())
+            .with_observability(config)
+            .with_previews(config.previews.clone())
+            .with_snapshot_uploads(config.snapshots.max_upload_bytes);
+        info!(path = %config.server.database_path().display(), "opened control-plane state");
+        Ok(Arc::new(store))
     }
 
     /// The hostnames the installation serves itself, which application routes

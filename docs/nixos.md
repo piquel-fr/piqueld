@@ -119,7 +119,8 @@ services.piqueld.settings.tailscale = {
 `_file` settings), `ingress.tunnel.enabled`, `ingress.tunnel.credentials_file`
 (also a systemd credential, required while the tunnel is enabled), `dns.providers`, all three `reconciliation`
 intervals/timeouts, the `retention` periods, both `build_history` limits,
-the six [`previews`](configuration.md#previews) limits, both `images` settings,
+the five [`previews`](configuration.md#previews) limits,
+[`snapshots.max_upload_bytes`](configuration.md#local-snapshots), both `images` settings,
 `metrics.listen`, `notifications.destinations`, and every `notifications` switch
 and timing, with the daemon's defaults. Reconciliation
 values must be 1–86400 seconds; retention values are nonnegative days, with zero

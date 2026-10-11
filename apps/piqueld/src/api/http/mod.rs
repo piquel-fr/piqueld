@@ -1250,7 +1250,7 @@ impl From<crate::git::snapshot::SnapshotError> for ApiError {
             SnapshotError::TooLarge { limit } => Self::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 piqueld_core::codes::SNAPSHOT_TOO_LARGE,
-                format!("{message}; raise [previews] max_upload_bytes, or upload against a base the repository has"),
+                format!("{message}; raise [snapshots] max_upload_bytes, or upload against a base the repository has"),
             )
             .details(json!({ "limit": limit })),
             SnapshotError::Invalid(_) => Self::new(

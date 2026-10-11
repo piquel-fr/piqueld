@@ -138,7 +138,7 @@ pub const PREVIEW_LIMIT_REACHED: &str = "preview_limit_reached";
 pub const PREVIEW_LIMITS_DEFAULTED: &str = "preview_limits_defaulted";
 /// A preview service asks for more replicas than `[previews] max_replicas`.
 pub const PREVIEW_REPLICAS_CAPPED: &str = "preview_replicas_capped";
-/// A local snapshot bundle is larger than `[previews] max_upload_bytes`.
+/// A local snapshot bundle is larger than `[snapshots] max_upload_bytes`.
 pub const SNAPSHOT_TOO_LARGE: &str = "snapshot_too_large";
 /// A local snapshot upload is not a valid Git bundle of one snapshot commit.
 pub const SNAPSHOT_INVALID: &str = "snapshot_invalid";

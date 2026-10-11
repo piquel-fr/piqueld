@@ -125,7 +125,6 @@ fn preview_bounds_must_be_values_a_manifest_could_set() {
         "default_memory_bytes = 0",
         "max_replicas = 0",
         "max_replicas = 101",
-        "max_upload_bytes = 0",
     ] {
         assert!(
             matches!(
@@ -135,6 +134,13 @@ fn preview_bounds_must_be_values_a_manifest_could_set() {
             "{invalid}"
         );
     }
+}
+
+#[test]
+fn snapshot_uploads_need_a_nonzero_limit() {
+    let config = DaemonConfig::from_toml("[snapshots]\nmax_upload_bytes = 4096").unwrap();
+    assert_eq!(config.snapshots.max_upload_bytes.get(), 4096);
+    assert!(DaemonConfig::from_toml("[snapshots]\nmax_upload_bytes = 0").is_err());
 }
 
 #[test]

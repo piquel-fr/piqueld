@@ -248,17 +248,18 @@ async fn fake_runtime_accepts_digest_pinned_requested_images() {
 }
 
 async fn state(temp: &TempDir) -> ApiState {
-    state_with(temp, piqueld_core::manifest::PreviewLimits::default()).await
+    state_with(temp, None).await
 }
 
-/// [`state`] with the daemon's `[previews]` limits.
-async fn state_with(temp: &TempDir, previews: piqueld_core::manifest::PreviewLimits) -> ApiState {
-    let store = Arc::new(
-        Store::open(temp.path().join("state.db"))
-            .await
-            .expect("fresh database opens")
-            .with_previews(previews),
-    );
+/// [`state`] with the daemon's `[snapshots] max_upload_bytes`, if given.
+async fn state_with(temp: &TempDir, max_upload_bytes: Option<std::num::NonZeroU64>) -> ApiState {
+    let store = Store::open(temp.path().join("state.db"))
+        .await
+        .expect("fresh database opens");
+    let store = Arc::new(match max_upload_bytes {
+        Some(limit) => store.with_snapshot_uploads(limit),
+        None => store,
+    });
     // `FakeAuth` signs requests in with this administrator's credential,
     // which mutations re-read from the database.
     seed_account(
@@ -6631,12 +6632,7 @@ async fn pruning_deletes_previews_only_when_their_branch_is_confirmed_gone() {
     use piqueld_client::{BranchState, ClientError, CreatePreviewRequest, PrunePreviewsRequest};
     let temp = tempfile::tempdir().unwrap();
     let repository = repository_with_branches(temp.path(), &["feat/gone", "feat/kept"]);
-    let (client, server, application) = connected_application(
-        &temp,
-        &repository,
-        piqueld_core::manifest::PreviewLimits::default(),
-    )
-    .await;
+    let (client, server, application) = connected_application(&temp, &repository, None).await;
     let application = application.as_str();
     let mut previews = Vec::new();
     for branch in ["feat/gone", "feat/kept"] {
@@ -6710,18 +6706,22 @@ async fn pruning_deletes_previews_only_when_their_branch_is_confirmed_gone() {
     server.abort();
 }
 
-/// Serves the contract API over TCP with `limits`, and saves the contract
-/// manifest connected to `repository`. Returns the client, the server, and
-/// the application ID.
+/// Serves the contract API over TCP, with `max_upload_bytes` if given, and
+/// saves the contract manifest connected to `repository`. Returns the
+/// client, the server, and the application ID.
 async fn connected_application(
     temp: &TempDir,
     repository: &std::path::Path,
-    limits: piqueld_core::manifest::PreviewLimits,
+    max_upload_bytes: Option<std::num::NonZeroU64>,
 ) -> (Client, tokio::task::JoinHandle<std::io::Result<()>>, String) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(
-        serve(listener, router(state_with(temp, limits).await, FakeAuth)).into_future(),
+        serve(
+            listener,
+            router(state_with(temp, max_upload_bytes).await, FakeAuth),
+        )
+        .into_future(),
     );
     let client = Client::tcp(&format!("http://{address}/")).unwrap();
     let mut manifest = manifest();
@@ -6783,11 +6783,8 @@ async fn local_snapshots_upload_within_limits_and_are_never_pruned() {
     use piqueld_client::{BranchState, ClientError, CreatePreviewRequest, PrunePreviewsRequest};
     let temp = tempfile::tempdir().unwrap();
     let repository = repository_with_branches(temp.path(), &["feat/gone"]);
-    let limits = piqueld_core::manifest::PreviewLimits {
-        max_upload_bytes: 8192,
-        ..piqueld_core::manifest::PreviewLimits::default()
-    };
-    let (client, server, application) = connected_application(&temp, &repository, limits).await;
+    let limit = std::num::NonZeroU64::new(8192);
+    let (client, server, application) = connected_application(&temp, &repository, limit).await;
     let application = application.as_str();
     let request = CreatePreviewRequest {
         branch: "feat/gone".into(),

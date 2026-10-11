@@ -8043,13 +8043,6 @@
             "format": "int32",
             "minimum": 0,
             "type": "integer"
-          },
-          "max_upload_bytes": {
-            "default": 268435456,
-            "description": "Largest Git bundle `preview deploy --local` may upload, in bytes.",
-            "format": "int64",
-            "minimum": 0,
-            "type": "integer"
           }
         },
         "type": "object"
@@ -13044,7 +13037,7 @@
     },
     "/api/v1/applications/{id}/previews/local": {
       "post": {
-        "description": "The body is a Git bundle of one snapshot commit, at most `[previews]\nmax_upload_bytes`: either thin, needing one base commit the\napplication's repository has, which the daemon fetches, or complete.\nIt is verified and unbundled into a repository of its own. The preview\nof `branch` and `slot` is created first if needed, as `createPreview`\ndoes, and deploys the snapshot's manifest, building `\"self\"` sources from\nit. Fails with 413 `snapshot_too_large`, 422 `snapshot_invalid`, or 422\n`snapshot_base_unavailable`, whose `details.prerequisites` names the\ncommits it needs; upload a complete bundle then. A body that stalls for\n30 seconds, or an upload not received within 10 minutes, fails with 408\n`snapshot_timed_out`. Needs no application revision.",
+        "description": "The body is a Git bundle of one snapshot commit, at most `[snapshots]\nmax_upload_bytes`: either thin, needing commits the application's\nrepository has (its base and, for merges, ancestors of it), which the\ndaemon fetches, or complete.\nIt is verified and unbundled into a repository of its own. The preview\nof `branch` and `slot` is created first if needed, as `createPreview`\ndoes, and deploys the snapshot's manifest, building `\"self\"` sources from\nit. Fails with 413 `snapshot_too_large`, 422 `snapshot_invalid`, or 422\n`snapshot_base_unavailable`, whose `details.prerequisites` names the\ncommits it needs; upload a complete bundle then. A body that stalls for\n30 seconds, or an upload not received within 10 minutes, fails with 408\n`snapshot_timed_out`. Needs no application revision.",
         "operationId": "deployLocalPreview",
         "parameters": [
           {

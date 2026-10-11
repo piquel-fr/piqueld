@@ -1194,9 +1194,10 @@ impl Client {
     }
     /*Deploys a snapshot of a local worktree to a preview
 
-    The body is a Git bundle of one snapshot commit, at most `[previews]
-    max_upload_bytes`: either thin, needing one base commit the
-    application's repository has, which the daemon fetches, or complete.
+    The body is a Git bundle of one snapshot commit, at most `[snapshots]
+    max_upload_bytes`: either thin, needing commits the application's
+    repository has (its base and, for merges, ancestors of it), which the
+    daemon fetches, or complete.
     It is verified and unbundled into a repository of its own. The preview
     of `branch` and `slot` is created first if needed, as `createPreview`
     does, and deploys the snapshot's manifest, building `"self"` sources from
