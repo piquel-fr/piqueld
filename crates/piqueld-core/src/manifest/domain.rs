@@ -51,7 +51,9 @@ pub struct ValidatedJob {
     pub run: JobRun,
     /// Seconds the job may run before the deployment fails.
     pub timeout_seconds: u32,
-    /// How the job may use the service's volumes.
+    /// How the job may use the service's volumes. The default is omitted, so
+    /// spec hashes of applications that never set it stay unchanged.
+    #[serde(skip_serializing_if = "JobVolumeAccess::is_default")]
     pub volume_access: JobVolumeAccess,
 }
 

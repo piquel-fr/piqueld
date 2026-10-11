@@ -10835,7 +10835,7 @@
           },
           "volume_access": {
             "$ref": "#/components/schemas/JobVolumeAccess",
-            "description": "How the job may use the service's volumes."
+            "description": "How the job may use the service's volumes. The default is omitted, so\nspec hashes of applications that never set it stay unchanged."
           }
         },
         "required": [
@@ -10843,8 +10843,7 @@
           "service",
           "command",
           "run",
-          "timeout_seconds",
-          "volume_access"
+          "timeout_seconds"
         ],
         "type": "object"
       },
