@@ -3,6 +3,7 @@
 pub mod editor;
 pub mod log_output;
 pub mod state;
+pub mod terminal;
 
 #[cfg(target_arch = "wasm32")]
 mod browser;
