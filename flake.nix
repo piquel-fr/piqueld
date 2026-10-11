@@ -103,7 +103,6 @@
               pname = "piqueld-daemon";
               cargoExtraArgs = "--locked --package piqueld --package piquelctl --features embedded-ui";
               CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
-              PIQUELD_PROBE = probeBinary;
             }
           );
           # The daemon embeds the probe that HTTP health checks run in
@@ -119,6 +118,22 @@
             doCheck = false;
           };
           probeBinary = "${probe}/bin/piqueld-probe";
+          # The workspace with only `members` real and every other member
+          # replaced by crane's dummy, which depends on manifests alone. A
+          # package built from it rebuilds only when those members change.
+          # Named like `src` so crane unpacks both into the same build path,
+          # which its dependency artifacts' fingerprints require.
+          memberSources =
+            members:
+            pkgs.runCommand "source" { } ''
+              cp -r --no-preserve=mode ${craneLib.mkDummySrc { inherit src; }} $out
+              cp -r --no-preserve=mode ${
+                lib.fileset.toSource {
+                  root = ./.;
+                  fileset = lib.fileset.unions members;
+                }
+              }/. $out
+            '';
           # The dashboard module the daemon embeds, built on its own so its
           # dependencies stay cached and daemon-only changes don't recompile
           # it. The daemon build script reads it from PIQUELD_DASHBOARD_WASM.
@@ -133,6 +148,14 @@
           dashboard = craneLib.buildPackage (
             dashboardArgs
             // {
+              # Only the dashboard's own crates are real; the rest of the
+              # workspace is crane's dummy, so daemon changes keep it cached.
+              src = memberSources [
+                # The real root manifest: members inherit its lints.
+                ./Cargo.toml
+                ./apps/piqueld-ui
+                ./crates
+              ];
               cargoArtifacts = buildDepsOnly dashboardArgs;
               installPhaseCommand = ''
                 install -Dm644 target/wasm32-unknown-unknown/dashboard/piqueld-ui.wasm \
