@@ -1,6 +1,6 @@
 //! Provisions the migrated `SQLite` schema used by `SQLx` compile-time query
-//! checks and, under `--features embedded-ui`, builds and embeds the dashboard
-//! bundle into the daemon binary.
+//! checks, embeds the static health probe and, under `--features embedded-ui`,
+//! builds and embeds the dashboard bundle into the daemon binary.
 
 use std::{
     env,
@@ -14,20 +14,25 @@ use std::{
 #[cfg(feature = "embedded-ui")]
 #[path = "build/dashboard.rs"]
 mod dashboard;
+#[path = "build/nested.rs"]
+mod nested;
+#[path = "build/probe.rs"]
+mod probe;
 
 use sqlx::{
     Connection,
     sqlite::{SqliteConnectOptions, SqliteConnection},
 };
 
-/// Always provisions the migration schema; embeds the dashboard only when the
-/// `embedded-ui` feature is enabled.
+/// Always provisions the migration schema and embeds the health probe; embeds
+/// the dashboard only when the `embedded-ui` feature is enabled.
 fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(
         env::var_os("CARGO_MANIFEST_DIR")
             .ok_or("Cargo did not provide CARGO_MANIFEST_DIR to the piqueld build script")?,
     );
     embed_migrations(&manifest_dir)?;
+    probe::embed(&manifest_dir)?;
 
     #[cfg(feature = "embedded-ui")]
     dashboard::embed(&manifest_dir)?;

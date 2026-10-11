@@ -2560,6 +2560,7 @@ dependencies = [
  "openssl",
  "piqueld-client",
  "piqueld-core",
+ "piqueld-probe",
  "prettyplease",
  "progenitor",
  "reqwest",
@@ -2616,6 +2617,7 @@ dependencies = [
 name = "piqueld-core"
 version = "0.1.0"
 dependencies = [
+ "piqueld-probe",
  "proptest",
  "serde",
  "serde_json",
@@ -2624,6 +2626,13 @@ dependencies = [
  "thiserror 2.0.18",
  "toml 0.8.23",
  "utoipa",
+]
+
+[[package]]
+name = "piqueld-probe"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
 ]
 
 [[package]]

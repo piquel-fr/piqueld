@@ -6,10 +6,11 @@ use std::{
     fmt::Write as _,
     fs, io,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use sha2::{Digest, Sha256};
+
+use crate::nested::NestedCargo;
 
 /// Builds the dashboard bundle and writes `OUT_DIR/ui_assets.rs`, which embeds
 /// every bundle file into the daemon.
@@ -132,57 +133,9 @@ impl Dashboard {
     }
 
     /// Compiles `piqueld-ui` for wasm32 and returns the module's path.
-    ///
-    /// The nested Cargo must never share this build's target directory: the
-    /// outer Cargo holds its build-directory lock until the build script
-    /// returns, so sharing would deadlock. It compiles into a sibling
-    /// directory instead. Cargo's jobserver, flag, wrapper, and profile
-    /// overrides are stripped because they describe the host build rather
-    /// than the wasm build, which the `dashboard` profile alone defines.
     fn compile(&self) -> Result<PathBuf, Box<dyn Error>> {
-        const HOST_SETTINGS: [&str; 7] = [
-            "CARGO_MAKEFLAGS",
-            "RUSTFLAGS",
-            "RUSTDOCFLAGS",
-            "CARGO_ENCODED_RUSTFLAGS",
-            "CARGO_BUILD_RUSTFLAGS",
-            "RUSTC_WRAPPER",
-            "RUSTC_WORKSPACE_WRAPPER",
-        ];
-        let cargo = env::var_os("CARGO")
-            .ok_or("Cargo did not provide CARGO to the piqueld build script")?;
-        let target_dir = self.nested_target_dir()?;
-        println!(
-            "cargo:warning=building embedded dashboard bundle (nested target dir: {})",
-            target_dir.display()
-        );
-        let mut command = Command::new(cargo);
-        command
-            .current_dir(&self.ui_dir)
-            .args(["build", "--locked", "--package", "piqueld-ui"])
-            .args(["--profile", Self::PROFILE, "--target", Self::TARGET])
-            .env("CARGO_TARGET_DIR", &target_dir);
-        for (key, _) in env::vars_os() {
-            if key.to_str().is_some_and(|key| {
-                HOST_SETTINGS.contains(&key) || key.starts_with("CARGO_PROFILE_")
-            }) {
-                command.env_remove(key);
-            }
-        }
-        let output = command.output()?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "cargo failed to build the dashboard; is the {target} target installed \
-                 (`rustup target add {target}`)?\n{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-                target = Self::TARGET,
-            ))
-            .into());
-        }
-        Ok(target_dir
-            .join(Self::TARGET)
-            .join(Self::PROFILE)
+        Ok(NestedCargo::new("ui")?
+            .build(&self.ui_dir, "piqueld-ui", Self::PROFILE, Self::TARGET)?
             .join("piqueld-ui.wasm"))
     }
 
@@ -206,36 +159,6 @@ impl Dashboard {
             sheet.push('\n');
         }
         Ok(sheet)
-    }
-
-    /// Derives a dedicated Cargo target directory for the nested wasm build from
-    /// the canonical `OUT_DIR` layout `<target>/<profile>/build/<pkg>-<hash>/out`.
-    fn nested_target_dir(&self) -> Result<PathBuf, Box<dyn Error>> {
-        const OUT_TO_TARGET_DEPTH: usize = 4;
-        let target_dir = self
-            .out_dir
-            .canonicalize()?
-            .ancestors()
-            .nth(OUT_TO_TARGET_DEPTH)
-            .ok_or_else(|| io::Error::other("unexpected OUT_DIR depth for target-dir derivation"))?
-            .to_owned();
-        if !target_dir.is_dir() {
-            return Err(io::Error::other(format!(
-                "derived Cargo target directory {} does not exist",
-                target_dir.display()
-            ))
-            .into());
-        }
-        let name = target_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| io::Error::other("Cargo target directory name is not valid UTF-8"))?
-            .to_owned();
-        let parent = target_dir
-            .parent()
-            .ok_or_else(|| io::Error::other("Cargo target directory has no parent"))?
-            .to_owned();
-        Ok(parent.join(format!("{name}-ui")))
     }
 
     /// Writes `OUT_DIR/ui_assets.rs`, embedding every bundle file by absolute path.

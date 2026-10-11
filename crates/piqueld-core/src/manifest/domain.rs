@@ -136,6 +136,15 @@ pub struct HealthExecution {
     pub timeout_seconds: u32,
 }
 
+impl HealthExecution {
+    /// Whether the check runs `piqueld-probe`, which must then be mounted at
+    /// [`piqueld_probe::CONTAINER_PATH`].
+    #[must_use]
+    pub fn runs_probe(&self) -> bool {
+        self.command.first().map(String::as_str) == Some(piqueld_probe::CONTAINER_PATH)
+    }
+}
+
 impl ValidatedHealthCheck {
     /// Probe interval applied when a check declares none.
     pub const DEFAULT_INTERVAL_SECONDS: u32 = 10;
@@ -143,7 +152,7 @@ impl ValidatedHealthCheck {
     pub const DEFAULT_TIMEOUT_SECONDS: u32 = 3;
 
     /// Returns the direct command and timing Docker runs for this check.
-    /// HTTP checks become the equivalent `wget` probe.
+    /// HTTP checks run `piqueld-probe`, which piqueld mounts into the container.
     #[must_use]
     pub fn execution(&self) -> HealthExecution {
         match self {
@@ -162,15 +171,12 @@ impl ValidatedHealthCheck {
                 interval_seconds,
                 timeout_seconds,
             } => HealthExecution {
-                command: vec![
-                    "wget".into(),
-                    "-q".into(),
-                    "-T".into(),
-                    timeout_seconds.to_string(),
-                    "-O".into(),
-                    "/dev/null".into(),
-                    format!("http://127.0.0.1:{port}{path}"),
-                ],
+                command: piqueld_probe::HttpProbe {
+                    port: *port,
+                    path: path.clone(),
+                    timeout_seconds: *timeout_seconds,
+                }
+                .command(),
                 interval_seconds: *interval_seconds,
                 timeout_seconds: *timeout_seconds,
             },

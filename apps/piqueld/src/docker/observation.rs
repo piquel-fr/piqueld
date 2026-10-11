@@ -358,13 +358,13 @@ impl BollardDocker {
 
     /// Converts Docker's supported health-check syntax into the core model.
     ///
-    /// `CMD` vectors become a command check unless they are exactly the `wget`
-    /// vector piqueld authors for HTTP checks; `CMD-SHELL` is read as HTTP from
-    /// its last word.
+    /// `CMD` vectors become a command check unless they are exactly the
+    /// `piqueld-probe` vector piqueld authors for HTTP checks; `CMD-SHELL` is
+    /// read as HTTP from its last word.
     /// Returns `None` for unsupported forms or missing timings.
     ///
     /// ```text
-    /// ["CMD","wget","-q","-T","3","-O","/dev/null","http://127.0.0.1:8080/health"]
+    /// ["CMD","/run/piqueld/probe","http","--port","8080","--path","/health","--timeout","3"]
     ///   → Http { port: 8080, path: "/health", timeout_seconds: 3, .. }
     /// ["CMD","/bin/check"] → Command { command: ["/bin/check"], .. }
     /// ```
@@ -374,7 +374,7 @@ impl BollardDocker {
         let timeout = u32::try_from(config.timeout? / NANOSECONDS_PER_SECOND).ok()?;
         match test.first().map(String::as_str) {
             Some("CMD") => Some(
-                Self::observed_wget_health(test, interval, timeout).unwrap_or(
+                Self::observed_probe_health(test, interval, timeout).unwrap_or(
                     HealthCheck::Command {
                         command: test[1..].to_vec(),
                         interval_seconds: interval,
@@ -391,16 +391,27 @@ impl BollardDocker {
         }
     }
 
-    /// Recognizes the exact `wget` vector piqueld authors for HTTP checks. Near
-    /// matches, such as a URL without a path, stay command checks so that
-    /// authoring the observed check reproduces Docker's vector exactly.
-    fn observed_wget_health(
+    /// Recognizes the exact `piqueld-probe` vector piqueld authors for HTTP
+    /// checks. Near matches, such as reordered flags or a timeout differing
+    /// from Docker's, stay command checks so that authoring the observed check
+    /// reproduces Docker's vector exactly.
+    fn observed_probe_health(
         test: &[String],
         interval_seconds: u32,
         timeout_seconds: u32,
     ) -> Option<HealthCheck> {
-        Self::observed_http_health(test.last()?, interval_seconds, timeout_seconds)
-            .filter(|health| health.execution().command == test[1..])
+        let (executable, arguments) = test.get(1..)?.split_first()?;
+        if executable != piqueld_probe::CONTAINER_PATH {
+            return None;
+        }
+        let probe = piqueld_probe::HttpProbe::parse(arguments.iter().cloned()).ok()?;
+        Some(HealthCheck::Http {
+            port: probe.port,
+            path: probe.path,
+            interval_seconds,
+            timeout_seconds,
+        })
+        .filter(|health| health.execution().command == test[1..])
     }
 
     /// Parses a loopback health URL into an HTTP check.

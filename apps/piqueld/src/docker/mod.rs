@@ -86,6 +86,8 @@ mod images;
 mod jobs;
 mod observation;
 mod policy;
+mod probe;
+use probe::HealthProbe;
 mod resources;
 mod secrets;
 mod spec;
@@ -359,6 +361,9 @@ pub trait DockerApi: Send + Sync + 'static {
         instance: &InstanceId,
         id: &piqueld_core::Sha256Digest,
     ) -> Result<(), DockerError>;
+    /// Removes `piqueld-probe` configs of other versions that no service
+    /// mounts, such as those older daemons published.
+    async fn prune_health_probes(&self) -> Result<(), DockerError>;
     /// Removes a managed volume and its data after rechecking its ownership.
     /// A missing volume counts as removed. Only deleting a preview removes
     /// volumes; environments retain theirs.

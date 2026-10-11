@@ -3,4 +3,6 @@ channel = "stable"
 components = [ "rustfmt", "clippy" ]
 targets = [
     "wasm32-unknown-unknown",
+    # The static health probe the daemon embeds.
+    "x86_64-unknown-linux-musl",
 ]

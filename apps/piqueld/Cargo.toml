@@ -39,6 +39,7 @@ hyper-util.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 piqueld-core.workspace = true
+piqueld-probe.workspace = true
 prettyplease = { workspace = true, optional = true }
 progenitor = { workspace = true, optional = true }
 rustix = { workspace = true, features = ["param"] }

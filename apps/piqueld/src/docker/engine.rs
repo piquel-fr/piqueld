@@ -19,8 +19,8 @@ const SERVICE_REQUEST_TIMEOUT: Duration = super::DockerTimeout::Request.duration
 const BOLLARD_HEADER_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Debug)]
-/// Failures of a raw service request, before they are classified publicly.
-enum ServiceWireError {
+/// Failures of a raw Engine request, before they are classified publicly.
+pub(super) enum WireError {
     /// Transport or local failures that already carry a public classification.
     Public(DockerError),
     /// A non-success HTTP response, kept raw so callers can match exact
@@ -37,12 +37,12 @@ struct ServiceResponseDiagnostic {
     message: String,
 }
 
-impl ServiceWireError {
+impl WireError {
     /// Converts the failure into a [`DockerError`] labelled with `operation`.
     ///
     /// Engine response bodies become a [`ServiceResponseDiagnostic`] source
     /// with control characters stripped and at most 2048 characters kept.
-    fn sanitized(self, operation: &'static str) -> DockerError {
+    pub(super) fn sanitized(self, operation: &'static str) -> DockerError {
         match self {
             Self::Public(error) => error,
             Self::Response { status, body } => {
@@ -60,14 +60,13 @@ impl ServiceWireError {
     }
 
     /// Returns whether Docker answered with HTTP 404.
-    fn is_not_found(&self) -> bool {
-        matches!(
-            self,
-            Self::Response {
-                status: StatusCode::NOT_FOUND,
-                ..
-            }
-        )
+    pub(super) fn is_not_found(&self) -> bool {
+        self.is_status(StatusCode::NOT_FOUND)
+    }
+
+    /// Returns whether Docker answered with `status`.
+    pub(super) fn is_status(&self, status: StatusCode) -> bool {
+        matches!(self, Self::Response { status: actual, .. } if *actual == status)
     }
 }
 
@@ -97,31 +96,25 @@ impl BollardDocker {
     ///
     /// Bollard's service model uses a different health-check key spelling than
     /// the Swarm API. Keeping the request and response bytes here lets the
-    /// adapter translate that key and inspect Docker's exact update error.
-    ///
-    /// 1. Serialize `spec` (if any), renaming `HealthCheck` to `Healthcheck`.
-    /// 2. Connect and perform an HTTP/1 handshake on the Unix socket.
-    /// 3. Send one `Connection: close` request and read the bounded body.
-    ///
-    /// All steps share one [`SERVICE_REQUEST_TIMEOUT`] deadline; elapsed
-    /// deadlines surface as unavailability. Non-success statuses are returned
-    /// as [`ServiceWireError::Response`].
+    /// adapter translate that key and inspect Docker's exact update error:
+    /// `spec` (if any) is serialized with `HealthCheck` renamed to `Healthcheck`,
+    /// then sent by [`Self::engine_request`].
     async fn service_request(
         &self,
         method: Method,
         path: &str,
         spec: Option<&ServiceSpec>,
-    ) -> Result<Vec<u8>, ServiceWireError> {
+    ) -> Result<Vec<u8>, WireError> {
         let body = if let Some(spec) = spec {
             let mut value = serde_json::to_value(spec).map_err(|source| {
-                ServiceWireError::Public(DockerError::request(
+                WireError::Public(DockerError::request(
                     "serialize service specification",
                     source,
                 ))
             })?;
             Self::rename_swarm_healthcheck(&mut value, "HealthCheck", "Healthcheck");
             serde_json::to_vec(&value).map_err(|source| {
-                ServiceWireError::Public(DockerError::request(
+                WireError::Public(DockerError::request(
                     "serialize service specification",
                     source,
                 ))
@@ -129,21 +122,32 @@ impl BollardDocker {
         } else {
             Vec::new()
         };
+        self.engine_request(method, path, body).await
+    }
 
+    /// Performs one raw Engine request with a JSON `body` through Docker's
+    /// Unix socket, for endpoints Bollard lacks or misrepresents.
+    ///
+    /// 1. Connect and perform an HTTP/1 handshake on the Unix socket.
+    /// 2. Send one `Connection: close` request and read the bounded body.
+    ///
+    /// All steps share one [`SERVICE_REQUEST_TIMEOUT`] deadline; elapsed
+    /// deadlines surface as unavailability. Non-success statuses are returned
+    /// as [`WireError::Response`].
+    pub(super) async fn engine_request(
+        &self,
+        method: Method,
+        path: &str,
+        body: Vec<u8>,
+    ) -> Result<Vec<u8>, WireError> {
         let deadline = tokio::time::Instant::now() + SERVICE_REQUEST_TIMEOUT;
         let stream = tokio::time::timeout_at(deadline, UnixStream::connect(self.socket.as_ref()))
             .await
             .map_err(|source| {
-                ServiceWireError::Public(DockerError::unavailable(
-                    "connect to Docker Engine",
-                    source,
-                ))
+                WireError::Public(DockerError::unavailable("connect to Docker Engine", source))
             })?
             .map_err(|source| {
-                ServiceWireError::Public(DockerError::unavailable(
-                    "connect to Docker Engine",
-                    source,
-                ))
+                WireError::Public(DockerError::unavailable("connect to Docker Engine", source))
             })?;
         let (mut sender, connection) = match tokio::time::timeout_at(
             deadline,
@@ -153,13 +157,13 @@ impl BollardDocker {
         {
             // Elapsed deadlines are unavailability, like every other timeout.
             Err(source) => {
-                return Err(ServiceWireError::Public(DockerError::unavailable(
+                return Err(WireError::Public(DockerError::unavailable(
                     "open Docker service connection",
                     source,
                 )));
             }
             Ok(Err(source)) => {
-                return Err(ServiceWireError::Public(DockerError::request(
+                return Err(WireError::Public(DockerError::request(
                     "open Docker service connection",
                     source,
                 )));
@@ -187,16 +191,10 @@ impl BollardDocker {
                 .header(header::CONNECTION, "close")
                 .body(Full::new(Bytes::from(body)))
                 .map_err(|source| {
-                    ServiceWireError::Public(DockerError::request(
-                        "build Docker service request",
-                        source,
-                    ))
+                    WireError::Public(DockerError::request("build Docker service request", source))
                 })?;
             let response = sender.send_request(request).await.map_err(|source| {
-                ServiceWireError::Public(DockerError::request(
-                    "send Docker service request",
-                    source,
-                ))
+                WireError::Public(DockerError::request("send Docker service request", source))
             })?;
             Self::read_service_response(response).await
         })
@@ -205,13 +203,13 @@ impl BollardDocker {
         if let Some(Err(source)) = drivers.join_next().await
             && !source.is_cancelled()
         {
-            return Err(ServiceWireError::Public(DockerError::request(
+            return Err(WireError::Public(DockerError::request(
                 "join Docker service connection",
                 source,
             )));
         }
         result.map_err(|source| {
-            ServiceWireError::Public(DockerError::unavailable("request Docker service", source))
+            WireError::Public(DockerError::unavailable("request Docker service", source))
         })?
     }
 
@@ -221,22 +219,19 @@ impl BollardDocker {
     /// non-success statuses keep their body for exact error matching.
     async fn read_service_response(
         response: hyper::Response<hyper::body::Incoming>,
-    ) -> Result<Vec<u8>, ServiceWireError> {
+    ) -> Result<Vec<u8>, WireError> {
         let status = response.status();
         let mut response = response.into_body();
         let mut body = Vec::new();
         while let Some(frame) = response.frame().await {
             let frame = frame.map_err(|source| {
-                ServiceWireError::Public(DockerError::request(
-                    "read Docker service response",
-                    source,
-                ))
+                WireError::Public(DockerError::request("read Docker service response", source))
             })?;
             let Ok(data) = frame.into_data() else {
                 continue;
             };
             if body.len().saturating_add(data.len()) > MAX_SERVICE_RESPONSE_BYTES {
-                return Err(ServiceWireError::Public(DockerError::Request(
+                return Err(WireError::Public(DockerError::Request(
                     "read Docker service response",
                 )));
             }
@@ -245,7 +240,7 @@ impl BollardDocker {
         if status.is_success() {
             Ok(body)
         } else {
-            Err(ServiceWireError::Response { status, body })
+            Err(WireError::Response { status, body })
         }
     }
 
@@ -358,8 +353,8 @@ impl BollardDocker {
 
     /// Returns whether Docker reported the one transient update conflict that
     /// is safe for the caller to retry with a refreshed service version.
-    fn update_out_of_sequence(error: &ServiceWireError) -> bool {
-        let ServiceWireError::Response { status, body } = error else {
+    fn update_out_of_sequence(error: &WireError) -> bool {
+        let WireError::Response { status, body } = error else {
             return false;
         };
         *status == StatusCode::INTERNAL_SERVER_ERROR
@@ -465,7 +460,7 @@ impl BollardDocker {
 
 #[cfg(test)]
 mod tests {
-    use super::{BollardDocker, ServiceWireError, StatusCode};
+    use super::{BollardDocker, StatusCode, WireError};
 
     struct EngineStub {
         docker: BollardDocker,
@@ -698,18 +693,18 @@ mod tests {
 
     #[test]
     fn update_retry_requires_the_exact_transient_daemon_response() {
-        let transient = ServiceWireError::Response {
+        let transient = WireError::Response {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             body: br#"{"message":"rpc error: code = Unknown desc = update out of sequence"}"#
                 .to_vec(),
         };
-        let different_message = ServiceWireError::Response {
+        let different_message = WireError::Response {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             body:
                 br#"{"message":"rpc error: code = Unknown desc = update out of sequence: other"}"#
                     .to_vec(),
         };
-        let different_status = ServiceWireError::Response {
+        let different_status = WireError::Response {
             status: StatusCode::CONFLICT,
             body: br#"{"message":"rpc error: code = Unknown desc = update out of sequence"}"#
                 .to_vec(),

@@ -163,6 +163,38 @@ preparation deadline still bounds the entire checkout/build/resolve phase.
 Raw service update retries share one absolute request deadline. Cancelling a
 request aborts its connection driver, and timeout errors retain their cause.
 
+## HTTP health probe
+
+HTTP health checks run `piqueld-probe`, a small static binary embedded in the
+daemon, so images need no `wget`, shell, or C library:
+
+```text
+["CMD","/run/piqueld/probe","http","--port","8080","--path","/health","--timeout","3"]
+```
+
+The daemon publishes the probe as a Swarm config named by its content,
+`piqueld-health-probe-<hash>`, the first time it deploys a service with an HTTP
+check. Services mount it at `/run/piqueld/probe`, root-owned with mode `0555`,
+so Swarm itself stores and distributes it, and Docker still runs the check, so
+health still gates tasks and rollouts. A service whose check runs the probe
+without mounting this daemon's config, or that mounts any other config,
+registers as drift.
+
+The probe's command line is a stable contract that newer probes keep
+accepting. A daemon upgrade that changes the probe publishes a new config, and
+services move to it through a normal health-gated rollout, as do services
+whose HTTP checks earlier daemons pointed at `wget`. Image cleanup removes
+probe configs no service mounts any longer, in its current spec or in the
+previous one a rollback would restore.
+
+Daemon builds compile the probe for the matching `*-unknown-linux-musl` target
+with the size-optimised `probe` profile, since Swarm caps config size. Setting
+`PIQUELD_PROBE` to a static probe embeds that file instead, and the build
+warns that changes under `crates/piqueld-probe` are not included: the Nix
+packages pass their `pkgsStatic` build this way, and so does `nix develop`,
+because nixpkgs' Rust has no musl standard library. Leave the shell, or unset
+`PIQUELD_PROBE` in a rustup toolchain, to build probe changes into the daemon.
+
 ## Image retention
 
 Git builds are labelled `io.piqueld.managed=true` and

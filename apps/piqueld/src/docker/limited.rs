@@ -150,6 +150,9 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     ) -> Result<(), DockerError> {
         self.inner.remove_image(instance, id).await
     }
+    async fn prune_health_probes(&self) -> Result<(), DockerError> {
+        self.inner.prune_health_probes().await
+    }
     async fn ensure_network(&self, value: &DesiredNetwork) -> Result<(), DockerError> {
         self.inner.ensure_network(value).await
     }

@@ -1097,6 +1097,22 @@ fn validate_mounts(
             );
         }
         validate_absolute_path(&mount.target, &format!("{path}.target"), errors);
+        // HTTP health checks mount piqueld-probe there.
+        if mount.target == piqueld_probe::CONTAINER_PATH
+            || mount
+                .target
+                .starts_with(&format!("{}/", piqueld_probe::CONTAINER_PATH))
+        {
+            error(
+                errors,
+                codes::MOUNT_TARGET_UNSAFE,
+                &format!("{path}.target"),
+                &format!(
+                    "mount target {} is reserved for piqueld's health probe",
+                    piqueld_probe::CONTAINER_PATH
+                ),
+            );
+        }
         if !targets.insert(mount.target.clone()) {
             error(
                 errors,

@@ -103,8 +103,22 @@
               pname = "piqueld-daemon";
               cargoExtraArgs = "--locked --package piqueld --package piquelctl --features embedded-ui";
               CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
+              PIQUELD_PROBE = probeBinary;
             }
           );
+          # The daemon embeds the probe that HTTP health checks run in
+          # containers, which may lack a C library or dynamic loader, so it is
+          # built statically against musl. Its build script reads it from
+          # PIQUELD_PROBE because nixpkgs' rustc has no musl standard library.
+          probe = (crane.mkLib pkgs.pkgsStatic).buildPackage {
+            inherit src;
+            inherit (commonArgs) version cargoVendorDir;
+            pname = "piqueld-probe";
+            cargoExtraArgs = "--locked --package piqueld-probe";
+            CARGO_PROFILE = "probe";
+            doCheck = false;
+          };
+          probeBinary = "${probe}/bin/piqueld-probe";
           mkPackage =
             {
               name,
@@ -120,7 +134,8 @@
                   + lib.concatMapStringsSep " " (binary: "--package ${binary}") binaries
                   + lib.optionalString withUi " --features embedded-ui";
                 CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
-              };
+              }
+              // lib.optionalAttrs (builtins.elem "piqueld" binaries) { PIQUELD_PROBE = probeBinary; };
             in
             craneLib.buildPackage (
               args
@@ -163,6 +178,7 @@
             if pkgs.stdenv.isDarwin then self.packages.${system}.cli else self.packages.${system}.combined;
         }
         // lib.optionalAttrs pkgs.stdenv.isLinux {
+          inherit probe;
           daemon = mkPackage {
             name = "piqueld-daemon";
             binaries = [ "piqueld" ];
@@ -188,6 +204,11 @@
         in
         {
           default = pkgs.mkShell {
+            # nixpkgs' rustc has no musl standard library, so daemon builds
+            # embed the flake's static probe; rustup toolchains build their own.
+            env = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+              PIQUELD_PROBE = "${self.packages.${system}.probe}/bin/piqueld-probe";
+            };
             # The locked nixpkgs toolchain can differ from rustup's moving
             # stable channel selected by rust-toolchain.toml.
             packages =

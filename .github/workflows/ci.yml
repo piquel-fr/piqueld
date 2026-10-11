@@ -19,6 +19,9 @@
 # `check` is deliberately not a separate job: `clippy --all-targets
 # --all-features` compiles everything it would and adds lints on top.
 #
+# Jobs compiling the daemon add the x86_64 musl target: its build script
+# embeds the static health probe built for it.
+#
 # Speed comes from Swatinem/rust-cache in every compiling job (keyed per job
 # against Cargo.lock), prebuilt tool downloads instead of `cargo install`,
 # and incremental compilation disabled to keep caches small.
@@ -72,7 +75,7 @@ jobs:
         with:
           cache-on-failure: true
           cache-directories: target-ui
-      - run: rustup target add wasm32-unknown-unknown
+      - run: rustup target add wasm32-unknown-unknown x86_64-unknown-linux-musl
       - run: just lint
 
   embedded-test:
@@ -88,7 +91,7 @@ jobs:
         with:
           cache-on-failure: true
           cache-directories: target-ui
-      - run: rustup target add wasm32-unknown-unknown
+      - run: rustup target add wasm32-unknown-unknown x86_64-unknown-linux-musl
       - run: just test-embedded
 
   browser-playwright:
@@ -104,7 +107,7 @@ jobs:
         with:
           cache-on-failure: true
           cache-directories: target-ui
-      - run: rustup target add wasm32-unknown-unknown
+      - run: rustup target add wasm32-unknown-unknown x86_64-unknown-linux-musl
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
@@ -138,6 +141,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
+      - run: rustup target add x86_64-unknown-linux-musl
       - name: Run workspace tests
         env:
           NEXTEST_PROFILE: ci
@@ -204,6 +208,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
+      - run: rustup target add x86_64-unknown-linux-musl
       - run: just openapi-check
 
   boundary:
@@ -258,6 +263,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
+      - run: rustup target add x86_64-unknown-linux-musl
       # Compile before the isolated Docker-in-Docker daemon starts so the
       # inner cargo invocation is instant.
       - name: Compile Docker integration tests
@@ -287,7 +293,7 @@ jobs:
         with:
           cache-on-failure: true
           cache-directories: target-ui
-      - run: rustup target add wasm32-unknown-unknown
+      - run: rustup target add wasm32-unknown-unknown x86_64-unknown-linux-musl
       - run: just build-embedded
       - run: test -x target/release/piqueld && test -x target/release/piquelctl
       - name: Upload release binaries

@@ -372,11 +372,14 @@ impl SwarmScenario {
             Some("http"),
         ))
         .unwrap();
-        http_service.command = vec!["/bin/sh".into()];
-        http_service.arguments = vec![
-            "-c".into(),
-            "mkdir -p /www && printf healthy >/www/health && httpd -f -p 8080 -h /www".into(),
-        ];
+        // A scratch image without a shell, wget, C library, or dynamic
+        // loader, which serves 200 on /health.
+        let reference = "traefik/whoami:v1.11.0";
+        let image = self.engine.docker.resolve_image(reference).await.unwrap();
+        http_service.source = ResolvedSource::parse_image(reference, image.clone()).unwrap();
+        http_service.image = piqueld_core::ImmutableImage::parse(image).unwrap();
+        http_service.command = Vec::new();
+        http_service.arguments = vec!["--port".into(), "8080".into()];
         http_service.healthcheck = Some(ValidatedHealthCheck::Http {
             port: 8080,
             path: "/health".into(),
@@ -423,25 +426,70 @@ impl SwarmScenario {
         );
 
         // Tasks of health-checked services must surface the live container
-        // healthcheck verdict once the probe has run at least once.
-        let health_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            let observed = self.engine.docker.observe(&self.app).await.unwrap();
-            let healthy = observed
-                .services
-                .iter()
-                .find(|candidate| candidate.name == self.service.name.as_str())
-                .and_then(|candidate| candidate.tasks.iter().find(|task| task.desired_running))
-                .map(|task| task.healthy);
-            if healthy == Some(Some(true)) {
-                break;
+        // healthcheck verdict once the probe has run at least once. The HTTP
+        // check runs piqueld-probe, mounted as a Swarm config.
+        for service in [&self.service, http_service] {
+            let health_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                let observed = self.engine.docker.observe(&self.app).await.unwrap();
+                let observed = observed
+                    .services
+                    .iter()
+                    .find(|candidate| candidate.name == service.name.as_str())
+                    .unwrap();
+                let healthy = observed
+                    .tasks
+                    .iter()
+                    .find(|task| task.desired_running)
+                    .map(|task| task.healthy);
+                if healthy == Some(Some(true)) {
+                    assert_eq!(observed.drift(service), [] as [&str; 0]);
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < health_deadline,
+                    "{} never reported a healthy task: {healthy:?}",
+                    service.logical_name
+                );
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
-            assert!(
-                tokio::time::Instant::now() < health_deadline,
-                "the command health check never reported a healthy task: {healthy:?}"
-            );
-            tokio::time::sleep(Duration::from_millis(250)).await;
         }
+
+        // The probe is mounted as a Swarm config, and pruning removes only
+        // probe configs no service mounts.
+        let spec = self
+            .docker_api("GET", &format!("/services/{}", http_service.name))
+            .await;
+        let configs = &spec["Spec"]["TaskTemplate"]["ContainerSpec"]["Configs"];
+        assert_eq!(
+            configs[0]["File"]["Name"], "/run/piqueld/probe",
+            "{configs}"
+        );
+        let current = configs[0]["ConfigName"].as_str().unwrap().to_owned();
+        self.docker_api_with(
+            "POST",
+            "/configs/create",
+            Some(serde_json::json!({
+                "Name": "piqueld-health-probe-stale",
+                "Labels": {"io.piqueld.health-probe": "true"},
+                "Data": "c3RhbGU=",
+            })),
+        )
+        .await;
+        self.engine.docker.prune_health_probes().await.unwrap();
+        let names = self
+            .docker_api("GET", "/configs")
+            .await
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|config| config["Spec"]["Name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&current), "{names:?}");
+        assert!(
+            !names.iter().any(|name| name.ends_with("-stale")),
+            "{names:?}"
+        );
     }
 
     async fn scale_and_reconnect(&mut self) {
@@ -715,9 +763,24 @@ impl SwarmScenario {
 
     /// Sends one request to Docker's HTTP API and returns its JSON body.
     async fn docker_api(&self, method: &str, path: &str) -> serde_json::Value {
+        self.docker_api_with(method, path, None).await
+    }
+
+    /// Sends one raw Engine request with an optional JSON `body` and expects
+    /// a 2xx response.
+    async fn docker_api_with(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> serde_json::Value {
         use std::io::{Read, Write};
         let socket = self.engine.socket.clone();
-        let request = format!("{method} {path} HTTP/1.0\r\nHost: docker\r\n\r\n");
+        let body = body.map(|body| body.to_string()).unwrap_or_default();
+        let request = format!(
+            "{method} {path} HTTP/1.0\r\nHost: docker\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
         let response = tokio::task::spawn_blocking(move || {
             let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
             stream.write_all(request.as_bytes()).unwrap();
@@ -728,7 +791,12 @@ impl SwarmScenario {
         .await
         .unwrap();
         let (head, body) = response.split_once("\r\n\r\n").unwrap();
-        assert!(head.contains(" 200 "), "{head}");
+        assert!(
+            [" 200 ", " 201 ", " 204 "]
+                .iter()
+                .any(|status| head.contains(status)),
+            "{head}"
+        );
         if body.is_empty() {
             return serde_json::Value::Null;
         }

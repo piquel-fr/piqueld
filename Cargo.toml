@@ -6,6 +6,7 @@ members = [
   "apps/piqueld-ui",
   "crates/piqueld-client",
   "crates/piqueld-core",
+  "crates/piqueld-probe",
   "tools/xtask",
 ]
 
@@ -21,6 +22,7 @@ zeroize = "1.8"
 # Internal
 piqueld-client = { version = "0.1.0", path = "crates/piqueld-client" }
 piqueld-core   = { version = "0.1.0", path = "crates/piqueld-core"   }
+piqueld-probe  = { version = "0.1.0", path = "crates/piqueld-probe"  }
 
 # External
 anstream = "1.0.0"
@@ -118,3 +120,12 @@ strip = "symbols"
 inherits = "release"
 opt-level = "z"
 codegen-units = 1
+
+# The static health probe the daemon build script embeds and Swarm mounts into
+# containers as a config. Swarm caps config size, so it is built for size.
+[profile.probe]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
