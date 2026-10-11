@@ -156,23 +156,6 @@ impl Worktree {
         branch: &str,
         limits: Option<&SnapshotLimits>,
     ) -> Result<Snapshot<'_>> {
-        let files = Git::checked(
-            Git::command(&self.root)
-                .args([
-                    "ls-files",
-                    "-z",
-                    "--cached",
-                    "--others",
-                    "--exclude-standard",
-                ])
-                .output()
-                .await,
-            "list the worktree's files",
-        )?;
-        self.check_supported(&files).await?;
-        if let Some(limits) = limits {
-            self.check_size(&files, limits).await?;
-        }
         let head = Git::checked(
             Git::command(&self.root)
                 .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
@@ -186,6 +169,21 @@ impl Worktree {
                 "HEAD has no commit yet; commit once first",
             )
         })?;
+        let files = self
+            .tracked(&["--others"], "list the worktree's files")
+            .await?;
+        // Tracked files ignored since, including deleted ones: they are sent
+        // as committed.
+        let ignored = self
+            .tracked(
+                &["--ignored", "--with-tree=HEAD"],
+                "list tracked ignored files",
+            )
+            .await?;
+        self.check_supported(&files).await?;
+        if let Some(limits) = limits {
+            self.check_size(&files, &ignored, limits).await?;
+        }
         let directory = tempfile::Builder::new()
             .prefix("piquelctl-snapshot-")
             .tempdir()
@@ -206,7 +204,7 @@ impl Worktree {
             }
             _ => {}
         }
-        snapshot.stage().await?;
+        snapshot.stage(ignored).await?;
         let staged = |arguments: &[&str]| snapshot.staged(arguments);
         let tree = Git::checked(staged(&["write-tree"]).output().await, "write the tree")?;
         let uncommitted = Git::checked(
@@ -254,12 +252,32 @@ impl Worktree {
         })
     }
 
+    /// The worktree's tracked files, NUL-separated, with `options` of
+    /// `git ls-files` such as `--others`, honoring ignore rules.
+    async fn tracked(&self, options: &[&str], action: &str) -> Result<String> {
+        Git::checked(
+            Git::command(&self.root)
+                .args(["ls-files", "-z", "--cached", "--exclude-standard"])
+                .args(options)
+                .output()
+                .await,
+            action,
+        )
+    }
+
     /// Refuses `files`, the snapshot's, when they take more than `limits`
     /// allow a checkout, naming the largest, so nothing is staged or packed
-    /// in vain. Their size in the worktree stands for the snapshot's.
-    async fn check_size(&self, files: &str, limits: &SnapshotLimits) -> Result<()> {
+    /// in vain. Their size in the worktree stands for the snapshot's; the
+    /// `ignored` ones, sent as committed, are left out of the estimate.
+    async fn check_size(&self, files: &str, ignored: &str, limits: &SnapshotLimits) -> Result<()> {
+        let ignored = ignored
+            .split('\0')
+            .collect::<std::collections::BTreeSet<_>>();
         let mut sizes = Vec::new();
-        for path in files.split('\0').filter(|path| !path.is_empty()) {
+        for path in files
+            .split('\0')
+            .filter(|path| !path.is_empty() && !ignored.contains(path))
+        {
             // Deleted files are not in the snapshot.
             if let Ok(metadata) = tokio::fs::symlink_metadata(self.root.join(path)).await {
                 sizes.push((metadata.len(), path));
@@ -524,9 +542,9 @@ impl Snapshot<'_> {
         })
     }
 
-    /// Stages the worktree into the snapshot's index, ignored files kept as
-    /// committed.
-    async fn stage(&self) -> Result<()> {
+    /// Stages the worktree into the snapshot's index, keeping the tracked
+    /// `ignored` files, NUL-separated, as committed.
+    async fn stage(&self, ignored: String) -> Result<()> {
         let staged = |arguments: &[&str]| self.staged(arguments);
         // `git add` skips files marked assume-unchanged, so the snapshot
         // would keep their committed content; only the copy's marks go.
@@ -551,20 +569,10 @@ impl Snapshot<'_> {
             staged(&["add", "--all"]).output().await,
             "stage the worktree",
         )?;
-        let ignored = Git::checked(
-            staged(&[
-                "ls-files",
-                "-z",
-                "--cached",
-                "--ignored",
-                "--exclude-standard",
-            ])
-            .output()
-            .await,
-            "list tracked ignored files",
-        )?;
         if !ignored.is_empty() {
+            // Names, not pathspecs: an ignored file may be named `:(exclude)x`.
             let reset = staged(&[
+                "--literal-pathspecs",
                 "reset",
                 "--quiet",
                 "HEAD",
@@ -803,6 +811,40 @@ mod tests {
             &format!("git cat-file -e {} && echo yes || echo no", snapshot.commit),
         );
         assert_eq!(written, "no");
+    }
+
+    /// Tracked files ignored since are sent as committed even when deleted
+    /// or staged as deleted, or named like pathspec magic, and their local
+    /// content does not count against the daemon's limits.
+    #[tokio::test]
+    async fn tracked_ignored_files_are_sent_as_committed() {
+        let root = tempfile::tempdir().unwrap();
+        let work = fixture(root.path());
+        sh(
+            &work,
+            "echo committed > ':(exclude)x' && git --literal-pathspecs add ':(exclude)x'
+             git commit -qm magic && printf ':(exclude)x\n' >> .gitignore
+             head -c 8192 /dev/zero > ':(exclude)x' && git rm -q --cached .env && rm .env",
+        );
+        let worktree = Worktree::at(&work).await.unwrap();
+        let limits = SnapshotLimits {
+            max_upload_bytes: 1 << 20,
+            max_tree_bytes: 4096,
+            max_files: 100,
+        };
+        let snapshot = worktree.snapshot("feat/x", Some(&limits)).await.unwrap();
+        snapshot.bundle(History::Thin).await.unwrap();
+        let snapshot_git = format!(
+            "git --git-dir={}",
+            snapshot.directory.path().join("bundle.git").display()
+        );
+        for (path, committed) in [(".env", "template"), (":(exclude)x", "committed")] {
+            let content = sh(
+                &work,
+                &format!("{snapshot_git} show '{}:{path}'", snapshot.commit),
+            );
+            assert_eq!(content, committed, "{path}");
+        }
     }
 
     /// Without remote-tracking branches, the whole history is bundled only

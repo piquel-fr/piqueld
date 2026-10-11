@@ -110,9 +110,10 @@ impl Heads {
 /// time, shared by every read that arrived while it ran, and at most
 /// [`Self::LISTING`] at once, so frequent reads never fork a process each.
 /// A listing is never reused once a later read arrives, so it is never
-/// staler than the read itself.
+/// staler than the read itself, and is dropped once no read waits for it.
 pub(crate) struct Listings {
-    /// The last listing of each repository ever read, and when it finished.
+    /// Each repository being listed, with its last listing and when it
+    /// finished.
     repositories: std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<Option<Listed>>>>>,
     /// Permits to list.
     listing: Semaphore,
@@ -157,38 +158,57 @@ impl Listings {
         };
         let heads = Arc::new(heads);
         *last = Some((std::time::Instant::now(), Arc::clone(&heads)));
+        drop(last);
+        let mut repositories = self
+            .repositories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Only the map and this read hold it: no read waits to share it.
+        // Reads take it from the map under this lock, so none can meanwhile.
+        if Arc::strong_count(&repository) == 2 {
+            repositories.remove(url);
+        }
         heads
     }
 }
 
 /// Admission for Git checkouts, which every clone goes through: at most
-/// [`Self::CLONING`] clones at once, and the working trees of every checkout
-/// held at once within `[checkouts] max_bytes`. A tree is measured before
-/// its files are written; a checkout waits until it fits, and one that never
-/// could, or has more than [`Self::FILES`] files, is refused.
+/// [`Self::CLONING`] clones at once, and the files of every checkout held
+/// at once, history and working tree, within `[checkouts] max_bytes`. A
+/// clone is stopped once it downloads more than its share of the budget
+/// (see [`Self::bounded`]); its tree is then measured before its files are
+/// written. A checkout waits until it fits, and one that never could, or has
+/// more than [`Self::FILES`] files, is refused. Clones in progress are not
+/// counted, so checkouts take at most twice `max_bytes`.
 pub(crate) struct Checkouts {
     /// Where checkouts are made: `<data_dir>/checkouts`, emptied at startup.
     root: PathBuf,
     /// Permits to clone, held until the clone is measured and checked out.
     cloning: Semaphore,
-    /// One permit per MiB of working tree, held by each [`Checkout`].
+    /// One permit per MiB of history and working tree, held by each
+    /// [`Checkout`].
     disk: Arc<Semaphore>,
-    /// The most bytes all working trees may take at once.
+    /// The most bytes all checkouts may take at once.
     max_bytes: u64,
 }
 
-/// A working tree larger than [`Checkouts`] admits.
+/// A checkout, or a download, larger than [`Checkouts`] admits.
 #[derive(Debug, thiserror::Error)]
-#[error("its files take more than {limit} bytes, or number more than {files}", files = Checkouts::FILES)]
+#[error("it takes more than {limit} bytes, or has more than {files} files", files = Checkouts::FILES)]
 pub(crate) struct TreeTooLarge {
     /// `[checkouts] max_bytes`.
     pub(crate) limit: u64,
 }
 
 impl Checkouts {
-    /// Clones at once. Each clone's history is on disk before its tree is
-    /// measured, which a shallow clone keeps to about one compressed tree.
+    /// Clones at once, each downloading at most this share of `max_bytes`.
     const CLONING: usize = 4;
+    /// How often a download's size is checked.
+    const WATCH: Duration = Duration::from_millis(100);
+    /// Applied before checking out, overriding the repository's own
+    /// attributes so files are checked out as committed: no filter driver,
+    /// encoding, line-ending, or `ident` conversion runs or grows them.
+    const ATTRIBUTES: &str = "* -text -filter -working-tree-encoding -ident\n";
     /// Most files one working tree may have.
     pub(crate) const FILES: usize = 500_000;
     /// Bytes per permit of `disk`.
@@ -229,18 +249,19 @@ impl Checkouts {
         }
     }
 
-    /// The most bytes all working trees may take at once.
+    /// The most bytes all checkouts may take at once.
     pub(crate) const fn max_bytes(&self) -> u64 {
         self.max_bytes
     }
 
     /// Clones the repository shallowly into a new directory and checks out
-    /// a detached commit once its tree fits, streaming Git output into `log`
-    /// when supplied.
+    /// a detached commit, as committed, once it fits, streaming Git output
+    /// into `log` when supplied.
     ///
-    /// A pinned `commit` is fetched explicitly (the branch may no longer exist);
-    /// otherwise the tip of `branch` is used. The resolved `HEAD` must be a full
-    /// commit hash.
+    /// A pinned `commit` is fetched explicitly (the branch may no longer
+    /// exist), with the default branch's whole history instead when the
+    /// server serves no unadvertised commit; otherwise the tip of `branch`
+    /// is used. The resolved `HEAD` must be a full commit hash.
     ///
     /// # Errors
     /// Returns a Git failure, or [`TreeTooLarge`].
@@ -260,39 +281,28 @@ impl Checkouts {
             .tempdir_in(&self.root)
             .context("create Git checkout directory")?;
         let root = directory.path().join("repository");
-        // `--no-local` keeps `--depth` for repository paths too.
-        let mut clone = Checkout::command();
-        clone.args([
-            "clone",
-            "--no-checkout",
-            "--single-branch",
-            "--depth=1",
-            "--no-local",
-        ]);
-        if repository.commit.is_none() {
-            clone.args(["--branch", &repository.branch]);
-        }
-        clone.arg("--").arg(&repository.url).arg(&root);
-        crate::command::LoggedCommand::run_recorded(&mut clone, "clone Git repository", log)
-            .await?;
-        if let Some(commit) = &repository.commit {
-            crate::command::LoggedCommand::run_recorded(
-                Checkout::command().arg("-C").arg(&root).args([
-                    "fetch",
-                    "--depth=1",
-                    "origin",
-                    commit,
-                ]),
-                "fetch pinned Git commit",
-                log,
-            )
-            .await?;
-        }
+        let download = Box::pin(Self::download(repository, &root, log));
+        let share = self.max_bytes / Self::CLONING as u64;
+        Self::bounded(directory.path(), share, download).await?;
         let revision = repository.commit.as_deref().unwrap_or("HEAD");
-        let bytes = self.measure(&root, revision).await?;
+        let tree = self.measure(&root, revision).await?;
+        let bytes = tree.saturating_add(Self::disk_usage(directory.path()).await?);
+        if bytes > self.max_bytes {
+            return Err(TreeTooLarge {
+                limit: self.max_bytes,
+            }
+            .into());
+        }
         let permits = u32::try_from(bytes.div_ceil(Self::MIB).max(1))
             .context("count the checkout's disk permits")?;
         let disk = Arc::clone(&self.disk).acquire_many_owned(permits).await?;
+        let info = root.join(".git/info");
+        tokio::fs::create_dir_all(&info)
+            .await
+            .context("create Git info directory")?;
+        tokio::fs::write(info.join("attributes"), Self::ATTRIBUTES)
+            .await
+            .context("write Git checkout attributes")?;
         crate::command::LoggedCommand::run_recorded(
             Checkout::command()
                 .arg("-C")
@@ -366,6 +376,109 @@ impl Checkouts {
             }
         }
         Ok(bytes)
+    }
+
+    /// Clones `repository` shallowly into `root` without checking it out,
+    /// and fetches its pinned commit, if any (see [`Self::checkout`]).
+    async fn download(
+        repository: &GitRepository,
+        root: &Path,
+        log: Option<&crate::build::BuildLog>,
+    ) -> anyhow::Result<()> {
+        // `--no-local` keeps `--depth` for repository paths too.
+        let mut clone = Checkout::command();
+        clone.args([
+            "clone",
+            "--no-checkout",
+            "--single-branch",
+            "--depth=1",
+            "--no-local",
+        ]);
+        if repository.commit.is_none() {
+            clone.args(["--branch", &repository.branch]);
+        }
+        clone.arg("--").arg(&repository.url).arg(root);
+        crate::command::LoggedCommand::run_recorded(&mut clone, "clone Git repository", log)
+            .await?;
+        let Some(commit) = &repository.commit else {
+            return Ok(());
+        };
+        let fetch = |arguments: &[&str]| {
+            let mut fetch = Checkout::command();
+            fetch.arg("-C").arg(root).arg("fetch").args(arguments);
+            fetch
+        };
+        let pinned = crate::command::LoggedCommand::run_recorded(
+            &mut fetch(&["--depth=1", "origin", commit]),
+            "fetch pinned Git commit",
+            log,
+        )
+        .await;
+        if pinned.is_err() {
+            crate::command::LoggedCommand::run_recorded(
+                &mut fetch(&["--unshallow", "origin"]),
+                "fetch Git history",
+                log,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Runs `transfer`, which downloads into `directory`, and stops it,
+    /// with its process group, once the directory takes more than `limit`
+    /// bytes.
+    ///
+    /// # Errors
+    /// Returns `transfer`'s error, or [`TreeTooLarge`].
+    pub(crate) async fn bounded<T, E: From<TreeTooLarge>>(
+        directory: &Path,
+        limit: u64,
+        transfer: impl Future<Output = Result<T, E>>,
+    ) -> Result<T, E> {
+        let watch = async {
+            loop {
+                tokio::time::sleep(Self::WATCH).await;
+                match Self::disk_usage(directory).await {
+                    Ok(bytes) if bytes > limit => return TreeTooLarge { limit },
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(?error, "measuring a Git download failed"),
+                }
+            }
+        };
+        tokio::select! {
+            result = transfer => result,
+            too_large = watch => Err(too_large.into()),
+        }
+    }
+
+    /// The bytes of the files under `directory`, which Git may be writing.
+    async fn disk_usage(directory: &Path) -> anyhow::Result<u64> {
+        let directory = directory.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let gone = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
+            let (mut bytes, mut directories) = (0_u64, vec![directory]);
+            while let Some(directory) = directories.pop() {
+                let entries = match std::fs::read_dir(&directory) {
+                    Err(error) if gone(&error) => continue,
+                    entries => entries?,
+                };
+                for entry in entries {
+                    let metadata =
+                        match entry.and_then(|entry| Ok((entry.path(), entry.metadata()?))) {
+                            Err(error) if gone(&error) => continue,
+                            metadata => metadata?,
+                        };
+                    match metadata {
+                        (path, metadata) if metadata.is_dir() => directories.push(path),
+                        (_, metadata) => bytes = bytes.saturating_add(metadata.len()),
+                    }
+                }
+            }
+            Ok(bytes)
+        })
+        .await
+        .context("measure Git checkout")?
     }
 
     /// Checks a repository out and builds its local image, labelled for
@@ -654,5 +767,45 @@ mod tests {
         assert!(first.as_ref().as_ref().unwrap().head("main").is_some());
         let later = listings.list(&url).await;
         assert!(!Arc::ptr_eq(&first, &later));
+        // Nothing is kept once no read waits.
+        assert!(listings.repositories.lock().unwrap().is_empty());
+    }
+
+    /// The repository's attributes cannot convert, and so grow, the files
+    /// checked out: they are the committed bytes.
+    #[tokio::test]
+    async fn checkouts_are_the_committed_bytes() {
+        let repository = tempfile::tempdir().unwrap();
+        let source = fixture(repository.path()).await;
+        tokio::fs::write(repository.path().join(".gitattributes"), "* ident\n")
+            .await
+            .unwrap();
+        commit(repository.path(), "$Id$\n").await;
+        let checkouts = checkouts(repository.path(), 1 << 30).await;
+        let checkout = checkouts.checkout(&source, None).await.unwrap();
+        let dockerfile = checkout.path("Dockerfile").await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(dockerfile).await.unwrap(),
+            "$Id$\n"
+        );
+    }
+
+    /// A download that grows past its limit is stopped.
+    #[tokio::test]
+    async fn downloads_past_their_limit_are_stopped() {
+        let directory = tempfile::tempdir().unwrap();
+        let download = async {
+            tokio::fs::write(directory.path().join("pack"), [0; 64])
+                .await
+                .unwrap();
+            std::future::pending::<anyhow::Result<()>>().await
+        };
+        let stopped = Checkouts::bounded(directory.path(), 32, download).await;
+        assert!(
+            stopped
+                .unwrap_err()
+                .downcast_ref::<TreeTooLarge>()
+                .is_some()
+        );
     }
 }

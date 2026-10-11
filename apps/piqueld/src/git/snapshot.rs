@@ -13,10 +13,12 @@
 //! 4. its working tree must fit `[checkouts] max_bytes` (see
 //!    [`Checkouts::measure`]), or no deployment could check it out.
 //!
+//! Fetching the prerequisites is stopped once the staging directory takes
+//! more than `[checkouts] max_bytes` (see [`Checkouts::bounded`]).
+//!
 //! Unbundling keeps the pack as uploaded, so it takes about as much disk as
 //! the upload; Git's allocations are bounded (see [`Checkout`]), so a small
-//! pack of huge objects cannot exhaust memory. The prerequisites' history is
-//! the application's repository's own, as large as any checkout of it.
+//! pack of huge objects cannot exhaust memory.
 //! An upload holds its permit until it is accepted or refused, so at most
 //! [`Snapshots::RECEIVING`] uploads are on disk unaccepted.
 //!
@@ -43,8 +45,11 @@ pub enum SnapshotError {
         /// The limit, in bytes.
         limit: u64,
     },
-    /// The snapshot's files would not fit `[checkouts] max_bytes`.
-    #[error("the snapshot's files take more than the {limit}-byte checkout limit")]
+    /// The snapshot, or the history it needs, would not fit
+    /// `[checkouts] max_bytes`.
+    #[error(
+        "the snapshot, or the history it needs, takes more than the {limit}-byte checkout limit"
+    )]
     TreeTooLarge {
         /// The limit, in bytes.
         limit: u64,
@@ -64,6 +69,12 @@ pub enum SnapshotError {
     /// The upload could not be read or stored.
     #[error("the snapshot could not be received")]
     Internal(#[source] anyhow::Error),
+}
+
+impl From<TreeTooLarge> for SnapshotError {
+    fn from(TreeTooLarge { limit }: TreeTooLarge) -> Self {
+        Self::TreeTooLarge { limit }
+    }
 }
 
 /// The snapshot ref every bundle carries, and the branch its repository has.
@@ -181,7 +192,8 @@ impl Snapshots {
         let repository = Staged(staging.path().join("repository.git"));
         repository.init().await?;
         if !header.prerequisites.is_empty() {
-            repository.fetch(url, &header.prerequisites).await?;
+            let fetch = repository.fetch(url, &header.prerequisites);
+            Checkouts::bounded(staging.path(), checkouts.max_bytes(), fetch).await?;
         }
         repository.unbundle(&bundle, &header).await?;
         let base = repository.base(&header).await?;
@@ -189,7 +201,7 @@ impl Snapshots {
             .measure(&repository.0, SNAPSHOT_BRANCH)
             .await
             .map_err(|error| match error.downcast::<TreeTooLarge>() {
-                Ok(TreeTooLarge { limit }) => SnapshotError::TreeTooLarge { limit },
+                Ok(too_large) => too_large.into(),
                 Err(error) => SnapshotError::Internal(error),
             })?;
         Ok((header.commit, base, staging))

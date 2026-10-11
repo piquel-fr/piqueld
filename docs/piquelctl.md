@@ -214,7 +214,8 @@ as for environments; deleting and pruning need `apps:delete`.
 `preview deploy <app> --local` deploys the Git worktree of the current
 directory without pushing it: its committed, uncommitted and untracked files,
 except ignored ones. A tracked file that is ignored, such as a committed
-`.env` template, is sent as committed, never with its local edits. Before
+`.env` template, is sent as committed, never with its local edits, even when
+deleted. Before
 uploading, it lists the uncommitted files it sends (`Info`, hidden with
 `--quiet`), and the snapshot's size and the commits it carries. It deploys to the preview of the current branch and
 `--slot`, creating it first if needed exactly as `preview create` does, within
