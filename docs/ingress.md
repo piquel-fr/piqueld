@@ -123,7 +123,7 @@ Caddy runs one server per listener, each with its own routes:
 | --- | --- | --- |
 | `public` | host `:80` and `:443` (published) | public routes |
 | `tunnel`, instead of `public` | `:8080` HTTP (not published) | public routes, from `cloudflared` |
-| `private` | `:8443` HTTPS and `:8081` HTTP → HTTPS (not published) | private routes |
+| `private` | `:8443` HTTPS and `:8081` HTTP → HTTPS (not published) | private routes, the [dashboard hostname](#dashboard-hostname) |
 
 A hostname appears only on its own listener, and each listener's TLS policy
 completes handshakes only for its own hostnames. A forged Host header for a
@@ -346,6 +346,53 @@ the gateway does.
 In GitHub, add a webhook to the manifest repository with the payload URL from
 `piquelctl app repository webhook show APP`, content type `application/json`,
 the secret, and the `push` event. GitHub's delivery log shows each response.
+
+## Dashboard hostname
+
+The website (dashboard and API) is served on the daemon's own listeners, such as
+its [tailnet node](configuration.md#tailnet-node) at
+`https://piqueld.<tailnet>.ts.net`. To reach it on your own domain instead, serve
+it through private ingress, like a private route:
+
+```toml
+[ingress]
+enabled = true
+
+[ingress.private]
+enabled = true
+dashboard_hostname = "dashboard.example.com"
+```
+
+- **Routing.** The private listener forwards every path of
+  `https://dashboard.example.com` to a Unix socket in the gateway's control
+  mount, `<data_dir>/ingress/control/dashboard.sock`, where the daemon serves the
+  same website as on its TCP listeners. Like private routes, the hostname is
+  reachable only from the tailnet, and HTTP redirects to HTTPS. Only the daemon's
+  user, which the gateway runs as, can connect to the socket.
+- **Clients.** The gateway sets `X-Forwarded-For` to each request's tailnet
+  client, which the daemon uses for login throttling and the audit trail. The
+  daemon asks the apps node who that client is (`tailscale whois`, through the
+  node's socket in `<data_dir>/ingress/tailscale/run`), so the `tailscale` CLI
+  must be on `PATH` for the audit trail to name tailnet users and for
+  [tailnet-bound tokens](authorization.md#tailnet-bound-tokens) to work here.
+- **DNS and certificates.** The hostname gets a private route's A/AAAA records
+  to the apps node's addresses, managed like routes' when a DNS provider sets
+  `manage_records` for its zone (see [managed DNS records](#managed-dns-records)),
+  and created by hand otherwise. Its certificate comes from
+  [DNS-01](#dns-01-certificates), so a provider must cover its zone.
+  Applications may not route the hostname or its subdomains.
+- **Passkeys.** An unset `auth.public_url` becomes
+  `https://dashboard.example.com`. Passkeys belong to that hostname, so passkeys
+  created on another origin, such as the tailnet node's, stop working there.
+  Register new ones with an enrollment link (`piquelctl account enroll`, with a
+  CLI login that still works), or, if none does,
+  [recover administrator access](authentication.md#recovering-administrator-access).
+  The tailnet node keeps serving the API, and `piquelctl status` reports that
+  `auth.public_url` is not its origin.
+
+The setting requires `ingress.enabled` and `ingress.private.enabled`. While the
+private listener is off, such as before Swarm's address pools are verified, the
+hostname is not served.
 
 ## DNS-01 certificates
 
@@ -635,6 +682,10 @@ over trusted HTTPS, `http://` must redirect, and the backend must see the device
 tailnet address in `X-Forwarded-For`. From a device off the tailnet, connecting must
 fail, and the same hostname on the server's public address must answer 404 without
 a certificate.
+
+The same applies to the dashboard hostname: from a tailnet device, the website
+must load over trusted HTTPS and passkey login must work, and the audit trail
+must name the device's tailnet user.
 
 A real tunnel needs Cloudflare, so CI does not run one either. Before relying on
 it, enable `[ingress.tunnel]`, deploy a disposable public route, and create its

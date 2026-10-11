@@ -116,8 +116,12 @@ impl Store {
     /// Collects every hostname the environment could still serve (the routes
     /// of the manifest it deploys, rendered for this environment, its resolved
     /// spec, its latest operation's target and rendered deployment manifest,
-    /// desired and applied gateway routes), rejects any within an installation
-    /// hostname, then replaces the environment's `hostname_reservations` rows.
+    /// desired and applied gateway routes), rejects any newly within an
+    /// installation hostname, then replaces the environment's
+    /// `hostname_reservations` rows. Names it reserved before the installation
+    /// claimed them stay reserved, though never routed, so the gateway's
+    /// acknowledgements and the environment's operations keep working until
+    /// its routes change.
     /// A unique violation means another environment owns the name. Sibling
     /// conflicts identify that environment of the same application.
     async fn reserve_hostnames_on(
@@ -149,7 +153,16 @@ impl Store {
             );
         }
         let installation = Self::installation_hostnames(&mut *connection).await?;
-        for hostname in &names {
+        let reserved: BTreeSet<String> = sqlx::query_scalar!(
+            "SELECT hostname FROM hostname_reservations WHERE environment_id=?1",
+            environment_id
+        )
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(StoreError::database)?
+        .into_iter()
+        .collect();
+        for hostname in names.difference(&reserved) {
             let parsed = Hostname::parse(hostname.as_str()).map_err(StoreError::corrupt)?;
             if installation.iter().any(|domain| parsed.is_within(domain)) {
                 return Err(StoreError::HostnameConflict {
@@ -460,7 +473,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(conflicts, [early.spec().routes[0].hostname.clone()]);
-        assert_eq!(store.routing_table().await.unwrap()[&id], []);
+        let table = store.routing_table().await.unwrap();
+        assert_eq!(table[&id], []);
+        // The gateway can still acknowledge the table without them.
+        store.acknowledge_routes(&table).await.unwrap();
 
         for hostname in ["piqueld.example.com", "api.piqueld.example.com"] {
             assert!(matches!(

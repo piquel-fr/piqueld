@@ -8,7 +8,8 @@
 //! ```
 //!
 //! The webhook hostname, `[ingress] webhook_hostname`, gets a public route's
-//! records.
+//! records, and the dashboard hostname, `[ingress.private]
+//! dashboard_hostname`, a private route's.
 //!
 //! **Ordering.** Records follow the routes the gateway has acknowledged
 //! ([`Store::applied_table`](crate::store::Store::applied_table)), so they
@@ -214,6 +215,11 @@ impl Ingress {
             // public route, from the gateway's own configuration.
             if let Some(hostname) = self.webhook_hostname() {
                 let desired = self.desired_records(Visibility::Public, &addresses);
+                wanted.insert(hostname.clone(), desired);
+            }
+            // The dashboard hostname is served on the private listener.
+            if let Some(hostname) = self.dashboard_hostname() {
+                let desired = self.desired_records(Visibility::Private, &addresses);
                 wanted.insert(hostname.clone(), desired);
             }
             for route in self.store.routing_table().await?.into_values().flatten() {

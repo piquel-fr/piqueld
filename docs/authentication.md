@@ -49,7 +49,9 @@ The simplest HTTPS origin on a tailnet is piqueld's own
 [tailnet node](configuration.md#tailnet-node): with `[tailscale]` enabled and
 `public_url` unset, the origin is `https://<hostname>.<tailnet>.ts.net` and
 piqueld terminates TLS itself. Its state lives in the data directory, so moving
-or reinstalling the daemon with that directory keeps the name and passkeys.
+or reinstalling the daemon with that directory keeps the name and passkeys. To use
+your own domain on the tailnet instead, set a
+[dashboard hostname](ingress.md#dashboard-hostname), which becomes the origin.
 
 Otherwise, terminate HTTPS at an external reverse proxy and forward requests to
 a configured piqueld listener. Keep both the proxy and piqueld reachable only from trusted

@@ -1450,3 +1450,65 @@ async fn the_webhook_hostname_forwards_only_its_webhook_path_to_the_daemon() {
     .unwrap();
     assert!(none.bind_webhooks().await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn the_dashboard_hostname_is_a_private_host_forwarded_to_the_daemon() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let dashboard = Hostname::parse("dashboard.example.com").unwrap();
+    let ingress =
+        private_ingress(&directory)
+            .await
+            .with_private(&crate::config::PrivateIngressConfig {
+                enabled: true,
+                dashboard_hostname: Some(dashboard.clone()),
+                ..Default::default()
+            });
+    let edge = ["172.20.0.0/16".to_owned()];
+    let configuration = ingress.build_configuration(&RoutingTable::new(), Some(&edge), None);
+    let servers = &configuration["apps"]["http"]["servers"];
+    assert_eq!(
+        servers["private"]["tls_connection_policies"][0]["match"]["sni"],
+        json!([dashboard.as_str()])
+    );
+    assert_eq!(
+        servers["public"]["tls_connection_policies"][0]["match"]["sni"],
+        json!([])
+    );
+    // The gateway names each request's tailnet client, since one upstream
+    // connection carries many.
+    let route = &servers["private"]["routes"][0];
+    assert_eq!(route["match"], json!([{"host":[dashboard.as_str()]}]));
+    assert_eq!(
+        route["handle"][0]["upstreams"],
+        json!([{"dial":"unix//control/dashboard.sock"}])
+    );
+    assert_eq!(
+        route["handle"][0]["headers"]["request"]["set"]["X-Forwarded-For"],
+        json!(["{http.request.remote.host}"])
+    );
+    // Its certificate comes from DNS-01, like private routes'.
+    assert_eq!(
+        ingress.dns01_hostnames(&RoutingTable::new()),
+        [dashboard.clone()].into()
+    );
+    // Until the private listener runs, it is served nowhere.
+    let configuration = ingress.build_configuration(&RoutingTable::new(), None, None);
+    assert!(configuration["apps"]["http"]["servers"]["private"].is_null());
+
+    let mut config = crate::config::DaemonConfig::default();
+    config.server.data_dir = directory.path().into();
+    config.ingress.private.dashboard_hostname = Some(dashboard.clone());
+    let socket = Ingress::bind_dashboard(&config).await.unwrap().unwrap();
+    let path = directory.path().join("ingress/control/dashboard.sock");
+    assert_eq!(
+        socket.listener.local_addr().unwrap().as_pathname(),
+        Some(path.as_path())
+    );
+    // Only the daemon's user, which the gateway runs as, may connect.
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+        0
+    );
+    assert_eq!(socket.hostname, dashboard);
+}

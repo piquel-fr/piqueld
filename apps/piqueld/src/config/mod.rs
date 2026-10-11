@@ -94,15 +94,24 @@ impl DaemonConfig {
         Resolution::Structural.during(|| Self::load(path)).map(drop)
     }
 
-    /// Parses and validates a TOML configuration document.
+    /// Parses and validates a TOML configuration document. An unset
+    /// `auth.public_url` becomes the dashboard hostname's HTTPS origin.
     ///
     /// # Errors
     ///
     /// Returns [`ConfigError`] when the document is malformed or violates a
     /// host configuration invariant.
     pub fn from_toml(source: &str) -> Result<Self, ConfigError> {
-        let config: Self = toml::from_str(source)
+        let mut config: Self = toml::from_str(source)
             .map_err(|error| ConfigError::Parse(TomlDiagnostic::new(source, &error)))?;
+        if config.auth.public_url.is_none() {
+            config.auth.public_url = config
+                .ingress
+                .private
+                .dashboard_hostname
+                .as_ref()
+                .map(|hostname| format!("https://{hostname}"));
+        }
         config.validate()?;
         Ok(config)
     }
@@ -154,8 +163,7 @@ impl DaemonConfig {
             ));
         }
         self.tailscale.validate()?;
-        self.ingress.acme.validate()?;
-        dns_label("ingress.private.hostname", &self.ingress.private.hostname)?;
+        self.ingress.validate()?;
         if self.tailscale.enabled
             && self.ingress.private.enabled
             && self.tailscale.hostname == self.ingress.private.hostname
@@ -220,7 +228,8 @@ impl DaemonConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct AuthConfig {
     /// HTTPS origin, or HTTP localhost for development. Defaults to the
-    /// tailnet node's HTTPS URL when it is enabled, otherwise localhost.
+    /// dashboard hostname's HTTPS URL when one is set, then to the tailnet
+    /// node's when it is enabled, otherwise localhost.
     pub public_url: Option<String>,
     /// Longest lifetime of new API tokens in days; unset allows tokens that
     /// never expire.
@@ -228,8 +237,9 @@ pub struct AuthConfig {
 }
 
 impl DaemonConfig {
-    /// Effective website origin. A tailnet node fills an unset value when it
-    /// joins, before authentication starts.
+    /// Effective website origin. The dashboard hostname fills an unset value
+    /// at load, and otherwise a tailnet node does when it joins, before
+    /// authentication starts.
     #[must_use]
     pub fn public_url(&self) -> &str {
         self.auth
@@ -331,6 +341,30 @@ pub struct IngressConfig {
     pub webhook_hostname: Option<piqueld_core::manifest::Hostname>,
 }
 
+impl IngressConfig {
+    /// Checks the ACME account, the apps node's name, and that the dashboard
+    /// hostname has private ingress to serve it and differs from the webhook
+    /// hostname.
+    fn validate(&self) -> Result<(), ConfigError> {
+        self.acme.validate()?;
+        dns_label("ingress.private.hostname", &self.private.hostname)?;
+        if let Some(dashboard) = &self.private.dashboard_hostname {
+            if !self.enabled || !self.private.enabled {
+                return Err(ConfigError::Invalid(
+                    "ingress.private.dashboard_hostname requires ingress.enabled and ingress.private.enabled".into(),
+                ));
+            }
+            if self.webhook_hostname.as_ref() == Some(dashboard) {
+                return Err(ConfigError::Invalid(
+                    "ingress.private.dashboard_hostname must differ from ingress.webhook_hostname"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The apps tailnet node: a Tailscale container that carries private routes'
 /// traffic to the gateway's private listener. It is separate from the
 /// daemon's own node (`[tailscale]`), with its own ACLs and tags.
@@ -345,6 +379,12 @@ pub struct PrivateIngressConfig {
     /// Auth key for the first login, read from `auth_key_file`. Without one,
     /// the node's login URL is relayed to the daemon logs.
     pub auth_key: Option<Credential>,
+    /// Private hostname serving the website (dashboard and API) to the
+    /// tailnet. The private listener forwards it to a socket in the gateway's
+    /// control mount, which the daemon serves. An unset `auth.public_url`
+    /// becomes its HTTPS origin. No application may route the hostname or its
+    /// subdomains.
+    pub dashboard_hostname: Option<piqueld_core::manifest::Hostname>,
 }
 
 impl Default for PrivateIngressConfig {
@@ -353,6 +393,7 @@ impl Default for PrivateIngressConfig {
             enabled: false,
             hostname: "piqueld-apps".into(),
             auth_key: None,
+            dashboard_hostname: None,
         }
     }
 }
@@ -364,6 +405,7 @@ struct RawPrivateIngressConfig {
     enabled: bool,
     hostname: String,
     auth_key_file: Option<CredentialFile>,
+    dashboard_hostname: Option<piqueld_core::manifest::Hostname>,
 }
 
 impl Default for RawPrivateIngressConfig {
@@ -373,6 +415,7 @@ impl Default for RawPrivateIngressConfig {
             enabled: defaults.enabled,
             hostname: defaults.hostname,
             auth_key_file: None,
+            dashboard_hostname: defaults.dashboard_hostname,
         }
     }
 }
@@ -387,6 +430,7 @@ impl TryFrom<RawPrivateIngressConfig> for PrivateIngressConfig {
                 .auth_key_file
                 .map(|file| Credential::read("auth_key", file))
                 .transpose()?,
+            dashboard_hostname: raw.dashboard_hostname,
         })
     }
 }
@@ -952,6 +996,13 @@ impl DaemonConfig {
                 private.enabled.to_string(),
             ),
             ("Hostname".into(), private.hostname.clone()),
+            (
+                "Dashboard hostname".into(),
+                private
+                    .dashboard_hostname
+                    .as_ref()
+                    .map_or_else(|| "none".into(), ToString::to_string),
+            ),
             (
                 "Auth key".into(),
                 private

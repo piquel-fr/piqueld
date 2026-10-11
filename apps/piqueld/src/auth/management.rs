@@ -91,7 +91,7 @@ impl Auth {
                 }
                 if tailnet.is_some() && !self.0.tokens.tailnet {
                     return Err(AuthError::Invalid(
-                        "tailnet bindings need the daemon's tailnet node (tailscale.enabled)",
+                        "tailnet bindings need the daemon's tailnet node (tailscale.enabled) or a dashboard hostname (ingress.private.dashboard_hostname)",
                     ));
                 }
                 if let Some(limit) = self.0.tokens.max_days

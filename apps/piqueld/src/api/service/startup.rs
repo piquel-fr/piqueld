@@ -157,12 +157,20 @@ impl ApplicationService {
 
     /// The hostnames the installation serves itself, which application routes
     /// may not claim, nor their subdomains: the website's, which could
-    /// otherwise act on its passkeys or cookies, and the webhooks'.
+    /// otherwise act on its passkeys or cookies, the dashboard's, and the
+    /// webhooks'.
     fn installation_hostnames(config: &DaemonConfig) -> anyhow::Result<Vec<Hostname>> {
         let website = crate::auth::Auth::validate_origin(config.public_url())?
             .domain()
             .and_then(|host| Hostname::parse(host.trim_end_matches('.')).ok());
+        let dashboard = config.ingress.private.dashboard_hostname.clone();
         let webhooks = config.ingress.webhook_hostname.clone();
-        Ok(website.into_iter().chain(webhooks).collect())
+        // The website is usually the dashboard hostname too.
+        let hostnames: std::collections::BTreeSet<_> = website
+            .into_iter()
+            .chain(dashboard)
+            .chain(webhooks)
+            .collect();
+        Ok(hostnames.into_iter().collect())
     }
 }

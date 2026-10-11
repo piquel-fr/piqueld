@@ -4,16 +4,21 @@ use anyhow::{Context, Result};
 use axum::{extract::connect_info::Connected, serve::IncomingStream};
 use clap::Parser;
 use piqueld::api::ApplicationService;
-use piqueld::api::http::{ApiState, UiAssets};
+use piqueld::api::http::{self, ApiState, UiAssets, UnixPeer};
+use piqueld::auth::Auth;
 use piqueld::config::{ConfigError, DaemonConfig};
+use piqueld::ingress::{DashboardSocket, Ingress};
 use piqueld::tailnet::Node;
-use std::{net::SocketAddr, os::unix::fs::OpenOptionsExt, path::PathBuf};
-use tokio::net::UnixListener;
+use piqueld::tailnet::TailnetLookup;
+use std::{net::SocketAddr, os::unix::fs::OpenOptionsExt, path::PathBuf, sync::Arc};
+use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 /// Configuration read when `--config` is not supplied.
 const DEFAULT_CONFIG_PATH: &str = "/etc/piqueld/config.toml";
+/// A served listener, which ends after shutdown or on failure.
+type ApiTask = tokio::task::JoinHandle<Result<(), std::io::Error>>;
 /// Time open connections get to finish after shutdown is requested.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -125,9 +130,7 @@ async fn serve(mut config: DaemonConfig) -> Result<()> {
     })?;
     // Bind all endpoints before opening state or starting background work.
     let runtime_dir = piqueld::RuntimeDir::acquire(&config.server.runtime_dir).await?;
-    let tcp_listeners = config.server.bind_tcp().await?;
-    let unix_listener = runtime_dir.bind_api().await?;
-    let metrics_listeners = config.metrics.bind().await?;
+    let listeners = Listeners::bind(&config, &runtime_dir).await?;
     // The node may fill auth.public_url, so it joins before authentication starts.
     let tailnet = Node::join(&mut config).await?;
 
@@ -143,8 +146,6 @@ async fn serve(mut config: DaemonConfig) -> Result<()> {
             }
         };
     let state = state.with_tailnet(tailnet.as_ref().map(Node::status));
-    let ui_assets = UiAssets::resolve();
-    log_ui_status(&ui_assets);
 
     // OS signal handling
     let signal_cancellation = cancellation.clone();
@@ -154,58 +155,17 @@ async fn serve(mut config: DaemonConfig) -> Result<()> {
         result
     });
 
-    let web_router = |hosts| {
-        piqueld::api::http::web_router_with_hosts(state.clone(), ui_assets, auth.clone(), hosts)
-    };
-    let mut tcp_apis: Vec<_> = tcp_listeners
-        .into_iter()
-        .map(|listener| {
-            spawn_tcp_api(
-                listener,
-                web_router(config.server.allowed_hosts.clone()),
-                cancellation.clone(),
-            )
-        })
-        .collect();
-    let tailnet_supervisor = tailnet.map(|node| {
-        let mut hosts = config.server.allowed_hosts.clone();
-        hosts.push(node.dns_name().to_owned());
-        // Only this listener's requests carry a tailnet identity.
-        let whois: std::sync::Arc<dyn piqueld::tailnet::TailnetLookup> = node.whois();
-        let (listener, supervisor) = node.listener(cancellation.clone());
-        tcp_apis.push(spawn_tcp_api(
-            listener,
-            web_router(hosts).layer(axum::Extension(whois)),
-            cancellation.clone(),
-        ));
-        supervisor
-    });
-    let metrics_apis: Vec<_> = metrics_listeners
-        .into_iter()
-        .map(|listener| {
-            spawn_tcp_api(
-                listener,
-                piqueld::api::http::metrics_router(state.clone()),
-                cancellation.clone(),
-            )
-        })
-        .collect();
     let audit = state.clone();
-    let unix_api = spawn_unix_api(unix_listener, state, auth, cancellation.clone());
+    let (apis, tailnet_supervisor) = listeners.serve(&config, state, auth, tailnet, &cancellation);
 
     piqueld::run_until_cancelled(cancellation).await?;
 
     signal_task.await.context("shutdown task failed")??;
-    for tcp_api in tcp_apis.into_iter().chain(metrics_apis) {
-        tcp_api
-            .await
-            .context("TCP API task failed")?
-            .context("TCP API failed")?;
+    for api in apis {
+        api.await
+            .context("HTTP API task failed")?
+            .context("HTTP API failed")?;
     }
-    unix_api
-        .await
-        .context("Unix API task failed")?
-        .context("Unix API failed")?;
     audit.drain_audit(SHUTDOWN_GRACE).await;
     controller
         .await
@@ -215,6 +175,97 @@ async fn serve(mut config: DaemonConfig) -> Result<()> {
         supervisor.await.context("tailnet supervisor failed")??;
     }
     Ok(())
+}
+
+/// Every endpoint the daemon serves, bound before it opens any state, so
+/// misconfiguration fails before anything else starts.
+struct Listeners {
+    /// The website on `server.listen_mode`'s addresses.
+    tcp: Vec<TcpListener>,
+    /// The API alone, on the runtime directory's socket.
+    unix: UnixListener,
+    /// The metrics-only listeners.
+    metrics: Vec<TcpListener>,
+    /// The socket the gateway forwards the dashboard hostname to.
+    dashboard: Option<DashboardSocket>,
+}
+
+impl Listeners {
+    async fn bind(config: &DaemonConfig, runtime_dir: &piqueld::RuntimeDir) -> Result<Self> {
+        Ok(Self {
+            tcp: config.server.bind_tcp().await?,
+            unix: runtime_dir.bind_api().await?,
+            metrics: config.metrics.bind().await?,
+            dashboard: Ingress::bind_dashboard(config)
+                .await
+                .context("failed to bind the dashboard socket")?,
+        })
+    }
+
+    /// Serves each listener, and the `tailnet` node's, with its router until
+    /// `cancellation`. Returns the API tasks and the node's supervisor.
+    fn serve(
+        self,
+        config: &DaemonConfig,
+        state: ApiState,
+        auth: Auth,
+        tailnet: Option<Node>,
+        cancellation: &CancellationToken,
+    ) -> (Vec<ApiTask>, Option<tokio::task::JoinHandle<Result<()>>>) {
+        let ui_assets = UiAssets::resolve();
+        log_ui_status(&ui_assets);
+        let web_router =
+            |hosts| http::web_router_with_hosts(state.clone(), ui_assets, auth.clone(), hosts);
+        let mut apis: Vec<_> = self
+            .tcp
+            .into_iter()
+            .map(|listener| {
+                spawn_api::<_, SocketAddr>(
+                    listener,
+                    web_router(config.server.allowed_hosts.clone()),
+                    cancellation.clone(),
+                )
+            })
+            .collect();
+        // Only requests through the tailnet node, or the apps node's dashboard
+        // hostname, carry a tailnet identity, looked up through that node.
+        let tailnet_router = |host: String, whois: Arc<dyn TailnetLookup>| {
+            let mut hosts = config.server.allowed_hosts.clone();
+            hosts.push(host);
+            web_router(hosts).layer(axum::Extension(whois))
+        };
+        if let Some(dashboard) = self.dashboard {
+            let router = tailnet_router(dashboard.hostname.to_string(), dashboard.whois);
+            apis.push(spawn_api::<_, UnixPeer>(
+                dashboard.listener,
+                http::gateway_router(router),
+                cancellation.clone(),
+            ));
+        }
+        let supervisor = tailnet.map(|node| {
+            let router = tailnet_router(node.dns_name().to_owned(), node.whois());
+            let (listener, supervisor) = node.listener(cancellation.clone());
+            apis.push(spawn_api::<_, SocketAddr>(
+                listener,
+                router,
+                cancellation.clone(),
+            ));
+            supervisor
+        });
+        apis.extend(self.metrics.into_iter().map(|listener| {
+            spawn_api::<_, SocketAddr>(
+                listener,
+                http::metrics_router(state.clone()),
+                cancellation.clone(),
+            )
+        }));
+        apis.push(spawn_api::<_, UnixPeer>(
+            self.unix,
+            http::api_router(state, auth),
+            cancellation.clone(),
+        ));
+        (apis, supervisor)
+    }
 }
 
 /// Reports dashboard availability once at startup so a binary without the
@@ -263,29 +314,25 @@ fn load_config(explicit_path: Option<&std::path::Path>) -> Result<DaemonConfig> 
     }
 }
 
-/// Serves `router` on a TCP-style listener (plain TCP or the tailnet node's
-/// forwarded connections) until cancellation, recording peer addresses for throttling.
-/// In-flight connections get `SHUTDOWN_GRACE` to finish, and the task cancels
-/// the whole daemon when it exits for any reason.
-fn spawn_tcp_api<L>(
-    listener: L,
-    router: axum::Router,
-    cancellation: CancellationToken,
-) -> tokio::task::JoinHandle<Result<(), std::io::Error>>
+/// Serves `router` on `listener` (plain TCP, the tailnet node's forwarded
+/// connections, or a Unix socket) until cancellation, recording each
+/// connection's `C` (its peer address, or its Unix credentials) for
+/// throttling and host operator checks. In-flight connections get
+/// `SHUTDOWN_GRACE` to finish, and the task cancels the whole daemon when it
+/// exits for any reason.
+fn spawn_api<L, C>(listener: L, router: axum::Router, cancellation: CancellationToken) -> ApiTask
 where
     L: axum::serve::Listener,
     L::Addr: std::fmt::Debug,
-    for<'a> SocketAddr: Connected<IncomingStream<'a, L>>,
+    C: Clone + Send + Sync + 'static,
+    for<'a> C: Connected<IncomingStream<'a, L>>,
 {
     info!(address = ?listener.local_addr(), "HTTP API listening");
     tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(async move { shutdown.cancelled().await }),
+            axum::serve(listener, router.into_make_service_with_connect_info::<C>())
+                .with_graceful_shutdown(async move { shutdown.cancelled().await }),
         );
         tokio::pin!(serve);
         // The grace period starts only once shutdown has been requested; a
@@ -300,45 +347,6 @@ where
             () = &mut grace => {
                 tracing::warn!(
                     "HTTP graceful shutdown grace elapsed; closing remaining connections"
-                );
-                Ok(())
-            }
-        };
-        cancellation.cancel();
-        served
-    })
-}
-
-/// Serves the authenticated API on the Unix socket with the same shutdown
-/// behavior as [`spawn_tcp_api`].
-fn spawn_unix_api(
-    listener: UnixListener,
-    state: ApiState,
-    auth: piqueld::auth::Auth,
-    cancellation: CancellationToken,
-) -> tokio::task::JoinHandle<Result<(), std::io::Error>> {
-    tokio::spawn(async move {
-        let shutdown = cancellation.clone();
-        let serve = std::future::IntoFuture::into_future(
-            axum::serve(
-                listener,
-                piqueld::api::http::api_router(state, auth)
-                    .into_make_service_with_connect_info::<piqueld::api::http::UnixPeer>(),
-            )
-            .with_graceful_shutdown(async move { shutdown.cancelled().await }),
-        );
-        tokio::pin!(serve);
-        // Same shutdown-only grace as the TCP API.
-        let grace = async {
-            cancellation.cancelled().await;
-            tokio::time::sleep(SHUTDOWN_GRACE).await;
-        };
-        tokio::pin!(grace);
-        let served = tokio::select! {
-            result = &mut serve => result,
-            () = &mut grace => {
-                tracing::warn!(
-                    "Unix socket graceful shutdown grace elapsed; closing remaining connections"
                 );
                 Ok(())
             }

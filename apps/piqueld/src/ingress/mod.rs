@@ -48,6 +48,20 @@ pub const CLOUDFLARED_IMAGE: &str = "cloudflare/cloudflared:2026.10.0@sha256:9b4
 
 /// Socket in the control mount that the gateway forwards webhook deliveries to.
 const WEBHOOK_SOCKET: &str = "webhooks.sock";
+/// Socket in the control mount that the gateway forwards the dashboard
+/// hostname to.
+const DASHBOARD_SOCKET: &str = "dashboard.sock";
+
+/// The daemon's end of the dashboard hostname, which the private listener
+/// forwards to it.
+pub struct DashboardSocket {
+    /// The bound socket in the gateway's control mount.
+    pub listener: tokio::net::UnixListener,
+    /// `ingress.private.dashboard_hostname`.
+    pub hostname: Hostname,
+    /// Identifies the tailnet clients the apps node forwards.
+    pub whois: Arc<crate::tailnet::Whois>,
+}
 
 /// Serializes gateway configuration, lifecycle, and durable route projection.
 pub struct Ingress {
@@ -82,6 +96,9 @@ pub struct Ingress {
     certificates: Certificates,
     /// The apps tailnet node, while `[ingress.private]` is enabled.
     node: Option<node::Node>,
+    /// Private hostname the gateway forwards to the daemon's dashboard
+    /// socket, `ingress.private.dashboard_hostname`.
+    dashboard: Option<Hostname>,
     /// The Cloudflare Tunnel serving public routes instead of ports 80/443,
     /// while `[ingress.tunnel]` is enabled.
     tunnel: Option<TunnelCredentials>,
@@ -158,6 +175,7 @@ impl Ingress {
             logs_since: Mutex::default(),
             certificates,
             node: None,
+            dashboard: None,
             tunnel: None,
             public_addresses: Vec::new(),
             records: std::sync::RwLock::default(),
@@ -213,12 +231,9 @@ impl Ingress {
         self.webhooks.as_ref().filter(|_| self.enabled)
     }
 
-    /// Binds the socket webhook deliveries arrive on, in the gateway's control
-    /// mount, whenever a webhook hostname is configured: the gateway forwards
-    /// to it while ingress is enabled, and otherwise another proxy running as
-    /// the daemon's user may. Only that user, which the gateway runs as, may
-    /// connect. A socket left by an earlier run is replaced: the data
-    /// directory lock is held.
+    /// Binds the socket webhook deliveries arrive on whenever a webhook
+    /// hostname is configured: the gateway forwards to it while ingress is
+    /// enabled, and otherwise another proxy running as the daemon's user may.
     ///
     /// # Errors
     /// Returns directory preparation or binding errors.
@@ -226,23 +241,60 @@ impl Ingress {
         if self.webhooks.is_none() {
             return Ok(None);
         }
-        let control = self.directory.join("control");
-        for directory in [&self.directory, &control] {
+        Self::bind_control(&self.directory, WEBHOOK_SOCKET)
+            .await
+            .map(Some)
+    }
+
+    /// Binds the socket the private listener forwards the dashboard hostname
+    /// to, when `config` sets one. Called before the daemon opens its state,
+    /// like its other listeners.
+    ///
+    /// # Errors
+    /// Returns directory preparation or binding errors.
+    pub async fn bind_dashboard(
+        config: &crate::config::DaemonConfig,
+    ) -> Result<Option<DashboardSocket>> {
+        let Some(hostname) = config.ingress.private.dashboard_hostname.clone() else {
+            return Ok(None);
+        };
+        let directory = config.server.data_dir.join("ingress");
+        Ok(Some(DashboardSocket {
+            listener: Self::bind_control(&directory, DASHBOARD_SOCKET).await?,
+            hostname,
+            whois: Arc::new(crate::tailnet::Whois::at(node::Node::socket(&directory))),
+        }))
+    }
+
+    /// Binds the daemon socket `name` in the gateway's control mount, below
+    /// the ingress `directory`. Only the daemon's user, which the gateway
+    /// runs as, may connect. A socket left by an earlier run is replaced: the
+    /// data directory lock is held.
+    async fn bind_control(directory: &Path, name: &str) -> Result<tokio::net::UnixListener> {
+        let control = directory.join("control");
+        for directory in [directory, &control] {
             crate::prepare_data_dir(directory).await?;
         }
-        let path = control.join(WEBHOOK_SOCKET);
+        let path = control.join(name);
         match tokio::fs::remove_file(&path).await {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                return Err(error).context("remove the previous webhook socket");
+                return Err(error).with_context(|| format!("remove the previous {name}"));
             }
             _ => {}
         }
         let previous = rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
         let bound = tokio::net::UnixListener::bind(&path);
         rustix::process::umask(previous);
-        let listener = bound.context("bind the webhook socket")?;
-        tracing::info!(socket = %path.display(), "webhook socket bound");
-        Ok(Some(listener))
+        let listener = bound.with_context(|| format!("bind {name}"))?;
+        tracing::info!(socket = %path.display(), "control socket bound");
+        Ok(listener)
+    }
+
+    /// The private hostname the gateway forwards to the daemon's dashboard
+    /// socket. Configuration only allows one with private ingress enabled.
+    #[must_use]
+    pub fn dashboard_hostname(&self) -> Option<&Hostname> {
+        self.dashboard.as_ref().filter(|_| self.enabled)
     }
 
     /// Serves private routes through the apps tailnet node when
@@ -250,6 +302,10 @@ impl Ingress {
     #[must_use]
     pub fn with_private(mut self, config: &PrivateIngressConfig) -> Self {
         self.node = node::Node::new(config, &self.directory);
+        self.dashboard = config
+            .dashboard_hostname
+            .clone()
+            .filter(|_| self.node.is_some());
         self
     }
 
@@ -337,8 +393,8 @@ impl Ingress {
     }
 
     /// Hostnames served with DNS-01 certificates instead of Caddy's automatic
-    /// HTTPS: private routes, which a public CA cannot reach, while private
-    /// ingress is enabled.
+    /// HTTPS: private routes and the dashboard hostname, which a public CA
+    /// cannot reach, while private ingress is enabled.
     fn dns01_hostnames(&self, table: &RoutingTable) -> BTreeSet<Hostname> {
         if self.node.is_none() {
             return BTreeSet::new();
@@ -348,6 +404,7 @@ impl Ingress {
             .flatten()
             .filter(|route| route.visibility == Visibility::Private)
             .map(|route| route.hostname.clone())
+            .chain(self.dashboard_hostname().cloned())
             .collect()
     }
 

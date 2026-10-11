@@ -1626,8 +1626,20 @@ async fn privileged_grants_and_tokens_raise_security_events() {
     );
 }
 
-/// Without the daemon's tailnet node, a token bound to a tailnet identity
-/// could never be used, so creating one is refused.
+/// Without the daemon's tailnet node or a dashboard hostname, a token bound to
+/// a tailnet identity could never be used, so creating one is refused.
+#[test]
+fn the_dashboard_hostname_identifies_tailnet_peers_too() {
+    use crate::config::DaemonConfig;
+    assert!(!TokenPolicy::new(&DaemonConfig::default()).tailnet);
+    let dashboard = DaemonConfig::from_toml(
+        "[ingress]\nenabled = true\n\
+         [ingress.private]\nenabled = true\ndashboard_hostname = 'dashboard.example.com'",
+    )
+    .unwrap();
+    assert!(TokenPolicy::new(&dashboard).tailnet);
+}
+
 #[tokio::test]
 async fn tailnet_bindings_need_the_tailnet_node() {
     let f = Fixture::new().await;

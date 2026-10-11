@@ -677,6 +677,37 @@ pub fn web_router_with_hosts(
     }
 }
 
+/// Wraps a [`web_router_with_hosts`] router for the dashboard socket, which
+/// the gateway's private listener forwards `ingress.private.dashboard_hostname`
+/// to. One upstream connection carries many tailnet clients' requests, so each
+/// request's client address comes from the `X-Forwarded-For` header the
+/// gateway sets. Only the daemon's user, which the gateway runs as, can
+/// connect; a request without a single client address is refused.
+pub fn gateway_router(router: Router) -> Router {
+    router.layer(middleware::from_fn(
+        |mut request: Request, next: Next| async move {
+            let client = request
+                .headers()
+                .get("x-forwarded-for")
+                .and_then(|value| value.to_str().ok()?.parse::<std::net::IpAddr>().ok());
+            let Some(client) = client else {
+                return ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "untrusted_client",
+                    "request did not come through the gateway",
+                )
+                .into_response();
+            };
+            request
+                .extensions_mut()
+                .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
+                    client, 0,
+                )));
+            next.run(request).await
+        },
+    ))
+}
+
 /// Builds the liveness-only route set. It is intentionally not part of Utoipa.
 pub fn health_router() -> Router<ApiState> {
     Router::<ApiState>::new().route("/health", get(system::health))
