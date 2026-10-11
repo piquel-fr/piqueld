@@ -33,7 +33,7 @@ pub struct ApplicationRuntime<D> {
     /// The build queue its Git sources wait in.
     priority: BuildPriority,
     /// The local snapshot `"self"` sources are checked out from, if any.
-    snapshot: Option<crate::snapshot::SnapshotSource>,
+    snapshot: Option<crate::git::snapshot::SnapshotSource>,
     /// The lock image cleanup takes exclusively; see `ImagesInUse`.
     images: Arc<tokio::sync::RwLock<()>>,
 }
@@ -82,7 +82,7 @@ impl<D> ApplicationRuntime<D> {
     #[must_use]
     pub(crate) fn with_snapshot(
         mut self,
-        snapshot: Option<crate::snapshot::SnapshotSource>,
+        snapshot: Option<crate::git::snapshot::SnapshotSource>,
     ) -> Self {
         self.snapshot = snapshot;
         self
@@ -391,7 +391,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
         docker: &D,
     ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
         let repository =
-            crate::snapshot::SnapshotSource::checkout(self.snapshot.as_ref(), repository);
+            crate::git::snapshot::SnapshotSource::checkout(self.snapshot.as_ref(), repository);
         let Some((store, operation)) = &self.progress else {
             return crate::git::Checkout::prepare(
                 repository,

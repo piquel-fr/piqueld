@@ -63,7 +63,7 @@ pub enum ApplicationError {
     RepositoryUnavailable(#[source] anyhow::Error),
     /// An uploaded local snapshot was refused.
     #[error(transparent)]
-    Snapshot(#[from] crate::snapshot::SnapshotError),
+    Snapshot(#[from] crate::git::snapshot::SnapshotError),
 }
 
 pub use crate::store::Actor;

@@ -1241,10 +1241,10 @@ impl From<ApplicationError> for ApiError {
     }
 }
 
-impl From<crate::snapshot::SnapshotError> for ApiError {
+impl From<crate::git::snapshot::SnapshotError> for ApiError {
     /// Maps refused snapshot uploads; Git's output stays in the logs.
-    fn from(error: crate::snapshot::SnapshotError) -> Self {
-        use crate::snapshot::SnapshotError;
+    fn from(error: crate::git::snapshot::SnapshotError) -> Self {
+        use crate::git::snapshot::SnapshotError;
         let message = error.to_string();
         match error {
             SnapshotError::TooLarge { limit } => Self::new(

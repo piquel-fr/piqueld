@@ -1,4 +1,8 @@
-//! Isolated Git checkouts. No shared mutable repository or credential store.
+//! Isolated Git checkouts and branch listings, and the snapshots of local
+//! worktrees deployments check out instead (see [`snapshot`]). No shared
+//! mutable repository or credential store.
+
+pub(crate) mod snapshot;
 
 use anyhow::{Context, bail};
 use piqueld_core::api::BranchState;
@@ -178,7 +182,7 @@ impl Checkout {
 
     /// Builds a hardened `git` command: restricted transports, no interactive
     /// prompts, hooks disabled, and killed if the future is dropped.
-    pub(crate) fn command() -> Command {
+    fn command() -> Command {
         let mut command = Command::new("git");
         // Inherit host credentials while excluding executable transport helpers, even
         // when host configuration enables them or rewrites a URL to use one.

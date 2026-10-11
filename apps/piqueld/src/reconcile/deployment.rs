@@ -1,6 +1,6 @@
 //! Fetch a candidate manifest without changing accepted intent or runtime state.
 use super::{Controller, DockerApi, Operation, OperationError};
-use crate::snapshot::SnapshotSource;
+use crate::git::snapshot::SnapshotSource;
 use crate::store::StoreError;
 use crate::store::Tracking;
 use piqueld_core::{

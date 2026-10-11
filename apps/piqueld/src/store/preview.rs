@@ -34,7 +34,7 @@ impl Store {
     }
 
     /// Snapshots uploaded from local worktrees.
-    pub(crate) fn snapshots(&self) -> &crate::snapshot::Snapshots {
+    pub(crate) fn snapshots(&self) -> &crate::git::snapshot::Snapshots {
         &self.snapshots
     }
 

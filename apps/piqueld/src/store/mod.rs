@@ -529,7 +529,7 @@ pub struct Store {
     previews: piqueld_core::manifest::PreviewLimits,
     /// Snapshots uploaded from local worktrees, kept next to the database
     /// in `snapshots/`.
-    snapshots: std::sync::Arc<crate::snapshot::Snapshots>,
+    snapshots: std::sync::Arc<crate::git::snapshot::Snapshots>,
 }
 
 impl Store {
@@ -630,7 +630,7 @@ impl Store {
             audit_days: 0,
             previews: piqueld_core::manifest::PreviewLimits::default(),
             snapshots: std::sync::Arc::new(
-                crate::snapshot::Snapshots::open(path.with_file_name("snapshots"))
+                crate::git::snapshot::Snapshots::open(path.with_file_name("snapshots"))
                     .await
                     .map_err(StoreError::PathSource)?,
             ),

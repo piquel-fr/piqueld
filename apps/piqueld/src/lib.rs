@@ -20,7 +20,6 @@ mod command;
 mod directories;
 mod git;
 mod runtime_dir;
-mod snapshot;
 mod ui_bundle;
 
 use thiserror::Error;

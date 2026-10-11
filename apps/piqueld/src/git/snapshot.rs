@@ -14,8 +14,8 @@
 //! The repository then moves to `<commit>.git`, from which deployments of
 //! that snapshot read their manifest and build `"self"` sources. Snapshots
 //! no preview's latest deployment uses are removed (see [`Snapshots::prune`]).
+use super::Checkout;
 use crate::command::LoggedCommand;
-use crate::git::Checkout;
 use crate::store::StoreError;
 use axum::body::Bytes;
 use futures_util::{Stream, StreamExt};
