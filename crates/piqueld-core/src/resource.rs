@@ -1363,7 +1363,7 @@ impl ObservedService {
     }
 
     /// Compares health checks by what Docker executes, so an HTTP check and its
-    /// equivalent `wget` command match. An unsupported observed check
+    /// equivalent `piqueld-probe` command match. An unsupported observed check
     /// (configured but not representable) never matches.
     pub(crate) fn healthcheck_matches(&self, desired: &DesiredService) -> bool {
         self.healthcheck

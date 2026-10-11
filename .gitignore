@@ -27,6 +27,10 @@ target
 # Dashboard UI Artifacts
 target-ui/
 
+# Dedicated Cargo target directory for the static health probe the daemon
+# build script embeds.
+/target-probe
+
 # Nix build artifacts
 /result
 /result-*

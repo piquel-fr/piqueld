@@ -401,6 +401,10 @@ impl DockerApi for FakeDocker {
         Ok(self.local_images.lock().await.clone())
     }
 
+    async fn prune_health_probes(&self) -> Result<(), DockerError> {
+        Ok(())
+    }
+
     async fn remove_image(
         &self,
         instance: &InstanceId,

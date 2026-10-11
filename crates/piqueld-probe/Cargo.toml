@@ -1,0 +1,17 @@
+[package]
+name = "piqueld-probe"
+description = "Static in-container HTTP health probe for piqueld services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The daemon embeds the binary and Swarm mounts it into images that may lack a
+# C library or dynamic loader, so it must stay dependency-light and small. The
+# daemon build script builds it statically, for a `*-unknown-linux-musl`
+# target with the `probe` profile.
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

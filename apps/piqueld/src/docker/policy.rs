@@ -1,15 +1,17 @@
 use super::{
-    BTreeSet, BollardDocker, HEALTH_RETRIES, HealthConfig, MountTypeEnum, NANO_CPUS_PER_MILLICORE,
-    RESTART_DELAY, SERVICE_LABEL, ServiceSpec, ServiceSpecUpdateConfigFailureActionEnum, TaskSpec,
-    TaskSpecContainerSpec, TaskSpecRestartPolicyConditionEnum,
+    BTreeSet, BollardDocker, HEALTH_RETRIES, HealthConfig, HealthProbe, MountTypeEnum,
+    NANO_CPUS_PER_MILLICORE, RESTART_DELAY, SERVICE_LABEL, ServiceSpec,
+    ServiceSpecUpdateConfigFailureActionEnum, TaskSpec, TaskSpecContainerSpec,
+    TaskSpecRestartPolicyConditionEnum,
 };
 
 /// The runtime policy emitted by the desired-service Docker specification builder.
 ///
 /// This policy verifies exactly the fields piqueld authors — replication,
 /// update settings, the restart condition and delay, mounts, environment,
-/// network targets and logical-name aliases, health checks, resource limits,
-/// and the placement pin to the local node. Fields the builder never sets are
+/// network targets and logical-name aliases, health checks and the probe
+/// config they run, resource limits, and the placement pin to the local node.
+/// Fields the builder never sets are
 /// accepted only at known Engine defaults, so ordinary engine-defaulted
 /// echo-back does not register as drift while unsupported non-default values
 /// do. Security relevant settings piqueld cannot express (privileged
@@ -96,7 +98,7 @@ impl ServiceRuntimePolicy {
                         })
                 })
             })
-            && container.configs.as_ref().is_none_or(Vec::is_empty)
+            && HealthProbe::matches(container)
             && container.oom_score_adj.is_none_or(|value| value == 0)
             && container.isolation.is_none_or(|value| {
                 matches!(
@@ -435,55 +437,85 @@ mod tests {
         assert!(ServiceRuntimePolicy::supported_health_config(&config));
     }
 
+    /// The probe vector piqueld authors for `Http { port: 8080, path: "/health", .. }`.
+    fn probe_vector(arguments: &[&str]) -> Vec<String> {
+        std::iter::once(piqueld_probe::CONTAINER_PATH)
+            .chain(arguments.iter().copied())
+            .map(String::from)
+            .collect()
+    }
+
     #[test]
     fn command_health_check_accepts_equivalent_http_vector() {
         let health_check = HealthCheck::Command {
-            command: vec![
-                "wget".into(),
-                "-q".into(),
-                "-T".into(),
-                "3".into(),
-                "-O".into(),
-                "/dev/null".into(),
-                "http://127.0.0.1:8080/health".into(),
-            ],
+            command: probe_vector(&[
+                "http",
+                "--port",
+                "8080",
+                "--path",
+                "/health",
+                "--timeout",
+                "3",
+            ]),
             interval_seconds: 10,
             timeout_seconds: 3,
         };
 
         let config = BollardDocker::health_config(&health_check);
         let observed = BollardDocker::observed_health(&config).unwrap();
+        assert!(matches!(observed, HealthCheck::Http { port: 8080, .. }));
         assert_eq!(observed.execution(), health_check.execution());
         assert!(ServiceRuntimePolicy::supported_health_config(&config));
     }
 
+    /// Near matches, including the `wget` vector earlier daemons authored for
+    /// HTTP checks, stay commands; HTTP services deployed before the probe
+    /// therefore drift and roll onto it.
     #[test]
     fn near_http_command_health_checks_round_trip_as_commands() {
-        for url in ["http://127.0.0.1:8080", "http://127.0.0.1:08080/health"] {
+        for command in [
+            probe_vector(&[
+                "http",
+                "--path",
+                "/health",
+                "--port",
+                "8080",
+                "--timeout",
+                "3",
+            ]),
+            probe_vector(&[
+                "http",
+                "--port",
+                "8080",
+                "--path",
+                "/health",
+                "--timeout",
+                "5",
+            ]),
+            [
+                "wget",
+                "-q",
+                "-T",
+                "3",
+                "-O",
+                "/dev/null",
+                "http://127.0.0.1:8080/health",
+            ]
+            .map(String::from)
+            .into(),
+        ] {
             let health_check = HealthCheck::Command {
-                command: vec![
-                    "wget".into(),
-                    "-q".into(),
-                    "-T".into(),
-                    "3".into(),
-                    "-O".into(),
-                    "/dev/null".into(),
-                    url.into(),
-                ],
+                command,
                 interval_seconds: 10,
                 timeout_seconds: 3,
             };
 
             let config = BollardDocker::health_config(&health_check);
             assert_eq!(
-                BollardDocker::observed_health(&config),
-                Some(health_check),
-                "{url}"
+                BollardDocker::observed_health(&config).as_ref(),
+                Some(&health_check)
             );
-            assert!(
-                ServiceRuntimePolicy::supported_health_config(&config),
-                "{url}"
-            );
+            assert!(ServiceRuntimePolicy::supported_health_config(&config));
         }
     }
 

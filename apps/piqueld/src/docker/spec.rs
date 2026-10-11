@@ -12,12 +12,15 @@ use piqueld_core::manifest::{RolloutOrder, RolloutPolicy};
 impl BollardDocker {
     /// Builds the service specification pinned to `node_id`, then resolves
     /// the inputs Docker assigns: each pinned secret becomes its immutable
-    /// Docker secret ID reference, and services attached to the application's
-    /// ingress network get `INGRESS_PROXIES_ENV` set to that network's subnets.
+    /// Docker secret ID reference, services whose health check runs
+    /// `piqueld-probe` mount its Swarm config, published on first use, and
+    /// services attached to the application's ingress network get
+    /// `INGRESS_PROXIES_ENV` set to that network's subnets.
     ///
-    /// Fails when a secret version is missing, or when the ingress network is
-    /// missing or still has no subnet after bounded inspection retries, since
-    /// Swarm assigns subnets after creating the network.
+    /// Fails when a secret version is missing, when the health probe cannot be
+    /// published, or when the ingress network is missing or still has no
+    /// subnet after bounded inspection retries, since Swarm assigns subnets
+    /// after creating the network.
     pub(super) async fn runtime_service_spec(
         &self,
         desired: &DesiredService,
@@ -33,6 +36,13 @@ impl BollardDocker {
             .expect("container spec");
         if !desired.secrets.is_empty() {
             container.secrets = Some(self.secret_references(desired).await?);
+        }
+        if desired
+            .healthcheck
+            .as_ref()
+            .is_some_and(|health| health.execution().runs_probe())
+        {
+            container.configs = Some(vec![self.health_probe_reference().await?]);
         }
         if let Some(network) = desired.ingress_network() {
             let proxies = self
@@ -153,12 +163,13 @@ impl BollardDocker {
 
     /// Converts a core health check into Docker's health-check representation.
     ///
-    /// Both variants run as a direct `CMD` vector; HTTP checks become the
-    /// equivalent `wget` probe via `HealthCheck::execution`.
+    /// Both variants run as a direct `CMD` vector; HTTP checks run the
+    /// `piqueld-probe` config mounted by `runtime_service_spec`, via
+    /// `HealthCheck::execution`.
     ///
     /// ```text
     /// Http { port: 8080, path: "/health", timeout_seconds: 3, .. }
-    ///   → ["CMD","wget","-q","-T","3","-O","/dev/null","http://127.0.0.1:8080/health"]
+    ///   → ["CMD","/run/piqueld/probe","http","--port","8080","--path","/health","--timeout","3"]
     /// ```
     pub(super) fn health_config(health_check: &HealthCheck) -> HealthConfig {
         let execution = health_check.execution();

@@ -604,6 +604,38 @@ image = "nginx:1"
 }
 
 #[test]
+fn the_health_probe_path_is_reserved() {
+    for target in ["/run/piqueld/probe", "/run/piqueld/probe/inner"] {
+        let manifest = format!(
+            r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "notes"
+[[spec.volumes]]
+name = "data"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "image"
+image = "nginx:1"
+[[spec.services.mounts]]
+volume = "data"
+target = "{target}"
+"#
+        );
+        let errors = parse_toml(&manifest).unwrap_err();
+        assert!(
+            errors
+                .0
+                .iter()
+                .any(|error| error.code == codes::MOUNT_TARGET_UNSAFE),
+            "{target}"
+        );
+    }
+}
+
+#[test]
 fn service_and_volume_count_budgets_are_enforced() {
     let services = (0..65)
         .map(|index| {

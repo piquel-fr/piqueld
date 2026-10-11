@@ -97,9 +97,14 @@ error whose message names the offending environment key where applicable:
 
 Defaults are replicas `1`, empty command and arguments, writable mounts, and
 health-check values of path `/health`, interval `10` seconds, timeout `3`
-seconds, and `3` retries. HTTP health checks run `wget` inside the container,
-so the image must contain a `wget` binary; images without one (for example
-distroless bases) must use command health checks instead. Services, mounts,
+seconds, and `3` retries. HTTP health checks need nothing in the image: piqueld
+mounts its static `piqueld-probe` at `/run/piqueld/probe` as a Swarm config
+and Docker runs it as the health check, for example
+`/run/piqueld/probe http --port 8080 --path /health --timeout 3`. It sends one
+plain HTTP GET to `127.0.0.1` inside the container, without following
+redirects, and passes on a 2xx or 3xx status within the timeout, so Swarm still
+gates tasks and rollouts on health, even for scratch and distroless images.
+Mounts cannot target `/run/piqueld/probe`. Command health checks run unchanged. Services, mounts,
 volumes, and environment maps are
 canonicalized before hashing. The specification hash is SHA-256 over a versioned
 canonical JSON envelope (`piqueld-spec-hash/v2`) covering only the canonical

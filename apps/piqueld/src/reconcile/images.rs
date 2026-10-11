@@ -125,13 +125,13 @@ impl<D: DockerApi> Controller<D> {
 
     /// Removes each image this installation built that no retention root
     /// keeps, by ID or repository digest, and no container uses, one by one,
-    /// by ID. Returns `false`
+    /// by ID, then health probe configs no service mounts. Returns `false`
     /// without doing anything while a preparation may be recording images;
     /// the next request or period cleans up instead.
     ///
     /// # Errors
-    /// Returns storage errors, or Docker errors listing images. A failed
-    /// removal is journaled and the image kept.
+    /// Returns storage errors, or Docker errors listing images or pruning
+    /// probe configs. A failed removal is journaled and the image kept.
     /// # Panics
     /// Panics if the store violates its validated instance identity invariant.
     pub async fn clean_images(&self) -> Result<bool, OperationError> {
@@ -158,6 +158,8 @@ impl<D: DockerApi> Controller<D> {
                 reclaimed += image.size;
             }
         }
+        // Old probe configs are about as long-lived as old images.
+        self.docker.prune_health_probes().await?;
         let now = crate::store::now_ms();
         self.images.status.send_modify(|status| {
             status.images = kept;

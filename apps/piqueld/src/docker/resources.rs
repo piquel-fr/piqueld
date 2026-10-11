@@ -614,6 +614,12 @@ impl DockerApi for BollardDocker {
             .await
     }
 
+    async fn prune_health_probes(&self) -> Result<(), DockerError> {
+        DockerTimeout::Request
+            .run("prune health probes", self.remove_stale_health_probes())
+            .await
+    }
+
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
         // Pulling through the Engine records RepoDigests, and resolution
         // verifies the tag was not re-pointed while the pull ran. Stream
