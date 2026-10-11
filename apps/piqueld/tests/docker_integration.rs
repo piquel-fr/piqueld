@@ -711,6 +711,7 @@ impl SwarmScenario {
             logical_name: name,
             run: piqueld_core::manifest::JobRun::BeforeRollout,
             timeout_seconds: 60,
+            volume_access: piqueld_core::manifest::JobVolumeAccess::ReadOnly,
             container,
         }
         .for_operation(operation)
@@ -882,7 +883,7 @@ impl SwarmScenario {
             loop {
                 match docker.job_status(job).await.unwrap() {
                     JobStatus::Running { .. } => {
-                        tokio::time::sleep(Duration::from_millis(250)).await
+                        tokio::time::sleep(Duration::from_millis(250)).await;
                     }
                     status => return status,
                 }

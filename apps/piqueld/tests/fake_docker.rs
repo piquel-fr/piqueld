@@ -64,8 +64,8 @@ struct FakeDocker {
     job_starts: Arc<Mutex<Vec<JobStart>>>,
     /// Job services by Docker name, with the operation that started each run
     /// and the exit code the run reports once finished.
-    /// Job runs by service name: operation, exit code, and deadline.
-    jobs: Arc<Mutex<BTreeMap<String, (String, i64, std::time::SystemTime)>>>,
+    /// Job runs by service name.
+    jobs: Arc<Mutex<BTreeMap<String, JobRunState>>>,
     /// Keeps job runs running.
     hold_jobs: Arc<AtomicBool>,
     /// Fails status checks of started runs.
@@ -86,6 +86,9 @@ struct FakeDocker {
     /// Holds builds once their image exists, until released.
     build_gate: Option<Arc<ResolutionGate>>,
 }
+
+/// A job run's operation, exit code, and deadline.
+type JobRunState = (String, i64, std::time::SystemTime);
 
 /// A started job with the services, networks, and volumes it could see.
 #[derive(Debug, PartialEq)]
@@ -4455,7 +4458,10 @@ async fn failed_exclusive_job_restarts_stopped_services_once_its_run_stopped() {
             harness.scan_result(&operation).await,
             (OperationState::Failed, Some("job_failed".into()))
         );
-        assert!(harness.docker.observed.lock().await.services.is_empty());
+        assert_eq!(
+            harness.docker.observed.lock().await.services,
+            [] as [piqueld_core::ObservedService; 0]
+        );
     }
     harness
         .docker

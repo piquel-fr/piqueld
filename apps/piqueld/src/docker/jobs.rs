@@ -8,7 +8,7 @@ use super::{
 };
 use bollard::{
     container::LogOutput,
-    models::{ServiceSpecModeReplicatedJob, Task, TaskState, TaskStatus},
+    models::{Service, ServiceSpecModeReplicatedJob, Task, TaskState, TaskStatus},
     query_parameters::{ListContainersOptionsBuilder, LogsOptionsBuilder},
 };
 use piqueld_core::{
@@ -84,8 +84,11 @@ impl BollardDocker {
     }
 
     /// Replaces any existing service of the job with this operation's run,
-    /// labelled with when its timeout expires. Starts it only once no other
-    /// container uses the volumes the job holds exclusively.
+    /// labelled with when its timeout expires. An exclusive run starts only
+    /// once no other service mounts its volumes and their containers stopped.
+    /// The controller's mutation lock covers this and every service write, so
+    /// with [`Self::check_volumes_free`] a service never shares a volume with
+    /// an exclusive run.
     pub(super) async fn create_job(&self, job: &DesiredJobRun) -> Result<(), DockerError> {
         if !job.has_valid_identity() {
             return Err(DockerError::OwnershipConflict);
@@ -96,6 +99,7 @@ impl BollardDocker {
             .await?;
         self.wait_jobs_stopped(ownership, Some(job.logical_name.as_str()), JobRuns::All)
             .await?;
+        self.check_volumes_unused(job).await?;
         self.wait_volumes_released(job).await?;
         let node_id = self.local_node_id().await?;
         let mut spec = Self::job_spec(self.runtime_service_spec(&job.container, &node_id).await?);
@@ -108,6 +112,109 @@ impl BollardDocker {
             .get_or_insert_with(Default::default)
             .insert(JOB_DEADLINE_LABEL.into(), deadline.to_string());
         self.create_service_wire(&spec).await
+    }
+
+    /// Fails while a service of the application, other than a job, mounts a
+    /// volume `job` holds exclusively: waiting cannot remove it.
+    async fn check_volumes_unused(&self, job: &DesiredJobRun) -> Result<(), DockerError> {
+        if job.exclusive_volumes().next().is_none() {
+            return Ok(());
+        }
+        let services = self
+            .labelled_services(Self::ownership_filter(&job.container.labels)?)
+            .await?;
+        if services.iter().any(|service| {
+            let labels = service.spec.as_ref().and_then(|spec| spec.labels.as_ref());
+            !labels.is_some_and(|labels| labels.contains_key(JOB_LABEL))
+                && Self::spec_mounts(service).any(|(volume, _)| job.holds_volume(volume))
+        }) {
+            return Err(DockerError::Request(
+                "start an exclusive job while a service mounts its volume",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Fails while a job of the service's application holds a volume the
+    /// service mounts: a job service mounts it writable, or a container of a
+    /// removed run still does while it stops. Exclusive runs are the only jobs
+    /// with writable mounts.
+    pub(super) async fn check_volumes_free(
+        &self,
+        service: &piqueld_core::DesiredService,
+    ) -> Result<(), DockerError> {
+        if service.mounts.is_empty() {
+            return Ok(());
+        }
+        let mounts = |volume: &str| {
+            service
+                .mounts
+                .iter()
+                .any(|mount| mount.volume_name.as_str() == volume)
+        };
+        let mut labels = Self::ownership_filter(&service.labels)?;
+        labels.push(JOB_LABEL.to_owned());
+        let services = self.labelled_services(labels.clone()).await?;
+        let containers = Self::map_request(
+            "list job containers",
+            self.docker
+                .list_containers(Some(
+                    ListContainersOptionsBuilder::default()
+                        .filters(&HashMap::from([("label", labels)]))
+                        .build(),
+                ))
+                .await,
+        )?;
+        let held = services.iter().any(|job| {
+            Self::spec_mounts(job).any(|(volume, read_only)| !read_only && mounts(volume))
+        }) || containers
+            .iter()
+            .flat_map(|container| container.mounts.iter().flatten())
+            .any(|mount| mount.rw == Some(true) && mount.name.as_deref().is_some_and(mounts));
+        if held {
+            return Err(DockerError::Request(
+                "start a service while a job holds its volume",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Volume names and read-only flags of a service's specification.
+    fn spec_mounts(service: &Service) -> impl Iterator<Item = (&str, bool)> {
+        service
+            .spec
+            .iter()
+            .flat_map(|spec| spec.task_template.iter())
+            .flat_map(|task| task.container_spec.iter())
+            .flat_map(|container| container.mounts.iter().flatten())
+            .filter_map(|mount| Some((mount.source.as_deref()?, mount.read_only == Some(true))))
+    }
+
+    /// Services carrying every label in `labels`.
+    async fn labelled_services(&self, labels: Vec<String>) -> Result<Vec<Service>, DockerError> {
+        Self::map_request(
+            "list services",
+            self.docker
+                .list_services(Some(
+                    ListServicesOptionsBuilder::default()
+                        .filters(&HashMap::from([("label", labels)]))
+                        .build(),
+                ))
+                .await,
+        )
+    }
+
+    /// Label filters selecting the application named by `ownership`.
+    fn ownership_filter(ownership: &BTreeMap<String, String>) -> Result<Vec<String>, DockerError> {
+        [MANAGED_LABEL, INSTANCE_LABEL, APPLICATION_LABEL]
+            .into_iter()
+            .map(|key| {
+                ownership
+                    .get(key)
+                    .map(|value| format!("{key}={value}"))
+                    .ok_or(DockerError::Validation("job ownership"))
+            })
+            .collect()
     }
 
     /// Waits until no running container mounts a volume `job` holds
@@ -140,15 +247,7 @@ impl BollardDocker {
         job: Option<&str>,
         runs: JobRuns<'_>,
     ) -> Result<(), DockerError> {
-        let mut labels = [MANAGED_LABEL, INSTANCE_LABEL, APPLICATION_LABEL]
-            .into_iter()
-            .map(|key| {
-                ownership
-                    .get(key)
-                    .map(|value| format!("{key}={value}"))
-                    .ok_or(DockerError::Validation("job ownership"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut labels = Self::ownership_filter(ownership)?;
         labels.push(job.map_or_else(|| JOB_LABEL.to_owned(), |job| format!("{JOB_LABEL}={job}")));
         let options = ListContainersOptionsBuilder::default()
             .filters(&HashMap::from([("label", labels)]))

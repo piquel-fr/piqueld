@@ -401,7 +401,9 @@ impl<D: DockerApi> Controller<D> {
 
     /// Whether the unpromoted operation may still roll out its prepared target.
     /// A failed job or a cancellation ends it once no job container can still
-    /// be running; other failures are retried or reconsidered.
+    /// be running; other failures are retried or reconsidered. Independently,
+    /// the Docker adapter refuses to start a service while a job holds one of
+    /// its volumes, including runs of superseded operations.
     async fn may_roll_out(&self, operation: &super::Operation) -> Result<bool, StoreError> {
         let ended = operation.state == OperationState::Cancelled
             || matches!(
@@ -489,8 +491,11 @@ impl<D: DockerApi> Controller<D> {
         {
             return Ok(());
         }
+        // Reread under the lock: a retry may have reopened a failed operation.
         if let Some(prepared) = self.store.prepared_target(operation_id).await?
-            && self.may_roll_out(&operation).await?
+            && self
+                .may_roll_out(&self.store.operation(operation_id).await?)
+                .await?
         {
             plan.preserve_job_prerequisites(&prepared, &observed);
         }

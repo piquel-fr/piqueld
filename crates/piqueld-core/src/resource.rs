@@ -523,9 +523,12 @@ pub struct DesiredJob {
     pub run: JobRun,
     /// Seconds the job may run before the deployment fails.
     pub timeout_seconds: u32,
+    /// How runs use the service's volumes. Targets prepared before this
+    /// setting existed read them only.
+    #[serde(default)]
+    pub volume_access: JobVolumeAccess,
     /// The referenced service's container settings with the job's command,
-    /// Docker name, and labels. Health checks never apply to jobs. Mounts are
-    /// read-only unless the job has exclusive volume access.
+    /// Docker name, and labels. Health checks never apply to jobs.
     pub container: DesiredService,
 }
 
@@ -548,7 +551,7 @@ impl DesiredJob {
         self.container
             .mounts
             .iter()
-            .filter(|mount| !mount.read_only)
+            .filter(|mount| self.volume_access == JobVolumeAccess::Exclusive && !mount.read_only)
             .map(|mount| &mount.volume_name)
     }
 
@@ -559,10 +562,16 @@ impl DesiredJob {
             .any(|exclusive| exclusive.as_str() == volume)
     }
 
-    /// Returns this job's run for `operation`.
+    /// Returns this job's run for `operation`. Runs of read-only jobs mount
+    /// every volume read-only.
     #[must_use]
     pub fn for_operation(&self, operation: &str) -> DesiredJobRun {
         let mut job = self.clone();
+        if job.volume_access == JobVolumeAccess::ReadOnly {
+            for mount in &mut job.container.mounts {
+                mount.read_only = true;
+            }
+        }
         job.container
             .labels
             .insert(JOB_OPERATION_LABEL.into(), operation.into());
@@ -1169,15 +1178,11 @@ fn compile_job(
     container
         .labels
         .insert(JOB_LABEL.into(), job.name.to_string());
-    if job.volume_access == JobVolumeAccess::ReadOnly {
-        for mount in &mut container.mounts {
-            mount.read_only = true;
-        }
-    }
     DesiredJob {
         logical_name: job.name.clone(),
         run: job.run,
         timeout_seconds: job.timeout_seconds,
+        volume_access: job.volume_access,
         container,
     }
 }

@@ -66,8 +66,12 @@ and converge using normal service health checks and convergence deadlines. The
 controller replans after each action and resets the deadline after each service
 converges. Jobs mount volumes read-only unless they declare exclusive access;
 an exclusive job then removes every service that mounts one of its writable
-volumes, and the adapter starts the run only once no container uses those
-volumes. Other services wait for all jobs to succeed, and the job's timeout
+volumes, and the adapter starts the run only once no other service mounts
+those volumes and their containers have stopped. Conversely, the adapter
+refuses to create or update a service while a job service of the application
+mounts one of its volumes writable, or a container of a removed run still does.
+Both checks run under the controller's mutation lock, so a service never shares
+a volume with an exclusive run, even one left by a superseded operation. Other services wait for all jobs to succeed, and the job's timeout
 starts only after its dependencies are ready. The run's deadline is recorded
 on its job service when it starts, so a resumed run keeps it. Jobs of a prerequisite service
 must precede jobs that need it; manifest validation rejects the opposite order.

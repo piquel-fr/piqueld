@@ -1070,11 +1070,16 @@ fn jobs_reuse_their_service_container_under_a_distinct_identity() {
     assert_ne!(job.container.name, service.name);
     assert_eq!(job.container.image, service.image);
     assert_eq!(job.container.environment, service.environment);
-    // Jobs only read volumes unless they declare exclusive access.
+    assert_eq!(job.container.mounts, service.mounts);
+    // Runs only read volumes unless the job declares exclusive access, also
+    // for targets prepared before the setting existed.
     assert!(!service.mounts[0].read_only);
-    assert_eq!(job.container.mounts.len(), 1);
-    assert!(job.container.mounts[0].read_only);
     assert_eq!(job.exclusive_volumes().count(), 0);
+    assert!(job.for_operation("operation-1").container.mounts[0].read_only);
+    let mut legacy = serde_json::to_value(job).unwrap();
+    legacy.as_object_mut().unwrap().remove("volume_access");
+    let legacy: piqueld_core::DesiredJob = serde_json::from_value(legacy).unwrap();
+    assert!(legacy.for_operation("operation-1").container.mounts[0].read_only);
     assert_eq!(job.container.networks, service.networks);
     assert_eq!(job.container.command, ["notes", "migrate"]);
     assert!(job.container.healthcheck.is_none());
@@ -1161,6 +1166,7 @@ fn exclusive_jobs_stop_volume_users_after_dependencies_and_repair_keeps_them_sto
         job.exclusive_volumes().collect::<Vec<_>>(),
         [&web.mounts[0].volume_name]
     );
+    assert!(!job.for_operation("operation-1").container.mounts[0].read_only);
     let plan_for = |observed: &ObservedApplication| {
         Plan::from_request(
             &PlanRequest::Reconcile {

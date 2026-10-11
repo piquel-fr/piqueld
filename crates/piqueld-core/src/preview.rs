@@ -335,7 +335,7 @@ impl crate::Plan {
                 severity: DiagnosticSeverity::Warning,
                 resource: job.name.to_string(),
                 message: format!(
-                    "job {} uses its volumes exclusively: {} stop before it runs and stay stopped until the rollout",
+                    "job {} uses its volumes exclusively: {} and any other running service mounting them stop before it runs and stay stopped until the rollout",
                     job.name,
                     services.join(", ")
                 ),
