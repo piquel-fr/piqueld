@@ -233,7 +233,12 @@ pub(super) fn ExecTerminal() -> impl IntoView {
             match update {
                 Update::Running => status.set(Status::Running),
                 Update::Output(data) => {
-                    terminal.update_value(|terminal| terminal.write(&data));
+                    let replies = terminal
+                        .try_update_value(|terminal| terminal.write(&data))
+                        .unwrap_or_default();
+                    if !replies.is_empty() {
+                        send(ExecInput::Stdin(replies));
+                    }
                     redraw();
                 }
                 Update::Ended(outcome) => {

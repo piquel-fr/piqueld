@@ -127,9 +127,40 @@ fn control(char: char) -> Option<u8> {
     })
 }
 
+/// Answers the status queries programs send to their terminal, such as the
+/// cursor position line editors request, which `vt100` leaves to callbacks.
+#[derive(Default)]
+struct Replies(Vec<u8>);
+
+impl vt100::Callbacks for Replies {
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        i1: Option<u8>,
+        _: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        let param = params.first().and_then(|param| param.first()).copied();
+        match (i1, c, param) {
+            // Device status: "OK".
+            (None, 'n', Some(5)) => self.0.extend_from_slice(b"\x1b[0n"),
+            // Cursor position, 1-based.
+            (None, 'n', Some(6)) => {
+                let (row, col) = screen.cursor_position();
+                self.0
+                    .extend_from_slice(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
+            }
+            // Primary device attributes: a VT100 with advanced video.
+            (None, 'c', None | Some(0)) => self.0.extend_from_slice(b"\x1b[?1;2c"),
+            _ => {}
+        }
+    }
+}
+
 /// The screen of one exec session.
 pub struct Terminal {
-    parser: vt100::Parser,
+    parser: vt100::Parser<Replies>,
     /// Output comes from a pseudo-terminal, which already ends lines with CRLF.
     tty: bool,
 }
@@ -139,14 +170,22 @@ impl Terminal {
     #[must_use]
     pub fn new(size: TerminalSize, tty: bool) -> Self {
         Self {
-            parser: vt100::Parser::new(size.height, size.width, SCROLLBACK),
+            parser: vt100::Parser::new_with_callbacks(
+                size.height,
+                size.width,
+                SCROLLBACK,
+                Replies::default(),
+            ),
             tty,
         }
     }
 
-    /// Writes command output. Without a pseudo-terminal, nothing translates
-    /// line feeds, so each also returns the cursor to the line's start.
-    pub fn write(&mut self, data: &[u8]) {
+    /// Writes command output and returns the terminal's replies to queries
+    /// in it, which belong on the command's input. Without a pseudo-terminal,
+    /// nothing translates line feeds, so each also returns the cursor to the
+    /// line's start.
+    #[must_use]
+    pub fn write(&mut self, data: &[u8]) -> Vec<u8> {
         if self.tty {
             self.parser.process(data);
         } else {
@@ -157,6 +196,7 @@ impl Terminal {
                 }
             }
         }
+        std::mem::take(&mut self.parser.callbacks_mut().0)
     }
 
     /// Current screen size.
@@ -372,7 +412,7 @@ mod tests {
     #[test]
     fn output_renders_as_escaped_styled_html() {
         let mut terminal = Terminal::new(SIZE, true);
-        terminal.write(b"\x1b[31m<a>\x1b[0m&\x1b[?25l");
+        let _ = terminal.write(b"\x1b[31m<a>\x1b[0m&\x1b[?25l");
         assert_eq!(
             terminal.html(),
             "<span style=\"color:var(--term-1);\">&lt;a&gt;</span>&amp;      \n          \n"
@@ -382,15 +422,23 @@ mod tests {
     #[test]
     fn output_without_a_terminal_returns_to_the_line_start() {
         let mut terminal = Terminal::new(SIZE, false);
-        terminal.write(b"ab\ncd");
+        let _ = terminal.write(b"ab\ncd");
         assert!(terminal.html().starts_with("ab        \ncd"));
+    }
+
+    #[test]
+    fn queries_are_answered_even_when_split_across_output() {
+        let mut terminal = Terminal::new(SIZE, true);
+        assert_eq!(terminal.write(b"ab\x1b["), b"");
+        assert_eq!(terminal.write(b"6n"), b"\x1b[1;3R");
+        assert_eq!(terminal.write(b"\x1b[c"), b"\x1b[?1;2c");
     }
 
     #[test]
     fn pastes_are_bracketed_on_request() {
         let mut terminal = Terminal::new(SIZE, true);
         assert_eq!(terminal.paste("a\nb"), b"a\rb");
-        terminal.write(b"\x1b[?2004h");
+        let _ = terminal.write(b"\x1b[?2004h");
         assert_eq!(terminal.paste("a"), b"\x1b[200~a\x1b[201~");
     }
 }
