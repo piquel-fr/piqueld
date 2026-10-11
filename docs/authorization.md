@@ -28,7 +28,7 @@ added later: requests about an environment are checked on its application.
 | `apps:write` | all or listed applications | Configuration edits, manifest apply, rename, adding, renaming or changing the source of environments, opting them into or out of sync, and generating webhook secrets |
 | `apps:deploy` | all or listed applications | Deploy, promote releases into, and reconcile environments, create and deploy previews, including local snapshots, and, with `apps:write`, turn on [deploying on push](application-manifest.md#deploying-on-push) or opt an environment into it |
 | `apps:delete` | all or listed applications | Delete the application, its environments or its previews |
-| `previews:deploy` | all or listed applications | Create and deploy [previews](#preview-permissions) and read their logs; included in `apps:deploy` |
+| `previews:deploy` | all or listed applications | Create and deploy [previews](#preview-permissions), including from a local worktree, and read their logs; included in `apps:deploy` |
 | `previews:delete` | all or listed applications | Delete and prune previews; included in `apps:delete` |
 | `apps:exec` | all or listed applications | Run commands in running containers (`piquelctl app exec`), which reaches everything those containers can, including secret values |
 | `secrets:write` | all or listed applications | Store, regenerate, and delete secret values, and choose which environments may mount a stored secret |
@@ -56,8 +56,8 @@ piquelctl token create agent --app notes \
   --permission previews:deploy --permission previews:delete
 ```
 
-This token can create, deploy, read the logs of, delete, and prune previews of
-`notes`, including previews created later. It cannot deploy, promote into,
+This token can create, deploy (also from a local worktree), read the logs of,
+delete, and prune previews of `notes`, including previews created later. It cannot deploy, promote into,
 reconcile, or delete long-lived environments, read their logs, change the
 application's configuration, environments, or secrets, delete the application,
 or run commands anywhere: commands in a preview still need `apps:exec`, which

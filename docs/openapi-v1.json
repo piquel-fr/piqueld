@@ -13203,7 +13203,7 @@
           }
         },
         "summary": "Deploys a snapshot of a local worktree to a preview.",
-        "x-piqueld-access": "apps:deploy"
+        "x-piqueld-access": "previews:deploy"
       }
     },
     "/api/v1/applications/{id}/previews/prune": {

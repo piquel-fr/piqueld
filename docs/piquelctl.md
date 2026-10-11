@@ -232,7 +232,7 @@ repositories, partial clones, and files staging would pass through a configured 
 driver, such as LFS's, are refused, since those filters write into the
 repository. A large first upload may need a longer `--timeout`; the daemon
 gives up on a body that stalls for 30 seconds, or after 10 minutes
-(`snapshot_timed_out`). Uploading needs `apps:deploy`.
+(`snapshot_timed_out`). Uploading needs `previews:deploy`, which `apps:deploy` includes.
 
 A preview that runs or is deploying a local snapshot reports its branch as
 `local`, with the branch's head if it was pushed: `preview prune` never deletes

@@ -138,8 +138,8 @@ when the complete normalized manifest is needed.
 
 `POST /api/v1/applications/{id}/previews/local?branch=feat/login&slot=agent-2`
 deploys a snapshot of a local worktree, which `piquelctl preview deploy
---local` makes, to the preview of `branch` and `slot`. It needs `apps:deploy`
-and no `expected_generation`, and creates the preview first if needed, as
+--local` makes, to the preview of `branch` and `slot`. It needs
+`previews:deploy` (included in `apps:deploy`) and no `expected_generation`, and creates the preview first if needed, as
 `POST /api/v1/applications/{id}/previews` does: idempotently, within the
 `[previews]` limits. The response is always 202 with `CreatedPreview`, whose
 `created` says whether the preview was new, and a new deployment.
