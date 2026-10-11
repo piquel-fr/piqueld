@@ -151,7 +151,8 @@ impl ApplicationService {
             .with_build_history(config.build_history.clone())
             .with_observability(config)
             .with_previews(config.previews.clone())
-            .with_snapshot_uploads(config.snapshots.max_upload_bytes);
+            .with_snapshot_uploads(config.snapshots.max_upload_bytes)
+            .with_checkouts(config.checkouts.max_bytes);
         info!(path = %config.server.database_path().display(), "opened control-plane state");
         Ok(Arc::new(store))
     }

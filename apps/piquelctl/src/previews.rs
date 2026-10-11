@@ -1,8 +1,7 @@
 //! `piquelctl preview`: disposable deployments of a branch. A preview is
 //! addressed by its stable ID, its slug, or its branch and `--slot`, in that
 //! order. Creating, deploying, and deleting one need no application revision.
-use crate::output::TaskOutcome;
-use crate::snapshot::Worktree;
+use crate::snapshot::{History, Worktree};
 use crate::{
     cli::{Cli, LogArgs},
     commands::{resolve_application, wait_for_deletion, wait_for_operation},
@@ -94,11 +93,17 @@ pub(crate) struct DeployArgs {
     #[arg(long)]
     slot: Option<String>,
     /// Deploy a snapshot of the current Git worktree: its committed,
-    /// uncommitted, and untracked files, except ignored ones. Creates the
+    /// uncommitted, and untracked files, except ignored ones, which are sent
+    /// only as committed. Lists the uncommitted files it sends. Creates the
     /// preview of its branch and `--slot` if needed. Never changes the
     /// repository.
     #[arg(long)]
     local: bool,
+    /// Upload every commit of HEAD with the snapshot, for a daemon that
+    /// cannot fetch a base from the application's repository. Without it,
+    /// only the commits since a pushed base are sent.
+    #[arg(long, requires = "local")]
+    full_history: bool,
     /// The branch the snapshot is deployed as, instead of the current one;
     /// required when HEAD is detached.
     #[arg(long, requires = "local")]
@@ -221,9 +226,10 @@ impl DeployArgs {
         wait_for_accepted(console, client, &preview, self.no_wait, &accepted).await
     }
 
-    /// Snapshots the current worktree (see `snapshot`), uploads it thin
-    /// against a base the repository likely has, or complete when the
-    /// daemon cannot fetch that base, then waits for its deployment unless
+    /// Snapshots the current worktree (see `snapshot`) within the
+    /// daemon's limits, lists the uncommitted files it sends, and uploads
+    /// it thin against a base the repository likely has, or with the whole
+    /// history with `--full-history`, then waits for its deployment unless
     /// `--no-wait`. The upload is not retried: the daemon may already have
     /// received it.
     async fn deploy_local(&self, client: &Client, console: &mut Console) -> Result<()> {
@@ -239,45 +245,61 @@ impl DeployArgs {
         };
         let application = resolve_application(client, &self.application).await?;
         let id = application.application.id().as_str();
+        // Older daemons report no limits; they still refuse what exceeds them.
+        let limits = retry_transport(|| client.system_status()).await?.snapshots;
+        let history = if self.full_history {
+            History::Full
+        } else {
+            History::Thin
+        };
         let progress = console.start_task("snapshot");
-        let uploaded = async {
-            progress.update("committing the worktree");
-            let snapshot = worktree.snapshot(&branch).await?;
-            let mut bundle = snapshot.bundle(true).await?;
-            loop {
-                progress.update(&bundle.describe());
-                let file = tokio::fs::File::open(&bundle.path)
-                    .await
-                    .map_err(|error| CliError::new(ErrorKind::General, error.to_string()))?;
-                let upload = client
-                    .deploy_local_preview(
-                        id,
-                        (&branch, self.slot.as_deref()),
-                        (file, bundle.length),
-                    )
-                    .await;
-                match upload {
-                    Err(ClientError::Api { error, .. })
-                        if error.code == codes::SNAPSHOT_BASE_UNAVAILABLE
-                            && bundle.snapshot.base.is_some() =>
-                    {
-                        bundle = snapshot.bundle(false).await?;
-                    }
-                    upload => return Ok::<_, CliError>((upload?, bundle.snapshot)),
-                }
-            }
+        progress.update("committing the worktree");
+        let packed = async {
+            let snapshot = worktree.snapshot(&branch, limits.as_ref()).await?;
+            let bundle = snapshot.bundle(history).await?;
+            bundle.check_size(limits.as_ref())?;
+            Ok((snapshot, bundle))
         }
         .await;
-        let (created, snapshot) = match uploaded {
-            Ok(uploaded) => {
-                progress.finish(TaskOutcome::Succeeded, "uploaded");
-                uploaded
-            }
-            Err(error) => {
-                progress.finish(TaskOutcome::Failed, &error.to_string());
-                return Err(error);
-            }
-        };
+        let (snapshot, bundle) = progress.settle(packed, |(_, bundle)| bundle.describe())?;
+        if !snapshot.uncommitted.is_empty() {
+            const LISTED: usize = 20;
+            let listed = snapshot.uncommitted.len().min(LISTED);
+            let files = snapshot.uncommitted[..listed].join(", ");
+            let more = match snapshot.uncommitted.len() - listed {
+                0 => String::new(),
+                more => format!(" and {more} more"),
+            };
+            console.info(format_args!("sending uncommitted files: {files}{more}"))?;
+        }
+        let progress = console.start_task("upload");
+        progress.update("uploading");
+        let uploaded = async {
+            let file = tokio::fs::File::open(&bundle.path)
+                .await
+                .map_err(|error| CliError::new(ErrorKind::General, error.to_string()))?;
+            client
+                .deploy_local_preview(id, (&branch, self.slot.as_deref()), (file, bundle.length))
+                .await
+                .map_err(|error| match error {
+                    ClientError::Api { error, .. }
+                        if error.code == codes::SNAPSHOT_BASE_UNAVAILABLE =>
+                    {
+                        CliError::new(
+                            ErrorKind::Input,
+                            format!(
+                                "the daemon could not fetch {} from the application's repository; \
+                                 push it, or pass --full-history to upload the whole history",
+                                bundle.snapshot.base.as_deref().unwrap_or("the base"),
+                            ),
+                        )
+                    }
+                    error => error.into(),
+                })
+        }
+        .await;
+        let created = progress.settle(uploaded, |_| "uploaded".to_owned())?;
+        let snapshot = bundle.snapshot;
         let deployed = if self.no_wait {
             Deployed::accepted(&created.preview, &created.operation.operation_id)
                 .snapshot(&branch, &snapshot)

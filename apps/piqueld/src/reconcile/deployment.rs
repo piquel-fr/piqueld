@@ -64,16 +64,20 @@ impl<D: DockerApi> Controller<D> {
         self.store
             .progress(&operation.id, "fetching_manifest", None)
             .await?;
-        let checkout = crate::git::Checkout::clone(
-            source
-                .as_ref()
-                .map_or(&backing.repository, |source| &source.repository),
-        )
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, "manifest repository fetch failed");
-            OperationError::ManifestFetchFailed(error)
-        })?;
+        let checkout = self
+            .store
+            .checkouts()
+            .checkout(
+                source
+                    .as_ref()
+                    .map_or(&backing.repository, |source| &source.repository),
+                None,
+            )
+            .await
+            .map_err(|error| {
+                tracing::error!(?error, "manifest repository fetch failed");
+                OperationError::ManifestFetchFailed(error)
+            })?;
         let mut manifest = Self::read_manifest(&checkout, &backing.path).await?;
         // Replaced before validation: `self` sources and `git.*` references
         // need a connection, and the file's own may be absent or invalid.

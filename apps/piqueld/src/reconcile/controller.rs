@@ -523,7 +523,7 @@ impl<D: DockerApi> Controller<D> {
         let _in_use = self.images_in_use().await;
         let runtime = crate::application::ApplicationRuntime::new(
             Arc::clone(&self.docker),
-            piqueld_core::InstanceId::parse(self.store.instance_id()).expect("valid identity"),
+            &self.store,
             Arc::new(tokio::sync::Notify::new()),
             self.prepare_timeout,
             self.images_lock(),

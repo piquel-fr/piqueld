@@ -213,18 +213,27 @@ as for environments; deleting and pruning need `apps:delete`.
 
 `preview deploy <app> --local` deploys the Git worktree of the current
 directory without pushing it: its committed, uncommitted and untracked files,
-except ignored ones. It deploys to the preview of the current branch and
+except ignored ones. A tracked file that is ignored, such as a committed
+`.env` template, is sent as committed, never with its local edits, even when
+deleted. Before
+uploading, it lists the uncommitted files it sends (`Info`, hidden with
+`--quiet`), and the snapshot's size and the commits it carries. It deploys to the preview of the current branch and
 `--slot`, creating it first if needed exactly as `preview create` does, within
 the same limits; on a detached `HEAD`, name the branch with `--branch`. The
 snapshot is a commit on top of `HEAD` made with a temporary index and object
 directory, so the branch, index, working tree, stash, refs and objects of the
-repository never change. It is uploaded as a Git bundle: thin against the
+repository never change. It is uploaded as a Git bundle, thin against the
 nearest ancestor of `HEAD` that a remote-tracking branch has, which the daemon
-fetches from the application's repository, or with the whole history when there
-is none or the daemon cannot fetch it (`snapshot_base_unavailable`, after which
-the CLI uploads the complete bundle once). Bundles over the daemon's
-[`snapshots.max_upload_bytes`](configuration.md#local-snapshots) fail with `snapshot_too_large`,
-and bundles Git cannot verify with `snapshot_invalid`. The daemon reads the
+fetches from the application's repository: only unpushed commits are sent.
+When there is no such ancestor, or the daemon cannot fetch it
+(`snapshot_base_unavailable`), the command fails rather than send the whole
+history; push the base, or pass `--full-history` to upload every commit of
+`HEAD`. Snapshots whose files take more than the daemon's
+[`checkouts.max_bytes`](configuration.md#git-checkouts), or number more than
+it accepts, are refused before anything is staged, naming the largest files,
+and bundles over its [`snapshots.max_upload_bytes`](configuration.md#local-snapshots)
+before they are uploaded; the daemon refuses both with `snapshot_too_large`
+too. Bundles Git cannot verify fail with `snapshot_invalid`. The daemon reads the
 manifest from the snapshot at the application's manifest path and builds
 `repository = "self"` services from it, like any preview deployment, with the
 same build priority and limits. Submodules, nested repositories, SHA-256

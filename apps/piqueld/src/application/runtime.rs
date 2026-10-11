@@ -36,28 +36,36 @@ pub struct ApplicationRuntime<D> {
     snapshot: Option<crate::git::snapshot::SnapshotSource>,
     /// The lock image cleanup takes exclusively; see `ImagesInUse`.
     images: Arc<tokio::sync::RwLock<()>>,
+    /// Admission for the checkouts Git sources build in.
+    checkouts: Arc<crate::git::Checkouts>,
 }
 
 impl<D> ApplicationRuntime<D> {
-    /// Creates application runtime orchestration with the supplied
-    /// preparation budget, sharing `images`, the lock image cleanup takes.
+    /// Creates application runtime orchestration for `store`'s instance with
+    /// the supplied preparation budget, sharing `images`, the lock image cleanup takes,
+    /// and `store`'s checkout admission.
+    ///
+    /// # Panics
+    /// Never: `Store::open` validated the store's instance ID.
     #[must_use]
     pub fn new(
         docker: Arc<D>,
-        instance_id: InstanceId,
+        store: &crate::store::Store,
         wake: Arc<Notify>,
         prepare_timeout: Duration,
         images: Arc<tokio::sync::RwLock<()>>,
     ) -> Self {
         Self {
             docker,
-            instance_id,
+            instance_id: InstanceId::parse(store.instance_id())
+                .expect("store instance identity is valid"),
             wake,
             prepare_timeout,
             progress: None,
             priority: BuildPriority::Environment,
             snapshot: None,
             images,
+            checkouts: Arc::clone(store.checkouts()),
         }
     }
     /// Associates source preparation with the operation whose status is reported.
@@ -392,15 +400,12 @@ impl<D: DockerApi> ApplicationRuntime<D> {
     ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
         let repository =
             crate::git::snapshot::SnapshotSource::checkout(self.snapshot.as_ref(), repository);
+        let owner = (&self.instance_id, self.priority);
         let Some((store, operation)) = &self.progress else {
-            return crate::git::Checkout::prepare(
-                repository,
-                build,
-                &self.instance_id,
-                self.priority,
-                docker,
-            )
-            .await;
+            return self
+                .checkouts
+                .prepare(repository, build, owner, docker, None)
+                .await;
         };
         let attempt = crate::build::BuildAttempt::start(
             Arc::clone(store),
@@ -411,15 +416,10 @@ impl<D: DockerApi> ApplicationRuntime<D> {
             None,
         )
         .await?;
-        let result = crate::git::Checkout::prepare_recorded(
-            repository,
-            build,
-            &self.instance_id,
-            self.priority,
-            docker,
-            Some(&attempt.log),
-        )
-        .await;
+        let result = self
+            .checkouts
+            .prepare(repository, build, owner, docker, Some(&attempt.log))
+            .await;
         match &result {
             Ok((_, image)) => {
                 attempt

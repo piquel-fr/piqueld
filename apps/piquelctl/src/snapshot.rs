@@ -1,19 +1,23 @@
 //! Snapshots of the current Git worktree for `preview deploy --local`.
 //!
-//! A snapshot is a commit of the worktree's tracked and untracked files,
-//! except ignored ones, on top of `HEAD`, uploaded as a Git bundle. It never
-//! changes the user's repository: Git writes the snapshot's index, objects,
-//! and ref into a private temporary directory instead.
+//! A snapshot is a commit of the worktree's tracked and untracked files on
+//! top of `HEAD`, uploaded as a Git bundle. Ignored files are left out, or
+//! kept as committed when tracked. It never changes the user's repository:
+//! Git writes the snapshot's index, objects, and ref into a private
+//! temporary directory instead.
 //!
-//! 1. `git add -A` stages the worktree into a copy of its index
+//! 1. Its files are measured against the daemon's limits before anything
+//!    is written (see [`Worktree::snapshot`]).
+//! 2. `git add -A` stages the worktree into a copy of its index
 //!    (`GIT_INDEX_FILE`), writing new objects into a temporary object
 //!    directory that reads the repository's own as an alternate.
-//! 2. `git write-tree` and `git commit-tree -p HEAD` make the commit.
-//! 3. A temporary bare repository sharing both object directories names it
+//! 3. `git write-tree` and `git commit-tree -p HEAD` make the commit.
+//! 4. A temporary bare repository sharing both object directories names it
 //!    with a ref, and bundles it, thin against a base the application's
-//!    repository has, or complete.
+//!    repository has, or with the whole history only when asked to (see
+//!    [`History`]).
 use crate::error::{CliError, ErrorKind, Result};
-use piqueld_client::LocalSnapshot;
+use piqueld_client::{LocalSnapshot, SnapshotLimits};
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -46,6 +50,19 @@ pub(crate) struct Snapshot<'a> {
     directory: tempfile::TempDir,
     /// The snapshot commit.
     pub(crate) commit: String,
+    /// The files it adds, changes, or removes compared with `HEAD`.
+    pub(crate) uncommitted: Vec<String>,
+}
+
+/// What a bundle carries besides the snapshot commit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum History {
+    /// The commits since the nearest ancestor of `HEAD` that a
+    /// remote-tracking branch has, which the daemon fetches from the
+    /// application's repository. Refused when there is none.
+    Thin,
+    /// Every commit of `HEAD`, which the daemon needs nothing to apply.
+    Full,
 }
 
 /// A bundle of a snapshot, ready to upload.
@@ -55,6 +72,26 @@ pub(crate) struct Bundle {
     pub(crate) length: u64,
     /// The commit it carries and the base it needs.
     pub(crate) snapshot: LocalSnapshot,
+    /// Commits of `HEAD` it carries besides the snapshot commit.
+    commits: u64,
+}
+
+/// A size in bytes, shown in the largest whole unit.
+///
+/// ```text
+/// 12 KiB, 3 MiB, 512 bytes
+/// ```
+struct Size(u64);
+
+impl std::fmt::Display for Size {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            bytes if bytes >= 1 << 30 => write!(formatter, "{} GiB", bytes >> 30),
+            bytes if bytes >= 1 << 20 => write!(formatter, "{} MiB", bytes >> 20),
+            bytes if bytes >= 1 << 10 => write!(formatter, "{} KiB", bytes >> 10),
+            bytes => write!(formatter, "{bytes} bytes"),
+        }
+    }
 }
 
 impl Worktree {
@@ -107,12 +144,18 @@ impl Worktree {
         }
     }
 
-    /// Commits the worktree's tracked and untracked files, except ignored
-    /// ones, on top of `HEAD`, without changing the repository. Submodules,
-    /// nested repositories, and what [`Self::check_supported`] refuses are
-    /// refused.
-    pub(crate) async fn snapshot(&self, branch: &str) -> Result<Snapshot<'_>> {
-        self.check_supported().await?;
+    /// Commits the worktree's tracked and untracked files on top of `HEAD`,
+    /// without changing the repository. Ignored files are left out, and
+    /// tracked ones kept as committed: `git add` would stage edits to them,
+    /// such as real credentials in a committed `.env` template. Submodules,
+    /// nested repositories, what [`Self::check_supported`] refuses, and,
+    /// when the daemon reports its `limits`, files that exceed them are
+    /// refused before anything is written.
+    pub(crate) async fn snapshot(
+        &self,
+        branch: &str,
+        limits: Option<&SnapshotLimits>,
+    ) -> Result<Snapshot<'_>> {
         let head = Git::checked(
             Git::command(&self.root)
                 .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
@@ -126,6 +169,21 @@ impl Worktree {
                 "HEAD has no commit yet; commit once first",
             )
         })?;
+        let files = self
+            .tracked(&["--others"], "list the worktree's files")
+            .await?;
+        // Tracked files ignored since, including deleted ones: they are sent
+        // as committed.
+        let ignored = self
+            .tracked(
+                &["--ignored", "--with-tree=HEAD"],
+                "list tracked ignored files",
+            )
+            .await?;
+        self.check_supported(&files).await?;
+        if let Some(limits) = limits {
+            self.check_size(&files, &ignored, limits).await?;
+        }
         let directory = tempfile::Builder::new()
             .prefix("piquelctl-snapshot-")
             .tempdir()
@@ -134,51 +192,31 @@ impl Worktree {
             worktree: self,
             directory,
             commit: String::new(),
+            uncommitted: Vec::new(),
         };
         // Git refuses an object directory that does not exist.
         tokio::fs::create_dir(snapshot.objects())
             .await
             .map_err(|error| Git::failure("create the object directory", error))?;
-        let index = snapshot.directory.path().join("index");
-        match tokio::fs::copy(&self.index, &index).await {
+        match tokio::fs::copy(&self.index, snapshot.index()).await {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
                 return Err(Git::failure("copy the index", error));
             }
             _ => {}
         }
-        let staged = |arguments: &[&str]| {
-            let mut command = Git::command(&self.root);
-            command
-                .env("GIT_INDEX_FILE", &index)
-                .env("GIT_OBJECT_DIRECTORY", snapshot.objects())
-                .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", &self.objects)
-                .args(arguments);
-            command
-        };
-        // `git add` skips files marked assume-unchanged, so the snapshot
-        // would keep their committed content; only the copy's marks go.
-        let index_entries = Git::checked(
-            staged(&["ls-files", "-v", "-z"]).output().await,
-            "list the index",
-        )?;
-        let assumed = index_entries
-            .split('\0')
-            .filter_map(|entry| entry.split_once(' '))
-            .filter(|(tag, _)| tag.bytes().all(|tag| tag.is_ascii_lowercase()))
-            .map(|(_, path)| path)
-            .collect::<Vec<_>>();
-        if !assumed.is_empty() {
-            let clear = staged(&["update-index", "--no-assume-unchanged", "-z", "--stdin"]);
-            Git::checked(
-                Git::with_input(clear, assumed.join("\0")).await,
-                "stage files marked assume-unchanged",
-            )?;
-        }
-        Git::checked(
-            staged(&["add", "--all"]).output().await,
-            "stage the worktree",
-        )?;
+        snapshot.stage(ignored).await?;
+        let staged = |arguments: &[&str]| snapshot.staged(arguments);
         let tree = Git::checked(staged(&["write-tree"]).output().await, "write the tree")?;
+        let uncommitted = Git::checked(
+            staged(&["diff-index", "--cached", "--name-only", "-z", "HEAD"])
+                .output()
+                .await,
+            "list uncommitted files",
+        )?
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect();
         let submodules = Git::checked(
             staged(&["ls-files", "--stage", "-z"]).output().await,
             "list staged files",
@@ -207,7 +245,81 @@ impl Worktree {
                 .await,
             "commit the snapshot",
         )?;
-        Ok(Snapshot { commit, ..snapshot })
+        Ok(Snapshot {
+            commit,
+            uncommitted,
+            ..snapshot
+        })
+    }
+
+    /// The worktree's tracked files, NUL-separated, with `options` of
+    /// `git ls-files` such as `--others`, honoring ignore rules.
+    async fn tracked(&self, options: &[&str], action: &str) -> Result<String> {
+        Git::checked(
+            Git::command(&self.root)
+                .args(["ls-files", "-z", "--cached", "--exclude-standard"])
+                .args(options)
+                .output()
+                .await,
+            action,
+        )
+    }
+
+    /// Refuses `files`, the snapshot's, when they take more than `limits`
+    /// allow a checkout, naming the largest, so nothing is staged or packed
+    /// in vain. Their size in the worktree stands for the snapshot's; the
+    /// `ignored` ones, sent as committed, are left out of the estimate.
+    async fn check_size(&self, files: &str, ignored: &str, limits: &SnapshotLimits) -> Result<()> {
+        let ignored = ignored
+            .split('\0')
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut sizes = Vec::new();
+        for path in files
+            .split('\0')
+            .filter(|path| !path.is_empty() && !ignored.contains(path))
+        {
+            // Deleted files are not in the snapshot, and a file replaced
+            // by a directory is counted as its files' ancestor.
+            if let Ok(metadata) = tokio::fs::symlink_metadata(self.root.join(path)).await
+                && !metadata.is_dir()
+            {
+                sizes.push((metadata.len(), path));
+            }
+        }
+        // Directories are charged a block each, like empty files.
+        let directories = sizes
+            .iter()
+            .flat_map(|(_, path)| Path::new(path).ancestors().skip(1))
+            .filter(|directory| !directory.as_os_str().is_empty())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len() as u64;
+        let total = sizes
+            .iter()
+            .map(|(size, _)| SnapshotLimits::file_cost(*size))
+            .sum::<u64>()
+            .saturating_add(directories.saturating_mul(SnapshotLimits::file_cost(0)));
+        let entries = sizes.len() as u64 + directories;
+        if total <= limits.max_tree_bytes && entries <= limits.max_files {
+            return Ok(());
+        }
+        sizes.sort_unstable_by(|a, b| b.cmp(a));
+        let largest = sizes
+            .iter()
+            .take(5)
+            .map(|(size, path)| format!("{path} ({})", Size(*size)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(CliError::new(
+            ErrorKind::Input,
+            format!(
+                "the snapshot's {entries} files and directories take {}, more than the daemon \
+                 checks out ({} entries, {}); ignore what the preview doesn't need. \
+                 Largest: {largest}",
+                Size(total),
+                limits.max_files,
+                Size(limits.max_tree_bytes),
+            ),
+        ))
     }
 
     /// Refuses what a snapshot can't take without writing to the
@@ -216,7 +328,7 @@ impl Worktree {
     /// them into the repository on demand; and files staging would pass
     /// through a configured filter driver, such as Git LFS's, which store
     /// their own data in the repository.
-    async fn check_supported(&self) -> Result<()> {
+    async fn check_supported(&self, files: &str) -> Result<()> {
         let format = Git::checked(
             Git::command(&self.root)
                 .args(["rev-parse", "--show-object-format"])
@@ -271,22 +383,12 @@ impl Worktree {
             .filter_map(|key| key.strip_prefix("filter.")?.rsplit_once('.'))
             .map(|(driver, _)| driver.to_owned())
             .collect::<std::collections::BTreeSet<_>>();
-        let files = Git::checked(
-            Git::command(&self.root)
-                .args([
-                    "ls-files",
-                    "-z",
-                    "--cached",
-                    "--others",
-                    "--exclude-standard",
-                ])
-                .output()
-                .await,
-            "list the worktree's files",
-        )?;
         let mut check = Git::command(&self.root);
         check.args(["check-attr", "--stdin", "-z", "filter"]);
-        let attributes = Git::checked(Git::with_input(check, files).await, "read the filters")?;
+        let attributes = Git::checked(
+            Git::with_input(check, files.to_owned()).await,
+            "read the filters",
+        )?;
         // `<path>\0filter\0<driver>\0`, for every file.
         let filtered = attributes
             .split('\0')
@@ -339,33 +441,53 @@ impl Worktree {
 }
 
 impl Bundle {
-    /// What is being uploaded, for progress.
+    /// What is being uploaded.
     ///
     /// ```text
-    /// uploading 12 KiB against 0123456789ab
-    /// uploading 3 MiB with its whole history
+    /// 12 KiB against 0123456789ab: 2 unpushed commits and the snapshot
+    /// 3 MiB with the whole history: 140 commits and the snapshot
     /// ```
     pub(crate) fn describe(&self) -> String {
-        let size = match self.length {
-            length if length >= 1 << 20 => format!("{} MiB", length >> 20),
-            length if length >= 1 << 10 => format!("{} KiB", length >> 10),
-            length => format!("{length} bytes"),
-        };
+        let size = Size(self.length);
+        let commits = self.commits;
         match &self.snapshot.base {
-            Some(base) => format!("uploading {size} against {}", &base[..base.len().min(12)]),
-            None => format!("uploading {size} with its whole history"),
+            Some(base) => format!(
+                "{size} against {}: {commits} unpushed commits and the snapshot",
+                &base[..base.len().min(12)]
+            ),
+            None => format!("{size} with the whole history: {commits} commits and the snapshot"),
+        }
+    }
+
+    /// Refuses a bundle larger than the daemon accepts, before uploading it.
+    pub(crate) fn check_size(&self, limits: Option<&SnapshotLimits>) -> Result<()> {
+        match limits {
+            Some(limits) if self.length > limits.max_upload_bytes => Err(CliError::new(
+                ErrorKind::Input,
+                format!(
+                    "the snapshot is {}, more than the daemon's {} upload limit; \
+                     ignore what the preview doesn't need",
+                    Size(self.length),
+                    Size(limits.max_upload_bytes)
+                ),
+            )),
+            _ => Ok(()),
         }
     }
 }
 
 impl Snapshot<'_> {
-    /// Bundles the snapshot, `thin` against the worktree's base when it has
-    /// one (see [`Worktree::base`]), otherwise complete.
-    pub(crate) async fn bundle(&self, thin: bool) -> Result<Bundle> {
-        let base = if thin {
-            self.worktree.base().await?
-        } else {
-            None
+    /// Bundles the snapshot with `history`.
+    pub(crate) async fn bundle(&self, history: History) -> Result<Bundle> {
+        let base = match history {
+            History::Full => None,
+            History::Thin => Some(self.worktree.base().await?.ok_or_else(|| {
+                CliError::new(
+                    ErrorKind::Input,
+                    "no remote-tracking branch has an ancestor of HEAD, so the daemon would \
+                     need the whole history; push or fetch a base, or pass --full-history",
+                )
+            })?),
         };
         let repository = self.directory.path().join("bundle.git");
         if !repository.exists() {
@@ -407,6 +529,19 @@ impl Snapshot<'_> {
             bundle.arg(format!("^{base}"));
         }
         Git::checked(bundle.output().await, "create the bundle")?;
+        let range = match &base {
+            Some(base) => format!("{base}..HEAD"),
+            None => "HEAD".to_owned(),
+        };
+        let commits = Git::checked(
+            Git::command(&self.worktree.root)
+                .args(["rev-list", "--count", &range])
+                .output()
+                .await,
+            "count the commits",
+        )?
+        .parse()
+        .map_err(|error| Git::failure("count the commits", error))?;
         let length = tokio::fs::metadata(&path)
             .await
             .map_err(|error| Git::failure("read the bundle", error))?
@@ -418,7 +553,92 @@ impl Snapshot<'_> {
                 commit: self.commit.clone(),
                 base,
             },
+            commits,
         })
+    }
+
+    /// Stages the worktree into the snapshot's index, keeping the tracked
+    /// `ignored` files, NUL-separated, as committed: they are reset to
+    /// `HEAD` and marked assume-unchanged first, so staging never reads
+    /// their local content.
+    async fn stage(&self, ignored: String) -> Result<()> {
+        let staged = |arguments: &[&str]| self.staged(arguments);
+        // `git add` skips files marked assume-unchanged, so the snapshot
+        // would keep their committed content; only the copy's marks go.
+        let index_entries = Git::checked(
+            staged(&["ls-files", "-v", "-z"]).output().await,
+            "list the index",
+        )?;
+        let assumed = index_entries
+            .split('\0')
+            .filter_map(|entry| entry.split_once(' '))
+            .filter(|(tag, _)| tag.bytes().all(|tag| tag.is_ascii_lowercase()))
+            .map(|(_, path)| path)
+            .collect::<Vec<_>>();
+        if !assumed.is_empty() {
+            let clear = staged(&["update-index", "--no-assume-unchanged", "-z", "--stdin"]);
+            Git::checked(
+                Git::with_input(clear, assumed.join("\0")).await,
+                "stage files marked assume-unchanged",
+            )?;
+        }
+        if !ignored.is_empty() {
+            // Names, not pathspecs: an ignored file may be named `:(exclude)x`.
+            let reset = staged(&[
+                "--literal-pathspecs",
+                "reset",
+                "--quiet",
+                "HEAD",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ]);
+            Git::checked(
+                Git::with_input(reset, ignored).await,
+                "keep ignored files as committed",
+            )?;
+            // Marked so `git add` never reads their local content.
+            let committed = Git::checked(
+                staged(&[
+                    "ls-files",
+                    "-z",
+                    "--cached",
+                    "--ignored",
+                    "--exclude-standard",
+                ])
+                .output()
+                .await,
+                "list tracked ignored files",
+            )?;
+            if !committed.is_empty() {
+                let mark = staged(&["update-index", "--assume-unchanged", "-z", "--stdin"]);
+                Git::checked(
+                    Git::with_input(mark, committed).await,
+                    "keep ignored files as committed",
+                )?;
+            }
+        }
+        Git::checked(
+            staged(&["add", "--all"]).output().await,
+            "stage the worktree",
+        )?;
+        Ok(())
+    }
+
+    /// A Git command in the worktree that reads and writes the snapshot's
+    /// index and objects, reading the repository's as alternates.
+    fn staged(&self, arguments: &[&str]) -> tokio::process::Command {
+        let mut command = Git::command(&self.worktree.root);
+        command
+            .env("GIT_INDEX_FILE", self.index())
+            .env("GIT_OBJECT_DIRECTORY", self.objects())
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", &self.worktree.objects)
+            .args(arguments);
+        command
+    }
+
+    /// The snapshot's index, a copy of the worktree's.
+    fn index(&self) -> PathBuf {
+        self.directory.path().join("index")
     }
 
     /// Where Git writes the snapshot's new objects.
@@ -538,9 +758,9 @@ mod tests {
     }
 
     /// A clone of a two-commit repository, with an unpushed commit, a
-    /// modified file marked assume-unchanged, a staged, an untracked, and an
-    /// ignored file. It splits its index and has a hook that runs whenever
-    /// the index changes.
+    /// modified file marked assume-unchanged, a staged, an untracked, an
+    /// ignored file, and a tracked one ignored since and edited. It splits
+    /// its index and has a hook that runs whenever the index changes.
     fn fixture(root: &Path) -> PathBuf {
         sh(
             root,
@@ -551,7 +771,8 @@ mod tests {
              git config core.splitIndex true
              printf '#!/bin/sh\ntouch hook-ran\n' > .git/hooks/post-index-change
              chmod +x .git/hooks/post-index-change
-             echo ignored > .gitignore && git add . && git commit -qm unpushed
+             printf 'ignored\n.env\n' > .gitignore && echo template > .env
+             git add . && git add -f .env && git commit -qm unpushed && echo secret > .env
              echo changed > app.toml && git update-index --assume-unchanged app.toml
              echo staged > staged.txt && git add staged.txt
              echo untracked > untracked.txt && echo secret > ignored && rm hook-ran",
@@ -566,9 +787,9 @@ mod tests {
         let before = state(&work);
         let worktree = Worktree::at(&work).await.unwrap();
         assert_eq!(worktree.branch().await.unwrap().as_deref(), Some("feat/x"));
-        let snapshot = worktree.snapshot("feat/x").await.unwrap();
-        let thin = snapshot.bundle(true).await.unwrap();
-        let complete = snapshot.bundle(false).await.unwrap();
+        let snapshot = worktree.snapshot("feat/x", None).await.unwrap();
+        let thin = snapshot.bundle(History::Thin).await.unwrap();
+        let complete = snapshot.bundle(History::Full).await.unwrap();
         assert_eq!(state(&work), before);
         // Read from the snapshot's own repository: the worktree's lacks it.
         let snapshot_git = format!(
@@ -579,7 +800,20 @@ mod tests {
             &work,
             &format!("{snapshot_git} ls-tree -r --name-only {}", snapshot.commit),
         );
-        assert_eq!(files, ".gitignore\napp.toml\nstaged.txt\nuntracked.txt");
+        assert_eq!(
+            files,
+            ".env\n.gitignore\napp.toml\nstaged.txt\nuntracked.txt"
+        );
+        assert_eq!(
+            snapshot.uncommitted,
+            ["app.toml", "staged.txt", "untracked.txt"]
+        );
+        // A tracked file ignored since is sent as committed.
+        let env = sh(
+            &work,
+            &format!("{snapshot_git} show {}:.env", snapshot.commit),
+        );
+        assert_eq!(env, "template");
         // Edits hidden from `git status` by assume-unchanged are included.
         let manifest = sh(
             &work,
@@ -616,23 +850,102 @@ mod tests {
         assert_eq!(written, "no");
     }
 
-    /// Without remote-tracking branches, the whole history is bundled.
+    /// Tracked files ignored since are sent as committed even when deleted
+    /// or staged as deleted, or named like pathspec magic, and their local
+    /// content does not count against the daemon's limits.
     #[tokio::test]
-    async fn worktrees_without_remotes_bundle_their_whole_history() {
+    async fn tracked_ignored_files_are_sent_as_committed() {
+        let root = tempfile::tempdir().unwrap();
+        let work = fixture(root.path());
+        sh(
+            &work,
+            "echo committed > ':(exclude)x' && git --literal-pathspecs add ':(exclude)x'
+             git commit -qm magic && printf ':(exclude)x\n' >> .gitignore
+             head -c 1048576 /dev/zero > ':(exclude)x' && git rm -q --cached .env && rm .env",
+        );
+        let worktree = Worktree::at(&work).await.unwrap();
+        let limits = SnapshotLimits {
+            max_upload_bytes: 1 << 20,
+            max_tree_bytes: 1 << 16,
+            max_files: 100,
+        };
+        let snapshot = worktree.snapshot("feat/x", Some(&limits)).await.unwrap();
+        snapshot.bundle(History::Thin).await.unwrap();
+        // Its local content was never even staged.
+        let local = sh(&work, "git hash-object -- ':(exclude)x'");
+        let object = snapshot.objects().join(&local[..2]).join(&local[2..]);
+        assert!(!object.exists());
+        let snapshot_git = format!(
+            "git --git-dir={}",
+            snapshot.directory.path().join("bundle.git").display()
+        );
+        for (path, committed) in [(".env", "template"), (":(exclude)x", "committed")] {
+            let content = sh(
+                &work,
+                &format!("{snapshot_git} show '{}:{path}'", snapshot.commit),
+            );
+            assert_eq!(content, committed, "{path}");
+        }
+    }
+
+    /// Without remote-tracking branches, the whole history is bundled only
+    /// when asked for.
+    #[tokio::test]
+    async fn worktrees_without_remotes_need_the_whole_history_asked_for() {
         let root = tempfile::tempdir().unwrap();
         sh(
             root.path(),
             "git init -q -b main work && cd work && echo a > a && git add . && git commit -qm a",
         );
         let worktree = Worktree::at(&root.path().join("work")).await.unwrap();
-        let bundle = worktree
-            .snapshot("main")
-            .await
-            .unwrap()
-            .bundle(true)
-            .await
-            .unwrap();
+        let snapshot = worktree.snapshot("main", None).await.unwrap();
+        let Err(error) = snapshot.bundle(History::Thin).await else {
+            panic!("the whole history must be asked for");
+        };
+        assert!(error.to_string().contains("--full-history"), "{error}");
+        let bundle = snapshot.bundle(History::Full).await.unwrap();
         assert_eq!(bundle.snapshot.base, None);
+        assert_eq!(bundle.commits, 1);
+    }
+
+    /// Files over the daemon's limits are refused before anything is
+    /// written, naming the largest; so is a bundle over its upload limit.
+    #[tokio::test]
+    async fn snapshots_over_the_daemon_limits_are_refused_early() {
+        let root = tempfile::tempdir().unwrap();
+        let work = fixture(root.path());
+        sh(&work, "head -c 4096 /dev/zero > large.bin");
+        let worktree = Worktree::at(&work).await.unwrap();
+        let before = state(&work);
+        let limits = SnapshotLimits {
+            max_upload_bytes: 1 << 20,
+            max_tree_bytes: 4096,
+            max_files: 100,
+        };
+        let Err(error) = worktree.snapshot("feat/x", Some(&limits)).await else {
+            panic!("files over the limit must be refused");
+        };
+        assert!(error.to_string().contains("large.bin (4 KiB)"), "{error}");
+        assert_eq!(state(&work), before);
+        let few = SnapshotLimits {
+            max_files: 2,
+            max_tree_bytes: 1 << 20,
+            ..limits
+        };
+        assert!(worktree.snapshot("feat/x", Some(&few)).await.is_err());
+
+        let roomy = SnapshotLimits {
+            max_tree_bytes: 1 << 20,
+            ..limits
+        };
+        let snapshot = worktree.snapshot("feat/x", Some(&roomy)).await.unwrap();
+        let bundle = snapshot.bundle(History::Thin).await.unwrap();
+        assert!(bundle.check_size(Some(&roomy)).is_ok());
+        let small = SnapshotLimits {
+            max_upload_bytes: bundle.length - 1,
+            ..roomy
+        };
+        assert!(bundle.check_size(Some(&small)).is_err());
     }
 
     /// Detached heads have no branch, and submodules and nested
@@ -647,7 +960,7 @@ mod tests {
         );
         let worktree = Worktree::at(&work).await.unwrap();
         assert_eq!(worktree.branch().await.unwrap(), None);
-        let Err(error) = worktree.snapshot("feat/x").await else {
+        let Err(error) = worktree.snapshot("feat/x", None).await else {
             panic!("nested repositories must be refused");
         };
         assert!(error.to_string().contains("nested"), "{error}");
@@ -666,13 +979,13 @@ mod tests {
             "echo '*.bin filter=cache' > .gitattributes && echo data > big.bin",
         );
         let worktree = Worktree::at(&work).await.unwrap();
-        assert!(worktree.snapshot("feat/x").await.is_ok());
+        assert!(worktree.snapshot("feat/x", None).await.is_ok());
         sh(
             &work,
             "git config filter.cache.clean 'mkdir -p .git/filter-cache && cat'",
         );
         let before = state(&work);
-        let Err(error) = worktree.snapshot("feat/x").await else {
+        let Err(error) = worktree.snapshot("feat/x", None).await else {
             panic!("filtered files must be refused");
         };
         assert!(error.to_string().contains("big.bin"), "{error}");
@@ -682,7 +995,7 @@ mod tests {
             &work,
             "rm big.bin && echo '\" a.bin\" filter=cache' > .gitattributes && echo data > ' a.bin'",
         );
-        let Err(error) = worktree.snapshot("feat/x").await else {
+        let Err(error) = worktree.snapshot("feat/x", None).await else {
             panic!("filtered files must be refused");
         };
         assert!(error.to_string().contains(" a.bin"), "{error}");
@@ -692,7 +1005,7 @@ mod tests {
             "git -C remote config uploadpack.allowFilter true && git clone -q --filter=blob:none \"file://$PWD/remote\" partial",
         );
         let worktree = Worktree::at(&root.path().join("partial")).await.unwrap();
-        let Err(error) = worktree.snapshot("main").await else {
+        let Err(error) = worktree.snapshot("main", None).await else {
             panic!("partial clones must be refused");
         };
         assert!(error.to_string().contains("partial clone"), "{error}");
@@ -702,7 +1015,7 @@ mod tests {
             "git init -q --object-format=sha256 -b main sha256 && cd sha256 && echo a > a && git add . && git commit -qm a",
         );
         let worktree = Worktree::at(&root.path().join("sha256")).await.unwrap();
-        let Err(error) = worktree.snapshot("main").await else {
+        let Err(error) = worktree.snapshot("main", None).await else {
             panic!("SHA-256 repositories must be refused");
         };
         assert!(error.to_string().contains("sha256"), "{error}");

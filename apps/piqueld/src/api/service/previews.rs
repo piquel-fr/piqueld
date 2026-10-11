@@ -14,10 +14,12 @@ use piqueld_core::{
     api::{BranchState, DeletedPreview, EnvironmentView, LocalSnapshot, PreviewView},
     manifest::RepositoryManifest,
 };
+use std::sync::Arc;
 
 impl ApplicationService {
     /// Lists an application's previews, reading every branch state with one
-    /// `git ls-remote` of its manifest repository.
+    /// `git ls-remote` of its manifest repository, shared with concurrent
+    /// reads (see `Listings`).
     ///
     /// # Errors
     /// Returns absence or storage errors. Repository failures are reported as
@@ -81,7 +83,7 @@ impl ApplicationService {
         let snapshots = self.store.snapshots();
         let limit = self.store.max_upload_bytes();
         let received = snapshots
-            .receive(bundle, length, limit, &repository)
+            .receive(bundle, (length, limit), &repository, self.store.checkouts())
             .await?;
         let mutation = Mutation::Preview(PreviewMutation::Local {
             application,
@@ -117,16 +119,15 @@ impl ApplicationService {
         application: &ApplicationId,
         confirmed: &[EnvironmentId],
     ) -> Result<Vec<DeletedPreview>, ApplicationError> {
-        let heads = self
-            .heads(application)
-            .await?
-            .1
-            .map_err(ApplicationError::RepositoryUnavailable)?;
+        let listing = self.heads(application).await?.1;
+        let heads = listing.as_ref().as_ref().map_err(|error| {
+            ApplicationError::RepositoryUnavailable(anyhow::anyhow!("{error:#}"))
+        })?;
         let mut deleted = Vec::new();
         for preview in self.store.previews(application).await? {
             let origins = self.store.preview_origins(&preview.id).await?;
             if !confirmed.contains(&preview.id)
-                || Self::branch_state(&preview, &origins, Ok(&heads), None)? != BranchState::Gone
+                || Self::branch_state(&preview, &origins, Ok(heads), None)? != BranchState::Gone
             {
                 continue;
             }
@@ -150,14 +151,14 @@ impl ApplicationService {
     async fn heads(
         &self,
         application: &ApplicationId,
-    ) -> Result<(Option<RepositoryManifest>, Result<Heads, anyhow::Error>), ApplicationError> {
+    ) -> Result<(Option<RepositoryManifest>, Arc<anyhow::Result<Heads>>), ApplicationError> {
         let application = self.store.application(application).await?;
         let connection = application.application.spec().manifest.clone();
         let heads = match &connection {
-            Some(connection) => Heads::list(&connection.repository.url).await,
-            None => Err(anyhow::anyhow!(
+            Some(connection) => self.listings.list(&connection.repository.url).await,
+            None => Arc::new(Err(anyhow::anyhow!(
                 "the application has no manifest repository"
-            )),
+            ))),
         };
         Ok((connection, heads))
     }

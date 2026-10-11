@@ -121,7 +121,8 @@ Tailscale CLI on the service's `PATH`), `ingress.tunnel.enabled`, `ingress.tunne
 (also a systemd credential, required while the tunnel is enabled), `dns.providers`, all three `reconciliation`
 intervals/timeouts, the `retention` periods, both `build_history` limits,
 the five [`previews`](configuration.md#previews) limits,
-[`snapshots.max_upload_bytes`](configuration.md#local-snapshots), both `images` settings,
+[`snapshots.max_upload_bytes`](configuration.md#local-snapshots),
+[`checkouts.max_bytes`](configuration.md#git-checkouts), both `images` settings,
 `metrics.listen`, `notifications.destinations`, and every `notifications` switch
 and timing, with the daemon's defaults. Reconciliation
 values must be 1–86400 seconds; retention values are nonnegative days, with zero

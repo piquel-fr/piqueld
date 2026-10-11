@@ -30,6 +30,7 @@ async fn status() -> Json<Envelope<SystemStatus>> {
             dns: piqueld_core::api::DnsStatus::default(),
             previews: None,
             images: piqueld_core::api::ImageStatus::default(),
+            snapshots: None,
         },
     })
 }

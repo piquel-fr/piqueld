@@ -5364,6 +5364,25 @@
                   }
                 ]
               },
+              "snapshots": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/SnapshotLimits"
+                      }
+                    ],
+                    "description": "How large a local snapshot may be; absent from older daemons."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
               "status": {
                 "description": "Machine-readable service status.",
                 "type": "string"
@@ -9886,6 +9905,35 @@
         "description": "Explicitly tagged lowercase SHA-256 digest.",
         "type": "string"
       },
+      "SnapshotLimits": {
+        "description": "How large a snapshot `piquelctl preview deploy --local` uploads may be,\nso it can refuse one before writing it.",
+        "properties": {
+          "max_files": {
+            "description": "The most files and directories it may have.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_tree_bytes": {
+            "description": "The most bytes its files may take, each file and directory charged\n[`Self::file_cost`]: `[checkouts] max_bytes`.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_upload_bytes": {
+            "description": "The largest bundle an upload may carry: `[snapshots] max_upload_bytes`.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_upload_bytes",
+          "max_tree_bytes",
+          "max_files"
+        ],
+        "type": "object"
+      },
       "Source": {
         "description": "The exhaustive set of deployable service sources.",
         "oneOf": [
@@ -10101,6 +10149,25 @@
                   }
                 ],
                 "description": "Previews against the `[previews]` limits; absent when they could not\nbe counted."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "snapshots": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/SnapshotLimits"
+                  }
+                ],
+                "description": "How large a local snapshot may be; absent from older daemons."
               },
               {
                 "enum": [

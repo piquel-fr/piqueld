@@ -159,8 +159,7 @@ impl<D: DockerApi> Controller<D> {
     pub fn runtime(&self, wake: Arc<Notify>) -> Arc<dyn crate::application::RuntimeBoundary> {
         Arc::new(crate::application::ApplicationRuntime::new(
             Arc::clone(&self.docker),
-            piqueld_core::InstanceId::parse(self.store.instance_id())
-                .expect("store instance identity is valid"),
+            &self.store,
             wake,
             self.prepare_timeout,
             self.images_lock(),

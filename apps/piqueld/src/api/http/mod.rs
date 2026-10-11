@@ -1285,6 +1285,12 @@ impl From<crate::git::snapshot::SnapshotError> for ApiError {
                 format!("{message}; raise [snapshots] max_upload_bytes, or upload against a base the repository has"),
             )
             .details(json!({ "limit": limit })),
+            SnapshotError::TreeTooLarge { limit } => Self::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                piqueld_core::codes::SNAPSHOT_TOO_LARGE,
+                format!("{message}; raise [checkouts] max_bytes, or ignore the files the preview doesn't need"),
+            )
+            .details(json!({ "limit": limit })),
             SnapshotError::Invalid(_) => Self::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 piqueld_core::codes::SNAPSHOT_INVALID,
@@ -1293,7 +1299,7 @@ impl From<crate::git::snapshot::SnapshotError> for ApiError {
             SnapshotError::BaseUnavailable { prerequisites } => Self::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 piqueld_core::codes::SNAPSHOT_BASE_UNAVAILABLE,
-                format!("{message}; upload a complete bundle instead"),
+                format!("{message}; push the base, or upload a complete bundle"),
             )
             .details(json!({ "prerequisites": prerequisites })),
             SnapshotError::TimedOut => Self::new(

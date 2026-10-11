@@ -49,6 +49,8 @@ pub struct DaemonConfig {
     pub previews: PreviewLimits,
     /// Snapshots of local worktrees, uploaded by `preview deploy --local`.
     pub snapshots: SnapshotsConfig,
+    /// The disk Git checkouts may take at once.
+    pub checkouts: CheckoutsConfig,
 }
 
 impl DaemonConfig {
@@ -522,6 +524,25 @@ impl Default for SnapshotsConfig {
     }
 }
 
+/// The Git checkouts deployments read manifests from and build sources in.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CheckoutsConfig {
+    /// Most bytes the working trees of all checkouts may take at once. A
+    /// checkout waits for room; a larger one, or a local snapshot that
+    /// would be, is refused.
+    pub max_bytes: std::num::NonZeroU64,
+}
+
+impl Default for CheckoutsConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes: std::num::NonZeroU64::new(4 * 1024 * 1024 * 1024)
+                .expect("the default checkout budget is not zero"),
+        }
+    }
+}
+
 /// Retention and cleanup of the images this installation builds.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -853,6 +874,13 @@ impl DaemonConfig {
             std::collections::BTreeMap::from([(
                 "Largest upload (bytes)".into(),
                 self.snapshots.max_upload_bytes.to_string(),
+            )]),
+        );
+        groups.insert(
+            "Git checkouts".into(),
+            std::collections::BTreeMap::from([(
+                "Largest total working trees (bytes)".into(),
+                self.checkouts.max_bytes.to_string(),
             )]),
         );
         groups.insert(

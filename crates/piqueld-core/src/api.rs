@@ -692,6 +692,50 @@ pub struct SystemStatus {
     /// The images this installation built, and their cleanup.
     #[serde(default)]
     pub images: ImageStatus,
+    /// How large a local snapshot may be; absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshots: Option<SnapshotLimits>,
+}
+
+/// How large a snapshot `piquelctl preview deploy --local` uploads may be,
+/// so it can refuse one before writing it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct SnapshotLimits {
+    /// The largest bundle an upload may carry: `[snapshots] max_upload_bytes`.
+    pub max_upload_bytes: u64,
+    /// The most bytes its files may take, each file and directory charged
+    /// [`Self::file_cost`]: `[checkouts] max_bytes`.
+    pub max_tree_bytes: u64,
+    /// The most files and directories it may have.
+    pub max_files: u64,
+}
+
+impl SnapshotLimits {
+    /// Filesystem block size files are charged in.
+    const BLOCK: u64 = 4096;
+    /// Each file's share of Git's index.
+    const METADATA: u64 = 256;
+
+    /// The disk a checked-out file of `size` bytes, or a directory of
+    /// none, is charged: whole blocks, at least one, and its share of the
+    /// index.
+    ///
+    /// ```
+    /// use piqueld_core::api::SnapshotLimits;
+    /// assert_eq!(SnapshotLimits::file_cost(1), 4096 + 256);
+    /// assert_eq!(SnapshotLimits::file_cost(4097), 8192 + 256);
+    /// ```
+    #[must_use]
+    pub const fn file_cost(size: u64) -> u64 {
+        let blocks = if size == 0 {
+            1
+        } else {
+            size.div_ceil(Self::BLOCK)
+        };
+        blocks
+            .saturating_mul(Self::BLOCK)
+            .saturating_add(Self::METADATA)
+    }
 }
 
 /// The images this installation built, as of the last cleanup.

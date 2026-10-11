@@ -399,6 +399,7 @@ fn status_and_dns_refresh_list_images_dns_providers_certificate_failures_and_pre
             reclaimed_bytes: 2048,
             cleaned_at_ms: Some(7),
         },
+        snapshots: None,
     };
     let stdout = Capture::default();
     let mut console =

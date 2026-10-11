@@ -40,6 +40,11 @@ impl ApplicationService {
                 .as_ref()
                 .map(|status| status.borrow().clone())
                 .unwrap_or_default(),
+            snapshots: Some(piqueld_core::api::SnapshotLimits {
+                max_upload_bytes: self.store.max_upload_bytes(),
+                max_tree_bytes: self.store.checkouts().max_bytes(),
+                max_files: crate::git::Checkouts::FILES as u64,
+            }),
         }
     }
 

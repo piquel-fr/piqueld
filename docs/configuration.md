@@ -95,6 +95,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `previews.default_memory_bytes` | `536870912` (512 MiB) |
 | `previews.max_replicas` | `1` |
 | `snapshots.max_upload_bytes` | `268435456` (256 MiB) |
+| `checkouts.max_bytes` | `4294967296` (4 GiB) |
 | `images.keep_deployments` | `3` (successful deployments per environment whose built images are kept) |
 | `images.cleanup_interval_seconds` | `3600` (`1..=86400`; cleanup also runs after each operation) |
 
@@ -223,6 +224,44 @@ the snapshots previews' latest deployments use; the others are removed on the
 next full reconciliation scan. It need not be backed up. It is a section of its
 own, rather than part of `[previews]`, because the API reports the
 `[previews]` limits and older clients reject fields they don't know.
+
+A bundle is kept as uploaded, so receiving one takes about as much disk as the
+upload, and every allocation Git makes for it is capped at 1 GiB, so a small
+bundle of huge objects cannot exhaust memory. Its files must also fit
+[`checkouts.max_bytes`](#git-checkouts), or no deployment could check it out:
+a larger snapshot is refused with 413 `snapshot_too_large`, as is one whose
+base history, fetched from the application's repository, takes more than
+`max_bytes`. An upload holds
+one of two receiving slots until its deployment is accepted or refused, so at
+most two unaccepted uploads are on disk at once.
+
+## Git checkouts
+
+Deployments check Git repositories out to read their manifest and build
+`git` sources, in `<data_dir>/checkouts`, which is emptied at startup:
+
+```toml
+[checkouts]
+max_bytes = 4294967296
+```
+
+`max_bytes`, at least 1, bounds the bytes all checkouts, history and
+working tree, take at once. Clones are shallow, so a checkout's history is
+about one compressed copy of its tree. At most four clones run at once, and
+one is stopped once it has downloaded more than a quarter of `max_bytes`.
+Each tree is then measured before its files are written, each file and
+directory charged its size in whole 4 KiB blocks, at least one, plus 256
+bytes for Git's index; the history counts as the disk it takes. A checkout
+waits until it fits beside the others, and one larger than `max_bytes`, or with
+more than 500,000 files and directories, fails. Once checked out, the disk a
+checkout really takes is compared with what it was charged: a checkout that
+takes more than the budget has room for fails. Clones still downloading are not counted, so
+checkouts take at most twice `max_bytes`. Files are checked out as
+committed: the repository's attributes cannot run filters such as LFS's, or
+convert encodings, line endings or `$Id$`. A pinned commit that the server
+won't serve by itself is found in the history of every branch. `GET /api/v1/system/status` reports the limit, so `piquelctl
+preview deploy --local` can refuse a snapshot that would not fit before
+packing it.
 
 ## TCP listen modes and Tailscale
 
