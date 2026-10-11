@@ -260,10 +260,9 @@ impl Instance {
         };
         let log = fs::File::create(self.file("output.log"))?;
         let mut job = Job::spawn(
-            Command::new("cargo")
+            Command::from(self.workspace.cargo())
                 .args(["build", "--package", "piqueld", "--bin", "piqueld"])
                 .args(["--features", "embedded-ui", "--color", color])
-                .current_dir(self.workspace.root())
                 .stderr(Stdio::piped()),
         )?;
         job.tee_stderr(log)?;

@@ -72,6 +72,31 @@ impl Workspace {
         &self.root
     }
 
+    /// Cargo, run from the workspace root without the package variables
+    /// `cargo run` gave this xtask. Build scripts such as ring's track
+    /// `CARGO_MANIFEST_DIR`, so passing xtask's on would make every nested
+    /// build, and the next ordinary one, recompile them and their dependents.
+    fn cargo(&self) -> std::process::Command {
+        let mut command = std::process::Command::new("cargo");
+        command.current_dir(&self.root);
+        for (key, _) in std::env::vars_os() {
+            if key.to_str().is_some_and(|key| {
+                key.starts_with("CARGO_PKG_")
+                    || matches!(
+                        key,
+                        "CARGO_MANIFEST_DIR"
+                            | "CARGO_MANIFEST_PATH"
+                            | "CARGO_CRATE_NAME"
+                            | "CARGO_BIN_NAME"
+                            | "CARGO_PRIMARY_PACKAGE"
+                    )
+            }) {
+                command.env_remove(key);
+            }
+        }
+        command
+    }
+
     /// Every checkout of the repository, the main one first.
     fn worktrees(&self) -> Result<Vec<PathBuf>> {
         let list = Self::git(&self.root, &["worktree", "list", "--porcelain"])?;

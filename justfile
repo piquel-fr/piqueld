@@ -45,15 +45,13 @@ test-wasm:
     @rustup target add wasm32-unknown-unknown
     @WASM_BINDGEN_TEST_ONLY_WEB=1 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --locked --package piqueld-client --lib --target wasm32-unknown-unknown
 
+# All features, like lint: the daemon tests run against the real embedded
+# bundle, and lint, test, and doc-test share one build.
 test:
-    @cargo nextest run --locked --workspace
-
-# Verify the real embedded bundle and run daemon tests against it.
-test-embedded:
-    @cargo nextest run --locked --package piqueld --features embedded-ui
+    @cargo nextest run --locked --workspace --all-features
 
 doc-test:
-    @cargo test --locked --doc --workspace
+    @cargo test --locked --doc --workspace --all-features
 
 deny:
     @cargo deny check

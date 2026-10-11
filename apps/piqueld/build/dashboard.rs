@@ -132,8 +132,21 @@ impl Dashboard {
         Ok(dist)
     }
 
-    /// Compiles `piqueld-ui` for wasm32 and returns the module's path.
+    /// Returns the dashboard module: `PIQUELD_DASHBOARD_WASM` when set, as the
+    /// Nix packages do with their own cached build, or else `piqueld-ui`
+    /// compiled for wasm32 with the `dashboard` profile.
     fn compile(&self) -> Result<PathBuf, Box<dyn Error>> {
+        println!("cargo:rerun-if-env-changed=PIQUELD_DASHBOARD_WASM");
+        if let Some(wasm) = env::var_os("PIQUELD_DASHBOARD_WASM") {
+            let wasm = PathBuf::from(wasm);
+            println!(
+                "cargo:warning=embedding the prebuilt dashboard {} from PIQUELD_DASHBOARD_WASM; \
+                 changes under apps/piqueld-ui are not included",
+                wasm.display()
+            );
+            println!("cargo:rerun-if-changed={}", wasm.display());
+            return Ok(wasm);
+        }
         Ok(NestedCargo::new("ui")?
             .build(&self.ui_dir, "piqueld-ui", Self::PROFILE, Self::TARGET)?
             .join("piqueld-ui.wasm"))

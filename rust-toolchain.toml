@@ -1,5 +1,6 @@
 [toolchain]
-channel = "stable"
+# Pinned, so rustup, CI, and the Nix packages build with the same Rust.
+channel = "1.99.0"
 components = [ "rustfmt", "clippy" ]
 targets = [
     "wasm32-unknown-unknown",
