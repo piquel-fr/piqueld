@@ -8606,7 +8606,12 @@ impl Client {
     - `event` messages with `id: v1:<event-id>` for each matching event;
     - ID-only messages that advance the resume position past filtered-out events;
     - a final `history_expired` or `stream_error` message, after which the
-      stream ends and history must be reloaded before reconnecting.
+      stream ends and history must be reloaded before reconnecting;
+    - a final `access_ended` message whose data is the `ErrorBody` of the
+      request that would now be refused, sent within 30 seconds once the
+      caller loses access.
+
+    The stream also ends, without a message, when the daemon shuts down.
 
     Sends a `GET` request to `/api/v1/events/stream`
 

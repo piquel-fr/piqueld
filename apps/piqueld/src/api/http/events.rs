@@ -1,5 +1,11 @@
-use super::{ApiError, ApiState, ok, openapi::ApiErrorResponse};
-use crate::auth::Identity;
+use super::{
+    ApiError, ApiState,
+    auth::TailnetSource,
+    lease::{Ended, Lease},
+    ok,
+    openapi::ApiErrorResponse,
+};
+use crate::{auth::Identity, store::Visibility};
 use axum::{
     Extension,
     extract::{Query, State, rejection::QueryRejection},
@@ -15,6 +21,7 @@ use piqueld_core::{
     observability::{EventFilter, EventScope},
 };
 use serde::Deserialize;
+use std::{collections::VecDeque, convert::Infallible};
 
 /// Event filters shared by the paged listing and the live stream.
 #[derive(Default, Deserialize, utoipa::IntoParams)]
@@ -91,7 +98,7 @@ pub(super) async fn list(
     query: Result<Query<EventQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let query = EventQuery::parse(query)?;
-    let visible = super::access::history(&identity)?;
+    let visible = super::access::history(&identity.grants)?;
     Ok(ok(state
         .filtered_events(
             &query.filter(),
@@ -111,16 +118,22 @@ pub(super) async fn list(
 /// - `event` messages with `id: v1:<event-id>` for each matching event;
 /// - ID-only messages that advance the resume position past filtered-out events;
 /// - a final `history_expired` or `stream_error` message, after which the
-///   stream ends and history must be reloaded before reconnecting.
+///   stream ends and history must be reloaded before reconnecting;
+/// - a final `access_ended` message whose data is the `ErrorBody` of the
+///   request that would now be refused, sent within 30 seconds once the
+///   caller loses access.
+///
+/// The stream also ends, without a message, when the daemon shuts down.
 #[utoipa::path(get,path="/api/v1/events/stream",operation_id="streamEvents",params(EventQuery),responses((status=200,description="Resumable SSE; IDs are v1:<event-id>",body=String,content_type="text/event-stream"),(status=400,response=inline(ApiErrorResponse)),(status=410,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn stream(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
+    source: Option<TailnetSource>,
     headers: HeaderMap,
     query: Result<Query<EventQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let query = EventQuery::parse(query)?;
-    let visible = super::access::history(&identity)?;
+    let visible = super::access::history(&identity.grants)?;
     if query.descending.unwrap_or(false) {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -148,76 +161,121 @@ pub(super) async fn stream(
     let (initial, checkpoint) = state
         .stream_events(&filter, &visible, after, batch_size)
         .await?;
-    let stream = futures_util::stream::unfold(
-        (
-            state,
-            filter,
-            after,
-            std::collections::VecDeque::from(initial),
-            checkpoint,
-            false,
-            visible,
-        ),
-        move |(state, filter, mut after, mut pending, mut checkpoint, done, visible)| async move {
-            if done {
-                return None;
-            }
-            loop {
-                if let Some(event) = pending.pop_front() {
-                    after = event.id;
-                    let item = ServerEvent::default()
-                        .id(format!("v1:{after}"))
+    let follow = Follow {
+        lease: Lease::new(state.clone(), identity, source),
+        state,
+        filter,
+        visible,
+        batch_size,
+        after,
+        pending: VecDeque::from(initial),
+        checkpoint,
+        done: false,
+    };
+    let stream = futures_util::stream::unfold(follow, |mut follow| async move {
+        let item = follow.next().await?;
+        Some((Ok::<_, Infallible>(item), follow))
+    });
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// A live event stream's position and access.
+struct Follow {
+    state: ApiState,
+    lease: Lease,
+    filter: EventFilter,
+    /// What the caller may read, updated whenever its access is rechecked.
+    visible: Visibility,
+    batch_size: usize,
+    /// ID of the last event sent.
+    after: i64,
+    /// Read events not yet sent.
+    pending: VecDeque<Event>,
+    /// Newest event ID read, matching or not.
+    checkpoint: i64,
+    /// Whether a final message was sent.
+    done: bool,
+}
+
+impl Follow {
+    /// The next message, or `None` once the stream ended.
+    async fn next(&mut self) -> Option<ServerEvent> {
+        if self.done {
+            return None;
+        }
+        loop {
+            if let Some(event) = self.pending.pop_front() {
+                self.after = event.id;
+                return Some(
+                    ServerEvent::default()
+                        .id(format!("v1:{}", self.after))
                         .event("event")
                         .json_data(event)
                         .unwrap_or_else(|_| {
                             ServerEvent::default()
                                 .event("stream_error")
                                 .data("serialization failed")
-                        });
-                    return Some((
-                        Ok::<_, std::convert::Infallible>(item),
-                        (state, filter, after, pending, checkpoint, false, visible),
-                    ));
-                }
-                if checkpoint > after {
-                    // An ID-only message moves Last-Event-ID past events the filter
-                    // excluded without dispatching an event to the client.
-                    after = checkpoint;
-                    return Some((
-                        Ok(ServerEvent::default().id(format!("v1:{after}"))),
-                        (state, filter, after, pending, checkpoint, false, visible),
-                    ));
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                match state
-                    .stream_events(&filter, &visible, after, batch_size)
-                    .await
-                {
-                    Ok((items, next)) => {
-                        pending.extend(items);
-                        checkpoint = next;
-                    }
-                    Err(error) => {
-                        let kind = if matches!(
-                            error,
-                            crate::api::ApplicationError::Store(
-                                crate::store::StoreError::HistoryExpired
-                            )
-                        ) {
-                            "history_expired"
-                        } else {
-                            "stream_error"
-                        };
-                        return Some((
-                            Ok(ServerEvent::default()
-                                .event(kind)
-                                .data("Reload history before reconnecting")),
-                            (state, filter, after, pending, checkpoint, true, visible),
-                        ));
+                        }),
+                );
+            }
+            if self.checkpoint > self.after {
+                // An ID-only message moves Last-Event-ID past events the filter
+                // excluded without dispatching an event to the client.
+                self.after = self.checkpoint;
+                return Some(ServerEvent::default().id(format!("v1:{}", self.after)));
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if self.lease.due() {
+                let checked = self
+                    .lease
+                    .recheck(|state: ApiState, identity: Identity| async move {
+                        Ok(super::access::history(
+                            &state.grants(identity.actor()).await?,
+                        )?)
+                    })
+                    .await;
+                match checked {
+                    Ok(visible) => self.visible = visible,
+                    Err(Ended::Shutdown) => return None,
+                    Err(Ended::Refused(error)) => {
+                        self.done = true;
+                        return Some(
+                            ServerEvent::default()
+                                .event("access_ended")
+                                .json_data(error.body())
+                                .unwrap_or_else(|_| ServerEvent::default().event("access_ended")),
+                        );
                     }
                 }
             }
-        },
-    );
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+            match self
+                .state
+                .stream_events(&self.filter, &self.visible, self.after, self.batch_size)
+                .await
+            {
+                Ok((items, next)) => {
+                    self.pending.extend(items);
+                    self.checkpoint = next;
+                }
+                Err(error) => {
+                    let kind = if matches!(
+                        error,
+                        crate::api::ApplicationError::Store(
+                            crate::store::StoreError::HistoryExpired
+                        )
+                    ) {
+                        "history_expired"
+                    } else {
+                        "stream_error"
+                    };
+                    self.done = true;
+                    return Some(
+                        ServerEvent::default()
+                            .event(kind)
+                            .data("Reload history before reconnecting"),
+                    );
+                }
+            }
+        }
+    }
 }

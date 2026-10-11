@@ -262,14 +262,12 @@ impl SwarmScenario {
         let exec = self.create_exec(script, tty).await;
         let (input, input_rx) = tokio::sync::mpsc::channel(4);
         let (output_tx, mut output) = tokio::sync::mpsc::channel(16);
-        // Dropping `_connected` before the command exits would disconnect.
-        let (_connected, disconnected) = tokio::sync::oneshot::channel();
         input.send(ExecInput::Stdin(stdin.to_vec())).await.unwrap();
         input.send(ExecInput::CloseStdin).await.unwrap();
         let io = piqueld::docker::ExecIo {
             input: input_rx,
             output: output_tx,
-            disconnected,
+            stop: tokio_util::sync::CancellationToken::new(),
         };
         let drain = async {
             let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
@@ -310,8 +308,8 @@ impl SwarmScenario {
             .exec("head -c 8388608 /dev/zero", &vec![0; 8 << 20], None)
             .await;
         assert_eq!((stdout.len(), code), (8 << 20, 0));
-        // A disconnected client ends a silent session, even while its unread
-        // input blocks the command's standard input.
+        // Stopping ends a silent session, even while its unread input blocks
+        // the command's standard input.
         let exec = self.create_exec("sleep 300", None).await;
         let (input, input_rx) = tokio::sync::mpsc::channel(1);
         let (output, _output_rx) = tokio::sync::mpsc::channel(1);
@@ -319,23 +317,23 @@ impl SwarmScenario {
             .send(piqueld_core::exec::ExecInput::Stdin(vec![0; 8 << 20]))
             .await
             .unwrap();
-        let (connected, disconnected) = tokio::sync::oneshot::channel();
+        let stop = tokio_util::sync::CancellationToken::new();
         let io = piqueld::docker::ExecIo {
             input: input_rx,
             output,
-            disconnected,
+            stop: stop.clone(),
         };
-        // Disconnect only once the 8 MiB write is blocked on the unread pipe.
+        // Stop only once the 8 MiB write is blocked on the unread pipe.
         let disconnect = async {
             tokio::time::sleep(Duration::from_secs(2)).await;
-            drop(connected);
+            stop.cancel();
         };
         let (stopped, ()) = tokio::time::timeout(
             Duration::from_secs(30),
             futures_util::future::join(self.engine.docker.run_exec(&exec, io), disconnect),
         )
         .await
-        .expect("a disconnect stops the session");
+        .expect("a stop ends the session");
         assert!(stopped.is_err());
         let instance = InstanceId::parse(&self.labels["io.piqueld.instance"]).unwrap();
         let mut missing = piqueld_core::exec::ExecRequest {

@@ -96,7 +96,8 @@ impl ApplicationService {
             .with_image_status(reconciler.image_status())
             .with_configuration(config.view())
             .with_ingress(Arc::clone(&ingress))
-            .with_webhook_hostname(config.ingress.webhook_hostname.clone());
+            .with_webhook_hostname(config.ingress.webhook_hostname.clone())
+            .with_shutdown(cancellation.clone());
         let webhook_listener = ingress
             .bind_webhooks()
             .await

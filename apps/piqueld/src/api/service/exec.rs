@@ -37,9 +37,7 @@ impl ApplicationService {
         request: &ExecRequest,
         who: &str,
     ) -> Result<ExecSession, ApplicationError> {
-        self.store
-            .require_on_environment(actor, AppPermission::Exec, environment)
-            .await?;
+        self.may_exec(actor, environment).await?;
         let application = self
             .store
             .get(environment)
@@ -72,6 +70,21 @@ impl ApplicationService {
             actor_credential_id: attribution.credential_id.map(str::to_owned),
             actor_operator: attribution.operator,
         })
+    }
+
+    /// Checks that `actor` may still run commands in `environment`, which a
+    /// running command rechecks while it lasts.
+    /// # Errors
+    /// Returns refusal, a revoked credential, or storage errors.
+    pub async fn may_exec(
+        &self,
+        actor: Actor<'_>,
+        environment: &EnvironmentId,
+    ) -> Result<(), ApplicationError> {
+        Ok(self
+            .store
+            .require_on_environment(actor, AppPermission::Exec, environment)
+            .await?)
     }
 }
 

@@ -22,6 +22,7 @@ pub use exec::ExecSession;
 pub use history::ManifestExport;
 use piqueld_core::{
     ApplicationId, EnvironmentId, EnvironmentName, GitBranch, PreviewSlot, TrackedBranch,
+    access::Grants,
     api::{LocalSnapshot, PromotionSelection, SecretAccess, SecretMetadata, StoredSecret},
     manifest::{ApplicationTemplate, RepositoryManifest, ValidatedTemplate},
 };
@@ -445,6 +446,8 @@ pub struct ApplicationService {
     hints: Arc<sync::Hints>,
     /// Public hostname serving webhook deliveries, `ingress.webhook_hostname`.
     webhook_hostname: Option<piqueld_core::manifest::Hostname>,
+    /// Cancelled when the daemon shuts down, ending long-lived connections.
+    shutdown: tokio_util::sync::CancellationToken,
 }
 
 /// Audit records allowed to wait for the writer at once.
@@ -468,7 +471,35 @@ impl ApplicationService {
             known_addresses: Arc::default(),
             hints: Arc::default(),
             webhook_hostname: None,
+            shutdown: tokio_util::sync::CancellationToken::new(),
         }
+    }
+
+    /// Ends long-lived connections, like event streams and commands, once
+    /// `shutdown` is cancelled.
+    #[must_use]
+    pub fn with_shutdown(mut self, shutdown: tokio_util::sync::CancellationToken) -> Self {
+        self.shutdown = shutdown;
+        self
+    }
+
+    /// Cancelled when the daemon shuts down.
+    #[must_use]
+    pub fn shutdown(&self) -> &tokio_util::sync::CancellationToken {
+        &self.shutdown
+    }
+
+    /// Notifies after every change to accounts, credentials, or grants.
+    #[must_use]
+    pub fn access_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.store.access_changes()
+    }
+
+    /// `actor`'s current grants, for connections that outlive a request.
+    /// # Errors
+    /// Returns a revoked credential or storage errors.
+    pub async fn grants(&self, actor: Actor<'_>) -> Result<Grants, ApplicationError> {
+        Ok(self.store.grants(actor).await?)
     }
 
     /// Names the public hostname webhook deliveries arrive on, for the

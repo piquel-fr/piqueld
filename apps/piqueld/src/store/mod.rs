@@ -532,6 +532,9 @@ pub struct Store {
     snapshots: std::sync::Arc<crate::git::snapshot::Snapshots>,
     /// Largest snapshot bundle an upload may carry (`[snapshots]`).
     max_upload_bytes: std::num::NonZeroU64,
+    /// Signalled after each committed change to accounts, credentials, or
+    /// grants (see [`Store::access_changes`]).
+    access_changes: tokio::sync::watch::Sender<()>,
 }
 
 impl Store {
@@ -637,6 +640,7 @@ impl Store {
                     .map_err(StoreError::PathSource)?,
             ),
             max_upload_bytes: crate::config::SnapshotsConfig::default().max_upload_bytes,
+            access_changes: tokio::sync::watch::Sender::new(()),
         };
         store.reencrypt_moved_secrets().await?;
         store.record_missing_releases().await?;

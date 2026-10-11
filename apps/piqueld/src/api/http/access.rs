@@ -30,7 +30,7 @@ use piqueld_core::auth::Principal;
 use piqueld_core::tailnet::TailnetPeer;
 use piqueld_core::{
     ApplicationId, EnvironmentId,
-    access::{AppPermission, Denied, GlobalPermission, Permission, Target},
+    access::{AppPermission, Denied, GlobalPermission, Grants, Permission, Target},
 };
 use serde_json::json;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
@@ -498,15 +498,15 @@ fn check(
     }
 }
 
-/// History `identity` may read: events of applications it holds
+/// History a caller with `grants` may read: events of applications it holds
 /// `events:read` on, and daemon events with `system:read`.
 ///
 /// # Errors
 /// Returns [`Denied::Missing`] when it may read no history at all.
-pub(super) fn history(identity: &Identity) -> Result<crate::store::Visibility, Denied> {
+pub(super) fn history(grants: &Grants) -> Result<crate::store::Visibility, Denied> {
     let visible = crate::store::Visibility {
-        applications: identity.grants.app_scope(AppPermission::EventsRead),
-        daemon: identity.grants.has_global(GlobalPermission::SystemRead),
+        applications: grants.app_scope(AppPermission::EventsRead),
+        daemon: grants.has_global(GlobalPermission::SystemRead),
     };
     if visible.applications.is_empty() && !visible.daemon {
         return Err(Denied::Missing(Permission::App(AppPermission::EventsRead)));
