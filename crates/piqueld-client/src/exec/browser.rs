@@ -121,19 +121,25 @@ pub(super) async fn open(
 
 impl Reader {
     /// Returns the next binary payload, or `None` once the connection closed
-    /// cleanly. An abnormal closure is an error.
+    /// cleanly, and on every read after that. An abnormal closure is an error.
     pub(super) async fn next(&mut self) -> Result<Option<Vec<u8>>, ClientError> {
         loop {
             match self.events.next().await {
                 Some(SocketEvent::Message(data)) => return Ok(Some(data)),
                 Some(SocketEvent::Open) => {}
-                Some(SocketEvent::Closed(event)) if !event.was_clean() => {
-                    return Err(exchange(&format!(
-                        "connection lost (close code {})",
-                        event.code()
-                    )));
+                Some(SocketEvent::Closed(event)) => {
+                    // The handlers, and so the senders, live as long as this
+                    // reader: closing the channel ends later reads.
+                    self.events.close();
+                    if !event.was_clean() {
+                        return Err(exchange(&format!(
+                            "connection lost (close code {})",
+                            event.code()
+                        )));
+                    }
+                    return Ok(None);
                 }
-                Some(SocketEvent::Closed(_)) | None => return Ok(None),
+                None => return Ok(None),
             }
         }
     }

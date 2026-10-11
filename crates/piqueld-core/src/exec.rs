@@ -15,6 +15,9 @@ use utoipa::ToSchema;
 /// Largest message the daemon accepts.
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
+/// Largest [`ExecInput::Stdin`] payload that fits in one message, after its tag.
+pub const MAX_STDIN_BYTES: usize = MAX_MESSAGE_BYTES - 1;
+
 /// Program and arguments to execute. The program must be non-empty.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "Vec<String>", into = "Vec<String>")]
@@ -235,6 +238,12 @@ mod tests {
             ExecOutput::decode(&ExecOutput::Exit(-3).encode()),
             Ok(ExecOutput::Exit(-3))
         ));
+    }
+
+    #[test]
+    fn the_largest_stdin_payload_fits_in_one_message() {
+        let message = ExecInput::Stdin(vec![0; MAX_STDIN_BYTES]).encode();
+        assert_eq!(message.len(), MAX_MESSAGE_BYTES);
     }
 
     #[test]

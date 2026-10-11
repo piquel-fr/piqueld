@@ -7,6 +7,7 @@
 
 use crate::{Client, ClientError, TransportFailure, client::invalid_request};
 use piqueld_core::api::API_PREFIX;
+use piqueld_core::exec::MAX_STDIN_BYTES;
 pub use piqueld_core::exec::{
     ExecCommand, ExecCommandError, ExecFrame, ExecInput, ExecOutput, ExecRequest, TerminalSize,
 };
@@ -62,11 +63,22 @@ impl ExecReader {
 }
 
 impl ExecWriter {
-    /// Sends one input message.
+    /// Sends one input message. Standard input larger than one message
+    /// allows, such as a large paste, is split across several.
     /// # Errors
     /// Returns transport errors, including a command that already exited.
     pub async fn send(&mut self, frame: &ExecInput) -> Result<(), ClientError> {
-        self.0.send(&frame.encode()).await
+        match frame {
+            ExecInput::Stdin(data) => {
+                for chunk in data.chunks(MAX_STDIN_BYTES) {
+                    self.0
+                        .send(&ExecInput::Stdin(chunk.to_vec()).encode())
+                        .await?;
+                }
+                Ok(())
+            }
+            frame => self.0.send(&frame.encode()).await,
+        }
     }
 }
 
