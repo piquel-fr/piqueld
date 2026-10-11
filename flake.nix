@@ -119,6 +119,27 @@
             doCheck = false;
           };
           probeBinary = "${probe}/bin/piqueld-probe";
+          # The dashboard module the daemon embeds, built on its own so its
+          # dependencies stay cached and daemon-only changes don't recompile
+          # it. The daemon build script reads it from PIQUELD_DASHBOARD_WASM.
+          # Like the build script's nested build, it ignores the release LTO
+          # override.
+          dashboardArgs = removeAttrs commonArgs [ "CARGO_PROFILE_RELEASE_LTO" ] // {
+            pname = "piqueld-dashboard";
+            cargoExtraArgs = "--locked --package piqueld-ui";
+            CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
+            CARGO_PROFILE = "dashboard";
+          };
+          dashboard = craneLib.buildPackage (
+            dashboardArgs
+            // {
+              cargoArtifacts = buildDepsOnly dashboardArgs;
+              installPhaseCommand = ''
+                install -Dm644 target/wasm32-unknown-unknown/dashboard/piqueld-ui.wasm \
+                  "$out/piqueld-ui.wasm"
+              '';
+            }
+          );
           mkPackage =
             {
               name,
@@ -135,7 +156,8 @@
                   + lib.optionalString withUi " --features embedded-ui";
                 CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
               }
-              // lib.optionalAttrs (builtins.elem "piqueld" binaries) { PIQUELD_PROBE = probeBinary; };
+              // lib.optionalAttrs (builtins.elem "piqueld" binaries) { PIQUELD_PROBE = probeBinary; }
+              // lib.optionalAttrs withUi { PIQUELD_DASHBOARD_WASM = "${dashboard}/piqueld-ui.wasm"; };
             in
             craneLib.buildPackage (
               args
@@ -178,7 +200,7 @@
             if pkgs.stdenv.isDarwin then self.packages.${system}.cli else self.packages.${system}.combined;
         }
         // lib.optionalAttrs pkgs.stdenv.isLinux {
-          inherit probe;
+          inherit probe dashboard;
           daemon = mkPackage {
             name = "piqueld-daemon";
             binaries = [ "piqueld" ];

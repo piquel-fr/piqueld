@@ -274,6 +274,11 @@ it. With the `embedded-ui` feature, the daemon build script:
 4. fills the placeholders in `apps/piqueld-ui/index.html` with the
    content-hashed file names, and embeds every file.
 
+Setting `PIQUELD_DASHBOARD_WASM` to a compiled `piqueld-ui.wasm` skips step 1
+and embeds that module instead, and the build warns that changes under
+`apps/piqueld-ui` are not included. The Nix packages pass their own cached
+`dashboard` build this way, so daemon-only changes don't recompile the UI.
+
 No Trunk, wasm-bindgen CLI, binaryen, Tailwind, or Node is involved. The shell
 has no inline scripts, so the Content-Security-Policy is a constant. See
 [ADR 0002](architecture/0002-cargo-built-dashboard.md) for the reasoning and
