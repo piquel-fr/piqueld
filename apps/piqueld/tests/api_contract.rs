@@ -86,16 +86,20 @@ impl RuntimeBoundary for FakeRuntime {
     }
 
     /// Only `web` has a running task. A command named `block` never reads
-    /// its input.
+    /// its input, and one named `hang` echoes it but never stops.
     async fn create_exec(
         &self,
         _environment: &piqueld_core::EnvironmentId,
         request: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<piqueld::docker::Exec>, BoundaryError> {
-        let blocked = request.command.as_slice()[0] == "block";
+        let id = match request.command.as_slice()[0].as_str() {
+            "block" => "exec-blocked",
+            "hang" => "exec-hang",
+            _ => "exec-1",
+        };
         Ok(
             (request.service.as_str() == "web").then(|| piqueld::docker::Exec {
-                id: if blocked { "exec-blocked" } else { "exec-1" }.into(),
+                id: id.into(),
                 task: "task-1".into(),
                 tty: request.tty.is_some(),
             }),
@@ -130,9 +134,15 @@ impl RuntimeBoundary for FakeRuntime {
                 .unwrap();
             Ok(i64::try_from(read).unwrap())
         };
+        let stopped = async {
+            if exec.id == "exec-hang" {
+                std::future::pending::<()>().await;
+            }
+            stop.cancelled().await;
+        };
         tokio::select! {
             result = echo => result,
-            () = stop.cancelled() => Err(piqueld::docker::DockerError::Request("stopped").into()),
+            () = stopped => Err(piqueld::docker::DockerError::Request("stopped").into()),
         }
     }
 
@@ -4993,7 +5003,7 @@ async fn open_exec(
 
 /// A running command ends with the refusal an equivalent request would get
 /// once its caller's credential is revoked, its account deleted, or its
-/// grants no longer include `apps:exec`.
+/// grants no longer include `apps:exec`, even if the runtime never stops it.
 #[tokio::test]
 async fn exec_sessions_end_once_access_is_lost() {
     use futures_util::{SinkExt, StreamExt};
@@ -5021,16 +5031,19 @@ async fn exec_sessions_end_once_access_is_lost() {
     let changes = [
         (
             "revoked",
+            "hang",
             json!({"action": "revoke_credential", "id": "revoked"}),
             401,
         ),
         (
             "deleted",
+            "cat",
             json!({"action": "delete_user", "user_id": "deleted"}),
             401,
         ),
         (
             "demoted",
+            "cat",
             json!({"action": "set_grants", "user_id": "demoted", "grants": reader}),
             403,
         ),
@@ -5039,9 +5052,9 @@ async fn exec_sessions_end_once_access_is_lost() {
         ("apps:exec", Some(f.blog.as_str())),
         ("apps:read", Some(f.blog.as_str())),
     ];
-    for (name, change, status) in changes {
+    for (name, command, change, status) in changes {
         let token = seed_account(&database, name, &grants).await;
-        let mut socket = open_exec(address, &f.blog, Some(&token), "cat").await;
+        let mut socket = open_exec(address, &f.blog, Some(&token), command).await;
         let echo = ExecInput::Stdin(b"hi".to_vec()).encode();
         socket.send(Message::binary(echo)).await.unwrap();
         let mut next = async || loop {
@@ -5058,7 +5071,8 @@ async fn exec_sessions_end_once_access_is_lost() {
             200,
             "{name}"
         );
-        let last = tokio::time::timeout(std::time::Duration::from_secs(5), next())
+        // A runtime that never stops gets five seconds to wind down.
+        let last = tokio::time::timeout(std::time::Duration::from_secs(10), next())
             .await
             .expect("the session ends promptly");
         assert!(
@@ -5141,7 +5155,8 @@ async fn read_stream(body: &mut Body, needle: Option<&str>) -> String {
 }
 
 /// An event stream ends with an `access_ended` message once its caller's
-/// credential is revoked, and without one when the daemon shuts down.
+/// credential is revoked, without sending events it read before, and
+/// without a message when the daemon shuts down.
 #[tokio::test]
 async fn event_streams_end_once_access_is_lost_or_the_daemon_stops() {
     use std::time::Duration;
@@ -5165,15 +5180,20 @@ async fn event_streams_end_once_access_is_lost_or_the_daemon_stops() {
     };
     let mut revoked = open(&reader).await;
     let mut stopped = open(&format!("{:x<43}", "contract-admin")).await;
+    // The first event leaves the rest of the batch read but not yet sent.
+    read_stream(&mut revoked, Some("event: event")).await;
     let revoke = serde_json::json!({"action": "revoke_credential", "id": "reader"});
     let manage = "/api/v1/auth/manage";
     assert_eq!(f.call(&reader, "POST", manage, revoke).await.0, 200);
     let text = tokio::time::timeout(Duration::from_secs(5), read_stream(&mut revoked, None))
         .await
         .expect("the stream ends promptly");
-    let last = text.trim_end().rsplit("\n\n").next().unwrap();
-    assert!(last.contains("event: access_ended"), "{text}");
-    assert!(last.contains("authentication_required"), "{text}");
+    assert!(
+        text.trim_start().starts_with("event: access_ended"),
+        "{text}"
+    );
+    assert!(text.contains("authentication_required"), "{text}");
+    assert!(!text.contains("event: event"), "{text}");
 
     shutdown.cancel();
     let text = tokio::time::timeout(Duration::from_secs(5), read_stream(&mut stopped, None))

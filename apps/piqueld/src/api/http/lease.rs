@@ -39,14 +39,16 @@ pub(super) struct Lease {
 }
 
 impl Lease {
-    /// Starts the lease of a connection `identity` was just authorized for.
+    /// Starts the lease of a connection `identity` was authorized for. Its
+    /// first recheck is due at once, so a change made since `identity` was
+    /// authenticated, before this subscribed to changes, is not missed.
     pub(super) fn new(state: ApiState, identity: Identity, source: Option<TailnetSource>) -> Self {
         Self {
             changes: state.access_changes(),
             state,
             identity,
             source,
-            next: Instant::now() + RECHECK,
+            next: Instant::now(),
         }
     }
 

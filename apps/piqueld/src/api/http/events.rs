@@ -120,8 +120,8 @@ pub(super) async fn list(
 /// - a final `history_expired` or `stream_error` message, after which the
 ///   stream ends and history must be reloaded before reconnecting;
 /// - a final `access_ended` message whose data is the `ErrorBody` of the
-///   request that would now be refused, sent within 30 seconds once the
-///   caller loses access.
+///   request that would now be refused, once the caller loses access (see
+///   docs/authorization.md for how soon).
 ///
 /// The stream also ends, without a message, when the daemon shuts down.
 #[utoipa::path(get,path="/api/v1/events/stream",operation_id="streamEvents",params(EventQuery),responses((status=200,description="Resumable SSE; IDs are v1:<event-id>",body=String,content_type="text/event-stream"),(status=400,response=inline(ApiErrorResponse)),(status=410,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
@@ -198,12 +198,43 @@ struct Follow {
 }
 
 impl Follow {
-    /// The next message, or `None` once the stream ended.
+    /// The next message, or `None` once the stream ended. Access is rechecked
+    /// before every message once due, so nothing read earlier is sent after
+    /// the caller lost access to it.
     async fn next(&mut self) -> Option<ServerEvent> {
         if self.done {
             return None;
         }
         loop {
+            if self.lease.due() {
+                let checked = self
+                    .lease
+                    .recheck(|state: ApiState, identity: Identity| async move {
+                        Ok(super::access::history(
+                            &state.grants(identity.actor()).await?,
+                        )?)
+                    })
+                    .await;
+                match checked {
+                    Ok(visible) if visible != self.visible => {
+                        // Events read with the previous visibility are read again.
+                        self.visible = visible;
+                        self.pending.clear();
+                        self.checkpoint = self.after;
+                    }
+                    Ok(_) => {}
+                    Err(Ended::Shutdown) => return None,
+                    Err(Ended::Refused(error)) => {
+                        self.done = true;
+                        return Some(
+                            ServerEvent::default()
+                                .event("access_ended")
+                                .json_data(error.body())
+                                .unwrap_or_else(|_| ServerEvent::default().event("access_ended")),
+                        );
+                    }
+                }
+            }
             if let Some(event) = self.pending.pop_front() {
                 self.after = event.id;
                 return Some(
@@ -225,29 +256,6 @@ impl Follow {
                 return Some(ServerEvent::default().id(format!("v1:{}", self.after)));
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            if self.lease.due() {
-                let checked = self
-                    .lease
-                    .recheck(|state: ApiState, identity: Identity| async move {
-                        Ok(super::access::history(
-                            &state.grants(identity.actor()).await?,
-                        )?)
-                    })
-                    .await;
-                match checked {
-                    Ok(visible) => self.visible = visible,
-                    Err(Ended::Shutdown) => return None,
-                    Err(Ended::Refused(error)) => {
-                        self.done = true;
-                        return Some(
-                            ServerEvent::default()
-                                .event("access_ended")
-                                .json_data(error.body())
-                                .unwrap_or_else(|_| ServerEvent::default().event("access_ended")),
-                        );
-                    }
-                }
-            }
             match self
                 .state
                 .stream_events(&self.filter, &self.visible, self.after, self.batch_size)

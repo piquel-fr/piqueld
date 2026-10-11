@@ -215,27 +215,32 @@ async fn relay(
         output: output_tx,
         stop: stop.clone(),
     };
-    let running = async {
-        let finished = tokio::join!(session.run(io), writing);
-        stop.cancel();
-        finished
-    };
-    let watching = async {
-        tokio::select! {
-            ended = ended => {
-                stop.cancel();
-                Some(ended)
-            }
-            () = stop.cancelled() => None,
+    let running = async { tokio::join!(session.run(io), writing) };
+    tokio::pin!(running);
+    let mut early = None;
+    let mut finished = tokio::select! {
+        biased;
+        finished = &mut running => Some(finished),
+        ended = ended => {
+            early = Some(ended);
+            None
         }
+        () = stop.cancelled() => None,
     };
-    let ((result, delivered), ended) = tokio::join!(running, watching);
+    // Once stopped, the command gets a bounded time to wind down and record
+    // its completion; the runtime may still be starting or inspecting it.
+    if finished.is_none() {
+        stop.cancel();
+        finished = tokio::time::timeout(CLOSE_TIMEOUT, &mut running).await.ok();
+    }
     reading.abort();
-    match ended {
+    match early {
         Some(Ended::Refused(error)) => return Some(Err(error)),
         Some(Ended::Shutdown) => return None,
         None => {}
     }
+    // A runtime that did not stop in time leaves nobody to report to.
+    let (result, delivered) = finished?;
     let left = !delivered || matches!(reading.await, Ok(true));
     match result {
         Err(_) if left => None,

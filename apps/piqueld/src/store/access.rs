@@ -186,7 +186,7 @@ impl EnvironmentOwner {
 
 /// The history a caller may read: application events within `applications`,
 /// and daemon events when `daemon` is set.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Visibility {
     /// Applications whose events are visible.
     pub applications: Scope,

@@ -551,7 +551,9 @@ a terminal, where disconnecting detaches) and terminal resizes (3, `u16` width
 then height). Closing the connection, rather than sending stdin end, stops the
 session. The daemon only sees the close after reading the input sent before it,
 so while a command is not reading its input, the daemon's pings, sent every 5
-seconds, notice a client that left.
+seconds, notice a client whose connection closed. A client that sends Close
+behind unread input but keeps its connection open is noticed when the command
+reads or exits, or the daemon shuts down.
 
 The daemon sends stdout (1), stderr (2), and finally either the exit code (3,
 big-endian `i64`) or a failure (4): the `u16` HTTP status an equivalent request
@@ -559,8 +561,8 @@ would have returned, then the `ErrorBody` JSON. Failures to start the command,
 such as an invalid request, `404 not_found` or `409 service_not_running`, arrive
 this way too, so browsers can read them. The caller's access is rechecked while
 the command runs (see [authorization](authorization.md)); once it is
-lost, the command is stopped and the client receives the refusal, such as `401
-authentication_required` or `403`. When the daemon shuts down, the connection
+lost, the session ends with the refusal, such as `401 authentication_required`
+or `403`, and the command, like after a disconnect, may keep running. When the daemon shuts down, the connection
 closes without a final message. `piqueld_core::exec` implements the
 messages. Progenitor's generated WebSocket methods do not build for WASM, so
 `piqueld-client` implements this method by hand for native targets. History

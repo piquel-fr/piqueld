@@ -8608,8 +8608,8 @@ impl Client {
     - a final `history_expired` or `stream_error` message, after which the
       stream ends and history must be reloaded before reconnecting;
     - a final `access_ended` message whose data is the `ErrorBody` of the
-      request that would now be refused, sent within 30 seconds once the
-      caller loses access.
+      request that would now be refused, once the caller loses access (see
+      docs/authorization.md for how soon).
 
     The stream also ends, without a message, when the daemon shuts down.
 
