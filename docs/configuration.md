@@ -7,6 +7,20 @@ explicit file is selected with:
 piqueld --config /path/to/config.toml
 ```
 
+Check a file without starting the daemon:
+
+```console
+piqueld check-config --config /path/to/config.toml
+```
+
+It applies the same parsing and validation as startup and exits nonzero with a
+diagnostic on the first problem. It touches nothing on the host: no state,
+sockets, Docker, or network. Credential files are only located, not read, so it
+runs where they are absent, such as a Nix build: relative `_file` paths are
+accepted without `$CREDENTIALS_DIRECTORY`, and their contents (readable,
+non-empty, a valid tunnel credentials file or webhook URL) are checked at
+startup.
+
 `--log-file <path>` also appends the daemon's logs to a file as JSON lines,
 created with mode `0600`. Standard output keeps its format: plain text on a
 terminal or the systemd journal, JSON elsewhere.

@@ -292,3 +292,49 @@ fn dns_providers_accept_credentials_only_from_files() {
         );
     }
 }
+
+#[test]
+fn checks_locate_credential_files_without_reading_them() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("piqueld.toml");
+    let check = |document: &str| {
+        std::fs::write(&path, document).unwrap();
+        DaemonConfig::check(&path)
+    };
+    // Relative names resolve against systemd's $CREDENTIALS_DIRECTORY only
+    // at startup, and absent files are not read.
+    let credentials = "[[notifications.destinations]]\nname = 'discord'\nurl_file = 'webhook'\n\
+         [ingress.private]\nauth_key_file = 'ts-apps-auth-key'\n\
+         [ingress.tunnel]\nenabled = true\ncredentials_file = 'cloudflared-tunnel'\n\
+         [[dns.providers]]\nkind = 'cloudflare'\napi_token_file = '/missing/token'";
+    check(credentials).unwrap();
+    assert!(DaemonConfig::load(&path).is_err());
+    // Everything else is validated as at startup.
+    for invalid in [
+        "[server]\nport = 0",
+        "[ingress.tunnel]\nenabled = true",
+        "[[notifications.destinations]]\nname = 'discord'",
+        "[[notifications.destinations]]\nname = 'discord'\nurl = 'http://hooks.example.com'",
+        "[tailscale]\nsocket = '/run/ts.sock'\nauth_key_file = 'ts-auth-key'",
+    ] {
+        assert!(check(invalid).is_err(), "accepted {invalid}");
+    }
+    // Even after a failed check, startup reads credential files.
+    std::fs::write(
+        &path,
+        "[[dns.providers]]\nkind = 'cloudflare'\napi_token_file = '/missing/token'",
+    )
+    .unwrap();
+    let error = format!(
+        "{:#}",
+        anyhow::Error::new(DaemonConfig::load(&path).unwrap_err())
+    );
+    assert!(
+        error.contains("could not read `api_token_file` /missing/token"),
+        "{error}"
+    );
+    assert!(matches!(
+        DaemonConfig::check(directory.path().join("missing.toml")),
+        Err(ConfigError::Read(_))
+    ));
+}

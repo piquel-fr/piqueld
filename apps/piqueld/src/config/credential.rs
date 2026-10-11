@@ -2,16 +2,54 @@
 //!
 //! Every such setting `key` also accepts `key_file`. Relative file paths resolve
 //! against `$CREDENTIALS_DIRECTORY`, so systemd `LoadCredential=` works
-//! unchanged. Files are read once while the configuration loads.
+//! unchanged. Files are read once while the configuration loads, except during
+//! a [`Resolution::Structural`] check.
 
 use serde::Deserialize;
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+/// How credential files are treated while configuration deserializes on the
+/// current thread.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Resolution {
+    /// Read every file, as the daemon does at startup.
+    Read,
+    /// Locate files without reading them, so `piqueld check-config` can run
+    /// in a build sandbox without the credentials. A configuration parsed
+    /// this way is only checked, never used.
+    Structural,
+}
+
+thread_local! {
+    static RESOLUTION: Cell<Resolution> = const { Cell::new(Resolution::Read) };
+}
+
+impl Resolution {
+    /// Runs `parse` with credential files treated as `self` on this thread.
+    pub(super) fn during<T>(self, parse: impl FnOnce() -> T) -> T {
+        /// Restores the previous mode, even if `parse` panics.
+        struct Restore(Resolution);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                RESOLUTION.set(self.0);
+            }
+        }
+        let _restore = Restore(RESOLUTION.replace(self));
+        parse()
+    }
+
+    fn current() -> Self {
+        RESOLUTION.get()
+    }
+}
 
 /// A resolved secret. Formatting shows where it came from, never the value.
 #[derive(Clone, Eq, PartialEq)]
 pub struct Credential {
-    value: String,
+    /// `None` only for a file left unread by a [`Resolution::Structural`] check.
+    value: Option<String>,
     file: Option<CredentialFile>,
 }
 
@@ -22,13 +60,18 @@ pub struct Credential {
 pub struct CredentialFile(PathBuf);
 
 impl CredentialFile {
-    /// Resolves `file`, joining a relative path onto `directory`.
+    /// Resolves `file`, joining a relative path onto `directory`. A
+    /// structural check accepts a relative path without a directory, which
+    /// only systemd provides at startup.
     fn resolve(file: PathBuf, directory: Option<PathBuf>) -> Result<Self, CredentialError> {
         if file.is_absolute() {
             return Ok(Self(file));
         }
         match directory {
             Some(directory) => Ok(Self(directory.join(file))),
+            None if Resolution::current() == Resolution::Structural => {
+                Ok(Self(Path::new("$CREDENTIALS_DIRECTORY").join(file)))
+            }
             None => Err(CredentialError::NoDirectory { path: file }),
         }
     }
@@ -77,12 +120,19 @@ impl Credential {
     }
 
     /// Reads a credential file, for settings accepted only as `key_file`.
-    /// Surrounding whitespace, such as a trailing newline, is removed.
+    /// Surrounding whitespace, such as a trailing newline, is removed. A
+    /// structural check leaves the file unread.
     ///
     /// # Errors
     ///
     /// The file must be readable and non-empty.
     pub(crate) fn read(key: &'static str, file: CredentialFile) -> Result<Self, CredentialError> {
+        if Resolution::current() == Resolution::Structural {
+            return Ok(Self {
+                value: None,
+                file: Some(file),
+            });
+        }
         let value = std::fs::read_to_string(file.path())
             .map_err(|error| CredentialError::Read {
                 key,
@@ -95,21 +145,31 @@ impl Credential {
             return Err(CredentialError::Empty { key, path: file.0 });
         }
         Ok(Self {
-            value,
+            value: Some(value),
             file: Some(file),
         })
     }
 
-    /// The secret itself. Never log or display it.
+    /// The secret itself. Never log or display it. Empty for a file left
+    /// unread by a structural check, whose configuration is never used.
     #[must_use]
     pub fn expose(&self) -> &str {
-        &self.value
+        self.value.as_deref().unwrap_or_default()
+    }
+
+    /// The secret, or `None` when a structural check left its file unread.
+    /// Validation of secret contents uses this to skip unread files.
+    pub(super) fn value(&self) -> Option<&str> {
+        self.value.as_deref()
     }
 }
 
 impl From<String> for Credential {
     fn from(value: String) -> Self {
-        Self { value, file: None }
+        Self {
+            value: Some(value),
+            file: None,
+        }
     }
 }
 

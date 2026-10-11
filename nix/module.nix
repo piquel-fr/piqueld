@@ -24,7 +24,7 @@ let
   dnsFiles =
     provider: lib.filterAttrs (name: value: lib.hasSuffix "_file" name && value != null) provider;
   dnsCredential = index: setting: "dns-${toString index}-${lib.removeSuffix "_file" setting}";
-  configuration = (pkgs.formats.toml { }).generate "piqueld.toml" (
+  generatedConfiguration = (pkgs.formats.toml { }).generate "piqueld.toml" (
     lib.recursiveUpdate (withoutNulls cfg.settings) (
       {
         server.data_dir = cfg.dataDir;
@@ -57,6 +57,16 @@ let
       }
     )
   );
+  # `piqueld check-config` reads no credentials and touches nothing on the
+  # host, so an invalid setting fails the system build instead of the service.
+  configuration =
+    if cfg.checkConfig then
+      pkgs.runCommand "piqueld.toml" { } ''
+        ${cfg.package}/bin/piqueld check-config --config ${generatedConfiguration}
+        cp ${generatedConfiguration} $out
+      ''
+    else
+      generatedConfiguration;
 in
 {
   imports = [
@@ -79,6 +89,11 @@ in
       type = lib.types.str;
       default = "/run/piqueld";
       description = "Runtime directory below /run containing piqueld.sock. Group members can connect; account authentication is still required.";
+    };
+    checkConfig = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Validate the generated configuration with `piqueld check-config` while building the system. Disable it when the package cannot run on the build machine, such as when cross-compiling.";
     };
     settings = lib.mkOption {
       type = lib.types.submodule {
