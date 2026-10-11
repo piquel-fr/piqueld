@@ -9001,6 +9001,57 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Checks the installation's health
+
+    Inspects the live installation read-only: the public URL and its
+    certificate, Docker against ingress requirements, ports 80/443, the secret
+    key, the API socket's permissions, the tailnet node, and backups. Each
+    check passes, warns, fails, or is skipped, with a next step when action is
+    needed. Returns 503 when the daemon has no effective configuration.
+
+    Sends a `GET` request to `/api/v1/system/checks`
+
+    */
+    pub async fn system_checks<'a>(
+        &'a self,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SystemChecks>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!("{}/api/v1/system/checks", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "system_checks",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Gets the effective read-only host configuration
 
     Returns 503 when the daemon has no effective configuration to report.

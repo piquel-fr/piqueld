@@ -62,6 +62,11 @@ async fn main() -> ExitCode {
                 let client = commands::build_client(&cli)?;
                 auth::login(&cli, &client, &mut console).await?;
             }
+            // One request, bounded by the client's own timeout, so a timeout
+            // still reports the resolved connection rather than dropping it.
+            cli::Command::Doctor => {
+                commands::doctor(&cli, &commands::build_client(&cli)?, &mut console).await?;
+            }
             // A command session is not bounded by the command timeout.
             cli::Command::App {
                 command: cli::AppCommand::Exec(args),

@@ -100,7 +100,7 @@ impl ApplicationService {
             .with_ingress(Arc::clone(&ingress));
         let service = Self::new(store, reconciler.runtime(Arc::clone(&wake)))
             .with_image_status(reconciler.image_status())
-            .with_configuration(config.view())
+            .with_configuration(config)
             .with_ingress(Arc::clone(&ingress))
             .with_webhook_hostname(config.ingress.webhook_hostname.clone());
         let webhook_listener = ingress

@@ -2718,6 +2718,7 @@ async fn routed_statuses_and_media_types_are_documented_in_openapi() {
     let cases = [
         (Method::GET, "/system/status", 200),
         (Method::GET, "/system/configuration", 503),
+        (Method::GET, "/system/checks", 503),
         (Method::GET, "/applications", 200),
         (Method::GET, "/events", 200),
         (Method::GET, "/applications/{id}", 404),
@@ -4679,6 +4680,12 @@ async fn grants_hide_applications_and_name_missing_permissions() {
         ),
         (
             "/api/v1/system/configuration".to_owned(),
+            "GET",
+            none.clone(),
+            "system:read",
+        ),
+        (
+            "/api/v1/system/checks".to_owned(),
             "GET",
             none.clone(),
             "system:read",

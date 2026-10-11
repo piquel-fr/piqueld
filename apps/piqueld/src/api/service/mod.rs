@@ -1,5 +1,6 @@
 //! Shared daemon operations, independent of transport adapters.
 
+mod checks;
 mod exec;
 mod history;
 mod notification_worker;
@@ -403,8 +404,8 @@ pub struct ApplicationService {
     tailnet: Option<tokio::sync::watch::Receiver<piqueld_core::api::TailnetStatus>>,
     /// The built images as of the last cleanup; `None` without a controller.
     images: Option<tokio::sync::watch::Receiver<piqueld_core::api::ImageStatus>>,
-    /// Effective host settings exposed read-only; `None` unless attached at startup.
-    configuration: Option<Arc<piqueld_core::api::HostConfiguration>>,
+    /// Effective host settings; `None` unless attached at startup.
+    configuration: Option<Arc<Configuration>>,
     store: Arc<Store>,
     /// Docker/Swarm adapter used for runtime requests and reconciliation wakeups.
     runtime: Arc<dyn RuntimeBoundary>,
@@ -420,6 +421,15 @@ pub struct ApplicationService {
     hints: Arc<sync::Hints>,
     /// Public hostname serving webhook deliveries, `ingress.webhook_hostname`.
     webhook_hostname: Option<piqueld_core::manifest::Hostname>,
+}
+
+/// Effective host settings, as attached by
+/// [`ApplicationService::with_configuration`].
+struct Configuration {
+    /// Read-only settings for the API.
+    view: piqueld_core::api::HostConfiguration,
+    /// What installation checks inspect.
+    checks: checks::CheckSettings,
 }
 
 /// Audit records allowed to wait for the writer at once.
@@ -484,13 +494,14 @@ impl ApplicationService {
         self
     }
 
-    /// Attaches the effective host configuration for read-only API inspection.
+    /// Attaches the effective host configuration for read-only API
+    /// inspection and installation checks.
     #[must_use]
-    pub fn with_configuration(
-        mut self,
-        configuration: piqueld_core::api::HostConfiguration,
-    ) -> Self {
-        self.configuration = Some(Arc::new(configuration));
+    pub fn with_configuration(mut self, config: &crate::config::DaemonConfig) -> Self {
+        self.configuration = Some(Arc::new(Configuration {
+            view: config.view(),
+            checks: checks::CheckSettings::from(config),
+        }));
         self
     }
 

@@ -9,6 +9,7 @@ use leptos_router::hooks::{use_params_map, use_query_map};
 use piqueld_client::{
     Client, Event, EventActor,
     observability::{DaemonStats, DeliveryState, EventFilter, EventScope},
+    system::{CheckStatus, SystemCheck},
 };
 
 /// Revision counter that observability resources track to refetch.
@@ -495,7 +496,8 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
     }
 }
 
-/// `/system` page: readiness panel plus auto-refreshing daemon resource usage.
+/// `/system` page: readiness panel, installation checks, and auto-refreshing
+/// daemon resource usage.
 #[component]
 pub(super) fn SystemPage() -> impl IntoView {
     let refresh = Refresh::new();
@@ -520,6 +522,7 @@ pub(super) fn SystemPage() -> impl IntoView {
         </PageHeader>
         <div class="stack">
             <super::dashboard::ReadinessPanel />
+            <ChecksPanel />
             {move || match data.get() {
                 None => empty("Collecting resource usage…"),
                 Some(Err(e)) => notice(Tone::Bad, e),
@@ -527,6 +530,76 @@ pub(super) fn SystemPage() -> impl IntoView {
             }}
         </div>
     }
+}
+
+/// Installation checks from `GET /api/v1/system/checks`, the same as
+/// `piquelctl doctor`. They probe the network and Docker, so they run when
+/// the page opens and on demand rather than on the page's refresh interval.
+#[component]
+fn ChecksPanel() -> impl IntoView {
+    let run = RwSignal::new(0_u64);
+    let checks = LocalResource::new(move || {
+        run.track();
+        async move {
+            Client::browser()
+                .system_checks()
+                .await
+                .map_err(|e| client_error_message(&e))
+        }
+    });
+    view! {
+        <section class="card" aria-labelledby="installation-checks-heading">
+            <header>
+                <div>
+                    <h3 id="installation-checks-heading">"Installation checks"</h3>
+                    <p>
+                        "What the daemon can verify about its own setup. A passing public URL means this host reaches it; browsers elsewhere also need DNS and network access."
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    class="btn btn-sm"
+                    on:click={move |_| run.update(|r| *r = r.wrapping_add(1))}
+                >
+                    {icon(Icon::Refresh)}
+                    "Run checks"
+                </button>
+            </header>
+            {move || match checks.get() {
+                None => empty("Running checks…"),
+                Some(Err(e)) => notice(Tone::Bad, e),
+                Some(Ok(checks)) => {
+                    view! {
+                        <div class="status-grid">
+                            {checks.checks.into_iter().map(check_card).collect_view()}
+                        </div>
+                    }
+                        .into_any()
+                }
+            }}
+        </section>
+    }
+}
+
+/// One installation check, with its next step when action is needed.
+fn check_card(check: SystemCheck) -> AnyView {
+    let (tone, label) = match check.status {
+        CheckStatus::Pass => (Tone::Ok, "Pass"),
+        CheckStatus::Warn => (Tone::Warn, "Warning"),
+        CheckStatus::Fail => (Tone::Bad, "Failed"),
+        CheckStatus::Skip => (Tone::Neutral, "Skipped"),
+    };
+    view! {
+        <article class="status-card" data-tone={tone.attr()}>
+            <header>
+                <strong>{check.id.label()}</strong>
+                {badge(tone, label)}
+            </header>
+            <p>{check.message}</p>
+            {check.next_step.map(|step| view! { <p>"Next step: " {step}</p> })}
+        </article>
+    }
+    .into_any()
 }
 
 fn resource_stats(stats: &DaemonStats) -> AnyView {

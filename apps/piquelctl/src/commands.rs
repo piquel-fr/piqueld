@@ -9,8 +9,8 @@ use crate::{
     output::{
         Console, TaskOutcome,
         reports::{
-            ApplicationDeletionReport, ApplicationRow, SavedDeploymentReport, ShowReport,
-            StatusReport, ValidManifestReport,
+            ApplicationDeletionReport, ApplicationRow, Connection, DoctorReport,
+            SavedDeploymentReport, ShowReport, StatusReport, ValidManifestReport,
         },
     },
     support::{confirm, looks_like_application_id, manifest_name, read_manifest, retry_transport},
@@ -50,6 +50,7 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
         Command::Profiles => unreachable!("profiles are listed before connecting"),
         Command::Secrets { action } => action.run(cli, client, console).await,
         Command::Status => status(cli, client, console).await,
+        Command::Doctor => unreachable!("doctor runs without the command timeout"),
         Command::Dns {
             command: DnsCommand::Refresh,
         } => refresh_dns(client, console).await,
@@ -235,6 +236,37 @@ async fn status(cli: &Cli, client: &Client, console: &mut Console) -> Result<()>
         transport: &transport_description(cli),
         ingress: readiness.as_ref().map(|readiness| &readiness.ingress),
     })
+}
+
+/// Reports the resolved connection, then the daemon's installation checks.
+/// The connection is reported even when the daemon cannot be reached or the
+/// request is interrupted, before that error. Fails with exit 6 when any
+/// check fails.
+pub(crate) async fn doctor(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
+    let connection = Connection {
+        endpoint: transport_description(cli),
+        endpoint_source: cli.connection_sources.endpoint.to_string(),
+        credential: crate::auth::Credentials::token(cli)?.1.to_string(),
+    };
+    // Outside the command supervisor, so Ctrl-C is handled here, like login.
+    let checks = tokio::select! {
+        checks = client.system_checks() => checks.map_err(CliError::from),
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            Err(CliError::new(ErrorKind::Interrupted, "doctor interrupted"))
+        }
+    };
+    console.emit(&DoctorReport {
+        connection: &connection,
+        checks: checks.as_ref().ok().map(|checks| checks.checks.as_slice()),
+    })?;
+    if checks?.failed() {
+        return Err(CliError::new(
+            ErrorKind::Unhealthy,
+            "an installation check failed; follow its next step",
+        ));
+    }
+    Ok(())
 }
 
 /// Checks DNS provider credentials now and prints the updated providers and

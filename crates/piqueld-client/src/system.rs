@@ -1,7 +1,8 @@
 pub use piqueld_core::api::{
-    CertificateStatus, DependencyStatus, DnsProviderStatus, DnsRecordState, DnsRecords, DnsStatus,
-    ImageStatus, IngressStatus, PrivateIngressStatus, PublicIngressStatus, ReadinessStatus,
-    RouteStatus, SystemStatus, TailnetStatus,
+    CertificateStatus, CheckStatus, DependencyStatus, DnsProviderStatus, DnsRecordState,
+    DnsRecords, DnsStatus, ImageStatus, IngressStatus, PrivateIngressStatus, PublicIngressStatus,
+    ReadinessStatus, RouteStatus, SystemCheck, SystemCheckId, SystemChecks, SystemStatus,
+    TailnetStatus,
 };
 
 use crate::{
@@ -40,6 +41,15 @@ impl Client {
         &self,
     ) -> Result<piqueld_core::api::HostConfiguration, ClientError> {
         generated_result(self.generated.system_configuration().await)
+            .await
+            .map(|response| response.data)
+    }
+
+    /// Checks the installation's health without changing it.
+    /// # Errors
+    /// Returns transport, API or decoding errors.
+    pub async fn system_checks(&self) -> Result<SystemChecks, ClientError> {
+        generated_result(self.generated.system_checks().await)
             .await
             .map(|response| response.data)
     }
