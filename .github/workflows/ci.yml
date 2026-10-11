@@ -318,7 +318,7 @@ jobs:
       - name: Build Nix packages
         run: nix build -L .#default .#default.cargoArtifacts .#dashboard .#dashboard.cargoArtifacts .#probe.cargoArtifacts
       - name: Build the other Nix packages
-        run: nix build -L ${{ github.event_name == 'pull_request' && '--dry-run' || '' }} .#cli .#cli.cargoArtifacts .#daemon
+        run: nix build -L --out-link result-other ${{ github.event_name == 'pull_request' && '--dry-run' || '' }} .#cli .#cli.cargoArtifacts .#daemon
 
   ci:
     name: ci
