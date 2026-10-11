@@ -851,11 +851,9 @@ mod tests {
         assert!(first.as_ref().as_ref().unwrap().head("main").is_some());
         let later = listings.list(&url).await;
         assert!(!Arc::ptr_eq(&first, &later));
-        // A cancelled read takes part too.
+        // Nothing is kept once no read waits, even a cancelled one.
         let cancelled = listings.list(&url);
         drop(tokio::time::timeout(Duration::ZERO, cancelled).await);
-        assert!(listings.repositories.lock().unwrap().is_empty());
-        // Nothing is kept once no read waits.
         assert!(listings.repositories.lock().unwrap().is_empty());
     }
 

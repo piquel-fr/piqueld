@@ -278,8 +278,11 @@ impl Worktree {
             .split('\0')
             .filter(|path| !path.is_empty() && !ignored.contains(path))
         {
-            // Deleted files are not in the snapshot.
-            if let Ok(metadata) = tokio::fs::symlink_metadata(self.root.join(path)).await {
+            // Deleted files are not in the snapshot, and a file replaced
+            // by a directory is counted as its files' ancestor.
+            if let Ok(metadata) = tokio::fs::symlink_metadata(self.root.join(path)).await
+                && !metadata.is_dir()
+            {
                 sizes.push((metadata.len(), path));
             }
         }
