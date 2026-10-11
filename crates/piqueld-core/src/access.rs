@@ -7,11 +7,14 @@
 //! admin                          every ability, including permissions added later
 //! admin on blog                  every application permission on `blog`
 //! apps:deploy on blog, shop      deploy these two applications
+//! previews:deploy on blog        create and deploy blog's previews, not blog itself
 //! system:read                    installation-wide; never limited to applications
 //! ```
 //!
 //! Every application permission also lets its holder read that application
-//! (`apps:read`), so a deploy-only token can follow its own deployment. The
+//! (`apps:read`), so a deploy-only token can follow its own deployment.
+//! `previews:deploy` and `previews:delete` act only on previews; `apps:deploy`
+//! and `apps:delete` include them. The
 //! wire form is a list of [`Grant`]s; [`Grants`] is the validated set, whose
 //! types make an application scope on an installation-wide permission
 //! unrepresentable.
@@ -65,6 +68,11 @@ permissions! {
         /// Delete the application, its environments, or its previews, with
         /// their runtime resources.
         Delete => "apps:delete", "Delete applications, environments and previews",
+        /// Create and deploy previews and read their logs, without any
+        /// access to long-lived environments; included in `apps:deploy`.
+        PreviewsDeploy => "previews:deploy", "Create and deploy previews and read their logs",
+        /// Delete and prune previews; included in `apps:delete`.
+        PreviewsDelete => "previews:delete", "Delete and prune previews",
         /// Store and delete secret values.
         SecretsWrite => "secrets:write", "Store and delete secret values",
         /// Read runtime, build and job logs, which may contain sensitive output.
@@ -74,6 +82,36 @@ permissions! {
         Exec => "apps:exec", "Run commands in running containers, which can read secret values",
         /// Read application history and diagnostics.
         EventsRead => "events:read", "Read history, diagnostics and analytics",
+    }
+}
+
+impl AppPermission {
+    /// The permission that includes this one everywhere, e.g. `apps:deploy`
+    /// for `previews:deploy`.
+    const fn included_in(self) -> Option<Self> {
+        match self {
+            Self::PreviewsDeploy => Some(Self::Deploy),
+            Self::PreviewsDelete => Some(Self::Delete),
+            _ => None,
+        }
+    }
+
+    /// The previews permission that also allows this one on a preview:
+    /// `previews:deploy` reads previews' logs. Deploying and deleting
+    /// previews have their own routes and mutations, which require previews
+    /// permissions directly.
+    #[must_use]
+    pub const fn on_previews(self) -> Option<Self> {
+        match self {
+            Self::LogsRead => Some(Self::PreviewsDeploy),
+            _ => None,
+        }
+    }
+
+    /// Whether holding `self` also grants `wanted`: itself, `apps:read`,
+    /// or a previews permission it includes.
+    fn includes(self, wanted: Self) -> bool {
+        self == wanted || wanted == Self::Read || wanted.included_in() == Some(self)
     }
 }
 
@@ -335,6 +373,10 @@ pub enum Denied {
 pub enum Target<'a> {
     /// An application addressed by ID.
     Id(&'a ApplicationId),
+    /// A preview of an application addressed by ID, where previews
+    /// permissions stand in for the permissions they cover (see
+    /// [`AppPermission::on_previews`]).
+    Preview(&'a ApplicationId),
     /// An existing application named by the caller, e.g. in a manifest.
     Named(&'a ApplicationId),
     /// An application about to be created.
@@ -348,7 +390,8 @@ pub enum Target<'a> {
 /// equal:
 ///
 /// - grants for the same permission merge into one;
-/// - nothing `admin` already covers is listed again;
+/// - nothing `admin`, or `apps:deploy` and `apps:delete` for their previews
+///   permissions, already covers is listed again;
 /// - `apps:read` lists every application readable through other
 ///   application permissions, since they imply it.
 ///
@@ -438,6 +481,14 @@ impl Grants {
             readable.extend(scope);
         }
         self.apps.insert(AppPermission::Read, readable);
+        for permission in AppPermission::ALL {
+            if let Some(including) = permission.included_in().and_then(|p| self.apps.get(&p)) {
+                let including = including.clone();
+                if let Some(scope) = self.apps.get_mut(permission) {
+                    *scope = scope.without(&including);
+                }
+            }
+        }
         self.apps.retain(|_, scope| !scope.is_empty());
         if admin.is_empty() {
             self.admin = None;
@@ -478,12 +529,13 @@ impl Grants {
     }
 
     /// Applications on which `permission` is held, directly, through `admin`,
-    /// or (for `apps:read`) through any other application permission.
+    /// through a permission including it, or (for `apps:read`) through any
+    /// other application permission.
     #[must_use]
     pub fn app_scope(&self, permission: AppPermission) -> Scope {
         let mut scope = self.admin_scope();
         for (held, held_scope) in &self.apps {
-            if *held == permission || permission == AppPermission::Read {
+            if held.includes(permission) {
                 scope.extend(held_scope);
             }
         }
@@ -584,6 +636,16 @@ impl Grants {
             Target::Id(id) => required
                 .iter()
                 .try_for_each(|permission| self.require_app(*permission, id)),
+            Target::Preview(id) => required.iter().try_for_each(|permission| {
+                self.require_app(*permission, id).or_else(|denied| {
+                    match (denied, permission.on_previews()) {
+                        (Denied::Missing(_), Some(previews)) => {
+                            self.require_app(previews, id).map_err(|_| denied)
+                        }
+                        _ => Err(denied),
+                    }
+                })
+            }),
             // As for an application that does not exist: only callers who
             // could act on every application learn that.
             Target::Unknown => required.iter().try_for_each(|permission| {
@@ -1000,5 +1062,51 @@ mod tests {
                 .has_global(GlobalPermission::SystemRead)
         );
         assert!(Preset::Admin.grants(&Scope::NONE).is_empty());
+    }
+
+    /// Previews permissions never act on the whole application, read
+    /// previews' logs, and are included in `apps:deploy` and `apps:delete`.
+    #[test]
+    fn previews_permissions_stop_at_previews() {
+        let blog = id("app-blog0000");
+        let only_blog = Some(&["app-blog0000"][..]);
+        let agent = grants(&[
+            ("previews:deploy", only_blog),
+            ("previews:delete", only_blog),
+        ]);
+        let (preview, whole) = (Target::Preview(&blog), Target::Id(&blog));
+        let logs = [AppPermission::LogsRead];
+        assert_eq!(agent.require_change(&logs, preview), Ok(()));
+        for permission in [
+            AppPermission::Deploy,
+            AppPermission::LogsRead,
+            AppPermission::Delete,
+        ] {
+            assert_eq!(
+                agent.require_change(&[permission], whole),
+                Err(Denied::Missing(Permission::App(permission)))
+            );
+        }
+        assert_eq!(agent.require_app(AppPermission::Read, &blog), Ok(()));
+        assert_eq!(
+            agent.require_change(&[AppPermission::Exec], preview),
+            Err(Denied::Missing(Permission::App(AppPermission::Exec)))
+        );
+        // Whole-application permissions include previews permissions, never
+        // the reverse, whether handing them out or limiting a token.
+        let deployer = grants(&[("apps:deploy", only_blog)]);
+        let previews = grants(&[("previews:deploy", only_blog)]);
+        assert!(deployer.covers(&previews));
+        assert!(!previews.covers(&deployer));
+        assert_eq!(deployer.intersection(&previews), previews);
+        assert_eq!(previews.intersection(&deployer), previews);
+        assert_eq!(
+            grants(&[("apps:deploy", only_blog), ("previews:deploy", only_blog)]),
+            deployer
+        );
+        assert_eq!(
+            deployer.require_change(&[AppPermission::PreviewsDeploy], whole),
+            Ok(())
+        );
     }
 }

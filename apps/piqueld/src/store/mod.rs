@@ -16,7 +16,7 @@ mod jobs;
 mod journal;
 mod notifications;
 mod observability;
-pub use access::{Actor, Attribution, Caller, Visibility};
+pub use access::{Actor, Attribution, Caller, EnvironmentOwner, Visibility};
 pub(crate) use audit::NewAuditEvent;
 pub use auth::{CredentialKind, Lockout};
 pub(crate) use auth::{Invitation, NewCredential, NewInvitation, NewPasskey, PasskeyOwner};

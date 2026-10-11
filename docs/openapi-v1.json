@@ -7727,6 +7727,8 @@
           "apps:write",
           "apps:deploy",
           "apps:delete",
+          "previews:deploy",
+          "previews:delete",
           "secrets:write",
           "logs:read",
           "apps:exec",
@@ -13032,7 +13034,7 @@
           }
         },
         "summary": "Creates a preview of a branch.",
-        "x-piqueld-access": "apps:deploy"
+        "x-piqueld-access": "previews:deploy"
       }
     },
     "/api/v1/applications/{id}/previews/local": {
@@ -13321,7 +13323,7 @@
           }
         },
         "summary": "Deletes previews whose branch is gone.",
-        "x-piqueld-access": "apps:delete"
+        "x-piqueld-access": "previews:delete"
       }
     },
     "/api/v1/applications/{id}/releases": {
@@ -25565,7 +25567,7 @@
           }
         },
         "summary": "Deletes a preview with its services, network, secrets, and every volume\nit ever created; the deletion verifies the volumes are gone.",
-        "x-piqueld-access": "apps:delete"
+        "x-piqueld-access": "previews:delete"
       },
       "get": {
         "operationId": "getPreview",
@@ -25741,7 +25743,7 @@
           }
         },
         "summary": "Deploys the head of a preview's branch.",
-        "x-piqueld-access": "apps:deploy"
+        "x-piqueld-access": "previews:deploy"
       }
     },
     "/api/v1/system/configuration": {

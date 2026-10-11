@@ -1,5 +1,5 @@
 //! Atomic acceptance: compare current intent, write the change and its replay receipt together.
-use super::access::Holder;
+use super::access::{EnvironmentOwner, Holder};
 use super::{Actor, Operation, OperationKind, Store, StoreError, StoredApplication, now_ms};
 use crate::api::{Mutation, MutationResponse, PreviewMutation, PromotionMutation};
 use piqueld_core::access::{AppPermission, Grants, Target};
@@ -260,8 +260,9 @@ impl Store {
     /// Checks that a caller holding `grants` may submit `mutation` against the
     /// current application and its repository connection (see
     /// `Grants::require_change` and `Mutation::required`), and returns whether
-    /// it creates one. Changes to an environment are checked on its application;
-    /// an unknown environment is hidden unless the caller could act on any.
+    /// it creates one. Changes to an environment are checked on its application,
+    /// with previews permissions also applying to a preview; an unknown
+    /// environment is hidden unless the caller could act on any.
     /// When `replaying`, a save naming an existing application also passes with
     /// the permissions that would create it, as that may be what it did.
     async fn authorize_mutation_on(
@@ -270,9 +271,15 @@ impl Store {
         mutation: &Mutation,
         replaying: bool,
     ) -> Result<bool, StoreError> {
-        let application = match mutation {
+        let whole = |application| EnvironmentOwner {
+            application,
+            preview: false,
+        };
+        let owner = match mutation {
             Mutation::Save { application, .. } => {
-                Self::application_id_by_name_on(tx, application.metadata().name.as_str()).await?
+                Self::application_id_by_name_on(tx, application.metadata().name.as_str())
+                    .await?
+                    .map(whole)
             }
             Mutation::Edit { id, .. }
             | Mutation::Rename { id, .. }
@@ -287,7 +294,7 @@ impl Store {
                 | PreviewMutation::Local {
                     application: id, ..
                 },
-            ) => Some(id.clone()),
+            ) => Some(whole(id.clone())),
             Mutation::RenameEnvironment { id, .. }
             | Mutation::SetBranch { id, .. }
             | Mutation::SetSync { id, .. }
@@ -302,17 +309,16 @@ impl Store {
                 PreviewMutation::Deploy { id }
                 | PreviewMutation::Delete { id }
                 | PreviewMutation::Prune { id, .. },
-            ) => Self::environment_application_on(tx, id).await?,
+            ) => Self::environment_owner_on(tx, id).await?,
         };
-        let target = match (&application, mutation) {
+        let target = match (&owner, mutation) {
             (None, Mutation::Save { .. }) => Target::New,
-            (Some(id), Mutation::Save { .. }) => Target::Named(id),
-            (Some(id), _) => Target::Id(id),
-            (None, _) => Target::Unknown,
+            (Some(owner), Mutation::Save { .. }) => Target::Named(&owner.application),
+            (owner, _) => EnvironmentOwner::target(owner.as_ref()),
         };
         // Whether sync deploys the change depends on the current connection.
-        let connection = match &application {
-            Some(id) => Self::application_on(tx, id.as_str())
+        let connection = match &owner {
+            Some(owner) => Self::application_on(tx, owner.application.as_str())
                 .await?
                 .and_then(|current| current.application.spec().manifest.clone()),
             None => None,

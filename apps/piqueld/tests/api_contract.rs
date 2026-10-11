@@ -6877,3 +6877,267 @@ async fn local_snapshots_upload_within_limits_and_are_never_pruned() {
     assert_eq!(deployments.items.len(), 1);
     server.abort();
 }
+
+/// An application `blog` with a manifest repository and a production
+/// environment, an `owner` holding application permissions on it,
+/// an `agent` token the owner limited to previews permissions, and a
+/// `limited` account that holds only `previews:deploy` on blog.
+struct PreviewFixture {
+    _temp: TempDir,
+    database: std::path::PathBuf,
+    router: axum::Router,
+    blog: String,
+    production: String,
+    owner: String,
+    limited: String,
+    agent: String,
+}
+
+impl PreviewFixture {
+    /// The previews permissions `agent` holds.
+    const AGENT: [&str; 2] = ["previews:deploy", "previews:delete"];
+    /// Every permission the owner holds.
+    const PERMISSIONS: [&str; 6] = [
+        "apps:deploy",
+        "apps:delete",
+        "logs:read",
+        "events:read",
+        "apps:write",
+        "secrets:write",
+    ];
+
+    async fn new() -> Self {
+        let temp = TempDir::new().unwrap();
+        let database = temp.path().join("state.db");
+        let repository = repository_with_branches(temp.path(), &["feat/one", "feat/two"]);
+        let state = state(&temp).await;
+        let mut input = manifest();
+        input.spec.manifest = Some(
+            serde_json::from_value(serde_json::json!({
+                "repository": {"url": repository.display().to_string(), "branch": "main"},
+                "path": "app.toml",
+            }))
+            .unwrap(),
+        );
+        let mutation =
+            piqueld::api::Mutation::save(input.validate_template().unwrap(), None, false);
+        let Ok(piqueld::api::MutationResponse::Saved(saved)) =
+            state.accept(Daemon, mutation, Some(0), false, None).await
+        else {
+            panic!("save response");
+        };
+        let blog = saved.application_id;
+        let blog_id = piqueld_core::ApplicationId::parse(blog.as_str()).unwrap();
+        // The application's only long-lived environment stands for production.
+        let production = state.application(&blog_id).await.unwrap().environments[0]
+            .id
+            .clone();
+        let app = Some(blog.as_str());
+        let owner = Self::PERMISSIONS.map(|permission| (permission, app));
+        let owner = seed_account(&database, "owner", &owner).await;
+        let limited = [("previews:deploy", app), ("accounts:manage", None)];
+        let limited = seed_account(&database, "limited", &limited).await;
+        let store = Store::open(&database).await.unwrap();
+        let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+        let mut fixture = Self {
+            _temp: temp,
+            database,
+            router: api_router(state, auth),
+            blog: blog.clone(),
+            production: production.to_string(),
+            owner,
+            limited,
+            agent: String::new(),
+        };
+        let request = fixture.token(&Self::AGENT);
+        let (status, created) = fixture
+            .call(&fixture.owner, "POST", "/api/v1/auth/manage", request)
+            .await;
+        assert_eq!(status, 200, "{created}");
+        created["token"]
+            .as_str()
+            .unwrap()
+            .clone_into(&mut fixture.agent);
+        fixture
+    }
+
+    /// Grants of `permissions` on blog.
+    fn grants(&self, permissions: &[&str]) -> serde_json::Value {
+        permissions
+            .iter()
+            .map(|permission| {
+                serde_json::json!({
+                    "permission": permission,
+                    "applications": [self.blog],
+                })
+            })
+            .collect()
+    }
+
+    /// A request creating a token with [`Self::grants`].
+    fn token(&self, permissions: &[&str]) -> serde_json::Value {
+        let grants = self.grants(permissions);
+        serde_json::json!({"action": "create_token", "grants": grants, "name": "agent", "days": 1})
+    }
+
+    /// Creates a preview of `branch` as the agent, returning its ID.
+    async fn preview(&self, branch: &str) -> String {
+        let uri = format!("/api/v1/applications/{}/previews", self.blog);
+        let request = serde_json::json!({"branch": branch});
+        let (status, body) = self.call(&self.agent, "POST", &uri, request).await;
+        assert!(status < 300, "{status} {body}");
+        body["data"]["preview"]["id"].as_str().unwrap().to_owned()
+    }
+
+    /// Sends a JSON request as `token`, returning the status and JSON body.
+    async fn call(
+        &self,
+        token: &str,
+        method: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = self.router.clone().oneshot(request).await.unwrap();
+        let status = response.status().as_u16();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap_or_default())
+    }
+}
+
+/// A token with previews permissions creates, deploys, reads, reads the logs
+/// of, and deletes previews.
+#[tokio::test]
+async fn previews_permissions_manage_previews() {
+    let f = PreviewFixture::new().await;
+    let none = serde_json::Value::Null;
+    let blog = &f.blog;
+    let preview = f.preview("feat/one").await;
+    for (method, uri) in [
+        ("GET", format!("/api/v1/previews/{preview}")),
+        ("GET", format!("/api/v1/environments/{preview}/deployments")),
+        ("POST", format!("/api/v1/previews/{preview}/deploy")),
+        ("GET", format!("/api/v1/applications/{blog}/previews")),
+        ("GET", format!("/api/v1/applications/{blog}")),
+    ] {
+        let (status, body) = f.call(&f.agent, method, &uri, none.clone()).await;
+        assert!(status < 300, "{method} {uri}: {status} {body}");
+    }
+    let logs = format!("/api/v1/environments/{preview}/logs?service=web&tail=5&since_seconds=60");
+    let (status, body) = f.call(&f.agent, "GET", &logs, none.clone()).await;
+    assert_eq!(status, 200, "{body}");
+    let delete = format!("/api/v1/previews/{preview}");
+    assert_eq!(f.call(&f.agent, "DELETE", &delete, none).await.0, 202);
+}
+
+/// A token with previews permissions changes no long-lived environment, reads
+/// none of its logs, changes no shared configuration, and cannot delete the
+/// application or run commands.
+#[tokio::test]
+async fn previews_permissions_reach_no_production_or_shared_state() {
+    let f = PreviewFixture::new().await;
+    let preview = f.preview("feat/one").await;
+    let (blog, production) = (&f.blog, format!("/api/v1/environments/{}", f.production));
+    for (method, uri, permission) in [
+        ("GET", format!("{production}/logs"), "logs:read"),
+        (
+            "POST",
+            format!("{production}/deploy?force=true"),
+            "apps:deploy",
+        ),
+        ("DELETE", format!("{production}?force=true"), "apps:delete"),
+        (
+            "GET",
+            format!("/api/v1/environments/{preview}/exec"),
+            "apps:exec",
+        ),
+        (
+            "DELETE",
+            format!("/api/v1/applications/{blog}?force=true"),
+            "apps:delete",
+        ),
+        (
+            "PUT",
+            format!("/api/v1/applications/{blog}/name?force=true"),
+            "apps:write",
+        ),
+        (
+            "PUT",
+            format!("/api/v1/applications/{blog}/repository/sync?force=true"),
+            "apps:write",
+        ),
+        (
+            "POST",
+            format!("/api/v1/applications/{blog}/environments?force=true"),
+            "apps:write",
+        ),
+        (
+            "PUT",
+            format!("/api/v1/applications/{blog}/secrets/token/access"),
+            "secrets:write",
+        ),
+    ] {
+        let (status, body) = f.call(&f.agent, method, &uri, serde_json::json!({})).await;
+        assert_eq!(status, 403, "{method} {uri}: {body}");
+        assert_eq!(body["details"]["permission"], permission, "{method} {uri}");
+    }
+}
+
+/// Previews permissions are never handed on as whole-application access, and
+/// a token holding them follows its owner's current access and its own
+/// revocation.
+#[tokio::test]
+async fn previews_permissions_never_widen() {
+    let f = PreviewFixture::new().await;
+    let none = serde_json::Value::Null;
+    let manage = "/api/v1/auth/manage";
+    let invite =
+        serde_json::json!({"action": "create_invitation", "grants": f.grants(&["apps:deploy"])});
+    for wider in [f.token(&["apps:deploy"]), invite] {
+        let (status, body) = f.call(&f.limited, "POST", manage, wider).await;
+        assert_eq!(
+            (status, body["code"].as_str()),
+            (403, Some("permission_exceeded"))
+        );
+    }
+    let narrower = f.token(&["previews:deploy"]);
+    assert_eq!(f.call(&f.limited, "POST", manage, narrower).await.0, 200);
+
+    let preview = format!("/api/v1/previews/{}", f.preview("feat/two").await);
+    {
+        use sqlx::Connection as _;
+        let mut connection =
+            sqlx::SqliteConnection::connect(&format!("sqlite:{}", f.database.display()))
+                .await
+                .unwrap();
+        sqlx::query("DELETE FROM auth_grants WHERE user_id='owner' AND permission='apps:delete'")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+    let (status, body) = f.call(&f.agent, "DELETE", &preview, none.clone()).await;
+    assert_eq!(
+        (status, body["details"]["permission"].as_str()),
+        (403, Some("previews:delete"))
+    );
+
+    let (_, directory) = f
+        .call(&f.owner, "GET", "/api/v1/auth/directory", none.clone())
+        .await;
+    let id = directory["credentials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|credential| credential["name"] == "agent" && credential["user_id"] == "owner")
+        .unwrap()["id"]
+        .clone();
+    let revoke = serde_json::json!({"action": "revoke_credential", "id": id});
+    assert_eq!(f.call(&f.owner, "POST", manage, revoke).await.0, 200);
+    assert_eq!(f.call(&f.agent, "GET", &preview, none).await.0, 401);
+}

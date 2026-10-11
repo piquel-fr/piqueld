@@ -121,11 +121,14 @@ impl ApplicationService {
             .await?)
     }
 
-    /// Returns the application a build attempt belongs to.
+    /// Returns the owner of the environment a build attempt belongs to.
     /// # Errors
     /// Returns absence or storage errors.
-    pub async fn build_application(&self, id: i64) -> Result<ApplicationId, ApplicationError> {
-        Ok(self.store.build_application(id).await?)
+    pub async fn build_owner(
+        &self,
+        id: i64,
+    ) -> Result<crate::store::EnvironmentOwner, ApplicationError> {
+        Ok(self.store.build_owner(id).await?)
     }
 
     /// Reads the newest bounded page of persisted build output (chunks in

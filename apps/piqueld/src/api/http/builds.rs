@@ -87,8 +87,10 @@ pub(super) async fn logs(
             "invalid build log query",
         )
     })?;
-    identity
-        .grants
-        .require_app(AppPermission::LogsRead, &state.build_application(id).await?)?;
+    let owner = state.build_owner(id).await?;
+    identity.grants.require_change(
+        &[AppPermission::LogsRead],
+        crate::store::EnvironmentOwner::target(Some(&owner)),
+    )?;
     Ok(ok(state.build_logs(id, query.before, query.stream).await?))
 }
