@@ -535,6 +535,9 @@ pub struct Store {
     /// Signalled after each committed change to accounts, credentials, or
     /// grants (see [`Store::access_changes`]).
     access_changes: tokio::sync::watch::Sender<()>,
+    /// Admission for every Git checkout, made in `checkouts/` next to the
+    /// database.
+    checkouts: std::sync::Arc<crate::git::Checkouts>,
 }
 
 impl Store {
@@ -641,6 +644,11 @@ impl Store {
             ),
             max_upload_bytes: crate::config::SnapshotsConfig::default().max_upload_bytes,
             access_changes: tokio::sync::watch::Sender::new(()),
+            checkouts: std::sync::Arc::new(
+                crate::git::Checkouts::open(path.with_file_name("checkouts"))
+                    .await
+                    .map_err(StoreError::PathSource)?,
+            ),
         };
         store.reencrypt_moved_secrets().await?;
         store.record_missing_releases().await?;

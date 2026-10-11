@@ -82,7 +82,8 @@ pub use previews::{
     PrunePreviewsRequest,
 };
 pub use system::{
-    CertificateStatus, DnsProviderStatus, DnsStatus, ImageStatus, SystemStatus, TailnetStatus,
+    CertificateStatus, DnsProviderStatus, DnsStatus, ImageStatus, SnapshotLimits, SystemStatus,
+    TailnetStatus,
 };
 
 use http::StatusCode;

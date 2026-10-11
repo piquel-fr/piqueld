@@ -9,12 +9,21 @@
 //!    object (`transfer.fsckObjects`);
 //! 3. the prerequisites must all be ancestors of one of them, the base, and
 //!    the snapshot commit must descend from it. A thin bundle of a history
-//!    with merges needs the base and some of its ancestors.
+//!    with merges needs the base and some of its ancestors;
+//! 4. its working tree must fit `[checkouts] max_bytes` (see
+//!    [`Checkouts::measure`]), or no deployment could check it out.
+//!
+//! Unbundling keeps the pack as uploaded, so it takes about as much disk as
+//! the upload; Git's allocations are bounded (see [`Checkout`]), so a small
+//! pack of huge objects cannot exhaust memory. The prerequisites' history is
+//! the application's repository's own, as large as any checkout of it.
+//! An upload holds its permit until it is accepted or refused, so at most
+//! [`Snapshots::RECEIVING`] uploads are on disk unaccepted.
 //!
 //! The repository then moves to `<commit>.git`, from which deployments of
 //! that snapshot read their manifest and build `"self"` sources. Snapshots
 //! no preview's latest deployment uses are removed (see [`Snapshots::prune`]).
-use super::Checkout;
+use super::{Checkout, Checkouts, TreeTooLarge};
 use crate::command::LoggedCommand;
 use crate::store::StoreError;
 use axum::body::Bytes;
@@ -31,6 +40,12 @@ pub enum SnapshotError {
     /// The bundle is larger than `[snapshots] max_upload_bytes`.
     #[error("the snapshot bundle is larger than the {limit}-byte upload limit")]
     TooLarge {
+        /// The limit, in bytes.
+        limit: u64,
+    },
+    /// The snapshot's files would not fit `[checkouts] max_bytes`.
+    #[error("the snapshot's files take more than the {limit}-byte checkout limit")]
+    TreeTooLarge {
         /// The limit, in bytes.
         limit: u64,
     },
@@ -67,19 +82,22 @@ pub(crate) struct Snapshots {
 }
 
 /// A snapshot received into a staging repository, not yet in place.
-pub(crate) struct Received {
+pub(crate) struct Received<'a> {
     /// The snapshot commit.
     pub(crate) commit: String,
     /// The commit it was uploaded against; `None` for a complete bundle.
     pub(crate) base: Option<String>,
     /// Holds the bundle and the repository; removed when dropped.
     staging: tempfile::TempDir,
+    /// Its permit to receive, held until it is kept or refused.
+    _receiving: tokio::sync::SemaphorePermit<'a>,
 }
 
 impl Snapshots {
     /// Most bytes a bundle header may take.
     const HEADER_LIMIT: u64 = 64 * 1024;
-    /// Uploads received at once, bounding the disk a burst of them takes.
+    /// Uploads received or waiting to be accepted at once, bounding the
+    /// disk a burst of them takes.
     const RECEIVING: usize = 2;
     /// Longest receiving one upload may take, from its permit on, so a
     /// stalled one never holds a permit for long.
@@ -104,41 +122,55 @@ impl Snapshots {
 
     /// Streams `body`, which announced `length` bytes, to a staging file of
     /// at most `limit` bytes, then receives it as described in the module
-    /// documentation, fetching its prerequisites from `url`. At most
-    /// [`Self::RECEIVING`] uploads are received at once; others wait. Each
-    /// gets [`Self::RECEIVE_TIMEOUT`], and its body [`Self::IDLE_TIMEOUT`]
+    /// documentation, fetching its prerequisites from `url` and measuring
+    /// its tree against `checkouts`. At most [`Self::RECEIVING`] uploads are
+    /// received, or wait to be kept, at once; others wait. Each gets
+    /// [`Self::RECEIVE_TIMEOUT`], and its body [`Self::IDLE_TIMEOUT`]
     /// between chunks.
     ///
     /// # Errors
     /// Returns [`SnapshotError`] for an oversized, malformed, or unverifiable
-    /// bundle, an unavailable base, a timeout, or a storage failure.
+    /// bundle, an unavailable base, a tree too large to check out, a
+    /// timeout, or a storage failure.
     pub(crate) async fn receive<E: std::error::Error + Send + Sync + 'static>(
         &self,
         body: impl Stream<Item = Result<Bytes, E>>,
-        length: Option<u64>,
-        limit: u64,
+        (length, limit): (Option<u64>, u64),
         url: &str,
-    ) -> Result<Received, SnapshotError> {
+        checkouts: &Checkouts,
+    ) -> Result<Received<'_>, SnapshotError> {
         if length.is_some_and(|length| length > limit) {
             return Err(SnapshotError::TooLarge { limit });
         }
-        let _receiving = self
+        let receiving = self
             .receiving
             .acquire()
             .await
             .map_err(|error| SnapshotError::Internal(error.into()))?;
-        tokio::time::timeout(Self::RECEIVE_TIMEOUT, self.stage(body, limit, url))
-            .await
-            .map_err(|_| SnapshotError::TimedOut)?
+        let (commit, base, staging) = tokio::time::timeout(
+            Self::RECEIVE_TIMEOUT,
+            self.stage(body, limit, url, checkouts),
+        )
+        .await
+        .map_err(|_| SnapshotError::TimedOut)??;
+        Ok(Received {
+            commit,
+            base,
+            staging,
+            _receiving: receiving,
+        })
     }
 
-    /// Receives an upload into a new staging repository (see [`Self::receive`]).
+    /// Receives an upload into a new staging repository (see
+    /// [`Self::receive`]), returning its commit, its base, and the staging
+    /// directory.
     async fn stage<E: std::error::Error + Send + Sync + 'static>(
         &self,
         body: impl Stream<Item = Result<Bytes, E>>,
         limit: u64,
         url: &str,
-    ) -> Result<Received, SnapshotError> {
+        checkouts: &Checkouts,
+    ) -> Result<(String, Option<String>, tempfile::TempDir), SnapshotError> {
         let staging = tempfile::Builder::new()
             .prefix("upload-")
             .tempdir_in(self.root.join("staging"))
@@ -152,11 +184,15 @@ impl Snapshots {
             repository.fetch(url, &header.prerequisites).await?;
         }
         repository.unbundle(&bundle, &header).await?;
-        Ok(Received {
-            base: repository.base(&header).await?,
-            commit: header.commit,
-            staging,
-        })
+        let base = repository.base(&header).await?;
+        checkouts
+            .measure(&repository.0, SNAPSHOT_BRANCH)
+            .await
+            .map_err(|error| match error.downcast::<TreeTooLarge>() {
+                Ok(TreeTooLarge { limit }) => SnapshotError::TreeTooLarge { limit },
+                Err(error) => SnapshotError::Internal(error),
+            })?;
+        Ok((header.commit, base, staging))
     }
 
     /// Streams `body` to `path`, refusing more than `limit` bytes.
@@ -189,7 +225,7 @@ impl Snapshots {
     /// and `accept`'s error is returned even if removing it fails.
     pub(crate) async fn keep<T, E: From<SnapshotError>>(
         &self,
-        received: Received,
+        received: Received<'_>,
         accept: impl Future<Output = Result<T, E>>,
     ) -> Result<T, E> {
         let internal = |error: std::io::Error| SnapshotError::Internal(error.into());
@@ -342,9 +378,12 @@ impl Staged {
         .await
         .map_err(invalid("verification failed"))?;
         let refspec = format!("{}:refs/heads/{SNAPSHOT_BRANCH}", header.reference);
+        // One thread resolves deltas, so one object at most is inflated.
         let unbundle = [
             "-c",
             "transfer.fsckObjects=true",
+            "-c",
+            "pack.threads=1",
             "fetch",
             "--quiet",
             "--no-tags",
@@ -591,14 +630,24 @@ mod tests {
         )
     }
 
-    async fn receive(
-        snapshots: &Snapshots,
+    /// Checkouts within `max_bytes`; only their limit is used.
+    fn checkouts(max_bytes: u64) -> Checkouts {
+        Checkouts::new(
+            PathBuf::from("unused"),
+            std::num::NonZeroU64::new(max_bytes).unwrap(),
+        )
+    }
+
+    async fn receive<'a>(
+        snapshots: &'a Snapshots,
         bytes: Vec<u8>,
         limit: u64,
         url: &Path,
-    ) -> Result<Received, SnapshotError> {
+    ) -> Result<Received<'a>, SnapshotError> {
         let url = url.display().to_string();
-        snapshots.receive(body(&bytes), None, limit, &url).await
+        snapshots
+            .receive(body(&bytes), (None, limit), &url, &checkouts(1 << 30))
+            .await
     }
 
     /// A thin bundle needs its base, which is fetched from the repository;
@@ -626,7 +675,10 @@ mod tests {
             assert!(snapshots.path(&commit).exists());
         }
         let source = snapshots.source(&remote.display().to_string(), &commit);
-        let checkout = Checkout::clone(&source.repository).await.unwrap();
+        let checkouts = Checkouts::open(root.path().join("checkouts"))
+            .await
+            .unwrap();
+        let checkout = checkouts.checkout(&source.repository, None).await.unwrap();
         assert_eq!(checkout.commit, commit);
         assert_eq!(
             tokio::fs::read_to_string(checkout.path("local.txt").await.unwrap())
@@ -670,7 +722,12 @@ mod tests {
 
         // Announced, and only found while streaming.
         let announced = snapshots
-            .receive(body(&thin), Some(length), length - 1, "unused")
+            .receive(
+                body(&thin),
+                (Some(length), length - 1),
+                "unused",
+                &checkouts(1 << 30),
+            )
             .await;
         assert!(matches!(announced, Err(SnapshotError::TooLarge { .. })));
         let streamed = receive(&snapshots, thin.clone(), length - 1, &remote).await;
@@ -699,6 +756,16 @@ mod tests {
             .await;
         assert!(refused.is_err());
         assert!(!snapshots.path(&commit).exists());
+
+        // Its files must fit a checkout: `local.txt` and `app.toml` take 10 bytes.
+        let url = remote.display().to_string();
+        let expands = snapshots
+            .receive(body(&thin), (None, 1 << 20), &url, &checkouts(9))
+            .await;
+        assert!(matches!(
+            expands,
+            Err(SnapshotError::TreeTooLarge { limit: 9 })
+        ));
 
         sh(root.path(), "git init -q -b main empty");
         let unfetchable = receive(&snapshots, thin, 1 << 20, &root.path().join("empty")).await;
@@ -738,6 +805,32 @@ mod tests {
         assert!(matches!(refused, Err(SnapshotError::Invalid(_))));
     }
 
+    /// A received upload holds its permit until it is kept, so uploads
+    /// waiting to be accepted never pile up on disk.
+    #[tokio::test]
+    async fn received_uploads_hold_their_permit_until_kept() {
+        let root = tempfile::tempdir().unwrap();
+        let (base, _) = fixture(root.path());
+        let remote = root.path().join("remote");
+        let snapshots = Snapshots::open(root.path().join("snapshots"))
+            .await
+            .unwrap();
+        let thin = bundle(root.path(), &format!("^{base}"));
+        let received = receive(&snapshots, thin, 1 << 20, &remote).await.unwrap();
+        assert_eq!(
+            snapshots.receiving.available_permits(),
+            Snapshots::RECEIVING - 1
+        );
+        let kept = snapshots
+            .keep(received, async { Ok::<_, SnapshotError>(()) })
+            .await;
+        assert!(kept.is_ok());
+        assert_eq!(
+            snapshots.receiving.available_permits(),
+            Snapshots::RECEIVING
+        );
+    }
+
     /// A body that stops sending gives up its permit.
     #[tokio::test(start_paused = true)]
     async fn stalled_uploads_time_out() {
@@ -746,7 +839,9 @@ mod tests {
             .await
             .unwrap();
         let stalled = futures_util::stream::pending::<Result<Bytes, std::io::Error>>();
-        let received = snapshots.receive(stalled, None, 1 << 20, "unused").await;
+        let received = snapshots
+            .receive(stalled, (None, 1 << 20), "unused", &checkouts(1 << 30))
+            .await;
         assert!(matches!(received, Err(SnapshotError::TimedOut)));
         assert_eq!(
             snapshots.receiving.available_permits(),

@@ -95,7 +95,7 @@ when the complete normalized manifest is needed.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/v1/system/status` | Daemon status, with `images`: the built images cleanup kept, the total size of those it removed since the daemon started, and when it last ran; DNS providers and certificates only with `system:read`; preview counts per readable application |
+| GET | `/api/v1/system/status` | Daemon status, with `images`: the built images cleanup kept, the total size of those it removed since the daemon started, and when it last ran; DNS providers and certificates only with `system:read`; preview counts per readable application; `snapshots`: the largest [local snapshot](#local-snapshots) upload, working tree and file count the daemon accepts |
 | GET | `/api/v1/system/configuration` | Effective read-only host settings |
 | POST | `/api/v1/system/dns/refresh` | Check DNS provider credentials and zones now (`system:operate`); returns `DnsStatus`, empty without `system:read` |
 | GET | `/api/v1/openapi.json` | Generated API schema |
@@ -123,7 +123,7 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/environments/{id}/rename` | Rename an environment without redeployment: `{ "name": "...", "expected_generation": 3 }` |
 | DELETE | `/api/v1/environments/{id}` | Request deletion of one environment; no body |
 | POST | `/api/v1/environments/{id}/reconcile` | Retry the latest operation with its saved inputs once it has ended or failed; an operation still in progress is returned unchanged |
-| GET | `/api/v1/applications/{id}/previews` | Previews with status, latest operation, hostnames, the `origin` of what they run and branch state (`exists`, `moved`, `gone`, `local` or `unknown`), from one `git ls-remote` |
+| GET | `/api/v1/applications/{id}/previews` | Previews with status, latest operation, hostnames, the `origin` of what they run and branch state (`exists`, `moved`, `gone`, `local` or `unknown`), from one `git ls-remote`, shared by the reads of a repository that arrive while it runs; at most four repositories are listed at once |
 | POST | `/api/v1/applications/{id}/previews` | Create and deploy a preview: `{ "branch": "feat/login", "slot": "agent-2" }`; 202 with `CreatedPreview` (`preview`, `operation`, `created: true`), or 200 with the existing preview of that branch and slot and its latest operation (`created: false`), never redeploying it. 409 `preview_requires_repository` without a manifest repository, `preview_limit_reached` over a `[previews]` limit |
 | POST | `/api/v1/applications/{id}/previews/local?branch=…&slot=…` | Deploy a [local snapshot](#local-snapshots): the body is a Git bundle (`application/octet-stream`); 202 with `CreatedPreview`. 408 `snapshot_timed_out`, 413 `snapshot_too_large`, 422 `snapshot_invalid` or `snapshot_base_unavailable` |
 | POST | `/api/v1/applications/{id}/previews/prune` | Delete each listed preview whose branch is confirmed gone: `{ "previews": [preview IDs] }`; returns the `DeletedPreview`s and keeps the rest. 502 `repository_unavailable`, deleting nothing, when the repository cannot be read |
@@ -149,11 +149,14 @@ The body is a Git bundle, sent as `application/octet-stream` with its
 bundle needs prerequisites (at most 64), which the daemon fetches from the
 application's repository: its base and, for a history with merges, ancestors
 of that base. `422 snapshot_base_unavailable` (with `details.prerequisites`)
-means it could not fetch them, and a complete bundle should be sent instead. The body is
+means it could not fetch them: push the base, or send a complete bundle. The body is
 streamed to the daemon's data directory and refused with `413
 snapshot_too_large` (with `details.limit`) once it exceeds `[snapshots]
-max_upload_bytes`, which is separate from the 2 MiB limit of other bodies.
-The daemon receives two uploads at a time; a body that sends nothing for 30
+max_upload_bytes`, which is separate from the 2 MiB limit of other bodies,
+and also once its files take more than `[checkouts] max_bytes`, or number
+more than 500,000, which `details.limit` then names.
+`SystemStatus.snapshots` reports these limits. The daemon receives two uploads
+at a time, each holding its slot until its deployment is accepted; a body that sends nothing for 30
 seconds, or an upload not received within 10 minutes, fails with `408
 snapshot_timed_out`. The
 bundle is received into a new repository of its own: a malformed header, a

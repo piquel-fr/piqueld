@@ -448,6 +448,8 @@ pub struct ApplicationService {
     webhook_hostname: Option<piqueld_core::manifest::Hostname>,
     /// Cancelled when the daemon shuts down, ending long-lived connections.
     shutdown: tokio_util::sync::CancellationToken,
+    /// Branch listings shared by concurrent preview reads.
+    listings: Arc<crate::git::Listings>,
 }
 
 /// Audit records allowed to wait for the writer at once.
@@ -472,6 +474,7 @@ impl ApplicationService {
             hints: Arc::default(),
             webhook_hostname: None,
             shutdown: tokio_util::sync::CancellationToken::new(),
+            listings: Arc::default(),
         }
     }
 

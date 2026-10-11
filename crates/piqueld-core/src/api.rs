@@ -692,6 +692,21 @@ pub struct SystemStatus {
     /// The images this installation built, and their cleanup.
     #[serde(default)]
     pub images: ImageStatus,
+    /// How large a local snapshot may be; absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshots: Option<SnapshotLimits>,
+}
+
+/// How large a snapshot `piquelctl preview deploy --local` uploads may be,
+/// so it can refuse one before writing it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct SnapshotLimits {
+    /// The largest bundle an upload may carry: `[snapshots] max_upload_bytes`.
+    pub max_upload_bytes: u64,
+    /// The most bytes its files may take: `[checkouts] max_bytes`.
+    pub max_tree_bytes: u64,
+    /// The most files it may have.
+    pub max_files: u64,
 }
 
 /// The images this installation built, as of the last cleanup.

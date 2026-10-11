@@ -745,7 +745,8 @@ never bounded. Creating a preview beyond `max_per_application` or `max_total`
 fails with `preview_limit_reached`.
 
 **Lifetime.** Previews are never deleted automatically. `preview list` and
-`preview show` report each branch's state, read on demand with `git ls-remote`:
+`preview show` report each branch's state, read on demand with `git ls-remote`
+(reads arriving while one runs share it):
 `exists` (at the deployed commit, or before the first fetch), `moved` (the
 branch head is past the deployed commit), `gone`, `local` (its latest
 deployment is a local snapshot, below), or `unknown` when the repository could

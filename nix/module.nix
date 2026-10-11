@@ -360,6 +360,11 @@ in
             default = 268435456;
             description = "Largest Git bundle `piquelctl preview deploy --local` may upload; larger ones fail with snapshot_too_large.";
           };
+          checkouts.max_bytes = lib.mkOption {
+            type = lib.types.ints.positive;
+            default = 4294967296;
+            description = "Most bytes the working trees of all Git checkouts may take at once; a checkout waits for room, and a larger one, or a local snapshot that would be, is refused.";
+          };
           metrics.listen = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [ ];

@@ -943,10 +943,15 @@ async fn git_build_runs_as_a_local_swarm_image() {
         .unwrap()
         .normalize(ApplicationId::parse("git-local-build").unwrap());
     let environment = EnvironmentId::default_for(app.id());
-    let owner = InstanceId::parse("git-build-test").unwrap();
+    // The store gives the build its owner and its checkout admission.
+    let state = tempfile::tempdir().unwrap();
+    let store = piqueld::store::Store::open(state.path().join("state.db"))
+        .await
+        .unwrap();
+    let owner = InstanceId::parse(store.instance_id()).unwrap();
     let runtime = piqueld::application::ApplicationRuntime::new(
         std::sync::Arc::new(docker.clone()),
-        owner.clone(),
+        &store,
         std::sync::Arc::new(tokio::sync::Notify::new()),
         Duration::from_mins(2),
         std::sync::Arc::default(),

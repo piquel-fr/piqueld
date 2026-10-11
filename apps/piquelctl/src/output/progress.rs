@@ -199,6 +199,20 @@ impl ProgressTask {
             Some(outcome),
         );
     }
+
+    /// Finishes the task with `result`: succeeded with `message`, or failed
+    /// with the error, which is returned.
+    pub(crate) fn settle<T>(
+        &self,
+        result: crate::error::Result<T>,
+        message: impl FnOnce(&T) -> String,
+    ) -> crate::error::Result<T> {
+        match &result {
+            Ok(value) => self.finish(TaskOutcome::Succeeded, &message(value)),
+            Err(error) => self.finish(TaskOutcome::Failed, &error.to_string()),
+        }
+        result
+    }
 }
 
 /// Shared state behind every clone of one `ProgressTask`.

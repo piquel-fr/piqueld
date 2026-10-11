@@ -36,6 +36,12 @@ pub(crate) struct CommandFailure {
     stdout: String,
     stderr: String,
 }
+
+/// A command printed more than [`LoggedCommand::output`] reads.
+#[derive(Debug, thiserror::Error)]
+#[error("output exceeds {0} bytes")]
+pub(crate) struct OutputLimit(pub(crate) usize);
+
 impl LoggedCommand {
     /// Bytes of each output stream retained for failure diagnostics.
     const TAIL_BYTES: usize = 8192;
@@ -63,7 +69,8 @@ impl LoggedCommand {
     }
 
     /// Runs a command like [`Self::run_recorded`], without a log, and returns
-    /// its whole standard output. More than `limit` bytes is an error.
+    /// its whole standard output. More than `limit` bytes is an
+    /// [`OutputLimit`] error.
     pub(crate) async fn output(
         command: &mut Command,
         operation: &'static str,
@@ -75,7 +82,9 @@ impl LoggedCommand {
                 .take(u64::try_from(limit)?.saturating_add(1))
                 .read_to_end(&mut output)
                 .await?;
-            anyhow::ensure!(output.len() <= limit, "output exceeds {limit} bytes");
+            if output.len() > limit {
+                return Err(OutputLimit(limit).into());
+            }
             Ok(output)
         };
         Self::run_in_group(command, operation, stdout, None).await

@@ -45,6 +45,18 @@ impl Store {
         self.max_upload_bytes.get()
     }
 
+    /// Applies the daemon's `[checkouts] max_bytes`.
+    #[must_use]
+    pub fn with_checkouts(mut self, max_bytes: std::num::NonZeroU64) -> Self {
+        self.checkouts = std::sync::Arc::new(self.checkouts.with_max_bytes(max_bytes));
+        self
+    }
+
+    /// Admission for every Git checkout.
+    pub(crate) const fn checkouts(&self) -> &std::sync::Arc<crate::git::Checkouts> {
+        &self.checkouts
+    }
+
     /// Snapshots uploaded from local worktrees.
     pub(crate) fn snapshots(&self) -> &crate::git::snapshot::Snapshots {
         &self.snapshots
