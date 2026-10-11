@@ -1080,6 +1080,49 @@
         white-space: pre;
     }
 
+    /* Cell classes from `Terminal::html`: `tf-*` colors text, `tb-*` its
+       background, with `fg`/`bg` the defaults (swapped by inverse video). */
+    .exec-screen .tf-fg { color: var(--term-fg); }
+    .exec-screen .tf-bg { color: var(--term-bg); }
+    .exec-screen .tb-fg { background: var(--term-fg); }
+    .exec-screen .tb-bg { background: var(--term-bg); }
+    .exec-screen .tf-0 { color: var(--term-0); }
+    .exec-screen .tb-0 { background: var(--term-0); }
+    .exec-screen .tf-1 { color: var(--term-1); }
+    .exec-screen .tb-1 { background: var(--term-1); }
+    .exec-screen .tf-2 { color: var(--term-2); }
+    .exec-screen .tb-2 { background: var(--term-2); }
+    .exec-screen .tf-3 { color: var(--term-3); }
+    .exec-screen .tb-3 { background: var(--term-3); }
+    .exec-screen .tf-4 { color: var(--term-4); }
+    .exec-screen .tb-4 { background: var(--term-4); }
+    .exec-screen .tf-5 { color: var(--term-5); }
+    .exec-screen .tb-5 { background: var(--term-5); }
+    .exec-screen .tf-6 { color: var(--term-6); }
+    .exec-screen .tb-6 { background: var(--term-6); }
+    .exec-screen .tf-7 { color: var(--term-7); }
+    .exec-screen .tb-7 { background: var(--term-7); }
+    .exec-screen .tf-8 { color: var(--term-8); }
+    .exec-screen .tb-8 { background: var(--term-8); }
+    .exec-screen .tf-9 { color: var(--term-9); }
+    .exec-screen .tb-9 { background: var(--term-9); }
+    .exec-screen .tf-10 { color: var(--term-10); }
+    .exec-screen .tb-10 { background: var(--term-10); }
+    .exec-screen .tf-11 { color: var(--term-11); }
+    .exec-screen .tb-11 { background: var(--term-11); }
+    .exec-screen .tf-12 { color: var(--term-12); }
+    .exec-screen .tb-12 { background: var(--term-12); }
+    .exec-screen .tf-13 { color: var(--term-13); }
+    .exec-screen .tb-13 { background: var(--term-13); }
+    .exec-screen .tf-14 { color: var(--term-14); }
+    .exec-screen .tb-14 { background: var(--term-14); }
+    .exec-screen .tf-15 { color: var(--term-15); }
+    .exec-screen .tb-15 { background: var(--term-15); }
+    .exec-screen .t-bold { font-weight: bold; }
+    .exec-screen .t-dim { opacity: .6; }
+    .exec-screen .t-italic { font-style: italic; }
+    .exec-screen .t-underline { text-decoration: underline; }
+
     .exec-probe {
         position: absolute;
         top: 0;

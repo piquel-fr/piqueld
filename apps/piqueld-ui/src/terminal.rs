@@ -247,9 +247,9 @@ impl Terminal {
         }
     }
 
-    /// The visible screen as HTML: one line per row, with styled `span`s for
-    /// colored or emphasized text and the cursor. Colors refer to the
-    /// `--term-*` CSS properties of the terminal element.
+    /// The visible screen as HTML: one line per row, with `span`s classed for
+    /// colored or emphasized text and the cursor (see `.exec-screen` in
+    /// `components.css`).
     #[must_use]
     pub fn html(&self) -> String {
         let screen = self.parser.screen();
@@ -267,10 +267,10 @@ impl Terminal {
                 if cell.is_wide_continuation() {
                     continue;
                 }
-                let style = style(cell, cursor == Some((row, col)));
-                if style != run.0 {
+                let classes = classes(cell, cursor == Some((row, col)));
+                if classes != run.0 {
                     push_run(&mut html, &run);
-                    run = (style, String::new());
+                    run = (classes, String::new());
                 }
                 match cell.contents() {
                     "" => run.1.push(' '),
@@ -285,11 +285,11 @@ impl Terminal {
 }
 
 /// Appends one run of text, in a span when it is styled.
-fn push_run(html: &mut String, (style, text): &(String, String)) {
-    if style.is_empty() {
+fn push_run(html: &mut String, (classes, text): &(String, String)) {
+    if classes.is_empty() {
         html.push_str(text);
     } else {
-        let _ = write!(html, r#"<span style="{style}">{text}</span>"#);
+        let _ = write!(html, r#"<span class="{classes}">{text}</span>"#);
     }
 }
 
@@ -305,59 +305,114 @@ fn escape(html: &mut String, text: &str) {
     }
 }
 
-/// Inline CSS for a cell; empty for default text. Inverse video and the
-/// cursor swap the foreground and background.
-fn style(cell: &vt100::Cell, cursor: bool) -> String {
+/// CSS classes for a cell; empty for default text. Inverse video and the
+/// cursor swap the foreground and background. The dashboard's content security
+/// policy forbids inline styles, so the stylesheet defines every class.
+fn classes(cell: &vt100::Cell, cursor: bool) -> String {
     let (mut fg, mut bg) = (
-        color(cell.fgcolor()).unwrap_or("var(--term-fg)".into()),
-        color(cell.bgcolor()).unwrap_or("var(--term-bg)".into()),
+        Paint::of(cell.fgcolor(), Paint::Foreground),
+        Paint::of(cell.bgcolor(), Paint::Background),
     );
-    let swapped = cell.inverse() != cursor;
-    if swapped {
+    if cell.inverse() != cursor {
         std::mem::swap(&mut fg, &mut bg);
     }
-    let mut css = String::new();
-    if swapped || cell.fgcolor() != Color::Default {
-        let _ = write!(css, "color:{fg};");
+    let mut classes = Vec::new();
+    if fg != Paint::Foreground {
+        classes.push(format!("tf-{}", fg.name()));
     }
-    if swapped || cell.bgcolor() != Color::Default {
-        let _ = write!(css, "background:{bg};");
+    if bg != Paint::Background {
+        classes.push(format!("tb-{}", bg.name()));
     }
-    for (set, rule) in [
-        (cell.bold(), "font-weight:bold;"),
-        (cell.dim(), "opacity:.6;"),
-        (cell.italic(), "font-style:italic;"),
-        (cell.underline(), "text-decoration:underline;"),
+    for (set, class) in [
+        (cell.bold(), "t-bold"),
+        (cell.dim(), "t-dim"),
+        (cell.italic(), "t-italic"),
+        (cell.underline(), "t-underline"),
     ] {
         if set {
-            css.push_str(rule);
+            classes.push(class.to_owned());
         }
     }
-    css
+    classes.join(" ")
 }
 
-/// CSS for a terminal color, or `None` for the default. The 16 named colors
-/// follow the theme; the rest of the 256-color palette is computed as xterm does.
-fn color(color: Color) -> Option<String> {
-    Some(match color {
-        Color::Default => return None,
-        Color::Idx(index @ 0..16) => format!("var(--term-{index})"),
-        Color::Idx(index @ 16..232) => {
-            let level = |value: u8| if value == 0 { 0 } else { 55 + 40 * value };
-            let index = index - 16;
-            format!(
-                "rgb({},{},{})",
-                level(index / 36),
-                level(index / 6 % 6),
-                level(index % 6)
-            )
+/// A color the stylesheet defines: the terminal's default foreground or
+/// background, or one of the 16 named colors, which follow the theme.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Paint {
+    Foreground,
+    Background,
+    Named(u8),
+}
+
+/// xterm's 16 named colors, for matching other colors to the nearest one.
+const NAMED: [[u8; 3]; 16] = [
+    [0, 0, 0],
+    [205, 0, 0],
+    [0, 205, 0],
+    [205, 205, 0],
+    [0, 0, 238],
+    [205, 0, 205],
+    [0, 205, 205],
+    [229, 229, 229],
+    [127, 127, 127],
+    [255, 0, 0],
+    [0, 255, 0],
+    [255, 255, 0],
+    [92, 92, 255],
+    [255, 0, 255],
+    [0, 255, 255],
+    [255, 255, 255],
+];
+
+impl Paint {
+    /// Resolves a cell color, with `default` for [`Color::Default`]. The rest
+    /// of the 256-color palette and RGB colors show as the nearest named color.
+    fn of(color: Color, default: Self) -> Self {
+        match color {
+            Color::Default => default,
+            Color::Idx(index @ 0..16) => Self::Named(index),
+            Color::Idx(index) => Self::nearest(Self::indexed(index)),
+            Color::Rgb(red, green, blue) => Self::nearest([red, green, blue]),
         }
-        Color::Idx(index) => {
-            let gray = 8 + 10 * (index - 232);
-            format!("rgb({gray},{gray},{gray})")
+    }
+
+    /// RGB of an entry of xterm's 256-color palette past the named colors:
+    /// a 6×6×6 cube, then a gray ramp.
+    fn indexed(index: u8) -> [u8; 3] {
+        let level = |value: u8| if value == 0 { 0 } else { 55 + 40 * value };
+        match index {
+            16..232 => {
+                let index = index - 16;
+                [level(index / 36), level(index / 6 % 6), level(index % 6)]
+            }
+            _ => [8 + 10 * index.saturating_sub(232); 3],
         }
-        Color::Rgb(red, green, blue) => format!("rgb({red},{green},{blue})"),
-    })
+    }
+
+    /// The named color closest to `rgb`.
+    fn nearest(rgb: [u8; 3]) -> Self {
+        let distance = |named: &[u8; 3]| -> u32 {
+            named
+                .iter()
+                .zip(rgb)
+                .map(|(&a, b)| u32::from(a.abs_diff(b)).pow(2))
+                .sum()
+        };
+        let index = (0..16u8)
+            .min_by_key(|&index| distance(&NAMED[usize::from(index)]))
+            .unwrap_or(0);
+        Self::Named(index)
+    }
+
+    /// Class name suffix: `fg`, `bg`, or the color's number.
+    fn name(self) -> String {
+        match self {
+            Self::Foreground => "fg".into(),
+            Self::Background => "bg".into(),
+            Self::Named(index) => index.to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -417,7 +472,18 @@ mod tests {
         let _ = terminal.write(b"\x1b[31m<a>\x1b[0m&\x1b[?25l");
         assert_eq!(
             terminal.html(),
-            "<span style=\"color:var(--term-1);\">&lt;a&gt;</span>&amp;      \n          \n"
+            "<span class=\"tf-1\">&lt;a&gt;</span>&amp;      \n          \n"
+        );
+    }
+
+    #[test]
+    fn colors_beyond_the_named_ones_show_as_the_nearest() {
+        let mut terminal = Terminal::new(SIZE, true);
+        // 256-color red, RGB green on default, then the cursor in inverse video.
+        let _ = terminal.write(b"\x1b[38;5;196ma\x1b[38;2;0;250;10mb\x1b[0m");
+        assert_eq!(
+            terminal.html().lines().next().unwrap(),
+            r#"<span class="tf-9">a</span><span class="tf-10">b</span><span class="tf-bg tb-fg"> </span>       "#
         );
     }
 

@@ -59,7 +59,9 @@ allocates a terminal sized to the element and sends keystrokes, pastes and size
 changes to the command. Without it, the command gets no input and its output is
 shown as is. Failures to start, such as `service_not_running`, are shown in
 place, and the exit code once the command ends. The terminal emulates xterm in
-Rust (with the `vt100` crate), keeps 5000 lines of history for the mouse wheel,
+Rust (with the `vt100` crate) and shows its 16 named colors in the dashboard's
+palette, with other colors shown as the nearest of them. It keeps 5000 lines of
+history for the mouse wheel,
 and leaves Ctrl+Shift+C/V and Command shortcuts to the browser for copying and
 pasting. **Disconnect**, starting another command, or leaving the environment's
 page closes the WebSocket: output stops, but Docker cannot stop an exec, so the
