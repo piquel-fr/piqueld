@@ -186,7 +186,7 @@ impl EnvironmentOwner {
 
 /// The history a caller may read: application events within `applications`,
 /// and daemon events when `daemon` is set.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Visibility {
     /// Applications whose events are visible.
     pub applications: Scope,
@@ -397,6 +397,37 @@ impl Store {
             .await
     }
 
+    /// `actor`'s current grants: `admin` for unrestricted actors like the
+    /// host operator.
+    ///
+    /// # Errors
+    /// Returns a revoked credential or storage errors.
+    pub async fn grants(&self, actor: Actor<'_>) -> Result<Grants, StoreError> {
+        let mut db = self.pool.acquire().await.map_err(StoreError::database)?;
+        Ok(actor
+            .load(&mut db)
+            .await?
+            .map_or_else(Grants::admin, |authority| authority.grants))
+    }
+
+    /// Notifies after every committed change to accounts, credentials, or
+    /// grants, so long-lived connections can recheck their access.
+    #[must_use]
+    pub fn access_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.access_changes.subscribe()
+    }
+
+    /// Commits a change to accounts, credentials, or grants and notifies
+    /// [`Self::access_changes`].
+    pub(super) async fn commit_access_change(
+        &self,
+        tx: sqlx::Transaction<'_, sqlx::Sqlite>,
+    ) -> Result<(), StoreError> {
+        tx.commit().await.map_err(StoreError::database)?;
+        self.access_changes.send_replace(());
+        Ok(())
+    }
+
     /// Replaces an account's grants, if `actor` may change that account, holds
     /// every new grant, and is not scoped: access handed to another account
     /// outlives the credential handing it out. Refuses to leave no
@@ -418,7 +449,7 @@ impl Store {
         let how = "by an account change";
         Self::replace_user_grants_on(&mut tx, user_id, grants, actor.attribution(), how).await?;
         Self::require_an_admin(&mut tx).await?;
-        tx.commit().await.map_err(StoreError::database)
+        self.commit_access_change(tx).await
     }
 
     /// Checks that `actor` may change the account `user_id`, against both

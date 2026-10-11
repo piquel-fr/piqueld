@@ -12,10 +12,8 @@ use piqueld_core::{
     exec::{ExecInput, ExecOutput, ExecRequest},
 };
 use std::{collections::HashMap, convert::Infallible};
-use tokio::{
-    io::AsyncWriteExt,
-    sync::{mpsc, oneshot},
-};
+use tokio::{io::AsyncWriteExt, sync::mpsc};
+use tokio_util::sync::CancellationToken;
 
 /// A created Docker exec instance that has not started yet.
 #[derive(Clone, Debug)]
@@ -34,9 +32,9 @@ pub struct ExecIo {
     pub input: mpsc::Receiver<ExecInput>,
     /// Command output. Only [`ExecOutput::Stdout`] and [`ExecOutput::Stderr`] are sent.
     pub output: mpsc::Sender<ExecOutput>,
-    /// Resolves when the transport drops its sender, meaning the client is
-    /// gone. Nothing can be sent on it, so only a disconnect signals it.
-    pub disconnected: oneshot::Receiver<Infallible>,
+    /// Cancelled by the transport to stop streaming, e.g. when the client
+    /// is gone or lost access. A command already stopped is never started.
+    pub stop: CancellationToken,
 }
 
 impl BollardDocker {
@@ -112,8 +110,8 @@ impl BollardDocker {
     /// Streams a created command until it exits and returns its exit code.
     ///
     /// Input failures only close standard input: a command may exit before
-    /// reading all of it. A disconnect or failed output delivery means the
-    /// client is gone, and streaming stops with an error.
+    /// reading all of it. A stop or failed output delivery means the client
+    /// is gone, and streaming stops with an error.
     pub(super) async fn run_task_exec(&self, exec: &Exec, io: ExecIo) -> Result<i64, DockerError> {
         let StartExecResults::Attached {
             mut output,
@@ -136,7 +134,7 @@ impl BollardDocker {
         let ExecIo {
             input: mut frames,
             output: sink,
-            disconnected,
+            stop,
         } = io;
         // Output is pumped on its own so a command that stops reading its
         // input never stops its output from draining.
@@ -155,8 +153,8 @@ impl BollardDocker {
             }
             Ok::<_, DockerError>(())
         };
-        // Never returns: a blocked stdin write must not hide a disconnect, so
-        // disconnects are watched separately.
+        // Never returns: a blocked stdin write must not hide a stop, so stops
+        // are watched separately.
         let forward_input = async {
             let mut input_open = true;
             while let Some(frame) = frames.recv().await {
@@ -191,10 +189,12 @@ impl BollardDocker {
             }
             std::future::pending::<Infallible>().await
         };
+        // A stop wins over input still queued, which must not reach the command.
         tokio::select! {
+            biased;
+            () = stop.cancelled() => return Err(DockerError::Request("exec stopped by its client transport")),
             result = forward_output => result?,
             never = forward_input => match never {},
-            _ = disconnected => return Err(DockerError::Request("client disconnected")),
         }
         self.docker
             .inspect_exec(&exec.id)

@@ -232,6 +232,11 @@ events, the stream sends an ID-only message so `Last-Event-ID` still advances. A
 HTTP 410, or a terminal `history_expired` event if pruning happens during the
 stream. A terminal `stream_error` indicates a storage failure. Clients should
 refresh their snapshot before reconnecting after an expired history response.
+Streams recheck the caller's access while open (see
+[authorization](authorization.md)): history it may no longer read
+stops arriving, and a caller that lost access entirely receives a terminal
+`access_ended` message whose data is the refusal's `ErrorBody`. Streams end
+without a message when the daemon shuts down; reconnect with `Last-Event-ID`.
 
 The dashboard adds Events, Errors, Analytics, Notifications and Daemon status.
 Application pages include scoped history; diagnostics link to related operation

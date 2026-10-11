@@ -761,7 +761,7 @@ impl Store {
                 .await
                 .map_err(StoreError::database)?;
         }
-        tx.commit().await.map_err(StoreError::database)
+        self.commit_access_change(tx).await
     }
 
     /// Deletes every credential of an account, signing it out everywhere.
@@ -776,7 +776,7 @@ impl Store {
             .execute(&mut *tx)
             .await
             .map_err(StoreError::database)?;
-        tx.commit().await.map_err(StoreError::database)
+        self.commit_access_change(tx).await
     }
 
     /// Every account with its grants, passkey, live credential, and live
@@ -909,7 +909,7 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         Self::require_an_admin(&mut tx).await?;
-        tx.commit().await.map_err(StoreError::database)
+        self.commit_access_change(tx).await
     }
 
     /// Checks that `actor` may change the account owning a passkey. Unknown

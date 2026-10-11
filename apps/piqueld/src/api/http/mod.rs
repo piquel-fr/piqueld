@@ -37,6 +37,7 @@ mod editing;
 mod environments;
 mod events;
 mod exec;
+mod lease;
 mod logs;
 mod observability;
 mod openapi;

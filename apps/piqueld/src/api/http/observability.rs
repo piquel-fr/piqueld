@@ -71,7 +71,7 @@ pub(super) async fn analytics(
     Ok(ok(state
         .deployment_analytics(
             query.environment_id.as_deref(),
-            &super::access::history(&identity)?,
+            &super::access::history(&identity.grants)?,
             query
                 .since_ms
                 .unwrap_or_else(|| until.saturating_sub(30 * 86_400_000)),

@@ -4,11 +4,13 @@ use super::{
     access::Audit,
     auth::{FreshTailnet, TailnetSource, binding_mismatch},
     decode_json,
+    lease::{Ended, Lease},
     openapi::ApiErrorResponse,
 };
 use crate::{api::ExecSession, auth::Identity, docker::ExecIo};
 use axum::{
     Extension,
+    body::Bytes,
     extract::{
         FromRequestParts, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -25,10 +27,14 @@ use piqueld_core::{
     exec::{ExecFrame, ExecInput, ExecOutput, ExecRequest, MAX_MESSAGE_BYTES},
 };
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::{sync::mpsc, time::Instant};
+use tokio_util::sync::CancellationToken;
 
 /// How long the daemon waits to deliver the final message and close.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often the daemon pings a client, which notices one that left within
+/// two intervals even while it is not reading the client's input.
+const PING_INTERVAL: Duration = Duration::from_secs(5);
 
 /// A WebSocket upgrade whose rejections use the API's JSON errors.
 pub(super) struct ExecUpgrade(WebSocketUpgrade);
@@ -82,9 +88,23 @@ pub(super) async fn exec(
                         return Err(binding_mismatch());
                     }
                 }
+                // The command ends as soon as its caller may no longer start
+                // it. Watching starts before the command is created, and
+                // access is checked again before it runs, so a change while
+                // it is created is not missed.
+                let mut lease = Lease::new(state.clone(), identity.clone(), source);
+                let environment = &id;
+                let mut check = move |state: ApiState, identity: Identity| async move {
+                    Ok(state.may_exec(identity.actor(), environment).await?)
+                };
                 let caller = identity.actor();
                 let session = state.exec(caller, &id, &request, &identity.who()).await?;
-                Ok(relay(session, reader, &mut writer).await)
+                match lease.recheck(&mut check).await {
+                    Ok(()) => {}
+                    Err(Ended::Refused(error)) => return Err(error),
+                    Err(Ended::Shutdown) => return Ok(None),
+                }
+                Ok(relay(session, reader, &mut writer, lease.ended(check)).await)
             }
             .await;
             // `None` means the client left, so there is nothing to report.
@@ -149,66 +169,115 @@ async fn read_request(reader: &mut SplitStream<WebSocket>) -> Result<ExecRequest
 }
 
 /// Relays messages between the client and the running command until it
-/// exits. Returns `None` when the command failed because the client left, since
-/// that is neither a failure to record nor one anybody can receive.
+/// exits, the client leaves, or `ended` resolves. Returns `None` when the
+/// command failed because the client left, since that is neither a failure to
+/// record nor one anybody can receive, and when the daemon shuts down.
 async fn relay(
     session: ExecSession,
     mut reader: SplitStream<WebSocket>,
     writer: &mut SplitSink<WebSocket, Message>,
+    ended: impl Future<Output = Ended>,
 ) -> Option<Result<i64, ApiError>> {
     let (input, input_rx) = mpsc::channel(16);
-    let (output_tx, output) = mpsc::channel::<ExecOutput>(16);
-    let (connected, disconnected) = oneshot::channel();
+    let (output_tx, mut output) = mpsc::channel::<ExecOutput>(16);
+    // Cancelled to stop the command: the client left, could not be written
+    // to, or lost access, or the daemon is shutting down.
+    let stop = CancellationToken::new();
     // Input is read independently so a quiet client never blocks output.
-    // Ending the read drops `connected`, which tells the relay the client is
-    // gone. The read returns whether the client ended it.
-    let reading = tokio::spawn(async move {
-        let _connected = connected;
-        while let Some(Ok(message)) = reader.next().await {
-            let data = match message {
-                Message::Binary(data) => data,
-                Message::Ping(_) | Message::Pong(_) => continue,
-                Message::Text(_) | Message::Close(_) => return true,
-            };
-            match ExecInput::decode(&data) {
-                Ok(frame) => {
-                    if input.send(frame).await.is_err() {
-                        return false;
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "rejected exec input");
-                    return true;
-                }
+    // The read returns whether the client ended it, which stops the command.
+    let reading = tokio::spawn({
+        let stop = stop.clone();
+        async move {
+            let left = read_input(&mut reader, input).await;
+            if left {
+                stop.cancel();
             }
+            left
         }
-        true
     });
-    // Owning `output` here drops it if the client disconnects, which stops the
-    // command stream. Returns whether every frame was delivered.
+    // Input the command does not read stops the reading above, so pings
+    // notice a client that left while it waits. Returns whether every frame
+    // was delivered.
     let writing = async {
-        let mut output = output;
-        while let Some(frame) = output.recv().await {
-            if writer
-                .send(Message::Binary(frame.encode().into()))
-                .await
-                .is_err()
-            {
+        let mut ping = tokio::time::interval_at(Instant::now() + PING_INTERVAL, PING_INTERVAL);
+        loop {
+            let message = tokio::select! {
+                frame = output.recv() => match frame {
+                    Some(frame) => Message::Binary(frame.encode().into()),
+                    None => return true,
+                },
+                _ = ping.tick() => Message::Ping(Bytes::new()),
+            };
+            let sent = tokio::select! {
+                biased;
+                () = stop.cancelled() => false,
+                sent = writer.send(message) => sent.is_ok(),
+            };
+            if !sent {
+                stop.cancel();
                 return false;
             }
         }
-        true
     };
     let io = ExecIo {
         input: input_rx,
         output: output_tx,
-        disconnected,
+        stop: stop.clone(),
     };
-    let (result, delivered) = tokio::join!(session.run(io), writing);
+    let running = async { tokio::join!(session.run(io), writing) };
+    tokio::pin!(running);
+    let mut early = None;
+    let mut finished = tokio::select! {
+        biased;
+        finished = &mut running => Some(finished),
+        ended = ended => {
+            early = Some(ended);
+            None
+        }
+        () = stop.cancelled() => None,
+    };
+    // Once stopped, the client's input is no longer read, and the command
+    // gets a bounded time to wind down and record its completion; the
+    // runtime may still be starting or inspecting it.
     reading.abort();
+    if finished.is_none() {
+        stop.cancel();
+        finished = tokio::time::timeout(CLOSE_TIMEOUT, &mut running).await.ok();
+    }
+    match early {
+        Some(Ended::Refused(error)) => return Some(Err(error)),
+        Some(Ended::Shutdown) => return None,
+        None => {}
+    }
+    // A runtime that did not stop in time leaves nobody to report to.
+    let (result, delivered) = finished?;
     let left = !delivered || matches!(reading.await, Ok(true));
     match result {
         Err(_) if left => None,
         result => Some(result.map_err(ApiError::from)),
     }
+}
+
+/// Forwards the client's input to `input` until the client ends it or the
+/// command no longer reads it. Returns whether the client ended it.
+async fn read_input(reader: &mut SplitStream<WebSocket>, input: mpsc::Sender<ExecInput>) -> bool {
+    while let Some(Ok(message)) = reader.next().await {
+        let data = match message {
+            Message::Binary(data) => data,
+            Message::Ping(_) | Message::Pong(_) => continue,
+            Message::Text(_) | Message::Close(_) => return true,
+        };
+        match ExecInput::decode(&data) {
+            Ok(frame) => {
+                if input.send(frame).await.is_err() {
+                    return false;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "rejected exec input");
+                return true;
+            }
+        }
+    }
+    true
 }

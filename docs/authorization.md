@@ -226,7 +226,13 @@ the account's sessions and tokens. Every write (account changes, passkeys,
 tokens, application mutations, secrets, key recovery, and notification retries)
 re-reads the caller's credential and grants inside its transaction, so a request
 that authenticated just before a demotion, revocation, or expiry cannot use the
-access it lost. Event streams opened before a change keep
-their original visibility until they reconnect. A command started with
-`apps:exec` runs until it ends, but a connection authorized before the change
-cannot start one.
+access it lost. Connections that outlive their request, event streams and
+commands started with `apps:exec`, recheck the caller's access within a second
+of an account change, a revoked credential, or a grant change. They also
+recheck it every 30 seconds, plus the time the check takes, which catches an
+expired credential, a token revoked because its application was deleted, or a
+tailnet peer that no longer matches a token's binding. A stream stops sending
+history its caller may no longer read, and one that lost access entirely ends
+with an `access_ended` message. A command session that lost access ends with
+the refusal (401 or 403); like a disconnect, the command itself may keep
+running in the task. Both also end when the daemon shuts down.

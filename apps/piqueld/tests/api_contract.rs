@@ -85,38 +85,72 @@ impl RuntimeBoundary for FakeRuntime {
         })
     }
 
-    /// Only `web` has a running task.
+    /// Only `web` has a running task. A command named `block` never reads
+    /// its input, one named `hang` echoes it but never stops or exits, and one named
+    /// `slow` takes two seconds to create.
     async fn create_exec(
         &self,
         _environment: &piqueld_core::EnvironmentId,
         request: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<piqueld::docker::Exec>, BoundaryError> {
+        if request.command.as_slice()[0] == "slow" {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        let id = match request.command.as_slice()[0].as_str() {
+            "block" => "exec-blocked",
+            "hang" => "exec-hang",
+            _ => "exec-1",
+        };
         Ok(
             (request.service.as_str() == "web").then(|| piqueld::docker::Exec {
-                id: "exec-1".into(),
+                id: id.into(),
                 task: "task-1".into(),
                 tty: request.tty.is_some(),
             }),
         )
     }
 
-    /// Echoes standard input, then reports how many bytes it read as the exit code.
+    /// Echoes standard input, then reports how many bytes it read as the exit
+    /// code, until the transport stops it.
     async fn run_exec(
         &self,
-        _exec: &piqueld::docker::Exec,
-        mut io: piqueld::docker::ExecIo,
+        exec: &piqueld::docker::Exec,
+        io: piqueld::docker::ExecIo,
     ) -> Result<i64, BoundaryError> {
         use piqueld_core::exec::{ExecInput, ExecOutput};
-        let mut read = 0;
-        while let Some(ExecInput::Stdin(data)) = io.input.recv().await {
-            read += data.len();
-            io.output.send(ExecOutput::Stdout(data)).await.unwrap();
+        let piqueld::docker::ExecIo {
+            mut input,
+            output,
+            stop,
+        } = io;
+        let echo = async {
+            if exec.id == "exec-blocked" {
+                return std::future::pending().await;
+            }
+            let mut read = 0;
+            while let Some(ExecInput::Stdin(data)) = input.recv().await {
+                read += data.len();
+                output.send(ExecOutput::Stdout(data)).await.unwrap();
+            }
+            if exec.id == "exec-hang" {
+                return std::future::pending().await;
+            }
+            output
+                .send(ExecOutput::Stderr(b"closed".to_vec()))
+                .await
+                .unwrap();
+            Ok(i64::try_from(read).unwrap())
+        };
+        let stopped = async {
+            if exec.id == "exec-hang" {
+                std::future::pending::<()>().await;
+            }
+            stop.cancelled().await;
+        };
+        tokio::select! {
+            result = echo => result,
+            () = stopped => Err(piqueld::docker::DockerError::Request("stopped").into()),
         }
-        io.output
-            .send(ExecOutput::Stderr(b"closed".to_vec()))
-            .await
-            .unwrap();
-        Ok(i64::try_from(read).unwrap())
     }
 
     fn trigger_reconciliation(&self) {}
@@ -256,10 +290,15 @@ async fn state_with(temp: &TempDir, max_upload_bytes: Option<std::num::NonZeroU6
     let store = Store::open(temp.path().join("state.db"))
         .await
         .expect("fresh database opens");
-    let store = Arc::new(match max_upload_bytes {
+    let store = match max_upload_bytes {
         Some(limit) => store.with_snapshot_uploads(limit),
         None => store,
-    });
+    };
+    state_on(temp, Arc::new(store)).await
+}
+
+/// [`state`] over `store`, opened in `temp`.
+async fn state_on(temp: &TempDir, store: Arc<Store>) -> ApiState {
     // `FakeAuth` signs requests in with this administrator's credential,
     // which mutations re-read from the database.
     seed_account(
@@ -2859,12 +2898,19 @@ async fn exec_rechecks_grants_when_the_command_starts() {
         credential_id: "operator",
         user_id: "operator",
     });
-    assert!(
-        state
-            .exec(caller, &environment, &request, "operator")
-            .await
-            .is_ok()
-    );
+    let session = state
+        .exec(caller, &environment, &request, "operator")
+        .await
+        .unwrap();
+    // The start is recorded once the command runs; without input it exits.
+    let (_, input) = tokio::sync::mpsc::channel(1);
+    let (output, _output) = tokio::sync::mpsc::channel(1);
+    let io = piqueld::docker::ExecIo {
+        input,
+        output,
+        stop: tokio_util::sync::CancellationToken::new(),
+    };
+    assert_eq!(session.run(io).await.unwrap(), 0);
     let filter = piqueld_core::observability::EventFilter {
         kind: Some("command_started".into()),
         ..Default::default()
@@ -4517,6 +4563,7 @@ async fn seed_account(
 struct GrantFixture {
     temp: TempDir,
     state: ApiState,
+    auth: piqueld::auth::Auth,
     router: axum::Router,
     blog: String,
     shop: String,
@@ -4530,7 +4577,10 @@ impl GrantFixture {
     async fn new() -> Self {
         let temp = TempDir::new().unwrap();
         let database = temp.path().join("state.db");
-        let state = state(&temp).await;
+        // Authentication shares the store, which tells connections that
+        // access changed.
+        let store = Arc::new(Store::open(&database).await.unwrap());
+        let state = state_on(&temp, Arc::clone(&store)).await;
         let mut ids = Vec::new();
         for name in ["blog", "shop"] {
             let mut input = manifest();
@@ -4550,13 +4600,13 @@ impl GrantFixture {
         let creator = seed_account(&database, "creator", &creator).await;
         let lead = seed_account(&database, "lead", &[("accounts:manage", None)]).await;
         let auditor = seed_account(&database, "auditor", &[("audit:read", None)]).await;
-        let store = Store::open(&database).await.unwrap();
         let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
         let [blog, shop] = <[String; 2]>::try_from(ids).unwrap();
         Self {
             temp,
-            router: api_router(state.clone(), auth),
+            router: api_router(state.clone(), auth.clone()),
             state,
+            auth,
             blog,
             shop,
             deployer,
@@ -4938,6 +4988,279 @@ async fn exec_refusals_after_the_upgrade_are_audited() {
         "{outcomes:?}"
     );
     server.abort();
+}
+
+/// Opens an exec WebSocket on `environment` at `address` as `token` and
+/// starts `command` with standard input attached.
+async fn open_exec(
+    address: std::net::SocketAddr,
+    environment: &str,
+    token: Option<&str>,
+    command: &str,
+) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+    let url = format!("ws://{address}/api/v1/environments/{environment}/exec");
+    let mut request = url.into_client_request().unwrap();
+    if let Some(token) = token {
+        let bearer = format!("Bearer {token}").parse().unwrap();
+        request.headers_mut().insert("authorization", bearer);
+    }
+    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let (mut socket, _) = tokio_tungstenite::client_async(request, stream)
+        .await
+        .unwrap();
+    let start = serde_json::json!({"service": "web", "command": [command], "stdin": true});
+    socket.send(Message::text(start.to_string())).await.unwrap();
+    socket
+}
+
+/// A running command ends with the refusal an equivalent request would get
+/// once its caller's credential is revoked, its account deleted, or its
+/// grants no longer include `apps:exec`, even if the runtime never stops it.
+#[tokio::test]
+async fn exec_sessions_end_once_access_is_lost() {
+    use futures_util::{SinkExt, StreamExt};
+    use piqueld_core::exec::{ExecFrame, ExecInput, ExecOutput};
+    use serde_json::json;
+    use tokio_tungstenite::tungstenite::Message;
+    let f = GrantFixture::new().await;
+    let database = f.temp.path().join("state.db");
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = tcp.local_addr().unwrap();
+    let server = tokio::spawn(serve(tcp, f.router.clone()).into_future());
+    let admin = format!("{:x<43}", "contract-admin");
+    // Deleting an account needs another administrator able to sign in.
+    let mut connection = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!(
+        "sqlite:{}",
+        database.display()
+    ))
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO auth_passkeys(id,user_id,name,credential,created_at) VALUES('key','contract-admin','key','{}',1)")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let reader = json!([{"permission": "apps:read", "applications": [f.blog]}]);
+    let changes = [
+        (
+            "revoked",
+            "hang",
+            json!({"action": "revoke_credential", "id": "revoked"}),
+            401,
+        ),
+        (
+            "deleted",
+            "cat",
+            json!({"action": "delete_user", "user_id": "deleted"}),
+            401,
+        ),
+        (
+            "demoted",
+            "cat",
+            json!({"action": "set_grants", "user_id": "demoted", "grants": reader}),
+            403,
+        ),
+    ];
+    let grants = [
+        ("apps:exec", Some(f.blog.as_str())),
+        ("apps:read", Some(f.blog.as_str())),
+    ];
+    for (name, command, change, status) in changes {
+        let token = seed_account(&database, name, &grants).await;
+        let mut socket = open_exec(address, &f.blog, Some(&token), command).await;
+        let echo = ExecInput::Stdin(b"hi".to_vec()).encode();
+        socket.send(Message::binary(echo)).await.unwrap();
+        let mut next = async || loop {
+            match socket.next().await {
+                Some(Ok(Message::Binary(data))) => return Some(ExecOutput::decode(&data).unwrap()),
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                _ => return None,
+            }
+        };
+        assert!(matches!(next().await, Some(ExecOutput::Stdout(data)) if data == b"hi"));
+        let manage = "/api/v1/auth/manage";
+        assert_eq!(
+            f.call(&admin, "POST", manage, change).await.0,
+            200,
+            "{name}"
+        );
+        // A runtime that never stops gets five seconds to wind down.
+        let last = tokio::time::timeout(std::time::Duration::from_secs(10), next())
+            .await
+            .expect("the session ends promptly");
+        assert!(
+            matches!(&last, Some(ExecOutput::Failed { status: got, .. }) if *got == status),
+            "{name}: {last:?}"
+        );
+    }
+    server.abort();
+}
+
+/// Access lost while a command is being created is noticed before it runs
+/// or is recorded as started, even if it would finish at once.
+#[tokio::test]
+async fn exec_rechecks_access_once_the_command_is_created() {
+    use futures_util::{SinkExt, StreamExt};
+    use piqueld_core::exec::{ExecFrame, ExecInput, ExecOutput};
+    use tokio_tungstenite::tungstenite::Message;
+    let f = GrantFixture::new().await;
+    let database = f.temp.path().join("state.db");
+    let grants = [("apps:exec", Some(f.blog.as_str()))];
+    let token = seed_account(&database, "operator", &grants).await;
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = tcp.local_addr().unwrap();
+    let server = tokio::spawn(serve(tcp, f.router.clone()).into_future());
+    let mut socket = open_exec(address, &f.blog, Some(&token), "slow").await;
+    // Input that would let the command finish as soon as it runs.
+    for input in [ExecInput::Stdin(b"hi".to_vec()), ExecInput::CloseStdin] {
+        socket.send(Message::binary(input.encode())).await.unwrap();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let revoke = serde_json::json!({"action": "revoke_credential", "id": "operator"});
+    let manage = "/api/v1/auth/manage";
+    assert_eq!(f.call(&token, "POST", manage, revoke).await.0, 200);
+    let mut outputs = Vec::new();
+    while let Some(Ok(message)) = socket.next().await {
+        if let Message::Binary(data) = message {
+            outputs.push(ExecOutput::decode(&data).unwrap());
+        }
+    }
+    assert!(
+        matches!(&outputs[..], [ExecOutput::Failed { status: 401, .. }]),
+        "{outputs:?}"
+    );
+    // History does not claim the command started.
+    let filter = piqueld_core::observability::EventFilter {
+        kind: Some("command_started".into()),
+        ..Default::default()
+    };
+    let started = f
+        .state
+        .filtered_events(&filter, &piqueld::store::Visibility::ALL, None, 10)
+        .await
+        .unwrap();
+    assert!(started.items.is_empty());
+    server.abort();
+}
+
+/// A client that leaves while the command is not reading its input, so
+/// that input is no longer read from the connection either, still ends the
+/// session.
+#[tokio::test]
+async fn exec_notices_a_client_that_left_behind_unread_input() {
+    use futures_util::SinkExt;
+    use piqueld_core::exec::{ExecFrame, ExecInput};
+    use tokio_tungstenite::tungstenite::Message;
+    let temp = tempfile::tempdir().unwrap();
+    let state = state(&temp).await;
+    let app = {
+        let mutation =
+            piqueld::api::Mutation::save(manifest().validate_template().unwrap(), None, false);
+        let Ok(piqueld::api::MutationResponse::Saved(saved)) =
+            state.accept(Daemon, mutation, Some(0), false, None).await
+        else {
+            panic!("save response");
+        };
+        saved.application_id
+    };
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = tcp.local_addr().unwrap();
+    let server = tokio::spawn(serve(tcp, router(state.clone(), FakeAuth)).into_future());
+    let mut socket = open_exec(address, app.as_str(), None, "block").await;
+    // More input than the relay buffers, so it stops reading the connection.
+    for _ in 0..32 {
+        let input = ExecInput::Stdin(vec![0; 1024]).encode();
+        socket.send(Message::binary(input)).await.unwrap();
+    }
+    drop(socket);
+    let filter = piqueld_core::observability::EventFilter {
+        kind: Some("command_finished".into()),
+        ..Default::default()
+    };
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let events = state
+                .filtered_events(&filter, &piqueld::store::Visibility::ALL, None, 10)
+                .await
+                .unwrap()
+                .items;
+            if !events.is_empty() {
+                return events;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the session ends once the client is gone");
+    assert_eq!(
+        finished[0].message.as_deref(),
+        Some("Command stream in task task-1 failed")
+    );
+    server.abort();
+}
+
+/// Reads an event stream until it ends, or until a message contains
+/// `needle` when given, returning what was read.
+async fn read_stream(body: &mut Body, needle: Option<&str>) -> String {
+    let mut text = String::new();
+    while let Some(frame) = body.frame().await {
+        if let Ok(data) = frame.unwrap().into_data() {
+            text.push_str(std::str::from_utf8(&data).unwrap());
+            if needle.is_some_and(|needle| text.contains(needle)) {
+                break;
+            }
+        }
+    }
+    text
+}
+
+/// An event stream ends with an `access_ended` message once its caller's
+/// credential is revoked, without sending events it read before, and
+/// without a message when the daemon shuts down.
+#[tokio::test]
+async fn event_streams_end_once_access_is_lost_or_the_daemon_stops() {
+    use std::time::Duration;
+    let f = GrantFixture::new().await;
+    let database = f.temp.path().join("state.db");
+    let reader = seed_account(&database, "reader", &[("events:read", None)]).await;
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let router = api_router(
+        f.state.clone().with_shutdown(shutdown.clone()),
+        f.auth.clone(),
+    );
+    let open = async |token: &str| {
+        let request = Request::builder()
+            .uri("/api/v1/events/stream")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        response.into_body()
+    };
+    let mut revoked = open(&reader).await;
+    let mut stopped = open(&format!("{:x<43}", "contract-admin")).await;
+    // The first event leaves the rest of the batch read but not yet sent.
+    read_stream(&mut revoked, Some("event: event")).await;
+    let revoke = serde_json::json!({"action": "revoke_credential", "id": "reader"});
+    let manage = "/api/v1/auth/manage";
+    assert_eq!(f.call(&reader, "POST", manage, revoke).await.0, 200);
+    let text = tokio::time::timeout(Duration::from_secs(5), read_stream(&mut revoked, None))
+        .await
+        .expect("the stream ends promptly");
+    assert!(
+        text.trim_start().starts_with("event: access_ended"),
+        "{text}"
+    );
+    assert!(text.contains("authentication_required"), "{text}");
+    assert!(!text.contains("event: event"), "{text}");
+
+    shutdown.cancel();
+    let text = tokio::time::timeout(Duration::from_secs(5), read_stream(&mut stopped, None))
+        .await
+        .expect("the stream ends on shutdown");
+    assert!(!text.contains("access_ended"), "{text}");
 }
 
 /// A CLI login's approval and the poll that signs it in are audited for the
