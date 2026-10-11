@@ -30,7 +30,9 @@ impl ApplicationService {
     /// 3. Connect Docker, interrupt stale actions, and ensure a Swarm manager
     ///    (journaled as an `ensure_swarm` action).
     /// 4. Build the ingress, reconciliation controller, and service.
-    /// 5. Spawn one task joining reconciliation, image cleanup, ingress,
+    /// 5. Bind the webhook listener, then record the daemon start, which
+    ///    notifies as `daemon_started`.
+    /// 6. Spawn one task joining reconciliation, image cleanup, ingress,
     ///    notification observation, notification webhook delivery, sync, and
     ///    the listener receiving GitHub webhooks.
     /// # Errors
@@ -99,6 +101,12 @@ impl ApplicationService {
             .bind_webhooks()
             .await
             .context("failed to bind the webhook socket")?;
+        // Every listener is bound and Swarm is ready, so the daemon can serve.
+        service
+            .store
+            .record_daemon_started(env!("CARGO_PKG_VERSION"))
+            .await
+            .context("failed to record the daemon start")?;
         let scan_interval = Duration::from_secs(config.reconciliation.scan_interval_seconds);
         let finished_operation_days = config.retention.finished_operation_days;
         let event_days = config.retention.event_days;

@@ -31,6 +31,8 @@ pub struct NotificationConfig {
     pub recovery: bool,
     /// Notify on security-relevant access changes and activity.
     pub security: bool,
+    /// Notify each time the daemon starts.
+    pub daemon_started: bool,
     /// Sustained failure observation threshold.
     pub failure_threshold_seconds: u64,
     /// Maximum automatic delivery retry window.
@@ -48,6 +50,7 @@ impl Default for NotificationConfig {
             daemon_failures: true,
             recovery: true,
             security: true,
+            daemon_started: true,
             failure_threshold_seconds: 120,
             retry_window_seconds: 86_400,
             destinations: Vec::new(),
@@ -112,21 +115,16 @@ impl NotificationConfig {
                 NotificationCategory::DaemonFailures => self.daemon_failures,
                 NotificationCategory::Recovery => self.recovery,
                 NotificationCategory::Security => self.security,
+                NotificationCategory::DaemonStarted => self.daemon_started,
             }
     }
     /// Lists the categories that would currently notify; empty when disabled.
     pub(crate) fn enabled_categories(&self) -> Vec<NotificationCategory> {
-        [
-            NotificationCategory::BuildFailures,
-            NotificationCategory::DeploymentFailures,
-            NotificationCategory::ServiceDegradation,
-            NotificationCategory::DaemonFailures,
-            NotificationCategory::Recovery,
-            NotificationCategory::Security,
-        ]
-        .into_iter()
-        .filter(|category| self.category_enabled(*category))
-        .collect()
+        NotificationCategory::ALL
+            .iter()
+            .copied()
+            .filter(|category| self.category_enabled(*category))
+            .collect()
     }
 }
 /// Webhook payload format.

@@ -118,6 +118,8 @@ macro_rules! notification_values {
             $($(#[$variant_meta])* #[serde(rename = $value)] $variant),+
         }
         impl $name {
+            /// Every value, in declaration order.
+            pub const ALL: &[Self] = &[$(Self::$variant),+];
             /// Stable storage and wire representation.
             #[must_use]
             pub const fn as_str(self) -> &'static str {
@@ -154,6 +156,8 @@ notification_values! {
         /// recovery, refused-request bursts, and credentials used from new
         /// addresses.
         Security => "security",
+        /// Each daemon start, with its version, once it is ready to serve.
+        DaemonStarted => "daemon_started",
     }
 }
 notification_values! {
@@ -259,25 +263,11 @@ mod tests {
         for (schema, values) in [
             (
                 DeliveryState::schema(),
-                serde_json::to_value([
-                    DeliveryState::Pending,
-                    DeliveryState::Delivered,
-                    DeliveryState::Failed,
-                    DeliveryState::Cancelled,
-                ])
-                .unwrap(),
+                serde_json::to_value(DeliveryState::ALL).unwrap(),
             ),
             (
                 NotificationCategory::schema(),
-                serde_json::to_value([
-                    NotificationCategory::BuildFailures,
-                    NotificationCategory::DeploymentFailures,
-                    NotificationCategory::ServiceDegradation,
-                    NotificationCategory::DaemonFailures,
-                    NotificationCategory::Recovery,
-                    NotificationCategory::Security,
-                ])
-                .unwrap(),
+                serde_json::to_value(NotificationCategory::ALL).unwrap(),
             ),
         ] {
             assert_eq!(serde_json::to_value(schema).unwrap()["enum"], values);

@@ -72,8 +72,8 @@ impl Store {
     /// Retries a failed delivery only while its destination/category remain enabled.
     /// Also refuses (as `StoreError::InvalidInput`) failures already followed by a
     /// delivered recovery, recoveries whose incident has reopened, and failures
-    /// whose incident has since closed. Security events open no incident, so
-    /// their deliveries stay retryable. Resets the delivery to `pending` with a
+    /// whose incident has since closed. Security events and daemon starts open
+    /// no incident, so their deliveries stay retryable. Resets the delivery to `pending` with a
     /// fresh retry window. `actor` needs `system:operate`, checked in the same
     /// transaction.
     ///
@@ -136,9 +136,9 @@ impl Store {
                     return Err(StoreError::InvalidInput);
                 }
             }
-            // Security events report one occurrence, not an incident that
-            // closes, so they stay retryable.
-            NotificationCategory::Security => {}
+            // Security events and daemon starts report one occurrence, not
+            // an incident that closes, so they stay retryable.
+            NotificationCategory::Security | NotificationCategory::DaemonStarted => {}
             // A closed incident cannot be announced again without a matching recovery.
             _ => {
                 let open = sqlx::query_scalar!(
@@ -333,10 +333,15 @@ impl Store {
                 .await?;
             }
         }
-        // Every security event notifies; none is a condition that recovers.
+        // Security events and daemon starts each notify; neither is a
+        // condition that recovers.
         if super::SecurityEvent::parse(&event.kind).is_some() {
             let security = NotificationCategory::Security;
             return Self::enqueue(tx, &self.notifications, event.id, security).await;
+        }
+        if event.kind == "daemon_started" {
+            let started = NotificationCategory::DaemonStarted;
+            return Self::enqueue(tx, &self.notifications, event.id, started).await;
         }
         let category = match (
             event.kind.as_str(),
