@@ -8,8 +8,8 @@ unrelated jobs.
 
 Rust build caches are scoped to jobs and saved from main only; pull requests
 restore them. The Nix job caches the store, including crane's dependency builds
-and the dashboard, and runs when the flake, `Cargo.lock`, or a build script
-changes. Dashboard tools are cached by version.
+and the dashboard. Pull requests build the combined package; main builds every
+package. Dashboard tools are cached by version.
 
 | Capability | Local recipe | CI job |
 | --- | --- | --- |

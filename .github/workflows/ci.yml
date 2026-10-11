@@ -12,8 +12,7 @@
 #   nix                -> the combined Nix package
 #
 # Pull requests run only the jobs whose inputs changed (see `changes`); pushes
-# to main and manual runs run everything. Nix packaging is checked when its
-# own inputs change: Rust sources are already validated by the cargo jobs.
+# to main and manual runs run everything, and build every Nix package.
 # `ci` is the single status to require: it fails if any job failed and passes
 # when the rest succeeded or were skipped.
 #
@@ -114,13 +113,17 @@ jobs:
               - tools/**
               - examples/**
               - tests/playwright/**
+            # The flake's package sources, built with nixpkgs' Rust, which
+            # can lag the stable release the cargo jobs use.
             nix:
-              - *workspace
+              - *crates
               - flake.nix
               - flake.lock
               - nix/**
-              - '**/build.rs'
-              - apps/piqueld/build/**
+              - apps/**
+              - tools/xtask/**
+              - migrations/**
+              - examples/**
 
   checks:
     name: checks
@@ -280,8 +283,9 @@ jobs:
 
   # Builds the combined package. Crane's dependency builds are rooted with
   # out-links so the cache action's garbage collection keeps them; without
-  # roots it deletes them, and every run rebuilds every dependency. The other
-  # packages are only evaluated: they share these sources and dependencies.
+  # roots it deletes them, and every run rebuilds every dependency. Pull
+  # requests only evaluate the other packages, which share these sources;
+  # main builds them too.
   nix:
     name: nix packages
     needs: changes
@@ -290,7 +294,7 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      # Purges superseded Nix caches after main saves a new one.
+      # Purges superseded Nix caches on main.
       actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -305,14 +309,16 @@ jobs:
             nix-x86_64-linux-
           save: true # TEMP: measure warm runs
           gc-max-store-size-linux: 4G
-          purge: true
+          # Only caches no run restored for a day: a failed save must not
+          # purge the last usable cache.
+          purge: ${{ github.ref == 'refs/heads/main' }}
           purge-prefixes: nix-x86_64-linux-
-          purge-created: 0
+          purge-last-accessed: P1D
           purge-primary-key: never
       - name: Build Nix packages
         run: nix build -L .#default .#default.cargoArtifacts .#dashboard .#dashboard.cargoArtifacts
-      - name: Evaluate the other Nix packages
-        run: nix build --dry-run .#cli .#daemon
+      - name: Build the other Nix packages
+        run: nix build -L ${{ github.event_name == 'pull_request' && '--dry-run' || '' }} .#cli .#daemon
 
   ci:
     name: ci
