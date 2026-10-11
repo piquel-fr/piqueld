@@ -93,10 +93,11 @@ fn deploys(view: &PreviewView) -> AnyView {
         },
     );
     let redeploy = match &view.branch {
-        BranchState::Local { head: None } => {
-            "Its branch was never pushed, so Redeploy branch head fails until it is. Deploy a new snapshot with `piquelctl preview deploy --local`."
-        }
-        _ => "Redeploy branch head replaces it with the head of its branch.",
+        BranchState::Local { head: None } => format!(
+            "Its branch was never pushed, so Redeploy branch head fails until it is. Deploy a new snapshot from its worktree with `{}`.",
+            local_command(&view.preview)
+        ),
+        _ => "Redeploy branch head replaces it with the head of its branch.".into(),
     };
     view! {
         "Local snapshot "
@@ -105,6 +106,23 @@ fn deploys(view: &PreviewView) -> AnyView {
         <div class="muted">{redeploy}</div>
     }
     .into_any()
+}
+
+/// The command that deploys a snapshot of a worktree to `preview`, run
+/// from that worktree on its branch.
+///
+/// ```text
+/// piquelctl preview deploy app-0123 --local --slot agent-2
+/// ```
+fn local_command(preview: &EnvironmentView) -> String {
+    let slot = preview
+        .preview()
+        .and_then(|identity| identity.slot.as_ref())
+        .map_or_else(String::new, |slot| format!(" --slot {slot}"));
+    format!(
+        "piquelctl preview deploy {} --local{slot}",
+        preview.application_id
+    )
 }
 
 /// Badge for a preview whose deployed target `[previews]` bounded, with how
@@ -387,7 +405,7 @@ fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
 /// "Redeploy branch head" button of a preview's page: deploys the head of
 /// its branch again, replacing any local snapshot it runs, then shows its
 /// deployments. Snapshots are only deployed from a worktree, by
-/// `piquelctl preview deploy --local`.
+/// `piquelctl preview deploy <app> --local`.
 #[component]
 pub(super) fn PreviewActions() -> impl IntoView {
     let context = editor();
@@ -411,7 +429,14 @@ pub(super) fn PreviewActions() -> impl IntoView {
         <button
             type="button"
             class="btn btn-primary"
-            title="Deploy the head of this preview's branch from the repository, replacing a local snapshot it runs. Deploy a new snapshot with `piquelctl preview deploy --local` from its worktree."
+            title={move || {
+                let command = context
+                    .selected_environment()
+                    .map_or_else(String::new, |preview| local_command(&preview));
+                format!(
+                    "Deploy the head of this preview's branch from the repository, replacing a local snapshot it runs. Deploy a new snapshot from its worktree with `{command}`."
+                )
+            }}
             disabled={move || context.environment_action_blocked()}
             on:click={deploy}
         >

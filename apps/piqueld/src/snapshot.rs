@@ -185,7 +185,8 @@ impl Snapshots {
 
     /// Moves `received` into place, unless that commit already is, and runs
     /// `accept`, which deploys it, before any [`Self::prune`] can remove it.
-    /// When `accept` fails, a snapshot this call moved into place goes again.
+    /// When `accept` fails, a snapshot this call moved into place goes again,
+    /// and `accept`'s error is returned even if removing it fails.
     pub(crate) async fn keep<T, E: From<SnapshotError>>(
         &self,
         received: Received,
@@ -201,8 +202,12 @@ impl Snapshots {
                 .map_err(internal)?;
         }
         let accepted = accept.await;
-        if accepted.is_err() && installed {
-            tokio::fs::remove_dir_all(&path).await.map_err(internal)?;
+        // The refusal is what the caller needs; pruning retries a failed removal.
+        if accepted.is_err()
+            && installed
+            && let Err(error) = tokio::fs::remove_dir_all(&path).await
+        {
+            tracing::warn!(?error, "removing a refused snapshot failed");
         }
         accepted
     }
