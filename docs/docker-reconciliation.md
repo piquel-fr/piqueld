@@ -188,12 +188,9 @@ probe configs no service mounts any longer, in its current spec or in the
 previous one a rollback would restore.
 
 Daemon builds compile the probe for the matching `*-unknown-linux-musl` target
-with the size-optimised `probe` profile, since Swarm caps config size. Setting
-`PIQUELD_PROBE` to a static probe embeds that file instead, and the build
-warns that changes under `crates/piqueld-probe` are not included: the Nix
-packages pass their `pkgsStatic` build this way, and so does `nix develop`,
-because nixpkgs' Rust has no musl standard library. Leave the shell, or unset
-`PIQUELD_PROBE` in a rustup toolchain, to build probe changes into the daemon.
+with the size-optimised `probe` profile, since Swarm caps config size. The
+target comes from `rust-toolchain.toml`, which rustup, `nix develop`, and the
+Nix packages all use.
 
 ## Image retention
 

@@ -3,12 +3,17 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   inputs.crane.url = "github:ipetkov/crane";
+  inputs.rust-overlay = {
+    url = "github:oxalica/rust-overlay";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
 
   outputs =
     {
       self,
       nixpkgs,
       crane,
+      rust-overlay,
     }:
     let
       supportedSystems = [
@@ -16,6 +21,10 @@
         "aarch64-darwin"
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+      pkgsFor = system: nixpkgs.legacyPackages.${system}.extend (import rust-overlay);
+      # The toolchain rust-toolchain.toml pins, with its components and
+      # targets, so Nix builds use the same Rust as rustup and CI.
+      toolchainFor = pkgs: pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
     in
     {
       nixosModules = {
@@ -43,9 +52,9 @@
       packages = forAllSystems (
         system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = pkgsFor system;
           lib = pkgs.lib;
-          craneLib = crane.mkLib pkgs;
+          craneLib = (crane.mkLib pkgs).overrideToolchain toolchainFor;
           # Keep documentation and workflow edits out of package source hashes.
           src = lib.fileset.toSource {
             root = ./.;
@@ -105,19 +114,6 @@
               CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
             }
           );
-          # The daemon embeds the probe that HTTP health checks run in
-          # containers, which may lack a C library or dynamic loader, so it is
-          # built statically against musl. Its build script reads it from
-          # PIQUELD_PROBE because nixpkgs' rustc has no musl standard library.
-          probe = (crane.mkLib pkgs.pkgsStatic).buildPackage {
-            inherit src;
-            inherit (commonArgs) version cargoVendorDir;
-            pname = "piqueld-probe";
-            cargoExtraArgs = "--locked --package piqueld-probe";
-            CARGO_PROFILE = "probe";
-            doCheck = false;
-          };
-          probeBinary = "${probe}/bin/piqueld-probe";
           # The workspace with only `members` real and every other member
           # replaced by crane's dummy, which depends on manifests alone. A
           # package built from it rebuilds only when those members change.
@@ -171,16 +167,17 @@
               cargoArtifacts,
             }:
             let
-              args = commonArgs // {
-                pname = name;
-                cargoExtraArgs =
-                  "--locked "
-                  + lib.concatMapStringsSep " " (binary: "--package ${binary}") binaries
-                  + lib.optionalString withUi " --features embedded-ui";
-                CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
-              }
-              // lib.optionalAttrs (builtins.elem "piqueld" binaries) { PIQUELD_PROBE = probeBinary; }
-              // lib.optionalAttrs withUi { PIQUELD_DASHBOARD_WASM = "${dashboard}/piqueld-ui.wasm"; };
+              args =
+                commonArgs
+                // {
+                  pname = name;
+                  cargoExtraArgs =
+                    "--locked "
+                    + lib.concatMapStringsSep " " (binary: "--package ${binary}") binaries
+                    + lib.optionalString withUi " --features embedded-ui";
+                  CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
+                }
+                // lib.optionalAttrs withUi { PIQUELD_DASHBOARD_WASM = "${dashboard}/piqueld-ui.wasm"; };
             in
             craneLib.buildPackage (
               args
@@ -223,7 +220,7 @@
             if pkgs.stdenv.isDarwin then self.packages.${system}.cli else self.packages.${system}.combined;
         }
         // lib.optionalAttrs pkgs.stdenv.isLinux {
-          inherit probe dashboard;
+          inherit dashboard;
           daemon = mkPackage {
             name = "piqueld-daemon";
             binaries = [ "piqueld" ];
@@ -245,28 +242,18 @@
       devShells = forAllSystems (
         system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = pkgsFor system;
         in
         {
           default = pkgs.mkShell {
-            # nixpkgs' rustc has no musl standard library, so daemon builds
-            # embed the flake's static probe; rustup toolchains build their own.
-            env = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-              PIQUELD_PROBE = "${self.packages.${system}.probe}/bin/piqueld-probe";
-            };
-            # The locked nixpkgs toolchain can differ from rustup's moving
-            # stable channel selected by rust-toolchain.toml.
             packages =
               with pkgs;
               [
-                cargo
+                (toolchainFor pkgs)
                 cargo-nextest
-                clippy
                 git
                 just
                 curl
-                rustc
-                rustfmt
                 pkg-config
                 openssl
               ]
