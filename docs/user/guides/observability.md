@@ -28,7 +28,7 @@ Image cleanup journals each removal as a daemon-scoped `remove_image` action
 whose resource is the image ID, so its `action_succeeded` events list the
 removed images and `action_failed` the ones it had to keep.
 
-Commands run with `app exec` or `preview exec` record `command_started`, naming the account and
+Commands run with `app exec`, `preview exec` or the dashboard's **Terminal** tab record `command_started`, naming the account and
 task, and `command_finished` with its exit code. Their resource is the logical
 service. Commands are never recorded because their arguments can contain secrets.
 

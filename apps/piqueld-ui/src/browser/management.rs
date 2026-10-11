@@ -11,6 +11,7 @@ mod routes;
 mod secrets;
 mod services;
 mod settings;
+mod terminal;
 mod variables;
 
 use super::format::timestamp;
@@ -62,7 +63,14 @@ const APPLICATION_TABS: [&str; 14] = [
     "Events",
 ];
 
-const ENVIRONMENT_TABS: [&str; 5] = ["Overview", "Deployments", "Secrets", "Logs", "Events"];
+const ENVIRONMENT_TABS: [&str; 6] = [
+    "Overview",
+    "Deployments",
+    "Secrets",
+    "Logs",
+    "Terminal",
+    "Events",
+];
 
 /// Which page of an application the route shows.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -71,9 +79,9 @@ pub(super) enum Page {
     Application,
     /// One service's shared configuration.
     Service(String),
-    /// One environment's runtime, deployments, secrets, logs, and history.
+    /// One environment's runtime, deployments, secrets, logs, terminal, and history.
     Environment(String),
-    /// One preview's branch, runtime, deployments, secrets, logs, and history.
+    /// One preview's branch, runtime, deployments, secrets, logs, terminal, and history.
     Preview(String),
 }
 
@@ -189,6 +197,18 @@ impl EditorContext {
                 follows.then(|| saved.application.clone())
             })
             .or_else(|| self.environment_manifest())
+    }
+
+    /// Service names of the manifest the shown environment deploys, or of
+    /// the saved one while that is unknown.
+    fn environment_services(self) -> Vec<String> {
+        self.environment_manifest()
+            .map_or_else(|| self.manifest(), |manifest| manifest.to_manifest())
+            .spec
+            .services
+            .into_iter()
+            .map(|service| service.name)
+            .collect()
     }
 
     /// The application's ID.
@@ -1472,6 +1492,10 @@ fn EnvironmentPage() -> impl IntoView {
         <Show when={move || context.tab.get() == "Logs"}>
             <ApplicationLogs />
         </Show>
+        // Hidden rather than unmounted, so a session survives switching tabs.
+        <div hidden={move || context.tab.get() != "Terminal"}>
+            <terminal::ExecTerminal />
+        </div>
         <Show when={move || context.tab.get() == "Events"}>
             <super::observability::EventHistory environment={id.clone()} />
         </Show>

@@ -19,7 +19,11 @@ thiserror.workspace = true
 url.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { workspace = true, features = ["Event", "Location", "Window"] }
+# Exec WebSockets: the socket's events feed a channel read by `ExecReader`.
+futures-channel.workspace = true
+js-sys.workspace = true
+wasm-bindgen.workspace = true
+web-sys = { workspace = true, features = ["BinaryType", "CloseEvent", "Event", "Location", "MessageEvent", "WebSocket", "Window"] }
 
 [lints]
 workspace = true

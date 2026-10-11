@@ -42,7 +42,7 @@ environments. Clicking anywhere on an environment's row opens its own page,
 `/dashboard/applications/<app>/environments/<environment>`, with a breadcrumb
 back to the application. Its Overview shows the runtime status, the environment's
 source, and renames or deletes the environment; its other tabs are Deployments,
-Secrets, Logs, and Events. The environment's Secrets tab lists each secret the
+Secrets, Logs, Terminal, and Events. The environment's Secrets tab lists each secret the
 manifest it deploys mounts and where the value comes from: generated for the
 environment, the application's secret store (with its version), missing from the
 store, which would fail the next deploy with `secret_missing`, not allowed by the
@@ -58,6 +58,29 @@ name, retains its Docker volumes, and leaves the application and other
 environments intact; **Retry deletion** resumes cleanup when needed. An
 environment page whose environment no longer exists says so rather than showing
 another environment.
+
+The **Terminal** tab of an environment or preview runs a one-off command in a
+running task of one of its services, like
+[`piquelctl app exec`](reference/cli.md#running-commands). It needs
+[`apps:exec`](accounts/permissions.md#application-permissions) on the
+application. Choose a **Service**, enter a **Command** (`/bin/sh` by default)
+and select **Run**. The command is split into arguments with shell quoting, but
+no shell runs it unless you name one.
+
+**Interactive terminal**, on by default, gives the command a terminal the size
+of the tab: what you type, paste and resize reaches the command. Without it, the
+command gets no input and its output is shown as is. The terminal shows 16
+colors from the dashboard's palette, with other colors shown as the nearest of
+them, and keeps 5000 lines of history for the mouse wheel. Ctrl+Shift+C and
+Ctrl+Shift+V, and Command shortcuts, copy and paste rather than reaching the
+command.
+
+The tab shows why a command could not start, such as `service_not_running`
+when the service has no running task, and the exit code once it ends. Switching
+tabs keeps the session. **Disconnect**, running another command, or leaving the
+page stops the output, but the command may keep running in the task, as when
+`piquelctl` ends early. History records the command's start and exit, never the
+command.
 
 The **Previews** tab lists the application's
 [previews](reference/manifest.md#previews), never shown among its
