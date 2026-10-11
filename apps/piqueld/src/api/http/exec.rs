@@ -88,15 +88,23 @@ pub(super) async fn exec(
                         return Err(binding_mismatch());
                     }
                 }
+                // The command ends as soon as its caller may no longer start
+                // it. Watching starts before the command is created, and
+                // access is checked again before it runs, so a change while
+                // it is created is not missed.
+                let mut lease = Lease::new(state.clone(), identity.clone(), source);
+                let environment = &id;
+                let mut check = move |state: ApiState, identity: Identity| async move {
+                    Ok(state.may_exec(identity.actor(), environment).await?)
+                };
                 let caller = identity.actor();
                 let session = state.exec(caller, &id, &request, &identity.who()).await?;
-                // The command ends as soon as its caller may no longer start it.
-                let lease = Lease::new(state.clone(), identity.clone(), source);
-                let environment = &id;
-                let ended = lease.ended(move |state: ApiState, identity: Identity| async move {
-                    Ok(state.may_exec(identity.actor(), environment).await?)
-                });
-                Ok(relay(session, reader, &mut writer, ended).await)
+                match lease.recheck(&mut check).await {
+                    Ok(()) => {}
+                    Err(Ended::Refused(error)) => return Err(error),
+                    Err(Ended::Shutdown) => return Ok(None),
+                }
+                Ok(relay(session, reader, &mut writer, lease.ended(check)).await)
             }
             .await;
             // `None` means the client left, so there is nothing to report.
@@ -201,8 +209,9 @@ async fn relay(
                 _ = ping.tick() => Message::Ping(Bytes::new()),
             };
             let sent = tokio::select! {
-                sent = writer.send(message) => sent.is_ok(),
+                biased;
                 () = stop.cancelled() => false,
+                sent = writer.send(message) => sent.is_ok(),
             };
             if !sent {
                 stop.cancel();
@@ -227,13 +236,14 @@ async fn relay(
         }
         () = stop.cancelled() => None,
     };
-    // Once stopped, the command gets a bounded time to wind down and record
-    // its completion; the runtime may still be starting or inspecting it.
+    // Once stopped, the client's input is no longer read, and the command
+    // gets a bounded time to wind down and record its completion; the
+    // runtime may still be starting or inspecting it.
+    reading.abort();
     if finished.is_none() {
         stop.cancel();
         finished = tokio::time::timeout(CLOSE_TIMEOUT, &mut running).await.ok();
     }
-    reading.abort();
     match early {
         Some(Ended::Refused(error)) => return Some(Err(error)),
         Some(Ended::Shutdown) => return None,

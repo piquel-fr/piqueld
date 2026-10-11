@@ -86,12 +86,16 @@ impl RuntimeBoundary for FakeRuntime {
     }
 
     /// Only `web` has a running task. A command named `block` never reads
-    /// its input, and one named `hang` echoes it but never stops.
+    /// its input, one named `hang` echoes it but never stops, and one named
+    /// `slow` takes two seconds to create.
     async fn create_exec(
         &self,
         _environment: &piqueld_core::EnvironmentId,
         request: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<piqueld::docker::Exec>, BoundaryError> {
+        if request.command.as_slice()[0] == "slow" {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
         let id = match request.command.as_slice()[0].as_str() {
             "block" => "exec-blocked",
             "hang" => "exec-hang",
@@ -5080,6 +5084,42 @@ async fn exec_sessions_end_once_access_is_lost() {
             "{name}: {last:?}"
         );
     }
+    server.abort();
+}
+
+/// Access lost while a command is being created is noticed before it runs,
+/// even if it would finish at once.
+#[tokio::test]
+async fn exec_rechecks_access_once_the_command_is_created() {
+    use futures_util::{SinkExt, StreamExt};
+    use piqueld_core::exec::{ExecFrame, ExecInput, ExecOutput};
+    use tokio_tungstenite::tungstenite::Message;
+    let f = GrantFixture::new().await;
+    let database = f.temp.path().join("state.db");
+    let grants = [("apps:exec", Some(f.blog.as_str()))];
+    let token = seed_account(&database, "operator", &grants).await;
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = tcp.local_addr().unwrap();
+    let server = tokio::spawn(serve(tcp, f.router.clone()).into_future());
+    let mut socket = open_exec(address, &f.blog, Some(&token), "slow").await;
+    // Input that would let the command finish as soon as it runs.
+    for input in [ExecInput::Stdin(b"hi".to_vec()), ExecInput::CloseStdin] {
+        socket.send(Message::binary(input.encode())).await.unwrap();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let revoke = serde_json::json!({"action": "revoke_credential", "id": "operator"});
+    let manage = "/api/v1/auth/manage";
+    assert_eq!(f.call(&token, "POST", manage, revoke).await.0, 200);
+    let mut outputs = Vec::new();
+    while let Some(Ok(message)) = socket.next().await {
+        if let Message::Binary(data) = message {
+            outputs.push(ExecOutput::decode(&data).unwrap());
+        }
+    }
+    assert!(
+        matches!(&outputs[..], [ExecOutput::Failed { status: 401, .. }]),
+        "{outputs:?}"
+    );
     server.abort();
 }
 
