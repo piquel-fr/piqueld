@@ -145,15 +145,17 @@ and no `expected_generation`, and creates the preview first if needed, as
 `created` says whether the preview was new, and a new deployment.
 
 The body is a Git bundle, sent as `application/octet-stream` with its
-`Content-Length`, of exactly one ref pointing at the snapshot commit. It may
-need one prerequisite, its base, which the daemon fetches from the
-application's repository; `422 snapshot_base_unavailable` (with `details.base`)
-means it could not, and a complete bundle should be sent instead. The body is
+`Content-Length`, of exactly one ref pointing at the snapshot commit. A thin
+bundle needs prerequisites (at most 64), which the daemon fetches from the
+application's repository: its base and, for a history with merges, ancestors
+of that base. `422 snapshot_base_unavailable` (with `details.prerequisites`)
+means it could not fetch them, and a complete bundle should be sent instead. The body is
 streamed to the daemon's data directory and refused with `413
 snapshot_too_large` (with `details.limit`) once it exceeds `[previews]
 max_upload_bytes`, which is separate from the 2 MiB limit of other bodies. The
 bundle is received into a new repository of its own: a malformed header, a
-bundle `git bundle verify` rejects, an object that fails Git's checks, or a
+bundle `git bundle verify` rejects, an object that fails Git's checks,
+prerequisites that are not all ancestors of one of them, the base, or a
 snapshot that does not descend from its base is `422 snapshot_invalid`.
 
 The deployment's `origin` is `{ "type": "local", "commit": …, "base": … }`

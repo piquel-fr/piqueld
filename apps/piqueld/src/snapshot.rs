@@ -3,11 +3,13 @@
 //! `[previews] max_upload_bytes`, then received into a new private
 //! repository of its own, never one shared with checkouts or other uploads:
 //!
-//! 1. its header must name one snapshot ref and at most one prerequisite,
-//!    the base, which is fetched from the application's repository;
+//! 1. its header must name one snapshot ref, and the commits it needs, its
+//!    prerequisites, are fetched from the application's repository;
 //! 2. `git bundle verify` checks it applies, and unbundling checks every
 //!    object (`transfer.fsckObjects`);
-//! 3. the snapshot commit must descend from the base.
+//! 3. the prerequisites must all be ancestors of one of them, the base, and
+//!    the snapshot commit must descend from it. A thin bundle of a history
+//!    with merges needs the base and some of its ancestors.
 //!
 //! The repository then moves to `<commit>.git`, from which deployments of
 //! that snapshot read their manifest and build `"self"` sources. Snapshots
@@ -35,11 +37,11 @@ pub enum SnapshotError {
     /// The upload is not a valid bundle of one snapshot commit.
     #[error("the upload is not a valid Git bundle of one snapshot commit: {0}")]
     Invalid(&'static str),
-    /// The base the bundle needs could not be fetched.
-    #[error("base commit {base} could not be fetched from the application's repository")]
+    /// The commits the bundle needs could not be fetched.
+    #[error("the commits the bundle needs could not be fetched from the application's repository")]
     BaseUnavailable {
-        /// The bundle's prerequisite.
-        base: String,
+        /// The bundle's prerequisites.
+        prerequisites: Vec<String>,
     },
     /// The upload could not be read or stored.
     #[error("the snapshot could not be received")]
@@ -65,7 +67,7 @@ pub(crate) struct Snapshots {
 pub(crate) struct Received {
     /// The snapshot commit.
     pub(crate) commit: String,
-    /// The prerequisite it was uploaded against; `None` for a complete bundle.
+    /// The commit it was uploaded against; `None` for a complete bundle.
     pub(crate) base: Option<String>,
     /// Holds the bundle and the repository; removed when dropped.
     staging: tempfile::TempDir,
@@ -124,13 +126,13 @@ impl Snapshots {
         let header = BundleHeader::read(&bundle).await?;
         let repository = Staged(staging.path().join("repository.git"));
         repository.init().await?;
-        if let Some(base) = &header.base {
-            repository.fetch_base(url, base).await?;
+        if !header.prerequisites.is_empty() {
+            repository.fetch(url, &header.prerequisites).await?;
         }
         repository.unbundle(&bundle, &header).await?;
         Ok(Received {
+            base: repository.base(&header).await?,
             commit: header.commit,
-            base: header.base,
             staging,
         })
     }
@@ -228,7 +230,8 @@ impl Snapshots {
 struct Staged(PathBuf);
 
 impl Staged {
-    /// Longest the base fetch may take; its process group is then killed.
+    /// Longest fetching the prerequisites may take; its process group is
+    /// then killed.
     const FETCH_TIMEOUT: Duration = Duration::from_secs(300);
 
     /// Runs Git in the repository.
@@ -255,37 +258,40 @@ impl Staged {
             .map_err(SnapshotError::Internal)
     }
 
-    /// Fetches `base` and its history from `url`, under a ref so that
-    /// `git bundle verify` finds it.
-    async fn fetch_base(&self, url: &str, base: &str) -> Result<(), SnapshotError> {
-        let refspec = format!("{base}:refs/base");
-        let arguments = [
+    /// Fetches `prerequisites` and their history from `url`, under refs so
+    /// that `git bundle verify` finds them.
+    async fn fetch(&self, url: &str, prerequisites: &[String]) -> Result<(), SnapshotError> {
+        let refspecs = prerequisites
+            .iter()
+            .map(|commit| format!("{commit}:refs/prerequisites/{commit}"))
+            .collect::<Vec<_>>();
+        let mut arguments = vec![
             "fetch",
             "--quiet",
             "--no-tags",
             "--no-write-fetch-head",
             "--",
             url,
-            &refspec,
         ];
+        arguments.extend(refspecs.iter().map(String::as_str));
         let fetched = tokio::time::timeout(
             Self::FETCH_TIMEOUT,
-            self.git("fetch snapshot base", &arguments),
+            self.git("fetch snapshot prerequisites", &arguments),
         )
         .await;
         if matches!(fetched, Ok(Ok(_))) {
             return Ok(());
         }
         // Git may echo the URL, credentials included, so details stay in logs.
-        tracing::warn!(?fetched, "snapshot base fetch failed");
+        tracing::warn!(?fetched, "snapshot prerequisite fetch failed");
         Err(SnapshotError::BaseUnavailable {
-            base: base.to_owned(),
+            prerequisites: prerequisites.to_vec(),
         })
     }
 
     /// Verifies `bundle` against the repository, unbundles its snapshot ref
     /// with every object checked, and checks that `header`'s commit is what
-    /// it unbundled and descends from its base.
+    /// it unbundled.
     async fn unbundle(&self, bundle: &Path, header: &BundleHeader) -> Result<(), SnapshotError> {
         let bundle = bundle.to_str().ok_or(SnapshotError::Invalid("path"))?;
         let invalid = |reason| {
@@ -327,15 +333,39 @@ impl Staged {
         if String::from_utf8_lossy(&commit).trim() != header.commit {
             return Err(SnapshotError::Invalid("its ref is not a commit"));
         }
-        if let Some(base) = &header.base {
-            self.git(
-                "check snapshot base",
-                &["merge-base", "--is-ancestor", base, &header.commit],
-            )
-            .await
-            .map_err(invalid("the snapshot does not descend from its base"))?;
-        }
         Ok(())
+    }
+
+    /// The base of an unbundled snapshot: the one prerequisite every other
+    /// is an ancestor of, which the snapshot commit descends from. `None`
+    /// for a complete bundle.
+    async fn base(&self, header: &BundleHeader) -> Result<Option<String>, SnapshotError> {
+        let invalid = |error| {
+            tracing::warn!(?error, "snapshot prerequisites refused");
+            SnapshotError::Invalid("its prerequisites are not the history of one base")
+        };
+        if header.prerequisites.is_empty() {
+            return Ok(None);
+        }
+        let mut independent = vec!["merge-base", "--independent"];
+        independent.extend(header.prerequisites.iter().map(String::as_str));
+        let bases = self
+            .git("find snapshot base", &independent)
+            .await
+            .map_err(invalid)?;
+        let bases = String::from_utf8_lossy(&bases);
+        let [base] = bases.split_whitespace().collect::<Vec<_>>()[..] else {
+            return Err(invalid(anyhow::anyhow!(
+                "several independent prerequisites"
+            )));
+        };
+        self.git(
+            "check snapshot base",
+            &["merge-base", "--is-ancestor", base, &header.commit],
+        )
+        .await
+        .map_err(invalid)?;
+        Ok(Some(base.to_owned()))
     }
 }
 
@@ -368,24 +398,28 @@ impl SnapshotSource {
     }
 }
 
-/// What a bundle's header says it carries: one snapshot ref and at most one
-/// prerequisite. Its pack is checked by Git.
+/// What a bundle's header says it carries: one snapshot ref and the commits
+/// it needs. Its pack is checked by Git.
 #[derive(Debug, Eq, PartialEq)]
 struct BundleHeader {
     /// The ref, under `refs/`.
     reference: String,
     /// The commit the ref points at.
     commit: String,
-    /// The prerequisite commit.
-    base: Option<String>,
+    /// The commits it needs, at most [`Self::PREREQUISITES`].
+    prerequisites: Vec<String>,
 }
 
 impl BundleHeader {
+    /// Most prerequisites a bundle may need. A thin bundle needs its base,
+    /// and one more commit for each merge of a branch forked before it.
+    const PREREQUISITES: usize = 64;
+
     /// Reads and checks the header of the bundle at `path`:
     ///
     /// ```text
     /// # v2 git bundle                       (or v3, with only @object-format=sha1)
-    /// -<base> <subject>                     at most one prerequisite
+    /// -<commit> <subject>                   prerequisites, at most 64
     /// <commit> refs/heads/snapshot          exactly one ref
     /// (blank line, then the pack)
     /// ```
@@ -415,7 +449,7 @@ impl BundleHeader {
             "# v3 git bundle" => true,
             _ => return None,
         };
-        let (mut base, mut reference) = (None, None);
+        let (mut prerequisites, mut reference) = (BTreeSet::new(), None);
         for line in lines {
             if let Some(capability) = line.strip_prefix('@') {
                 if !v3 || capability != "object-format=sha1" {
@@ -423,7 +457,10 @@ impl BundleHeader {
                 }
             } else if let Some(prerequisite) = line.strip_prefix('-') {
                 let commit = prerequisite.split(' ').next()?;
-                if !valid_git_commit(commit) || base.replace(commit.to_owned()).is_some() {
+                if !valid_git_commit(commit)
+                    || !prerequisites.insert(commit.to_owned())
+                    || prerequisites.len() > Self::PREREQUISITES
+                {
                     return None;
                 }
             } else {
@@ -440,7 +477,7 @@ impl BundleHeader {
         Some(Self {
             reference: reference.to_owned(),
             commit: commit.to_owned(),
-            base,
+            prerequisites: prerequisites.into_iter().collect(),
         })
     }
 
@@ -615,12 +652,43 @@ mod tests {
         sh(root.path(), "git init -q -b main empty");
         let unfetchable = receive(&snapshots, thin, 1 << 20, &root.path().join("empty")).await;
         assert!(
-            matches!(unfetchable, Err(SnapshotError::BaseUnavailable { base: missing }) if missing == base)
+            matches!(unfetchable, Err(SnapshotError::BaseUnavailable { prerequisites }) if prerequisites == [base])
         );
     }
 
+    /// A thin bundle of a history that merged a branch forked before its
+    /// base needs the base and that fork point, and its base is the one
+    /// they share. Prerequisites that are not one history are refused.
+    #[tokio::test]
+    async fn thin_bundles_of_merges_need_their_base_and_its_ancestors() {
+        let root = tempfile::tempdir().unwrap();
+        let base = sh(
+            root.path(),
+            "git init -q -b main remote && cd remote
+             echo a > a && git add . && git commit -qm a && git switch -qc side
+             echo s > s && git add . && git commit -qm s && git switch -q main
+             echo b > a && git commit -qam b && git rev-parse HEAD",
+        );
+        let commit = sh(
+            root.path(),
+            "git clone -q remote work && cd work && git merge -q --no-edit origin/side
+             git update-ref refs/heads/snapshot HEAD && git rev-parse HEAD",
+        );
+        let remote = root.path().join("remote");
+        let snapshots = Snapshots::open(root.path().join("snapshots"))
+            .await
+            .unwrap();
+        let merged = bundle(root.path(), &format!("^{base}"));
+        let received = receive(&snapshots, merged, 1 << 20, &remote).await.unwrap();
+        assert_eq!((received.commit, received.base), (commit, Some(base)));
+        // Excluding both parents of the merge leaves two unrelated bases.
+        let unrelated = bundle(root.path(), "^HEAD^1 ^HEAD^2");
+        let refused = receive(&snapshots, unrelated, 1 << 20, &remote).await;
+        assert!(matches!(refused, Err(SnapshotError::Invalid(_))));
+    }
+
     #[test]
-    fn headers_name_one_snapshot_and_at_most_one_base() {
+    fn headers_name_one_snapshot_and_its_prerequisites() {
         let (a, b) = ("a".repeat(40), "b".repeat(40));
         let parse = |lines: &[String]| BundleHeader::parse(lines);
         let header = |lines: &[&str]| {
@@ -633,15 +701,20 @@ mod tests {
             parse(&header(&[
                 "# v3 git bundle",
                 "@object-format=sha1",
-                &format!("-{a} subject"),
+                &format!("-{b} subject"),
+                &format!("-{a}"),
                 &format!("{b} refs/heads/snapshot"),
             ])),
             Some(BundleHeader {
                 reference: "refs/heads/snapshot".into(),
                 commit: b.clone(),
-                base: Some(a.clone()),
+                prerequisites: vec![a.clone(), b.clone()],
             })
         );
+        let mut many = vec!["# v2 git bundle".to_owned()];
+        many.extend((0..=BundleHeader::PREREQUISITES).map(|n| format!("-{n:040x}")));
+        many.push(format!("{b} refs/heads/snapshot"));
+        assert_eq!(parse(&many), None);
         for invalid in [
             header(&["# v4 git bundle", &format!("{b} refs/heads/snapshot")]),
             header(&[
@@ -662,7 +735,7 @@ mod tests {
             header(&[
                 "# v2 git bundle",
                 &format!("-{a}"),
-                &format!("-{b}"),
+                &format!("-{a}"),
                 &format!("{b} refs/x"),
             ]),
             header(&["# v2 git bundle", &format!("{b} HEAD")]),

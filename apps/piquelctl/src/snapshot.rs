@@ -311,8 +311,21 @@ impl Snapshot<'_> {
 struct Git;
 
 impl Git {
+    /// Settings that would otherwise make staging write outside the
+    /// snapshot's directory: hooks such as `post-index-change`, a split
+    /// index's shared files beside the repository's index, and an fsmonitor
+    /// daemon.
+    const ISOLATED: [&str; 6] = [
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.splitIndex=false",
+        "-c",
+        "core.fsmonitor=false",
+    ];
+
     /// A Git command run in `directory`, unaffected by variables naming
-    /// another repository, and never prompting.
+    /// another repository, never prompting, and with [`Self::ISOLATED`].
     fn command(directory: &Path) -> tokio::process::Command {
         let mut command = tokio::process::Command::new("git");
         for variable in REPOSITORY_VARIABLES {
@@ -320,6 +333,7 @@ impl Git {
         }
         command
             .env("GIT_TERMINAL_PROMPT", "0")
+            .args(Self::ISOLATED)
             .arg("-C")
             .arg(directory)
             .stdin(std::process::Stdio::null())
@@ -371,19 +385,20 @@ mod tests {
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
 
-    /// Everything a snapshot must leave as it was: refs, `HEAD`, the index,
-    /// the stash, the status, and every object file.
+    /// Every file of the worktree and its Git directory, with its hash: a
+    /// snapshot must leave refs, `HEAD`, the index, the stash, objects,
+    /// configuration, and the working tree as they were, and run no hook.
+    /// No Git command runs, since one could refresh the index itself.
     fn state(work: &Path) -> String {
         sh(
             work,
-            "git for-each-ref; git rev-parse HEAD; git symbolic-ref HEAD
-             git ls-files --stage; git stash list; git status --porcelain --untracked-files=all
-             sha256sum .git/index; find .git/objects -type f | sort",
+            "find . -type f -print0 | sort -z | xargs -0 sha256sum",
         )
     }
 
     /// A clone of a two-commit repository, with an unpushed commit, a
-    /// modified, a staged, an untracked, and an ignored file.
+    /// modified, a staged, an untracked, and an ignored file. It splits its
+    /// index and has a hook that runs whenever the index changes.
     fn fixture(root: &Path) -> PathBuf {
         sh(
             root,
@@ -391,9 +406,12 @@ mod tests {
              cd remote && echo one > app.toml && git add . && git commit -qm one
              echo two > app.toml && git commit -qam two && cd ..
              git clone -q remote work && cd work && git switch -qc feat/x
+             git config core.splitIndex true
+             printf '#!/bin/sh\ntouch hook-ran\n' > .git/hooks/post-index-change
+             chmod +x .git/hooks/post-index-change
              echo ignored > .gitignore && git add . && git commit -qm unpushed
              echo changed > app.toml && echo staged > staged.txt && git add staged.txt
-             echo untracked > untracked.txt && echo secret > ignored",
+             echo untracked > untracked.txt && echo secret > ignored && rm hook-ran",
         );
         root.join("work")
     }

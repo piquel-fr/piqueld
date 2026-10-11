@@ -1258,12 +1258,12 @@ impl From<crate::snapshot::SnapshotError> for ApiError {
                 piqueld_core::codes::SNAPSHOT_INVALID,
                 message,
             ),
-            SnapshotError::BaseUnavailable { base } => Self::new(
+            SnapshotError::BaseUnavailable { prerequisites } => Self::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 piqueld_core::codes::SNAPSHOT_BASE_UNAVAILABLE,
                 format!("{message}; upload a complete bundle instead"),
             )
-            .details(json!({ "base": base })),
+            .details(json!({ "prerequisites": prerequisites })),
             SnapshotError::Internal(error) => {
                 tracing::error!(?error, "snapshot upload failed");
                 Self::new(
