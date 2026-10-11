@@ -155,7 +155,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-directories: target-ui
-          save-if: true # TEMP: measure warm runs
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: just lint
       - run: just test
       - name: Preserve test report
@@ -184,7 +184,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-directories: ${{ runner.temp }}/piqueld-tools
-          save-if: true # TEMP: measure warm runs
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: bash scripts/install-wasm-tools.sh
       - run: just ui-check
       - run: just check-wasm
@@ -203,7 +203,6 @@ jobs:
       # through the prebuild below.
       PIQUELD_DOCKER_TEST_TIMEOUT: 30m
       NEXTEST_PROFILE: docker-ci
-      CARGO_TERM_VERBOSE: "true" # TEMP: diagnose rebuilds
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
@@ -211,7 +210,7 @@ jobs:
           tool: just,cargo-nextest
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          save-if: true # TEMP: measure warm runs
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Compile everything `just docker-test` runs before the isolated
       # Docker-in-Docker daemon starts, so its inner cargo invocations are
       # instant: the xtask runner and both test binaries it selects.
@@ -244,7 +243,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-directories: target-ui
-          save-if: true # TEMP: measure warm runs
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
@@ -279,7 +278,7 @@ jobs:
           tool: just,cargo-nextest
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          save-if: true # TEMP: measure warm runs
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: just validate-cli
 
   # Builds the combined package. Crane's dependency builds are rooted with
@@ -308,7 +307,7 @@ jobs:
           restore-prefixes-first-match: |
             nix-x86_64-linux-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock') }}-
             nix-x86_64-linux-
-          save: true # TEMP: measure warm runs
+          save: ${{ github.ref == 'refs/heads/main' }}
           gc-max-store-size-linux: 4G
           # Only caches no run restored for a day: a failed save must not
           # purge the last usable cache.
@@ -317,9 +316,9 @@ jobs:
           purge-last-accessed: P1D
           purge-primary-key: never
       - name: Build Nix packages
-        run: nix build -L .#default .#default.cargoArtifacts .#dashboard .#dashboard.cargoArtifacts
+        run: nix build -L .#default .#default.cargoArtifacts .#dashboard .#dashboard.cargoArtifacts .#probe.cargoArtifacts
       - name: Build the other Nix packages
-        run: nix build -L ${{ github.event_name == 'pull_request' && '--dry-run' || '' }} .#cli .#daemon
+        run: nix build -L ${{ github.event_name == 'pull_request' && '--dry-run' || '' }} .#cli .#cli.cargoArtifacts .#daemon
 
   ci:
     name: ci
