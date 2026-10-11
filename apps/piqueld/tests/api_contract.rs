@@ -5334,14 +5334,11 @@ impl piqueld::tailnet::TailnetLookup for FakeTailnet {
     }
 }
 
-/// A token bound to a tailnet tag works only through the tailnet node from a
-/// device carrying that tag right now; refusals name the tailnet peer in the
-/// audit trail.
-#[tokio::test]
-async fn tailnet_bound_tokens_work_only_from_matching_devices() {
+/// A daemon whose administrator created a token bound to `tag:ci`: its
+/// state, authentication, and the token.
+async fn tailnet_bound_token(temp: &TempDir) -> (ApiState, piqueld::auth::Auth, String) {
     use piqueld::auth::{Auth, TokenPolicy};
-    let temp = TempDir::new().unwrap();
-    let state = state(&temp).await;
+    let state = state(temp).await;
     let database = temp.path().join("state.db");
     let admin = seed_account(&database, "admin", &[("admin", None)]).await;
     let store = Store::open(&database).await.unwrap();
@@ -5350,10 +5347,6 @@ async fn tailnet_bound_tokens_work_only_from_matching_devices() {
         tailnet: true,
     };
     let auth = Auth::configured(&store, "https://piqueld.example", tokens).unwrap();
-    let unix = api_router(state.clone(), auth.clone());
-    let lookup: Arc<dyn piqueld::tailnet::TailnetLookup> = Arc::new(FakeTailnet);
-    let tailnet = web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth)
-        .layer(axum::Extension(lookup));
     let create = piqueld_core::auth::Manage::CreateToken {
         grants: piqueld_core::access::Grants::admin(),
         name: "ci".into(),
@@ -5365,10 +5358,25 @@ async fn tailnet_bound_tokens_work_only_from_matching_devices() {
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&create).unwrap()))
         .unwrap();
-    let response = unix.clone().oneshot(request).await.unwrap();
+    let unix = api_router(state.clone(), auth.clone());
+    let response = unix.oneshot(request).await.unwrap();
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let managed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let token = managed["token"].as_str().expect("token").to_owned();
+    (state, auth, token)
+}
+
+/// A token bound to a tailnet tag works only through the tailnet node from a
+/// device carrying that tag right now; refusals name the tailnet peer in the
+/// audit trail.
+#[tokio::test]
+async fn tailnet_bound_tokens_work_only_from_matching_devices() {
+    let temp = TempDir::new().unwrap();
+    let (state, auth, token) = tailnet_bound_token(&temp).await;
+    let unix = api_router(state.clone(), auth.clone());
+    let lookup: Arc<dyn piqueld::tailnet::TailnetLookup> = Arc::new(FakeTailnet);
+    let tailnet = web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth)
+        .layer(axum::Extension(lookup));
     let me = async |router: &axum::Router, peer: Option<[u8; 4]>| {
         let mut request = Request::get("/api/v1/auth/me")
             .header("host", "localhost")
@@ -5425,6 +5433,47 @@ async fn tailnet_bound_tokens_work_only_from_matching_devices() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     panic!("the refused requests were not audited");
+}
+
+/// Behind the gateway's dashboard hostname, one connection carries many
+/// tailnet clients, each named by the `X-Forwarded-For` header the gateway
+/// sets, so tailnet-bound tokens work from matching devices there too.
+#[tokio::test]
+async fn the_dashboard_socket_names_clients_by_the_gateways_header() {
+    let temp = TempDir::new().unwrap();
+    let (state, auth, token) = tailnet_bound_token(&temp).await;
+    let lookup: Arc<dyn piqueld::tailnet::TailnetLookup> = Arc::new(FakeTailnet);
+    let gateway = piqueld::api::http::gateway_router(
+        web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth)
+            .layer(axum::Extension(lookup)),
+    );
+    let through_gateway = async |client: Option<&str>| {
+        let mut request = Request::get("/api/v1/auth/me")
+            .header("host", "localhost")
+            .header("authorization", format!("Bearer {token}"));
+        if let Some(client) = client {
+            request = request.header("x-forwarded-for", client);
+        }
+        let request = request.body(Body::empty()).unwrap();
+        gateway
+            .clone()
+            .oneshot(request)
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    };
+    assert_eq!(
+        through_gateway(Some("100.64.0.2")).await,
+        200,
+        "the CI runner"
+    );
+    assert_eq!(
+        through_gateway(Some("100.64.0.1")).await,
+        401,
+        "Alice's laptop"
+    );
+    assert_eq!(through_gateway(None).await, 403, "not through the gateway");
 }
 
 /// A runner whose tag is `tag:ci` when it connects, and `tag:old` on every

@@ -72,6 +72,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `ingress.private.enabled` | `false` (restart required) |
 | `ingress.private.hostname` | `"piqueld-apps"` |
 | `ingress.private.auth_key_file` | none |
+| `ingress.private.dashboard_hostname` | none (restart required) |
 | `ingress.tunnel.enabled` | `false` (restart required) |
 | `ingress.tunnel.credentials_file` | none; required while enabled |
 | `ingress.webhook_hostname` | none (restart required) |
@@ -304,8 +305,9 @@ auth_key_file = "ts-auth-key" # $CREDENTIALS_DIRECTORY/ts-auth-key
   and rewrites both at every start.
 - `auth_key_file` is only needed for the first login. Without it, startup logs a
   login URL and waits until the node is approved.
-- An unset `auth.public_url` becomes `https://<hostname>.<tailnet>.ts.net`. An
-  explicit value that differs is allowed, but is reported in `piquelctl status`
+- An unset `auth.public_url` becomes `https://<hostname>.<tailnet>.ts.net`,
+  unless `ingress.private.dashboard_hostname` is set. A value that differs is
+  allowed, but is reported in `piquelctl status`
   and the dashboard, because passkeys only work on `auth.public_url`.
 - The node name is trusted automatically; it does not need to be listed in
   `server.allowed_hosts`.
@@ -353,7 +355,8 @@ https_port = 7846         # https://<node>.<tailnet>.ts.net:7846
 
 ## Authentication origin
 
-`auth.public_url` is the canonical HTTPS website origin. It defaults to the
+`auth.public_url` is the canonical HTTPS website origin. It defaults to
+`https://<ingress.private.dashboard_hostname>` when that is set, then to the
 tailnet node's URL when `[tailscale]` is enabled, and to `http://localhost:7845`
 otherwise. Remote passkey login requires HTTPS even over Tailscale. See
 [authentication](authentication.md) for reverse-proxy setup, the private
@@ -475,6 +478,13 @@ auth_key_file = "ts-apps-auth-key"   # $CREDENTIALS_DIRECTORY/ts-apps-auth-key
 both nodes run. Without `auth_key_file`, the daemon logs the node's login URL.
 It is read once at startup; while disabled, private routes report `disabled`.
 See [public and private routes](ingress.md#public-and-private-routes).
+
+`ingress.private.dashboard_hostname` serves the website (dashboard and API) to the
+tailnet on your own domain, through the private listener like a private route.
+An unset `auth.public_url` becomes its HTTPS origin, and applications may not
+route it or its subdomains. It requires `ingress.enabled` and
+`ingress.private.enabled`, and is read once at startup. See
+[dashboard hostname](ingress.md#dashboard-hostname).
 
 `[ingress.tunnel]` serves public routes through a locally managed Cloudflare
 Tunnel instead of ports 80/443, which are then closed:

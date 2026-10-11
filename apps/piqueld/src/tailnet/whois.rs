@@ -20,8 +20,9 @@ const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 const CACHE_LIMIT: usize = 1024;
 
 /// Resolves the tailnet identity behind a peer address. Routers serving the
-/// tailnet node carry one as an `Arc<dyn TailnetLookup>` extension; requests
-/// on other listeners have no tailnet identity.
+/// tailnet node or the dashboard socket carry one as an
+/// `Arc<dyn TailnetLookup>` extension; requests on other listeners have no
+/// tailnet identity.
 #[async_trait]
 pub trait TailnetLookup: Send + Sync {
     /// Who `peer` is, or `None` when it cannot be determined. `fresh` skips
@@ -91,6 +92,13 @@ impl Whois {
             cache: Mutex::new(HashMap::new()),
             querying: Mutex::new(()),
         }
+    }
+
+    /// Looks peers up through the `tailscaled` listening on `socket`, such as
+    /// the apps node's.
+    #[must_use]
+    pub fn at(socket: std::path::PathBuf) -> Self {
+        Self::new(Cli { socket })
     }
 
     /// A cached identity for `address`, if still current.

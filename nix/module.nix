@@ -121,7 +121,7 @@ in
           auth.public_url = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
-            description = "Canonical HTTPS website origin for passkeys; HTTP localhost is allowed for development. Defaults to the tailnet node's HTTPS URL when tailscale.enabled is set, otherwise http://localhost:7845.";
+            description = "Canonical HTTPS website origin for passkeys; HTTP localhost is allowed for development. Defaults to https://<ingress.private.dashboard_hostname> when one is set, then to the tailnet node's HTTPS URL when tailscale.enabled is set, otherwise http://localhost:7845.";
           };
           auth.max_token_days = lib.mkOption {
             type = lib.types.nullOr (lib.types.ints.between 1 4294967295);
@@ -197,6 +197,12 @@ in
             type = lib.types.strMatching "[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
             default = "piqueld-apps";
             description = "Apps node name, which becomes <hostname>.<tailnet>.ts.net. Must differ from tailscale.hostname.";
+          };
+          ingress.private.dashboard_hostname = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "dashboard.example.com";
+            description = "Private hostname on which the gateway serves piqueld's website (dashboard and API) to the tailnet, with a DNS-01 certificate. It gets a private route's DNS records, managed when a provider sets manage_records, applications may not route it or its subdomains, and an unset auth.public_url becomes its HTTPS origin. Requires ingress.enabled and ingress.private.enabled. Restart piqueld to apply.";
           };
           ingress.private.auth_key_file = lib.mkOption {
             # A string, not a path, so the secret is never copied into the Nix store.
@@ -518,8 +524,11 @@ in
         pkgs.openssh
         pkgs.docker-client
       ]
-      # The tailnet node runs its own tailscaled, unless shared, and drives it with the CLI.
-      ++ lib.optional (usesTailscale || cfg.settings.tailscale.enabled) config.services.tailscale.package;
+      # The tailnet node runs its own tailscaled, unless shared, and drives it
+      # with the CLI, which also identifies the apps node's dashboard clients.
+      ++ lib.optional (
+        usesTailscale || cfg.settings.tailscale.enabled || privateIngress.dashboard_hostname != null
+      ) config.services.tailscale.package;
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/piqueld --config ${configuration}";
         LoadCredential =

@@ -206,6 +206,34 @@ fn tailscale_node_settings_are_validated() {
 }
 
 #[test]
+fn the_dashboard_hostname_needs_private_ingress_and_becomes_the_public_url() {
+    let private = "[ingress]\nenabled = true\n[ingress.private]\nenabled = true\n";
+    let config = DaemonConfig::from_toml(&format!(
+        "{private}dashboard_hostname = 'dashboard.example.com'"
+    ))
+    .unwrap();
+    assert_eq!(config.public_url(), "https://dashboard.example.com");
+    let explicit = DaemonConfig::from_toml(&format!(
+        "[auth]\npublic_url = 'https://piqueld.example.com'\n{private}dashboard_hostname = 'dashboard.example.com'"
+    ))
+    .unwrap();
+    assert_eq!(explicit.public_url(), "https://piqueld.example.com");
+    for document in [
+        "[ingress.private]\nenabled = true\ndashboard_hostname = 'dashboard.example.com'".into(),
+        "[ingress]\nenabled = true\n[ingress.private]\ndashboard_hostname = 'dashboard.example.com'".into(),
+        format!("{private}dashboard_hostname = '*.example.com'"),
+        "[ingress]\nenabled = true\nwebhook_hostname = 'dashboard.example.com'\n\
+         [ingress.private]\nenabled = true\ndashboard_hostname = 'dashboard.example.com'"
+            .into(),
+    ] {
+        assert!(
+            DaemonConfig::from_toml(&document).is_err(),
+            "accepted {document}"
+        );
+    }
+}
+
+#[test]
 fn credential_files_are_read_and_never_shown() {
     let directory = tempfile::tempdir().unwrap();
     let webhook = directory.path().join("webhook");

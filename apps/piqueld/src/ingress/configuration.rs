@@ -12,6 +12,8 @@
 //!
 //! With `ingress.webhook_hostname`, the public listener also forwards that
 //! hostname's webhook path, and nothing else, to the daemon's webhook socket.
+//! With `ingress.private.dashboard_hostname`, the private listener forwards
+//! that hostname to the daemon's dashboard socket, which serves the website.
 //!
 //! A hostname appears only on its own listener, and each HTTPS server's TLS
 //! policy accepts only its own hostnames, so a forged Host or SNI for a
@@ -38,7 +40,7 @@
 //! 404 handler.
 
 use super::{
-    Ingress, WEBHOOK_SOCKET,
+    DASHBOARD_SOCKET, Ingress, WEBHOOK_SOCKET,
     node::{PRIVATE_HTTP_PORT, PRIVATE_HTTPS_PORT, TAILNET_RANGES},
     tunnel::TUNNEL_PORT,
 };
@@ -46,8 +48,8 @@ use crate::api::{WEBHOOK_BODY_LIMIT, WEBHOOK_PATH};
 use crate::store::ingress::RoutingTable;
 use anyhow::Result;
 use piqueld_core::{
-    DockerServiceName,
-    manifest::{RouteTarget, Visibility},
+    DockerServiceName, EnvironmentId,
+    manifest::{RouteTarget, ValidatedRoute, Visibility},
 };
 use serde_json::{Value, json};
 
@@ -121,54 +123,43 @@ impl Ingress {
                     Visibility::Private => continue,
                 };
                 let host = route.hostname.as_str();
-                listener.hosts.push(host.to_owned());
-                // A bounded, side-effect-free endpoint lets the daemon distinguish
-                // this gateway from a different server behind an incorrect DNS record.
-                listener.https.push(json!({"match":[{"host":[host],"path":["/.well-known/piqueld-ingress"]}],"handle":[{"handler":"static_response","body":self.instance_id}],"terminal":true}));
-                let handler = match &route.target {
-                    RouteTarget::Service { service, port } => {
-                        let mut proxy = json!({
-                            "handler":"reverse_proxy",
-                            "upstreams":[{"dial":format!("{}:{port}", DockerServiceName::for_service(id,service))}],
-                            "transport":{"protocol":"http","versions":["1.1"]},
-                            "stream_close_delay":300_000_000_000_u64
-                        });
-                        // Cloudflare terminated TLS, and the client address
-                        // comes from `Cf-Connecting-IP`, not the peer.
-                        if tunnel.is_some() && route.visibility == Visibility::Public {
-                            proxy["headers"] = json!({"request":{"set":{
-                                "X-Forwarded-For":["{http.vars.client_ip}"],
-                                "X-Forwarded-Proto":["https"]
-                            }}});
-                        }
-                        proxy
-                    }
-                    RouteTarget::Redirect { redirect } => json!({
-                        "handler":"static_response",
-                        "status_code":u16::from(redirect.status),
-                        "headers":{"Location":[redirect.location()]}
-                    }),
-                };
-                listener
-                    .https
-                    .push(json!({"match":[{"host":[host]}],"handle":[handler],"terminal":true}));
-                listener.redirects.push(json!({"match":[{"host":[host]}],"handle":[{"handler":"static_response","status_code":308,"headers":{"Location":["https://{http.request.host}{http.request.uri}"]}}],"terminal":true}));
+                let handler = Self::handler(id, route, tunnel.is_some());
+                listener.serve(host, [
+                    // A bounded, side-effect-free endpoint lets the daemon distinguish
+                    // this gateway from a different server behind an incorrect DNS record.
+                    json!({"match":[{"host":[host],"path":["/.well-known/piqueld-ingress"]}],"handle":[{"handler":"static_response","body":self.instance_id}],"terminal":true}),
+                    json!({"match":[{"host":[host]}],"handle":[handler],"terminal":true}),
+                ]);
             }
         }
         // Only the webhook path reaches the daemon, through its own socket,
         // which serves nothing else. Its other paths fall through to the 404.
         if let Some(host) = self.webhook_hostname() {
             let host = host.as_str();
-            public.hosts.push(host.to_owned());
-            public.https.push(json!({
+            public.serve(host, [json!({
                 "match":[{"host":[host],"path":[format!("{WEBHOOK_PATH}*")]}],
                 "handle":[
                     {"handler":"request_body","max_size":WEBHOOK_BODY_LIMIT},
                     {"handler":"reverse_proxy","upstreams":[{"dial":format!("unix//control/{WEBHOOK_SOCKET}")}]}
                 ],
                 "terminal":true
-            }));
-            public.redirects.push(json!({"match":[{"host":[host]}],"handle":[{"handler":"static_response","status_code":308,"headers":{"Location":["https://{http.request.host}{http.request.uri}"]}}],"terminal":true}));
+            })]);
+        }
+        // The whole website reaches the daemon, which takes each request's
+        // tailnet client from `X-Forwarded-For`: one upstream connection
+        // carries many clients' requests.
+        if let Some(host) = self.dashboard_hostname().filter(|_| proxies.is_some()) {
+            let host = host.as_str();
+            private.serve(host, [json!({
+                "match":[{"host":[host]}],
+                "handle":[{
+                    "handler":"reverse_proxy",
+                    "upstreams":[{"dial":format!("unix//control/{DASHBOARD_SOCKET}")}],
+                    "headers":{"request":{"set":{"X-Forwarded-For":["{http.request.remote.host}"]}}},
+                    "stream_close_delay":300_000_000_000_u64
+                }],
+                "terminal":true
+            })]);
         }
         // The Unix admin endpoint is private to the daemon. Strict SNI matching
         // prevents a TLS connection for one hostname from selecting another host.
@@ -215,6 +206,35 @@ impl Ingress {
         }
         configuration
     }
+    /// What serves `route` of environment `id`: a reverse proxy to its Swarm
+    /// service, or its redirect. `tunnel` says whether public routes arrive
+    /// through the Cloudflare Tunnel.
+    fn handler(id: &EnvironmentId, route: &ValidatedRoute, tunnel: bool) -> Value {
+        match &route.target {
+            RouteTarget::Service { service, port } => {
+                let mut proxy = json!({
+                    "handler":"reverse_proxy",
+                    "upstreams":[{"dial":format!("{}:{port}", DockerServiceName::for_service(id,service))}],
+                    "transport":{"protocol":"http","versions":["1.1"]},
+                    "stream_close_delay":300_000_000_000_u64
+                });
+                // Cloudflare terminated TLS, and the client address
+                // comes from `Cf-Connecting-IP`, not the peer.
+                if tunnel && route.visibility == Visibility::Public {
+                    proxy["headers"] = json!({"request":{"set":{
+                        "X-Forwarded-For":["{http.vars.client_ip}"],
+                        "X-Forwarded-Proto":["https"]
+                    }}});
+                }
+                proxy
+            }
+            RouteTarget::Redirect { redirect } => json!({
+                "handler":"static_response",
+                "status_code":u16::from(redirect.status),
+                "headers":{"Location":[redirect.location()]}
+            }),
+        }
+    }
 }
 
 impl Listener {
@@ -243,6 +263,14 @@ impl Listener {
             "trusted_proxies":{"source":"static","ranges":edge},
             "client_ip_headers":["Cf-Connecting-IP"]
         })
+    }
+
+    /// Serves `host` with its HTTPS `routes`, and redirects its HTTP
+    /// requests to HTTPS.
+    fn serve(&mut self, host: &str, routes: impl IntoIterator<Item = Value>) {
+        self.hosts.push(host.to_owned());
+        self.https.extend(routes);
+        self.redirects.push(json!({"match":[{"host":[host]}],"handle":[{"handler":"static_response","status_code":308,"headers":{"Location":["https://{http.request.host}{http.request.uri}"]}}],"terminal":true}));
     }
 
     /// Aborts connections whose peer is outside `remote_ip`'s ranges.

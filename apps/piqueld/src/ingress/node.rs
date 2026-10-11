@@ -89,12 +89,19 @@ impl Node {
             hostname: config.hostname.clone(),
             auth_key: config.auth_key.clone(),
             api: UnixApi::new(
-                directory.join("tailscale/run/tailscaled.sock"),
+                Self::socket(directory),
                 crate::docker::DockerTimeout::Request.duration(),
             )
             .with_host("local-tailscaled.sock"),
             login_url: std::sync::Mutex::new(None),
         })
+    }
+}
+
+impl Node {
+    /// The node's `LocalAPI` socket, below the ingress `directory`.
+    pub(super) fn socket(directory: &std::path::Path) -> PathBuf {
+        directory.join("tailscale/run/tailscaled.sock")
     }
 }
 

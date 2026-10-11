@@ -116,7 +116,8 @@ services.piqueld.settings.tailscale = {
 `ingress.acme.directory`,
 `ingress.acme.email`, `ingress.private.enabled`, `ingress.private.hostname`,
 `ingress.private.auth_key_file` (passed as a systemd credential, like the other
-`_file` settings), `ingress.tunnel.enabled`, `ingress.tunnel.credentials_file`
+`_file` settings), `ingress.private.dashboard_hostname` (which also puts the
+Tailscale CLI on the service's `PATH`), `ingress.tunnel.enabled`, `ingress.tunnel.credentials_file`
 (also a systemd credential, required while the tunnel is enabled), `dns.providers`, all three `reconciliation`
 intervals/timeouts, the `retention` periods, both `build_history` limits,
 the five [`previews`](configuration.md#previews) limits,
