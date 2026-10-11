@@ -46,7 +46,7 @@ test('the terminal runs a command, relays input and resizes, and reports failure
   await expect(page.getByRole('status').getByText('Running', { exact: true })).toBeVisible();
   await expect(screen).toContainText('fixture ready');
   await page.keyboard.type('hi');
-  await expect(screen).toContainText('fixture readyhi');
+  await expect(screen).toContainText(/fixture ready\s+hi/);
   await page.setViewportSize({ width: 900, height: 700 });
   await expect(screen).toContainText(/resized to \d+x\d+/);
   await page.keyboard.press('Control+d');
