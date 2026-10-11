@@ -9,8 +9,12 @@ repository.workspace = true
 [dependencies]
 js-sys.workspace = true
 piqueld-client.workspace = true
+shlex.workspace = true
+thiserror.workspace = true
+vt100.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+futures-channel.workspace = true
 futures-util.workspace = true
 gloo-timers = { workspace = true, features = ["futures"] }
 leptos = { workspace = true, features = ["csr"] }
@@ -18,7 +22,7 @@ serde_json.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 leptos_router.workspace = true
-web-sys = { workspace = true, features = ["Document", "Window", "Crypto", "BeforeUnloadEvent", "Storage", "Location", "History", "Navigator", "Clipboard"] }
+web-sys = { workspace = true, features = ["Document", "Window", "Crypto", "BeforeUnloadEvent", "Storage", "Location", "History", "Navigator", "Clipboard", "ClipboardEvent", "DataTransfer", "DomRect", "HtmlTextAreaElement", "InputEvent", "KeyboardEvent", "ResizeObserver", "Selection", "WheelEvent"] }
 
 [lints]
 workspace = true

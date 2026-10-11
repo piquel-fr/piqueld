@@ -32,7 +32,7 @@ environments. Clicking anywhere on an environment's row opens its own page,
 `/dashboard/applications/<app>/environments/<environment>`, with a breadcrumb
 back to the application. Its Overview shows the runtime status, the environment's
 source, and renames or deletes the environment; its other tabs are Deployments,
-Secrets, Logs, and Events. The environment's Secrets tab lists each secret the
+Secrets, Logs, Terminal, and Events. The environment's Secrets tab lists each secret the
 manifest it deploys mounts and where the value comes from: generated for the
 environment, the application's secret store (with its version), missing from the
 store, which would fail the next deploy with `secret_missing`, not allowed by the
@@ -48,6 +48,24 @@ name, retains its Docker volumes, and leaves the application and other
 environments intact; **Retry deletion** resumes cleanup when needed. An
 environment page whose environment no longer exists says so rather than showing
 another environment.
+
+The Terminal tab of an environment or preview runs a one-off command in a
+running task of one of its services, like
+[`piquelctl app exec`](piquelctl.md#running-commands), over the same exec
+WebSocket. It needs [`apps:exec`](authorization.md) on the application. Choose a
+service and enter a command, split into arguments with shell quoting but run
+without a shell (`/bin/sh` by default); **Interactive terminal**, on by default,
+allocates a terminal sized to the element and sends keystrokes, pastes and size
+changes to the command. Without it, the command gets no input and its output is
+shown as is. Failures to start, such as `service_not_running`, are shown in
+place, and the exit code once the command ends. The terminal emulates xterm in
+Rust (with the `vt100` crate), keeps 5000 lines of history for the mouse wheel,
+and leaves Ctrl+Shift+C/V and Command shortcuts to the browser for copying and
+pasting. **Disconnect**, starting another command, or leaving the environment's
+page closes the WebSocket: output stops, but Docker cannot stop an exec, so the
+command may keep running in the task, as when `piquelctl` ends early. Switching
+tabs keeps the session. History records the command's start and exit, never
+the command.
 
 The **Previews** tab lists the application's
 [previews](application-manifest.md#previews), never shown among its

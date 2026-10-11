@@ -604,7 +604,8 @@ The service needs a running task; otherwise the command fails with
 `service_not_running`. The environment's history records `command_started` and
 `command_finished` events with the account, task and exit code, never the
 command. Ending `piquelctl` early closes the stream, but the command may keep
-running in the task.
+running in the task. An environment's [Terminal tab](web-ui.md) in the dashboard runs
+commands the same way.
 
 ## Mutation safety
 

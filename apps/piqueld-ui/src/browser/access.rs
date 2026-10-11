@@ -7,7 +7,7 @@ use super::ui::{Tone, notice};
 use leptos::prelude::*;
 use piqueld_client::{
     ApplicationId,
-    access::{Grant, Grants, Permission, Preset, Scope},
+    access::{AppPermission, Grant, Grants, Permission, Preset, Scope},
 };
 use std::collections::BTreeSet;
 
@@ -26,6 +26,12 @@ pub(super) fn grants() -> Signal<Grants> {
 pub(super) fn can(permission: Permission) -> Signal<bool> {
     let grants = grants();
     Signal::derive(move || grants.with(|grants| grants.require(permission).is_ok()))
+}
+
+/// Whether the signed-in credential holds `permission` on application `id`.
+pub(super) fn can_app(permission: AppPermission, id: ApplicationId) -> Signal<bool> {
+    let grants = grants();
+    Signal::derive(move || grants.with(|grants| grants.require_app(permission, &id).is_ok()))
 }
 
 /// Application name for an ID from the dashboard's application list, or the

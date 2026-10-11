@@ -515,7 +515,11 @@ would have returned, then the `ErrorBody` JSON. Failures to start the command,
 such as an invalid request, `404 not_found` or `409 service_not_running`, arrive
 this way too, so browsers can read them. `piqueld_core::exec` implements the
 messages. Progenitor's generated WebSocket methods do not build for WASM, so
-`piqueld-client` implements this method by hand for native targets. History
+`piqueld-client` implements this method by hand: natively over a connection
+upgraded by reqwest, and in the dashboard over the browser's `WebSocket`, which
+the session cookie and page `Origin` authenticate. Browsers hide the response to
+a refused handshake, so the dashboard reports one only as a connection closed
+before it opened. History
 records `command_started` and `command_finished` events, never the command.
 
 `GET /api/v1/system/readiness` reports top-level `ready` plus separate `database`,

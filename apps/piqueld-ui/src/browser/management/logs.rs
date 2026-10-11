@@ -104,16 +104,9 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
                             <option value="">"All services"</option>
                             {move || {
                                 context
-                                    .environment_manifest()
-                                    .map_or_else(|| context.manifest(), |manifest| manifest.to_manifest())
-                                    .spec
-                                    .services
+                                    .environment_services()
                                     .into_iter()
-                                    .map(|s| {
-                                        view! {
-                                            <option value={s.name.clone()}>{s.name.clone()}</option>
-                                        }
-                                    })
+                                    .map(|name| view! { <option value={name.clone()}>{name.clone()}</option> })
                                     .collect_view()
                             }}
                         </select>

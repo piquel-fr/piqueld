@@ -1022,6 +1022,85 @@
         color: #7d8a9d;
     }
 
+    /* Exec terminal: a grid of character cells sized to the viewport. */
+    .exec-command {
+        flex: 1;
+        min-width: 16rem;
+    }
+
+    .exec-command input {
+        font-family: var(--font-mono);
+    }
+
+    .exec-status:not(:empty) {
+        margin-bottom: 10px;
+    }
+
+    .exec-terminal {
+        --term-fg: #c3cad4;
+        --term-bg: #0d1117;
+        --term-0: #1f2430;
+        --term-1: #f87171;
+        --term-2: #7fd1a1;
+        --term-3: #e3c17a;
+        --term-4: #7aa2f7;
+        --term-5: #c4a7f5;
+        --term-6: #7dd3fc;
+        --term-7: #c3cad4;
+        --term-8: #5c6675;
+        --term-9: #fca5a5;
+        --term-10: #a7f3c4;
+        --term-11: #f5d68f;
+        --term-12: #a5c0fb;
+        --term-13: #ddd0fb;
+        --term-14: #bae6fd;
+        --term-15: #f4f6f8;
+        max-height: none;
+        padding: .5rem .6rem;
+        overflow: hidden;
+        background: var(--term-bg);
+        color: var(--term-fg);
+        cursor: text;
+    }
+
+    .exec-terminal:focus-within {
+        border-color: var(--accent);
+    }
+
+    .exec-viewport {
+        position: relative;
+        height: min(32rem, 60vh);
+        overflow: hidden;
+    }
+
+    .exec-screen {
+        margin: 0;
+        font: inherit;
+        line-height: 1.3;
+        white-space: pre;
+    }
+
+    .exec-probe {
+        position: absolute;
+        top: 0;
+        left: 0;
+        line-height: 1.3;
+        visibility: hidden;
+    }
+
+    /* Receives keystrokes, pastes and composed text without being seen. */
+    .exec-keyboard {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        border: 0;
+        opacity: 0;
+        resize: none;
+    }
+
     .log-options {
         display: flex;
         flex-wrap: wrap;
