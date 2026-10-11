@@ -136,9 +136,10 @@ impl BollardDocker {
     }
 
     /// Fails while a job of the service's application holds a volume the
-    /// service mounts: a job service mounts it writable, or a task of a
-    /// removed run still may. Exclusive runs are the only jobs with writable
-    /// mounts.
+    /// service mounts: a job service mounts it writable, a task of a removed
+    /// run still may, or a run's container still does. Swarm can report a
+    /// task failed, or reap it, before its container exits. Exclusive runs
+    /// are the only jobs with writable mounts.
     pub(super) async fn check_volumes_free(
         &self,
         service: &piqueld_core::DesiredService,
@@ -154,18 +155,32 @@ impl BollardDocker {
         };
         let mut labels = Self::ownership_filter(&service.labels)?;
         labels.push(JOB_LABEL.to_owned());
-        let jobs = self.labelled_services(labels).await?;
+        let jobs = self.labelled_services(labels.clone()).await?;
+        let containers = Self::map_request(
+            "list job containers",
+            self.docker
+                .list_containers(Some(
+                    ListContainersOptionsBuilder::default()
+                        .filters(&HashMap::from([("label", labels)]))
+                        .build(),
+                ))
+                .await,
+        )?;
         let application = service.labels.get(APPLICATION_LABEL);
         let held = jobs.iter().any(|job| {
             Self::spec_mounts(job).any(|(volume, read_only)| !read_only && mounts(volume))
-        }) || self
-            .volume_tasks(|labels, volume, read_only| {
-                labels.contains_key(JOB_LABEL)
-                    && labels.get(APPLICATION_LABEL) == application
-                    && !read_only
-                    && mounts(volume)
-            })
-            .await?;
+        }) || containers
+            .iter()
+            .flat_map(|container| container.mounts.iter().flatten())
+            .any(|mount| mount.rw == Some(true) && mount.name.as_deref().is_some_and(mounts))
+            || self
+                .volume_tasks(|labels, volume, read_only| {
+                    labels.contains_key(JOB_LABEL)
+                        && labels.get(APPLICATION_LABEL) == application
+                        && !read_only
+                        && mounts(volume)
+                })
+                .await?;
         if held {
             return Err(DockerError::Request(
                 "start a service while a job holds its volume",
