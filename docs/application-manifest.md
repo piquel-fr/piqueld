@@ -973,7 +973,7 @@ history; output past 1 MiB per run is dropped and the run is marked truncated.
 
 Plans list each job as a `run_job` action after the actions that prepare it,
 and change lists show job settings as `jobs.<name>.<field>`, with commands
-redacted like service commands.
+redacted like service commands, and the order jobs run in as `jobs.order`.
 
 Besides applying a manifest, jobs can be edited with `piquelctl app job`, the
 dashboard's Jobs tab, or `PUT /api/v1/applications/{id}/jobs`. Renaming a

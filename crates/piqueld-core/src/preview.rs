@@ -151,10 +151,16 @@ impl ManifestChange {
             fields.insert(path, Value::Object(route));
         }
         entries("volumes", "name", &mut fields);
+        // Jobs run in declared order, so a reordering is a change of its own.
+        let mut order = Vec::new();
         for (path, job) in entries("jobs", "name", &mut fields) {
+            order.push(Value::String(path["jobs.".len()..].to_owned()));
             for (key, value) in job {
                 fields.insert(format!("{path}.{key}"), value);
             }
+        }
+        if !order.is_empty() {
+            fields.insert("jobs.order".into(), Value::Array(order));
         }
         if let Value::Object(variables) = take("variables") {
             for (name, value) in variables {
@@ -431,16 +437,19 @@ image="example:1"
 "#;
         let id = crate::ApplicationId::parse("app-example-01").unwrap();
         let original = crate::parse_toml(input).unwrap().normalize(id.clone());
-        let with_job = |command: &str| {
+        let with_jobs = |jobs: &[(&str, &str)]| {
             let mut manifest = original.to_manifest();
-            manifest.spec.jobs = vec![crate::manifest::Job {
-                name: "migrate".into(),
-                service: "web".into(),
-                command: vec![command.into()],
-                run: crate::manifest::JobRun::BeforeRollout,
-                timeout_seconds: 300,
-                volume_access: JobVolumeAccess::ReadOnly,
-            }];
+            manifest.spec.jobs = jobs
+                .iter()
+                .map(|(name, command)| crate::manifest::Job {
+                    name: (*name).into(),
+                    service: "web".into(),
+                    command: vec![(*command).into()],
+                    run: crate::manifest::JobRun::BeforeRollout,
+                    timeout_seconds: 300,
+                    volume_access: JobVolumeAccess::ReadOnly,
+                })
+                .collect();
             manifest
                 .validate()
                 .unwrap()
@@ -455,24 +464,33 @@ image="example:1"
                 .map(|change| (change.field, change.before.is_some()))
                 .collect::<Vec<_>>()
         };
+        let migrate = [("migrate", "migrate")];
         assert_eq!(
             fields(ManifestChange::between(
                 Some(&original),
-                &with_job("migrate")
+                &with_jobs(&migrate)
             )),
             [
                 ("jobs.migrate.command".to_owned(), false),
                 ("jobs.migrate.run".to_owned(), false),
                 ("jobs.migrate.service".to_owned(), false),
                 ("jobs.migrate.timeout_seconds".to_owned(), false),
+                ("jobs.order".to_owned(), false),
             ]
         );
         assert_eq!(
             fields(ManifestChange::between(
-                Some(&with_job("migrate")),
-                &with_job("upgrade")
+                Some(&with_jobs(&migrate)),
+                &with_jobs(&[("migrate", "upgrade")])
             )),
             [("jobs.migrate.command".to_owned(), true)]
+        );
+        assert_eq!(
+            fields(ManifestChange::between(
+                Some(&with_jobs(&[("migrate", "migrate"), ("seed", "seed")])),
+                &with_jobs(&[("seed", "seed"), ("migrate", "migrate")])
+            )),
+            [("jobs.order".to_owned(), true)]
         );
     }
 }

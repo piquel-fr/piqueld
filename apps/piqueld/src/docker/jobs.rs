@@ -8,7 +8,10 @@ use super::{
 };
 use bollard::{
     container::LogOutput,
-    models::{Service, ServiceSpecModeReplicatedJob, Task, TaskState, TaskStatus},
+    models::{
+        ContainerSummary, Service, ServiceSpecModeReplicatedJob, Task, TaskSpecContainerSpec,
+        TaskState, TaskStatus,
+    },
     query_parameters::{ListContainersOptionsBuilder, LogsOptionsBuilder},
 };
 use piqueld_core::{
@@ -137,9 +140,9 @@ impl BollardDocker {
 
     /// Fails while a job of the service's application holds a volume the
     /// service mounts: a job service mounts it writable, a task of a removed
-    /// run still may, or a run's container still does. Swarm can report a
-    /// task failed, or reap it, before its container exits. Exclusive runs
-    /// are the only jobs with writable mounts.
+    /// run still may, or a run's container still does. A run moves from
+    /// service to task to container, so reading them in that order cannot
+    /// miss one. Exclusive runs are the only jobs with writable mounts.
     pub(super) async fn check_volumes_free(
         &self,
         service: &piqueld_core::DesiredService,
@@ -147,40 +150,36 @@ impl BollardDocker {
         if service.mounts.is_empty() {
             return Ok(());
         }
-        let mounts = |volume: &str| {
-            service
-                .mounts
-                .iter()
-                .any(|mount| mount.volume_name.as_str() == volume)
+        let writes = |(volume, read_only): (&str, bool)| {
+            !read_only
+                && service
+                    .mounts
+                    .iter()
+                    .any(|mount| mount.volume_name.as_str() == volume)
         };
         let mut labels = Self::ownership_filter(&service.labels)?;
         labels.push(JOB_LABEL.to_owned());
-        let jobs = self.labelled_services(labels.clone()).await?;
-        let containers = Self::map_request(
-            "list job containers",
-            self.docker
-                .list_containers(Some(
-                    ListContainersOptionsBuilder::default()
-                        .filters(&HashMap::from([("label", labels)]))
-                        .build(),
-                ))
-                .await,
-        )?;
-        let application = service.labels.get(APPLICATION_LABEL);
-        let held = jobs.iter().any(|job| {
-            Self::spec_mounts(job).any(|(volume, read_only)| !read_only && mounts(volume))
-        }) || containers
+        let held = self
+            .labelled_services(labels.clone())
+            .await?
             .iter()
-            .flat_map(|container| container.mounts.iter().flatten())
-            .any(|mount| mount.rw == Some(true) && mount.name.as_deref().is_some_and(mounts))
+            .any(|job| Self::spec_mounts(job).any(writes))
+            || self.live_tasks().await?.iter().any(|task| {
+                Self::has_labels(task.labels.as_ref(), &labels)
+                    && Self::container_mounts(task).any(writes)
+            })
             || self
-                .volume_tasks(|labels, volume, read_only| {
-                    labels.contains_key(JOB_LABEL)
-                        && labels.get(APPLICATION_LABEL) == application
-                        && !read_only
-                        && mounts(volume)
-                })
-                .await?;
+                .labelled_containers(labels)
+                .await?
+                .iter()
+                .flat_map(|container| container.mounts.iter().flatten())
+                .any(|mount| {
+                    mount.rw == Some(true)
+                        && mount
+                            .name
+                            .as_deref()
+                            .is_some_and(|volume| writes((volume, false)))
+                });
         if held {
             return Err(DockerError::Request(
                 "start a service while a job holds its volume",
@@ -189,50 +188,44 @@ impl BollardDocker {
         Ok(())
     }
 
-    /// Whether a task that has not stopped mounts a volume `selects` accepts,
-    /// given its container labels, the volume name, and whether the mount is
-    /// read-only. Tasks of removed services keep their specification until
-    /// Swarm stops them, and a task may not have created its container yet,
-    /// so tasks rather than containers tell whether a volume is in use.
-    async fn volume_tasks(
-        &self,
-        selects: impl Fn(&HashMap<String, String>, &str, bool) -> bool,
-    ) -> Result<bool, DockerError> {
+    /// Container specifications of tasks that have not stopped. Tasks of
+    /// removed services keep their specification until Swarm stops them, and
+    /// a task may not have created its container yet, so only tasks tell
+    /// whether a container may still start. Swarm can also report a task
+    /// stopped, or reap it, before its container exits, so callers read
+    /// running containers after tasks.
+    async fn live_tasks(&self) -> Result<Vec<TaskSpecContainerSpec>, DockerError> {
         let tasks = Self::map_request(
             "list tasks",
             self.docker
                 .list_tasks(None::<bollard::query_parameters::ListTasksOptions>)
                 .await,
         )?;
-        let no_labels = HashMap::new();
-        Ok(tasks.iter().any(|task| {
-            let stopped = matches!(
-                task.status.as_ref().and_then(|status| status.state),
-                Some(
-                    TaskState::COMPLETE
-                        | TaskState::SHUTDOWN
-                        | TaskState::FAILED
-                        | TaskState::REJECTED
-                        | TaskState::ORPHANED
+        Ok(tasks
+            .into_iter()
+            .filter(|task| {
+                !matches!(
+                    task.status.as_ref().and_then(|status| status.state),
+                    Some(
+                        TaskState::COMPLETE
+                            | TaskState::SHUTDOWN
+                            | TaskState::FAILED
+                            | TaskState::REJECTED
+                            | TaskState::ORPHANED
+                    )
                 )
-            );
-            let container = task
-                .spec
-                .as_ref()
-                .and_then(|spec| spec.container_spec.as_ref());
-            let labels = container
-                .and_then(|container| container.labels.as_ref())
-                .unwrap_or(&no_labels);
-            !stopped
-                && container
-                    .and_then(|container| container.mounts.as_ref())
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|mount| {
-                        Some((mount.source.as_deref()?, mount.read_only == Some(true)))
-                    })
-                    .any(|(volume, read_only)| selects(labels, volume, read_only))
-        }))
+            })
+            .filter_map(|task| task.spec?.container_spec)
+            .collect())
+    }
+
+    /// Volume names and read-only flags of a container specification.
+    fn container_mounts(container: &TaskSpecContainerSpec) -> impl Iterator<Item = (&str, bool)> {
+        container
+            .mounts
+            .iter()
+            .flatten()
+            .filter_map(|mount| Some((mount.source.as_deref()?, mount.read_only == Some(true))))
     }
 
     /// Volume names and read-only flags of a service's specification.
@@ -242,8 +235,19 @@ impl BollardDocker {
             .iter()
             .flat_map(|spec| spec.task_template.iter())
             .flat_map(|task| task.container_spec.iter())
-            .flat_map(|container| container.mounts.iter().flatten())
-            .filter_map(|mount| Some((mount.source.as_deref()?, mount.read_only == Some(true))))
+            .flat_map(Self::container_mounts)
+    }
+
+    /// Whether `labels` match every `key` or `key=value` filter, as Docker's
+    /// `label` filter does.
+    fn has_labels(labels: Option<&HashMap<String, String>>, filters: &[String]) -> bool {
+        filters.iter().all(|filter| {
+            let value = |key: &str| labels.and_then(|labels| labels.get(key));
+            match filter.split_once('=') {
+                Some((key, expected)) => value(key).is_some_and(|value| value == expected),
+                None => value(filter).is_some(),
+            }
+        })
     }
 
     /// Services carrying every label in `labels`.
@@ -253,6 +257,23 @@ impl BollardDocker {
             self.docker
                 .list_services(Some(
                     ListServicesOptionsBuilder::default()
+                        .filters(&HashMap::from([("label", labels)]))
+                        .build(),
+                ))
+                .await,
+        )
+    }
+
+    /// Running containers carrying every label in `labels`.
+    async fn labelled_containers(
+        &self,
+        labels: Vec<String>,
+    ) -> Result<Vec<ContainerSummary>, DockerError> {
+        Self::map_request(
+            "list job containers",
+            self.docker
+                .list_containers(Some(
+                    ListContainersOptionsBuilder::default()
                         .filters(&HashMap::from([("label", labels)]))
                         .build(),
                 ))
@@ -282,14 +303,13 @@ impl BollardDocker {
             let options = ListContainersOptionsBuilder::default()
                 .filters(&HashMap::from([("volume", vec![volume.to_string()])]))
                 .build();
-            while self
-                .volume_tasks(|_, mounted, _| mounted == volume.as_str())
-                .await?
-                || !Self::map_request(
-                    "list volume containers",
-                    self.docker.list_containers(Some(options.clone())).await,
-                )?
-                .is_empty()
+            while self.live_tasks().await?.iter().any(|task| {
+                Self::container_mounts(task).any(|(mounted, _)| mounted == volume.as_str())
+            }) || !Self::map_request(
+                "list volume containers",
+                self.docker.list_containers(Some(options.clone())).await,
+            )?
+            .is_empty()
             {
                 tokio::time::sleep(JOB_STOP_POLL_INTERVAL).await;
             }
@@ -297,10 +317,10 @@ impl BollardDocker {
         Ok(())
     }
 
-    /// Waits until no selected container of the application's jobs, or of
-    /// one job, is running. Swarm stops a removed service's containers
-    /// asynchronously, after their grace period; the caller's request timeout
-    /// bounds the wait.
+    /// Waits until no selected run of the application's jobs, or of one job,
+    /// can still run: no task of it has not stopped and no container of it is
+    /// running. Swarm stops a removed service's tasks asynchronously, after
+    /// their grace period; the caller's request timeout bounds the wait.
     async fn wait_jobs_stopped(
         &self,
         ownership: &BTreeMap<String, String>,
@@ -309,27 +329,28 @@ impl BollardDocker {
     ) -> Result<(), DockerError> {
         let mut labels = Self::ownership_filter(ownership)?;
         labels.push(job.map_or_else(|| JOB_LABEL.to_owned(), |job| format!("{JOB_LABEL}={job}")));
-        let options = ListContainersOptionsBuilder::default()
-            .filters(&HashMap::from([("label", labels)]))
-            .build();
-        loop {
-            let containers = Self::map_request(
-                "list job containers",
-                self.docker.list_containers(Some(options.clone())).await,
-            )?;
-            if !containers.into_iter().any(|container| {
-                runs.selects(
-                    container
-                        .labels
-                        .as_ref()
-                        .and_then(|labels| labels.get(JOB_OPERATION_LABEL))
+        let selected = |run: Option<&HashMap<String, String>>| {
+            Self::has_labels(run, &labels)
+                && runs.selects(
+                    run.and_then(|run| run.get(JOB_OPERATION_LABEL))
                         .map(String::as_str),
                 )
-            }) {
-                return Ok(());
-            }
+        };
+        // Tasks before containers: see `live_tasks`.
+        while self
+            .live_tasks()
+            .await?
+            .iter()
+            .any(|task| selected(task.labels.as_ref()))
+            || self
+                .labelled_containers(labels.clone())
+                .await?
+                .iter()
+                .any(|container| selected(container.labels.as_ref()))
+        {
             tokio::time::sleep(JOB_STOP_POLL_INTERVAL).await;
         }
+        Ok(())
     }
 
     /// Returns the deadline and tasks of the operation's run, or `None` when it
@@ -545,6 +566,22 @@ mod tests {
         let network = &task.networks.unwrap()[0];
         assert_eq!(network.target.as_deref(), Some("app-notes"));
         assert_eq!(network.aliases, None);
+    }
+
+    #[test]
+    fn label_filters_match_like_docker() {
+        let labels = HashMap::from([
+            (JOB_LABEL.to_owned(), "migrate".to_owned()),
+            (APPLICATION_LABEL.to_owned(), "notes".to_owned()),
+        ]);
+        let matches = |filters: &[&str]| {
+            let filters: Vec<String> = filters.iter().map(|&filter| filter.into()).collect();
+            BollardDocker::has_labels(Some(&labels), &filters)
+        };
+        assert!(matches(&[JOB_LABEL, &format!("{APPLICATION_LABEL}=notes")]));
+        assert!(!matches(&[&format!("{APPLICATION_LABEL}=other")]));
+        assert!(!matches(&[JOB_OPERATION_LABEL]));
+        assert!(!BollardDocker::has_labels(None, &[JOB_LABEL.into()]));
     }
 
     #[test]
