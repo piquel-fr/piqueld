@@ -152,7 +152,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-directories: target-ui
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true # TEMP: measure warm runs
       - run: just lint
       - run: just test
       - name: Preserve test report
@@ -181,7 +181,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-directories: ${{ runner.temp }}/piqueld-tools
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true # TEMP: measure warm runs
       - run: bash scripts/install-wasm-tools.sh
       - run: just ui-check
       - run: just check-wasm
@@ -207,7 +207,7 @@ jobs:
           tool: just,cargo-nextest
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true # TEMP: measure warm runs
       # Compile everything `just docker-test` runs before the isolated
       # Docker-in-Docker daemon starts, so its inner cargo invocations are
       # instant: the xtask runner and both test binaries it selects.
@@ -240,7 +240,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-directories: target-ui
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true # TEMP: measure warm runs
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
@@ -275,7 +275,7 @@ jobs:
           tool: just,cargo-nextest
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true # TEMP: measure warm runs
       - run: just validate-cli
 
   # Builds the combined package. Crane's dependency builds are rooted with
@@ -299,7 +299,7 @@ jobs:
         with:
           primary-key: nix-x86_64-linux-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock') }}
           restore-prefixes-first-match: nix-x86_64-linux-
-          save: ${{ github.ref == 'refs/heads/main' }}
+          save: true # TEMP: measure warm runs
           gc-max-store-size-linux: 4G
           purge: true
           purge-prefixes: nix-x86_64-linux-
