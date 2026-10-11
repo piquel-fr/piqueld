@@ -697,8 +697,24 @@ impl SwarmScenario {
 
     /// The `migrate` job derived from the service, running `script`.
     fn job(&self, operation: &str, script: &str) -> piqueld_core::DesiredJobRun {
+        self.job_with(
+            operation,
+            script,
+            piqueld_core::manifest::JobVolumeAccess::ReadOnly,
+        )
+    }
+
+    /// The `migrate` job with `access` to the scenario's volume, mounted
+    /// writable at `/data`.
+    fn job_with(
+        &self,
+        operation: &str,
+        script: &str,
+        volume_access: piqueld_core::manifest::JobVolumeAccess,
+    ) -> piqueld_core::DesiredJobRun {
         let name = piqueld_core::JobName::parse("migrate").unwrap();
         let mut container = self.service.clone();
+        container.mounts = vec![self.data_mount()];
         container.name = piqueld_core::DockerServiceName::for_job(&self.app, &name);
         container.command = vec!["/bin/sh".into(), "-c".into(), script.into()];
         container.arguments.clear();
@@ -711,7 +727,7 @@ impl SwarmScenario {
             logical_name: name,
             run: piqueld_core::manifest::JobRun::BeforeRollout,
             timeout_seconds: 60,
-            volume_access: piqueld_core::manifest::JobVolumeAccess::ReadOnly,
+            volume_access,
             container,
         }
         .for_operation(operation)
@@ -800,6 +816,78 @@ impl SwarmScenario {
             docker.job_status(&second).await.unwrap(),
             JobStatus::Missing
         );
+    }
+
+    /// The scenario's volume, mounted writable at `/data`.
+    fn data_mount(&self) -> piqueld_core::DesiredMount {
+        piqueld_core::DesiredMount {
+            volume_name: self.volume.name.clone(),
+            target: "/data".into(),
+            read_only: false,
+        }
+    }
+
+    /// An exclusive run and a service never share a volume: the run does not
+    /// start while a service mounts it, starts once the removed service's
+    /// task stopped, and blocks the service until the run is removed. `sh` as
+    /// PID 1 ignores SIGTERM, so removed tasks stop only after the grace period.
+    async fn exclusive_jobs_hold_their_volume(&self) {
+        let docker = &self.engine.docker;
+        let mut writer = self.service.clone();
+        writer.logical_name = piqueld_core::ServiceName::parse("writer").unwrap();
+        writer.name = piqueld_core::DockerServiceName::parse(docker_resource_name(
+            &self.app,
+            ResourceKind::Service,
+            Some("writer"),
+        ))
+        .unwrap();
+        writer
+            .labels
+            .insert("io.piqueld.service".into(), "writer".into());
+        writer.command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "while true; do sleep 1; done".into(),
+        ];
+        writer.arguments.clear();
+        writer.healthcheck = None;
+        writer.secrets.clear();
+        writer.mounts = vec![self.data_mount()];
+        self.engine.ensure_service_eventually(&writer).await;
+
+        let job = self.job_with(
+            "operation-exclusive",
+            "sleep 300",
+            piqueld_core::manifest::JobVolumeAccess::Exclusive,
+        );
+        assert!(matches!(
+            docker.start_job(&job).await,
+            Err(DockerError::Request(_))
+        ));
+        docker
+            .remove_service(writer.name.as_str(), &self.labels)
+            .await
+            .unwrap();
+        docker.start_job(&job).await.unwrap();
+        assert!(matches!(
+            docker.ensure_service(&writer).await,
+            Err(DockerError::Request(_))
+        ));
+        docker
+            .remove_jobs(&self.labels, JobRuns::All)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_mins(1), async {
+            while docker.ensure_service(&writer).await.is_err() {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .expect("the service starts once the run stopped");
+        docker
+            .remove_service(writer.name.as_str(), &self.labels)
+            .await
+            .unwrap();
     }
 
     /// Job removal waits for a run's container to stop even after an earlier
@@ -1007,6 +1095,7 @@ async fn swarm_init_create_replica_drift_restart_jobs_delete_and_volume_retentio
     scenario.assert_idempotence_and_repair_drift().await;
     scenario.run_jobs().await;
     scenario.remove_jobs_waits_for_stopping_containers().await;
+    scenario.exclusive_jobs_hold_their_volume().await;
     scenario.delete_retaining_volume(&http_service).await;
 }
 

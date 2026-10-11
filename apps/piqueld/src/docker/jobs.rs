@@ -136,9 +136,9 @@ impl BollardDocker {
     }
 
     /// Fails while a job of the service's application holds a volume the
-    /// service mounts: a job service mounts it writable, or a container of a
-    /// removed run still does while it stops. Exclusive runs are the only jobs
-    /// with writable mounts.
+    /// service mounts: a job service mounts it writable, or a task of a
+    /// removed run still may. Exclusive runs are the only jobs with writable
+    /// mounts.
     pub(super) async fn check_volumes_free(
         &self,
         service: &piqueld_core::DesiredService,
@@ -154,29 +154,70 @@ impl BollardDocker {
         };
         let mut labels = Self::ownership_filter(&service.labels)?;
         labels.push(JOB_LABEL.to_owned());
-        let services = self.labelled_services(labels.clone()).await?;
-        let containers = Self::map_request(
-            "list job containers",
-            self.docker
-                .list_containers(Some(
-                    ListContainersOptionsBuilder::default()
-                        .filters(&HashMap::from([("label", labels)]))
-                        .build(),
-                ))
-                .await,
-        )?;
-        let held = services.iter().any(|job| {
+        let jobs = self.labelled_services(labels).await?;
+        let application = service.labels.get(APPLICATION_LABEL);
+        let held = jobs.iter().any(|job| {
             Self::spec_mounts(job).any(|(volume, read_only)| !read_only && mounts(volume))
-        }) || containers
-            .iter()
-            .flat_map(|container| container.mounts.iter().flatten())
-            .any(|mount| mount.rw == Some(true) && mount.name.as_deref().is_some_and(mounts));
+        }) || self
+            .volume_tasks(|labels, volume, read_only| {
+                labels.contains_key(JOB_LABEL)
+                    && labels.get(APPLICATION_LABEL) == application
+                    && !read_only
+                    && mounts(volume)
+            })
+            .await?;
         if held {
             return Err(DockerError::Request(
                 "start a service while a job holds its volume",
             ));
         }
         Ok(())
+    }
+
+    /// Whether a task that has not stopped mounts a volume `selects` accepts,
+    /// given its container labels, the volume name, and whether the mount is
+    /// read-only. Tasks of removed services keep their specification until
+    /// Swarm stops them, and a task may not have created its container yet,
+    /// so tasks rather than containers tell whether a volume is in use.
+    async fn volume_tasks(
+        &self,
+        selects: impl Fn(&HashMap<String, String>, &str, bool) -> bool,
+    ) -> Result<bool, DockerError> {
+        let tasks = Self::map_request(
+            "list tasks",
+            self.docker
+                .list_tasks(None::<bollard::query_parameters::ListTasksOptions>)
+                .await,
+        )?;
+        let no_labels = HashMap::new();
+        Ok(tasks.iter().any(|task| {
+            let stopped = matches!(
+                task.status.as_ref().and_then(|status| status.state),
+                Some(
+                    TaskState::COMPLETE
+                        | TaskState::SHUTDOWN
+                        | TaskState::FAILED
+                        | TaskState::REJECTED
+                        | TaskState::ORPHANED
+                )
+            );
+            let container = task
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.container_spec.as_ref());
+            let labels = container
+                .and_then(|container| container.labels.as_ref())
+                .unwrap_or(&no_labels);
+            !stopped
+                && container
+                    .and_then(|container| container.mounts.as_ref())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|mount| {
+                        Some((mount.source.as_deref()?, mount.read_only == Some(true)))
+                    })
+                    .any(|(volume, read_only)| selects(labels, volume, read_only))
+        }))
     }
 
     /// Volume names and read-only flags of a service's specification.
@@ -217,19 +258,23 @@ impl BollardDocker {
             .collect()
     }
 
-    /// Waits until no running container mounts a volume `job` holds
-    /// exclusively. Swarm stops the containers of removed services
-    /// asynchronously; the caller's request timeout bounds the wait.
+    /// Waits until no task that has not stopped, and no running container,
+    /// mounts a volume `job` holds exclusively. Swarm stops the tasks of
+    /// removed services asynchronously; the caller's request timeout bounds
+    /// the wait.
     async fn wait_volumes_released(&self, job: &DesiredJobRun) -> Result<(), DockerError> {
         for volume in job.exclusive_volumes() {
             let options = ListContainersOptionsBuilder::default()
                 .filters(&HashMap::from([("volume", vec![volume.to_string()])]))
                 .build();
-            while !Self::map_request(
-                "list volume containers",
-                self.docker.list_containers(Some(options.clone())).await,
-            )?
-            .is_empty()
+            while self
+                .volume_tasks(|_, mounted, _| mounted == volume.as_str())
+                .await?
+                || !Self::map_request(
+                    "list volume containers",
+                    self.docker.list_containers(Some(options.clone())).await,
+                )?
+                .is_empty()
             {
                 tokio::time::sleep(JOB_STOP_POLL_INTERVAL).await;
             }
