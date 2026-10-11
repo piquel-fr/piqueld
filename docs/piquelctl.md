@@ -227,11 +227,14 @@ the CLI uploads the complete bundle once). Bundles over the daemon's
 and bundles Git cannot verify with `snapshot_invalid`. The daemon reads the
 manifest from the snapshot at the application's manifest path and builds
 `repository = "self"` services from it, like any preview deployment, with the
-same build priority and limits. Submodules and nested repositories are refused,
-and Git LFS files are uploaded as their pointers. A large first upload may need
-a longer `--timeout`. Uploading needs `apps:deploy`.
+same build priority and limits. Submodules, nested repositories, SHA-256
+repositories, and files staging would pass through a configured Git filter
+driver, such as LFS's, are refused, since those filters write into the
+repository. A large first upload may need a longer `--timeout`; the daemon
+gives up on a body that stalls for 30 seconds, or after 10 minutes
+(`snapshot_timed_out`). Uploading needs `apps:deploy`.
 
-A preview whose latest deployment is a local snapshot reports its branch as
+A preview that runs or is deploying a local snapshot reports its branch as
 `local`, with the branch's head if it was pushed: `preview prune` never deletes
 it, so delete it with `preview delete`. Deploy on push leaves the snapshot
 running until the branch's head moves, or, for a branch never pushed, until it

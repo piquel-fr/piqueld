@@ -78,14 +78,17 @@ pub(super) struct GitBundle(std::marker::PhantomData<()>);
 /// of `branch` and `slot` is created first if needed, as `createPreview`
 /// does, and deploys the snapshot's manifest, building `"self"` sources from
 /// it. Fails with 413 `snapshot_too_large`, 422 `snapshot_invalid`, or 422
-/// `snapshot_base_unavailable`, whose `details.base` names the base; upload
-/// a complete bundle then. Needs no application revision.
+/// `snapshot_base_unavailable`, whose `details.prerequisites` names the
+/// commits it needs; upload a complete bundle then. A body that stalls for
+/// 30 seconds, or an upload not received within 10 minutes, fails with 408
+/// `snapshot_timed_out`. Needs no application revision.
 #[utoipa::path(post,path="/api/v1/applications/{id}/previews/local",operation_id="deployLocalPreview",
     params(("id"=String,Path),LocalPreviewQuery,("Idempotency-Key"=Option<String>,Header)),
     request_body(content=inline(GitBundle),content_type="application/octet-stream",description="Git bundle of the snapshot commit"),
     responses((status=202,description="Snapshot received and its deployment accepted",body=Envelope<CreatedPreview>),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
-    (status=409,response=inline(ApiErrorResponse)),(status=413,response=inline(ApiErrorResponse)),
+    (status=408,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),
+    (status=413,response=inline(ApiErrorResponse)),
     (status=415,response=inline(ApiErrorResponse)),(status=422,response=inline(ApiErrorResponse)),
     (status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn deploy_local(

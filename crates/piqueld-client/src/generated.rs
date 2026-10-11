@@ -1201,8 +1201,10 @@ impl Client {
     of `branch` and `slot` is created first if needed, as `createPreview`
     does, and deploys the snapshot's manifest, building `"self"` sources from
     it. Fails with 413 `snapshot_too_large`, 422 `snapshot_invalid`, or 422
-    `snapshot_base_unavailable`, whose `details.base` names the base; upload
-    a complete bundle then. Needs no application revision.
+    `snapshot_base_unavailable`, whose `details.prerequisites` names the
+    commits it needs; upload a complete bundle then. A body that stalls for
+    30 seconds, or an upload not received within 10 minutes, fails with 408
+    `snapshot_timed_out`. Needs no application revision.
 
     Sends a `POST` request to `/api/v1/applications/{id}/previews/local`
 
@@ -1270,6 +1272,9 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            408u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             409u16 => Err(Error::ErrorResponse(

@@ -1264,6 +1264,11 @@ impl From<crate::snapshot::SnapshotError> for ApiError {
                 format!("{message}; upload a complete bundle instead"),
             )
             .details(json!({ "prerequisites": prerequisites })),
+            SnapshotError::TimedOut => Self::new(
+                StatusCode::REQUEST_TIMEOUT,
+                piqueld_core::codes::SNAPSHOT_TIMED_OUT,
+                message,
+            ),
             SnapshotError::Internal(error) => {
                 tracing::error!(?error, "snapshot upload failed");
                 Self::new(

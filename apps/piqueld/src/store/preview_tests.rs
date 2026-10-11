@@ -467,24 +467,35 @@ async fn local_snapshots_create_previews_within_limits_and_record_their_provenan
     ));
 }
 
-/// A preview whose latest deployment is a local snapshot may never have been
-/// pushed, so pruning keeps it until its branch head is deployed again; and,
-/// like every preview, it can't be a promotion source.
+/// A preview running or deploying a local snapshot may never have been
+/// pushed, so pruning keeps it, even once a redeployment of its branch head
+/// failed, until one replaced the snapshot; and, like every preview, it
+/// can't be a promotion source.
 #[tokio::test]
 async fn local_snapshot_previews_are_not_pruned_nor_promotion_sources() {
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path().join("db")).await.unwrap();
     let application = save(&store, false).await;
     let notes = "https://example.com/notes.git";
-    let preview = local(
+    let created = local(
         &store,
         &application,
         ("feat/x", None),
         (notes, &"1".repeat(40)),
     )
     .await
-    .unwrap()
-    .preview;
+    .unwrap();
+    let preview = created.preview;
+    // As preparing a deployment does.
+    let prepared = async |operation: &str| {
+        sqlx::query(
+            "UPDATE operations SET promoted=1,state='succeeded',finished_at_ms=1 WHERE id=?1",
+        )
+        .bind(operation)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    };
     let accept = async |mutation| store.accept(Daemon, mutation, None, true, None).await;
     let prune = || {
         Mutation::Preview(PreviewMutation::Prune {
@@ -510,11 +521,27 @@ async fn local_snapshot_previews_are_not_pruned_nor_promotion_sources() {
         ))
     ));
 
-    accept(Mutation::Preview(PreviewMutation::Deploy {
-        id: preview.id.clone(),
-    }))
-    .await
-    .unwrap();
+    prepared(&created.operation.operation_id).await;
+    let redeploy = || {
+        Mutation::Preview(PreviewMutation::Deploy {
+            id: preview.id.clone(),
+        })
+    };
+    // Redeploying the branch head failed: the snapshot still runs.
+    accept(redeploy()).await.unwrap();
+    sqlx::query("UPDATE operations SET state='failed',finished_at_ms=1 WHERE environment_id=?1 AND promoted=0")
+        .bind(preview.id.as_str())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        accept(prune()).await,
+        Err(StoreError::IdentityConflict)
+    ));
+    let MutationResponse::Operation(replaced) = accept(redeploy()).await.unwrap().0 else {
+        panic!("operation")
+    };
+    prepared(&replaced.operation_id).await;
     accept(prune()).await.unwrap();
     assert!(store.get(&preview.id).await.unwrap().delete_intent());
 }

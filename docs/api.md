@@ -123,9 +123,9 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/environments/{id}/rename` | Rename an environment without redeployment: `{ "name": "...", "expected_generation": 3 }` |
 | DELETE | `/api/v1/environments/{id}` | Request deletion of one environment; no body |
 | POST | `/api/v1/environments/{id}/reconcile` | Retry the latest operation with its saved inputs once it has ended or failed; an operation still in progress is returned unchanged |
-| GET | `/api/v1/applications/{id}/previews` | Previews with status, latest operation, hostnames, the `origin` of their latest deployment and branch state (`exists`, `moved`, `gone`, `local` or `unknown`), from one `git ls-remote` |
+| GET | `/api/v1/applications/{id}/previews` | Previews with status, latest operation, hostnames, the `origin` of what they run and branch state (`exists`, `moved`, `gone`, `local` or `unknown`), from one `git ls-remote` |
 | POST | `/api/v1/applications/{id}/previews` | Create and deploy a preview: `{ "branch": "feat/login", "slot": "agent-2" }`; 202 with `CreatedPreview` (`preview`, `operation`, `created: true`), or 200 with the existing preview of that branch and slot and its latest operation (`created: false`), never redeploying it. 409 `preview_requires_repository` without a manifest repository, `preview_limit_reached` over a `[previews]` limit |
-| POST | `/api/v1/applications/{id}/previews/local?branch=…&slot=…` | Deploy a [local snapshot](#local-snapshots): the body is a Git bundle (`application/octet-stream`); 202 with `CreatedPreview`. 413 `snapshot_too_large`, 422 `snapshot_invalid` or `snapshot_base_unavailable` |
+| POST | `/api/v1/applications/{id}/previews/local?branch=…&slot=…` | Deploy a [local snapshot](#local-snapshots): the body is a Git bundle (`application/octet-stream`); 202 with `CreatedPreview`. 408 `snapshot_timed_out`, 413 `snapshot_too_large`, 422 `snapshot_invalid` or `snapshot_base_unavailable` |
 | POST | `/api/v1/applications/{id}/previews/prune` | Delete each listed preview whose branch is confirmed gone: `{ "previews": [preview IDs] }`; returns the `DeletedPreview`s and keeps the rest. 502 `repository_unavailable`, deleting nothing, when the repository cannot be read |
 | GET | `/api/v1/previews/{id}` | One `PreviewView` |
 | POST | `/api/v1/previews/{id}/deploy` | Deploy the head of the preview's branch, replacing a local snapshot it runs; 202 with `AcceptedOperation` |
@@ -152,7 +152,10 @@ of that base. `422 snapshot_base_unavailable` (with `details.prerequisites`)
 means it could not fetch them, and a complete bundle should be sent instead. The body is
 streamed to the daemon's data directory and refused with `413
 snapshot_too_large` (with `details.limit`) once it exceeds `[previews]
-max_upload_bytes`, which is separate from the 2 MiB limit of other bodies. The
+max_upload_bytes`, which is separate from the 2 MiB limit of other bodies.
+The daemon receives two uploads at a time; a body that sends nothing for 30
+seconds, or an upload not received within 10 minutes, fails with `408
+snapshot_timed_out`. The
 bundle is received into a new repository of its own: a malformed header, a
 bundle `git bundle verify` rejects, an object that fails Git's checks,
 prerequisites that are not all ancestors of one of them, the base, or a
@@ -165,10 +168,12 @@ and builds `repository = "self"` services from the snapshot, through the
 preview's usual path, `[previews]` bounds and build priority included. It
 records the branch's head, or its absence, for deploy on push, so a snapshot
 stays until its branch moves or is first pushed. `PreviewView.origin` is the
-latest deployment's origin, and its `branch` is `{ "state": "local", "head":
-… }` (`head` absent while the branch was never pushed) while that is a local
-snapshot; pruning keeps such previews. Snapshots no preview's latest deployment
-uses are removed on the next full reconciliation scan.
+origin of what the preview runs (of its latest deployment before one was
+prepared), and its `branch` is `{ "state": "local", "head": … }` (`head`
+absent while the branch was never pushed) while it runs or deploys a local
+snapshot, even after a redeployment of its branch failed; pruning keeps such
+previews. Snapshots no preview's latest deployment uses are removed on the next
+full reconciliation scan.
 
 ### Field endpoints
 

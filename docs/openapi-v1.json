@@ -1078,7 +1078,7 @@
             "type": "object"
           },
           {
-            "description": "The preview's latest deployment is a snapshot of a local worktree\n(`preview deploy --local`), so the branch may never have been\npushed. Never counts as gone.",
+            "description": "The preview runs or is deploying a snapshot of a local worktree\n(`preview deploy --local`), so the branch may never have been\npushed. Never counts as gone.",
             "properties": {
               "head": {
                 "description": "Commit at the branch head; absent while the repository has no\nsuch branch.",
@@ -5068,7 +5068,7 @@
               },
               "origin": {
                 "$ref": "#/components/schemas/DeploymentOrigin",
-                "description": "Where its latest deployment came from: built from its branch, or a\nlocal snapshot; `build` before its first."
+                "description": "Where what it runs came from, or, until a deployment was prepared,\nits latest deployment: built from its branch, or a local snapshot;\n`build` before its first. A failed redeployment of its branch keeps\na local snapshot it runs."
               },
               "preview": {
                 "$ref": "#/components/schemas/EnvironmentView",
@@ -5463,7 +5463,7 @@
                 },
                 "origin": {
                   "$ref": "#/components/schemas/DeploymentOrigin",
-                  "description": "Where its latest deployment came from: built from its branch, or a\nlocal snapshot; `build` before its first."
+                  "description": "Where what it runs came from, or, until a deployment was prepared,\nits latest deployment: built from its branch, or a local snapshot;\n`build` before its first. A failed redeployment of its branch keeps\na local snapshot it runs."
                 },
                 "preview": {
                   "$ref": "#/components/schemas/EnvironmentView",
@@ -8152,7 +8152,7 @@
           },
           "origin": {
             "$ref": "#/components/schemas/DeploymentOrigin",
-            "description": "Where its latest deployment came from: built from its branch, or a\nlocal snapshot; `build` before its first."
+            "description": "Where what it runs came from, or, until a deployment was prepared,\nits latest deployment: built from its branch, or a local snapshot;\n`build` before its first. A failed redeployment of its branch keeps\na local snapshot it runs."
           },
           "preview": {
             "$ref": "#/components/schemas/EnvironmentView",
@@ -13044,7 +13044,7 @@
     },
     "/api/v1/applications/{id}/previews/local": {
       "post": {
-        "description": "The body is a Git bundle of one snapshot commit, at most `[previews]\nmax_upload_bytes`: either thin, needing one base commit the\napplication's repository has, which the daemon fetches, or complete.\nIt is verified and unbundled into a repository of its own. The preview\nof `branch` and `slot` is created first if needed, as `createPreview`\ndoes, and deploys the snapshot's manifest, building `\"self\"` sources from\nit. Fails with 413 `snapshot_too_large`, 422 `snapshot_invalid`, or 422\n`snapshot_base_unavailable`, whose `details.base` names the base; upload\na complete bundle then. Needs no application revision.",
+        "description": "The body is a Git bundle of one snapshot commit, at most `[previews]\nmax_upload_bytes`: either thin, needing one base commit the\napplication's repository has, which the daemon fetches, or complete.\nIt is verified and unbundled into a repository of its own. The preview\nof `branch` and `slot` is created first if needed, as `createPreview`\ndoes, and deploys the snapshot's manifest, building `\"self\"` sources from\nit. Fails with 413 `snapshot_too_large`, 422 `snapshot_invalid`, or 422\n`snapshot_base_unavailable`, whose `details.prerequisites` names the\ncommits it needs; upload a complete bundle then. A body that stalls for\n30 seconds, or an upload not received within 10 minutes, fails with 408\n`snapshot_timed_out`. Needs no application revision.",
         "operationId": "deployLocalPreview",
         "parameters": [
           {
@@ -13127,6 +13127,16 @@
             "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "408": {
             "content": {
               "application/json": {
                 "schema": {

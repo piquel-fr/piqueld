@@ -764,7 +764,8 @@ commit of the repository it was uploaded against. A preview running a local
 snapshot reports its branch as `local` and is never pruned, even when the
 branch was never pushed. Deploying on push leaves it running until the branch
 moves, or is first pushed. Redeploying the preview deploys the branch head
-instead. Submodules and Git LFS are not supported.
+instead. Submodules, Git LFS and other filters, and SHA-256 repositories are
+not supported.
 
 ## Startup dependencies
 

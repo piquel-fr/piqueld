@@ -4,7 +4,7 @@ use super::{Actor, Operation, OperationKind, Store, StoreError, StoredApplicatio
 use crate::api::{Mutation, MutationResponse, PreviewMutation, PromotionMutation};
 use piqueld_core::access::{AppPermission, Grants, Target};
 use piqueld_core::api::{
-    AcceptedOperation, CreatedPreview, DeletedApplication, DeploymentOrigin, RenamedApplication,
+    AcceptedOperation, CreatedPreview, DeletedApplication, RenamedApplication,
 };
 use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName};
 use sha2::{Digest, Sha256};
@@ -594,15 +594,12 @@ impl Store {
             PreviewMutation::Prune { id, repository } => {
                 let preview = Self::preview_on(tx, &id).await?;
                 // A branch gone from one repository says nothing about
-                // another, nor about a local snapshot deployed since.
+                // another, nor about a local snapshot it runs or deploys.
                 if preview
                     .tracking()?
                     .repository()
                     .is_none_or(|current| current.repository.url != repository)
-                    || matches!(
-                        Self::latest_origin_on(tx, &id).await?,
-                        DeploymentOrigin::Local(_)
-                    )
+                    || Self::preview_origins_on(tx, &id).await?.local()
                 {
                     return Err(StoreError::IdentityConflict);
                 }

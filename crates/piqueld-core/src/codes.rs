@@ -145,6 +145,8 @@ pub const SNAPSHOT_INVALID: &str = "snapshot_invalid";
 /// The base commit a thin snapshot bundle needs cannot be fetched from the
 /// application's repository; upload a complete bundle instead.
 pub const SNAPSHOT_BASE_UNAVAILABLE: &str = "snapshot_base_unavailable";
+/// A local snapshot upload stalled, or took too long to receive.
+pub const SNAPSHOT_TIMED_OUT: &str = "snapshot_timed_out";
 /// `[spec.environments.<name>]` names no environment of the application.
 pub const ENVIRONMENT_BLOCK_UNKNOWN: &str = "environment_block_unknown";
 /// Manifest that must be literal still references variables.

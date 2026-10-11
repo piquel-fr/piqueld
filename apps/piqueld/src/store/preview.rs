@@ -287,34 +287,38 @@ impl Store {
         Ok(operation)
     }
 
-    /// Where the latest deployment of environment or preview `id` came
-    /// from: `Build` before its first.
+    /// Where preview `id`'s deployments came from (see [`PreviewOrigins`]).
     ///
     /// # Errors
     /// Returns a storage or decoding error.
-    pub async fn latest_origin(&self, id: &EnvironmentId) -> Result<DeploymentOrigin, StoreError> {
-        Self::latest_origin_on(
+    pub async fn preview_origins(&self, id: &EnvironmentId) -> Result<PreviewOrigins, StoreError> {
+        Self::preview_origins_on(
             &mut *self.pool.acquire().await.map_err(StoreError::database)?,
             id,
         )
         .await
     }
 
-    /// [`Self::latest_origin`] on an existing connection or transaction.
-    pub(super) async fn latest_origin_on(
+    /// [`Self::preview_origins`] on an existing connection or transaction.
+    pub(super) async fn preview_origins_on(
         connection: &mut SqliteConnection,
         id: &EnvironmentId,
-    ) -> Result<DeploymentOrigin, StoreError> {
+    ) -> Result<PreviewOrigins, StoreError> {
         let id = id.as_str();
-        sqlx::query_scalar!(
-            "SELECT d.origin_json FROM deployments d JOIN operations o ON o.id=d.id WHERE o.environment_id=?1 ORDER BY o.created_at_ms DESC,o.id DESC LIMIT 1",
+        let row = sqlx::query!(
+            r#"SELECT (SELECT d.origin_json FROM deployments d JOIN operations o ON o.id=d.id WHERE o.environment_id=?1 AND o.promoted=1 ORDER BY d.id DESC LIMIT 1) AS current,(SELECT d.origin_json FROM deployments d JOIN operations o ON o.id=d.id WHERE o.environment_id=?1 ORDER BY o.created_at_ms DESC,o.id DESC LIMIT 1) AS latest"#,
             id
         )
-        .fetch_optional(connection)
+        .fetch_one(connection)
         .await
-        .map_err(StoreError::database)?
-        .map_or(Ok(DeploymentOrigin::Build), |json| {
-            serde_json::from_str(&json).map_err(StoreError::corrupt)
+        .map_err(StoreError::database)?;
+        let decode = |json: Option<String>| {
+            json.map(|json| serde_json::from_str(&json).map_err(StoreError::corrupt))
+                .transpose()
+        };
+        Ok(PreviewOrigins {
+            current: decode(row.current)?,
+            latest: decode(row.latest)?,
         })
     }
 
@@ -461,5 +465,34 @@ impl Store {
         .await
         .map_err(StoreError::database)?
         .flatten())
+    }
+}
+
+/// Where a preview's deployments came from: the one it runs, and its
+/// latest, which may still be deploying, or may have failed and left the
+/// current one running.
+pub struct PreviewOrigins {
+    /// The deployment its current target comes from, if one was prepared.
+    pub current: Option<DeploymentOrigin>,
+    /// Its latest deployment, if any.
+    pub latest: Option<DeploymentOrigin>,
+}
+
+impl PreviewOrigins {
+    /// Whether it runs, or is deploying, a local snapshot, so its branch
+    /// may never have been pushed.
+    #[must_use]
+    pub fn local(&self) -> bool {
+        [&self.current, &self.latest]
+            .into_iter()
+            .flatten()
+            .any(|origin| matches!(origin, DeploymentOrigin::Local(_)))
+    }
+
+    /// Where what it runs comes from or, before one was prepared, its
+    /// latest deployment; `Build` before its first.
+    #[must_use]
+    pub fn running(self) -> DeploymentOrigin {
+        self.current.or(self.latest).unwrap_or_default()
     }
 }

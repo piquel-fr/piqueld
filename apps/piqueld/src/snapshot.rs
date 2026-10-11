@@ -43,6 +43,9 @@ pub enum SnapshotError {
         /// The bundle's prerequisites.
         prerequisites: Vec<String>,
     },
+    /// The body stalled, or receiving took too long.
+    #[error("the snapshot upload took too long; retry it")]
+    TimedOut,
     /// The upload could not be read or stored.
     #[error("the snapshot could not be received")]
     Internal(#[source] anyhow::Error),
@@ -78,6 +81,11 @@ impl Snapshots {
     const HEADER_LIMIT: u64 = 64 * 1024;
     /// Uploads received at once, bounding the disk a burst of them takes.
     const RECEIVING: usize = 2;
+    /// Longest receiving one upload may take, from its permit on, so a
+    /// stalled one never holds a permit for long.
+    const RECEIVE_TIMEOUT: Duration = Duration::from_secs(600);
+    /// Longest the body may go without sending anything.
+    const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Opens `root`, removing uploads a previous process left half-received.
     pub(crate) async fn open(root: PathBuf) -> std::io::Result<Self> {
@@ -96,12 +104,14 @@ impl Snapshots {
 
     /// Streams `body`, which announced `length` bytes, to a staging file of
     /// at most `limit` bytes, then receives it as described in the module
-    /// documentation, fetching its base from `url`. At most
-    /// [`Self::RECEIVING`] uploads are received at once; others wait.
+    /// documentation, fetching its prerequisites from `url`. At most
+    /// [`Self::RECEIVING`] uploads are received at once; others wait. Each
+    /// gets [`Self::RECEIVE_TIMEOUT`], and its body [`Self::IDLE_TIMEOUT`]
+    /// between chunks.
     ///
     /// # Errors
     /// Returns [`SnapshotError`] for an oversized, malformed, or unverifiable
-    /// bundle, an unavailable base, or a storage failure.
+    /// bundle, an unavailable base, a timeout, or a storage failure.
     pub(crate) async fn receive<E: std::error::Error + Send + Sync + 'static>(
         &self,
         body: impl Stream<Item = Result<Bytes, E>>,
@@ -117,6 +127,18 @@ impl Snapshots {
             .acquire()
             .await
             .map_err(|error| SnapshotError::Internal(error.into()))?;
+        tokio::time::timeout(Self::RECEIVE_TIMEOUT, self.stage(body, limit, url))
+            .await
+            .map_err(|_| SnapshotError::TimedOut)?
+    }
+
+    /// Receives an upload into a new staging repository (see [`Self::receive`]).
+    async fn stage<E: std::error::Error + Send + Sync + 'static>(
+        &self,
+        body: impl Stream<Item = Result<Bytes, E>>,
+        limit: u64,
+        url: &str,
+    ) -> Result<Received, SnapshotError> {
         let staging = tempfile::Builder::new()
             .prefix("upload-")
             .tempdir_in(self.root.join("staging"))
@@ -147,7 +169,10 @@ impl Snapshots {
         let mut file = tokio::fs::File::create(path).await.map_err(internal)?;
         let mut written = 0_u64;
         let mut body = std::pin::pin!(body);
-        while let Some(chunk) = body.next().await {
+        while let Some(chunk) = tokio::time::timeout(Self::IDLE_TIMEOUT, body.next())
+            .await
+            .map_err(|_| SnapshotError::TimedOut)?
+        {
             let chunk = chunk.map_err(|error| SnapshotError::Internal(error.into()))?;
             written = written.saturating_add(chunk.len() as u64);
             if written > limit {
@@ -160,22 +185,26 @@ impl Snapshots {
 
     /// Moves `received` into place, unless that commit already is, and runs
     /// `accept`, which deploys it, before any [`Self::prune`] can remove it.
+    /// When `accept` fails, a snapshot this call moved into place goes again.
     pub(crate) async fn keep<T, E: From<SnapshotError>>(
         &self,
         received: Received,
         accept: impl Future<Output = Result<T, E>>,
     ) -> Result<T, E> {
+        let internal = |error: std::io::Error| SnapshotError::Internal(error.into());
         let _lock = self.lock.lock().await;
         let path = self.path(&received.commit);
-        if !tokio::fs::try_exists(&path)
-            .await
-            .map_err(|error| SnapshotError::Internal(error.into()))?
-        {
+        let installed = !tokio::fs::try_exists(&path).await.map_err(internal)?;
+        if installed {
             tokio::fs::rename(received.staging.path().join("repository.git"), &path)
                 .await
-                .map_err(|error| SnapshotError::Internal(error.into()))?;
+                .map_err(internal)?;
         }
-        accept.await
+        let accepted = accept.await;
+        if accepted.is_err() && installed {
+            tokio::fs::remove_dir_all(&path).await.map_err(internal)?;
+        }
+        accepted
     }
 
     /// Where a deployment of the kept snapshot `commit` of the repository
@@ -583,10 +612,12 @@ mod tests {
         for (bytes, expected) in [(thin, Some(base)), (complete, None)] {
             let received = receive(&snapshots, bytes, 1 << 20, &remote).await.unwrap();
             assert_eq!((&received.commit, &received.base), (&commit, &expected));
+            let commit = received.commit.clone();
             let kept = snapshots
                 .keep(received, async { Ok::<_, SnapshotError>(()) })
                 .await;
             assert!(kept.is_ok());
+            assert!(snapshots.path(&commit).exists());
         }
         let source = snapshots.source(&remote.display().to_string(), &commit);
         let checkout = Checkout::clone(&source.repository).await.unwrap();
@@ -618,7 +649,8 @@ mod tests {
     }
 
     /// Oversized, malformed, and corrupted bundles, and bases the repository
-    /// lacks, are refused with their own errors.
+    /// lacks, are refused with their own errors, and a snapshot whose
+    /// deployment is refused is not kept.
     #[tokio::test]
     async fn refuses_oversized_invalid_and_unfetchable_bundles() {
         let root = tempfile::tempdir().unwrap();
@@ -648,6 +680,19 @@ mod tests {
             &remote,
         );
         assert!(matches!(truncated.await, Err(SnapshotError::Invalid(_))));
+
+        // A snapshot whose acceptance is refused is not kept.
+        let received = receive(&snapshots, thin.clone(), 1 << 20, &remote)
+            .await
+            .unwrap();
+        let commit = received.commit.clone();
+        let refused = snapshots
+            .keep(received, async {
+                Err::<(), _>(SnapshotError::Invalid("refused"))
+            })
+            .await;
+        assert!(refused.is_err());
+        assert!(!snapshots.path(&commit).exists());
 
         sh(root.path(), "git init -q -b main empty");
         let unfetchable = receive(&snapshots, thin, 1 << 20, &root.path().join("empty")).await;
@@ -685,6 +730,22 @@ mod tests {
         let unrelated = bundle(root.path(), "^HEAD^1 ^HEAD^2");
         let refused = receive(&snapshots, unrelated, 1 << 20, &remote).await;
         assert!(matches!(refused, Err(SnapshotError::Invalid(_))));
+    }
+
+    /// A body that stops sending gives up its permit.
+    #[tokio::test(start_paused = true)]
+    async fn stalled_uploads_time_out() {
+        let root = tempfile::tempdir().unwrap();
+        let snapshots = Snapshots::open(root.path().join("snapshots"))
+            .await
+            .unwrap();
+        let stalled = futures_util::stream::pending::<Result<Bytes, std::io::Error>>();
+        let received = snapshots.receive(stalled, None, 1 << 20, "unused").await;
+        assert!(matches!(received, Err(SnapshotError::TimedOut)));
+        assert_eq!(
+            snapshots.receiving.available_permits(),
+            Snapshots::RECEIVING
+        );
     }
 
     #[test]

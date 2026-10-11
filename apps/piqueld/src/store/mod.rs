@@ -26,6 +26,7 @@ pub(crate) use security::SecurityEvent;
 mod operation;
 mod preview;
 mod promotion;
+pub use preview::PreviewOrigins;
 pub use promotion::{Promotion, PromotionCandidate, PromotionError};
 mod release;
 mod repository;

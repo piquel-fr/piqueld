@@ -315,7 +315,7 @@ pub enum BranchState {
     },
     /// The repository answered and has no such branch.
     Gone,
-    /// The preview's latest deployment is a snapshot of a local worktree
+    /// The preview runs or is deploying a snapshot of a local worktree
     /// (`preview deploy --local`), so the branch may never have been
     /// pushed. Never counts as gone.
     Local {
@@ -356,8 +356,10 @@ pub struct PreviewView {
     pub hostnames: Vec<String>,
     /// Where its branch is now.
     pub branch: BranchState,
-    /// Where its latest deployment came from: built from its branch, or a
-    /// local snapshot; `build` before its first.
+    /// Where what it runs came from, or, until a deployment was prepared,
+    /// its latest deployment: built from its branch, or a local snapshot;
+    /// `build` before its first. A failed redeployment of its branch keeps
+    /// a local snapshot it runs.
     #[serde(default)]
     pub origin: DeploymentOrigin,
     /// How `[previews]` bounded its deployed target: services that run with

@@ -1083,7 +1083,12 @@ mod tests {
             panic!("deployed")
         };
         assert_eq!(
-            store.latest_origin(&preview).await.unwrap(),
+            store
+                .preview_origins(&preview)
+                .await
+                .unwrap()
+                .latest
+                .unwrap(),
             piqueld_core::api::DeploymentOrigin::Build
         );
         sqlx::query("UPDATE operations SET state='succeeded',finished_at_ms=1 WHERE id=?1")

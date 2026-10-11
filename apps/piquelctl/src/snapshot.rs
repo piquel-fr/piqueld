@@ -108,9 +108,11 @@ impl Worktree {
     }
 
     /// Commits the worktree's tracked and untracked files, except ignored
-    /// ones, on top of `HEAD`, without changing the repository. Submodules
-    /// and nested repositories are refused.
+    /// ones, on top of `HEAD`, without changing the repository. Submodules,
+    /// nested repositories, and what [`Self::check_supported`] refuses are
+    /// refused.
     pub(crate) async fn snapshot(&self, branch: &str) -> Result<Snapshot<'_>> {
+        self.check_supported().await?;
         let head = Git::checked(
             Git::command(&self.root)
                 .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
@@ -187,6 +189,86 @@ impl Worktree {
             "commit the snapshot",
         )?;
         Ok(Snapshot { commit, ..snapshot })
+    }
+
+    /// Refuses what a snapshot can't take without writing to the
+    /// repository or the daemon can't receive: object formats other than
+    /// SHA-1, and files staging would pass through a configured filter
+    /// driver, such as Git LFS's, which store their own data in the
+    /// repository.
+    async fn check_supported(&self) -> Result<()> {
+        let format = Git::checked(
+            Git::command(&self.root)
+                .args(["rev-parse", "--show-object-format"])
+                .output()
+                .await,
+            "read the object format",
+        )?;
+        if format != "sha1" {
+            return Err(CliError::new(
+                ErrorKind::Input,
+                format!("--local supports SHA-1 repositories only, not {format}"),
+            ));
+        }
+        let configured = Git::command(&self.root)
+            .args([
+                "config",
+                "--name-only",
+                "--get-regexp",
+                r"^filter\..*\.(clean|process)$",
+            ])
+            .output()
+            .await;
+        // Exit code 1: no filter driver is configured.
+        let drivers = match configured {
+            Ok(output) if output.status.code() == Some(1) => return Ok(()),
+            output => Git::checked(output, "read the filter drivers")?,
+        };
+        let drivers = drivers
+            .lines()
+            .filter_map(|key| key.strip_prefix("filter.")?.rsplit_once('.'))
+            .map(|(driver, _)| driver.to_owned())
+            .collect::<std::collections::BTreeSet<_>>();
+        let files = Git::checked(
+            Git::command(&self.root)
+                .args([
+                    "ls-files",
+                    "-z",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                ])
+                .output()
+                .await,
+            "list the worktree's files",
+        )?;
+        let mut check = Git::command(&self.root);
+        check
+            .args(["check-attr", "--stdin", "-z", "filter"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let attributes = Git::checked(Git::with_input(check, files).await, "read the filters")?;
+        // `<path>\0filter\0<driver>\0`, for every file.
+        let filtered = attributes
+            .split('\0')
+            .collect::<Vec<_>>()
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .filter(|[_, _, driver]| drivers.contains(*driver))
+            .map(|[path, _, _]| (*path).to_owned())
+            .collect::<Vec<_>>();
+        if filtered.is_empty() {
+            return Ok(());
+        }
+        Err(CliError::new(
+            ErrorKind::Input,
+            format!(
+                "--local does not support files passed through Git filters such as LFS: {}",
+                filtered.join(", ")
+            ),
+        ))
     }
 
     /// The nearest ancestor of `HEAD` that a remote-tracking branch has,
@@ -339,6 +421,22 @@ impl Git {
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
         command
+    }
+
+    /// Runs `command`, whose standard streams are piped, with `input` on
+    /// its standard input.
+    async fn with_input(
+        mut command: tokio::process::Command,
+        input: String,
+    ) -> std::io::Result<Output> {
+        let mut child = command.spawn()?;
+        let mut stdin = child.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+        // Written concurrently with reading the output, so neither pipe fills.
+        let write =
+            async move { tokio::io::AsyncWriteExt::write_all(&mut stdin, input.as_bytes()).await };
+        let (written, output) = tokio::join!(write, child.wait_with_output());
+        written?;
+        output
     }
 
     /// The trimmed standard output of a successful command, or a failure
@@ -503,5 +601,40 @@ mod tests {
         };
         assert!(error.to_string().contains("nested"), "{error}");
         assert!(Worktree::at(root.path()).await.is_err());
+    }
+
+    /// Files a configured filter driver would stage, such as LFS's, and
+    /// SHA-256 repositories are refused before anything is written; a
+    /// filter attribute without a configured driver is harmless.
+    #[tokio::test]
+    async fn filtered_files_and_sha256_repositories_are_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let work = fixture(root.path());
+        sh(
+            &work,
+            "echo '*.bin filter=cache' > .gitattributes && echo data > big.bin",
+        );
+        let worktree = Worktree::at(&work).await.unwrap();
+        assert!(worktree.snapshot("feat/x").await.is_ok());
+        sh(
+            &work,
+            "git config filter.cache.clean 'mkdir -p .git/filter-cache && cat'",
+        );
+        let before = state(&work);
+        let Err(error) = worktree.snapshot("feat/x").await else {
+            panic!("filtered files must be refused");
+        };
+        assert!(error.to_string().contains("big.bin"), "{error}");
+        assert_eq!(state(&work), before);
+
+        sh(
+            root.path(),
+            "git init -q --object-format=sha256 -b main sha256 && cd sha256 && echo a > a && git add . && git commit -qm a",
+        );
+        let worktree = Worktree::at(&root.path().join("sha256")).await.unwrap();
+        let Err(error) = worktree.snapshot("main").await else {
+            panic!("SHA-256 repositories must be refused");
+        };
+        assert!(error.to_string().contains("sha256"), "{error}");
     }
 }

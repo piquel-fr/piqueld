@@ -6,14 +6,12 @@ use super::{
     Actor, ApplicationError, ApplicationService, Mutation, MutationResponse, PreviewMutation,
 };
 use crate::git::Heads;
-use crate::store::StoreError;
+use crate::store::{PreviewOrigins, StoreError};
 use axum::body::Bytes;
 use futures_util::Stream;
 use piqueld_core::{
     ApplicationId, EnvironmentId, GitBranch, PreviewSlot,
-    api::{
-        BranchState, DeletedPreview, DeploymentOrigin, EnvironmentView, LocalSnapshot, PreviewView,
-    },
+    api::{BranchState, DeletedPreview, EnvironmentView, LocalSnapshot, PreviewView},
     manifest::RepositoryManifest,
 };
 
@@ -106,8 +104,8 @@ impl ApplicationService {
     /// Deletes each of `confirmed` that is a preview of `application` whose
     /// branch the repository confirms is gone, and keeps the others,
     /// including all of them when the application's repository changes
-    /// meanwhile, and those whose latest deployment is a local snapshot,
-    /// whose branch may never have been pushed. Fails with
+    /// meanwhile, and those running or deploying a local snapshot, whose
+    /// branch may never have been pushed. Fails with
     /// `repository_unavailable`, deleting nothing, when the repository
     /// cannot be read: an unreadable repository never makes a branch gone.
     ///
@@ -126,9 +124,9 @@ impl ApplicationService {
             .map_err(ApplicationError::RepositoryUnavailable)?;
         let mut deleted = Vec::new();
         for preview in self.store.previews(application).await? {
-            let origin = self.store.latest_origin(&preview.id).await?;
+            let origins = self.store.preview_origins(&preview.id).await?;
             if !confirmed.contains(&preview.id)
-                || Self::branch_state(&preview, &origin, Ok(&heads), None)? != BranchState::Gone
+                || Self::branch_state(&preview, &origins, Ok(&heads), None)? != BranchState::Gone
             {
                 continue;
             }
@@ -184,11 +182,11 @@ impl ApplicationService {
             .flat_map(|target| &target.routes)
             .map(|route| route.hostname.to_string())
             .collect();
-        let origin = self.store.latest_origin(&preview.id).await?;
+        let origins = self.store.preview_origins(&preview.id).await?;
         let fetched = self.store.fetched_commit(&preview.id).await?;
-        let branch = Self::branch_state(&preview, &origin, heads.as_ref(), fetched.as_deref())?;
+        let branch = Self::branch_state(&preview, &origins, heads.as_ref(), fetched.as_deref())?;
         Ok(PreviewView {
-            origin,
+            origin: origins.running(),
             status: status_view(self.store.status(&preview.id).await?),
             latest_operation: self
                 .store
@@ -202,25 +200,25 @@ impl ApplicationService {
         })
     }
 
-    /// Where `preview`'s branch is in `heads`: `local` while its latest
-    /// deployment, of `origin`, is a local snapshot, otherwise compared with
-    /// the commit it last `fetched`.
+    /// Where `preview`'s branch is in `heads`: `local` while it runs or
+    /// deploys a local snapshot (see [`PreviewOrigins::local`]), otherwise
+    /// compared with the commit it last `fetched`.
     fn branch_state(
         preview: &EnvironmentView,
-        origin: &DeploymentOrigin,
+        origins: &PreviewOrigins,
         heads: Result<&Heads, &anyhow::Error>,
         fetched: Option<&str>,
     ) -> Result<BranchState, ApplicationError> {
         let identity = preview.preview().ok_or(StoreError::NotFound)?;
         let branch = identity.branch.as_str();
-        Ok(match (heads, origin) {
-            (Err(error), _) => BranchState::Unknown {
+        Ok(match heads {
+            Err(error) => BranchState::Unknown {
                 message: format!("{error:#}"),
             },
-            (Ok(heads), DeploymentOrigin::Local(_)) => BranchState::Local {
+            Ok(heads) if origins.local() => BranchState::Local {
                 head: heads.head(branch).map(str::to_owned),
             },
-            (Ok(heads), _) => heads.state(branch, fetched),
+            Ok(heads) => heads.state(branch, fetched),
         })
     }
 }
