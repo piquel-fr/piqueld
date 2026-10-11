@@ -193,9 +193,10 @@ impl Worktree {
 
     /// Refuses what a snapshot can't take without writing to the
     /// repository or the daemon can't receive: object formats other than
-    /// SHA-1, and files staging would pass through a configured filter
-    /// driver, such as Git LFS's, which store their own data in the
-    /// repository.
+    /// SHA-1; partial clones, which lack objects a bundle needs and fetch
+    /// them into the repository on demand; and files staging would pass
+    /// through a configured filter driver, such as Git LFS's, which store
+    /// their own data in the repository.
     async fn check_supported(&self) -> Result<()> {
         let format = Git::checked(
             Git::command(&self.root)
@@ -209,6 +210,28 @@ impl Worktree {
                 ErrorKind::Input,
                 format!("--local supports SHA-1 repositories only, not {format}"),
             ));
+        }
+        // Older Git marks a partial clone with `extensions.partialClone`,
+        // newer Git with its remote's `promisor` setting.
+        let partial = Git::command(&self.root)
+            .args([
+                "config",
+                "--name-only",
+                "--get-regexp",
+                r"^(extensions\.partialclone|remote\..*\.promisor)$",
+            ])
+            .output()
+            .await;
+        // Exit code 1: not a partial clone.
+        match partial {
+            Ok(output) if output.status.code() == Some(1) => {}
+            output => {
+                Git::checked(output, "read whether this is a partial clone")?;
+                return Err(CliError::new(
+                    ErrorKind::Input,
+                    "--local does not support partial clones; clone without --filter",
+                ));
+            }
         }
         let configured = Git::command(&self.root)
             .args([
@@ -333,7 +356,7 @@ impl Snapshot<'_> {
         if !repository.exists() {
             Git::checked(
                 Git::command(self.directory.path())
-                    .args(["init", "--quiet", "--bare"])
+                    .args(["init", "--quiet", "--bare", "--object-format=sha1"])
                     .arg(&repository)
                     .output()
                     .await,
@@ -439,8 +462,9 @@ impl Git {
         output
     }
 
-    /// The trimmed standard output of a successful command, or a failure
-    /// to `action` with what Git printed.
+    /// The standard output of a successful command, without its final
+    /// newline, or a failure to `action` with what Git printed. Nothing
+    /// else is trimmed: NUL-separated output keeps every path intact.
     fn checked(output: std::io::Result<Output>, action: &str) -> Result<String> {
         let output = output.map_err(|error| Self::failure(action, error))?;
         if !output.status.success() {
@@ -450,7 +474,7 @@ impl Git {
             ));
         }
         String::from_utf8(output.stdout)
-            .map(|stdout| stdout.trim().to_owned())
+            .map(|stdout| stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned())
             .map_err(|error| Self::failure(action, error))
     }
 
@@ -603,11 +627,11 @@ mod tests {
         assert!(Worktree::at(root.path()).await.is_err());
     }
 
-    /// Files a configured filter driver would stage, such as LFS's, and
-    /// SHA-256 repositories are refused before anything is written; a
-    /// filter attribute without a configured driver is harmless.
+    /// Files a configured filter driver would stage, such as LFS's, partial
+    /// clones, and SHA-256 repositories are refused before anything is
+    /// written; a filter attribute without a configured driver is harmless.
     #[tokio::test]
-    async fn filtered_files_and_sha256_repositories_are_refused() {
+    async fn filtered_files_partial_clones_and_sha256_repositories_are_refused() {
         let root = tempfile::tempdir().unwrap();
         let work = fixture(root.path());
         sh(
@@ -626,6 +650,25 @@ mod tests {
         };
         assert!(error.to_string().contains("big.bin"), "{error}");
         assert_eq!(state(&work), before);
+        // A path starting with a space, listed first, is checked as is.
+        sh(
+            &work,
+            "rm big.bin && echo '\" a.bin\" filter=cache' > .gitattributes && echo data > ' a.bin'",
+        );
+        let Err(error) = worktree.snapshot("feat/x").await else {
+            panic!("filtered files must be refused");
+        };
+        assert!(error.to_string().contains(" a.bin"), "{error}");
+
+        sh(
+            root.path(),
+            "git -C remote config uploadpack.allowFilter true && git clone -q --filter=blob:none \"file://$PWD/remote\" partial",
+        );
+        let worktree = Worktree::at(&root.path().join("partial")).await.unwrap();
+        let Err(error) = worktree.snapshot("main").await else {
+            panic!("partial clones must be refused");
+        };
+        assert!(error.to_string().contains("partial clone"), "{error}");
 
         sh(
             root.path(),

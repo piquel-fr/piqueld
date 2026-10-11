@@ -277,6 +277,7 @@ impl Staged {
             "init",
             "--quiet",
             "--bare",
+            "--object-format=sha1",
             "--initial-branch",
             SNAPSHOT_BRANCH,
         ])

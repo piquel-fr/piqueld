@@ -228,7 +228,7 @@ and bundles Git cannot verify with `snapshot_invalid`. The daemon reads the
 manifest from the snapshot at the application's manifest path and builds
 `repository = "self"` services from it, like any preview deployment, with the
 same build priority and limits. Submodules, nested repositories, SHA-256
-repositories, and files staging would pass through a configured Git filter
+repositories, partial clones, and files staging would pass through a configured Git filter
 driver, such as LFS's, are refused, since those filters write into the
 repository. A large first upload may need a longer `--timeout`; the daemon
 gives up on a body that stalls for 30 seconds, or after 10 minutes
