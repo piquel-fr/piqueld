@@ -305,6 +305,41 @@ impl Store {
         Ok(())
     }
 
+    /// Records a daemon-scoped `daemon_started` event whose resource is
+    /// `version`, noting the previously started version when it differs.
+    /// Delivered as a `daemon_started` notification, so it must be recorded
+    /// after `configure_deliveries` for new destinations to receive it.
+    /// # Errors
+    /// Returns storage errors.
+    pub(crate) async fn record_daemon_started(&self, version: &str) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let previous = sqlx::query_scalar!(
+            "SELECT resource FROM events WHERE kind='daemon_started' ORDER BY id DESC LIMIT 1"
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .flatten();
+        let message = match previous {
+            Some(previous) if previous != version => {
+                format!("piqueld {version} started (previously {previous})")
+            }
+            _ => format!("piqueld {version} started"),
+        };
+        let now = now_ms();
+        sqlx::query!(
+            "INSERT INTO events(scope,kind,message,resource,created_at_ms)
+            VALUES('daemon','daemon_started',?1,?2,?3)",
+            message,
+            version,
+            now,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
     /// Logs a control-plane failure and records it in the journal, falling back
     /// to the daemon log alone when the journal write fails.
     pub(crate) async fn report_diagnostic(

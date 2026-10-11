@@ -427,6 +427,11 @@ in
             default = true;
             description = "Notify on security-relevant access changes and activity, such as new administrators, privileged tokens, and bursts of refused requests.";
           };
+          notifications.daemon_started = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Notify each time the daemon starts, with its version.";
+          };
           notifications.recovery = lib.mkOption {
             type = lib.types.bool;
             default = true;

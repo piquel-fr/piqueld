@@ -7365,7 +7365,8 @@
           "service_degradation",
           "daemon_failures",
           "recovery",
-          "security"
+          "security",
+          "daemon_started"
         ],
         "type": "string"
       },

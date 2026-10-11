@@ -164,6 +164,16 @@ daemon, as daemon history events that each notify immediately:
 | `credential_new_address` | A session, CLI login, or token already used elsewhere is used from a new network address (IPv6 by /64) |
 | `secret_key_recovered` | The secrets master key was recovered, discarding stored values |
 
+### Daemon start notifications
+
+The `daemon_started` notification category reports each start of the daemon,
+including restarts for updates. Once its listeners are bound and Docker Swarm is
+ready, the daemon records a `daemon_started` event in daemon history whose
+resource is its version, and whose message names the previous version after a
+change, such as `piqueld 0.2.0 started (previously 0.1.0)`. A start that fails
+before then records no event, so a missing notification after a restart means
+the daemon did not come up.
+
 ## Ownership and retention
 
 `scope` determines ownership, independently of a contextual `environment_id`:
@@ -247,6 +257,7 @@ service_degradation = true
 daemon_failures = true
 recovery = true
 security = true # access changes; see "Security notifications"
+daemon_started = true # see "Daemon start notifications"
 failure_threshold_seconds = 120
 retry_window_seconds = 86400
 

@@ -1083,6 +1083,37 @@ async fn refusal_bursts_and_new_addresses_notify_as_security() {
     );
 }
 
+/// Each daemon start notifies as `daemon_started`, naming the previous
+/// version only when it changed.
+#[tokio::test]
+async fn daemon_starts_notify_with_version_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db"))
+        .await
+        .unwrap()
+        .with_observability(&notifications());
+    store.configure_deliveries().await.unwrap();
+    for version in ["0.1.0", "0.1.0", "0.2.0"] {
+        store.record_daemon_started(version).await.unwrap();
+    }
+    store.process_notifications().await.unwrap();
+    let mut notified = Vec::new();
+    for delivery in store.deliveries(None, 10).await.unwrap().items {
+        assert_eq!(delivery.category, NotificationCategory::DaemonStarted);
+        let event = store.event(delivery.event_id).await.unwrap();
+        notified.push(event.message.unwrap_or_default());
+    }
+    notified.sort();
+    assert_eq!(
+        notified,
+        [
+            "piqueld 0.1.0 started",
+            "piqueld 0.1.0 started",
+            "piqueld 0.2.0 started (previously 0.1.0)",
+        ]
+    );
+}
+
 /// On the Unix socket, refusals by the host operator and by anonymous
 /// callers share no account and no address, yet count separately.
 #[tokio::test]
