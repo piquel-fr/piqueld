@@ -522,11 +522,12 @@ auto_initialize_swarm = true
     /// Cargo's output stays visible: the build lock is shared with the dev
     /// daemon's rebuilds, so a wait for it would otherwise look like a hang.
     fn ctl(&self, args: &[String]) -> anyhow::Error {
-        let error = std::process::Command::new("cargo")
+        let error = self
+            .workspace
+            .cargo()
             .args(["run", "--package", "piquelctl", "--"])
             .args(args)
             .env("PIQUELD_SOCKET", self.socket())
-            .current_dir(self.workspace.root())
             .exec();
         anyhow::Error::new(error).context("run piquelctl")
     }

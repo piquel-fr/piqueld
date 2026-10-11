@@ -121,7 +121,7 @@ async fn test(
     };
     let socket = runtime.join("docker.sock");
     let nextest = |args: &[&str]| {
-        let mut command = Command::new("cargo");
+        let mut command = Command::from(workspace.cargo());
         command
             .args([
                 "nextest",
@@ -135,8 +135,7 @@ async fn test(
             .args(["--test-threads=1"])
             .args(args)
             .env("PIQUELD_DOCKER_ISOLATED", "1")
-            .env("PIQUELD_DOCKER_SOCKET", &socket)
-            .current_dir(workspace.root());
+            .env("PIQUELD_DOCKER_SOCKET", &socket);
         command
     };
     let limit = Some(limit()?);
