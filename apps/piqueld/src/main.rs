@@ -25,6 +25,10 @@ const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
     about = "Run the piqueld single-node Docker control plane"
 )]
 struct Args {
+    /// Runs the daemon when omitted.
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Read daemon configuration from this TOML file.
     ///
     /// Without this flag, `/etc/piqueld/config.toml` is read if it exists;
@@ -38,6 +42,22 @@ struct Args {
     /// while a person watches the terminal.
     #[arg(long, value_name = "PATH")]
     log_file: Option<PathBuf>,
+}
+
+/// One-shot commands that exit instead of running the daemon.
+#[derive(Debug, clap::Subcommand)]
+enum Command {
+    /// Check a configuration file's syntax, types, ranges, and combinations,
+    /// then exit.
+    ///
+    /// Nothing on the host is touched: no state, sockets, Docker, or network.
+    /// Credential files are only located, not read, so the check also runs
+    /// where they are absent, such as a Nix build.
+    CheckConfig {
+        /// The TOML file to check.
+        #[arg(long, value_name = "PATH")]
+        config: PathBuf,
+    },
 }
 
 impl Args {
@@ -57,22 +77,37 @@ impl Args {
     }
 }
 
-/// Starts the daemon and runs until a shutdown signal.
-///
-/// 1. Loads configuration and initializes tracing.
-/// 2. Prepares and locks the data directory, then validates and locks the runtime
-///    directory and binds every listener, so misconfiguration fails before any
-///    state is opened.
-/// 3. Starts the application service and reconciliation controller.
-/// 4. Serves the dashboard/API over TCP, metrics, and the Unix API socket.
-/// 5. After cancellation, waits for every task and pending audit record, and
-///    surfaces the first failure.
+/// Runs a one-shot [`Command`], or the daemon until a shutdown signal.
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let mut config = load_config(args.config.as_deref())?;
-    piqueld::config::init_tracing(args.open_log_file()?).context("failed to initialize tracing")?;
+    match &args.command {
+        Some(Command::CheckConfig { config }) => {
+            DaemonConfig::check(config)
+                .with_context(|| format!("failed to check configuration {}", config.display()))?;
+            println!("configuration {} is valid", config.display());
+            Ok(())
+        }
+        None => {
+            let config = load_config(args.config.as_deref())?;
+            piqueld::config::init_tracing(args.open_log_file()?)
+                .context("failed to initialize tracing")?;
+            serve(config).await
+        }
+    }
+}
 
+/// Starts the daemon with loaded configuration and runs until a shutdown
+/// signal. Tracing is already initialized.
+///
+/// 1. Prepares and locks the data directory, then validates and locks the runtime
+///    directory and binds every listener, so misconfiguration fails before any
+///    state is opened.
+/// 2. Starts the application service and reconciliation controller.
+/// 3. Serves the dashboard/API over TCP, metrics, and the Unix API socket.
+/// 4. After cancellation, waits for every task and pending audit record, and
+///    surfaces the first failure.
+async fn serve(mut config: DaemonConfig) -> Result<()> {
     piqueld::prepare_data_dir(&config.server.data_dir)
         .await
         .with_context(|| {

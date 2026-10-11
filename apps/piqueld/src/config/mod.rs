@@ -4,6 +4,7 @@ mod credential;
 mod listeners;
 mod observability;
 mod tunnel;
+use credential::Resolution;
 pub use credential::{Credential, CredentialError, CredentialFile};
 pub use observability::{MetricsConfig, NotificationConfig, WebhookDestination, WebhookKind};
 pub use tunnel::{TunnelConfig, TunnelConfigError, TunnelCredentials};
@@ -71,6 +72,24 @@ impl DaemonConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let source = std::fs::read_to_string(path).map_err(ConfigError::Read)?;
         Self::from_toml(&source)
+    }
+
+    /// Checks a configuration file as [`Self::load`] would, without reading
+    /// credential files or touching anything else on the host. This is
+    /// `piqueld check-config`, which can run where the credentials are absent,
+    /// such as a Nix build.
+    ///
+    /// Credential files are only located: relative paths are accepted without
+    /// `$CREDENTIALS_DIRECTORY`, and checks of their contents (readable,
+    /// non-empty, a tunnel credentials file, a valid webhook URL) wait for
+    /// startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] when the file cannot be read or the configuration
+    /// is malformed or invalid.
+    pub fn check(path: impl AsRef<Path>) -> Result<(), ConfigError> {
+        Resolution::Structural.during(|| Self::load(path)).map(drop)
     }
 
     /// Parses and validates a TOML configuration document.

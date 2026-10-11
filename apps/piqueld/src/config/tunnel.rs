@@ -45,7 +45,8 @@ impl TunnelCredentials {
         format!("{}.cfargotunnel.com", self.id)
     }
 
-    /// Reads and checks the credentials file.
+    /// Reads and checks the credentials file, unless a structural check
+    /// leaves it unread.
     fn read(file: CredentialFile) -> Result<Self, TunnelConfigError> {
         /// The fields `cloudflared` requires. Secrets are only checked for
         /// presence, so decoding errors never quote them.
@@ -61,7 +62,15 @@ impl TunnelCredentials {
         }
         let path = file.path().to_owned();
         let file = Credential::read("credentials", file)?;
-        let fields: Fields = serde_json::from_str(file.expose())
+        // A structural check leaves the file unread; its configuration is
+        // never used, so the ID is a placeholder.
+        let Some(contents) = file.value() else {
+            return Ok(Self {
+                id: Uuid::nil(),
+                file,
+            });
+        };
+        let fields: Fields = serde_json::from_str(contents)
             .map_err(|error| TunnelConfigError::Decode { path, error })?;
         let id =
             Uuid::parse_str(&fields.id).map_err(|_| TunnelConfigError::Id { id: fields.id })?;

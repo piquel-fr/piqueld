@@ -57,7 +57,8 @@ impl Default for NotificationConfig {
 impl NotificationConfig {
     /// Checks timing bounds and that each destination has a unique name of
     /// 1..=63 bytes and a URL using HTTPS (or HTTP on loopback) with a host and no
-    /// userinfo or fragment.
+    /// userinfo or fragment. URLs in files a structural check left unread are
+    /// checked when the daemon starts.
     pub(super) fn validate(&self) -> Result<(), ConfigError> {
         if self.failure_threshold_seconds > 86_400
             || !(1..=604_800).contains(&self.retry_window_seconds)
@@ -74,7 +75,11 @@ impl NotificationConfig {
                     "webhook names must be unique and contain 1..=63 bytes".into(),
                 ));
             }
-            let url = reqwest::Url::parse(destination.url.expose())
+            // A structural check leaves file-backed URLs unread.
+            let Some(url) = destination.url.value() else {
+                continue;
+            };
+            let url = reqwest::Url::parse(url)
                 .map_err(|_| ConfigError::Invalid("webhook URL is invalid".into()))?;
             let loopback_http = url.scheme() == "http"
                 && url.host_str().is_some_and(|host| {
