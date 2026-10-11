@@ -33,7 +33,7 @@ added later: requests about an environment are checked on its application.
 | `logs:read` | all or listed applications | Runtime, build and job logs, which may contain sensitive output |
 | `events:read` | all or listed applications | Application history, diagnostics, and deployment analytics |
 | `apps:create` | installation | Create applications |
-| `system:read` | installation | Daemon configuration, resources, daemon history, notification deliveries, and DNS providers and certificates |
+| `system:read` | installation | Daemon configuration, installation checks, resources, daemon history, notification deliveries, and DNS providers and certificates |
 | `system:operate` | installation | Secret key recovery, notification retries, and DNS provider checks |
 | `accounts:manage` | installation | Other accounts and invitations, within the limits below |
 | `audit:read` | installation | Every account's [audit trail](observability.md#audit-trail); everyone reads their own |

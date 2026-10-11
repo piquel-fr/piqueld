@@ -55,7 +55,13 @@ impl ApplicationService {
     /// Returns effective host settings without exposing mutable configuration.
     /// # Errors
     /// Returns an error if no host configuration was supplied at construction.
-    pub fn configuration(&self) -> Result<&HostConfiguration, ApplicationError> {
+    pub fn host_configuration(&self) -> Result<&HostConfiguration, ApplicationError> {
+        self.configuration()
+            .map(|configuration| &configuration.view)
+    }
+
+    /// The attached host configuration.
+    pub(super) fn configuration(&self) -> Result<&super::Configuration, ApplicationError> {
         self.configuration
             .as_deref()
             .ok_or(ApplicationError::ConfigurationUnavailable)

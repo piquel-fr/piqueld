@@ -118,6 +118,11 @@ pub(crate) enum Command {
     },
     /// Report daemon availability and version.
     Status,
+    /// Check this CLI's connection and the installation's health.
+    ///
+    /// Shows the resolved endpoint and credential, then each daemon check as
+    /// pass, warn, fail, or skip with a next step. Exits 6 when a check fails.
+    Doctor,
     /// Inspect the daemon's DNS providers.
     Dns {
         #[command(subcommand)]

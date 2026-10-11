@@ -720,6 +720,10 @@
         border-color: var(--ok-line);
     }
 
+    .status-card[data-tone="warn"] {
+        border-color: var(--warn-line);
+    }
+
     .status-card[data-tone="bad"] {
         border-color: var(--bad-line);
     }

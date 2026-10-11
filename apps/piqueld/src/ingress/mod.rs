@@ -3,6 +3,7 @@
 //! tunnel listener that only `cloudflared` reaches; private routes on a
 //! private listener that only the apps tailnet node reaches.
 mod certificates;
+mod checks;
 mod configuration;
 mod gateway;
 mod node;

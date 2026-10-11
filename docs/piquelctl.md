@@ -34,6 +34,7 @@ built with Cargo. See [connection profiles](#connection-profiles).
 ```console
 piquelctl profiles
 piquelctl status
+piquelctl doctor
 piquelctl app list
 piquelctl app show <name-or-id>
 piquelctl app logs <name-or-id> [--service <name>]
@@ -277,6 +278,7 @@ written to stderr, so stdout remains valid JSON.
 | --- | --- |
 | `profiles` | `{ "profiles": [{ "name": string, "endpoint": string }] }` |
 | `status` | `SystemStatus` |
+| `doctor` | `{ "connection": { "endpoint": string, "endpoint_source": string, "credential": string }, "checks": [SystemCheck] or null }`; `checks` is null when the daemon could not be asked |
 | `dns refresh` | `DnsStatus` |
 | `app list` | `{ "items": [{ "application": ApplicationSummary, "environments": [EnvironmentRow] }], "next_cursor": null }` |
 | `app show` | `{ "application": ApplicationView, "environments": [EnvironmentRow] }` |
@@ -358,6 +360,7 @@ no `request_id`:
 | `conflict` | 3 | An ambiguous name or a blocked plan |
 | `deployment_superseded` | 3 | `wait`'s deployment was superseded; `details.deployment_id` and `superseded_by` |
 | `operation_failed` | 5 | An awaited operation failed; `details.operation` |
+| `checks_failed` | 6 | `doctor` found a failed installation check |
 | `interrupted` | 130 | Ctrl-C |
 | `failed` | 1 | Any other failure |
 
@@ -407,12 +410,42 @@ Branch on the exit code, then read the `error` event on stderr:
 | 3 | Conflict: `deployment_superseded`, `preview_limit_reached` (its `details` list the previews to delete), a revision precondition | Read the newer state; wait for `details.superseded_by`, or delete a preview |
 | 4 | Unavailable or timed out (`connection_failed`, `timeout`) | Retry the read or `wait`; server-side work was not cancelled |
 | 5 | The deployment failed (`operation_failed`; `details.operation` names the phase and error) | Read `logs`, fix, deploy again |
+| 6 | `doctor` found a failed check (`checks_failed`) | Follow each failed check's `next_step` |
+
+## Installation checks
+
+`piquelctl doctor` shows how this CLI connects (the endpoint, where it came
+from, and which credential it sends), then asks the daemon to check its
+installation (`GET /api/v1/system/checks`, which needs `system:read`):
+
+| Check | Passes when |
+| --- | --- |
+| Public URL | `auth.public_url` is HTTPS and its `/health` answers piqueld's liveness response from the daemon's host with a trusted certificate |
+| Tailnet node | The daemon's node is logged in, holds a valid certificate, and serves `auth.public_url` |
+| Docker Engine | Docker answers; with ingress enabled, it is Engine 28+ with API 1.48+ |
+| Ports 80/443 | With direct ingress, they are held by the running managed Caddy gateway, or nothing on the host listens on them |
+| Secret key | `secrets.key` is a private file matching the stored verifier, or not needed yet |
+| API socket | The runtime directory passes startup's checks, and the socket is `0660` with the daemon's group |
+| Backups | Always skipped: piqueld does not take backups yet |
+
+Each check is `pass`, `warn`, `fail`, or `skip` (not applicable, such as the
+tailnet node while `[tailscale]` is disabled), with a next step when action is
+needed. `doctor` exits 6 when any check fails; warnings keep exit 0. Checks
+never change the installation. `doctor` makes a single request bounded by
+`--timeout`; when it fails, the connection is still reported, with `checks`
+null in JSON, before the error.
+
+The checks run where the daemon runs. A reachable public URL means the
+daemon's host reaches it; browsers elsewhere also need DNS and network access,
+and may reach it when the host cannot, such as without NAT hairpinning.
+Likewise, `doctor` reaching the daemon proves this CLI's connection, not the
+browser's.
 
 ## Connection failures
 
 Use `piquelctl status` to check whether the selected endpoint responds with the
-piqueld API. Connection diagnostics are available on failures from every command;
-there is no separate diagnostic command.
+piqueld API, or `piquelctl doctor` for the resolved connection and installation
+checks. Connection diagnostics are available on failures from every command.
 
 Failures identify the effective endpoint and its source (flag, environment,
 profile and file, or built-in default), preserve the observed cause, and suggest
@@ -433,7 +466,7 @@ profile files report a location and a safe error category instead.
 
 These diagnostics use the original request and resolved configuration. They do
 not probe other targets, inspect permissions, or check database, Docker, or Swarm
-readiness. Unexpected HTTP responses and invalid API data include connection
+readiness; `doctor` checks the installation. Unexpected HTTP responses and invalid API data include connection
 context; ordinary application errors keep their existing reporting. With
 `--json`, the same facts are the error's `details` (see the JSON errors above);
 with `--quiet`, diagnostics stay human-readable. Exit codes and successful

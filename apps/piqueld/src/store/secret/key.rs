@@ -1,8 +1,93 @@
 //! Authenticate the database's key before accepting any new ciphertext.
 use super::{Envelope, SecretCipher, SecretOwner, Store, StoreError};
-use piqueld_core::api::SecretKeyRecovery;
+use crate::secrets::KeyFailure;
+use piqueld_core::api::{CheckStatus, SecretKeyRecovery, SystemCheck, SystemCheckId};
+
+impl SecretCipher {
+    /// Proves this key matches the database by decrypting its stored verifier.
+    fn verify(&self, verifier: &Envelope) -> anyhow::Result<()> {
+        self.decrypt(SecretOwner::KeyVerifier, "key-verification", 1, verifier)
+            .map(drop)
+    }
+}
 
 impl Store {
+    /// Checks without side effects that `secrets.key` exists while values
+    /// need it, is private, and matches the stored verifier. Unlike
+    /// [`Self::verified_secret_cipher`], it never generates a key or stores a
+    /// verifier.
+    pub(crate) async fn secret_key_check(&self) -> SystemCheck {
+        let check =
+            |status, message: String| SystemCheck::new(SystemCheckId::SecretKey, status, message);
+        let path = self.secret_key_path.display();
+        let verifier = match sqlx::query!(
+            "SELECT nonce,ciphertext FROM secret_key_verification WHERE singleton=1"
+        )
+        .fetch_optional(&self.pool)
+        .await
+        {
+            Ok(row) => row.map(|row| Envelope {
+                nonce: row.nonce,
+                ciphertext: row.ciphertext,
+            }),
+            Err(error) => {
+                return check(
+                    CheckStatus::Fail,
+                    format!("could not read the stored key verifier: {error}"),
+                )
+                .next_step("Check the database; daemon logs have details.");
+            }
+        };
+        match (self.secret_key_path.try_exists(), &verifier) {
+            (Ok(false), None) => {
+                return check(
+                    CheckStatus::Pass,
+                    format!("no secret is stored yet; {path} is created by the first secret write"),
+                );
+            }
+            (Ok(false), Some(_)) => {
+                return check(CheckStatus::Fail, KeyFailure::Missing.to_string()).next_step(
+                    format!("Restore {path} from backup, or discard every stored value with `piquelctl secrets recover-key`."),
+                );
+            }
+            (Ok(true), _) => {}
+            (Err(error), _) => {
+                return check(
+                    CheckStatus::Fail,
+                    format!("could not inspect {path}: {error}"),
+                )
+                .next_step("Check the data directory's permissions.");
+            }
+        }
+        let opened = SecretCipher::open(&self.secret_key_path).and_then(|cipher| match &verifier {
+            Some(verifier) => cipher
+                .verify(verifier)
+                .map_err(|_| KeyFailure::AuthenticationFailed.into()),
+            None => Ok(()),
+        });
+        match opened {
+            Ok(()) if verifier.is_some() => check(
+                CheckStatus::Pass,
+                format!("{path} is private and matches the stored verifier"),
+            ),
+            Ok(()) => check(
+                CheckStatus::Pass,
+                format!("{path} is private; the first secret write binds it to the database"),
+            ),
+            Err(error) => {
+                let step = match error.downcast_ref::<KeyFailure>() {
+                    Some(KeyFailure::NotPrivate) => format!(
+                        "Make {path} a regular file owned by the daemon user with mode 0600."
+                    ),
+                    _ => format!(
+                        "Restore the original {path} from backup, or discard every stored value with `piquelctl secrets recover-key`."
+                    ),
+                };
+                check(CheckStatus::Fail, format!("{error:#}")).next_step(step)
+            }
+        }
+    }
+
     /// Loads the master key and proves it matches the database by decrypting the
     /// stored verifier. The first write binds the key by storing a new verifier
     /// in `tx`, so it only persists if the caller commits.
@@ -21,15 +106,10 @@ impl Store {
             .map_err(StoreError::SecretSource)?;
         if let Some(row) = verification {
             cipher
-                .decrypt(
-                    SecretOwner::KeyVerifier,
-                    "key-verification",
-                    1,
-                    &Envelope {
-                        nonce: row.nonce,
-                        ciphertext: row.ciphertext,
-                    },
-                )
+                .verify(&Envelope {
+                    nonce: row.nonce,
+                    ciphertext: row.ciphertext,
+                })
                 .map_err(StoreError::SecretSource)?;
         } else {
             let envelope = cipher

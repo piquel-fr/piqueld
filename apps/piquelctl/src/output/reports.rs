@@ -10,7 +10,7 @@ use piqueld_client::{
     ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl, SavedApplication,
     SecretMetadata, SecretProblem, ServiceImage, Source, StoredSecret, SystemStatus, UrlState,
     sync::{SyncState, WebhookSecret, WebhookView},
-    system::{IngressStatus, PublicIngressStatus, RouteStatus},
+    system::{IngressStatus, PublicIngressStatus, RouteStatus, SystemCheck},
 };
 use serde::Serialize;
 use std::io;
@@ -279,6 +279,60 @@ report!(DnsStatus, self, out, {
         )?;
         if let Some(error) = &certificate.error {
             out.label("Certificate problem", error)?;
+        }
+    }
+    Ok(())
+});
+
+/// How this CLI reaches the daemon, as `doctor` reports it.
+#[derive(Serialize)]
+pub(crate) struct Connection {
+    /// `Unix socket <path>` or `TCP <url>`.
+    pub(crate) endpoint: String,
+    /// Where the endpoint came from, such as a profile.
+    pub(crate) endpoint_source: String,
+    /// Where the bearer token comes from, or `none`.
+    pub(crate) credential: String,
+}
+
+/// `doctor`'s result: the connection, then the daemon's checks, which are
+/// `null` when the daemon could not be asked.
+///
+/// ```text
+/// Endpoint: Unix socket /run/piqueld/piqueld.sock (built-in default)
+/// Credential: none
+/// pass  Public URL: https://ops.example.com answers from this host …
+/// warn  Tailnet node: …
+///       Next step: …
+/// ```
+#[derive(Serialize)]
+pub(crate) struct DoctorReport<'a> {
+    pub(crate) connection: &'a Connection,
+    pub(crate) checks: Option<&'a [SystemCheck]>,
+}
+report!(DoctorReport<'_>, self, out, {
+    let connection = self.connection;
+    out.label(
+        "Endpoint",
+        format_args!("{} ({})", connection.endpoint, connection.endpoint_source),
+    )?;
+    out.label("Credential", &connection.credential)?;
+    let Some(checks) = self.checks else {
+        return Ok(());
+    };
+    out.line(
+        "Reaching the daemon proves this connection, not that browsers can reach the public URL.",
+    )?;
+    for check in checks {
+        out.line(format_args!(
+            "{:<4}  {}: {}",
+            check.status.as_str(),
+            check.id.label(),
+            check.message
+        ))?;
+        if let Some(step) = &check.next_step {
+            out.value("      ")?;
+            out.label("Next step", step)?;
         }
     }
     Ok(())
