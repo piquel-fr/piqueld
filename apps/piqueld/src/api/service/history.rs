@@ -121,13 +121,14 @@ impl ApplicationService {
             .await?)
     }
 
-    /// Returns the owner of the environment a build attempt belongs to.
+    /// Returns the owner of the environment a build attempt belongs to, if
+    /// the build exists.
     /// # Errors
-    /// Returns absence or storage errors.
+    /// Returns storage errors.
     pub async fn build_owner(
         &self,
         id: i64,
-    ) -> Result<crate::store::EnvironmentOwner, ApplicationError> {
+    ) -> Result<Option<crate::store::EnvironmentOwner>, ApplicationError> {
         Ok(self.store.build_owner(id).await?)
     }
 

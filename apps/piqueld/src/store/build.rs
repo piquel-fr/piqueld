@@ -309,22 +309,29 @@ impl Store {
             .collect::<Result<Vec<_>, StoreError>>()?;
         Ok(Page { items, next_cursor })
     }
-    /// Returns the owner of the environment a build attempt belongs to.
+    /// Returns the owner of the environment a build attempt belongs to, if
+    /// the build exists.
     /// # Errors
-    /// Returns not found or storage errors.
-    pub async fn build_owner(&self, id: i64) -> Result<super::EnvironmentOwner, StoreError> {
-        let row = sqlx::query!(
+    /// Returns storage errors.
+    pub async fn build_owner(
+        &self,
+        id: i64,
+    ) -> Result<Option<super::EnvironmentOwner>, StoreError> {
+        sqlx::query!(
             r#"SELECT e.application_id AS "application_id!",e.kind='preview' AS "preview!: bool" FROM builds b JOIN environments e ON e.id=b.environment_id WHERE b.id=?1"#,
             id
         )
         .fetch_optional(&self.pool)
         .await
         .map_err(StoreError::database)?
-        .ok_or(StoreError::NotFound)?;
-        Ok(super::EnvironmentOwner {
-            application: ApplicationId::parse(row.application_id).map_err(StoreError::corrupt)?,
-            preview: row.preview,
+        .map(|row| {
+            Ok(super::EnvironmentOwner {
+                application: ApplicationId::parse(row.application_id)
+                    .map_err(StoreError::corrupt)?,
+                preview: row.preview,
+            })
         })
+        .transpose()
     }
     /// Reads the newest output chunks before an optional exclusive cursor. Stream filtering happens before pagination.
     /// Pages hold up to 16 chunks in offset order; `previous_offset` is the cursor

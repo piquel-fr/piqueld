@@ -6980,6 +6980,20 @@ impl PreviewFixture {
         serde_json::json!({"action": "create_token", "grants": grants, "name": "agent", "days": 1})
     }
 
+    /// Records a finished build of `environment`, returning its ID.
+    async fn build(&self, environment: &str) -> i64 {
+        use sqlx::Connection as _;
+        let mut connection =
+            sqlx::SqliteConnection::connect(&format!("sqlite:{}", self.database.display()))
+                .await
+                .unwrap();
+        sqlx::query_scalar("INSERT INTO builds(environment_id,operation_id,service,source_json,state,started_at_ms) VALUES(?1,'operation','web','{}','succeeded',1) RETURNING id")
+            .bind(environment)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap()
+    }
+
     /// Creates a preview of `branch` as the agent, returning its ID.
     async fn preview(&self, branch: &str) -> String {
         let uri = format!("/api/v1/applications/{}/previews", self.blog);
@@ -7032,6 +7046,9 @@ async fn previews_permissions_manage_previews() {
     let logs = format!("/api/v1/environments/{preview}/logs?service=web&tail=5&since_seconds=60");
     let (status, body) = f.call(&f.agent, "GET", &logs, none.clone()).await;
     assert_eq!(status, 200, "{body}");
+    let build = format!("/api/v1/builds/{}/logs", f.build(&preview).await);
+    let (status, body) = f.call(&f.agent, "GET", &build, none.clone()).await;
+    assert_eq!(status, 200, "{body}");
     let delete = format!("/api/v1/previews/{preview}");
     assert_eq!(f.call(&f.agent, "DELETE", &delete, none).await.0, 202);
 }
@@ -7044,7 +7061,9 @@ async fn previews_permissions_reach_no_production_or_shared_state() {
     let f = PreviewFixture::new().await;
     let preview = f.preview("feat/one").await;
     let (blog, production) = (&f.blog, format!("/api/v1/environments/{}", f.production));
+    let build = f.build(&f.production).await;
     for (method, uri, permission) in [
+        ("GET", format!("/api/v1/builds/{build}/logs"), "logs:read"),
         ("GET", format!("{production}/logs"), "logs:read"),
         (
             "POST",
