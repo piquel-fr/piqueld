@@ -171,8 +171,9 @@ including restarts for updates. Once its listeners are bound and Docker Swarm is
 ready, the daemon records a `daemon_started` event in daemon history whose
 resource is its version, and whose message names the previous version after a
 change, such as `piqueld 0.2.0 started (previously 0.1.0)`. A start that fails
-before then records no event, so a missing notification after a restart means
-the daemon did not come up.
+before then records no event. A missing notification alone does not prove that,
+since notifications may be disabled or delivery may fail: check daemon history
+for the event and the delivery history for its status.
 
 ## Ownership and retention
 
