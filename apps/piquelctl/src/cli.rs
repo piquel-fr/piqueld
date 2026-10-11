@@ -275,6 +275,11 @@ pub(crate) enum Command {
     /// Show the daemon's effective host settings, read-only (requires
     /// system:read). Change them in its TOML configuration and restart it.
     Settings,
+    /// Check this CLI's connection and the installation's health.
+    ///
+    /// Shows the resolved endpoint and credential, then each daemon check as
+    /// pass, warn, fail, or skip with a next step. Exits 6 when a check fails.
+    Doctor,
     /// Inspect the daemon's DNS providers.
     Dns {
         #[command(subcommand)]

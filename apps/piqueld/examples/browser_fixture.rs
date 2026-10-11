@@ -169,7 +169,15 @@ async fn main() -> anyhow::Result<()> {
     let auth = piqueld::auth::Auth::new(&store, &origin)?;
     let setup = dir.join("setup-link");
     auth.prepare_setup(&setup).await?;
+    // Installation checks inspect these settings; the fixture serves no
+    // runtime socket, so its API socket check fails, as a real failure would.
+    let config = piqueld::config::DaemonConfig::from_toml(&format!(
+        "[server]\ndata_dir = '{}'\nruntime_dir = '{}'\n[auth]\npublic_url = '{origin}'",
+        dir.join("data").display(),
+        dir.display()
+    ))?;
     let (state, mut controller) = Backend::from_env().serve(store);
+    let state = state.with_configuration(&config);
     let router = piqueld::api::http::web_router(state.clone(), UiAssets::resolve(), auth.clone());
     let mut server = tokio::spawn(async move {
         axum::serve(

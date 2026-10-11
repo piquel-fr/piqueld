@@ -126,23 +126,36 @@ impl SecretCipher {
             if bound {
                 bail!(KeyFailure::Missing);
             }
-            let parent = path.parent().context("locate secret key directory")?;
-            let mut temporary = tempfile::NamedTempFile::new_in(parent)
-                .context("create private secret key file")?;
-            let mut key = XChaCha20Poly1305::generate_key(&mut OsRng);
-            let result = temporary.write_all(key.as_slice());
-            key.zeroize();
-            result.context("write secret master key")?;
-            temporary
-                .as_file()
-                .sync_all()
-                .context("sync secret master key")?;
-            temporary
-                .persist_noclobber(path)
-                .map_err(|e| e.error)
-                .context("install secret master key")?;
-            Self::sync_directory(path)?;
+            Self::generate(path)?;
         }
+        Self::open(path)
+    }
+
+    /// Writes a new key to `path`, which must not exist yet.
+    fn generate(path: &Path) -> anyhow::Result<()> {
+        use anyhow::Context;
+        let parent = path.parent().context("locate secret key directory")?;
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(parent).context("create private secret key file")?;
+        let mut key = XChaCha20Poly1305::generate_key(&mut OsRng);
+        let result = temporary.write_all(key.as_slice());
+        key.zeroize();
+        result.context("write secret master key")?;
+        temporary
+            .as_file()
+            .sync_all()
+            .context("sync secret master key")?;
+        temporary
+            .persist_noclobber(path)
+            .map_err(|e| e.error)
+            .context("install secret master key")?;
+        Self::sync_directory(path)
+    }
+
+    /// Opens an existing key without creating or changing anything, as the
+    /// installation check does.
+    pub(crate) fn open(path: &Path) -> anyhow::Result<Self> {
+        use anyhow::{Context, bail};
         let descriptor = rustix::fs::open(
             path,
             rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,

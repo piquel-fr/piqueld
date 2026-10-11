@@ -83,7 +83,7 @@ pub(super) async fn health() -> impl IntoResponse {
 pub(super) async fn configuration(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, super::ApiError> {
-    Ok(ok(state.configuration()?.clone()))
+    Ok(ok(state.host_configuration()?.clone()))
 }
 
 /// Checks whether deployment dependencies are ready.
@@ -110,4 +110,22 @@ pub(super) async fn readiness(
         },
         axum::Json(Envelope { data: status }),
     )
+}
+
+/// Checks the installation's health.
+///
+/// Inspects the live installation read-only: the public URL and its
+/// certificate, Docker against ingress requirements, ports 80/443, the secret
+/// key, the API socket's permissions, the tailnet node, and backups. Each
+/// check passes, warns, fails, or is skipped, with a next step when action is
+/// needed. Returns 503 when the daemon has no effective configuration, or
+/// `server_busy` while two runs are already in progress.
+#[utoipa::path(get,path="/api/v1/system/checks",operation_id="systemChecks",
+    responses((status=200,description="Installation checks",body=Envelope<piqueld_core::api::SystemChecks>),
+    (status=503,response=inline(super::openapi::ApiErrorResponse))))]
+pub(super) async fn checks(
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, super::ApiError> {
+    let _admitted = state.admit(crate::api::Expensive::Checks)?;
+    Ok(ok(state.system_checks().await?))
 }

@@ -126,6 +126,11 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>"
     },
     {
+      "schema": "Envelope_SystemChecks",
+      "name": "EnvelopeSystemChecks",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::SystemChecks>"
+    },
+    {
       "schema": "Envelope_SystemStatus",
       "name": "EnvelopeSystemStatus",
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::SystemStatus>"

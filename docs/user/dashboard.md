@@ -28,6 +28,8 @@ each, applications and previews.
 Its footer shows daemon connectivity and the signed-in account with a sign-out
 button. The home page and Applications show the five most recent deployments
 across applications; each row opens that deployment in its environment's history.
+Daemon status also runs the [installation checks](reference/cli.md#installation-checks)
+when it opens and on demand, showing each with its next step.
 Applications also has a clickable directory with each application's health (its
 least healthy environment) and last deployment time.
 

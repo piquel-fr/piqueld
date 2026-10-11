@@ -1,9 +1,10 @@
 //! Control-plane status, configuration, and readiness.
 pub use piqueld_core::api::{
-    CertificateStatus, DependencyStatus, DnsProviderStatus, DnsRecordState, DnsRecords, DnsStatus,
-    HostConfiguration, ImageStatus, IngressStatus, PrivateIngressStatus, PublicIngressStatus,
-    ReadinessStatus, RouteStatus, SnapshotLimits, SystemStatus, TailnetStatus,
-    TelemetryDestinationStatus, TelemetryReceiver, TelemetryStatus,
+    CertificateStatus, CheckStatus, DependencyStatus, DnsProviderStatus, DnsRecordState,
+    DnsRecords, DnsStatus, HostConfiguration, ImageStatus, IngressStatus, PrivateIngressStatus,
+    PublicIngressStatus, ReadinessStatus, RouteStatus, SnapshotLimits, SystemCheck, SystemCheckId,
+    SystemChecks, SystemStatus, TailnetStatus, TelemetryDestinationStatus, TelemetryReceiver,
+    TelemetryStatus,
 };
 
 use crate::{Client, ClientError, client::EnvelopedCall};
@@ -31,6 +32,13 @@ impl Client {
     /// Returns transport, API or decoding errors.
     pub async fn system_configuration(&self) -> Result<HostConfiguration, ClientError> {
         self.generated.system_configuration().data().await
+    }
+
+    /// Checks the installation's health without changing it.
+    /// # Errors
+    /// Returns transport, API or decoding errors.
+    pub async fn system_checks(&self) -> Result<SystemChecks, ClientError> {
+        self.generated.system_checks().data().await
     }
 
     /// Reads diagnostic readiness, including a structured 503 response.

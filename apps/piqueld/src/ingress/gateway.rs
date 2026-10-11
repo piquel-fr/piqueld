@@ -30,6 +30,35 @@ use std::{
     time::Duration,
 };
 
+/// Docker Engine and API versions, e.g. `28.1.1` and `1.49`.
+pub(super) struct DockerVersion {
+    pub(super) engine: String,
+    pub(super) api: String,
+}
+
+impl DockerVersion {
+    /// Whether the engine is Docker Engine 28+ with API 1.48+, which support
+    /// the per-endpoint `GwPriority` used to keep the edge network as the
+    /// default route.
+    ///
+    /// ```text
+    /// {"Version": "28.1.1", "ApiVersion": "1.49"}  -> true
+    /// {"Version": "27.5.0", "ApiVersion": "1.47"}  -> false
+    /// ```
+    pub(super) fn supports_ingress(&self) -> bool {
+        let major = self
+            .engine
+            .split('.')
+            .next()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        let api = self.api.split_once('.').and_then(|(major, minor)| {
+            Some((major.parse::<u32>().ok()?, minor.parse::<u32>().ok()?))
+        });
+        major >= 28 && api.is_some_and(|v| v >= (1, 48))
+    }
+}
+
 /// SHA-256 of the managed container spec; a mismatch triggers replacement.
 pub(super) const CONFIGURATION_LABEL: &str = "io.piqueld.ingress-configuration";
 /// The writable scratch space of managed containers with a temporary directory.
@@ -170,31 +199,23 @@ impl Ingress {
         Ok(())
     }
 
-    /// Requires Docker Engine 28+ with API 1.48+, which support the per-endpoint
-    /// `GwPriority` used to keep the edge network as the default route.
-    ///
-    /// ```text
-    /// {"Version": "28.1.1", "ApiVersion": "1.49"}  -> ok
-    /// {"Version": "27.5.0", "ApiVersion": "1.47"}  -> error
-    /// ```
+    /// Requires a Docker Engine that [supports ingress](DockerVersion::supports_ingress).
     async fn check_version(&self) -> Result<()> {
-        let version = self.docker.get("/version").await?;
-        let major = version["Version"]
-            .as_str()
-            .and_then(|v| v.split('.').next())
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
-        let api = version["ApiVersion"]
-            .as_str()
-            .and_then(|v| v.split_once('.'))
-            .and_then(|(major, minor)| {
-                Some((major.parse::<u32>().ok()?, minor.parse::<u32>().ok()?))
-            });
         ensure!(
-            major >= 28 && api.is_some_and(|v| v >= (1, 48)),
+            self.docker_version().await?.supports_ingress(),
             "Docker Engine 28+ with API 1.48+ is required for ingress network gateway priority"
         );
         Ok(())
+    }
+
+    /// The engine's versions, as `GET /version` reports them.
+    pub(super) async fn docker_version(&self) -> Result<DockerVersion> {
+        let version = self.docker.get("/version").await?;
+        let field = |name: &str| version[name].as_str().unwrap_or_default().to_owned();
+        Ok(DockerVersion {
+            engine: field("Version"),
+            api: field("ApiVersion"),
+        })
     }
 
     /// The subnets of the edge network: the only peers whose PROXY headers the
@@ -1105,5 +1126,27 @@ impl Ingress {
             remaining = &remaining[8 + length..];
         }
         Ok(lines)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DockerVersion;
+
+    #[test]
+    fn ingress_needs_engine_28_with_api_1_48() {
+        for (engine, api, supported) in [
+            ("28.1.1", "1.49", true),
+            ("29.0.0", "1.48", true),
+            ("27.5.0", "1.47", false),
+            ("28.0.0", "1.47", false),
+            ("", "", false),
+        ] {
+            let version = DockerVersion {
+                engine: engine.into(),
+                api: api.into(),
+            };
+            assert_eq!(version.supports_ingress(), supported, "{engine} {api}");
+        }
     }
 }
