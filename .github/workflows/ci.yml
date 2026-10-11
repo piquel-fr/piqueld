@@ -11,8 +11,11 @@
 #   cli (macOS)        -> validate-cli
 #   nix                -> the combined Nix package
 #
-# Pull requests run only the jobs whose inputs changed (see `changes`); pushes
-# to main and manual runs run everything, and build every Nix package.
+# Pull requests run only the jobs whose inputs changed (see `changes`). Draft
+# pull requests run only the quick jobs (checks, rust, wasm-ui): the slower
+# ones (Docker, Playwright, macOS, Nix) wait until the pull request is marked
+# ready, so iterating on a draft stays cheap. Pushes to main and manual runs
+# run everything, and build every Nix package.
 # `ci` is the single status to require: it fails if any job failed and passes
 # when the rest succeeded or were skipped.
 #
@@ -23,6 +26,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
   workflow_dispatch:
@@ -43,10 +47,11 @@ env:
   NEXTEST_PROFILE: ci
 
 jobs:
-  # Decides which jobs a pull request needs from the paths it changes. Each
-  # filter lists a job's inputs, following the workspace dependency graph:
-  # piqueld-core <- piqueld-client <- piquelctl, piqueld-ui, xtask, and the
-  # daemon embeds piqueld-ui. Workspace-wide inputs run everything.
+  # Decides which jobs a pull request needs from the paths it changes, and
+  # holds the slow ones back while it is a draft. Each filter lists a job's
+  # inputs, following the workspace dependency graph: piqueld-core <-
+  # piqueld-client <- piquelctl, piqueld-ui, xtask, and the daemon embeds
+  # piqueld-ui. Workspace-wide inputs run everything.
   changes:
     name: changes
     runs-on: ubuntu-latest
@@ -57,10 +62,10 @@ jobs:
       rust: ${{ github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' }}
       deny: ${{ github.event_name != 'pull_request' || steps.filter.outputs.deny == 'true' }}
       ui: ${{ github.event_name != 'pull_request' || steps.filter.outputs.ui == 'true' }}
-      cli: ${{ github.event_name != 'pull_request' || steps.filter.outputs.cli == 'true' }}
-      docker: ${{ github.event_name != 'pull_request' || steps.filter.outputs.docker == 'true' }}
-      playwright: ${{ github.event_name != 'pull_request' || steps.filter.outputs.playwright == 'true' }}
-      nix: ${{ github.event_name != 'pull_request' || steps.filter.outputs.nix == 'true' }}
+      cli: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.cli == 'true' && !github.event.pull_request.draft) }}
+      docker: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.docker == 'true' && !github.event.pull_request.draft) }}
+      playwright: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.playwright == 'true' && !github.event.pull_request.draft) }}
+      nix: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.nix == 'true' && !github.event.pull_request.draft) }}
     steps:
       - if: github.event_name == 'pull_request'
         id: filter
@@ -113,8 +118,7 @@ jobs:
               - tools/**
               - examples/**
               - tests/playwright/**
-            # The flake's package sources, built with nixpkgs' Rust, which
-            # can lag the stable release the cargo jobs use.
+            # The flake's package sources.
             nix:
               - *crates
               - flake.nix
@@ -316,7 +320,7 @@ jobs:
           purge-last-accessed: P1D
           purge-primary-key: never
       - name: Build Nix packages
-        run: nix build -L .#default .#default.cargoArtifacts .#dashboard .#dashboard.cargoArtifacts .#probe.cargoArtifacts
+        run: nix build -L .#default .#default.cargoArtifacts .#dashboard .#dashboard.cargoArtifacts
       - name: Build the other Nix packages
         run: nix build -L --out-link result-other ${{ github.event_name == 'pull_request' && '--dry-run' || '' }} .#cli .#cli.cargoArtifacts .#daemon
 

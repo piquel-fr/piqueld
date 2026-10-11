@@ -19,6 +19,10 @@ the manifest, CLI, and dashboard preview.
 
 Titles should follow the `feat(server): add docker swarm reconciliation` convention.
 
+Open pull requests as drafts and mark them ready for review once the work is
+done. Drafts run only the quick CI jobs; marking a pull request ready runs the
+slow ones (Docker, Playwright, macOS, Nix), which it must pass before merging.
+
 ## Adding features
 
 **piqueld** has three different surfaces to access its features: the manifest,
