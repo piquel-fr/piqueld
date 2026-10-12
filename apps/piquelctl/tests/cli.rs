@@ -1936,28 +1936,76 @@ fn field_edit_sends_only_the_selected_value_and_defaults_to_save_only() {
             json!({"value":null}),
         ),
     ] {
-        let server = start_server(false, 2, move |request| {
-            if request.method == "GET" {
-                return Reply::json(app_view("app-notes-01", "notes"));
-            }
-            assert_eq!(request.method, "PUT");
-            assert_eq!(
-                request.path,
-                format!(
-                    "/api/v1/applications/app-notes-01/services/web/{suffix}?deploy=false&expected_generation=1&force=false"
-                )
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&request.body).unwrap(),
-                expected
-            );
-            assert!(request.headers.contains_key("idempotency-key"));
-            Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
-        });
-        let output = run(&server, &arguments);
-        assert_eq!(assert_json_success(&output)["generation"], 2);
-        assert_eq!(server.finish().len(), 2);
+        assert_saves_field(&arguments, suffix, &expected);
     }
+}
+
+/// Runs `arguments` against a server that serves the `notes` application,
+/// asserting they save only `expected` at the service field `suffix`.
+fn assert_saves_field(arguments: &[&str], suffix: &str, expected: &Value) {
+    let (suffix, expected) = (suffix.to_owned(), expected.clone());
+    let server = start_server(false, 2, move |request| {
+        if request.method == "GET" {
+            return Reply::json(app_view("app-notes-01", "notes"));
+        }
+        assert_eq!(request.method, "PUT");
+        assert_eq!(
+            request.path,
+            format!(
+                "/api/v1/applications/app-notes-01/services/web/{suffix}?deploy=false&expected_generation=1&force=false"
+            )
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&request.body).unwrap(),
+            expected
+        );
+        assert!(request.headers.contains_key("idempotency-key"));
+        Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
+    });
+    let output = run(&server, arguments);
+    assert_eq!(assert_json_success(&output)["generation"], 2);
+    assert_eq!(server.finish().len(), 2);
+}
+
+#[test]
+fn file_add_inlines_local_files_and_names_repository_files() {
+    let directory = tempdir().expect("file directory");
+    let local = directory.path().join("prometheus.yml");
+    std::fs::write(&local, "scrape: ${HOME} {{ .x }}\n").expect("local file");
+    let local = local.to_str().expect("UTF-8 path");
+    // Local files are inlined verbatim, never rendered.
+    assert_saves_field(
+        &[
+            "app",
+            "file",
+            "add",
+            "app-notes-01",
+            "web",
+            "/etc/prometheus/prometheus.yml",
+            "--from",
+            local,
+            "--yes",
+        ],
+        "file",
+        &json!({"target":"/etc/prometheus/prometheus.yml","content":"scrape: ${HOME} {{ .x }}\n"}),
+    );
+    assert_saves_field(
+        &[
+            "app",
+            "file",
+            "add",
+            "app-notes-01",
+            "web",
+            "/etc/otelcol/config.yaml",
+            "--path",
+            "otel/config.yaml",
+            "--mode",
+            "640",
+            "--yes",
+        ],
+        "file",
+        &json!({"target":"/etc/otelcol/config.yaml","path":"otel/config.yaml","mode":"0640"}),
+    );
 }
 
 #[test]

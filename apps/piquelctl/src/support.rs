@@ -107,74 +107,78 @@ pub(crate) async fn read_input<T: Send + 'static>(
     })
 }
 
-/// Reads a UTF-8 manifest of at most `MAX_MANIFEST_BYTES` on a blocking thread.
-/// Only regular files are accepted; the type is checked both before and after
-/// opening, and the read itself is capped in case the file grows.
+/// Reads a UTF-8 manifest of at most `MAX_MANIFEST_BYTES`; see [`read_text`].
 pub(crate) async fn read_manifest(path: &Path) -> Result<String> {
+    read_text(path, "manifest", MAX_MANIFEST_BYTES).await
+}
+
+/// Reads the UTF-8 `what` at `path`, of at most `limit` bytes, on a blocking
+/// thread. Only regular files are accepted; the type is checked both before
+/// and after opening, and the read itself is capped in case the file grows.
+pub(crate) async fn read_text(path: &Path, what: &'static str, limit: u64) -> Result<String> {
     let path = path.to_owned();
     let display_path = path.display().to_string();
     tokio::task::spawn_blocking(move || {
         let metadata = std::fs::metadata(&path).map_err(|error| {
             CliError::new(
                 ErrorKind::Input,
-                format!("could not read manifest {}: {error}", path.display()),
+                format!("could not read {what} {}: {error}", path.display()),
             )
         })?;
         if !metadata.is_file() {
             return Err(CliError::new(
                 ErrorKind::Input,
-                format!("manifest path {} is not a regular file", path.display()),
+                format!("{what} path {} is not a regular file", path.display()),
             ));
         }
         let file = std::fs::File::open(&path).map_err(|error| {
             CliError::new(
                 ErrorKind::Input,
-                format!("could not read manifest {}: {error}", path.display()),
+                format!("could not read {what} {}: {error}", path.display()),
             )
         })?;
         let metadata = file.metadata().map_err(|error| {
             CliError::new(
                 ErrorKind::Input,
-                format!("could not inspect manifest {}: {error}", path.display()),
+                format!("could not inspect {what} {}: {error}", path.display()),
             )
         })?;
         if !metadata.is_file() {
             return Err(CliError::new(
                 ErrorKind::Input,
-                format!("manifest path {} is not a regular file", path.display()),
+                format!("{what} path {} is not a regular file", path.display()),
             ));
         }
-        if metadata.len() > MAX_MANIFEST_BYTES {
+        if metadata.len() > limit {
             return Err(CliError::new(
                 ErrorKind::Input,
                 format!(
-                    "manifest {} exceeds the {}-byte input limit",
-                    path.display(),
-                    MAX_MANIFEST_BYTES
+                    "{what} {} exceeds the {limit}-byte input limit",
+                    path.display()
                 ),
             ));
         }
         // Cap the read itself so a concurrently growing file cannot force an
         // unbounded allocation after the metadata check.
         let mut bytes = Vec::new();
-        file.take(MAX_MANIFEST_BYTES + 1)
+        file.take(limit + 1)
             .read_to_end(&mut bytes)
             .map_err(|error| {
                 CliError::new(
                     ErrorKind::Input,
-                    format!("could not read manifest {}: {error}", path.display()),
+                    format!("could not read {what} {}: {error}", path.display()),
                 )
             })?;
-        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        if bytes.len() as u64 > limit {
             return Err(CliError::new(
                 ErrorKind::Input,
-                format!("manifest {} exceeds the input limit", path.display()),
+                format!("{what} {} exceeds the input limit", path.display()),
             ));
         }
         String::from_utf8(bytes).map_err(|_| {
             CliError::new(
                 ErrorKind::Input,
-                format!("manifest {} is not valid UTF-8", path.display()),
+                format!("{what} {} is not valid UTF-8", path.display()),
             )
         })
     })
@@ -182,7 +186,7 @@ pub(crate) async fn read_manifest(path: &Path) -> Result<String> {
     .map_err(|error| {
         CliError::new(
             ErrorKind::General,
-            format!("could not read manifest {display_path}: {error}"),
+            format!("could not read {what} {display_path}: {error}"),
         )
     })?
 }

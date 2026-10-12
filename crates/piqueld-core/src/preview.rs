@@ -3,7 +3,7 @@ use crate::{
     DiagnosticSeverity, NormalizedApplication, PlanDiagnostic,
     api::{ManifestChange, ServiceRolloutView},
     codes,
-    manifest::ApplicationSpec,
+    manifest::{ApplicationSpec, FileSource, files::content_digest},
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,12 +36,16 @@ impl ManifestChange {
     }
 
     /// Flattens a specification into comparable field paths. Services contribute
-    /// one entry per top-level setting except `name`; routes are keyed by
-    /// hostname, volumes only record presence, and variables are keyed by name.
+    /// one entry per top-level setting except `name`, and one per file, keyed
+    /// by target, which summarizes inline content by size and digest; routes
+    /// are keyed by hostname, volumes only record presence, and variables are
+    /// keyed by name.
     ///
     /// ```text
     /// manifest                              -> repository manifest settings
     /// services.web.replicas                 -> 3
+    /// services.web.files./etc/app.yaml      -> "path: app.yaml, mode: 0444"
+    /// services.web.files./etc/motd          -> "content: 5 bytes, sha256:2cf24dba5fb0, mode: 0444"
     /// routes.app.example.com                -> {"service":"web","port":3000}
     /// volumes.data                          -> "present (retained if removed)"
     /// variables.domain                      -> "example.com"
@@ -50,11 +54,27 @@ impl ManifestChange {
     /// previews.visibility                   -> "public"
     /// ```
     fn fields(spec: &ApplicationSpec) -> BTreeMap<String, Value> {
+        let mut fields = BTreeMap::new();
+        for service in &spec.services {
+            for file in &service.files {
+                let source = match &file.source {
+                    FileSource::Path(path) => format!("path: {path}"),
+                    FileSource::Content(content) => format!(
+                        "content: {} bytes, sha256:{}",
+                        content.len(),
+                        &content_digest(content)[..12]
+                    ),
+                };
+                fields.insert(
+                    format!("services.{}.files.{}", service.name, file.target),
+                    Value::String(format!("{source}, mode: {}", file.mode)),
+                );
+            }
+        }
         let Ok(Value::Object(mut spec)) = serde_json::to_value(spec) else {
             return BTreeMap::new();
         };
         let mut take = |key: &str| spec.remove(key).unwrap_or(Value::Null);
-        let mut fields = BTreeMap::new();
         if let Some(manifest) = Some(take("manifest")).filter(|value| !value.is_null()) {
             fields.insert("manifest".into(), manifest);
         }
@@ -83,7 +103,9 @@ impl ManifestChange {
         };
         for (path, service) in entries("services", "name", &mut fields) {
             for (key, value) in service {
-                fields.insert(format!("{path}.{key}"), value);
+                if key != "files" {
+                    fields.insert(format!("{path}.{key}"), value);
+                }
             }
         }
         for (path, route) in entries("routes", "hostname", &mut fields) {

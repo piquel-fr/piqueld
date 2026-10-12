@@ -9,11 +9,12 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{Source, edit::ApplicationEdit};
 
-const SERVICE_TABS: [&str; 9] = [
+const SERVICE_TABS: [&str; 10] = [
     Section::General.title(),
     Section::Environment.title(),
     Section::Process.title(),
     Section::Storage.title(),
+    Section::Files.title(),
     Section::Health.title(),
     Section::Dependencies.title(),
     Section::Rollout.title(),

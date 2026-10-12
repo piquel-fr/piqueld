@@ -344,8 +344,8 @@ A future user-deployed Prometheus/collector/Grafana application needs:
 2. A reachable scrape endpoint, or host access for a separately operated log
    collector. Docker service/build log APIs are bounded snapshots, not an external
    log-shipping protocol.
-3. Monitoring configuration and Grafana provisioning, either baked into images or
-   supplied through a future file/config mounting feature.
+3. Monitoring configuration and Grafana provisioning, mounted as read-only
+   [files](application-manifest.md#files) from the manifest's repository.
 4. Browser access to Grafana. Services reach each other by manifest name on the
    application's private network (for example `prometheus:9090`); published
    ports would make external access straightforward, otherwise users must

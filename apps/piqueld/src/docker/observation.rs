@@ -153,6 +153,7 @@ impl BollardDocker {
                     })
                 })
                 .collect(),
+            files: BollardDocker::observed_files(container),
             healthcheck: container
                 .health_check
                 .as_ref()

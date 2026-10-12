@@ -620,6 +620,12 @@ impl DockerApi for BollardDocker {
             .await
     }
 
+    async fn prune_files(&self, ownership: &BTreeMap<String, String>) -> Result<(), DockerError> {
+        DockerTimeout::Request
+            .run("prune service files", self.remove_unused_files(ownership))
+            .await
+    }
+
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
         // Pulling through the Engine records RepoDigests, and resolution
         // verifies the tag was not re-pointed while the pull ran. Stream

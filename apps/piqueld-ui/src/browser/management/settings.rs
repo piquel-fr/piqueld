@@ -4,11 +4,11 @@ use super::super::ui::{
     Icon, Modal, Tone, copy_button, icon, notice, remove_button, text_input, when,
 };
 use super::{dirty_group, editor, save_actions};
-use crate::editor::{Section, ServiceForm};
+use crate::editor::{FileForm, Section, ServiceForm};
 use leptos::prelude::*;
 use piqueld_client::{
-    ApplicationView, Client, GitRepository, Mount, RepositoryManifest, Rollout, Service, Source,
-    Typed, Volume,
+    ApplicationView, Client, FileSource, GitRepository, Mount, RepositoryManifest, Rollout,
+    Service, Source, Typed, Volume,
     edit::{ApplicationEdit, ServiceEdit, ServiceGeneral, ServiceProcess},
     sync::RepositorySync,
 };
@@ -599,6 +599,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
                 arguments: service.arguments.clone(),
             }),
             Section::Storage => ServiceEdit::Mounts(service.mounts.clone()),
+            Section::Files => ServiceEdit::Files(service.files.clone()),
             Section::Health => ServiceEdit::Healthcheck(service.healthcheck.clone()),
             Section::Dependencies => ServiceEdit::DependsOn(service.depends_on.clone()),
             Section::Rollout => ServiceEdit::Rollout(service.rollout.clone()),
@@ -634,6 +635,9 @@ const fn section_hint(section: Section) -> &'static str {
             "Each row is one element. Spaces are preserved; no shell parsing is applied."
         }
         Section::Storage => "Mount declared volumes at absolute container paths.",
+        Section::Files => {
+            "Read-only files at absolute container paths, mounted exactly as written: contents never reference variables. Images that rewrite their configuration at startup must copy it somewhere writable."
+        }
         Section::Health => {
             "Docker restarts unhealthy replicas and counts only healthy ones toward readiness."
         }
@@ -763,6 +767,7 @@ pub(super) fn service_fields(
         }
         .into_any(),
         Section::Storage => mount_fields(form),
+        Section::Files => file_fields(form),
         Section::Health => health_fields(form),
         Section::Dependencies => dependency_fields(service, form),
         Section::Rollout => rollout_fields(form),
@@ -992,6 +997,105 @@ pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> AnyView {
     }
     .into_any()
 }
+/// File rows: container path, mode, and the inline content or, for files a
+/// repository-backed manifest declares, their repository path.
+pub(super) fn file_fields(form: RwSignal<ServiceForm>) -> AnyView {
+    // Reads or writes the `i`th file's fields, if it still exists.
+    let read = |i: usize, field: fn(&FileForm) -> String| {
+        move |v: &ServiceForm| v.files.get(i).map_or_else(String::new, field)
+    };
+    let write = |i: usize, field: fn(&mut FileForm, String)| {
+        move |v: &mut ServiceForm, s: String| {
+            if let Some(file) = v.files.get_mut(i) {
+                field(file, s);
+            }
+        }
+    };
+    view! {
+        <div class="form-list">
+            <For
+                each={move || (0..form.with(|v| v.files.len())).collect::<Vec<_>>()}
+                key={|i| *i}
+                children={move |i| {
+                    let repository = form
+                        .with_untracked(|v| {
+                            v.files
+                                .get(i)
+                                .is_some_and(|file| matches!(file.source, FileSource::Path(_)))
+                        });
+                    view! {
+                        <div class="stack-sm">
+                            <div class="form-row">
+                                {text_input(
+                                    "Container path",
+                                    form,
+                                    read(i, |file| file.target.clone()),
+                                    write(i, |file, s| file.target = s),
+                                )}
+                                {text_input(
+                                    "Mode",
+                                    form,
+                                    read(i, |file| file.mode.clone()),
+                                    write(i, |file, s| file.mode = s),
+                                )}
+                                {remove_button(move || {
+                                    form
+                                        .update(|v| {
+                                            v.files.remove(i);
+                                        })
+                                })}
+                            </div>
+                            {if repository {
+                                text_input(
+                                    "Repository path",
+                                    form,
+                                    read(
+                                        i,
+                                        |file| match &file.source {
+                                            FileSource::Path(path) => path.clone(),
+                                            FileSource::Content(_) => String::new(),
+                                        },
+                                    ),
+                                    write(i, |file, s| file.source = FileSource::Path(s)),
+                                )
+                            } else {
+                                view! {
+                                    <label class="field">
+                                        <span>"Content"</span>
+                                        <textarea
+                                            spellcheck="false"
+                                            rows="6"
+                                            prop:value={move || {
+                                                form.with(read(
+                                                    i,
+                                                    |file| match &file.source {
+                                                        FileSource::Content(content) => content.clone(),
+                                                        FileSource::Path(_) => String::new(),
+                                                    },
+                                                ))
+                                            }}
+                                            on:input={move |event| {
+                                                form.update(|v| {
+                                                    write(
+                                                        i,
+                                                        |file, s| file.source = FileSource::Content(s),
+                                                    )(v, event_target_value(&event))
+                                                })
+                                            }}
+                                        ></textarea>
+                                    </label>
+                                }
+                                    .into_any()
+                            }}
+                        </div>
+                    }
+                }}
+            />
+        </div>
+        {add_button("Add file", move || form.update(|v| v.files.push(FileForm::default())))}
+    }
+    .into_any()
+}
 /// Health check type selector with the interval, timeout, and HTTP or command
 /// fields relevant to the chosen type.
 pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
@@ -1095,6 +1199,7 @@ pub(super) fn NewService() -> impl IntoView {
         let (name, image) = fields.get_untracked();
         let service = Service {
             secrets: Vec::new(),
+            files: Vec::new(),
             name,
             source: Source::Image {
                 image: image.into(),

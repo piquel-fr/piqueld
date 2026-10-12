@@ -210,6 +210,8 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/services/{service}/{command,arguments}` | `{ "value": ["element", "..."] }` |
 | PUT | `/services/{service}/mount` | `Mount`; adds/replaces by container target |
 | DELETE | `/services/{service}/mount` | `{ "value": "/container/target" }` |
+| PUT | `/services/{service}/file` | `ServiceFile`, e.g. `{ "target": "/etc/app/motd", "content": "hello" }`; adds/replaces by container target |
+| DELETE | `/services/{service}/file` | `{ "value": "/container/target" }` |
 | PUT | `/services/{service}/depends-on` | `{ "value": ["db"] }`; replaces the services that must be healthy before this one rolls out |
 | PUT | `/services/{service}/rollout` | `{ "value": { "order": "stop-first", "monitor_seconds": 30 } }`; replaces the rollout block, and omitted fields use their defaults |
 | PUT | `/services/{service}/secrets` | `{ "value": [{ "name": "token", "target": "/run/secrets/token" }] }`; replaces file references without exposing values |
@@ -237,7 +239,7 @@ Routes remain saved while ingress is disabled and become active only after deplo
 with ingress enabled in the daemon's read-only TOML configuration.
 
 For dashboard forms, typed section endpoints also allow atomically replacing
-`/volumes`, service `/environment`, `/mounts`, `/resources`, `/general`
+`/volumes`, service `/environment`, `/mounts`, `/files`, `/resources`, `/general`
 (source and replicas), and `/process` (command and arguments). These never replace
 the complete application manifest. See the generated OpenAPI document for exact
 request schemas and error responses.

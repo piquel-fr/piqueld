@@ -74,6 +74,23 @@ test('adds a service and edits it on the service page', async ({ page, account }
   await expect(page.locator('a.list-row', { hasText: 'web' })).toContainText('3 replicas');
 });
 
+test('mounts an inline file whose content is kept verbatim', async ({ page, account }) => {
+  void account;
+  await createApplication(page);
+  await addService(page, 'web', 'nginx:1.27');
+  await page.locator('a.list-row', { hasText: 'web' }).click();
+  await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: 'Files', exact: true }).click();
+  await page.getByRole('button', { name: 'Add file', exact: true }).click();
+  await page.getByLabel('Container path', { exact: true }).fill('/etc/prometheus/prometheus.yml');
+  await page.getByLabel('Mode', { exact: true }).fill('0640');
+  await page.getByLabel('Content', { exact: true }).fill('target: ${{ vars.missing }} {{ .x }}');
+  await save(page);
+  await page.reload();
+  await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: 'Files', exact: true }).click();
+  await expect(page.getByLabel('Mode', { exact: true })).toHaveValue('0640');
+  await expect(page.getByLabel('Content', { exact: true })).toHaveValue('target: ${{ vars.missing }} {{ .x }}');
+});
+
 test('saves volumes and routes, previews the plan, and records a deployment', async ({ page, account }) => {
   void account;
   await createApplication(page);

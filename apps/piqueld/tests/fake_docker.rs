@@ -239,6 +239,11 @@ impl ImageSource for RegistryView {
 fn observed_service(desired: &DesiredService) -> ObservedService {
     ObservedService {
         secrets: desired.secrets.clone(),
+        files: desired
+            .files
+            .iter()
+            .map(piqueld_core::resource::ObservedFile::from)
+            .collect(),
         name: desired.name.to_string(),
         image: desired.image.to_string(),
         replicas: desired.replicas,
@@ -402,6 +407,10 @@ impl DockerApi for FakeDocker {
     }
 
     async fn prune_health_probes(&self) -> Result<(), DockerError> {
+        Ok(())
+    }
+
+    async fn prune_files(&self, _ownership: &BTreeMap<String, String>) -> Result<(), DockerError> {
         Ok(())
     }
 
@@ -2627,6 +2636,60 @@ mod repository_deployments {
             panic!("environment expected")
         };
         environment.id
+    }
+
+    /// Repository files are read at the commit each deployment fetches, mount
+    /// their bytes verbatim, and a missing one fails the fetch naming it.
+    /// Saved manifests keep the path, never the bytes.
+    #[tokio::test]
+    async fn repository_files_are_captured_at_the_fetched_commit() {
+        use piqueld_core::manifest::{FileMode, FileSource, ServiceFile};
+        let repository = RepositoryFixture::new();
+        let harness = ControllerHarness::new().await;
+        let mut main = repository.manifest("app.json");
+        main.spec.services[0].files = vec![ServiceFile {
+            target: "/etc/otel.yaml".into(),
+            source: FileSource::Path("otel.yaml".into()),
+            mode: FileMode::default(),
+        }];
+        repository.write("app.json", &main);
+        let otel = repository.directory.path().join("otel.yaml");
+        std::fs::write(&otel, "home: ${HOME}\n").unwrap();
+        repository.commit();
+        let first = harness
+            .applications()
+            .apply(main.clone().validate_template().unwrap(), Some(0))
+            .await
+            .unwrap();
+        harness.finish(&first).await;
+        let environment = first.environment_id;
+        let deployed = async || {
+            let current = harness.store.get(&environment).await.unwrap();
+            assert!(current.application.application.files().is_empty());
+            current.resolved.unwrap().services[0].files[0]
+                .content
+                .clone()
+        };
+        assert_eq!(deployed().await, "home: ${HOME}\n");
+
+        std::fs::write(&otel, "home: /root\n").unwrap();
+        repository.commit();
+        let changed = RepositoryFixture::deploy(&harness, &environment).await;
+        assert_eq!(changed.state, OperationState::Succeeded);
+        assert_eq!(deployed().await, "home: /root\n");
+
+        std::fs::remove_file(&otel).unwrap();
+        repository.commit();
+        let missing = RepositoryFixture::deploy(&harness, &environment).await;
+        assert_eq!(
+            (missing.state, missing.error_code.as_deref()),
+            (OperationState::Failed, Some("manifest_invalid"))
+        );
+        assert_eq!(
+            missing.error_message.as_deref(),
+            Some("repository file otel.yaml does not exist at the fetched commit")
+        );
+        assert_eq!(deployed().await, "home: /root\n");
     }
 
     /// A fetched file's `spec.manifest` never redirects later fetches: it is

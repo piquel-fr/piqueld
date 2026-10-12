@@ -28,6 +28,27 @@ validated_string!(
     crate::resource::valid_logical_name
 );
 
+validated_string!(
+    /// A Docker config name, distinct from other resource kinds.
+    DockerConfigName, DockerConfigNameError,
+    "managed Docker config names must be 1-63 lowercase letters, digits, or internal hyphens",
+    crate::resource::valid_logical_name
+);
+
+impl DockerConfigName {
+    /// Names the config holding a file's `content` for an environment. Configs
+    /// are immutable, so the name follows the content: new content is a new
+    /// config, and unchanged content keeps its config across deployments.
+    #[must_use]
+    pub fn for_file(id: &EnvironmentId, content: &str) -> Self {
+        Self(docker_resource_name(
+            id,
+            ResourceKind::File,
+            Some(&crate::manifest::files::content_digest(content)),
+        ))
+    }
+}
+
 impl DockerNetworkName {
     /// Whether this is the canonical private or ingress network for an application.
     #[must_use]

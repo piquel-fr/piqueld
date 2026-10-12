@@ -5,11 +5,11 @@ use piqueld_client::{
     AcceptedOperation, AcceptedPromotion, ActionReason, ActionRisk, ApplicationId, ApplicationLogs,
     ApplicationSummary, ApplicationView, BranchState, BuildLogPage, BuildRecord, CreatedPreview,
     DeletedApplication, DeletedPreview, DeploymentOrigin, DnsStatus, EnvironmentDetailView,
-    EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event, ImageStatus, LocalSnapshot,
-    MountedSecret, Operation, OperationState, Page, PlanView, PreviewUsage, PreviewView,
-    ReleaseAvailability, ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl,
-    SavedApplication, SecretMetadata, SecretProblem, ServiceImage, Source, StoredSecret,
-    SystemStatus, UrlState,
+    EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event, FileSource, ImageStatus,
+    LocalSnapshot, MountedSecret, Operation, OperationState, Page, PlanView, PreviewUsage,
+    PreviewView, ReleaseAvailability, ReleaseId, ReleasePlan, ReleaseView, ResolvedSource,
+    RouteUrl, SavedApplication, SecretMetadata, SecretProblem, ServiceFile, ServiceImage, Source,
+    StoredSecret, SystemStatus, UrlState,
     sync::{SyncState, WebhookSecret, WebhookView},
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
@@ -192,6 +192,38 @@ report!(PreviewUsage, self, out, {
     }
     Ok(())
 });
+
+/// One file of `file list`, with the service mounting it.
+#[derive(Serialize)]
+pub(crate) struct FileRow {
+    pub(crate) service: String,
+    #[serde(flatten)]
+    pub(crate) file: ServiceFile,
+}
+
+impl Report for Vec<FileRow> {
+    type Json = [FileRow];
+    fn json(&self) -> &Self::Json {
+        self
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        if self.is_empty() {
+            return out.line("No files.");
+        }
+        out.heading("SERVICE  TARGET  MODE  SOURCE")?;
+        for row in self {
+            let source = match &row.file.source {
+                FileSource::Path(path) => format!("repository {path}"),
+                FileSource::Content(content) => format!("inline, {} bytes", content.len()),
+            };
+            out.line(format_args!(
+                "{}  {}  {}  {source}",
+                row.service, row.file.target, row.file.mode
+            ))?;
+        }
+        Ok(())
+    }
+}
 
 /// One deployed route of `route list`, with its environment's name.
 #[derive(Serialize)]

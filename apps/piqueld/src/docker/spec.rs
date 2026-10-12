@@ -12,13 +12,14 @@ use piqueld_core::manifest::{RolloutOrder, RolloutPolicy};
 impl BollardDocker {
     /// Builds the service specification pinned to `node_id`, then resolves
     /// the inputs Docker assigns: each pinned secret becomes its immutable
-    /// Docker secret ID reference, services whose health check runs
-    /// `piqueld-probe` mount its Swarm config, published on first use, and
+    /// Docker secret ID reference, each file and, for services whose health
+    /// check runs `piqueld-probe`, the probe mount their Swarm configs,
+    /// published on first use, and
     /// services attached to the application's ingress network get
     /// `INGRESS_PROXIES_ENV` set to that network's subnets.
     ///
-    /// Fails when a secret version is missing, when the health probe cannot be
-    /// published, or when the ingress network is missing or still has no
+    /// Fails when a secret version is missing, when a file or the health probe
+    /// cannot be published, or when the ingress network is missing or still has no
     /// subnet after bounded inspection retries, since Swarm assigns subnets
     /// after creating the network.
     pub(super) async fn runtime_service_spec(
@@ -37,12 +38,16 @@ impl BollardDocker {
         if !desired.secrets.is_empty() {
             container.secrets = Some(self.secret_references(desired).await?);
         }
+        let mut configs = self.file_references(desired).await?;
         if desired
             .healthcheck
             .as_ref()
             .is_some_and(|health| health.execution().runs_probe())
         {
-            container.configs = Some(vec![self.health_probe_reference().await?]);
+            configs.push(self.health_probe_reference().await?);
+        }
+        if !configs.is_empty() {
+            container.configs = Some(configs);
         }
         if let Some(network) = desired.ingress_network() {
             let proxies = self

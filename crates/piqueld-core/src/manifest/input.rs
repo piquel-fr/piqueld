@@ -311,6 +311,10 @@ pub struct Service {
     /// Secrets mounted as files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretMount>,
+    /// Read-only files mounted into the containers. Their contents are never
+    /// rendered with variables.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<super::ServiceFile>,
     /// Optional container health check.
     pub healthcheck: Option<HealthCheck>,
     /// Optional CPU and memory limits.

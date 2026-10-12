@@ -73,6 +73,8 @@ pub enum ResourceKind {
     Volume,
     /// A Swarm replicated job that runs to completion.
     Job,
+    /// An immutable Swarm config holding a service file's content.
+    File,
 }
 
 impl ResourceKind {
@@ -83,6 +85,7 @@ impl ResourceKind {
             Self::Service => "service",
             Self::Volume => "volume",
             Self::Job => "job",
+            Self::File => "file",
         }
     }
 }

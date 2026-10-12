@@ -10,7 +10,8 @@ use super::{
 /// This policy verifies exactly the fields piqueld authors — replication,
 /// update settings, the restart condition and delay, mounts, environment,
 /// network targets and logical-name aliases, health checks and the probe
-/// config they run, resource limits, and the placement pin to the local node.
+/// config they run, file configs, resource limits, and the placement pin to
+/// the local node.
 /// Fields the builder never sets are
 /// accepted only at known Engine defaults, so ordinary engine-defaulted
 /// echo-back does not register as drift while unsupported non-default values
@@ -99,6 +100,7 @@ impl ServiceRuntimePolicy {
                 })
             })
             && HealthProbe::matches(container)
+            && BollardDocker::files_match_policy(container)
             && container.oom_score_adj.is_none_or(|value| value == 0)
             && container.isolation.is_none_or(|value| {
                 matches!(
@@ -314,6 +316,7 @@ mod tests {
         let application = piqueld_core::EnvironmentId::parse("app-policy").unwrap();
         DesiredService {
             secrets: Vec::new(),
+            files: Vec::new(),
             logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
             name: piqueld_core::DockerServiceName::parse("app-policy-web").unwrap(),
             source: ResolvedSource::Image {

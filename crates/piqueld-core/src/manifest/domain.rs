@@ -215,6 +215,9 @@ pub struct ValidatedService {
     /// Secret file mounts.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<ValidatedSecretMount>,
+    /// Read-only files. Omitted when empty so existing specification hashes stay stable.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<super::ServiceFile>,
     /// Optional container health check.
     pub healthcheck: Option<ValidatedHealthCheck>,
     /// Optional CPU and memory limits.
@@ -659,6 +662,7 @@ impl ValidatedService {
                     })
                 })
                 .collect::<Result<_, ValidationErrors>>()?,
+            files: value.files,
             mounts: value
                 .mounts
                 .into_iter()
@@ -752,6 +756,7 @@ impl ValidatedService {
                     target: secret.target.clone(),
                 })
                 .collect(),
+            files: self.files.clone(),
             mounts: self
                 .mounts
                 .iter()

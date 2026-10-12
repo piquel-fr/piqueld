@@ -74,8 +74,10 @@ mod timeout;
 pub(crate) use timeout::DockerTimeout;
 mod build_queue;
 pub use build_queue::BuildPriority;
+mod configs;
 mod engine;
 mod exec;
+mod files;
 pub use exec::{Exec, ExecIo};
 mod limited;
 mod logs;
@@ -364,6 +366,10 @@ pub trait DockerApi: Send + Sync + 'static {
     /// Removes `piqueld-probe` configs of other versions that no service
     /// mounts, such as those older daemons published.
     async fn prune_health_probes(&self) -> Result<(), DockerError>;
+    /// Removes the configs of the files of the environment `ownership`
+    /// labels that no service mounts, now or in the previous spec a rollback
+    /// restores. Docker refuses to remove configs in use.
+    async fn prune_files(&self, ownership: &BTreeMap<String, String>) -> Result<(), DockerError>;
     /// Removes a managed volume and its data after rechecking its ownership.
     /// A missing volume counts as removed. Only deleting a preview removes
     /// volumes; environments retain theirs.

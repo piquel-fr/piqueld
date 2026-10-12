@@ -5,15 +5,16 @@ use crate::{
     error::{CliError, ErrorKind, Result},
     output::{
         Console,
-        reports::{RouteRow, SavedDeploymentReport},
+        reports::{FileRow, RouteRow, SavedDeploymentReport},
     },
-    support::{confirm, retry_transport},
+    support::{confirm, read_text, retry_transport},
 };
 use clap::{Args, Subcommand, builder::TypedValueParser};
 use piqueld_client::{
-    ApplicationView, Build, Client, GitRepository, HealthCheck, Job, JobRun, Mount, Redirect,
-    RedirectStatus, RepositoryManifest, Rollout, RolloutOrder, Route, SavedApplication, Service,
-    Source, SourceRepository, Template, Typed, Variable, Visibility, Volume,
+    ApplicationView, Build, Client, FileMode, FileSource, GitRepository, HealthCheck, Job, JobRun,
+    Mount, Redirect, RedirectStatus, RepositoryManifest, Rollout, RolloutOrder, Route,
+    SavedApplication, Service, ServiceFile, Source, SourceRepository, Template, Typed, Variable,
+    Visibility, Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit, Variables},
     sync::RepositorySync,
 };
@@ -325,6 +326,112 @@ pub(crate) enum MountCommand {
     },
     /// Remove the mount at a container target path.
     Remove(TextArgs),
+}
+#[derive(Debug, Subcommand)]
+pub(crate) enum FileCommand {
+    /// List the read-only files services mount, as saved.
+    List {
+        /// Application name or stable ID.
+        app: String,
+        /// Only this service's files.
+        service: Option<String>,
+    },
+    /// Add a read-only file, or replace the file at the same target.
+    Add(AddFileArgs),
+    /// Remove the file at a container target path.
+    Remove(TextArgs),
+}
+#[derive(Debug, Args)]
+pub(crate) struct AddFileArgs {
+    #[command(flatten)]
+    target: Target,
+    /// Absolute container path of the file.
+    #[arg(value_name = "TARGET")]
+    file: String,
+    #[command(flatten)]
+    source: FileSourceArgs,
+    /// Octal permissions of the root-owned file.
+    #[arg(long, default_value_t = FileMode::default())]
+    mode: FileMode,
+}
+// Exactly one source of a file's content.
+#[derive(Debug, Args)]
+#[group(required = true, multiple = false)]
+pub(crate) struct FileSourceArgs {
+    /// The file's content. It is never rendered with variables.
+    #[arg(long)]
+    content: Option<String>,
+    /// Read the content from this local file now, and save it inline.
+    #[arg(long, value_name = "LOCAL_FILE")]
+    from: Option<std::path::PathBuf>,
+    /// Read the content from this file in the manifest's repository, relative
+    /// to its root, each time a deployment fetches the manifest.
+    #[arg(long, value_name = "REPOSITORY_PATH")]
+    path: Option<String>,
+}
+impl FileSourceArgs {
+    /// The selected source; `--from` reads its local file now.
+    async fn source(&self) -> Result<FileSource> {
+        Ok(match (&self.content, &self.from, &self.path) {
+            (Some(content), ..) => FileSource::Content(content.clone()),
+            (_, Some(local), _) => {
+                FileSource::Content(read_text(local, "file", ServiceFile::MAX_BYTES as u64).await?)
+            }
+            (.., Some(path)) => FileSource::Path(path.clone()),
+            (None, None, None) => unreachable!("Clap requires one file source"),
+        })
+    }
+}
+impl FileCommand {
+    /// Lists saved files, or adds, replaces, or removes one service's file by
+    /// target.
+    pub(crate) async fn run(
+        &self,
+        cli: &Cli,
+        client: &Client,
+        console: &mut Console,
+    ) -> Result<()> {
+        let (target, edit) = match self {
+            Self::List { app, service } => {
+                let application = resolve_application(client, app).await?;
+                let rows: Vec<_> = application
+                    .application
+                    .spec()
+                    .services
+                    .iter()
+                    .filter(|candidate| service.as_ref().is_none_or(|name| candidate.name == *name))
+                    .flat_map(|candidate| {
+                        candidate.files.iter().map(|file| FileRow {
+                            service: candidate.name.clone(),
+                            file: file.clone(),
+                        })
+                    })
+                    .collect();
+                return console.emit(&rows);
+            }
+            Self::Add(args) => (
+                &args.target,
+                ServiceEdit::File(ServiceFile {
+                    target: args.file.clone(),
+                    source: args.source.source().await?,
+                    mode: args.mode,
+                }),
+            ),
+            Self::Remove(args) => (&args.target, ServiceEdit::RemoveFile(args.value.clone())),
+        };
+        save(
+            cli,
+            client,
+            console,
+            &target.app,
+            &target.flags,
+            &ApplicationEdit::Service {
+                name: target.service.clone(),
+                edit,
+            },
+        )
+        .await
+    }
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum HealthCommand {
@@ -705,6 +812,7 @@ impl ServiceCommand {
                     arguments: Vec::new(),
                     mounts: Vec::new(),
                     secrets: Vec::new(),
+                    files: Vec::new(),
                     healthcheck: None,
                     resources: None,
                     depends_on: Vec::new(),

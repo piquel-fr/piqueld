@@ -5,11 +5,12 @@ use crate::manifest::domain::{
 };
 use crate::names::validated_string;
 use crate::{
-    ApplicationName, DockerNetworkName, DockerServiceName, DockerVolumeName, EnvironmentId,
-    JobName, ResourceKind, ServiceName, VolumeName, docker_resource_name,
+    ApplicationName, DockerConfigName, DockerNetworkName, DockerServiceName, DockerVolumeName,
+    EnvironmentId, JobName, ResourceKind, ServiceName, VolumeName, docker_resource_name,
     manifest::{
-        JobRun, NormalizedApplication, RolloutPolicy, SourceRepository, ValidatedHealthCheck,
-        ValidatedResourceLimits, ValidatedRollout, ValidatedSource, valid_image_reference,
+        FileMode, FileSource, JobRun, NormalizedApplication, RepositoryFiles, RolloutPolicy,
+        SourceRepository, ValidatedHealthCheck, ValidatedResourceLimits, ValidatedRollout,
+        ValidatedSource, valid_image_reference,
     },
 };
 use crate::{BuildInputs, ImageReference, ImmutableImage, Release, RepositoryDigest};
@@ -31,6 +32,8 @@ pub const SPEC_HASH_LABEL: &str = "io.piqueld.spec-hash";
 pub const JOB_LABEL: &str = "io.piqueld.job";
 /// Label carrying the operation that started a one-shot job run.
 pub const JOB_OPERATION_LABEL: &str = "io.piqueld.job-operation";
+/// Label marking the Swarm configs piqueld publishes for service files.
+pub const FILE_LABEL: &str = "io.piqueld.file";
 /// Environment variable listing the ingress network's CIDRs in routed services.
 /// Only the gateway and the application's own routed services share that
 /// network, so `X-Forwarded-For` from these peers carries the client address.
@@ -349,6 +352,43 @@ pub struct ObservedMount {
     pub read_only: bool,
 }
 
+/// A read-only file mounted from an immutable, content-named Swarm config.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DesiredFile {
+    /// The config holding the content, named after the environment and the
+    /// content's digest.
+    pub config_name: DockerConfigName,
+    /// Absolute container path.
+    pub target: String,
+    /// Permissions of the root-owned file.
+    pub mode: FileMode,
+    /// The file's content.
+    pub content: String,
+}
+
+/// Untrusted observation of a config mounted as a file.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservedFile {
+    /// Docker-reported config name.
+    pub config_name: String,
+    /// Container target path.
+    pub target: String,
+    /// Permission bits.
+    pub mode: u32,
+}
+
+impl From<&DesiredFile> for ObservedFile {
+    fn from(value: &DesiredFile) -> Self {
+        Self {
+            config_name: value.config_name.to_string(),
+            target: value.target.clone(),
+            mode: value.mode.bits(),
+        }
+    }
+}
+
 /// A service's attachment to one network and the DNS aliases it answers to there.
 ///
 /// Observed attachments carry untrusted Docker-reported names; desired ones are
@@ -397,6 +437,10 @@ pub struct DesiredService {
     /// Immutable secret file bindings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretFile>,
+    /// Read-only files from content-named configs. Omitted when empty, so
+    /// targets prepared before files existed still decode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<DesiredFile>,
     /// Optional health check.
     pub healthcheck: Option<ValidatedHealthCheck>,
     /// Optional CPU and memory limits.
@@ -855,7 +899,15 @@ fn compile(
         .spec()
         .services
         .iter()
-        .map(|service| compile_service(service, resolutions, &ownership, &private_network))
+        .map(|service| {
+            compile_service(
+                service,
+                resolutions,
+                app.files(),
+                &ownership,
+                &private_network,
+            )
+        })
         .collect::<Vec<_>>();
     Ok(ResolvedApplication {
         jobs: app
@@ -903,6 +955,17 @@ fn validate_application(
 ) -> Vec<CompileError> {
     let mut errors = unresolved_errors(app, resolutions);
     for service in &app.spec().services {
+        for file in &service.files {
+            if let FileSource::Path(path) = &file.source
+                && app.files().get(path).is_none()
+            {
+                errors.push(CompileError {
+                    code: crate::codes::FILE_UNRESOLVED.into(),
+                    resource: service.name.to_string(),
+                    message: format!("repository file {path} was not captured with the manifest"),
+                });
+            }
+        }
         for secret in &service.secrets {
             if !resolutions.secret_names.contains_key(&secret.name) {
                 errors.push(CompileError {
@@ -998,12 +1061,14 @@ fn resolved_source_matches(source: &ValidatedSource, resolved: &ResolvedSource) 
 /// Builds the desired Docker service for one validated service.
 ///
 /// Must only run after `validate_application` succeeds: it indexes the
-/// resolved source and pinned secret names directly and panics if missing.
-/// Services start attached to the private network only; ingress is projected
-/// later by `ResolvedApplication::with_ingress_routes`.
+/// resolved source, pinned secret names, and captured repository `files`
+/// directly and panics if missing. Services start attached to the private
+/// network only; ingress is projected later by
+/// `ResolvedApplication::with_ingress_routes`.
 fn compile_service(
     service: &Service,
     resolutions: &ResolutionSet,
+    files: &RepositoryFiles,
     environment_ownership: &Ownership,
     private_network: &DockerNetworkName,
 ) -> DesiredService {
@@ -1035,6 +1100,24 @@ fn compile_service(
             .map(|secret| SecretFile {
                 secret_name: resolutions.secret_names[&secret.name].clone(),
                 target: secret.target.clone(),
+            })
+            .collect(),
+        files: service
+            .files
+            .iter()
+            .map(|file| {
+                let content = match &file.source {
+                    FileSource::Content(content) => content.as_str(),
+                    FileSource::Path(path) => files
+                        .get(path)
+                        .expect("validated applications captured their repository files"),
+                };
+                DesiredFile {
+                    config_name: DockerConfigName::for_file(environment, content),
+                    target: file.target.clone(),
+                    mode: file.mode,
+                    content: content.to_owned(),
+                }
             })
             .collect(),
         healthcheck: service.healthcheck.clone(),
@@ -1316,6 +1399,9 @@ pub struct ObservedService {
     /// Immutable secret file bindings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretFile>,
+    /// Configs mounted as files, except piqueld's health probe.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<ObservedFile>,
     /// Observed health check.
     pub healthcheck: Option<ValidatedHealthCheck>,
     /// Whether Docker has a health check, including an unsupported one.
@@ -1397,6 +1483,13 @@ impl ObservedService {
             ("command", self.command == desired.command),
             ("arguments", self.arguments == desired.arguments),
             ("secrets", unordered_eq(&self.secrets, &desired.secrets)),
+            (
+                "files",
+                unordered_eq(
+                    self.files.iter().cloned(),
+                    desired.files.iter().map(ObservedFile::from),
+                ),
+            ),
             ("mounts", self.mounts_match(desired)),
             // Multiplicity is significant, so a duplicated attachment is drift.
             ("networks", self.networks_match(desired)),
@@ -1493,7 +1586,7 @@ impl OwnershipState {
                     && DockerNetworkName::parse(name)
                         .is_ok_and(|name| name.is_for_application(application))
             }
-            ResourceKind::Volume => !labels.contains_key(SERVICE_LABEL),
+            ResourceKind::Volume | ResourceKind::File => !labels.contains_key(SERVICE_LABEL),
             ResourceKind::Job => {
                 !labels.contains_key(SERVICE_LABEL)
                     && labels.get(JOB_LABEL).is_some_and(|job| {

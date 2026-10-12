@@ -3,8 +3,8 @@
 //! Fields that accept `${{ }}` references keep them as text: typed fields
 //! parse either a literal or a reference when saved.
 use piqueld_client::{
-    Build, GitRepository, HealthCheck, ManifestRepository, Mount, ResourceLimits, Rollout, Service,
-    Source, SourceRepository, Template, Typed,
+    Build, FileMode, FileSource, GitRepository, HealthCheck, ManifestRepository, Mount,
+    ResourceLimits, Rollout, Service, ServiceFile, Source, SourceRepository, Template, Typed,
 };
 
 /// Independently saved service settings.
@@ -18,6 +18,8 @@ pub enum Section {
     Process,
     /// Persistent mounts.
     Storage,
+    /// Read-only files.
+    Files,
     /// Container health check.
     Health,
     /// Services that must be healthy before this one rolls out.
@@ -29,11 +31,12 @@ pub enum Section {
 }
 impl Section {
     /// All form groups in display order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::General,
         Self::Environment,
         Self::Process,
         Self::Storage,
+        Self::Files,
         Self::Health,
         Self::Dependencies,
         Self::Rollout,
@@ -47,6 +50,7 @@ impl Section {
             Self::Environment => "Environment",
             Self::Process => "Command & arguments",
             Self::Storage => "Volume mounts",
+            Self::Files => "Files",
             Self::Health => "Health check",
             Self::Dependencies => "Startup dependencies",
             Self::Rollout => "Rollout",
@@ -86,6 +90,8 @@ pub struct ServiceForm {
     pub arguments: Vec<String>,
     /// Volume mounts.
     pub mounts: Vec<Mount>,
+    /// Read-only files.
+    pub files: Vec<FileForm>,
     /// None, HTTP, or command.
     pub health_kind: String,
     /// HTTP port.
@@ -108,6 +114,53 @@ pub struct ServiceForm {
     pub cpu: String,
     /// Optional memory limit in bytes.
     pub memory: String,
+}
+/// One read-only file, with its mode as typed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileForm {
+    /// Absolute container path.
+    pub target: String,
+    /// The file's source. The dashboard edits inline contents; repository
+    /// files are shown as the repository-backed manifest declares them.
+    pub source: FileSource,
+    /// Octal permissions, before validation.
+    pub mode: String,
+}
+impl Default for FileForm {
+    /// An empty inline file with the default mode.
+    fn default() -> Self {
+        Self {
+            target: String::new(),
+            source: FileSource::Content(String::new()),
+            mode: FileMode::default().to_string(),
+        }
+    }
+}
+impl From<&ServiceFile> for FileForm {
+    fn from(file: &ServiceFile) -> Self {
+        Self {
+            target: file.target.clone(),
+            source: file.source.clone(),
+            mode: file.mode.to_string(),
+        }
+    }
+}
+impl FileForm {
+    /// The declared file.
+    /// # Errors
+    /// Returns an actionable error for a mode that is not octal permissions.
+    fn file(&self) -> Result<ServiceFile, String> {
+        Ok(ServiceFile {
+            target: self.target.clone(),
+            source: self.source.clone(),
+            mode: self.mode.trim().parse().map_err(|_| {
+                format!(
+                    "The mode of file {} must be octal permissions such as 0444.",
+                    self.target
+                )
+            })?,
+        })
+    }
 }
 impl From<&Service> for ServiceForm {
     /// Seeds a draft from saved configuration. Fields for the unused source or
@@ -132,6 +185,7 @@ impl From<&Service> for ServiceForm {
             command: texts(&service.command),
             arguments: texts(&service.arguments),
             mounts: service.mounts.clone(),
+            files: service.files.iter().map(FileForm::from).collect(),
             health_kind: "none".into(),
             port: "8080".into(),
             path: "/health".into(),
@@ -350,6 +404,13 @@ impl ServiceForm {
                 service.arguments = templates(&self.arguments);
             }
             Section::Storage => service.mounts.clone_from(&self.mounts),
+            Section::Files => {
+                service.files = self
+                    .files
+                    .iter()
+                    .map(FileForm::file)
+                    .collect::<Result<_, _>>()?;
+            }
             Section::Health => service.healthcheck = self.healthcheck()?,
             Section::Dependencies => service.depends_on.clone_from(&self.depends_on),
             Section::Rollout => service.rollout = self.rollout()?,
@@ -382,6 +443,7 @@ mod tests {
     fn service() -> Service {
         Service {
             secrets: Vec::new(),
+            files: Vec::new(),
             name: "web".into(),
             source: Source::Image {
                 image: "nginx:stable".into(),

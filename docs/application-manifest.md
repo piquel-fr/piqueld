@@ -47,7 +47,7 @@ name = "data"
 
 Services support replicas, environment variables, command and argument arrays,
 health checks, startup dependencies, rollout settings, CPU/memory limits, mounts of declared
-named volumes, and file references to application secrets. Named volumes are retained when an application
+named volumes, read-only [files](#files), and file references to application secrets. Named volumes are retained when an application
 is deleted. Secret values are never manifest fields (manifests may only ask piqueld to
 generate them), and there are no manifest
 fields for directly published ports. Exact-host HTTP routes are declared in
@@ -89,6 +89,9 @@ error whose message names the offending environment key where applicable:
 | Command / arguments elements | 128 each |
 | Command / arguments element size | 4,096 bytes |
 | Mounts per service | 32 |
+| Files per service | 32 |
+| File size | 512,000 bytes (500 KiB, Swarm's config limit) |
+| Files per application | 2 MiB in total |
 | Jobs per application | 16 |
 | Job timeout | 86,400 seconds |
 | Health-check interval | 3,600 seconds |
@@ -108,7 +111,7 @@ Mounts cannot target `/run/piqueld/probe`. Command health checks run unchanged. 
 volumes, and environment maps are
 canonicalized before hashing. The specification hash is SHA-256 over a versioned
 canonical JSON envelope (`piqueld-spec-hash/v2`) covering only the canonical
-spec. The application name selects which application an apply targets; changing
+spec and the contents of the repository files it mounts. The application name selects which application an apply targets; changing
 it targets a different application. Use the explicit rename action to retain
 identity and resources, then update the manifest name.
 
@@ -193,7 +196,8 @@ and `monitor_seconds`, route `hostname` and redirect `to`, job `command`, servic
 secret mount `name`, and the build inputs `image`, `dockerfile`, `context`, build argument values and
 `target`. They are rejected elsewhere, including names, table keys, `type`
 fields, mount and secret targets, `spec.secrets` declarations, Git repository
-settings and `spec.manifest`.
+settings and `spec.manifest`. [Files](#files) are never rendered: `${{` in a
+file's content is mounted as written.
 
 The build inputs are baked into images, so each deployment's
 [release](piquelctl.md#commands) fingerprints their rendered values. Rendering a
@@ -772,6 +776,62 @@ branch was never pushed. Deploying on push leaves it running until the branch
 moves, or is first pushed. Redeploying the preview deploys the branch head
 instead. Submodules, Git LFS and other filters, partial clones, and SHA-256
 repositories are not supported.
+
+## Files
+
+Services mount read-only files, each from exactly one source:
+
+```toml
+[[spec.services.files]]
+target = "/etc/otelcol/config.yaml"
+path = "examples/observability/collector.yaml"
+# mode = "0444"
+
+[[spec.services.files]]
+target = "/etc/app/motd"
+content = "hello"
+```
+
+- `path` reads a file from the manifest's own repository, at the exact commit
+  the manifest was fetched from. It is relative to the repository root, like a
+  Git build's `dockerfile`, and must stay inside it: `..` and symlinks leaving
+  the checkout or pointing into `.git` are rejected. Only repository-backed
+  applications can use it; elsewhere validation fails with
+  `file_requires_repository`. `preview deploy --local` reads it from the
+  uploaded snapshot.
+- `content` is the file's text, inline.
+
+Contents are never rendered with variables, so configuration that uses `${…}`
+or `{{ }}` itself, such as Prometheus' or Grafana's, is mounted exactly as
+written. Values that differ between environments belong in environment
+variables, which most such tools expand.
+
+`target` is an absolute, normalized container path, unique among the service's
+mount, secret, and file targets, and outside `/run/secrets` and `/run/piqueld`.
+`mode` is an octal permission from `"0000"` to `"0777"`; files are owned by
+root. Repository files must be UTF-8 text. Directories are not supported: list
+files one by one.
+
+Files are read-only: piqueld publishes each content as an immutable Swarm
+config, which Docker always mounts read-only. An image that rewrites its own
+configuration at startup must copy the file somewhere writable first.
+
+A deployment reads its repository files when it fetches the manifest, and
+records their bytes with the deployment and its release. Retries and restarts
+reuse them and never read the repository again, and a promoted environment,
+which never fetches, mounts exactly the release's bytes. A changed file is a
+manifest change like any other: it takes effect with the next deployment, or
+the next push when [deploying on push](#deploying-on-push). New content is a
+new config, so only the services mounting it roll out, in their usual
+[rollout](#rollout) order. `app plan` lists each file as
+`services.<name>.files.<target>`, with inline content summarized by size and
+digest; since it reads nothing from the repository, it shows changed paths, but
+not changed repository contents.
+
+For repository-backed applications, Git owns files, as it owns the rest of the
+configuration: `piquelctl app file` and the dashboard edit them only for other
+applications. Disconnecting the repository fails validation while services
+still mount repository files; replace them with inline `content` first.
 
 ## Startup dependencies
 

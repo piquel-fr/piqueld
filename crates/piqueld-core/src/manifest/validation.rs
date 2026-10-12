@@ -3,10 +3,10 @@
 use super::dependencies::StartupOrder;
 use super::variables::{Template, Typed};
 use super::{
-    APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, Build, GitRepository,
-    HealthCheck, Job, ManifestRevision, Mount, ResourceLimits, SecretDeclaration, SecretGenerator,
-    Service, Source, SourceRepository, ValidatedApplication, ValidatedRollout, ValidatedTemplate,
-    Volume,
+    APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, Build, FileSource,
+    GitRepository, HealthCheck, Job, ManifestRevision, Mount, ResourceLimits, SecretDeclaration,
+    SecretGenerator, Service, ServiceFile, Source, SourceRepository, ValidatedApplication,
+    ValidatedRollout, ValidatedTemplate, Volume,
 };
 use crate::{codes, resource::valid_logical_name};
 use serde::{Deserialize, Serialize};
@@ -635,6 +635,17 @@ impl ApplicationManifest {
             &mut errors,
         );
         validate_dependencies(&self.spec.services, &mut errors);
+        if self.spec.inline_file_bytes() > ServiceFile::MAX_TOTAL_BYTES {
+            error(
+                &mut errors,
+                codes::FILE_TOTAL_EXCESSIVE,
+                "spec.services",
+                &format!(
+                    "inline file contents must total at most {} bytes",
+                    ServiceFile::MAX_TOTAL_BYTES
+                ),
+            );
+        }
         validate_volumes(&self.spec.volumes, &mut errors);
         validate_generated_secrets(&self.spec.secrets, &mut errors);
         validate_jobs(&self.spec.jobs, &self.spec.services, &mut errors);
@@ -771,12 +782,13 @@ impl Source {
     }
 }
 
-/// Validates every service: name, replicas, source, secrets, environment,
-/// mounts, process arguments, health check, and resource limits.
+/// Validates every service: name, replicas, source, secrets, files,
+/// environment, mounts, process arguments, health check, and resource limits.
 ///
 /// `volume_names` holds declared volumes for mount references, and
-/// `manifest_backed` allows `"self"` Git sources. Secret targets must be unique
-/// under `/run/secrets/` and must not collide with mount targets.
+/// `manifest_backed` allows `"self"` Git sources and repository files. Secret
+/// targets must be unique under `/run/secrets/` and must not collide with
+/// mount targets; file targets collide with neither.
 fn validate_services(
     services: &[Service],
     volume_names: &BTreeSet<String>,
@@ -844,6 +856,7 @@ fn validate_services(
                 "at most 64 secret file mounts per service",
             );
         }
+        validate_files(&service.files, &base, manifest_backed, &mut targets, errors);
         VariableMap::ENVIRONMENT.validate(&service.environment, &base, errors);
         validate_mounts(&service.mounts, &base, volume_names, errors);
         validate_process_arguments(
@@ -1067,6 +1080,69 @@ fn safe_key_echo(key: &str) -> String {
         })
         .collect::<String>();
     format!("'{sanitized}'")
+}
+
+/// Checks file count, that each target is safe and collides with no other
+/// target in `targets` (mounts, secrets, and earlier files) or a reserved
+/// directory, that repository paths stay inside a repository the application
+/// has, and that inline contents fit one Swarm config.
+fn validate_files<'a>(
+    files: &'a [ServiceFile],
+    base: &str,
+    manifest_backed: bool,
+    targets: &mut BTreeSet<&'a str>,
+    errors: &mut Vec<ValidationError>,
+) {
+    if files.len() > ServiceFile::MAX_PER_SERVICE {
+        error(
+            errors,
+            codes::FILE_COUNT_EXCESSIVE,
+            &format!("{base}.files"),
+            &format!(
+                "a service must mount at most {} files",
+                ServiceFile::MAX_PER_SERVICE
+            ),
+        );
+    }
+    for (index, file) in files.iter().enumerate() {
+        let path = format!("{base}.files[{index}]");
+        validate_absolute_path(&file.target, &format!("{path}.target"), errors);
+        if file.reserved_target() || !targets.insert(&file.target) {
+            error(
+                errors,
+                codes::FILE_TARGET_INVALID,
+                &format!("{path}.target"),
+                &format!(
+                    "file targets must be unique among the service's mount, secret, and file targets, and outside {}",
+                    ServiceFile::RESERVED_DIRECTORIES.join(" and ")
+                ),
+            );
+        }
+        match &file.source {
+            FileSource::Path(_) if !manifest_backed => error(
+                errors,
+                codes::FILE_REQUIRES_REPOSITORY,
+                &format!("{path}.path"),
+                "only applications whose manifest comes from a repository can mount repository files; set content instead",
+            ),
+            FileSource::Path(relative) if !valid_repository_path(relative) => error(
+                errors,
+                "repository_path_invalid",
+                &format!("{path}.path"),
+                "file path must remain within the repository root",
+            ),
+            FileSource::Content(content) if content.len() > ServiceFile::MAX_BYTES => error(
+                errors,
+                codes::FILE_TOO_LARGE,
+                &format!("{path}.content"),
+                &format!(
+                    "file content must be at most {} bytes",
+                    ServiceFile::MAX_BYTES
+                ),
+            ),
+            FileSource::Path(_) | FileSource::Content(_) => {}
+        }
+    }
 }
 
 /// Checks mount count, that each mount references a declared volume, and that

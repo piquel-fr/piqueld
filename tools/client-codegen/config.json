@@ -296,6 +296,16 @@
       "rustType": "piqueld_core::edit::SecretsValue"
     },
     {
+      "schema": "ServiceFile",
+      "name": "ServiceFile",
+      "rustType": "piqueld_core::manifest::ServiceFile"
+    },
+    {
+      "schema": "FilesValue",
+      "name": "FilesValue",
+      "rustType": "piqueld_core::edit::FilesValue"
+    },
+    {
       "schema": "OptionalStringValue",
       "name": "OptionalStringValue",
       "rustType": "piqueld_core::edit::OptionalStringValue"

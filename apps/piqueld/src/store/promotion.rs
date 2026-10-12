@@ -7,7 +7,7 @@ use super::{
 };
 use piqueld_core::{
     EnvironmentKind, EnvironmentName, EnvironmentSource, InstanceId, NormalizedApplication,
-    Release, ReleaseId, ValidationErrors,
+    PromotedFrom, Release, ReleaseId, ValidationErrors,
     api::{DeploymentOrigin, EnvironmentView, PromotionSelection, SecretProblem},
     compile_release,
     manifest::SecretSource,
@@ -403,34 +403,16 @@ impl Store {
         .await
     }
 
-    /// Accepts `promotion` in `tx`. Everything checked before acceptance is
-    /// checked again here, where nothing can change underneath: the target
-    /// still promotes from the source, and the source deployment is still
-    /// current and succeeded. Then it starts a deployment, renders the
-    /// release with the target's block and variables from the release's own
-    /// manifest, refuses it while any secret it mounts is unusable (listing
-    /// them all), stores the values generated for its declared secrets,
-    /// pins secret versions, compiles the
-    /// release with its own images (`release_incompatible` when a build
-    /// input renders differently), and saves the prepared target with the
-    /// deployment. Its images are then retention roots, so callers holding
-    /// cleanup off may let go once this commits.
-    pub(super) async fn accept_promotion_on(
-        &self,
+    /// Checks again that `promotion`'s origin applies to `target`, which
+    /// promotes from `from`: a reviewed deployment must still be the current,
+    /// succeeded one of that same source, and running the release itself
+    /// needs no source. Builds are never promoted.
+    async fn check_origin_on(
         tx: &mut Transaction<'_, Sqlite>,
         target: &StoredEnvironment,
+        from: &PromotedFrom,
         promotion: &Promotion,
-        instance: InstanceId,
-    ) -> Result<Operation, StoreError> {
-        let EnvironmentSource::Promoted(from) = &target.environment.source else {
-            return Err(PromotionError::NotPromoted {
-                environment: target.environment.name.clone(),
-            }
-            .into());
-        };
-        if target.delete_intent() {
-            return Err(StoreError::IllegalTransition);
-        }
+    ) -> Result<(), StoreError> {
         match &promotion.origin {
             DeploymentOrigin::Promotion {
                 environment,
@@ -464,6 +446,38 @@ impl Store {
                 return Err(StoreError::InvalidInput);
             }
         }
+        Ok(())
+    }
+
+    /// Accepts `promotion` in `tx`. Everything checked before acceptance is
+    /// checked again here, where nothing can change underneath: the target
+    /// still promotes from the source, and the source deployment is still
+    /// current and succeeded. Then it starts a deployment, renders the
+    /// release with the target's block and variables from the release's own
+    /// manifest, refuses it while any secret it mounts is unusable (listing
+    /// them all), stores the values generated for its declared secrets,
+    /// pins secret versions, compiles the
+    /// release with its own images (`release_incompatible` when a build
+    /// input renders differently), and saves the prepared target with the
+    /// deployment. Its images are then retention roots, so callers holding
+    /// cleanup off may let go once this commits.
+    pub(super) async fn accept_promotion_on(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        target: &StoredEnvironment,
+        promotion: &Promotion,
+        instance: InstanceId,
+    ) -> Result<Operation, StoreError> {
+        let EnvironmentSource::Promoted(from) = &target.environment.source else {
+            return Err(PromotionError::NotPromoted {
+                environment: target.environment.name.clone(),
+            }
+            .into());
+        };
+        if target.delete_intent() {
+            return Err(StoreError::IllegalTransition);
+        }
+        Self::check_origin_on(tx, target, from, promotion).await?;
         let release =
             Self::release_on(tx, &target.environment.application_id, &promotion.release).await?;
         let now = now_ms();
@@ -511,9 +525,12 @@ impl Store {
         .await
         .map_err(StoreError::database)?;
         let id = target.id().as_str();
+        // The release keeps the files it captured.
+        let saved = release.template().clone().without_files();
+        let saved = saved.canonical_json().map_err(StoreError::corrupt)?;
         sqlx::query!(
             "UPDATE environments SET manifest_json=?1,updated_at_ms=?2 WHERE id=?3",
-            template,
+            saved,
             now,
             id
         )

@@ -153,11 +153,23 @@ pub const ENVIRONMENT_BLOCK_UNKNOWN: &str = "environment_block_unknown";
 pub const VARIABLE_UNRESOLVED: &str = "variable_unresolved";
 /// A declared secret is also set in the application's secret store.
 pub const SECRET_NAME_CONFLICT: &str = "secret_name_conflict";
+/// A file's target is a mount or secret target, another file's, or reserved.
+pub const FILE_TARGET_INVALID: &str = "file_target_invalid";
+/// A file reads the manifest's repository, but the application has none.
+pub const FILE_REQUIRES_REPOSITORY: &str = "file_requires_repository";
+/// Inline file content exceeds the per-file budget.
+pub const FILE_TOO_LARGE: &str = "file_too_large";
+/// A service mounts more files than allowed.
+pub const FILE_COUNT_EXCESSIVE: &str = "file_count_excessive";
+/// An application's files together exceed their byte budget.
+pub const FILE_TOTAL_EXCESSIVE: &str = "file_total_excessive";
 
 /// Service source has no immutable resolution yet.
 pub const SOURCE_UNRESOLVED: &str = "source_unresolved";
 /// Resolved source does not immutably match the requested service source.
 pub const SOURCE_RESOLUTION_MISMATCH: &str = "source_resolution_mismatch";
+/// A repository file a service mounts was not captured with its manifest.
+pub const FILE_UNRESOLVED: &str = "file_unresolved";
 /// A release's manifest renders a build input differently for another
 /// environment than for the release, so its images do not apply there.
 pub const RELEASE_INCOMPATIBLE: &str = "release_incompatible";

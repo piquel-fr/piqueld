@@ -164,8 +164,11 @@ impl Store {
             &fetched.spec().secrets,
         )
         .await?;
-        // A retry may accept a manifest fetched before a rename.
-        let fetched = fetched.with_name(application.metadata().name.clone());
+        // A retry may accept a manifest fetched before a rename. The
+        // deployment keeps the files it captured.
+        let fetched = fetched
+            .with_name(application.metadata().name.clone())
+            .without_files();
         let manifest = fetched.canonical_json().map_err(StoreError::corrupt)?;
         let now = now_ms();
         let environment = operation.environment_id.as_str();

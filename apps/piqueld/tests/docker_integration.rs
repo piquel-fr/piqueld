@@ -119,6 +119,7 @@ impl SwarmScenario {
             .unwrap();
         let service = DesiredService {
             secrets: vec![piqueld_core::resource::SecretFile { secret_name: secret_name.clone(), target: "/run/secrets/token".into() }],
+            files: vec![Self::motd(&app)],
             logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
             name: piqueld_core::DockerServiceName::parse(docker_resource_name(
                 &app,
@@ -133,7 +134,7 @@ impl SwarmScenario {
             command: vec!["/bin/sh".into()],
             arguments: vec![
                 "-c".into(),
-                "test $(cat /run/secrets/token) = mounted-value || exit 1; until getent hosts web >/dev/null; do sleep 1; done; echo log-stdout; echo log-stderr >&2; while true; do sleep 5; done".into(),
+                "test $(cat /run/secrets/token) = mounted-value || exit 1; test \"$(cat /etc/piqueld-motd)\" = 'hello ${HOME}' || exit 1; if echo changed 2>/dev/null >/etc/piqueld-motd; then exit 1; fi; until getent hosts web >/dev/null; do sleep 1; done; echo log-stdout; echo log-stderr >&2; while true; do sleep 5; done".into(),
             ],
             mounts: vec![],
             healthcheck: Some(ValidatedHealthCheck::Command {
@@ -165,6 +166,38 @@ impl SwarmScenario {
             volume,
             service,
         }
+    }
+
+    /// A file whose content looks like shell and template syntax, which the
+    /// web task expects verbatim at `/etc/piqueld-motd`.
+    fn motd(app: &EnvironmentId) -> piqueld_core::DesiredFile {
+        piqueld_core::DesiredFile {
+            config_name: piqueld_core::DockerConfigName::for_file(app, "hello ${HOME}"),
+            target: "/etc/piqueld-motd".into(),
+            mode: piqueld_core::manifest::FileMode::default(),
+            content: "hello ${HOME}".into(),
+        }
+    }
+
+    /// The web task checked its file's content and that it cannot write it
+    /// before logging; pruning keeps the config while a service mounts it.
+    async fn assert_files(&self) {
+        self.engine.docker.prune_files(&self.labels).await.unwrap();
+        assert_eq!(
+            self.engine
+                .docker
+                .observe(&self.app)
+                .await
+                .unwrap()
+                .services[0]
+                .files,
+            self.service
+                .files
+                .iter()
+                .map(piqueld_core::resource::ObservedFile::from)
+                .collect::<Vec<_>>(),
+            "the mounted file's config survives pruning"
+        );
     }
 
     /// The container logs only after resolving its logical name, so this also
@@ -921,6 +954,7 @@ impl SwarmScenario {
 async fn swarm_init_create_replica_drift_restart_jobs_delete_and_volume_retention() {
     let mut scenario = SwarmScenario::new().await;
     scenario.assert_logs().await;
+    scenario.assert_files().await;
     scenario.assert_exec().await;
     let http_service = scenario.add_http_service().await;
     scenario.assert_healthchecks(&http_service).await;

@@ -526,6 +526,11 @@ piquelctl app service cpu notes web --clear --yes
 piquelctl app volume add notes data --yes
 piquelctl app service mount set notes web data /var/lib/data --yes
 piquelctl app service mount remove notes web /var/lib/data --yes
+piquelctl app file add notes web /etc/app/motd --content hello --yes
+piquelctl app file add notes web /etc/prometheus/prometheus.yml --from ./prometheus.yml --yes
+piquelctl app file add notes web /etc/otelcol/config.yaml --path otel/config.yaml --mode 0440 --yes
+piquelctl app file list notes web
+piquelctl app file remove notes web /etc/app/motd --yes
 piquelctl app volume remove notes data --yes
 piquelctl app route add notes notes.example.com web 3000 --visibility public --yes
 piquelctl app route add notes admin.notes.example.com admin 8080 --yes
@@ -555,6 +560,11 @@ and captures a deployment atomically, then waits for it; add `--no-wait` to retu
 its receipt immediately. No local manifest file is read or rewritten. The server
 validates the complete result, so removing a mounted volume is rejected until its
 mounts are removed. Removing declarations retains Docker volume data.
+`app file add` adds a read-only [file](application-manifest.md#files), or
+replaces the one at the same target: `--content` sets its text, `--from` reads
+a local file now and saves its content inline, and `--path` names a file in the
+manifest's repository, read by each deployment. Repository-backed applications
+are edited in Git instead. `app file list` shows each service's saved files.
 Route edits preserve other routes and use the inspected generation to reject
 concurrent changes. `route redirect` defaults to status 308 and appends the
 request path and query to the destination; use `--status` and
