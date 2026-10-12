@@ -490,17 +490,19 @@ impl SwarmScenario {
             }
         }
 
-        // The probe is mounted as a Swarm config, and pruning removes only
-        // probe configs no service mounts.
+        // The probe is mounted as a Swarm config, beside the service's files,
+        // and pruning removes only probe configs no service mounts.
         let spec = self
             .docker_api("GET", &format!("/services/{}", http_service.name))
             .await;
         let configs = &spec["Spec"]["TaskTemplate"]["ContainerSpec"]["Configs"];
-        assert_eq!(
-            configs[0]["File"]["Name"], "/run/piqueld/probe",
-            "{configs}"
-        );
-        let current = configs[0]["ConfigName"].as_str().unwrap().to_owned();
+        let probe = configs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|config| config["File"]["Name"] == "/run/piqueld/probe")
+            .unwrap_or_else(|| panic!("no probe config in {configs}"));
+        let current = probe["ConfigName"].as_str().unwrap().to_owned();
         self.docker_api_with(
             "POST",
             "/configs/create",
