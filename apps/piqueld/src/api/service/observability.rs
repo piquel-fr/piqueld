@@ -177,10 +177,9 @@ impl ApplicationService {
             tracing::error!(pending, "audit records still pending at shutdown were lost");
         }
     }
-    /// Counts one refused API request for the `access_denied_total` metric.
+    /// Counts one refused API request for the `piqueld.access.denials` metric.
     pub(crate) fn count_denial(&self) {
-        self.denials
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.telemetry.count_denial();
     }
     /// Verifies the audit trail's hash chain.
     /// # Errors
@@ -220,117 +219,6 @@ impl ApplicationService {
         id: &str,
     ) -> Result<(), ApplicationError> {
         Ok(self.store.retry_delivery(actor, id).await?)
-    }
-    /// Renders the cached daemon statistics for the metrics listener's `GET /metrics`.
-    /// Each available measurement becomes a `piqueld_*` sample with Prometheus
-    /// HELP/TYPE metadata. Unavailable OS measurements are omitted. Collection
-    /// uses the same cache as the daemon status page; this does not contact or
-    /// manage Prometheus, retain samples, or export application logs/events.
-    ///
-    /// Names ending in `_total` are counters; everything else is a gauge:
-    ///
-    /// ```text
-    /// # HELP piqueld_uptime_seconds Daemon process uptime
-    /// # TYPE piqueld_uptime_seconds gauge
-    /// piqueld_uptime_seconds 3600
-    /// ```
-    /// # Errors
-    /// Returns collection failures instead of publishing misleading zero values.
-    pub async fn prometheus_metrics(&self) -> Result<String, ApplicationError> {
-        use std::fmt::Write as _;
-        let stats = self.daemon_stats().await?;
-        let mut output = String::new();
-        for (name, help, value) in [
-            (
-                "uptime_seconds",
-                "Daemon process uptime",
-                Some(stats.uptime_seconds.to_string()),
-            ),
-            (
-                "access_denied_total",
-                "API requests refused for missing credentials or permission since start",
-                Some(
-                    self.denials
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                        .to_string(),
-                ),
-            ),
-            (
-                "process_resident_memory_bytes",
-                "Process resident memory",
-                stats.memory_bytes.map(|v| v.to_string()),
-            ),
-            (
-                "process_cpu_seconds_total",
-                "Process CPU seconds",
-                stats.cpu_seconds.map(|v| v.to_string()),
-            ),
-            (
-                "process_cpu_percent",
-                "CPU percentage; one core equals 100",
-                stats.cpu_percent.map(|v| v.to_string()),
-            ),
-            (
-                "database_bytes",
-                "SQLite main database file size",
-                Some(stats.database_bytes.to_string()),
-            ),
-            (
-                "database_wal_bytes",
-                "SQLite WAL file size",
-                Some(stats.wal_bytes.to_string()),
-            ),
-            (
-                "disk_available_bytes",
-                "Disk bytes available to the daemon",
-                stats.available_disk_bytes.map(|v| v.to_string()),
-            ),
-            (
-                "events",
-                "Retained event records",
-                Some(stats.events.to_string()),
-            ),
-            (
-                "diagnostics",
-                "Retained distinct diagnostic occurrences",
-                Some(stats.diagnostics.to_string()),
-            ),
-            (
-                "build_output_bytes",
-                "Retained build output",
-                Some(stats.build_output_bytes.to_string()),
-            ),
-            (
-                "operations_running",
-                "Running operations",
-                Some(stats.running_operations.to_string()),
-            ),
-            (
-                "operations_queued",
-                "Queued operations",
-                Some(stats.queued_operations.to_string()),
-            ),
-            (
-                "notification_deliveries_pending",
-                "Pending webhook deliveries",
-                Some(stats.pending_deliveries.to_string()),
-            ),
-            (
-                "notification_deliveries_failed",
-                "Failed webhook deliveries",
-                Some(stats.failed_deliveries.to_string()),
-            ),
-        ] {
-            if let Some(value) = value {
-                let kind = if name.ends_with("_total") {
-                    "counter"
-                } else {
-                    "gauge"
-                };
-                writeln!(output,"# HELP piqueld_{name} {help}\n# TYPE piqueld_{name} {kind}\npiqueld_{name} {value}").expect("writing a string cannot fail");
-            }
-        }
-        Ok(output)
     }
 }
 

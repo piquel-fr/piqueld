@@ -92,7 +92,7 @@ pub use previews::{
 };
 pub use system::{
     CertificateStatus, DnsProviderStatus, DnsStatus, ImageStatus, SnapshotLimits, SystemStatus,
-    TailnetStatus,
+    TailnetStatus, TelemetryDestinationStatus, TelemetryStatus,
 };
 
 pub use piqueld_core::api::{

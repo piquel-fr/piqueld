@@ -1,6 +1,6 @@
 //! Startup-only TCP listener selection and Tailscale discovery.
 
-use super::{ListenMode, MetricsConfig, ServerConfig};
+use super::{ListenMode, ServerConfig};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use std::{
@@ -30,10 +30,15 @@ impl ServerConfig {
         } else {
             Vec::new()
         };
-        bind_all(self.listen_addresses(tailscale), |address| {
-            format!("failed to bind HTTP API on {address}")
-        })
-        .await
+        let mut listeners = Vec::new();
+        for address in self.listen_addresses(tailscale) {
+            listeners.push(
+                TcpListener::bind(address)
+                    .await
+                    .with_context(|| format!("failed to bind HTTP API on {address}"))?,
+            );
+        }
+        Ok(listeners)
     }
 
     /// Expands the listen mode into concrete socket addresses on the shared port.
@@ -59,36 +64,6 @@ impl ServerConfig {
             .map(|ip| SocketAddr::new(ip, self.port))
             .collect()
     }
-}
-
-impl MetricsConfig {
-    /// Binds every metrics address before the daemon starts serving.
-    ///
-    /// # Errors
-    /// Any bind failure aborts startup and releases listeners already bound.
-    pub async fn bind(&self) -> Result<Vec<TcpListener>> {
-        bind_all(self.listen.iter().copied(), |address| {
-            format!("failed to bind metrics listener {address}")
-        })
-        .await
-    }
-}
-
-/// Binds every one of `addresses`, describing a failing one with `failure`.
-/// Listeners already bound are released on failure.
-async fn bind_all(
-    addresses: impl IntoIterator<Item = SocketAddr>,
-    failure: impl Fn(SocketAddr) -> String,
-) -> Result<Vec<TcpListener>> {
-    let mut listeners = Vec::new();
-    for address in addresses {
-        listeners.push(
-            TcpListener::bind(address)
-                .await
-                .with_context(|| failure(address))?,
-        );
-    }
-    Ok(listeners)
 }
 
 /// The subset of `tailscale status --json` needed to find local addresses.

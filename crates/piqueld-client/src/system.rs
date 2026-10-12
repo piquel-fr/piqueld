@@ -2,7 +2,8 @@
 pub use piqueld_core::api::{
     CertificateStatus, DependencyStatus, DnsProviderStatus, DnsRecordState, DnsRecords, DnsStatus,
     ImageStatus, IngressStatus, PrivateIngressStatus, PublicIngressStatus, ReadinessStatus,
-    RouteStatus, SnapshotLimits, SystemStatus, TailnetStatus,
+    RouteStatus, SnapshotLimits, SystemStatus, TailnetStatus, TelemetryDestinationStatus,
+    TelemetryStatus,
 };
 
 use crate::{Client, ClientError, client::EnvelopedCall};

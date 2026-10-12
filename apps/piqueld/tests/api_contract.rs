@@ -4007,7 +4007,7 @@ async fn typed_edits_record_safe_field_history() {
 }
 
 #[tokio::test]
-async fn diagnostic_ids_correlate_api_failures_and_metrics_routes_are_isolated() {
+async fn diagnostic_ids_correlate_api_failures() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
     let app = api.deploy().await;
@@ -4047,13 +4047,6 @@ async fn diagnostic_ids_correlate_api_failures_and_metrics_routes_are_isolated()
             .any(|e| e.diagnostic.as_ref().is_some_and(|d| d.id == id))
     );
     assert!(api.client.daemon_stats().await.unwrap().diagnostics > 0);
-    let metrics =
-        piqueld::api::http::metrics_router(ApiState::new(api.store.clone(), api.runtime.clone()));
-    let response = metrics.send(request("/metrics")).await;
-    assert_eq!(response.status, StatusCode::OK);
-    assert!(response.text().contains("piqueld_database_bytes"));
-    let applications = metrics.send(request("/api/v1/applications")).await;
-    assert_eq!(applications.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -4464,11 +4457,6 @@ async fn audit_trail_records_callers_and_outcomes() {
     let deployer = "/api/v1/audit?user_id=deployer&outcome=denied";
     let body = f.audit(&f.auditor, deployer, 6).await;
     assert_eq!(body["data"]["items"].as_array().unwrap().len(), 6);
-    let metrics = f.state.prometheus_metrics().await.unwrap();
-    assert!(
-        metrics.contains("piqueld_access_denied_total 7"),
-        "{metrics}"
-    );
 }
 
 /// Callers read their own trail, so it reveals nothing they could not see:

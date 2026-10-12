@@ -643,6 +643,23 @@ impl Store {
         }).collect();
         Ok(EnvironmentPage { items, next_cursor })
     }
+
+    /// Every live environment, read page by page as [`Self::list`] does.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn every_environment(&self) -> Result<Vec<StoredEnvironment>, StoreError> {
+        let mut environments = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = self.list(cursor.as_deref(), super::MAX_PAGE_SIZE).await?;
+            environments.extend(page.items);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                return Ok(environments);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

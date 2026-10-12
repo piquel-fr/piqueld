@@ -45,6 +45,7 @@ impl ApplicationService {
                 max_tree_bytes: self.store.checkouts().max_bytes(),
                 max_files: crate::git::Checkouts::FILES as u64,
             }),
+            telemetry: self.telemetry.status(),
         }
     }
 

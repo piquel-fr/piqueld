@@ -1,7 +1,7 @@
 use super::{
-    ApplicationState, Arc, BlockedPlan, CancellationToken, Controller, DockerApi, Duration,
-    MAX_PAGE_SIZE, Notify, Operation, OperationError, OperationKind, OperationState, Plan,
-    PlanRequest, StoreError, StoredEnvironment,
+    ApplicationState, Arc, BlockedPlan, CancellationToken, Controller, DockerApi, Duration, Notify,
+    Operation, OperationError, OperationKind, OperationState, Plan, PlanRequest, StoreError,
+    StoredEnvironment,
 };
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use piqueld_core::{EnvironmentId, observability::DiagnosticCode};
@@ -229,36 +229,29 @@ impl<D: DockerApi> Controller<D> {
         }
     }
 
-    /// Pages through all environments and selects those needing work. A full scan
+    /// Selects the environments needing work among all of them. A full scan
     /// selects every environment with an operation; otherwise only requested,
     /// cleanly running, or retry-due operations are selected.
     async fn discover(
         &self,
         full: bool,
     ) -> Result<Vec<(StoredEnvironment, Operation)>, StoreError> {
-        let mut cursor = None;
         let mut applications = Vec::new();
-        loop {
-            let page = self.store.list(cursor.as_deref(), MAX_PAGE_SIZE).await?;
-            for app in page.items {
-                if let Some(operation) = self
-                    .store
-                    .latest_operation_for_environment(app.id())
-                    .await?
-                    && (full
-                        || operation.state == OperationState::Requested
-                        || (operation.state == OperationState::Running
-                            && operation.error_code.is_none())
-                        || Self::retry_due(&operation))
-                {
-                    applications.push((app, operation));
-                }
-            }
-            cursor = page.next_cursor;
-            if cursor.is_none() {
-                return Ok(applications);
+        for app in self.store.every_environment().await? {
+            if let Some(operation) = self
+                .store
+                .latest_operation_for_environment(app.id())
+                .await?
+                && (full
+                    || operation.state == OperationState::Requested
+                    || (operation.state == OperationState::Running
+                        && operation.error_code.is_none())
+                    || Self::retry_due(&operation))
+            {
+                applications.push((app, operation));
             }
         }
+        Ok(applications)
     }
 
     /// Runs one concurrent observation/reconciliation pass, also used by runtime

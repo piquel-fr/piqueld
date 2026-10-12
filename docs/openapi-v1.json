@@ -5602,6 +5602,10 @@
               "tailscale": {
                 "$ref": "#/components/schemas/TailnetStatus",
                 "description": "Dedicated tailnet node serving the website over HTTPS."
+              },
+              "telemetry": {
+                "$ref": "#/components/schemas/TelemetryStatus",
+                "description": "Export of the daemon's own telemetry over OTLP."
               }
             },
             "required": [
@@ -10860,6 +10864,10 @@
           "tailscale": {
             "$ref": "#/components/schemas/TailnetStatus",
             "description": "Dedicated tailnet node serving the website over HTTPS."
+          },
+          "telemetry": {
+            "$ref": "#/components/schemas/TelemetryStatus",
+            "description": "Export of the daemon's own telemetry over OTLP."
           }
         },
         "required": [
@@ -10916,6 +10924,58 @@
           "state",
           "public_url_matches",
           "message"
+        ],
+        "type": "object"
+      },
+      "TelemetryDestinationStatus": {
+        "description": "One collector receiving the daemon's telemetry.",
+        "properties": {
+          "dropped": {
+            "description": "Records dropped since the daemon started, because the queue was full\nor the collector failed or rejected them.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "endpoint": {
+            "description": "OTLP/gRPC endpoint: `https://`, `http://` or `unix://`.",
+            "type": "string"
+          },
+          "failing": {
+            "description": "Whether exports have failed for at least a minute without a success.",
+            "type": "boolean"
+          },
+          "headers": {
+            "description": "The file request headers were read from, such as\n`from /run/credentials/piqueld.service/otlp-headers`; never their\nvalues. Absent without headers.",
+            "nullable": true,
+            "type": "string"
+          },
+          "last_success_ms": {
+            "description": "When the collector last accepted an export, in Unix milliseconds;\nabsent before the first.",
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "endpoint",
+          "dropped",
+          "failing"
+        ],
+        "type": "object"
+      },
+      "TelemetryStatus": {
+        "description": "Export of the daemon's traces, metrics and logs over OTLP.",
+        "properties": {
+          "destinations": {
+            "description": "Collectors receiving telemetry; empty when `[telemetry]` sets no\nendpoint.",
+            "items": {
+              "$ref": "#/components/schemas/TelemetryDestinationStatus"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "destinations"
         ],
         "type": "object"
       },

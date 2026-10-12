@@ -3,11 +3,13 @@
 mod credential;
 mod listeners;
 mod observability;
+mod telemetry;
 mod tunnel;
 mod view;
 use credential::Resolution;
 pub use credential::{Credential, CredentialError, CredentialFile};
-pub use observability::{MetricsConfig, NotificationConfig, WebhookDestination, WebhookKind};
+pub use observability::{NotificationConfig, WebhookDestination, WebhookKind};
+pub use telemetry::{OtlpEndpoint, TelemetryConfig};
 pub use tunnel::{TunnelConfig, TunnelConfigError, TunnelCredentials};
 
 use piqueld_core::TomlDiagnostic;
@@ -43,8 +45,8 @@ pub struct DaemonConfig {
     pub build_history: BuildHistoryConfig,
     /// Retention and cleanup of the images this installation builds.
     pub images: ImagesConfig,
-    /// Optional metrics-only listener.
-    pub metrics: MetricsConfig,
+    /// Export of the daemon's traces, metrics and logs over OTLP.
+    pub telemetry: TelemetryConfig,
     /// Global webhook notification settings.
     pub notifications: NotificationConfig,
     /// How many previews may exist and what their services may use.
@@ -127,19 +129,10 @@ impl DaemonConfig {
     /// manifest could set itself.
     fn validate(&self) -> Result<(), ConfigError> {
         self.notifications.validate()?;
+        self.telemetry.validate()?;
         self.previews
             .validate()
             .map_err(|error| ConfigError::Invalid(error.to_string()))?;
-        if self
-            .metrics
-            .listen
-            .iter()
-            .any(|address| address.port() == 0)
-        {
-            return Err(ConfigError::Invalid(
-                "metrics ports must be greater than zero".into(),
-            ));
-        }
         for (name, path) in [
             ("server.data_dir", &self.server.data_dir),
             ("server.runtime_dir", &self.server.runtime_dir),
@@ -746,6 +739,9 @@ pub enum ConfigError {
 
 /// Installs tracing filtered by `RUST_LOG` when present.
 ///
+/// With `telemetry` enabled, API request spans and log events are also
+/// exported over OTLP.
+///
 /// Interactive terminals and the systemd journal receive plain text. The
 /// journal gets it without colors or timestamps, which it records itself.
 /// Other pipes (containers, log collectors) receive structured JSON. A
@@ -759,6 +755,7 @@ pub enum ConfigError {
 /// global subscriber is already installed.
 pub fn init_tracing(
     log_file: Option<std::fs::File>,
+    telemetry: &crate::telemetry::Telemetry,
 ) -> Result<(), tracing_subscriber::util::TryInitError> {
     use std::io::IsTerminal as _;
     let layer = if std::io::stdout().is_terminal() {
@@ -780,6 +777,7 @@ pub fn init_tracing(
                 .json()
                 .with_writer(std::sync::Arc::new(file))
         }))
+        .with(telemetry.layer())
         .try_init()
 }
 

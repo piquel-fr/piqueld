@@ -13,7 +13,7 @@ use piqueld_client::{
     access::{GlobalPermission, Permission},
     system::{
         CertificateStatus, DependencyStatus, DnsProviderStatus, ImageStatus, PublicIngressStatus,
-        ReadinessStatus,
+        ReadinessStatus, TelemetryStatus,
     },
 };
 use std::fmt::Write as _;
@@ -303,6 +303,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                     {move || {
                         signals.system.get().map(|system| preview_card(system.previews.as_ref()))
                     }} {move || signals.system.get().map(|system| images_card(&system.images))}
+                    {move || signals.system.get().map(|system| telemetry_cards(&system.telemetry))}
                     {move || {
                         signals
                             .system
@@ -491,6 +492,50 @@ fn images_card(images: &ImageStatus) -> AnyView {
             "Cleanup hasn't run since the daemon started.",
         ),
     }
+}
+
+/// Cards for telemetry export: one per collector, with its endpoint, last
+/// export and dropped records, or one saying export is off. Headers appear
+/// only as the file they were read from.
+fn telemetry_cards(telemetry: &TelemetryStatus) -> AnyView {
+    if telemetry.destinations.is_empty() {
+        return status_card(
+            "Telemetry export",
+            Tone::Neutral,
+            "Off",
+            "Set an endpoint under [telemetry] in the daemon configuration to export traces, metrics and logs over OTLP.",
+        );
+    }
+    telemetry
+        .destinations
+        .iter()
+        .map(|destination| {
+            let (tone, label) = match (destination.failing, destination.last_success_ms) {
+                (true, _) => (Tone::Bad, "Failing"),
+                (false, Some(_)) => (Tone::Ok, "Exporting"),
+                (false, None) => (Tone::Pending, "Waiting"),
+            };
+            let last = destination.last_success_ms.map_or_else(
+                || "Nothing exported yet.".to_owned(),
+                |at| format!("Last export {}.", super::format::relative(at)),
+            );
+            let headers = destination
+                .headers
+                .as_ref()
+                .map(|headers| format!(" Headers {headers}."))
+                .unwrap_or_default();
+            status_card(
+                "Telemetry export",
+                tone,
+                label,
+                &format!(
+                    "{}. {last} {} records dropped since the daemon started.{headers}",
+                    destination.endpoint, destination.dropped
+                ),
+            )
+        })
+        .collect_view()
+        .into_any()
 }
 
 /// Card for one DNS-01 certificate: its name, hostnames, expiry and last error.
