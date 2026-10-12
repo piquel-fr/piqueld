@@ -3420,7 +3420,7 @@ async fn environment_visibility_edits_cap_routes_in_the_saved_manifest() {
         manifest.spec.environments["production"].visibility,
         Visibility::Private
     );
-    // Back to the default, the block configures nothing and disappears.
+    // The block declares production, so it stays once back to the default.
     set(Visibility::Public, 2).await;
     let manifest = api
         .client
@@ -3429,7 +3429,10 @@ async fn environment_visibility_edits_cap_routes_in_the_saved_manifest() {
         .unwrap()
         .application
         .to_manifest();
-    assert!(manifest.spec.environments.is_empty());
+    assert_eq!(
+        manifest.spec.environments["production"],
+        piqueld_core::manifest::EnvironmentConfig::default()
+    );
 }
 
 #[tokio::test]
@@ -6827,14 +6830,22 @@ async fn previews_render_variables_for_the_selected_environment() {
         rendered.variables["env.name"],
         VariableValue::String("staging".into())
     );
-    // A block for an environment that does not exist yet is only a warning.
-    let unknown = rendered
-        .plan
-        .diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code == piqueld_core::codes::ENVIRONMENT_BLOCK_UNKNOWN)
-        .unwrap();
-    assert_eq!(unknown.resource, "spec.environments.preview");
+    // Blocks declare environments: saving it would create `preview`, and
+    // `production` would no longer be declared.
+    let name = |name: &str| piqueld_core::EnvironmentName::parse(name).unwrap();
+    assert_eq!(
+        rendered.environments,
+        [
+            piqueld_core::manifest::EnvironmentChange::Create {
+                environment: name("preview"),
+                source: piqueld_core::manifest::DeclaredSource::Saved,
+                sync: false,
+            },
+            piqueld_core::manifest::EnvironmentChange::Undeclared {
+                environment: name("production"),
+            },
+        ]
+    );
     assert!(!rendered.plan.is_blocked());
 
     // Production has no value for `level`.

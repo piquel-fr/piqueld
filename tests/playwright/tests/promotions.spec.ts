@@ -1,14 +1,15 @@
 import { test, expect } from '../fixtures.js';
 import type { Page, Route } from '@playwright/test';
 
-/** The manifest of `shop`: `web` mounts each environment's own API key. */
+/** The manifest of `shop`, which declares `staging` and `production`
+ * promoted from it: `web` mounts each environment's own API key. */
 const manifest = {
   api_version: 'piqueld.dev/v1alpha1', kind: 'Application',
   metadata: { name: 'shop' },
   spec: {
     environments: {
       staging: { variables: { api_key: 'staging-api-key' } },
-      production: { variables: { api_key: 'production-api-key' } },
+      production: { promote_from: 'staging', variables: { api_key: 'production-api-key' } },
     },
     services: [{
       name: 'web',
@@ -33,9 +34,24 @@ async function call(page: Page, method: string, path: string, body?: unknown, he
   }, { method, path, body, headers });
 }
 
-/** `shop` with `staging` building the saved manifest and `production` promoted from it. */
+/** `shop`, whose manifest creates `staging` building the saved manifest and
+ * `production` promoted from it. */
 async function createPromotion(page: Page) {
   const saved = await call(page, 'POST', 'applications/apply', { manifest, expected_generation: 0 });
+  const app = saved.application_id as string;
+  const { environments } = await call(page, 'GET', `applications/${app}`);
+  const staging = environments.find((environment: { name: string }) => environment.name === 'staging').id as string;
+  return { app, production: app, staging };
+}
+
+/** `shop` without environment blocks, whose `staging` and promotion are
+ * created by hand, as for applications whose manifest declares none. */
+async function createUndeclaredPromotion(page: Page) {
+  const undeclared = {
+    ...manifest,
+    spec: { services: [{ name: 'web', source: { type: 'image', image: 'nginx:alpine' } }] },
+  };
+  const saved = await call(page, 'POST', 'applications/apply', { manifest: undeclared, expected_generation: 0 });
   const app = saved.application_id as string;
   const staging = (await call(page, 'POST', `applications/${app}/environments`, {
     name: 'staging', expected_generation: saved.generation,
@@ -184,7 +200,7 @@ test('promoting shows the plan and promotes exactly what was reviewed', async ({
 
 test('an environment builds its own source or receives promoted releases, as one choice', async ({ page, account }) => {
   void account;
-  const { app, production } = await createPromotion(page);
+  const { app, production } = await createUndeclaredPromotion(page);
   await page.goto(`/dashboard/applications/${app}/environments/${production}`);
   const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Source', exact: true }) });
   await expect(card).toContainText('Receives releases promoted from staging');
@@ -207,6 +223,33 @@ test('an environment builds its own source or receives promoted releases, as one
   await save.click();
   await expect(card).toContainText('Receives releases promoted from staging');
   expect(changes).toEqual([null, expect.stringMatching(/^env-/)]);
+});
+
+test('the manifest owns the environments it declares, and reports the ones it drops', async ({ page, account }) => {
+  void account;
+  const { app, production } = await createPromotion(page);
+  await page.goto(`/dashboard/applications/${app}/environments/${production}`);
+  const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Source', exact: true }) });
+  await expect(card).toContainText('Receives releases promoted from staging');
+  await expect(card).toContainText('[spec.environments.production]');
+  await expect(card.getByRole('combobox', { name: 'Deploys', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Delete environment', exact: true })).toBeDisabled();
+
+  // Without staging's block, production builds again and staging keeps
+  // running, reported until it is deleted.
+  const { generation } = await call(page, 'GET', `applications/${app}`);
+  const productionOnly = {
+    ...manifest,
+    spec: { ...manifest.spec, environments: { production: { variables: { api_key: 'production-api-key' } } } },
+  };
+  await call(page, 'POST', 'applications/apply', {
+    manifest: productionOnly, expected_generation: generation, expected_application_id: app,
+  });
+  await page.goto(`/dashboard/applications/${app}?tab=environments`);
+  const drift = page.getByRole('region', { name: 'Differences from the manifest' });
+  await expect(drift.getByRole('listitem')).toHaveCount(1);
+  await expect(drift).toContainText('staging');
+  await expect(drift).toContainText('Not declared');
 });
 
 test('an environment\'s Secrets tab edits the stored secrets it may mount', async ({ page, account }) => {

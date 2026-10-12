@@ -233,31 +233,6 @@ impl ServiceRolloutView {
 }
 
 impl crate::Plan {
-    /// Warns about each `[spec.environments.<name>]` block of `template` that
-    /// names none of `environments`. Such a block is kept, so a manifest can be
-    /// saved before its environment is created.
-    pub fn warn_environments(
-        &mut self,
-        template: &crate::manifest::ApplicationTemplate,
-        environments: &[crate::EnvironmentName],
-    ) {
-        self.diagnostics.extend(
-            template
-                .spec()
-                .environments
-                .keys()
-                .filter(|name| !environments.iter().any(|environment| environment.as_str() == *name))
-                .map(|name| PlanDiagnostic {
-                    code: codes::ENVIRONMENT_BLOCK_UNKNOWN.into(),
-                    severity: DiagnosticSeverity::Warning,
-                    resource: format!("spec.environments.{name}"),
-                    message: format!("the application has no environment named {name}; this configuration applies once one is created"),
-                    blocking: false,
-                }),
-        );
-        self.sort_diagnostics();
-    }
-
     /// Adds `diagnostics`, keeping every diagnostic in resource order.
     pub fn warn(&mut self, diagnostics: impl IntoIterator<Item = PlanDiagnostic>) {
         self.diagnostics.extend(diagnostics);

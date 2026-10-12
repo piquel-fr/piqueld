@@ -151,8 +151,18 @@ pub const SNAPSHOT_INVALID: &str = "snapshot_invalid";
 pub const SNAPSHOT_BASE_UNAVAILABLE: &str = "snapshot_base_unavailable";
 /// A local snapshot upload stalled, or took too long to receive.
 pub const SNAPSHOT_TIMED_OUT: &str = "snapshot_timed_out";
-/// `[spec.environments.<name>]` names no environment of the application.
-pub const ENVIRONMENT_BLOCK_UNKNOWN: &str = "environment_block_unknown";
+/// Only environments of a repository-backed application follow a branch.
+pub const MANIFEST_REPOSITORY_REQUIRED: &str = "manifest_repository_required";
+/// A promoted environment also sets a branch, commit, or sync.
+pub const ENVIRONMENT_SOURCE_CONFLICT: &str = "environment_source_conflict";
+/// An environment pinned to a commit cannot sync.
+pub const ENVIRONMENT_SYNC_PINNED: &str = "environment_sync_pinned";
+/// A promotion source is not an environment that can be one.
+pub const PROMOTION_SOURCE_INVALID: &str = "promotion_source_invalid";
+/// An environment would, directly or through others, promote from itself.
+pub const PROMOTION_CYCLE: &str = "promotion_cycle";
+/// The manifest declares the environment, so it owns its source and existence.
+pub const ENVIRONMENT_DECLARED: &str = "environment_declared";
 /// Manifest that must be literal still references variables.
 pub const VARIABLE_UNRESOLVED: &str = "variable_unresolved";
 /// A declared secret is also set in the application's secret store.

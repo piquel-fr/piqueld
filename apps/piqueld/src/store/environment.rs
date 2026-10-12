@@ -14,27 +14,29 @@ use piqueld_core::{
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 impl Store {
-    /// Inserts an environment deploying from `source`, initially
-    /// `not_deployed`, and records its creation. Returns `AlreadyExists` when
-    /// the application already has one with `name`.
+    /// Inserts an environment deploying from `source`, opted into sync when
+    /// `sync`, initially `not_deployed`, and records its creation. Returns
+    /// `AlreadyExists` when the application already has one with `name`.
     pub(super) async fn insert_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &ApplicationId,
-        id: &EnvironmentId,
-        name: &EnvironmentName,
+        (id, name): (&EnvironmentId, &EnvironmentName),
         source: &EnvironmentSource,
+        sync: bool,
         now: i64,
     ) -> Result<(), StoreError> {
         let (application, id, name) = (application.as_str(), id.as_str(), name.as_str());
         let (branch, commit, promoted_from) = Self::source_columns(source);
+        let sync = i64::from(sync);
         sqlx::query!(
-            "INSERT INTO environments(id,application_id,name,branch,pinned_commit,promoted_from,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?7)",
+            "INSERT INTO environments(id,application_id,name,branch,pinned_commit,promoted_from,sync,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8)",
             id,
             application,
             name,
             branch,
             commit,
             promoted_from,
+            sync,
             now
         )
         .execute(&mut **tx)
@@ -80,6 +82,7 @@ impl Store {
             return Err(StoreError::Busy);
         }
         let template = &application.application;
+        Self::check_undeclared(template, name)?;
         let connection = template.spec().manifest.as_ref();
         let source = match source {
             Some(SourceChoice::PromoteFrom(environment)) => {
@@ -94,7 +97,7 @@ impl Store {
         if let Some(from) = source.promoted_from() {
             Self::check_promotion_source_on(tx, template.id(), (&id, name), from).await?;
         }
-        Self::insert_environment_on(tx, template.id(), &id, name, &source, now).await?;
+        Self::insert_environment_on(tx, template.id(), (&id, name), &source, false, now).await?;
         Self::bump_generation_on(
             tx,
             application.application.id(),
@@ -174,13 +177,17 @@ impl Store {
     }
 
     /// Points an environment of a repository-backed application at `branch`
-    /// (see `set_source_on`).
+    /// (see `set_source_on`), unless the saved manifest declares it.
     pub(super) async fn set_branch_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
         branch: TrackedBranch,
         now: i64,
     ) -> Result<(), StoreError> {
+        Self::check_undeclared(
+            &environment.application.application,
+            &environment.environment.name,
+        )?;
         let connection = environment.application.application.spec().manifest.as_ref();
         let source = EnvironmentSource::select(connection, Some(branch))?;
         Self::set_source_on(tx, environment, source, now).await
@@ -189,13 +196,17 @@ impl Store {
     /// Makes an environment promoted from `promote_from` (see
     /// `check_promotion_source_on`), or, without one, returns it to tracking
     /// the application's saved manifest or the branch `spec.manifest` names
-    /// (see `set_source_on`).
+    /// (see `set_source_on`), unless the saved manifest declares it.
     pub(super) async fn set_promotion_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
         promote_from: Option<EnvironmentId>,
         now: i64,
     ) -> Result<(), StoreError> {
+        Self::check_undeclared(
+            &environment.application.application,
+            &environment.environment.name,
+        )?;
         let source = match promote_from {
             Some(from) => {
                 Self::check_promotion_source_on(
@@ -217,24 +228,47 @@ impl Store {
         Self::set_source_on(tx, environment, source, now).await
     }
 
-    /// Changes where an environment deploys from, advancing the application
-    /// revision. Nothing is fetched or deployed: the environment no longer
-    /// reports its configuration as resolved until its next deployment or
-    /// promotion. Environments being deleted are `Busy`, and so are
-    /// environments with a deployment in progress becoming promoted: that
-    /// deployment may already be fetching or building.
+    /// Changes where an environment deploys from (see `write_source_on`),
+    /// advancing the application revision when it changed.
     async fn set_source_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
         source: EnvironmentSource,
         now: i64,
     ) -> Result<(), StoreError> {
+        if !Self::write_source_on(tx, environment, source, false, now).await? {
+            return Ok(());
+        }
+        Self::bump_generation_on(
+            tx,
+            &environment.environment.application_id,
+            environment.application.generation,
+            Some(environment.id()),
+        )
+        .await
+    }
+
+    /// Changes where an environment deploys from, recording
+    /// `environment_source_changed`, and returns whether it changed. Nothing
+    /// is fetched or deployed: once the caller advances the revision, the
+    /// environment no longer reports its configuration as resolved until its
+    /// next deployment or promotion. Environments being deleted are `Busy`,
+    /// and so are environments with a deployment in progress becoming
+    /// promoted, since that deployment may already be fetching or building,
+    /// unless it is `accepting` its fetched manifest, past both.
+    pub(super) async fn write_source_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        environment: &StoredEnvironment,
+        source: EnvironmentSource,
+        accepting: bool,
+        now: i64,
+    ) -> Result<bool, StoreError> {
         if environment.delete_intent() {
             return Err(StoreError::Busy);
         }
         let previous = &environment.environment.source;
         if source == *previous {
-            return Ok(());
+            return Ok(false);
         }
         let id = environment.id().as_str();
         let deploying = sqlx::query_scalar!(
@@ -245,7 +279,7 @@ impl Store {
         .await
         .map_err(StoreError::database)?
             != 0;
-        if deploying && source.promoted_from().is_some() {
+        if deploying && !accepting && source.promoted_from().is_some() {
             return Err(StoreError::Busy);
         }
         let (branch, commit, promoted_from) = Self::source_columns(&source);
@@ -276,13 +310,7 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        Self::bump_generation_on(
-            tx,
-            &environment.environment.application_id,
-            environment.application.generation,
-            Some(environment.id()),
-        )
-        .await
+        Ok(true)
     }
 
     /// Describes `source` in a sentence, naming a promotion source.
@@ -332,11 +360,16 @@ impl Store {
 
     /// Requests deletion of one environment and advances its application
     /// revision, since environment names select configuration. Refused while
-    /// live environments promote from it.
+    /// live environments promote from it, and while the saved manifest
+    /// declares it, since converging would create it again, empty.
     pub(super) async fn delete_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
     ) -> Result<Operation, StoreError> {
+        Self::check_undeclared(
+            &environment.application.application,
+            &environment.environment.name,
+        )?;
         Self::check_promotion_dependents_on(tx, environment.id()).await?;
         let operation = Self::request_delete_on(tx, environment.id()).await?;
         Self::bump_generation_on(

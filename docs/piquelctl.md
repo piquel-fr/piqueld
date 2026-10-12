@@ -80,9 +80,11 @@ piquelctl events --application <application-id> --limit 50
 ```
 
 An application owns the saved manifest; its environments deploy it, each with its
-own deployments, status, volumes, generated secrets, routes, and network. Applications have
-an environment named `production` from creation (existing applications were
-migrated to one that kept their ID). `env` commands select an environment by name
+own deployments, status, volumes, generated secrets, routes, and network. A
+manifest that [declares environments](application-manifest.md#declared-environments)
+gets exactly those when it is saved or fetched from the branch `spec.manifest`
+names; otherwise applications have an environment named `production` from
+creation (existing applications were migrated to one that kept their ID). `env` commands select an environment by name
 or stable ID; `ENV` may be omitted only when the application has exactly one.
 `app deploy`, `app reconcile`, and `app logs` act on the application's only
 environment and fail with an "environment required" input error naming the
@@ -93,6 +95,17 @@ Environment creation, renames and deletions are conditioned on the inspected
 application revision like other mutations (`--expected-generation`, `--force`),
 and advance it, so a command based on an earlier inspection fails instead of
 acting on a renamed or deleted environment.
+
+Declared environments take their source, sync and existence from their
+`[spec.environments.<name>]` block: `env create`, `env source`, `env branch`,
+`env sync` and `env delete` refuse them with `environment_declared`, naming the
+environment; change the manifest instead (remove the block before deleting
+one). `app plan` lists, under `Environments:`, what saving a manifest would
+create (`+`), change (`~`), or no longer declare (`!`); `app show` lists how the
+environments differ from the saved manifest, including environments it no
+longer declares, which keep running until `env delete`. `app apply --deploy`
+deploys every declared environment that builds and waits for each; promoted
+ones wait for `env promote`.
 
 Each environment of a repository-backed application follows its own branch of
 the application's repository; the repository URL and manifest path stay on the
@@ -339,9 +352,9 @@ written to stderr, so stdout remains valid JSON.
 | `app create` / `app rename` / field edits | `SavedApplication`; `--deploy` uses the same output as `app apply --deploy` |
 | `app manifest` | Saved TOML as a JSON string |
 | `app releases` | `{ "items": [ReleaseView], "next_cursor": string or null }` |
-| `app apply` | `SavedApplication` with null `operation_id` |
-| `app apply --deploy --no-wait` | `SavedApplication` with a deployment operation ID |
-| `app apply --deploy` | `{ "saved": SavedApplication, "outcome": OperationState, "operation": Operation }` |
+| `app apply` | `SavedApplication` with null `operation_id` and empty `operation_ids` |
+| `app apply --deploy --no-wait` | `SavedApplication` with the deployment operation IDs in `operation_ids`, the first also in `operation_id` |
+| `app apply --deploy` | `{ "saved": SavedApplication, "outcome": OperationState, "operation": Operation, "operations": [Operation] }`; `outcome` and `operation` are the first deployment's, `operations` every one |
 | `app delete --no-wait` | `{ "deleted": DeletedApplication, "volumes_retained": true }` |
 | `app delete` | `{ "deleted": DeletedApplication, "outcome": "deleted", "volumes_retained": true }` |
 | `env delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": true }` |

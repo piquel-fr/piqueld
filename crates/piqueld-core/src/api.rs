@@ -92,6 +92,11 @@ pub struct ApplicationView {
     /// Previews in slug order.
     #[serde(default)]
     pub previews: Vec<EnvironmentView>,
+    /// How the environments differ from the ones the saved manifest
+    /// declares: changes waiting for its next save or fetch, and
+    /// environments it no longer declares, kept until deleted explicitly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drift: Vec<crate::manifest::EnvironmentChange>,
     /// The last time sync listed its repository's branches; absent until it
     /// did, and while sync is off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -524,6 +529,11 @@ pub struct PlanView {
     pub operation: Option<Operation>,
     /// Safe changes relative to the baseline.
     pub changes: Vec<ManifestChange>,
+    /// How saving the manifest would change the application's environments
+    /// (creating, re-sourcing, opting into sync), and the environments it no
+    /// longer declares. Empty for release plans, and when nothing changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environments: Vec<crate::manifest::EnvironmentChange>,
     /// Ordered runtime plan for the selected environment; unresolved images are
     /// explicit actions. Empty when no environment is selected.
     pub plan: Plan,
@@ -813,8 +823,26 @@ pub struct SavedApplication {
     pub application_id: String,
     /// Saved configuration revision.
     pub generation: u64,
-    /// Deployment operation, only when explicitly requested.
+    /// The first deployment operation, only when explicitly requested; see
+    /// `operation_ids` for applications that declare several environments.
     pub operation_id: Option<String>,
+    /// Every deployment operation started, one per environment: the
+    /// application's only one, or each declared environment that builds.
+    #[serde(default)]
+    pub operation_ids: Vec<String>,
+}
+
+impl SavedApplication {
+    /// Every deployment operation started. Daemons from before
+    /// `operation_ids` report only `operation_id`.
+    #[must_use]
+    pub fn deployments(&self) -> Vec<&str> {
+        if self.operation_ids.is_empty() {
+            self.operation_id.iter().map(String::as_str).collect()
+        } else {
+            self.operation_ids.iter().map(String::as_str).collect()
+        }
+    }
 }
 
 /// Durable deployment snapshot and execution summary.
@@ -1753,6 +1781,7 @@ mod environment_tests {
                 environment("app-notes-01", "production"),
             ],
             previews: Vec::new(),
+            drift: Vec::new(),
             sync_check: None,
         };
         assert_eq!(

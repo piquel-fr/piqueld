@@ -185,6 +185,7 @@ impl ApplicationService {
             }),
             operation,
             changes: ManifestChange::between_applications(baseline.as_ref(), app),
+            environments: Vec::new(),
             plan,
             rollouts: ServiceRolloutView::for_application(app),
             variables: rendering.values.clone(),

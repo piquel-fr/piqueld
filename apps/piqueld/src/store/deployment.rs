@@ -103,8 +103,10 @@ impl Store {
     }
 
     /// Saves edited configuration with the next generation without creating an
-    /// operation, so nothing is deployed until requested. New applications get a
-    /// `production` environment that starts as `not_deployed`. Returns
+    /// operation, so nothing is deployed until requested. Converges the
+    /// environments to the ones it declares (see `converge_environments_on`);
+    /// new applications that declare none get a `production` environment.
+    /// New environments start as `not_deployed`. Returns
     /// `IllegalTransition` while deletion is pending, `AlreadyExists` for a taken
     /// name, `SecretDeleting` for manifests that reference secrets being deleted,
     /// and `secret_name_conflict` for declared secrets the application stores.
@@ -151,14 +153,18 @@ impl Store {
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
-        if previous == 0 {
+        let declarations = app.spec().declared_environments()?;
+        if previous == 0 && declarations.is_empty() {
             Self::create_default_environment_on(tx, app, now).await?;
         }
         Self::follow_connection_on(tx, app, previous_url.as_deref()).await?;
+        Self::converge_environments_on(tx, app.id(), &declarations, (previous == 0, None), now)
+            .await?;
         Ok(SavedApplication {
             application_id: id.into(),
             generation: u64::try_from(generation).map_err(StoreError::corrupt)?,
             operation_id: None,
+            operation_ids: Vec::new(),
         })
     }
 

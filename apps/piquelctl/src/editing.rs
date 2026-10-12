@@ -1329,22 +1329,26 @@ pub(crate) async fn create(
         retry_transport(|| client.create_application(&args.name, args.deployment.deploy)).await?;
     finish(console, client, &saved, &args.deployment).await
 }
-/// Emits the save result, first waiting for an accepted deployment unless `--no-wait`.
-async fn finish(
+/// Emits the save result, first waiting, in order, for every accepted
+/// deployment (one per environment that builds) unless `--no-wait`.
+pub(crate) async fn finish(
     console: &mut Console,
     client: &Client,
     saved: &SavedApplication,
     deployment: &DeploymentArgs,
 ) -> Result<()> {
-    if let Some(id) = &saved.operation_id
-        && !deployment.no_wait
-    {
-        let operation = wait_for_operation(console, client, id).await?;
-        return console.emit(&SavedDeploymentReport {
-            saved,
-            outcome: operation.state,
-            operation: &operation,
-        });
+    let deployments = saved.deployments();
+    if deployments.is_empty() || deployment.no_wait {
+        return console.emit(saved);
     }
-    console.emit(saved)
+    let mut operations = Vec::with_capacity(deployments.len());
+    for id in deployments {
+        operations.push(wait_for_operation(console, client, id).await?);
+    }
+    console.emit(&SavedDeploymentReport {
+        saved,
+        outcome: operations[0].state,
+        operation: &operations[0],
+        operations: &operations,
+    })
 }

@@ -127,11 +127,14 @@ impl Store {
     /// still follows a branch. Other environments keep their own.
     ///
     /// While the application is still repository-backed, a manifest an
-    /// environment fetched, with the application's own connection, also
-    /// becomes its saved manifest: what application-wide views show and what
-    /// environments deploy after disconnecting. A preview's branch never does. Records `application_applied` when either changed;
-    /// neither advances the application revision, since repository-backed
-    /// configuration cannot be edited.
+    /// environment fetched from the branch and commit `spec.manifest` names,
+    /// with the application's own connection, also becomes its saved manifest:
+    /// what application-wide views show, what environments deploy after
+    /// disconnecting, and what declares its environments, to which they are
+    /// converged (see `converge_environments_on`). Other branches, one-off
+    /// revisions and previews never do. Records `application_applied` when
+    /// either manifest changed; neither advances the application revision,
+    /// since repository-backed configuration cannot be edited.
     /// Fails with `secret_name_conflict` when the application's store now holds
     /// a name the fetched manifest declares.
     /// Called in the same transaction that saves the fully prepared runtime target.
@@ -183,14 +186,26 @@ impl Store {
         .map_err(StoreError::database)?
         .rows_affected();
         // Even when this environment's own manifest is unchanged, another
-        // environment may have fetched since.
+        // environment may have fetched since. The fetched manifest's
+        // connection is the revision it was fetched from.
         if let (EnvironmentKind::Environment, Some(connection)) =
             (fetching, application.spec().manifest.clone())
+            && fetched
+                .spec()
+                .manifest
+                .as_ref()
+                .is_some_and(|fetched| fetched.repository == connection.repository)
         {
-            let saved = fetched
-                .with_manifest(Some(connection))
-                .canonical_json()
-                .map_err(StoreError::corrupt)?;
+            let saved = fetched.with_manifest(Some(connection));
+            Self::converge_environments_on(
+                tx,
+                application.id(),
+                &saved.spec().declared_environments()?,
+                (false, Some(&operation.environment_id)),
+                now,
+            )
+            .await?;
+            let saved = saved.canonical_json().map_err(StoreError::corrupt)?;
             let id = application.id().as_str();
             changed += sqlx::query!(
                 "UPDATE applications SET desired_json=?1,updated_at_ms=?2 WHERE id=?3 AND desired_json IS NOT ?1",
@@ -363,12 +378,16 @@ mod tests {
             .await
             .unwrap();
         let current = store.get(environment).await.unwrap();
-        let fetched = piqueld_core::manifest::parse_template_toml(&format!(
+        // As fetching does, the connection replaces the file's own before validation.
+        let mut fetched = piqueld_core::manifest::ApplicationManifest::decode_toml(&format!(
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{spec}"
         ))
-        .unwrap()
-        .normalize(current.application.application.id().clone())
-        .with_manifest(current.tracking().unwrap().repository());
+        .unwrap();
+        fetched.spec.manifest = current.tracking().unwrap().repository();
+        let fetched = fetched
+            .validate_template()
+            .unwrap()
+            .normalize(current.application.application.id().clone());
         let rendering = current.render(&fetched, &op.id).unwrap();
         store
             .save_deployment_input(
@@ -537,7 +556,7 @@ mod tests {
         fetch(
             &store,
             &production,
-            &format!("{service}\n[[spec.routes]]\nhostname='notes.example.com'\nservice='web'\nport=80\n[spec.environments.qa.variables]\nlevel='debug'"),
+            &format!("{service}\n[[spec.routes]]\nhostname='notes.example.com'\nservice='web'\nport=80\n[spec.environments.production.variables]\nlevel='debug'"),
         )
         .await;
         // Staging has fetched nothing yet, so it reserves nothing.
@@ -555,7 +574,7 @@ mod tests {
         assert_eq!(reserved(&production).await, ["notes.example.com"]);
         assert_eq!(reserved(&staging.id).await, ["staging.example.com"]);
         assert_eq!(store.get(&production).await.unwrap().own, before);
-        // Only production's own manifest configures `qa`.
+        // Only production's own manifest configures `production`.
         let rename = |id: &EnvironmentId| Mutation::RenameEnvironment {
             id: id.clone(),
             name: piqueld_core::EnvironmentName::parse("qa").unwrap(),
@@ -614,6 +633,63 @@ mod tests {
             "{}[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'",
             if declared { secret } else { "" }
         )
+    }
+
+    /// Fetching a manifest from the branch `spec.manifest` names converges
+    /// the environments it declares, including the fetching one, whose own
+    /// deployment is past building; other branches never do.
+    #[tokio::test]
+    async fn fetches_of_the_connection_branch_converge_declared_environments() {
+        use piqueld_core::{EnvironmentSource, TrackedBranch};
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let application = saved_connection(&store).await;
+        let production = EnvironmentId::default_for(&application);
+        let declared = format!(
+            "[spec.environments.staging]\nsync=true\n[spec.environments.production]\npromote_from='staging'\n[spec.environments.canary]\nbranch='next'\n{}",
+            token_spec(false)
+        );
+        fetch(&store, &production, &declared).await;
+        let environments = store.environments(&application).await.unwrap();
+        let named = |name: &str| {
+            environments
+                .iter()
+                .find(|environment| environment.name.as_str() == name)
+                .unwrap()
+                .clone()
+        };
+        let (staging, canary) = (named("staging"), named("canary"));
+        assert_eq!(
+            staging.source,
+            EnvironmentSource::Branch(TrackedBranch::new("main".into(), None).unwrap())
+        );
+        assert!(staging.sync);
+        assert_eq!(
+            canary.source,
+            EnvironmentSource::Branch(TrackedBranch::new("next".into(), None).unwrap())
+        );
+        assert_eq!(
+            named("production").source.promoted_from(),
+            Some(&staging.id)
+        );
+
+        // A manifest on another branch declares nothing.
+        fetch(&store, &canary.id, &token_spec(false)).await;
+        assert_eq!(store.environments(&application).await.unwrap().len(), 3);
+        // The next one from `main` stops staging syncing, and leaves canary,
+        // no longer declared, as it is.
+        fetch(
+            &store,
+            &staging.id,
+            &format!(
+                "[spec.environments.staging]\n[spec.environments.production]\npromote_from='staging'\n{}",
+                token_spec(false)
+            ),
+        )
+        .await;
+        let environments = store.environments(&application).await.unwrap();
+        assert_eq!(environments.len(), 3);
+        assert!(!environments.iter().any(|environment| environment.sync));
     }
 
     /// A secret stored after a manifest was fetched but before it is accepted

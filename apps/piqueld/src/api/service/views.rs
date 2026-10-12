@@ -24,7 +24,14 @@ pub(super) fn application_view(
         .manifest
         .as_ref()
         .is_some_and(|connection| !connection.sync.is_off());
+    // Saved manifests were validated, declarations included, when saved.
+    let declarations = stored
+        .application
+        .spec()
+        .declared_environments()
+        .unwrap_or_default();
     ApplicationView {
+        drift: piqueld_core::manifest::EnvironmentChange::between(&declarations, &environments),
         sync_check: sync_check.filter(|_| syncs),
         generation: stored.generation,
         spec_hash: stored.application.spec_hash(),

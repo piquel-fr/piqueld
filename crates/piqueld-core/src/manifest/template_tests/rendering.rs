@@ -404,6 +404,7 @@ fn variable_values_render_system_references_overrides_and_native_interpolation()
                 ("changed".into(), Variable::Boolean(false)),
                 ("only".into(), Variable::String("${{env.name}}".into())),
             ]),
+            ..EnvironmentConfig::default()
         },
     );
     manifest.spec.services[0].environment.insert(
@@ -519,6 +520,7 @@ fn rendering_collects_sorted_errors_and_only_the_first_missing_value_per_field()
                 ("a".into(), Variable::Integer(1)),
                 ("b".into(), Variable::Integer(2)),
             ]),
+            ..EnvironmentConfig::default()
         },
     );
     manifest.spec.services[0].command = vec!["${{vars.b}}${{vars.a}}".into()];
@@ -557,6 +559,7 @@ fn raw_rendering_reports_parse_errors_and_variable_declaration_paths() {
                 EnvironmentConfig {
                     visibility: Visibility::Public,
                     variables: std::collections::BTreeMap::from([("bad".into(), variable)]),
+                    ..EnvironmentConfig::default()
                 },
             );
         } else {

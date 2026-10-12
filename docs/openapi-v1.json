@@ -751,6 +751,13 @@
             "description": "Whether deletion has been requested.",
             "type": "boolean"
           },
+          "drift": {
+            "description": "How the environments differ from the ones the saved manifest\ndeclares: changes waiting for its next save or fetch, and\nenvironments it no longer declares, kept until deleted explicitly.",
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentChange"
+            },
+            "type": "array"
+          },
           "environments": {
             "description": "Environments in name order. Never includes previews.",
             "items": {
@@ -1796,6 +1803,69 @@
           "failed_deliveries"
         ],
         "type": "object"
+      },
+      "DeclaredSource": {
+        "description": "Where a declared environment deploys from, naming other environments by\nname, as the manifest does.",
+        "oneOf": [
+          {
+            "description": "The application's saved manifest.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "saved"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TrackedBranch",
+                "description": "The manifest file on a branch of the application's manifest repository."
+              },
+              {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "branch"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "The manifest file on a branch of the application's manifest repository."
+          },
+          {
+            "description": "Releases promoted from another environment of the application.",
+            "properties": {
+              "from": {
+                "$ref": "#/components/schemas/EnvironmentName",
+                "description": "The environment it receives releases from."
+              },
+              "type": {
+                "enum": [
+                  "promoted"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "DeletedApplication": {
         "description": "Accepted application deletion: one delete operation per environment.",
@@ -3003,6 +3073,13 @@
               "delete_intent": {
                 "description": "Whether deletion has been requested.",
                 "type": "boolean"
+              },
+              "drift": {
+                "description": "How the environments differ from the ones the saved manifest\ndeclares: changes waiting for its next save or fetch, and\nenvironments it no longer declares, kept until deleted explicitly.",
+                "items": {
+                  "$ref": "#/components/schemas/EnvironmentChange"
+                },
+                "type": "array"
               },
               "environments": {
                 "description": "Environments in name order. Never includes previews.",
@@ -5019,6 +5096,13 @@
                 },
                 "type": "array"
               },
+              "environments": {
+                "description": "How saving the manifest would change the application's environments\n(creating, re-sourcing, opting into sync), and the environments it no\nlonger declares. Empty for release plans, and when nothing changes.",
+                "items": {
+                  "$ref": "#/components/schemas/EnvironmentChange"
+                },
+                "type": "array"
+              },
               "generation": {
                 "description": "Current intent revision; zero means the name is absent.",
                 "format": "int64",
@@ -5269,9 +5353,16 @@
                 "type": "integer"
               },
               "operation_id": {
-                "description": "Deployment operation, only when explicitly requested.",
+                "description": "The first deployment operation, only when explicitly requested; see\n`operation_ids` for applications that declare several environments.",
                 "nullable": true,
                 "type": "string"
+              },
+              "operation_ids": {
+                "description": "Every deployment operation started, one per environment: the\napplication's only one, or each declared environment that builds.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               }
             },
             "required": [
@@ -5797,10 +5888,143 @@
         ],
         "type": "object"
       },
+      "EnvironmentChange": {
+        "description": "A difference between the environments a manifest declares and the\napplication's environments, as converging them would resolve it, or, for\n`undeclared`, report it.",
+        "oneOf": [
+          {
+            "description": "The environment is created, not deployed.",
+            "properties": {
+              "change": {
+                "enum": [
+                  "create"
+                ],
+                "type": "string"
+              },
+              "environment": {
+                "$ref": "#/components/schemas/EnvironmentName",
+                "description": "The declared environment."
+              },
+              "source": {
+                "$ref": "#/components/schemas/DeclaredSource",
+                "description": "Where it deploys from."
+              },
+              "sync": {
+                "description": "Whether pushes deploy it, from its first deployment.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "environment",
+              "source",
+              "sync",
+              "change"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The environment deploys from `to` instead of `from`; nothing is\ndeployed. Waits while a deployment of it runs when it becomes promoted.",
+            "properties": {
+              "change": {
+                "enum": [
+                  "source"
+                ],
+                "type": "string"
+              },
+              "environment": {
+                "$ref": "#/components/schemas/EnvironmentName",
+                "description": "The declared environment."
+              },
+              "from": {
+                "$ref": "#/components/schemas/DeclaredSource",
+                "description": "Where it deploys from now."
+              },
+              "to": {
+                "$ref": "#/components/schemas/DeclaredSource",
+                "description": "Where it is declared to deploy from."
+              }
+            },
+            "required": [
+              "environment",
+              "from",
+              "to",
+              "change"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Pushes start or stop deploying the environment.",
+            "properties": {
+              "change": {
+                "enum": [
+                  "sync"
+                ],
+                "type": "string"
+              },
+              "environment": {
+                "$ref": "#/components/schemas/EnvironmentName",
+                "description": "The declared environment."
+              },
+              "sync": {
+                "description": "Whether pushes deploy it.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "environment",
+              "sync",
+              "change"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The manifest no longer declares the environment. It keeps running,\nwith its volumes and secrets, until deleted explicitly.",
+            "properties": {
+              "change": {
+                "enum": [
+                  "undeclared"
+                ],
+                "type": "string"
+              },
+              "environment": {
+                "$ref": "#/components/schemas/EnvironmentName",
+                "description": "The environment."
+              }
+            },
+            "required": [
+              "environment",
+              "change"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "EnvironmentConfig": {
         "additionalProperties": false,
-        "description": "Configuration of one environment, `[spec.environments.<name>]`.",
+        "description": "Configuration of one environment, `[spec.environments.<name>]`, which\ndeclares it (see [`super::declaration`]). Without `promote_from`, it builds\nits own source: the saved manifest, or a branch of `spec.manifest`'s\nrepository.",
         "properties": {
+          "branch": {
+            "default": null,
+            "description": "Branch of the manifest repository it follows; by default the one\n`spec.manifest` names.",
+            "nullable": true,
+            "type": "string"
+          },
+          "commit": {
+            "default": null,
+            "description": "Full commit it deploys instead of its branch's head.",
+            "nullable": true,
+            "type": "string"
+          },
+          "promote_from": {
+            "default": null,
+            "description": "Environment whose releases it receives, by `piquelctl env promote`,\ninstead of building.",
+            "nullable": true,
+            "type": "string"
+          },
+          "sync": {
+            "default": false,
+            "description": "Whether pushes to its branch deploy it while the repository syncs\n(`spec.manifest.sync`).",
+            "type": "boolean"
+          },
           "variables": {
             "additionalProperties": {
               "$ref": "#/components/schemas/Variable"
@@ -8001,6 +8225,13 @@
             },
             "type": "array"
           },
+          "environments": {
+            "description": "How saving the manifest would change the application's environments\n(creating, re-sourcing, opting into sync), and the environments it no\nlonger declares. Empty for release plans, and when nothing changes.",
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentChange"
+            },
+            "type": "array"
+          },
           "generation": {
             "description": "Current intent revision; zero means the name is absent.",
             "format": "int64",
@@ -9489,9 +9720,16 @@
             "type": "integer"
           },
           "operation_id": {
-            "description": "Deployment operation, only when explicitly requested.",
+            "description": "The first deployment operation, only when explicitly requested; see\n`operation_ids` for applications that declare several environments.",
             "nullable": true,
             "type": "string"
+          },
+          "operation_ids": {
+            "description": "Every deployment operation started, one per environment: the\napplication's only one, or each declared environment that builds.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [

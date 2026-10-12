@@ -267,7 +267,7 @@ pub fn valid_identifier(value: &str) -> bool {
 }
 
 /// Quotes user text in messages, truncated to 64 characters.
-fn echo(text: &str) -> String {
+pub(super) fn echo(text: &str) -> String {
     text.chars().take(64).collect()
 }
 
@@ -829,16 +829,6 @@ impl ApplicationSpec {
                 "spec.environments",
                 &format!("at most {MAX_ENVIRONMENTS} environments may be configured"),
             );
-        }
-        for name in self.environments.keys() {
-            if let Err(source) = EnvironmentName::parse(name.as_str()) {
-                error(
-                    errors,
-                    codes::NAME_INVALID,
-                    "spec.environments",
-                    &format!("[spec.environments.{}]: {source}", echo(name)),
-                );
-            }
         }
         for (path, name, value) in self.declarations() {
             if !valid_identifier(name) {

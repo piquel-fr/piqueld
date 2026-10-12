@@ -47,7 +47,8 @@ branch, which `EnvironmentDetailView.manifest` returns (null before its first
 fetch). Hostname reservations, the `environment_configured` rename check, and
 `plan` with `environment=ID` read that manifest, so a fetch for one environment
 never changes another. The application's saved manifest is the one last
-fetched by any environment, with the application's own connection; it is what
+fetched from the branch `spec.manifest` names, by any environment, with the
+application's own connection; it is what
 application views show and what environments deploy after disconnecting.
 A sibling hostname conflict returns `hostname_conflict` with the hostname and
 reserving environment name in `details.hostname` and `details.environment`.
@@ -100,12 +101,12 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/system/dns/refresh` | Check DNS provider credentials and zones now (`system:operate`); returns `DnsStatus`, empty without `system:read` |
 | GET | `/api/v1/openapi.json` | Generated API schema |
 | GET | `/api/v1/applications` | Paginated application summaries (up to 100 per page) |
-| GET | `/api/v1/applications/{id}` | Full latest accepted application intent and its environments |
+| GET | `/api/v1/applications/{id}` | Full latest accepted application intent and its environments, with `drift`: how they differ from the environments the saved manifest [declares](application-manifest.md#declared-environments) |
 | POST | `/api/v1/applications/plan` | Preview a manifest without pulling images; `environment=ID` selects the environment to compare with |
-| POST | `/api/v1/applications/apply` | Save configuration by name; `?deploy=true` also deploys its only environment |
+| POST | `/api/v1/applications/apply` | Save configuration by name, converging the environments it [declares](application-manifest.md#declared-environments); `?deploy=true` also deploys its only environment, or every declared one that builds (`operation_ids`) |
 | DELETE | `/api/v1/applications/{id}` | Request deletion of every environment and preview; no body. `environments=a,b` must name every environment when there are several |
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment |
-| POST | `/api/v1/applications/{id}/environments` | Add an environment: `{ "name": "staging", "branch": "main", "commit": null, "expected_generation": 3 }`; `branch` defaults to the one `spec.manifest` names and requires a repository-backed application. `"promote_from": "env-..."` instead creates a promoted environment; it excludes `branch` and `commit` (400 `source_invalid`) |
+| POST | `/api/v1/applications/{id}/environments` | Add an environment: `{ "name": "staging", "branch": "main", "commit": null, "expected_generation": 3 }`; `branch` defaults to the one `spec.manifest` names and requires a repository-backed application. `"promote_from": "env-..."` instead creates a promoted environment; it excludes `branch` and `commit` (400 `source_invalid`). 409 `environment_declared` for a name the saved manifest declares |
 | PUT | `/api/v1/environments/{id}/branch` | Follow another branch, or pin or unpin a commit, without redeploying: `{ "branch": "release", "commit": null, "expected_generation": 3 }` |
 | PUT | `/api/v1/environments/{id}/sync` | Opt an environment into or out of its application's sync: `{ "enabled": true }`; needs no `expected_generation`, and opting in while it syncs needs `apps:deploy` too. 404 for previews, which follow their application |
 | GET | `/api/v1/applications/{id}/webhook` | `WebhookView`: the payload URL to configure in GitHub (absent until the daemon sets `ingress.webhook_hostname`) and when the secret was generated |
@@ -184,7 +185,8 @@ All paths below are relative to `/api/v1/applications/{id}`. Edits accept
 `expected_generation=N` (required unless `force=true`), `deploy=true|false`
 (default false), and `Idempotency-Key`. They return `Envelope<SavedApplication>`
 with HTTP 200 for saving or HTTP 202 when a deployment is accepted.
-`deploy=true` deploys the application's only environment and fails with 409
+`deploy=true` deploys the application's only environment, or every environment
+its manifest declares that builds, and otherwise fails with 409
 `environment_required` (listing them in `details.environments`) when it has
 several or none. The server
 loads, edits, validates, and saves its internal manifest inside one transaction;
@@ -437,7 +439,11 @@ it deploys renders for it, so environments of one application may use different
 hostnames through variables; two that render the same hostname fail with 409
 `hostname_conflict`. Renaming an environment returns 409 `environment_configured`
 while that manifest has a `[spec.environments.<name>]` block for the old or new
-name. Creating an environment with a `branch`, or changing the branch of one,
+name. Creating, deleting, or changing the branch, source or sync of an
+environment the saved manifest
+[declares](application-manifest.md#declared-environments) returns 409
+`environment_declared`, naming it in `details.environment`. Creating an
+environment with a `branch`, or changing the branch of one,
 for an application without a manifest repository fails with 422
 `manifest_repository_required`; an invalid branch or commit fails with
 `git_branch_invalid` or `git_commit_invalid`. Changing a branch or source
@@ -472,8 +478,10 @@ The response includes the inspected generation (zero for an absent name), an
 plan, each service's effective rollout order (`derived` or `explicit`) and
 monitor window, and `variables`: the value of every reference in scope for the
 selected environment. The manifest is rendered for that environment; a missing
-value fails with 422. A `[spec.environments.<name>]` block naming no
-environment adds a non-blocking `environment_block_unknown` warning. A `start-first` order set on a service with a writable volume adds
+value fails with 422. `environments` lists how saving the manifest would change
+the application's environments: `create`, `source` and `sync` changes, and
+`undeclared` environments it no longer declares (see
+[declared environments](application-manifest.md#declared-environments)). A `start-first` order set on a service with a writable volume adds
 a non-blocking `rollout_start_first_writable_volume` warning to the plan. Each job
 appears as a `run_job` action where the deployment runs it, and an exclusive job
 adds a non-blocking `job_stops_services` warning naming the services it stops. Manifest
@@ -481,8 +489,8 @@ differences and the runtime plan compare with the environment selected by
 `environment=ID` (by default the application's only environment): its last
 deployment snapshot, not saved configuration, and its observed runtime. Without a
 selection and with several environments, they compare the saved manifests as
-written and the runtime plan is empty. A new application renders for
-`production`. An environment of another
+written and the runtime plan is empty. A new application renders for the
+first environment it declares that builds, or `production`. An environment of another
 application returns 404. Image tags report resolution requirements even when unchanged,
 matching Deploy's refresh behavior. Environment,
 command, argument, and health-check values are redacted in previews, including

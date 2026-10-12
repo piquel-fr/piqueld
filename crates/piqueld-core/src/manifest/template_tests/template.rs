@@ -313,6 +313,7 @@ fn saved_hostnames_skip_missing_invalid_and_deployment_only_values() {
                 "missing".into(),
                 Variable::String("stage.example.com".into()),
             )]),
+            ..EnvironmentConfig::default()
         },
     );
     manifest.spec.routes = [

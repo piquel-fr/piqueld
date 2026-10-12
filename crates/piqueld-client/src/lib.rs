@@ -59,12 +59,13 @@ pub use environments::{
     ReleasePlan, ReleasePromotion, RouteUrl, SecretProblem, TrackedBranch, UrlCondition, UrlState,
 };
 pub use piqueld_core::manifest::{
-    ApplicationManifest, ApplicationSpec, ApplicationTemplate, Build, EnvironmentConfig, FileMode,
-    FileSource, GitRepository, HealthCheck, Job, JobRun, JobVolumeAccess, ManifestRepository,
-    ManifestRevision, Metadata, Mount, Redirect, RedirectStatus, RepositoryManifest,
-    ResourceLimits, Rollout, RolloutOrder, RolloutOrderSource, Route, RouteTarget, SecretMount,
-    SecretSource, Service, ServiceFile, Source, SourceRepository, SystemVariable, Template, Typed,
-    ValidatedBuild, ValidatedRollout, ValidatedSource, Variable, VariableValue, Visibility, Volume,
+    ApplicationManifest, ApplicationSpec, ApplicationTemplate, Build, DeclaredSource,
+    EnvironmentChange, EnvironmentConfig, FileMode, FileSource, GitRepository, HealthCheck, Job,
+    JobRun, JobVolumeAccess, ManifestRepository, ManifestRevision, Metadata, Mount, Redirect,
+    RedirectStatus, RepositoryManifest, ResourceLimits, Rollout, RolloutOrder, RolloutOrderSource,
+    Route, RouteTarget, SecretMount, SecretSource, Service, ServiceFile, Source, SourceRepository,
+    SystemVariable, Template, Typed, ValidatedBuild, ValidatedRollout, ValidatedSource, Variable,
+    VariableValue, Visibility, Volume,
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{
@@ -91,8 +92,8 @@ use thiserror::Error;
 
 pub use piqueld_core::api::{
     API_PREFIX, ApplicationLogs, BuildLogChunk, BuildLogPage, BuildRecord, BuildState, Envelope,
-    EnvironmentAccess, ErrorBody, LogRecord, LogStream, MountedSecret, Page, SecretAccess,
-    SecretKeyRecovery, SecretMetadata, StoredSecret,
+    EnvironmentAccess, ErrorBody, LogRecord, LogStream, ManifestChange, MountedSecret, Page,
+    SecretAccess, SecretKeyRecovery, SecretMetadata, StoredSecret,
 };
 
 /// Validates a TOML application manifest and returns its editable name.

@@ -17,7 +17,8 @@ replica counts, limits, volumes, routes, jobs, repository settings and secret
 file references. Manually set secret values live in one store per application,
 shared by the environments their access lists allow; generated secret values
 and the deployed snapshot belong to each environment. Values that differ between environments, such as hostnames or replica
-counts, come from [variables](#variables).
+counts, come from [variables](#variables). Which environments exist, and
+where each deploys from, can be [declared](#declared-environments) too.
 
 ```toml
 api_version = "piqueld.dev/v1alpha1"
@@ -218,9 +219,8 @@ Validation (saving, `app validate`) rejects references to a variable declared
 nowhere, unknown namespaces and system variables, and malformed references, with
 the field path. Values that contain references are validated once rendered, when
 an environment is planned or deployed. A `[spec.environments.<name>]` block
-naming no environment of the application is allowed, so a manifest can be saved
-before its environment exists; `app plan` warns about it with
-`environment_block_unknown`.
+also [declares](#declared-environments) the environment `<name>`, so saving one
+for an environment that doesn't exist yet creates it.
 
 A deployment renders the manifest for its environment when it is captured, or,
 when repository-backed, once the manifest is fetched and its commit is known. The
@@ -344,6 +344,82 @@ branch.
 Git checkout permits file, Git, HTTP(S), and SSH transports. Executable remote
 helpers such as `ext::` are disabled, including through host URL rewrites.
 
+## Declared environments
+
+Every `[spec.environments.<name>]` block declares the environment `<name>` and
+where it deploys from. A manifest that declares environments is the source of
+truth for which environments the application has and how each one is sourced:
+
+```toml
+[spec.environments.staging]
+sync = true                  # pushes to its branch deploy it
+
+[spec.environments.production]
+promote_from = "staging"     # only receives releases promoted from staging
+```
+
+| Field | Meaning |
+| --- | --- |
+| `branch` | Branch of the manifest repository it follows; by default the one `spec.manifest` names. |
+| `commit` | Full commit it deploys instead of its branch's head (by default `spec.manifest`'s branch). |
+| `sync` | Whether pushes to its branch [deploy it](#deploying-on-push) while the repository syncs. |
+| `promote_from` | Environment it receives [promoted releases](#promoted-environments) from, instead of building. |
+
+`branch`, `commit` and `sync` need a [manifest repository](#repository-backed-manifests);
+without one, an environment deploys the saved manifest. `promote_from` excludes
+the other three (`environment_source_conflict`), `sync` excludes a pinned
+commit (`environment_sync_pinned`), and `promote_from` must name another
+declared environment without leading back to itself (`promotion_source_invalid`,
+`promotion_cycle`). Validation (`app validate`, `app plan`, saving, fetching)
+reports each at its field, e.g. `spec.environments.production.promote_from`.
+
+Saving the manifest (`app apply`, the dashboard's edits), or deploying it from
+the branch `spec.manifest` names, converges the application's environments to
+the ones it declares:
+
+- A declared environment that doesn't exist is created, not deployed. A new
+  application gets exactly the environments it declares; one that declares
+  none gets a `production` environment, as before.
+- An existing one whose source or `sync` differs changes, deploying nothing,
+  as `piquelctl env source`, `env branch` and `env sync` would. An environment
+  that becomes promoted while a deployment of it is in progress keeps its
+  source until the next save or fetch, unless that deployment is the fetch
+  itself.
+- An environment the manifest no longer declares is never deleted, since it
+  has volumes and secrets: it keeps running, and `app show`, `app plan` and
+  the dashboard report it until you delete it with `piquelctl env delete`.
+
+Manifests fetched from other branches, one-off `--branch`/`--commit`
+deployments and previews never create or change environments.
+
+`app plan` lists what saving a manifest would change, e.g.
+
+```text
+Environments:
+  + staging: created, deploys from branch main, follows pushes
+  ~ production: deploys from releases promoted from staging instead of branch main
+  ! qa: no longer declared; kept until deleted with `piquelctl env delete`
+```
+
+and `app show` and the application's Environments tab list how the
+environments differ from the saved manifest. `app apply --deploy` deploys
+every declared environment that builds; promoted ones wait for their first
+`env promote`. So for an application such as
+[`examples/staging-production.toml`](../examples/staging-production.toml),
+applying it with `--deploy` is enough: staging follows `main`, and production
+receives what staging ran once you promote it.
+
+A declared environment's source, sync and existence belong to its block, so
+`piquelctl env create`, `env source`, `env branch`, `env sync` and `env delete`
+refuse it with `environment_declared`, and the dashboard shows them read-only.
+Remove the block to delete the environment. Environments a manifest doesn't
+declare, and every environment of an application whose manifest declares none,
+keep these commands. Field edits that add a block for an existing environment,
+such as `piquelctl env visibility` or setting one of its variables in the
+dashboard, declare it as it is (and, for the first block, every other existing
+environment too), so editing configuration never changes where environments
+deploy from or which exist.
+
 ## Repository-backed manifests
 
 Manifest retrieval is independent from service source selection. Add this to an
@@ -366,9 +442,11 @@ the application has several environments).
 
 The repository URL and manifest path belong to the application: every
 environment reads the same file from the same repository. The branch belongs to
-each environment. The `production` environment created with the application,
-and environments created later without `--branch`, follow the branch and pinned
-commit `spec.manifest` names; other environments follow their own:
+each environment. [Declared environments](#declared-environments) follow their
+block's `branch` and `commit`, by default the branch and pinned commit
+`spec.manifest` names. Otherwise, the `production` environment created with
+the application, and environments created later without `--branch`, follow
+that branch; other environments follow their own:
 
 ```console
 piquelctl env create notes staging --branch main
@@ -397,9 +475,11 @@ reservations, the rename check, `app plan --env`, `env show`, and its dashboard
 page read that manifest, so a fetch for one environment never changes what
 another deploys or reserves. An environment that was never deployed has fetched
 nothing and reserves no hostnames yet. The application's saved manifest is the
-one last fetched by any of its environments, keeping the application's own
-connection: the application page and `app show` display it, and environments
-deploy it after disconnecting.
+one last fetched from the branch and commit `spec.manifest` names, by any of
+its environments, keeping the application's own connection: the application
+page and `app show` display it, environments deploy it after disconnecting,
+and it [declares the environments](#declared-environments). Fetches from other
+branches, and one-off revisions, change only their environment's own manifest.
 
 A fetched file's own `spec.manifest` is ignored: files on different branches
 often differ, and one branch must not redirect every environment. It may be
@@ -442,8 +522,9 @@ It is part of the application's connection, set with
 dashboard's repository settings. Like the rest of `spec.manifest`, a fetched
 file's `sync` is ignored. Sync is `off` by default.
 
-While it is on, every preview, and every environment that opted in with
-`piquelctl env sync APP ENV on` (or on its dashboard page) and follows an
+While it is on, every preview, and every environment that opted in, with
+`sync = true` in its [declaration](#declared-environments) or, when undeclared,
+`piquelctl env sync APP ENV on` (or on its dashboard page), and follows an
 unpinned branch, redeploys when its branch moves:
 
 - **`poll`** lists the repository's branch heads every `interval_seconds`
@@ -480,7 +561,8 @@ fix it. Sync deployments go through the same build queue as any other.
 
 Pinned environments never sync. Opting an environment in, or turning sync on,
 deploys what moved since the last deployments at the next listing, so both
-need `apps:deploy` as well as `apps:write`. Nothing else does: changes to an
+need `apps:deploy` as well as `apps:write`; so does saving a manifest that
+declares an environment with `sync = true` while the repository syncs. Nothing else does: changes to an
 application's connection, branches, or environments take effect with each
 one's next deployment.
 
@@ -571,12 +653,21 @@ releases promoted from another environment of the same application, so it runs
 exactly the images that environment ran: the same commit, base images and build
 cache.
 
+```toml
+[spec.environments.production]
+promote_from = "staging"
+```
+
 ```console
-piquelctl env create notes production --promote-from staging
-piquelctl env source notes production --promote-from staging   # convert an existing environment
 piquelctl env promote notes production --plan
 piquelctl env promote notes production [--deployment ID | --release ID]
 ```
+
+[Declare](#declared-environments) the source with `promote_from`, or, for an
+environment the manifest doesn't declare, use
+`piquelctl env create notes production --promote-from staging` or
+`piquelctl env source notes production --promote-from staging` to convert an
+existing one.
 
 **Sources.** The source is stored by ID, so renaming either environment keeps
 it. Any environment of the application can be a source, including a promoted
@@ -588,10 +679,11 @@ others promote from is refused with `promotion_source_in_use`, naming them;
 deleting the application deletes them all.
 
 Converting is always explicit: existing and migrated environments never become
-promoted on their own, and connecting or disconnecting the manifest repository
-leaves promoted environments promoted. `env source --tracking` returns one to
-the saved manifest, or to the branch `spec.manifest` names; `env branch` makes
-it follow another branch. Changing the source deploys nothing. Deploying a
+promoted on their own, only by a declaration or `env source`, and connecting or
+disconnecting the manifest repository leaves promoted environments promoted.
+Removing `promote_from`, or `env source --tracking`, returns one to the saved
+manifest, or to the branch `spec.manifest` names; `branch`, or `env branch`,
+makes it follow another branch. Changing the source deploys nothing. Deploying a
 promoted environment (`env deploy`, `app deploy`) fails with
 `environment_promoted`. An environment can't become promoted while a deployment
 of it is requested or running (`application_busy`), since that deployment may be

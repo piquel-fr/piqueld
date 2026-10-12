@@ -1,7 +1,8 @@
 //! Environment lifecycle controls and where an environment deploys from (the
 //! branch it follows, or the environment it is promoted from) and whether
 //! pushes to its branch deploy it; configuration continues to belong to the
-//! application or its repository.
+//! application or its repository. Environments the manifest declares take
+//! their source, sync and existence from it, so those controls are read-only.
 use super::super::environment_row;
 use super::super::format::commit;
 use super::super::ui::{
@@ -217,6 +218,7 @@ pub(super) fn EnvironmentList() -> impl IntoView {
                 </div>
                 <NewEnvironment />
             </div>
+            <Drift />
             {move || {
                 let environments = context.saved.with(|saved| saved.environments.clone());
                 if environments.is_empty() {
@@ -274,6 +276,71 @@ pub(super) fn EnvironmentList() -> impl IntoView {
             }}
         </div>
     }
+}
+
+/// How the environments differ from the ones the saved manifest declares:
+/// changes waiting for its next save or fetch, and environments it no longer
+/// declares, which stay until deleted. Hidden when they match.
+#[component]
+fn Drift() -> impl IntoView {
+    let context = editor();
+    move || {
+        let drift = context.saved.with(|saved| saved.drift.clone());
+        (!drift.is_empty()).then(|| {
+            view! {
+                <section class="card" aria-label="Differences from the manifest">
+                    <header>
+                        <div>
+                            <h3>"Differs from the manifest"</h3>
+                            <p>
+                                "The manifest declares this application's environments. These differences apply at its next save or fetch, except environments it no longer declares, which keep running until you delete them."
+                            </p>
+                        </div>
+                    </header>
+                    <ul class="list">
+                        {drift
+                            .into_iter()
+                            .map(|change| {
+                                let tone = match change {
+                                    piqueld_client::EnvironmentChange::Undeclared { .. } => Tone::Warn,
+                                    _ => Tone::Neutral,
+                                };
+                                view! {
+                                    <li class="list-row">
+                                        <span class="title">
+                                            {change.environment().to_string()}
+                                            <small>{change.summary()}</small>
+                                        </span>
+                                        {badge(
+                                            tone,
+                                            match change {
+                                                piqueld_client::EnvironmentChange::Undeclared {
+                                                    ..
+                                                } => "Not declared",
+                                                _ => "Pending",
+                                            },
+                                        )}
+                                    </li>
+                                }
+                            })
+                            .collect_view()}
+                    </ul>
+                </section>
+            }
+        })
+    }
+}
+
+/// Explains that the manifest owns a declared environment's source,
+/// existence and sync, so the forms that would change them are read-only.
+fn declared_notice(name: &str) -> AnyView {
+    notice(
+        Tone::Neutral,
+        format!(
+            "The manifest declares this environment in [spec.environments.{name}], so its source, deploy on push, and existence are changed there."
+        ),
+    )
+    .into_any()
 }
 
 /// Badge for whether pushes deploy an environment or preview, with why or why not.
@@ -478,6 +545,14 @@ fn NewEnvironment() -> impl IntoView {
                             }
                         }}
                     </p>
+                    <Show when={move || {
+                        context.saved.with(|saved| !saved.application.spec().environments.is_empty())
+                    }}>
+                        {notice(
+                            Tone::Neutral,
+                            "The manifest declares this application's environments. To add one it manages, add a [spec.environments.<name>] block to it; one created here is not declared, and shows as a difference from the manifest.",
+                        )}
+                    </Show>
                     {text_input("Environment name", name, String::clone, |value, input| *value = input)}
                     <Show when={move || sources.with(|sources| !sources.is_empty())}>
                         <PromotionSource
@@ -572,7 +647,14 @@ fn SourceSettings() -> impl IntoView {
             .selected_environment()
             .is_some_and(|environment| environment.delete_intent)
     };
-    let blocked = move || context.action_blocked() || deleting();
+    let name = move || {
+        context
+            .selected_environment()
+            .map(|environment| environment.name.to_string())
+            .unwrap_or_default()
+    };
+    let declared = move || context.declared(&name());
+    let blocked = move || context.action_blocked() || deleting() || declared();
     // The change saving would make, if any.
     let change = move || -> Option<Result<EnvironmentChange, String>> {
         let id = id.get_value();
@@ -653,6 +735,7 @@ fn SourceSettings() -> impl IntoView {
                     </p>
                 </div>
             </header>
+            {move || declared().then(|| declared_notice(&name()))}
             <form class="stack-sm" on:submit={save}>
                 <fieldset class="stack-sm" disabled={blocked}>
                     <PromotionSource
@@ -718,7 +801,7 @@ fn SourceSettings() -> impl IntoView {
                                 <button
                                     type="button"
                                     class="btn"
-                                    disabled={move || context.action_blocked() || deleting()}
+                                    disabled={move || context.action_blocked() || deleting() || declared()}
                                     on:click={toggle_sync}
                                 >
                                     {if environment.sync {
@@ -913,7 +996,12 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                 <button
                     type="button"
                     class="btn btn-danger"
-                    disabled={move || context.action_blocked()}
+                    disabled={move || context.action_blocked() || context.declared(&current())}
+                    title={move || {
+                        context
+                            .declared(&current())
+                            .then(|| format!("Remove [spec.environments.{}] from the manifest first.", current()))
+                    }}
                     on:click={delete}
                 >
                     {move || if deleting() { "Retry deletion" } else { "Delete environment" }}

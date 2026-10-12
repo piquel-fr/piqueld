@@ -262,11 +262,9 @@ impl Store {
         Ok(())
     }
 
-    /// Opts environment `id` in or out of its application's sync, recording
-    /// `environment_sync_changed`, and responds with it. Neither changes what it deploys, so the
-    /// application revision stays. Opting back in deploys the branch head at
-    /// the next sync if it moved since the last deployment. Previews always
-    /// sync: they are `NotFound`.
+    /// Opts environment `id` in or out of its application's sync (see
+    /// `write_sync_on`) and responds with it, unless the saved manifest
+    /// declares it. Previews always sync: they are `NotFound`.
     pub(super) async fn set_sync_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: EnvironmentId,
@@ -277,10 +275,28 @@ impl Store {
         if environment.delete_intent() {
             return Err(StoreError::Busy);
         }
-        if environment.environment.sync == enabled {
-            return Self::environment_accepted(tx, id).await;
+        Self::check_undeclared(
+            &environment.application.application,
+            &environment.environment.name,
+        )?;
+        Self::write_sync_on(tx, &environment.environment, enabled, now).await?;
+        Self::environment_accepted(tx, id).await
+    }
+
+    /// Opts `environment` in or out of its application's sync, recording
+    /// `environment_sync_changed` when that changes it. Neither changes what
+    /// it deploys, so the application revision stays. Opting back in deploys
+    /// the branch head at the next sync if it moved since the last deployment.
+    pub(super) async fn write_sync_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        environment: &EnvironmentView,
+        enabled: bool,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        if environment.sync == enabled {
+            return Ok(());
         }
-        let (row, value) = (id.as_str(), i64::from(enabled));
+        let (row, value) = (environment.id.as_str(), i64::from(enabled));
         sqlx::query!(
             "UPDATE environments SET sync=?1,updated_at_ms=?2 WHERE id=?3",
             value,
@@ -290,7 +306,7 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        let name = &environment.environment.name;
+        let name = &environment.name;
         let message = if enabled {
             format!("pushes deploy environment {name} again")
         } else {
@@ -305,7 +321,7 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        Self::environment_accepted(tx, id).await
+        Ok(())
     }
 
     /// Records that sync listed `application`'s branches now, and why it

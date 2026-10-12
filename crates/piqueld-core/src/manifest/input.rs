@@ -103,13 +103,21 @@ pub struct ApplicationSpec {
 }
 
 impl ApplicationSpec {
-    /// Sets `environment`'s visibility ceiling, dropping its block when left
-    /// at its defaults, since such a block configures nothing.
+    /// Sets `environment`'s visibility ceiling. Blocks declare environments,
+    /// so one is kept once it exists, and only a restriction adds one.
     pub fn set_environment_visibility(&mut self, environment: &str, visibility: Visibility) {
-        let config = self.environments.entry(environment.to_owned()).or_default();
-        config.visibility = visibility;
-        if *config == EnvironmentConfig::default() {
-            self.environments.remove(environment);
+        match self.environments.get_mut(environment) {
+            Some(config) => config.visibility = visibility,
+            None if visibility.is_public() => {}
+            None => {
+                self.environments.insert(
+                    environment.to_owned(),
+                    EnvironmentConfig {
+                        visibility,
+                        ..EnvironmentConfig::default()
+                    },
+                );
+            }
         }
     }
 
@@ -150,10 +158,28 @@ impl ApplicationSpec {
     }
 }
 
-/// Configuration of one environment, `[spec.environments.<name>]`.
+/// Configuration of one environment, `[spec.environments.<name>]`, which
+/// declares it (see [`super::declaration`]). Without `promote_from`, it builds
+/// its own source: the saved manifest, or a branch of `spec.manifest`'s
+/// repository.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct EnvironmentConfig {
+    /// Branch of the manifest repository it follows; by default the one
+    /// `spec.manifest` names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Full commit it deploys instead of its branch's head.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// Environment whose releases it receives, by `piquelctl env promote`,
+    /// instead of building.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub promote_from: Option<String>,
+    /// Whether pushes to its branch deploy it while the repository syncs
+    /// (`spec.manifest.sync`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub sync: bool,
     /// The strictest visibility this environment's routes get. The default,
     /// `public`, restricts nothing; `private` keeps every route on the tailnet.
     #[serde(skip_serializing_if = "Visibility::is_public")]
@@ -167,6 +193,10 @@ pub struct EnvironmentConfig {
 impl Default for EnvironmentConfig {
     fn default() -> Self {
         Self {
+            branch: None,
+            commit: None,
+            promote_from: None,
+            sync: false,
             visibility: Visibility::Public,
             variables: BTreeMap::new(),
         }

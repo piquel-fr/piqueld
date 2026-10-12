@@ -1,8 +1,8 @@
 //! Typed changes to saved application configuration. No edit performs runtime work.
 use crate::manifest::{
-    ApplicationManifest, Build, EnvironmentConfig, GitRepository, HealthCheck, Job, Mount,
-    RepositoryManifest, ResourceLimits, Rollout, Route, SecretMount, Service, ServiceFile, Source,
-    SourceRepository, Template, Typed, Variable, Visibility, Volume,
+    ApplicationManifest, Build, GitRepository, HealthCheck, Job, Mount, RepositoryManifest,
+    ResourceLimits, Rollout, Route, SecretMount, Service, ServiceFile, Source, SourceRepository,
+    Template, Typed, Variable, Visibility, Volume,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -130,7 +130,8 @@ pub struct Variables {
 
 impl Variables {
     /// Replaces the variable values of `spec`, keeping other environment
-    /// configuration and dropping blocks left empty.
+    /// configuration. Blocks declare environments, so a block left empty is
+    /// kept, and only values add one.
     fn apply(self, spec: &mut crate::manifest::ApplicationSpec) {
         let Self {
             defaults,
@@ -143,10 +144,10 @@ impl Variables {
             config.variables = environments.remove(name).unwrap_or_default();
         }
         for (name, variables) in environments {
-            spec.environments.entry(name).or_default().variables = variables;
+            if !variables.is_empty() {
+                spec.environments.entry(name).or_default().variables = variables;
+            }
         }
-        spec.environments
-            .retain(|_, config| *config != EnvironmentConfig::default());
     }
 
     /// The variable values of `manifest`.

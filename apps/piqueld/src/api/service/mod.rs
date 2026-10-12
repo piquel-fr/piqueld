@@ -358,7 +358,8 @@ impl Mutation {
     /// Whether this change lets sync deploy what no deployment chose, given
     /// the application's current `connection`: turning sync on, which lets
     /// it deploy previews and opted-in environments whose branch moved since
-    /// their last deployment, or opting an environment in while it syncs.
+    /// their last deployment, or opting an environment in while it syncs,
+    /// including by saving a manifest that declares one with `sync = true`.
     /// Those take the permission to deploy. Nothing else does: sync follows
     /// only from a deployment's head, and a new environment, a new branch, or
     /// a new repository follows only after its next deployment. Changes to
@@ -372,7 +373,16 @@ impl Mutation {
         };
         let turns_on = |changed: Option<&RepositoryManifest>| syncs(changed) && !syncs(connection);
         match self {
-            Self::Save { application, .. } => turns_on(application.spec().manifest.as_ref()),
+            Self::Save { application, .. } => {
+                let changed = application.spec().manifest.as_ref();
+                turns_on(changed)
+                    || (syncs(changed)
+                        && application
+                            .spec()
+                            .environments
+                            .values()
+                            .any(|config| config.sync))
+            }
             Self::Edit { edit, .. } => match edit.as_ref() {
                 ApplicationEdit::Repository(changed) => turns_on(changed.as_ref()),
                 ApplicationEdit::RepositorySync(sync) => !sync.is_off() && !syncs(connection),
