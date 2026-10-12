@@ -192,6 +192,13 @@ impl RepositoryFiles {
         self.0.is_empty()
     }
 
+    /// Each captured path and its content, in path order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0
+            .iter()
+            .map(|(path, content)| (path.as_str(), content.as_str()))
+    }
+
     /// The captured content of `path`.
     #[must_use]
     pub fn get(&self, path: &str) -> Option<&str> {

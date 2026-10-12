@@ -179,12 +179,11 @@ impl ApplicationService {
         Ok(PlanView {
             application_id: application.to_string(),
             generation: target.application.generation,
-            identical: baseline.as_ref().is_some_and(|app| app.spec() == proposed),
+            identical: baseline.as_ref().is_some_and(|current| {
+                current.spec() == proposed && current.files() == app.files()
+            }),
             operation,
-            changes: ManifestChange::between(
-                baseline.map(|app| app.spec().to_input()).as_ref(),
-                &proposed.to_input(),
-            ),
+            changes: ManifestChange::between_applications(baseline.as_ref(), app),
             plan,
             rollouts: ServiceRolloutView::for_application(app),
             variables: rendering.values.clone(),

@@ -828,7 +828,8 @@ new config, so only the services mounting it roll out, in their usual
 [rollout](#rollout) order. `app plan` lists each file as
 `services.<name>.files.<target>`, with inline content summarized by size and
 digest; since it reads nothing from the repository, it shows changed paths, but
-not changed repository contents.
+not changed repository contents. Promotion plans compare the captured bytes
+too, as `repository_files.<path>`.
 
 For repository-backed applications, Git owns files, as it owns the rest of the
 configuration: `piquelctl app file` and the dashboard edit them only for other

@@ -26,6 +26,9 @@ pub(super) struct ConfigSpec {
     labels: Option<BTreeMap<String, String>>,
     #[serde(default)]
     data: String,
+    /// Swarm renders templated configs, so their bytes are not the content.
+    #[serde(default)]
+    templating: Option<serde_json::Value>,
 }
 
 /// What a config holds, which names the Docker requests made for it.
@@ -102,8 +105,8 @@ impl BollardDocker {
     }
 
     /// Returns the ID of the config `name`, or `None` when it does not exist.
-    /// The name promises base64 `data` and `labels`; anything else was not
-    /// published here.
+    /// The name promises base64 `data`, untemplated, and `labels`; anything
+    /// else was not published here.
     async fn owned_config(
         &self,
         kind: ConfigKind,
@@ -128,7 +131,7 @@ impl BollardDocker {
         {
             return Err(DockerError::OwnershipConflict);
         }
-        if config.spec.data != data {
+        if config.spec.data != data || config.spec.templating.is_some() {
             return Err(DockerError::ConfigurationConflict);
         }
         Ok(Some(config.id))

@@ -17,8 +17,44 @@ impl ManifestChange {
     /// yet, so every field is an addition.
     #[must_use]
     pub fn between(current: Option<&ApplicationSpec>, proposed: &ApplicationSpec) -> Vec<Self> {
-        let old = current.map_or_else(BTreeMap::new, Self::fields);
-        let new = Self::fields(proposed);
+        Self::differences(
+            &current.map_or_else(BTreeMap::new, Self::fields),
+            &Self::fields(proposed),
+        )
+    }
+
+    /// Compares rendered applications like [`Self::between`], plus the
+    /// repository files each captured, one `repository_files.<path>` entry
+    /// per file summarized by size and digest: a release's files can change
+    /// while the paths its manifest mounts stay the same.
+    #[must_use]
+    pub fn between_applications(
+        current: Option<&NormalizedApplication>,
+        proposed: &NormalizedApplication,
+    ) -> Vec<Self> {
+        let fields = |application: &NormalizedApplication| {
+            let mut fields = Self::fields(&application.spec().to_input());
+            fields.extend(application.files().iter().map(|(path, content)| {
+                (
+                    format!("repository_files.{path}"),
+                    Value::String(format!(
+                        "{} bytes, sha256:{}",
+                        content.len(),
+                        &content_digest(content)[..12]
+                    )),
+                )
+            }));
+            fields
+        };
+        Self::differences(
+            &current.map_or_else(BTreeMap::new, fields),
+            &fields(proposed),
+        )
+    }
+
+    /// Every field whose value differs between `old` and `new`, including
+    /// fields only one has.
+    fn differences(old: &BTreeMap<String, Value>, new: &BTreeMap<String, Value>) -> Vec<Self> {
         old.keys()
             .chain(new.keys())
             .collect::<BTreeSet<_>>()

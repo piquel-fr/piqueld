@@ -215,6 +215,15 @@ fn repository_files_are_captured_hashed_and_mounted_by_content() {
     );
     assert_eq!(api.files, changed.services[0].files);
     assert_ne!(application.spec_hash(), changed_application.spec_hash());
+    // Plans of rendered applications, such as promotions, show the bytes.
+    let content = ManifestChange::between_applications(Some(&application), &changed_application);
+    assert_eq!(
+        content
+            .iter()
+            .map(|change| change.field.as_str())
+            .collect::<Vec<_>>(),
+        ["repository_files.otel.yaml"]
+    );
 
     // A release keeps the bytes it captured, so promotions mount them.
     let release = Release::new(first.clone(), Some("0".repeat(40)), &target);

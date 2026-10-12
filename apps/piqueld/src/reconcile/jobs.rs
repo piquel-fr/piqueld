@@ -398,15 +398,23 @@ impl<D: DockerApi> Controller<D> {
 
     /// Retries durable cleanup independently of deployment execution. The
     /// mutation lock covers reading and clearing intent, so an old cleanup
-    /// request cannot remove a newly started run of the same operation.
+    /// request cannot remove a newly started run of the same operation. Once
+    /// runs are removed, so are the configs of files only they mounted; a
+    /// failed removal is logged and left to the next operation.
     pub(super) async fn retry_job_cleanup(
         &self,
         application: &piqueld_core::EnvironmentId,
     ) -> Result<(), OperationError> {
         let _guard = self.mutations.lock().await;
         let ownership = self.ownership_labels(application);
-        for operation in self.store.pending_job_cleanup(application).await? {
-            self.stop_job_run(&operation, &ownership).await?;
+        let pending = self.store.pending_job_cleanup(application).await?;
+        for operation in &pending {
+            self.stop_job_run(operation, &ownership).await?;
+        }
+        if !pending.is_empty()
+            && let Err(error) = self.docker.prune_files(&ownership).await
+        {
+            tracing::warn!(?error, "removing unused service files failed");
         }
         Ok(())
     }
