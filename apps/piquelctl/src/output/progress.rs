@@ -200,6 +200,19 @@ impl ProgressTask {
         );
     }
 
+    /// Stops the spinner's background redraws, so a test can inspect the
+    /// terminal between its own events without racing a tick.
+    #[cfg(test)]
+    pub(super) fn stop_ticking(&self) {
+        let task = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(bar) = &task.bar {
+            bar.disable_steady_tick();
+        }
+    }
+
     /// Finishes the task with `result`: succeeded with `message`, or failed
     /// with the error, which is returned.
     pub(crate) fn settle<T>(

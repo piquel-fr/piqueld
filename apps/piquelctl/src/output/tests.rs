@@ -321,6 +321,10 @@ fn terminal_progress_is_suspended_for_every_role_and_cleared_on_final_drop() {
         )));
     let first = console.start_task("first");
     let second = console.start_task("second");
+    // A tick clears the row and then rewrites it from another thread, so the
+    // checks below could otherwise land in between on a slow runner.
+    first.stop_ticking();
+    second.stop_ticking();
     first.update("working");
     second.update("waiting");
     console.emit(&Sample).unwrap();
