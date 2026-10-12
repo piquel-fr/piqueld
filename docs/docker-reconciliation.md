@@ -177,8 +177,8 @@ The daemon publishes the probe as a Swarm config named by its content,
 check. Services mount it at `/run/piqueld/probe`, root-owned with mode `0555`,
 so Swarm itself stores and distributes it, and Docker still runs the check, so
 health still gates tasks and rollouts. A service whose check runs the probe
-without mounting this daemon's config, or that mounts any other config,
-registers as drift.
+without mounting this daemon's config at `/run/piqueld/probe`, or that mounts
+any other config there, registers as drift.
 
 The probe's command line is a stable contract that newer probes keep
 accepting. A daemon upgrade that changes the probe publishes a new config, and
@@ -191,6 +191,33 @@ Daemon builds compile the probe for the matching `*-unknown-linux-musl` target
 with the size-optimised `probe` profile, since Swarm caps config size. The
 target comes from `rust-toolchain.toml`, which rustup, `nix develop`, and the
 Nix packages all use.
+
+## Service files
+
+Each [file](application-manifest.md#files) a service mounts is an immutable
+Swarm config holding its content, named after the environment, the content's
+SHA-256 digest, and the file's mode (`piqueld-<environment>-file-…`), since
+Docker materializes a config once per container, and labelled
+`io.piqueld.managed`, `io.piqueld.instance`, `io.piqueld.application`, and
+`io.piqueld.file`. Publishing is idempotent: a config with the same name and
+content is reused across deployments, while one holding other content, or
+another installation's labels, is a configuration or ownership conflict.
+Services mount configs by ID, root-owned with the file's mode, and Docker always
+mounts configs read-only.
+
+New content is a new config, so only the services mounting a changed file get
+a new task specification and roll out. Observed config references that differ
+from the desired ones in name, target, or mode, other than the probe at
+`/run/piqueld/probe`, are drift, which repair restores; references that are not
+root-owned or not mounted by ID are out-of-policy drift.
+
+Once an operation of an environment ends, succeeded or failed, piqueld removes
+the environment's file configs no service mounts any longer, in its current
+spec or in the previous one a rollback would restore. It holds the lock repair
+takes to change services, so no config is removed between being published and
+mounted. A failed removal is logged and retried after the next operation,
+except that deleting an environment fails, and is retried, until its configs
+are gone.
 
 ## Image retention
 

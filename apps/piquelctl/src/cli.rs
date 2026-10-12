@@ -176,6 +176,11 @@ pub(crate) enum AppCommand {
         #[command(subcommand)]
         command: crate::editing::ServiceCommand,
     },
+    /// List, add, or remove read-only files mounted into services.
+    File {
+        #[command(subcommand)]
+        command: crate::editing::FileCommand,
+    },
     /// Add or remove declared named volumes.
     Volume {
         #[command(subcommand)]

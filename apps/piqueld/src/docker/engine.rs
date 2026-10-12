@@ -1,6 +1,7 @@
 use super::{
     Arc, BollardDocker, Docker, DockerError, ListNodesOptions, Path, ResourceKind, ServiceSpec,
 };
+use futures_util::TryStreamExt as _;
 use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request, StatusCode, body::Bytes, header};
 use hyper_util::rt::TokioIo;
@@ -125,21 +126,68 @@ impl BollardDocker {
         self.engine_request(method, path, body).await
     }
 
-    /// Performs one raw Engine request with a JSON `body` through Docker's
-    /// Unix socket, for endpoints Bollard lacks or misrepresents.
-    ///
-    /// 1. Connect and perform an HTTP/1 handshake on the Unix socket.
-    /// 2. Send one `Connection: close` request and read the bounded body.
-    ///
-    /// All steps share one [`SERVICE_REQUEST_TIMEOUT`] deadline; elapsed
-    /// deadlines surface as unavailability. Non-success statuses are returned
-    /// as [`WireError::Response`].
+    /// Performs one raw Engine request whose response is at most
+    /// [`MAX_SERVICE_RESPONSE_BYTES`]; see [`Self::engine_exchange`].
     pub(super) async fn engine_request(
         &self,
         method: Method,
         path: &str,
         body: Vec<u8>,
     ) -> Result<Vec<u8>, WireError> {
+        self.engine_exchange(method, path, body, Self::read_service_response)
+            .await
+    }
+
+    /// Lists `T`s with a raw `GET` of `path`, decoding the JSON array as it
+    /// arrives. Fields `T` leaves out, such as config payloads or service
+    /// environments, are skipped rather than held, so a listing needs no
+    /// size bound: memory follows the largest `T`, not the whole response.
+    pub(super) async fn engine_list<T: serde::de::DeserializeOwned + Send + 'static>(
+        &self,
+        path: &str,
+    ) -> Result<Vec<T>, WireError> {
+        self.engine_exchange(Method::GET, path, Vec::new(), async |response| {
+            if !response.status().is_success() {
+                return Self::read_service_response(response)
+                    .await
+                    .map(|_| Vec::new());
+            }
+            let data = http_body_util::BodyStream::new(response.into_body())
+                .try_filter_map(|frame| std::future::ready(Ok(frame.into_data().ok())))
+                .map_err(std::io::Error::other);
+            let reader = tokio_util::io::SyncIoBridge::new(tokio_util::io::StreamReader::new(
+                Box::pin(data),
+            ));
+            tokio::task::spawn_blocking(move || {
+                serde_json::from_reader(std::io::BufReader::new(reader))
+            })
+            .await
+            .map_err(|source| {
+                WireError::Public(DockerError::request("decode Docker listing", source))
+            })?
+            .map_err(|source| {
+                WireError::Public(DockerError::request("decode Docker listing", source))
+            })
+        })
+        .await
+    }
+
+    /// Performs one raw Engine request with a JSON `body` through Docker's
+    /// Unix socket, for endpoints Bollard lacks or misrepresents.
+    ///
+    /// 1. Connect and perform an HTTP/1 handshake on the Unix socket.
+    /// 2. Send one `Connection: close` request and pass the response to
+    ///    `read`.
+    ///
+    /// All steps share one [`SERVICE_REQUEST_TIMEOUT`] deadline; elapsed
+    /// deadlines surface as unavailability.
+    async fn engine_exchange<T>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Vec<u8>,
+        read: impl AsyncFnOnce(hyper::Response<hyper::body::Incoming>) -> Result<T, WireError>,
+    ) -> Result<T, WireError> {
         let deadline = tokio::time::Instant::now() + SERVICE_REQUEST_TIMEOUT;
         let stream = tokio::time::timeout_at(deadline, UnixStream::connect(self.socket.as_ref()))
             .await
@@ -196,7 +244,7 @@ impl BollardDocker {
             let response = sender.send_request(request).await.map_err(|source| {
                 WireError::Public(DockerError::request("send Docker service request", source))
             })?;
-            Self::read_service_response(response).await
+            read(response).await
         })
         .await;
         drivers.abort_all();

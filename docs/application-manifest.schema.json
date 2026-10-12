@@ -171,6 +171,43 @@
       },
       "type": "object"
     },
+    "FileMode": {
+      "description": "Octal file permissions from `0000` to `0777`, written as text such as\n`\"0444\"` or `\"644\"`.",
+      "example": "0444",
+      "pattern": "^0?[0-7]{3}$",
+      "type": "string"
+    },
+    "FileSource": {
+      "description": "Where a file's content comes from.",
+      "oneOf": [
+        {
+          "description": "A file in the manifest's own repository, relative to its root, read at\nthe exact commit the manifest was fetched from. Only repository-backed\napplications can use it.",
+          "properties": {
+            "path": {
+              "description": "A file in the manifest's own repository, relative to its root, read at\nthe exact commit the manifest was fetched from. Only repository-backed\napplications can use it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The content itself.",
+          "properties": {
+            "content": {
+              "description": "The content itself.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "content"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "GitRepository": {
       "additionalProperties": false,
       "description": "Git checkout configuration. Credentials come from the host's Git configuration.",
@@ -732,6 +769,13 @@
           },
           "type": "object"
         },
+        "files": {
+          "description": "Read-only files mounted into the containers. Their contents are never\nrendered with variables.",
+          "items": {
+            "$ref": "#/definitions/ServiceFile"
+          },
+          "type": "array"
+        },
         "healthcheck": {
           "oneOf": [
             {
@@ -790,6 +834,31 @@
         "source"
       ],
       "type": "object"
+    },
+    "ServiceFile": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/FileSource",
+          "description": "Where the file's content comes from."
+        },
+        {
+          "properties": {
+            "mode": {
+              "$ref": "#/definitions/FileMode",
+              "description": "Octal permissions, `\"0444\"` by default. The file is owned by root."
+            },
+            "target": {
+              "description": "Absolute, normalized container path of the file.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "A read-only file mounted into a service's containers, from exactly one\nsource: `path` in the manifest's repository, or inline `content`."
     },
     "Source": {
       "description": "The exhaustive set of deployable service sources.",

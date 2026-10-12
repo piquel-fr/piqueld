@@ -45,6 +45,10 @@ pub enum OperationError {
         #[source]
         source: anyhow::Error,
     },
+    /// A repository file a service mounts cannot be captured at the
+    /// manifest's commit.
+    #[error("{0}")]
+    ManifestFile(#[from] piqueld_core::manifest::FileCaptureError),
     /// Operation execution was cancelled.
     #[error("operation was cancelled")]
     Cancelled,
@@ -155,6 +159,7 @@ impl OperationError {
             Self::ManifestInput {
                 not_found: false, ..
             }
+            | Self::ManifestFile(_)
             | Self::ManifestInvalid => DiagnosticCode::ManifestInvalid,
             Self::ImageUnavailable { .. } => DiagnosticCode::ImageUnavailable,
             Self::GitBuildFailed(_) => DiagnosticCode::GitBuildFailed,

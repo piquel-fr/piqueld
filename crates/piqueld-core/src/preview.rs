@@ -3,7 +3,7 @@ use crate::{
     DiagnosticSeverity, NormalizedApplication, PlanDiagnostic,
     api::{ManifestChange, ServiceRolloutView},
     codes,
-    manifest::ApplicationSpec,
+    manifest::{ApplicationSpec, FileSource, files::content_digest},
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,8 +17,44 @@ impl ManifestChange {
     /// yet, so every field is an addition.
     #[must_use]
     pub fn between(current: Option<&ApplicationSpec>, proposed: &ApplicationSpec) -> Vec<Self> {
-        let old = current.map_or_else(BTreeMap::new, Self::fields);
-        let new = Self::fields(proposed);
+        Self::differences(
+            &current.map_or_else(BTreeMap::new, Self::fields),
+            &Self::fields(proposed),
+        )
+    }
+
+    /// Compares rendered applications like [`Self::between`], plus the
+    /// repository files each captured, one `repository_files.<path>` entry
+    /// per file summarized by size and digest: a release's files can change
+    /// while the paths its manifest mounts stay the same.
+    #[must_use]
+    pub fn between_applications(
+        current: Option<&NormalizedApplication>,
+        proposed: &NormalizedApplication,
+    ) -> Vec<Self> {
+        let fields = |application: &NormalizedApplication| {
+            let mut fields = Self::fields(&application.spec().to_input());
+            fields.extend(application.files().iter().map(|(path, content)| {
+                (
+                    format!("repository_files.{path}"),
+                    Value::String(format!(
+                        "{} bytes, sha256:{}",
+                        content.len(),
+                        &content_digest(content)[..12]
+                    )),
+                )
+            }));
+            fields
+        };
+        Self::differences(
+            &current.map_or_else(BTreeMap::new, fields),
+            &fields(proposed),
+        )
+    }
+
+    /// Every field whose value differs between `old` and `new`, including
+    /// fields only one has.
+    fn differences(old: &BTreeMap<String, Value>, new: &BTreeMap<String, Value>) -> Vec<Self> {
         old.keys()
             .chain(new.keys())
             .collect::<BTreeSet<_>>()
@@ -36,12 +72,16 @@ impl ManifestChange {
     }
 
     /// Flattens a specification into comparable field paths. Services contribute
-    /// one entry per top-level setting except `name`; routes are keyed by
-    /// hostname, volumes only record presence, and variables are keyed by name.
+    /// one entry per top-level setting except `name`, and one per file, keyed
+    /// by target, which summarizes inline content by size and digest; routes
+    /// are keyed by hostname, volumes only record presence, and variables are
+    /// keyed by name.
     ///
     /// ```text
     /// manifest                              -> repository manifest settings
     /// services.web.replicas                 -> 3
+    /// services.web.files./etc/app.yaml      -> "path: app.yaml, mode: 0444"
+    /// services.web.files./etc/motd          -> "content: 5 bytes, sha256:2cf24dba5fb0, mode: 0444"
     /// routes.app.example.com                -> {"service":"web","port":3000}
     /// volumes.data                          -> "present (retained if removed)"
     /// variables.domain                      -> "example.com"
@@ -50,11 +90,27 @@ impl ManifestChange {
     /// previews.visibility                   -> "public"
     /// ```
     fn fields(spec: &ApplicationSpec) -> BTreeMap<String, Value> {
+        let mut fields = BTreeMap::new();
+        for service in &spec.services {
+            for file in &service.files {
+                let source = match &file.source {
+                    FileSource::Path(path) => format!("path: {path}"),
+                    FileSource::Content(content) => format!(
+                        "content: {} bytes, sha256:{}",
+                        content.len(),
+                        &content_digest(content)[..12]
+                    ),
+                };
+                fields.insert(
+                    format!("services.{}.files.{}", service.name, file.target),
+                    Value::String(format!("{source}, mode: {}", file.mode)),
+                );
+            }
+        }
         let Ok(Value::Object(mut spec)) = serde_json::to_value(spec) else {
             return BTreeMap::new();
         };
         let mut take = |key: &str| spec.remove(key).unwrap_or(Value::Null);
-        let mut fields = BTreeMap::new();
         if let Some(manifest) = Some(take("manifest")).filter(|value| !value.is_null()) {
             fields.insert("manifest".into(), manifest);
         }
@@ -83,7 +139,9 @@ impl ManifestChange {
         };
         for (path, service) in entries("services", "name", &mut fields) {
             for (key, value) in service {
-                fields.insert(format!("{path}.{key}"), value);
+                if key != "files" {
+                    fields.insert(format!("{path}.{key}"), value);
+                }
             }
         }
         for (path, route) in entries("routes", "hostname", &mut fields) {

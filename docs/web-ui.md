@@ -2,7 +2,7 @@
 
 The Leptos dashboard manages application configuration through forms. Create an
 empty application in a modal, add services in a modal and declare named volumes, and edit images, Git builds
-(including Docker build arguments and targets), replicas, environment variables, commands, arguments, mounts, health checks, startup
+(including Docker build arguments and targets), replicas, environment variables, commands, arguments, mounts, read-only files, health checks, startup
 dependencies, rollout order and monitor window, and resource limits. Each settings group has its own **Save changes** button. Saving updates
 the database without changing running containers.
 
@@ -161,8 +161,10 @@ visibility, destination and state: **ready**, or **pending** with what it waits
 for (ingress, HTTPS, DNS records, or a healthy service), as the daemon reports
 it in [URL readiness](api.md#url-readiness). Each service row opens a service page with a
 breadcrumb back to the application and tabs for source and scaling,
-environment, command and arguments, volume mounts, health checks, startup
-dependencies, rollout, resource limits, and logs. Startup dependencies list the
+environment, command and arguments, volume mounts, files, health checks,
+startup dependencies, rollout, resource limits, and logs. Files lists each
+read-only file's container path, mode, and inline content; files a
+repository-backed manifest reads show their repository path. Startup dependencies list the
 application's other services as checkboxes. Rollout selects an order (derived
 from mounts, stop first, or start first) and an optional monitor window, blank
 for the 30-second default. Service form drafts are retained when switching tabs.

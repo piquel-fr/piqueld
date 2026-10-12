@@ -6,7 +6,10 @@ use crate::store::Tracking;
 use piqueld_core::{
     NormalizedApplication,
     api::{DeploymentOrigin, DiagnosticView},
-    manifest::{ApplicationManifest, GitRevision, RenderContext, RepositoryManifest},
+    manifest::{
+        ApplicationManifest, ApplicationTemplate, FileCaptureError, GitRevision, RenderContext,
+        RepositoryManifest, ServiceFile,
+    },
 };
 
 impl<D: DockerApi> Controller<D> {
@@ -16,11 +19,13 @@ impl<D: DockerApi> Controller<D> {
     ///
     /// Deployments are rendered when captured, or once fetched when
     /// repository-backed, and retries reuse that rendering, so they never
-    /// re-read variables or a moving branch. Otherwise the repository is cloned
-    /// and the manifest file (at most 2 MiB; `.json` parsed as JSON, anything
-    /// else as TOML) is validated, required to keep the application name,
-    /// rendered for `environment` at the fetched commit, bounded by
-    /// `[previews]` when it is a preview, and persisted with it.
+    /// re-read variables, a moving branch, or the files services mount.
+    /// Otherwise the repository is cloned and the manifest file (at most
+    /// 2 MiB; `.json` parsed as JSON, anything else as TOML) is validated,
+    /// required to keep the application name, captured with the repository
+    /// files its services mount, rendered for `environment` at the fetched
+    /// commit, bounded by `[previews]` when it is a preview, and persisted
+    /// with it.
     /// Its own `spec.manifest` must decode but is ignored, even when absent or
     /// invalid: the repository it was fetched from replaces it before
     /// validation, with a `manifest_connection_ignored` warning when it names
@@ -92,6 +97,7 @@ impl<D: DockerApi> Controller<D> {
         if template.metadata().name != input.template.metadata().name {
             return Err(OperationError::ManifestInvalid);
         }
+        let template = Self::capture_files(&checkout, template).await?;
         let mut rendering = template
             .render(&RenderContext {
                 target: environment.environment().target(),
@@ -199,6 +205,60 @@ impl<D: DockerApi> Controller<D> {
                 commit,
             }),
         )
+    }
+
+    /// Captures every repository file `template`'s services mount, as
+    /// `checkout` holds it, with the template.
+    async fn capture_files(
+        checkout: &crate::git::Checkout,
+        template: ApplicationTemplate,
+    ) -> Result<ApplicationTemplate, OperationError> {
+        let mut files = Vec::new();
+        // Stop at the budget, rather than read every file first.
+        let mut total = template.spec().inline_file_bytes();
+        for relative in template.spec().repository_file_paths() {
+            let content = Self::read_file(checkout, relative).await?;
+            total += content.len();
+            if total > ServiceFile::MAX_TOTAL_BYTES {
+                return Err(FileCaptureError::TotalTooLarge.into());
+            }
+            files.push((relative.to_owned(), content));
+        }
+        Ok(template.with_files(files.into_iter().collect())?)
+    }
+
+    /// Reads the regular file at `relative` in `checkout` as UTF-8 text of at
+    /// most [`ServiceFile::MAX_BYTES`].
+    async fn read_file(
+        checkout: &crate::git::Checkout,
+        relative: &str,
+    ) -> Result<String, OperationError> {
+        let path = checkout.path(relative).await.map_err(|error| {
+            let missing = error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+            if missing {
+                FileCaptureError::Missing(relative.into())
+            } else {
+                FileCaptureError::NotAFile(relative.into())
+            }
+        })?;
+        let unreadable = |error: std::io::Error| {
+            tracing::error!(?error, "repository file read failed");
+            OperationError::ManifestInput {
+                not_found: false,
+                source: error.into(),
+            }
+        };
+        let metadata = tokio::fs::metadata(&path).await.map_err(unreadable)?;
+        if !metadata.is_file() {
+            return Err(FileCaptureError::NotAFile(relative.into()).into());
+        }
+        if metadata.len() > ServiceFile::MAX_BYTES as u64 {
+            return Err(FileCaptureError::TooLarge(relative.into()).into());
+        }
+        let bytes = tokio::fs::read(&path).await.map_err(unreadable)?;
+        String::from_utf8(bytes).map_err(|_| FileCaptureError::NotText(relative.into()).into())
     }
 
     /// Reads and decodes, without validating, the manifest file at `relative`

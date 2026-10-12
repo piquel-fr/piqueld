@@ -2,6 +2,7 @@
 
 pub(crate) mod dependencies;
 pub mod domain;
+pub mod files;
 pub mod input;
 pub mod limits;
 pub mod rollout;
@@ -14,6 +15,9 @@ pub mod variables;
 pub use domain::{
     HealthExecution, SecretSource, ValidatedBuild, ValidatedHealthCheck, ValidatedResourceLimits,
     ValidatedSecretMount, ValidatedSource,
+};
+pub use files::{
+    FileCaptureError, FileMode, FileModeError, FileSource, RepositoryFiles, ServiceFile,
 };
 pub use limits::{PreviewLimits, PreviewLimitsError};
 pub use rollout::{Rollout, RolloutOrder, RolloutOrderSource, RolloutPolicy, ValidatedRollout};
@@ -84,6 +88,9 @@ pub struct NormalizedApplication {
     metadata: ValidatedMetadata,
     /// Canonical resource specification.
     spec: ValidatedSpec,
+    /// Contents of the repository files services mount, as captured.
+    #[serde(skip_serializing_if = "RepositoryFiles::is_empty")]
+    files: RepositoryFiles,
 }
 
 impl ValidatedApplication {
@@ -110,6 +117,7 @@ impl ValidatedApplication {
             kind: APPLICATION_KIND.into(),
             metadata: self.metadata,
             spec,
+            files: RepositoryFiles::default(),
         }
     }
 }
@@ -123,6 +131,7 @@ fn normalize_spec(spec: &mut ValidatedSpec) {
     for service in &mut spec.services {
         service.mounts.sort();
         service.secrets.sort();
+        service.files.sort();
         service.depends_on.sort();
     }
     spec.volumes.sort();
@@ -147,6 +156,20 @@ impl NormalizedApplication {
     #[must_use]
     pub fn spec(&self) -> &ValidatedSpec {
         &self.spec
+    }
+
+    /// Returns the captured contents of the repository files services mount.
+    #[must_use]
+    pub const fn files(&self) -> &RepositoryFiles {
+        &self.files
+    }
+
+    /// Attaches the repository files captured with the manifest this
+    /// application was rendered from.
+    #[must_use]
+    pub(crate) fn with_files(mut self, files: RepositoryFiles) -> Self {
+        self.files = files;
+        self
     }
 
     /// Rebinds storage identity without changing validated configuration.
@@ -213,8 +236,9 @@ impl NormalizedApplication {
 
     /// Versioned SHA-256 over canonical JSON after defaults and normalization.
     ///
-    /// The envelope covers only the canonical spec, so cosmetic metadata edits
-    /// do not change the hash or redeploy services.
+    /// The envelope covers only the canonical spec and the captured contents
+    /// of repository files, so cosmetic metadata edits do not change the hash
+    /// or redeploy services.
     #[must_use]
     ///
     /// # Panics
@@ -225,7 +249,7 @@ impl NormalizedApplication {
         let mut normalized = self.clone().normalize();
         // Manifest location does not change the desired runtime resources.
         normalized.spec.manifest = None;
-        hash_spec(&normalized.spec)
+        hash_spec(&normalized.spec, &normalized.files)
     }
 
     /// Canonical JSON representation used for durable desired state.
@@ -262,21 +286,26 @@ impl NormalizedApplication {
     }
 }
 
-/// Versioned SHA-256 over a specification's canonical JSON.
+/// Versioned SHA-256 over a specification's canonical JSON and the captured
+/// repository files it mounts. Without files, the envelope is unchanged from
+/// before files existed, so existing hashes stay stable.
 ///
 /// # Panics
 ///
 /// Panics only if the specification cannot be serialized, which indicates a
 /// bug in the manifest types.
-fn hash_spec(spec: &impl Serialize) -> String {
+fn hash_spec(spec: &impl Serialize, files: &RepositoryFiles) -> String {
     #[derive(Serialize)]
     struct HashEnvelope<'a, S> {
         hash_version: &'static str,
         spec: &'a S,
+        #[serde(skip_serializing_if = "RepositoryFiles::is_empty")]
+        files: &'a RepositoryFiles,
     }
     let bytes = serde_json::to_vec(&HashEnvelope {
         hash_version: SPEC_HASH_VERSION,
         spec,
+        files,
     })
     .expect("manifest serialization is infallible");
     format!("sha256:{:x}", Sha256::digest(bytes))
@@ -299,6 +328,18 @@ impl<'de> Deserialize<'de> for NormalizedApplication {
             }
         }
 
+        /// The `files` of every service in `spec`, which are never templates,
+        /// so they skip [`escape`] and keep their contents as they are.
+        fn services(
+            spec: &mut serde_json::Value,
+        ) -> impl Iterator<Item = &mut serde_json::Map<String, serde_json::Value>> {
+            spec.get_mut("services")
+                .and_then(serde_json::Value::as_array_mut)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_object_mut)
+        }
+
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Wire {
@@ -307,9 +348,19 @@ impl<'de> Deserialize<'de> for NormalizedApplication {
             kind: String,
             metadata: Metadata,
             spec: serde_json::Value,
+            #[serde(default)]
+            files: RepositoryFiles,
         }
         let mut wire = Wire::deserialize(deserializer)?;
+        let files = services(&mut wire.spec)
+            .map(|service| service.remove("files"))
+            .collect::<Vec<_>>();
         escape(&mut wire.spec);
+        for (service, files) in services(&mut wire.spec).zip(files) {
+            if let Some(files) = files {
+                service.insert("files".into(), files);
+            }
+        }
         ApplicationManifest {
             api_version: wire.api_version,
             kind: wire.kind,
@@ -317,7 +368,7 @@ impl<'de> Deserialize<'de> for NormalizedApplication {
             spec: ApplicationSpec::deserialize(wire.spec).map_err(serde::de::Error::custom)?,
         }
         .validate()
-        .map(|validated| validated.normalize(wire.id))
+        .map(|validated| validated.normalize(wire.id).with_files(wire.files))
         .map_err(serde::de::Error::custom)
     }
 }

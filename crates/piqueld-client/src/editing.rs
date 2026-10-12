@@ -2,13 +2,14 @@
 use crate::{Client, ClientError, SavedApplication, client::generated_result};
 use piqueld_core::{
     edit::{
-        ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, HealthValue, JobsValue,
-        MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositorySyncValue,
-        RepositoryValue, ResourcesValue, RolloutValue, RoutesValue, SecondsValue, SecretsValue,
-        ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue,
-        TemplateValue, TemplatesValue, VariablesValue, VisibilityValue, VolumesValue,
+        ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, FilesValue, HealthValue,
+        JobsValue, MemoryValue, MountsValue, OptionalStringValue, ReplicasValue,
+        RepositorySyncValue, RepositoryValue, ResourcesValue, RolloutValue, RoutesValue,
+        SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue,
+        StringValue, StringsValue, TemplateValue, TemplatesValue, VariablesValue, VisibilityValue,
+        VolumesValue,
     },
-    manifest::{Mount, Service, Volume},
+    manifest::{Mount, Service, ServiceFile, Volume},
 };
 
 // The generated client owns paths, encoding, request bodies, and response types.
@@ -56,6 +57,7 @@ edit_method!(set_service_command, (id, service), request: TemplatesValue);
 edit_method!(set_service_arguments, (id, service), request: TemplatesValue);
 edit_method!(set_service_mounts, (id, service), request: MountsValue);
 edit_method!(set_service_secrets, (id, service), request: SecretsValue);
+edit_method!(set_service_files, (id, service), request: FilesValue);
 edit_method!(set_service_depends_on, (id, service), request: StringsValue);
 edit_method!(set_service_rollout, (id, service), request: RolloutValue);
 edit_method!(set_service_healthcheck, (id, service), request: HealthValue);
@@ -73,6 +75,8 @@ edit_method!(set_service_environment_entry, (id, service, key), request: Templat
 edit_method!(remove_service_environment_entry, (id, service, key));
 edit_method!(set_service_mount, (id, service), request: Mount);
 edit_method!(remove_service_mount, (id, service), request: StringValue);
+edit_method!(set_service_file, (id, service), request: ServiceFile);
+edit_method!(remove_service_file, (id, service), request: StringValue);
 
 impl Client {
     /// Creates an empty application, requiring the name to be absent.
@@ -261,6 +265,11 @@ impl Client {
             ServiceEdit::Mount(value) => self.set_service_mount(id, service, value, options).await,
             ServiceEdit::RemoveMount(value) => {
                 send!(remove_service_mount, StringValue, value.clone())
+            }
+            ServiceEdit::Files(value) => send!(set_service_files, FilesValue, value.clone()),
+            ServiceEdit::File(value) => self.set_service_file(id, service, value, options).await,
+            ServiceEdit::RemoveFile(value) => {
+                send!(remove_service_file, StringValue, value.clone())
             }
         }
     }

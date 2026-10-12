@@ -1,7 +1,7 @@
 //! Typed changes to saved application configuration. No edit performs runtime work.
 use crate::manifest::{
     ApplicationManifest, Build, EnvironmentConfig, GitRepository, HealthCheck, Job, Mount,
-    RepositoryManifest, ResourceLimits, Rollout, Route, SecretMount, Service, Source,
+    RepositoryManifest, ResourceLimits, Rollout, Route, SecretMount, Service, ServiceFile, Source,
     SourceRepository, Template, Typed, Variable, Visibility, Volume,
 };
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,7 @@ value_request! {
     EnvironmentValue: BTreeMap<String, Template>;
     MountsValue: Vec<Mount>;
     SecretsValue: Vec<SecretMount>;
+    FilesValue: Vec<ServiceFile>;
     VolumesValue: Vec<Volume>;
     RoutesValue: Vec<Route>;
     JobsValue: Vec<Job>;
@@ -202,6 +203,12 @@ pub enum ServiceEdit {
     Mount(Mount),
     /// Remove a mount by container target.
     RemoveMount(String),
+    /// Replace file declarations.
+    Files(Vec<ServiceFile>),
+    /// Add or replace a file at its target.
+    File(ServiceFile),
+    /// Remove a file by container target.
+    RemoveFile(String),
     /// Switch or clear health check.
     Healthcheck(Option<HealthCheck>),
     /// HTTP health port.
@@ -228,6 +235,55 @@ pub enum ServiceEdit {
     DependsOn(Vec<String>),
     /// Replace the rollout settings; omitted fields use their defaults.
     Rollout(Rollout),
+}
+
+/// A service setting identified by its container target, such as a mount or a file.
+trait Targeted: Sized {
+    /// Name of the setting in `NotFound` errors.
+    const KIND: &'static str;
+
+    /// The container path that identifies it within its service.
+    fn target(&self) -> &str;
+
+    /// Replaces the item with `value`'s target, or appends `value`.
+    fn set(items: &mut Vec<Self>, value: Self) {
+        match items
+            .iter_mut()
+            .find(|item| item.target() == value.target())
+        {
+            Some(item) => *item = value,
+            None => items.push(value),
+        }
+    }
+
+    /// Removes the item at `target`, failing with `NotFound` if absent.
+    fn remove(items: &mut Vec<Self>, target: String) -> Result<(), EditError> {
+        let index = items
+            .iter()
+            .position(|item| item.target() == target)
+            .ok_or(EditError::NotFound {
+                kind: Self::KIND,
+                name: target,
+            })?;
+        items.remove(index);
+        Ok(())
+    }
+}
+
+impl Targeted for Mount {
+    const KIND: &'static str = "mount";
+
+    fn target(&self) -> &str {
+        &self.target
+    }
+}
+
+impl Targeted for ServiceFile {
+    const KIND: &'static str = "file";
+
+    fn target(&self) -> &str {
+        &self.target
+    }
 }
 
 /// Errors applying a structurally valid edit to the current saved configuration.
@@ -452,49 +508,17 @@ impl ServiceEdit {
             Self::Arguments(value) => service.arguments = value,
             Self::Mounts(value) => service.mounts = value,
             Self::Secrets(value) => service.secrets = value,
-            Self::Mount(value) => Self::set_mount(service, value),
-            Self::RemoveMount(target) => Self::remove_mount(service, target)?,
+            Self::Mount(value) => Targeted::set(&mut service.mounts, value),
+            Self::RemoveMount(target) => Targeted::remove(&mut service.mounts, target)?,
+            Self::Files(value) => service.files = value,
+            Self::File(value) => Targeted::set(&mut service.files, value),
+            Self::RemoveFile(target) => Targeted::remove(&mut service.files, target)?,
             Self::Healthcheck(value) => service.healthcheck = value,
-            Self::HealthPort(value) => match Self::health(service)? {
-                HealthCheck::Http { port, .. } => *port = value,
-                HealthCheck::Command { .. } => {
-                    return Err(EditError::Incompatible(
-                        "port requires an HTTP health check",
-                    ));
-                }
-            },
-            Self::HealthPath(value) => match Self::health(service)? {
-                HealthCheck::Http { path, .. } => *path = value,
-                HealthCheck::Command { .. } => {
-                    return Err(EditError::Incompatible(
-                        "path requires an HTTP health check",
-                    ));
-                }
-            },
-            Self::HealthCommand(value) => match Self::health(service)? {
-                HealthCheck::Command { command, .. } => *command = value,
-                HealthCheck::Http { .. } => {
-                    return Err(EditError::Incompatible(
-                        "command requires a command health check",
-                    ));
-                }
-            },
-            Self::HealthInterval(value) => match Self::health(service)? {
-                HealthCheck::Http {
-                    interval_seconds, ..
-                }
-                | HealthCheck::Command {
-                    interval_seconds, ..
-                } => *interval_seconds = value,
-            },
-            Self::HealthTimeout(value) => match Self::health(service)? {
-                HealthCheck::Http {
-                    timeout_seconds, ..
-                }
-                | HealthCheck::Command {
-                    timeout_seconds, ..
-                } => *timeout_seconds = value,
-            },
+            Self::HealthPort(_)
+            | Self::HealthPath(_)
+            | Self::HealthCommand(_)
+            | Self::HealthInterval(_)
+            | Self::HealthTimeout(_) => self.apply_health(Self::health(service)?)?,
             Self::Resources(value) => service.resources = value,
             Self::Cpu(value) => {
                 Self::resources(service).cpu_millis = value;
@@ -517,6 +541,52 @@ impl ServiceEdit {
         }
         Ok(())
     }
+    /// Applies a health check field edit to `check`, which must be the kind
+    /// of check the field belongs to. `apply` passes only health field edits.
+    fn apply_health(self, check: &mut HealthCheck) -> Result<(), EditError> {
+        match (self, check) {
+            (Self::HealthPort(value), HealthCheck::Http { port, .. }) => *port = value,
+            (Self::HealthPath(value), HealthCheck::Http { path, .. }) => *path = value,
+            (Self::HealthCommand(value), HealthCheck::Command { command, .. }) => {
+                *command = value;
+            }
+            (
+                Self::HealthInterval(value),
+                HealthCheck::Http {
+                    interval_seconds, ..
+                }
+                | HealthCheck::Command {
+                    interval_seconds, ..
+                },
+            ) => *interval_seconds = value,
+            (
+                Self::HealthTimeout(value),
+                HealthCheck::Http {
+                    timeout_seconds, ..
+                }
+                | HealthCheck::Command {
+                    timeout_seconds, ..
+                },
+            ) => *timeout_seconds = value,
+            (Self::HealthPort(_), _) => {
+                return Err(EditError::Incompatible(
+                    "port requires an HTTP health check",
+                ));
+            }
+            (Self::HealthPath(_), _) => {
+                return Err(EditError::Incompatible(
+                    "path requires an HTTP health check",
+                ));
+            }
+            (Self::HealthCommand(_), _) => {
+                return Err(EditError::Incompatible(
+                    "command requires a command health check",
+                ));
+            }
+            _ => unreachable!("only health check field edits are applied to a check"),
+        }
+        Ok(())
+    }
     /// Returns the resource limits, inserting an empty block if none exist.
     fn resources(service: &mut Service) -> &mut ResourceLimits {
         service.resources.get_or_insert(ResourceLimits {
@@ -524,27 +594,7 @@ impl ServiceEdit {
             memory_bytes: None,
         })
     }
-    /// Replaces the mount with the same container target, or appends a new one.
-    fn set_mount(service: &mut Service, value: Mount) {
-        if let Some(mount) = service.mounts.iter_mut().find(|m| m.target == value.target) {
-            *mount = value;
-        } else {
-            service.mounts.push(value);
-        }
-    }
-    /// Removes the mount at `target`, failing with `NotFound` if absent.
-    fn remove_mount(service: &mut Service, target: String) -> Result<(), EditError> {
-        let index = service
-            .mounts
-            .iter()
-            .position(|m| m.target == target)
-            .ok_or(EditError::NotFound {
-                kind: "mount",
-                name: target,
-            })?;
-        service.mounts.remove(index);
-        Ok(())
-    }
+
     /// Returns the Git repository of a Git source; image sources are incompatible.
     fn git(service: &mut Service) -> Result<&mut GitRepository, EditError> {
         match &mut service.source {
@@ -622,6 +672,7 @@ mod tests {
             arguments: vec![],
             mounts: vec![],
             secrets: vec![],
+            files: vec![],
             healthcheck: None,
             resources: None,
             depends_on: depends_on.iter().map(|&name| name.into()).collect(),

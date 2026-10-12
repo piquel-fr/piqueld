@@ -153,6 +153,9 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     async fn prune_health_probes(&self) -> Result<(), DockerError> {
         self.inner.prune_health_probes().await
     }
+    async fn prune_files(&self, ownership: &BTreeMap<String, String>) -> Result<(), DockerError> {
+        self.inner.prune_files(ownership).await
+    }
     async fn ensure_network(&self, value: &DesiredNetwork) -> Result<(), DockerError> {
         self.inner.ensure_network(value).await
     }

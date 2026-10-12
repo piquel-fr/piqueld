@@ -45,19 +45,19 @@ pub use planner::{
     PlanRequest, PlanSummary,
 };
 pub use resource::{
-    CompileError, Convergence, DesiredJob, DesiredJobRun, DesiredMount, DesiredNetwork,
-    DesiredService, DesiredVolume, InstanceId, InstanceIdError, ObservedApplication,
-    ObservedNetwork, ObservedService, ObservedTask, ObservedVolume, Ownership, OwnershipState,
-    ResolutionRequirement, ResolutionSet, ResolvedApplication, ResolvedSource, Sha256Digest,
-    Sha256DigestError, TaskDiagnostic, TaskState, compile_application, compile_release,
-    image_repository, preview_resolution, valid_logical_name,
+    CompileError, Convergence, DesiredFile, DesiredJob, DesiredJobRun, DesiredMount,
+    DesiredNetwork, DesiredService, DesiredVolume, InstanceId, InstanceIdError,
+    ObservedApplication, ObservedNetwork, ObservedService, ObservedTask, ObservedVolume, Ownership,
+    OwnershipState, ResolutionRequirement, ResolutionSet, ResolvedApplication, ResolvedSource,
+    Sha256Digest, Sha256DigestError, TaskDiagnostic, TaskState, compile_application,
+    compile_release, image_repository, preview_resolution, valid_logical_name,
 };
 
 pub use operation::{ApplicationState, Operation, OperationKind, OperationState};
 
 /// Typed generated Docker resource names.
 pub mod docker_names;
-pub use docker_names::{DockerNetworkName, DockerServiceName, DockerVolumeName};
+pub use docker_names::{DockerConfigName, DockerNetworkName, DockerServiceName, DockerVolumeName};
 
 /// Checked image references used by runtime compilation.
 pub mod images;

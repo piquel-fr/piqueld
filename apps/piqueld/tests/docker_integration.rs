@@ -119,6 +119,7 @@ impl SwarmScenario {
             .unwrap();
         let service = DesiredService {
             secrets: vec![piqueld_core::resource::SecretFile { secret_name: secret_name.clone(), target: "/run/secrets/token".into() }],
+            files: vec![Self::motd(&app)],
             logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
             name: piqueld_core::DockerServiceName::parse(docker_resource_name(
                 &app,
@@ -133,7 +134,7 @@ impl SwarmScenario {
             command: vec!["/bin/sh".into()],
             arguments: vec![
                 "-c".into(),
-                "test $(cat /run/secrets/token) = mounted-value || exit 1; until getent hosts web >/dev/null; do sleep 1; done; echo log-stdout; echo log-stderr >&2; while true; do sleep 5; done".into(),
+                "test $(cat /run/secrets/token) = mounted-value || exit 1; test \"$(cat /etc/piqueld-motd)\" = 'hello ${HOME}' || exit 1; if echo changed 2>/dev/null >/etc/piqueld-motd; then exit 1; fi; until getent hosts web >/dev/null; do sleep 1; done; echo log-stdout; echo log-stderr >&2; while true; do sleep 5; done".into(),
             ],
             mounts: vec![],
             healthcheck: Some(ValidatedHealthCheck::Command {
@@ -165,6 +166,78 @@ impl SwarmScenario {
             volume,
             service,
         }
+    }
+
+    /// A file whose content looks like shell and template syntax, which the
+    /// web task expects verbatim at `/etc/piqueld-motd`.
+    fn motd(app: &EnvironmentId) -> piqueld_core::DesiredFile {
+        piqueld_core::DesiredFile {
+            config_name: piqueld_core::DockerConfigName::for_file(
+                app,
+                "hello ${HOME}",
+                piqueld_core::manifest::FileMode::default(),
+            ),
+            target: "/etc/piqueld-motd".into(),
+            mode: piqueld_core::manifest::FileMode::default(),
+            content: "hello ${HOME}".into(),
+        }
+    }
+
+    /// The web task checked its file's content and that it cannot write it
+    /// before logging; pruning keeps the config while a service mounts it,
+    /// and removes the rest, even when their listing is far larger than
+    /// other Engine responses.
+    async fn assert_files(&self) {
+        use base64::Engine as _;
+        use piqueld_core::manifest::ServiceFile;
+        // Labelled as piqueld labels the environment's file configs.
+        let mut labels = self.labels.clone();
+        labels.remove("io.piqueld.spec-hash");
+        labels.insert("io.piqueld.file".into(), "true".into());
+        // 12 full-size generations list as more than 8 MiB of base64.
+        for generation in 0..12 {
+            let content = format!("{generation:x}").repeat(ServiceFile::MAX_BYTES);
+            self.docker_api_with(
+                "POST",
+                "/configs/create",
+                Some(serde_json::json!({
+                    "Name": format!("piqueld-{}-file-unused-{generation}", self.app),
+                    "Labels": labels,
+                    "Data": base64::engine::general_purpose::STANDARD
+                        .encode(&content[..ServiceFile::MAX_BYTES]),
+                })),
+            )
+            .await;
+        }
+        self.engine.docker.prune_files(&self.labels).await.unwrap();
+        let remaining = self
+            .docker_api("GET", "/configs")
+            .await
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|config| {
+                config["Spec"]["Labels"]["io.piqueld.file"] == "true"
+                    && config["Spec"]["Labels"]["io.piqueld.application"] == self.app.as_str()
+            })
+            .map(|config| config["Spec"]["Name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(remaining, [self.service.files[0].config_name.to_string()]);
+        assert_eq!(
+            self.engine
+                .docker
+                .observe(&self.app)
+                .await
+                .unwrap()
+                .services[0]
+                .files,
+            self.service
+                .files
+                .iter()
+                .map(piqueld_core::resource::ObservedFile::from)
+                .collect::<Vec<_>>(),
+            "the mounted file's config survives pruning"
+        );
     }
 
     /// The container logs only after resolving its logical name, so this also
@@ -453,17 +526,19 @@ impl SwarmScenario {
             }
         }
 
-        // The probe is mounted as a Swarm config, and pruning removes only
-        // probe configs no service mounts.
+        // The probe is mounted as a Swarm config, beside the service's files,
+        // and pruning removes only probe configs no service mounts.
         let spec = self
             .docker_api("GET", &format!("/services/{}", http_service.name))
             .await;
         let configs = &spec["Spec"]["TaskTemplate"]["ContainerSpec"]["Configs"];
-        assert_eq!(
-            configs[0]["File"]["Name"], "/run/piqueld/probe",
-            "{configs}"
-        );
-        let current = configs[0]["ConfigName"].as_str().unwrap().to_owned();
+        let probe = configs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|config| config["File"]["Name"] == "/run/piqueld/probe")
+            .unwrap_or_else(|| panic!("no probe config in {configs}"));
+        let current = probe["ConfigName"].as_str().unwrap().to_owned();
         self.docker_api_with(
             "POST",
             "/configs/create",
@@ -921,6 +996,7 @@ impl SwarmScenario {
 async fn swarm_init_create_replica_drift_restart_jobs_delete_and_volume_retention() {
     let mut scenario = SwarmScenario::new().await;
     scenario.assert_logs().await;
+    scenario.assert_files().await;
     scenario.assert_exec().await;
     let http_service = scenario.add_http_service().await;
     scenario.assert_healthchecks(&http_service).await;

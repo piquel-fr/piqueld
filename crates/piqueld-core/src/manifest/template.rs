@@ -4,9 +4,9 @@
 use super::domain::{ValidatedMetadata, ValidatedSpec};
 use super::variables::{RenderContext, RenderTarget, VariableValue};
 use super::{
-    APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, ApplicationSpec, Hostname,
-    ManifestRevision, Metadata, NormalizedApplication, RepositoryManifest, SecretSource,
-    ValidatedApplication, ValidationError, ValidationErrors,
+    APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, ApplicationSpec,
+    FileCaptureError, Hostname, ManifestRevision, Metadata, NormalizedApplication, RepositoryFiles,
+    RepositoryManifest, SecretSource, ValidatedApplication, ValidationError, ValidationErrors,
 };
 use crate::{ApplicationId, ApplicationName, EnvironmentName, codes};
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,10 @@ pub struct ApplicationTemplate {
     metadata: ValidatedMetadata,
     /// Resource specification, with references unresolved.
     spec: ApplicationSpec,
+    /// Contents of the repository files services mount, captured when the
+    /// manifest was fetched; empty for manifests not fetched by a deployment.
+    #[serde(skip_serializing_if = "RepositoryFiles::is_empty")]
+    files: RepositoryFiles,
 }
 
 /// A template rendered for one environment: what a deployment captures.
@@ -74,6 +78,7 @@ impl ValidatedTemplate {
         for service in &mut spec.services {
             service.mounts.sort();
             service.secrets.sort();
+            service.files.sort();
             service.depends_on.sort();
         }
         spec.volumes.sort();
@@ -85,6 +90,7 @@ impl ValidatedTemplate {
             kind: APPLICATION_KIND.into(),
             metadata: self.metadata,
             spec: self.spec,
+            files: RepositoryFiles::default(),
         }
     }
 
@@ -134,6 +140,35 @@ impl ApplicationTemplate {
     #[must_use]
     pub fn spec(&self) -> &ApplicationSpec {
         &self.spec
+    }
+
+    /// Returns the captured contents of the repository files services mount.
+    #[must_use]
+    pub const fn files(&self) -> &RepositoryFiles {
+        &self.files
+    }
+
+    /// Captures `files`, the contents of [`ApplicationSpec::repository_file_paths`]
+    /// at the commit this manifest was fetched from.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileCaptureError::TooLarge`] for a file over
+    /// [`super::ServiceFile::MAX_BYTES`] and [`FileCaptureError::TotalTooLarge`]
+    /// when the application's files together exceed their budget.
+    pub fn with_files(mut self, files: RepositoryFiles) -> Result<Self, FileCaptureError> {
+        self.spec.check_captured(&files)?;
+        self.files = files;
+        Ok(self)
+    }
+
+    /// The manifest without the repository files captured with it: what
+    /// applications and environments save, while deployments and releases
+    /// keep the captured bytes.
+    #[must_use]
+    pub fn without_files(mut self) -> Self {
+        self.files = RepositoryFiles::default();
+        self
     }
 
     /// Rebinds storage identity without changing configuration.
@@ -213,7 +248,10 @@ impl ApplicationTemplate {
             return Err(ValidationErrors::sorted(errors));
         }
         Ok(Rendering {
-            application: manifest.validate()?.normalize(self.id.clone()),
+            application: manifest
+                .validate()?
+                .normalize(self.id.clone())
+                .with_files(self.files.clone()),
             values,
         })
     }
@@ -302,14 +340,14 @@ impl ApplicationTemplate {
         self.spec.environments.contains_key(environment.as_str())
     }
 
-    /// Versioned SHA-256 over the canonical specification, excluding the
-    /// manifest location. Equal for templates that render identically in
-    /// every environment.
+    /// Versioned SHA-256 over the canonical specification and captured
+    /// files, excluding the manifest location. Equal for templates that
+    /// render identically in every environment.
     #[must_use]
     pub fn spec_hash(&self) -> String {
         let mut spec = self.spec.clone();
         spec.manifest = None;
-        super::hash_spec(&spec)
+        super::hash_spec(&spec, &self.files)
     }
 
     /// Canonical JSON representation used for durable intent.
@@ -340,6 +378,7 @@ impl From<&NormalizedApplication> for ApplicationTemplate {
             kind: APPLICATION_KIND.into(),
             metadata: application.metadata().clone(),
             spec: application.spec().to_input(),
+            files: application.files().clone(),
         }
     }
 }
@@ -356,17 +395,22 @@ impl<'de> Deserialize<'de> for ApplicationTemplate {
             kind: String,
             metadata: Metadata,
             spec: ApplicationSpec,
+            #[serde(default)]
+            files: RepositoryFiles,
         }
         let wire = Wire::deserialize(deserializer)?;
-        ApplicationManifest {
+        let template = ApplicationManifest {
             api_version: wire.api_version,
             kind: wire.kind,
             metadata: wire.metadata,
             spec: wire.spec,
         }
         .validate_template()
-        .map(|validated| validated.normalize(wire.id))
-        .map_err(serde::de::Error::custom)
+        .map_err(serde::de::Error::custom)?
+        .normalize(wire.id);
+        template
+            .with_files(wire.files)
+            .map_err(serde::de::Error::custom)
     }
 }
 

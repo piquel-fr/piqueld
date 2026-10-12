@@ -153,6 +153,7 @@ async fn app(
         }
         AppCommand::Create(args) => crate::editing::create(cli, client, console, args).await,
         AppCommand::Service { command } => command.run(cli, client, console).await,
+        AppCommand::File { command } => command.run(cli, client, console).await,
         AppCommand::Volume { command } => command.run(cli, client, console).await,
         AppCommand::Route { command } => command.run(cli, client, console).await,
         AppCommand::Job { command } => command.run(cli, client, console).await,

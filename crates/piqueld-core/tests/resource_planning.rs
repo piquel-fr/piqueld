@@ -70,6 +70,7 @@ fn observed(desired: &piqueld_core::resource::ResolvedApplication) -> ObservedAp
             .iter()
             .map(|service| ObservedService {
                 secrets: Vec::new(),
+                files: Vec::new(),
                 name: service.name.to_string(),
                 image: service.image.to_string(),
                 replicas: service.replicas,
@@ -382,6 +383,7 @@ fn desired_identity_matrices_reject_non_canonical_resources() {
     let resolved = resolutions().sources.get("web").unwrap().clone();
     let service = DesiredService {
         secrets: Vec::new(),
+        files: Vec::new(),
         logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
         name: piqueld_core::DockerServiceName::parse(piqueld_core::docker_resource_name(
             &id,
@@ -1012,7 +1014,9 @@ fn planner_rejects_wrong_resource_roles_before_use_or_deletion() {
                     .insert(SERVICE_LABEL.into(), "INVALID".into());
                 service.name = docker_resource_name(&desired.id, role, Some("INVALID"));
             }
-            ResourceKind::Job => unreachable!("observation never reports jobs"),
+            ResourceKind::Job | ResourceKind::File => {
+                unreachable!("observation never reports jobs or configs")
+            }
         }
         let deletion = Plan::from_request(
             &PlanRequest::Delete {

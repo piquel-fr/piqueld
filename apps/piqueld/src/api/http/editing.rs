@@ -18,13 +18,14 @@ use piqueld_core::{
     ApplicationId,
     api::{Envelope, SavedApplication},
     edit::{
-        ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, HealthValue, JobsValue,
-        MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositorySyncValue,
-        RepositoryValue, ResourcesValue, RolloutValue, RoutesValue, SecondsValue, SecretsValue,
-        ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue,
-        TemplateValue, TemplatesValue, VariablesValue, VisibilityValue, VolumesValue,
+        ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, FilesValue, HealthValue,
+        JobsValue, MemoryValue, MountsValue, OptionalStringValue, ReplicasValue,
+        RepositorySyncValue, RepositoryValue, ResourcesValue, RolloutValue, RoutesValue,
+        SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue,
+        StringValue, StringsValue, TemplateValue, TemplatesValue, VariablesValue, VisibilityValue,
+        VolumesValue,
     },
-    manifest::{Mount, Service, Volume},
+    manifest::{Mount, Service, ServiceFile, Volume},
 };
 use utoipa_axum::router::OpenApiRouter;
 
@@ -204,6 +205,7 @@ edit_endpoint!(set_service_environment, put, "/api/v1/applications/{id}/services
 edit_endpoint!(set_service_command, put, "/api/v1/applications/{id}/services/{service}/command", (id: String = "id", service: String = "service"), TemplatesValue, body::<TemplatesValue>, |(_, service), body: TemplatesValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Command(body.value) });
 edit_endpoint!(set_service_arguments, put, "/api/v1/applications/{id}/services/{service}/arguments", (id: String = "id", service: String = "service"), TemplatesValue, body::<TemplatesValue>, |(_, service), body: TemplatesValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Arguments(body.value) });
 edit_endpoint!(set_service_mounts, put, "/api/v1/applications/{id}/services/{service}/mounts", (id: String = "id", service: String = "service"), MountsValue, body::<MountsValue>, |(_, service), body: MountsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Mounts(body.value) });
+edit_endpoint!(set_service_files, put, "/api/v1/applications/{id}/services/{service}/files", (id: String = "id", service: String = "service"), FilesValue, body::<FilesValue>, |(_, service), body: FilesValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Files(body.value) });
 edit_endpoint!(set_service_depends_on, put, "/api/v1/applications/{id}/services/{service}/depends-on", (id: String = "id", service: String = "service"), StringsValue, body::<StringsValue>, |(_, service), body: StringsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::DependsOn(body.value) });
 edit_endpoint!(set_service_secrets, put, "/api/v1/applications/{id}/services/{service}/secrets", (id: String = "id", service: String = "service"), SecretsValue, body::<SecretsValue>, |(_, service), body: SecretsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Secrets(body.value) });
 edit_endpoint!(set_service_rollout, put, "/api/v1/applications/{id}/services/{service}/rollout", (id: String = "id", service: String = "service"), RolloutValue, body::<RolloutValue>, |(_, service), body: RolloutValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Rollout(body.value) });
@@ -256,6 +258,8 @@ async fn remove_service_environment_entry(
 }
 edit_endpoint!(set_service_mount, put, "/api/v1/applications/{id}/services/{service}/mount", (id: String = "id", service: String = "service"), Mount, body::<Mount>, |(_, service), body: Mount| ApplicationEdit::Service { name: service, edit: ServiceEdit::Mount(body) });
 edit_endpoint!(remove_service_mount, delete, "/api/v1/applications/{id}/services/{service}/mount", (id: String = "id", service: String = "service"), StringValue, body::<StringValue>, |(_, service), body: StringValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::RemoveMount(body.value) });
+edit_endpoint!(set_service_file, put, "/api/v1/applications/{id}/services/{service}/file", (id: String = "id", service: String = "service"), ServiceFile, body::<ServiceFile>, |(_, service), body: ServiceFile| ApplicationEdit::Service { name: service, edit: ServiceEdit::File(body) });
+edit_endpoint!(remove_service_file, delete, "/api/v1/applications/{id}/services/{service}/file", (id: String = "id", service: String = "service"), StringValue, body::<StringValue>, |(_, service), body: StringValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::RemoveFile(body.value) });
 
 /// Query options for `create_application`; `deploy` defaults to false.
 #[derive(Default, serde::Deserialize)]
@@ -342,6 +346,7 @@ pub(super) fn router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Write) => set_service_arguments))
         .routes(granted!(App(Write) => set_service_mounts))
         .routes(granted!(App(Write) => set_service_secrets))
+        .routes(granted!(App(Write) => set_service_files))
         .routes(granted!(App(Write) => set_service_depends_on))
         .routes(granted!(App(Write) => set_service_rollout))
         .routes(granted!(App(Write) => set_service_healthcheck))
@@ -359,4 +364,6 @@ pub(super) fn router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Write) => remove_service_environment_entry))
         .routes(granted!(App(Write) => set_service_mount))
         .routes(granted!(App(Write) => remove_service_mount))
+        .routes(granted!(App(Write) => set_service_file))
+        .routes(granted!(App(Write) => remove_service_file))
 }

@@ -3,13 +3,12 @@
 //! mount at [`piqueld_probe::CONTAINER_PATH`]. Swarm stores and distributes
 //! the bytes, so nothing depends on host paths.
 
+use super::configs::ConfigKind;
 use super::{BollardDocker, DockerError, TaskSpecContainerSpec};
-use base64::Engine as _;
 use bollard::models::{TaskSpecContainerSpecConfigs, TaskSpecContainerSpecFile1};
-use hyper::{Method, StatusCode};
 use piqueld_core::resource::MANAGED_LABEL;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, fmt::Write as _, sync::LazyLock};
+use std::{collections::BTreeMap, fmt::Write as _, sync::LazyLock};
 
 /// The probe the build script compiled for the daemon's architecture.
 const BINARY: &[u8] = include_bytes!(env!("PIQUELD_PROBE_BINARY"));
@@ -20,27 +19,9 @@ const BINARY: &[u8] = include_bytes!(env!("PIQUELD_PROBE_BINARY"));
 /// old one once no service mounts it.
 pub(super) struct HealthProbe;
 
-/// The parts of an inspected or listed config piqueld reads.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct Config {
-    #[serde(rename = "ID")]
-    id: String,
-    spec: ConfigSpec,
-}
-
-/// A config's name and base64 content.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct ConfigSpec {
-    name: String,
-    #[serde(default)]
-    data: String,
-}
-
 impl HealthProbe {
     /// Label marking the configs piqueld publishes for the probe.
-    const LABEL: &str = "io.piqueld.health-probe";
+    pub(super) const LABEL: &str = "io.piqueld.health-probe";
     /// Root-owned, and readable and executable by every container user.
     const MODE: u32 = 0o555;
 
@@ -73,37 +54,35 @@ impl HealthProbe {
         }
     }
 
-    /// IDs of the configs the listed `services` mount in their current or
-    /// previous specs.
-    fn referenced(services: &[serde_json::Value]) -> BTreeSet<String> {
-        services
-            .iter()
-            .flat_map(|service| [service.get("Spec"), service.get("PreviousSpec")])
-            .flatten()
-            .filter_map(|spec| {
-                spec.pointer("/TaskTemplate/ContainerSpec/Configs")?
-                    .as_array()
-            })
-            .flatten()
-            .filter_map(|config| Some(config.get("ConfigID")?.as_str()?.to_owned()))
-            .collect()
+    /// Whether a config reference mounts a file at the probe's path, which
+    /// no service file may use.
+    pub(super) fn at_probe_path(config: &TaskSpecContainerSpecConfigs) -> bool {
+        config.file.as_ref().and_then(|file| file.name.as_deref())
+            == Some(piqueld_probe::CONTAINER_PATH)
     }
 
-    /// Whether `container` mounts exactly this daemon's probe config when its
-    /// health check runs the probe, and no config otherwise. A config from
-    /// another probe version, such as one an older daemon published, is drift.
+    /// Whether `container` mounts exactly this daemon's probe config at the
+    /// probe's path when its health check runs the probe, and nothing there
+    /// otherwise. A config from another probe version, such as one an older
+    /// daemon published, is drift. Service files are checked separately.
     pub(super) fn matches(container: &TaskSpecContainerSpec) -> bool {
         let runs_probe = container
             .health_check
             .as_ref()
             .and_then(BollardDocker::observed_health)
             .is_some_and(|health| health.execution().runs_probe());
-        match container.configs.as_deref().unwrap_or_default() {
+        let probes = container
+            .configs
+            .iter()
+            .flatten()
+            .filter(|config| Self::at_probe_path(config))
+            .collect::<Vec<_>>();
+        match probes.as_slice() {
             [] => !runs_probe,
             [config] => {
                 runs_probe
                     && config.config_id.as_ref().is_some_and(|id| !id.is_empty())
-                    && *config == Self::reference(config.config_id.clone().unwrap_or_default())
+                    && **config == Self::reference(config.config_id.clone().unwrap_or_default())
             }
             _ => false,
         }
@@ -112,8 +91,7 @@ impl HealthProbe {
 
 impl BollardDocker {
     /// Returns the reference mounting the probe config, publishing the config
-    /// first when it is missing. A creation race (HTTP 409) is resolved by
-    /// reading the config that won.
+    /// first when it is missing.
     ///
     /// # Errors
     /// Returns `ConfigurationConflict` when a config with the probe's name
@@ -121,96 +99,33 @@ impl BollardDocker {
     pub(super) async fn health_probe_reference(
         &self,
     ) -> Result<TaskSpecContainerSpecConfigs, DockerError> {
-        if let Some(id) = self.health_probe_config().await? {
-            return Ok(HealthProbe::reference(id));
-        }
-        let body = serde_json::json!({
-            "Name": HealthProbe::name(),
-            "Labels": {MANAGED_LABEL: "true", HealthProbe::LABEL: "true"},
-            "Data": base64::engine::general_purpose::STANDARD.encode(BINARY),
-        });
-        match self
-            .engine_request(Method::POST, "/configs/create", body.to_string().into())
-            .await
-        {
-            Ok(_) => {}
-            Err(error) if error.is_status(StatusCode::CONFLICT) => {}
-            Err(error) => return Err(error.sanitized("publish the HTTP health probe")),
-        }
-        self.health_probe_config()
-            .await?
-            .map(HealthProbe::reference)
-            .ok_or(DockerError::Request("publish the HTTP health probe"))
-    }
-
-    /// Returns the probe config's ID, or `None` when it does not exist.
-    async fn health_probe_config(&self) -> Result<Option<String>, DockerError> {
-        let bytes = match self
-            .engine_request(
-                Method::GET,
-                &format!("/configs/{}", HealthProbe::name()),
-                Vec::new(),
-            )
-            .await
-        {
-            Ok(bytes) => bytes,
-            Err(error) if error.is_not_found() => return Ok(None),
-            Err(error) => return Err(error.sanitized("inspect the HTTP health probe")),
-        };
-        let config: Config = serde_json::from_slice(&bytes)
-            .map_err(|source| DockerError::request("decode the HTTP health probe", source))?;
-        // The name promises the content; anything else was not published here.
-        if config.spec.data != base64::engine::general_purpose::STANDARD.encode(BINARY) {
-            return Err(DockerError::ConfigurationConflict);
-        }
-        Ok(Some(config.id))
+        let labels = BTreeMap::from([
+            (MANAGED_LABEL.to_owned(), "true".to_owned()),
+            (HealthProbe::LABEL.to_owned(), "true".to_owned()),
+        ]);
+        self.publish_config(
+            ConfigKind::HealthProbe,
+            HealthProbe::name(),
+            &labels,
+            BINARY,
+        )
+        .await
+        .map(HealthProbe::reference)
     }
 
     /// Removes probe configs of other versions that no service mounts, now or
-    /// in the previous spec a rollback restores: Docker only refuses to remove
-    /// configs current specs use (HTTP 400). Retained configs go once the
+    /// in the previous spec a rollback restores. Retained configs go once the
     /// services mounting them roll onto the current probe and on again.
     ///
     /// # Errors
     /// Returns request errors listing services or listing or removing configs.
     pub(super) async fn remove_stale_health_probes(&self) -> Result<(), DockerError> {
-        // Bollard's service model omits `PreviousSpec`, so read the raw list.
-        let services = self
-            .engine_request(Method::GET, "/services", Vec::new())
-            .await
-            .map_err(|error| error.sanitized("list services"))?;
-        let services: Vec<serde_json::Value> = serde_json::from_slice(&services)
-            .map_err(|source| DockerError::request("decode services", source))?;
-        let referenced = HealthProbe::referenced(&services);
-        let filters = serde_json::json!({"label": [HealthProbe::LABEL]}).to_string();
-        let path = format!(
-            "/configs?filters={}",
-            url::form_urlencoded::byte_serialize(filters.as_bytes()).collect::<String>()
-        );
-        let bytes = self
-            .engine_request(Method::GET, &path, Vec::new())
-            .await
-            .map_err(|error| error.sanitized("list HTTP health probes"))?;
-        let configs: Vec<Config> = serde_json::from_slice(&bytes)
-            .map_err(|source| DockerError::request("decode HTTP health probes", source))?;
-        for config in configs {
-            if config.spec.name == HealthProbe::name() || referenced.contains(&config.id) {
-                continue;
-            }
-            match self
-                .engine_request(
-                    Method::DELETE,
-                    &format!("/configs/{}", config.id),
-                    Vec::new(),
-                )
-                .await
-            {
-                Ok(_) => {}
-                Err(error) if error.is_not_found() || error.is_status(StatusCode::BAD_REQUEST) => {}
-                Err(error) => return Err(error.sanitized("remove an old HTTP health probe")),
-            }
-        }
-        Ok(())
+        self.remove_unused_configs(
+            ConfigKind::HealthProbe,
+            &[HealthProbe::LABEL.to_owned()],
+            |config| config.name() == HealthProbe::name(),
+        )
+        .await
     }
 }
 
@@ -249,7 +164,19 @@ mod tests {
         let mut writable = probe.clone();
         writable.file.as_mut().unwrap().mode = Some(0o777);
 
+        // Service files mount other configs elsewhere, checked separately.
+        let file = TaskSpecContainerSpecConfigs {
+            config_name: Some("piqueld-app-file-0000".into()),
+            file: Some(TaskSpecContainerSpecFile1 {
+                name: Some("/etc/app.conf".into()),
+                ..probe.file.clone().unwrap()
+            }),
+            ..probe.clone()
+        };
+
         assert!(matches(&http, vec![probe.clone()]));
+        assert!(matches(&http, vec![file.clone(), probe.clone()]));
+        assert!(matches(&command, vec![file]));
         assert!(!matches(&http, Vec::new()));
         assert!(!matches(&http, vec![older]));
         assert!(!matches(&http, vec![writable]));
@@ -257,20 +184,6 @@ mod tests {
         assert!(!matches(&http, vec![probe.clone(), probe.clone()]));
         assert!(!matches(&command, vec![probe]));
         assert!(matches(&command, Vec::new()));
-    }
-
-    /// A rollback restores the previous spec, so its probe config is kept.
-    #[test]
-    fn previous_specs_keep_their_probe_configs() {
-        let spec = |id: &str| serde_json::json!({"TaskTemplate": {"ContainerSpec": {"Configs": [{"ConfigID": id}]}}});
-        let services = [
-            serde_json::json!({"Spec": spec("current"), "PreviousSpec": spec("previous")}),
-            serde_json::json!({"Spec": {"TaskTemplate": {"ContainerSpec": {}}}}),
-        ];
-        assert_eq!(
-            HealthProbe::referenced(&services),
-            BTreeSet::from(["current".into(), "previous".into()])
-        );
     }
 
     #[test]
