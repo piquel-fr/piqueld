@@ -622,14 +622,17 @@ impl Checkout {
     const ALLOC_LIMIT: &str = "1g";
 
     /// Builds a hardened `git` command: restricted transports, no interactive
-    /// prompts, hooks disabled, allocations within [`Self::ALLOC_LIMIT`], and
-    /// killed if the future is dropped.
+    /// prompts, hooks disabled, system configuration ignored, allocations within
+    /// [`Self::ALLOC_LIMIT`], and killed if the future is dropped.
     fn command() -> Command {
         let mut command = Command::new("git");
-        // Inherit host credentials while excluding executable transport helpers, even
-        // when host configuration enables them or rewrites a URL to use one.
+        // Inherit the daemon user's credentials while excluding executable transport
+        // helpers, even when its configuration enables them or rewrites a URL to use
+        // one. Ignore the host-wide `/etc/gitconfig`: it holds operator settings,
+        // such as rewriting GitHub URLs to SSH, that the daemon user cannot satisfy.
         // Never hang waiting for a password prompt.
         command
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_ALLOW_PROTOCOL", "file:git:http:https:ssh")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GCM_INTERACTIVE", "never")
@@ -707,6 +710,22 @@ mod tests {
             .await
             .unwrap();
         String::from_utf8(output.stdout).unwrap().trim().into()
+    }
+
+    #[tokio::test]
+    async fn checkout_ignores_host_wide_git_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        let system = root.path().join("gitconfig");
+        tokio::fs::write(&system, "[piqueld]\n\tprobe = system\n")
+            .await
+            .unwrap();
+        let output = Checkout::command()
+            .env("GIT_CONFIG_SYSTEM", &system)
+            .args(["config", "--get", "piqueld.probe"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.stdout.is_empty(), "{output:?}");
     }
 
     #[tokio::test]
