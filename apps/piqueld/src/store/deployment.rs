@@ -130,19 +130,13 @@ impl Store {
         )
         .await?;
         Self::check_declared_against_store_on(tx, id, &app.spec().secrets).await?;
+        let current = Self::application_on(tx, id)
+            .await?
+            .map(|current| current.application);
         // What sync followed in another repository says nothing about this one.
-        let previous_url = Self::application_on(tx, id).await?.and_then(|current| {
-            Some(
-                current
-                    .application
-                    .spec()
-                    .manifest
-                    .as_ref()?
-                    .repository
-                    .url
-                    .clone(),
-            )
-        });
+        let previous_url = current
+            .as_ref()
+            .and_then(|current| Some(current.spec().manifest.as_ref()?.repository.url.clone()));
         let previous = Self::generation_on(tx, id, expected).await?;
         let generation = previous.checked_add(1).ok_or(StoreError::InvalidInput)?;
         let json = serde_json::to_string(app).map_err(StoreError::corrupt)?;
@@ -153,7 +147,9 @@ impl Store {
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
-        let declarations = app.spec().declared_environments()?;
+        let declarations = app
+            .spec()
+            .declared_environments_since(current.as_ref().map(ApplicationTemplate::spec))?;
         if previous == 0 && declarations.is_empty() {
             Self::create_default_environment_on(tx, app, now).await?;
         }

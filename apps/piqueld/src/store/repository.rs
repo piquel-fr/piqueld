@@ -195,7 +195,9 @@ impl Store {
             Self::converge_environments_on(
                 tx,
                 application.id(),
-                &saved.spec().declared_environments()?,
+                &saved
+                    .spec()
+                    .declared_environments_since(Some(application.spec()))?,
                 (false, Some(&operation.environment_id)),
                 now,
             )

@@ -223,6 +223,18 @@ impl EditorContext {
         self.saved
             .with(|saved| saved.application.spec().environments.contains_key(name))
     }
+    /// Whether the saved manifest's block for the environment `name` sets
+    /// where it deploys from, owning its source and deploy on push.
+    fn source_declared(self, name: &str) -> bool {
+        self.saved.with(|saved| {
+            saved
+                .application
+                .spec()
+                .environments
+                .get(name)
+                .is_some_and(piqueld_client::EnvironmentConfig::sets_source)
+        })
+    }
     /// Whether runtime configuration is owned by a Git manifest instead of these forms.
     fn managed(self) -> bool {
         self.saved

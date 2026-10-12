@@ -815,8 +815,7 @@ impl Store {
         let id = current.application.id().clone();
         let mut manifest = current.application.to_manifest();
         edit.clone().apply(&mut manifest)?;
-        Self::declare_as_they_are_on(tx, &id, current.application.spec(), &mut manifest.spec)
-            .await?;
+        Self::declare_existing_on(tx, &id, current.application.spec(), &mut manifest.spec).await?;
         let application = manifest.validate_template()?.normalize(id.clone());
         let field = match &edit {
             ApplicationEdit::Name(_) => "name",
@@ -1402,6 +1401,42 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    /// Blocks that set no source, as every block did before blocks declared
+    /// sources, keep the source an environment was given with `env source`
+    /// across saves, and still allow changing it that way.
+    #[tokio::test]
+    async fn blocks_without_a_source_keep_existing_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let spec = "[spec.environments.staging.variables]\nlevel='debug'\n[spec.environments.production.variables]\nlevel='info'\n";
+        let (application, [staging, production]) =
+            environments(&store, spec, ["staging", "production"]).await;
+        let promote = Mutation::Promotion(PromotionMutation::SetSource {
+            id: production.clone(),
+            promote_from: Some(staging.clone()),
+        });
+        store
+            .accept(Actor::Daemon, promote, None, true, None)
+            .await
+            .unwrap();
+        let template = piqueld_core::manifest::parse_template_toml(&format!(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{spec}"
+        ))
+        .unwrap();
+        store
+            .accept(
+                Actor::Daemon,
+                Mutation::save(template, Some(application.to_string()), false),
+                None,
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+        let source = store.get(&production).await.unwrap().environment.source;
+        assert_eq!(source.promoted_from(), Some(&staging));
     }
 
     /// Receipts recorded before deploy overrides existed must still replay.

@@ -439,9 +439,9 @@ it deploys renders for it, so environments of one application may use different
 hostnames through variables; two that render the same hostname fail with 409
 `hostname_conflict`. Renaming an environment returns 409 `environment_configured`
 while that manifest has a `[spec.environments.<name>]` block for the old or new
-name. Creating, deleting, or changing the branch, source or sync of an
-environment the saved manifest
-[declares](application-manifest.md#declared-environments) returns 409
+name. Creating or deleting an environment the saved manifest
+[declares](application-manifest.md#declared-environments), or changing the
+branch, source or sync of one whose block sets its source, returns 409
 `environment_declared`, naming it in `details.environment`. Creating an
 environment with a `branch`, or changing the branch of one,
 for an application without a manifest repository fails with 422

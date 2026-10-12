@@ -381,7 +381,7 @@ impl Mutation {
                             .spec()
                             .environments
                             .values()
-                            .any(|config| config.sync))
+                            .any(|config| config.sync == Some(true)))
             }
             Self::Edit { edit, .. } => match edit.as_ref() {
                 ApplicationEdit::Repository(changed) => turns_on(changed.as_ref()),

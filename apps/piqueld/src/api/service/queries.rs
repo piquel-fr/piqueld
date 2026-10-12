@@ -252,7 +252,7 @@ impl ApplicationService {
         };
         let declarations = template
             .spec()
-            .declared_environments()
+            .declared_environments_since(current.as_ref().map(|current| current.application.spec()))
             .map_err(StoreError::from)?;
         let environment = self
             .plan_environment(environment, current.is_some(), &id, &environments)

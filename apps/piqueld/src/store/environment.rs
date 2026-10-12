@@ -177,14 +177,14 @@ impl Store {
     }
 
     /// Points an environment of a repository-backed application at `branch`
-    /// (see `set_source_on`), unless the saved manifest declares it.
+    /// (see `set_source_on`), unless the saved manifest declares its source.
     pub(super) async fn set_branch_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
         branch: TrackedBranch,
         now: i64,
     ) -> Result<(), StoreError> {
-        Self::check_undeclared(
+        Self::check_source_undeclared(
             &environment.application.application,
             &environment.environment.name,
         )?;
@@ -196,14 +196,14 @@ impl Store {
     /// Makes an environment promoted from `promote_from` (see
     /// `check_promotion_source_on`), or, without one, returns it to tracking
     /// the application's saved manifest or the branch `spec.manifest` names
-    /// (see `set_source_on`), unless the saved manifest declares it.
+    /// (see `set_source_on`), unless the saved manifest declares its source.
     pub(super) async fn set_promotion_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
         promote_from: Option<EnvironmentId>,
         now: i64,
     ) -> Result<(), StoreError> {
-        Self::check_undeclared(
+        Self::check_source_undeclared(
             &environment.application.application,
             &environment.environment.name,
         )?;

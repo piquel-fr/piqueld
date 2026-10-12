@@ -4,6 +4,7 @@
 use super::{Store, StoreError};
 use piqueld_core::manifest::{
     ApplicationSpec, ApplicationTemplate, Declaration, DeclaredSource, EnvironmentChange,
+    EnvironmentConfig,
 };
 use piqueld_core::{
     ApplicationId, EnvironmentId, EnvironmentName, EnvironmentSource, PromotedFrom,
@@ -13,14 +14,39 @@ use sqlx::{Sqlite, Transaction};
 use std::collections::BTreeMap;
 
 impl Store {
-    /// Refuses an imperative change to environment `name` while `application`'s
-    /// saved manifest declares it: creating, deleting, or changing its source
-    /// or sync belongs to that `[spec.environments.<name>]` block.
+    /// Refuses to create or delete environment `name` while `application`'s
+    /// saved manifest declares it: its `[spec.environments.<name>]` block
+    /// decides whether it exists.
     pub(super) fn check_undeclared(
         application: &ApplicationTemplate,
         name: &EnvironmentName,
     ) -> Result<(), StoreError> {
-        if application.spec().environments.contains_key(name.as_str()) {
+        Self::check_declared_by(application, name, |_| true)
+    }
+
+    /// Refuses to change the source or sync of environment `name` while its
+    /// block in `application`'s saved manifest sets them (see
+    /// `EnvironmentConfig::sets_source`).
+    pub(super) fn check_source_undeclared(
+        application: &ApplicationTemplate,
+        name: &EnvironmentName,
+    ) -> Result<(), StoreError> {
+        Self::check_declared_by(application, name, EnvironmentConfig::sets_source)
+    }
+
+    /// `EnvironmentDeclared` when `name`'s block in `application`'s saved
+    /// manifest is `declares`.
+    fn check_declared_by(
+        application: &ApplicationTemplate,
+        name: &EnvironmentName,
+        declares: impl Fn(&EnvironmentConfig) -> bool,
+    ) -> Result<(), StoreError> {
+        if application
+            .spec()
+            .environments
+            .get(name.as_str())
+            .is_some_and(declares)
+        {
             return Err(StoreError::EnvironmentDeclared {
                 environment: name.clone(),
             });
@@ -163,47 +189,26 @@ impl Store {
     }
 
     /// Blocks declare environments, so an edit through the CLI or dashboard
-    /// that adds one for an existing environment declares that environment
-    /// as it is, and one that declares the application's first environment
-    /// declares every existing one as it is: editing configuration never
-    /// changes where environments deploy from, or which exist. `before` is
-    /// the saved manifest, `after` the edited one.
-    pub(super) async fn declare_as_they_are_on(
+    /// that declares the application's first environment declares every
+    /// existing one too, with a block that leaves its source as it is:
+    /// editing configuration never changes which environments the manifest
+    /// reports, or where they deploy from. `before` is the saved manifest,
+    /// `after` the edited one.
+    pub(super) async fn declare_existing_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &ApplicationId,
         before: &ApplicationSpec,
         after: &mut ApplicationSpec,
     ) -> Result<(), StoreError> {
-        let adds = |name: &str, after: &ApplicationSpec| {
-            !before.environments.contains_key(name) && after.environments.contains_key(name)
-        };
-        if after.environments.keys().all(|name| !adds(name, after)) {
+        if !before.environments.is_empty() || after.environments.is_empty() {
             return Ok(());
         }
-        let first = before.environments.is_empty();
-        let environments = Self::environments_on(tx, application.as_str()).await?;
-        for environment in environments
-            .iter()
-            .filter(|environment| !environment.delete_intent)
-        {
-            let name = environment.name.as_str();
-            if !(adds(name, after) || first) {
-                continue;
-            }
-            let config = after.environments.entry(name.to_owned()).or_default();
-            match &environment.source {
-                EnvironmentSource::Saved => {}
-                EnvironmentSource::Branch(branch) => {
-                    config.branch = Some(branch.branch().to_owned());
-                    config.commit = branch.commit().map(str::to_owned);
-                    config.sync = environment.sync && branch.commit().is_none();
-                }
-                EnvironmentSource::Promoted(from) => {
-                    config.promote_from = environments
-                        .iter()
-                        .find(|source| source.id == from.environment)
-                        .map(|source| source.name.to_string());
-                }
+        for environment in Self::environments_on(tx, application.as_str()).await? {
+            if !environment.delete_intent {
+                after
+                    .environments
+                    .entry(environment.name.to_string())
+                    .or_default();
             }
         }
         Ok(())

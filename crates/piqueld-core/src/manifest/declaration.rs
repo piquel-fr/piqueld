@@ -58,6 +58,12 @@ pub struct Declaration {
     /// Whether pushes to its branch deploy it while the repository syncs.
     /// Always false for promoted environments, which never build.
     pub sync: bool,
+    /// Whether converging changes an existing environment's source and sync
+    /// to these: its block sets them, or the previous manifest's did, so that
+    /// removing them returns it to the default. Otherwise they only create a
+    /// missing environment, and an existing one keeps the source it has, such
+    /// as one set with `piquelctl env source` before blocks declared sources.
+    pub manages_source: bool,
 }
 
 impl Declaration {
@@ -91,13 +97,30 @@ impl ApplicationSpec {
     /// naming an undeclared environment (`promotion_source_invalid`) or
     /// leading back to itself (`promotion_cycle`).
     pub fn declared_environments(&self) -> Result<Vec<Declaration>, ValidationErrors> {
+        self.declared_environments_since(None)
+    }
+
+    /// [`Self::declared_environments`] when this manifest replaces `previous`:
+    /// sources `previous` set and this one removed are managed too, so they
+    /// return to the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::declared_environments`].
+    pub fn declared_environments_since(
+        &self,
+        previous: Option<&Self>,
+    ) -> Result<Vec<Declaration>, ValidationErrors> {
         let mut errors = Vec::new();
         let mut declared = BTreeMap::new();
         for (name, config) in &self.environments {
             let path = format!("spec.environments.{name}");
             match EnvironmentName::parse(name.as_str()) {
                 Ok(parsed) => match self.declare(parsed, config, &path) {
-                    Ok(declaration) => {
+                    Ok(mut declaration) => {
+                        declaration.manages_source |= previous
+                            .and_then(|previous| previous.environments.get(name))
+                            .is_some_and(EnvironmentConfig::sets_source);
                         declared.insert(name.as_str(), declaration);
                     }
                     Err(invalid) => errors.extend(invalid),
@@ -184,7 +207,7 @@ impl ApplicationSpec {
             message,
         };
         if let Some(from) = &config.promote_from {
-            if config.branch.is_some() || config.commit.is_some() || config.sync {
+            if config.branch.is_some() || config.commit.is_some() || config.sync.is_some() {
                 return Err(vec![fail(
                     "promote_from",
                     codes::ENVIRONMENT_SOURCE_CONFLICT,
@@ -205,13 +228,14 @@ impl ApplicationSpec {
                 name,
                 source: DeclaredSource::Promoted { from },
                 sync: false,
+                manages_source: true,
             });
         }
         let Some(connection) = &self.manifest else {
             let errors = [
                 ("branch", config.branch.is_some()),
                 ("commit", config.commit.is_some()),
-                ("sync", config.sync),
+                ("sync", config.sync == Some(true)),
             ]
             .into_iter()
             .filter(|(_, set)| *set)
@@ -228,6 +252,7 @@ impl ApplicationSpec {
                     name,
                     source: DeclaredSource::Saved,
                     sync: false,
+                    manages_source: config.sets_source(),
                 })
             } else {
                 Err(errors)
@@ -260,7 +285,8 @@ impl ApplicationSpec {
         // Only its own pin: one inherited from `spec.manifest`, or from the
         // revision a deployment fetched, keeps it opted in but not following,
         // as `piquelctl env sync` does for a pinned environment.
-        if config.sync && config.commit.is_some() {
+        let sync = config.sync.unwrap_or(false);
+        if sync && config.commit.is_some() {
             return Err(vec![fail(
                 "sync",
                 codes::ENVIRONMENT_SYNC_PINNED,
@@ -270,7 +296,8 @@ impl ApplicationSpec {
         Ok(Declaration {
             name,
             source: DeclaredSource::Branch(branch),
-            sync: config.sync,
+            sync,
+            manages_source: config.sets_source(),
         })
     }
 }
@@ -348,7 +375,8 @@ pub enum EnvironmentChange {
 impl EnvironmentChange {
     /// What converging `environments` (never previews) to `declarations`
     /// changes, in the order of `declarations`, then the environments it
-    /// leaves undeclared. Without declarations there is nothing to converge.
+    /// leaves undeclared. Existing environments change only where their
+    /// declaration manages their source (see [`Declaration::manages_source`]). Without declarations there is nothing to converge.
     /// Environments being deleted are gone: a declaration of one's name is
     /// created once it is.
     #[must_use]
@@ -371,6 +399,9 @@ impl EnvironmentChange {
                 });
                 continue;
             };
+            if !declaration.manages_source {
+                continue;
+            }
             let from = Self::named(&current.source, environments);
             if let Some(from) = from.filter(|from| *from != declaration.source) {
                 changes.push(Self::Source {
@@ -538,11 +569,13 @@ mod tests {
                     name: name("canary"),
                     source: branch("next", Some(&"a".repeat(40))),
                     sync: false,
+                    manages_source: true,
                 },
                 Declaration {
                     name: name("staging"),
                     source: branch("main", None),
                     sync: true,
+                    manages_source: true,
                 },
                 Declaration {
                     name: name("production"),
@@ -550,6 +583,7 @@ mod tests {
                         from: name("staging")
                     },
                     sync: false,
+                    manages_source: true,
                 },
             ]
         );
@@ -622,6 +656,48 @@ mod tests {
             [
                 ("the saved manifest".into(), false),
                 ("releases promoted from staging".into(), false),
+            ]
+        );
+    }
+
+    /// Blocks that set no source, as every block did before blocks declared
+    /// sources, leave existing environments' sources and sync alone; one that
+    /// removes the source it set returns its environment to the default.
+    #[test]
+    fn only_declared_sources_change_existing_environments() {
+        let staging = environment(
+            "staging",
+            EnvironmentSource::Branch(TrackedBranch::new("main".into(), None).unwrap()),
+            true,
+        );
+        let production = environment(
+            "production",
+            EnvironmentSource::Promoted(PromotedFrom {
+                environment: staging.id.clone(),
+            }),
+            false,
+        );
+        let environments = [production, staging];
+        let legacy = spec(&format!(
+            "{CONNECTION}[spec.environments.staging.variables]\nx=1\n[spec.environments.production]\nvisibility='private'\n"
+        ))
+        .unwrap();
+        let declarations = legacy.declared_environments().unwrap();
+        assert_eq!(EnvironmentChange::between(&declarations, &environments), []);
+
+        let declared = spec(&format!(
+            "{CONNECTION}[spec.environments.staging]\nsync=true\n[spec.environments.production]\npromote_from='staging'\n"
+        ))
+        .unwrap();
+        let removed = legacy.declared_environments_since(Some(&declared)).unwrap();
+        assert_eq!(
+            EnvironmentChange::between(&removed, &environments)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            [
+                "production: deploys from branch main instead of releases promoted from staging",
+                "staging: no longer follows pushes",
             ]
         );
     }
@@ -709,6 +785,7 @@ mod tests {
                 name: name("staging"),
                 source: branch("main", None),
                 sync: true,
+                manages_source: true,
             },
             Declaration {
                 name: name("production"),
@@ -716,11 +793,13 @@ mod tests {
                     from: name("staging"),
                 },
                 sync: false,
+                manages_source: true,
             },
             Declaration {
                 name: name("qa"),
                 source: branch("main", None),
                 sync: false,
+                manages_source: true,
             },
         ];
         let changes = EnvironmentChange::between(

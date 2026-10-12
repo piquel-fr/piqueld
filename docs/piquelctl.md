@@ -96,11 +96,12 @@ application revision like other mutations (`--expected-generation`, `--force`),
 and advance it, so a command based on an earlier inspection fails instead of
 acting on a renamed or deleted environment.
 
-Declared environments take their source, sync and existence from their
-`[spec.environments.<name>]` block: `env create`, `env source`, `env branch`,
-`env sync` and `env delete` refuse them with `environment_declared`, naming the
-environment; change the manifest instead (remove the block before deleting
-one). `app plan` lists, under `Environments:`, what saving a manifest would
+Declared environments exist as long as their `[spec.environments.<name>]`
+block does: `env create` and `env delete` refuse them with
+`environment_declared`, naming the environment (remove the block before
+deleting one). When the block sets `branch`, `commit`, `promote_from` or
+`sync`, `env source`, `env branch` and `env sync` refuse it too; change the
+manifest instead. `app plan` lists, under `Environments:`, what saving a manifest would
 create (`+`), change (`~`), or no longer declare (`!`); `app show` lists how the
 environments differ from the saved manifest, including environments it no
 longer declares, which keep running until `env delete`. `app apply --deploy`

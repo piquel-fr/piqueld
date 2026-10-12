@@ -264,7 +264,7 @@ impl Store {
 
     /// Opts environment `id` in or out of its application's sync (see
     /// `write_sync_on`) and responds with it, unless the saved manifest
-    /// declares it. Previews always sync: they are `NotFound`.
+    /// declares its source. Previews always sync: they are `NotFound`.
     pub(super) async fn set_sync_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: EnvironmentId,
@@ -275,7 +275,7 @@ impl Store {
         if environment.delete_intent() {
             return Err(StoreError::Busy);
         }
-        Self::check_undeclared(
+        Self::check_source_undeclared(
             &environment.application.application,
             &environment.environment.name,
         )?;

@@ -1,8 +1,9 @@
 //! Environment lifecycle controls and where an environment deploys from (the
 //! branch it follows, or the environment it is promoted from) and whether
 //! pushes to its branch deploy it; configuration continues to belong to the
-//! application or its repository. Environments the manifest declares take
-//! their source, sync and existence from it, so those controls are read-only.
+//! application or its repository. The manifest decides whether environments
+//! it declares exist, and their source and sync when their block sets them,
+//! so those controls are then read-only.
 use super::super::environment_row;
 use super::super::format::commit;
 use super::super::ui::{
@@ -331,13 +332,13 @@ fn Drift() -> impl IntoView {
     }
 }
 
-/// Explains that the manifest owns a declared environment's source,
-/// existence and sync, so the forms that would change them are read-only.
+/// Explains that the manifest owns the environment's source and sync, so
+/// the forms that would change them are read-only.
 fn declared_notice(name: &str) -> AnyView {
     notice(
         Tone::Neutral,
         format!(
-            "The manifest declares this environment in [spec.environments.{name}], so its source, deploy on push, and existence are changed there."
+            "The manifest sets this environment's source in [spec.environments.{name}], so its source and deploy on push are changed there."
         ),
     )
     .into_any()
@@ -653,7 +654,7 @@ fn SourceSettings() -> impl IntoView {
             .map(|environment| environment.name.to_string())
             .unwrap_or_default()
     };
-    let declared = move || context.declared(&name());
+    let declared = move || context.source_declared(&name());
     let blocked = move || context.action_blocked() || deleting() || declared();
     // The change saving would make, if any.
     let change = move || -> Option<Result<EnvironmentChange, String>> {

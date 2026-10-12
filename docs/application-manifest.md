@@ -381,8 +381,13 @@ the ones it declares:
 - A declared environment that doesn't exist is created, not deployed. A new
   application gets exactly the environments it declares; one that declares
   none gets a `production` environment, as before.
-- An existing one whose source or `sync` differs changes, deploying nothing,
-  as `piquelctl env source`, `env branch` and `env sync` would. An environment
+- An existing one whose block sets its source (`branch`, `commit`,
+  `promote_from` or `sync`), or whose block in the previous saved manifest
+  did, changes to it when it differs, deploying nothing, as
+  `piquelctl env source`, `env branch` and `env sync` would; a block that
+  removes them returns it to the default. A block that sets none, such as one
+  only setting variables or visibility (all blocks did before environments
+  were declared), keeps an existing environment's source and sync as they are. An environment
   that becomes promoted while a deployment of it is in progress keeps its
   source until the next save or fetch, unless that deployment is the fetch
   itself.
@@ -413,16 +418,15 @@ every declared environment that builds; promoted ones wait for their first
 applying it with `--deploy` is enough: staging follows `main`, and production
 receives what staging ran once you promote it.
 
-A declared environment's source, sync and existence belong to its block, so
-`piquelctl env create`, `env source`, `env branch`, `env sync` and `env delete`
-refuse it with `environment_declared`, and the dashboard shows them read-only.
-Remove the block to delete the environment. Environments a manifest doesn't
-declare, and every environment of an application whose manifest declares none,
-keep these commands. Field edits that add a block for an existing environment,
-such as `piquelctl env visibility` or setting one of its variables in the
-dashboard, declare it as it is (and, for the first block, every other existing
-environment too), so editing configuration never changes where environments
-deploy from or which exist.
+A declared environment's existence belongs to its block, so `piquelctl env
+create` and `env delete` refuse it with `environment_declared`: remove the block
+to delete the environment. When the block sets its source, `env source`,
+`env branch` and `env sync` refuse it too, and the dashboard shows them
+read-only. Other environments, including every environment of an application
+whose manifest declares none, keep these commands. A field edit that adds the
+first block, such as `piquelctl env visibility` or setting a variable in the
+dashboard, also adds an empty block for every other existing environment, so
+editing configuration never leaves environments undeclared.
 
 ## Repository-backed manifests
 
