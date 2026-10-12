@@ -10,6 +10,7 @@ use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::ingress::{DashboardSocket, Ingress};
 use piqueld::tailnet::Node;
 use piqueld::tailnet::TailnetLookup;
+use piqueld::telemetry::Telemetry;
 use std::{net::SocketAddr, os::unix::fs::OpenOptionsExt, path::PathBuf, sync::Arc};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
@@ -21,6 +22,8 @@ const DEFAULT_CONFIG_PATH: &str = "/etc/piqueld/config.toml";
 type ApiTask = tokio::task::JoinHandle<Result<(), std::io::Error>>;
 /// Time open connections get to finish after shutdown is requested.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Time queued telemetry gets to reach its collectors on exit.
+const TELEMETRY_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 // Command-line arguments. Doc comments on fields become CLI help text.
 #[derive(Debug, Parser)]
@@ -95,24 +98,29 @@ async fn main() -> Result<()> {
         }
         None => {
             let config = load_config(args.config.as_deref())?;
-            piqueld::config::init_tracing(args.open_log_file()?)
+            let telemetry =
+                Telemetry::new(&config.telemetry).context("failed to prepare telemetry export")?;
+            piqueld::config::init_tracing(args.open_log_file()?, &telemetry)
                 .context("failed to initialize tracing")?;
-            serve(config).await
+            let result = serve(config, telemetry.clone()).await;
+            // Send what the daemon recorded last, including a startup failure.
+            telemetry.shutdown(TELEMETRY_GRACE).await;
+            result
         }
     }
 }
 
 /// Starts the daemon with loaded configuration and runs until a shutdown
-/// signal. Tracing is already initialized.
+/// signal. Tracing is already initialized, exporting through `telemetry`.
 ///
 /// 1. Prepares and locks the data directory, then validates and locks the runtime
 ///    directory and binds every listener, so misconfiguration fails before any
 ///    state is opened.
 /// 2. Starts the application service and reconciliation controller.
-/// 3. Serves the dashboard/API over TCP, metrics, and the Unix API socket.
+/// 3. Serves the dashboard/API over TCP and the Unix API socket.
 /// 4. After cancellation, waits for every task and pending audit record, and
 ///    surfaces the first failure.
-async fn serve(mut config: DaemonConfig) -> Result<()> {
+async fn serve(mut config: DaemonConfig, telemetry: Telemetry) -> Result<()> {
     piqueld::prepare_data_dir(&config.server.data_dir)
         .await
         .with_context(|| {
@@ -136,7 +144,7 @@ async fn serve(mut config: DaemonConfig) -> Result<()> {
 
     let cancellation = CancellationToken::new();
     let (state, auth, controller) =
-        match ApplicationService::start(&config, cancellation.clone()).await {
+        match ApplicationService::start(&config, telemetry, cancellation.clone()).await {
             Ok(started) => started,
             Err(error) => {
                 if let Some(node) = tailnet {
@@ -184,8 +192,6 @@ struct Listeners {
     tcp: Vec<TcpListener>,
     /// The API alone, on the runtime directory's socket.
     unix: UnixListener,
-    /// The metrics-only listeners.
-    metrics: Vec<TcpListener>,
     /// The socket the gateway forwards the dashboard hostname to.
     dashboard: Option<DashboardSocket>,
 }
@@ -195,7 +201,6 @@ impl Listeners {
         Ok(Self {
             tcp: config.server.bind_tcp().await?,
             unix: runtime_dir.bind_api().await?,
-            metrics: config.metrics.bind().await?,
             dashboard: Ingress::bind_dashboard(config)
                 .await
                 .context("failed to bind the dashboard socket")?,
@@ -252,13 +257,6 @@ impl Listeners {
             ));
             supervisor
         });
-        apis.extend(self.metrics.into_iter().map(|listener| {
-            spawn_api::<_, SocketAddr>(
-                listener,
-                http::metrics_router(state.clone()),
-                cancellation.clone(),
-            )
-        }));
         apis.push(spawn_api::<_, UnixPeer>(
             self.unix,
             http::api_router(state, auth),

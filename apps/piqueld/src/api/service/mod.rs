@@ -10,6 +10,7 @@ mod queries;
 mod startup;
 mod sync;
 mod system;
+mod telemetry;
 mod views;
 mod webhooks;
 
@@ -434,8 +435,8 @@ pub struct ApplicationService {
     store: Arc<Store>,
     /// Docker/Swarm adapter used for runtime requests and reconciliation wakeups.
     runtime: Arc<dyn RuntimeBoundary>,
-    /// API requests refused since start, exported as a metric.
-    denials: Arc<std::sync::atomic::AtomicU64>,
+    /// Export of the daemon's traces, metrics and logs; disabled by default.
+    telemetry: crate::telemetry::Telemetry,
     /// Slots for audit records waiting to be written.
     audit_backlog: Arc<tokio::sync::Semaphore>,
     /// The share of `audit_backlog` anonymous records may hold.
@@ -467,7 +468,7 @@ impl ApplicationService {
             ingress: None,
             tailnet: None,
             images: None,
-            denials: Arc::default(),
+            telemetry: crate::telemetry::Telemetry::default(),
             audit_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG)),
             anonymous_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG / 2)),
             known_addresses: Arc::default(),
@@ -524,6 +525,19 @@ impl ApplicationService {
     ) -> Self {
         self.tailnet = status;
         self
+    }
+
+    /// Exports through `telemetry`, already started, and reports its state.
+    #[must_use]
+    pub fn with_telemetry(mut self, telemetry: crate::telemetry::Telemetry) -> Self {
+        self.telemetry = telemetry;
+        self
+    }
+
+    /// Telemetry export, which records API latency.
+    #[must_use]
+    pub fn telemetry(&self) -> &crate::telemetry::Telemetry {
+        &self.telemetry
     }
 
     /// Reports image cleanup's latest status.

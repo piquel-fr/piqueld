@@ -24,7 +24,9 @@ impl ApplicationService {
     /// A controller failure cancels the token so all transports shut down together.
     ///
     /// Steps, in order:
-    /// 1. Open the store and initialize authentication.
+    /// 1. Open the store, start `telemetry` export, noting where the journal
+    ///    stands so it exports what this start journals, and initialize
+    ///    authentication.
     /// 2. Reserve the website's and webhooks' hostnames so applications
     ///    cannot route them.
     /// 3. Connect Docker, interrupt stale actions, and ensure a Swarm manager
@@ -33,15 +35,17 @@ impl ApplicationService {
     /// 5. Bind the webhook listener, then record the daemon start, which
     ///    notifies as `daemon_started`.
     /// 6. Spawn one task joining reconciliation, image cleanup, ingress,
-    ///    notification observation, notification webhook delivery, sync, and
-    ///    the listener receiving GitHub webhooks.
+    ///    notification observation, notification webhook delivery, sync, the
+    ///    listener receiving GitHub webhooks, and telemetry export from the
+    ///    journal.
     /// # Errors
     /// Returns contextual storage, Docker connection, or Swarm initialization errors.
     pub async fn start(
         config: &DaemonConfig,
+        telemetry: crate::telemetry::Telemetry,
         cancellation: CancellationToken,
     ) -> anyhow::Result<(Self, crate::auth::Auth, JoinHandle<Result<(), StoreError>>)> {
-        let store = Self::open_store(config).await?;
+        let (store, journaled) = Self::open_store(config, &telemetry).await?;
         let auth = crate::auth::Auth::initialize(&store, config).await?;
         let reserved = Self::installation_hostnames(config)?;
         for hostname in store.reserve_installation_hostnames(&reserved).await? {
@@ -97,6 +101,7 @@ impl ApplicationService {
             .with_configuration(config.view())
             .with_ingress(Arc::clone(&ingress))
             .with_webhook_hostname(config.ingress.webhook_hostname.clone())
+            .with_telemetry(telemetry)
             .with_shutdown(cancellation.clone());
         let webhook_listener = ingress
             .bind_webhooks()
@@ -112,7 +117,6 @@ impl ApplicationService {
         let finished_operation_days = config.retention.finished_operation_days;
         let event_days = config.retention.event_days;
         let background = service.clone();
-        let scan_seconds = config.reconciliation.scan_interval_seconds;
         let controller = tokio::spawn(async move {
             // Also cancel on panic so callers cannot wait forever on a failed worker.
             let _cancel_on_drop = cancellation.clone().drop_guard();
@@ -129,22 +133,30 @@ impl ApplicationService {
                 cancellation.cancel();
                 result
             };
-            let (result, (), (), (), (), (), ()) = tokio::join!(
+            let (result, (), (), (), (), (), (), ()) = tokio::join!(
                 reconcile,
                 reconciler.run_image_cleanup(cancellation.child_token()),
                 ingress.run(cancellation.child_token()),
-                background.observe_notifications(scan_seconds, cancellation.child_token()),
+                background
+                    .observe_notifications(scan_interval.as_secs(), cancellation.child_token()),
                 background.deliver_notifications(webhook_client, cancellation.child_token()),
                 background.sync(cancellation.child_token()),
-                background.serve_webhooks(webhook_listener, cancellation.child_token())
+                background.serve_webhooks(webhook_listener, cancellation.child_token()),
+                background.export_telemetry(journaled, cancellation.child_token())
             );
             result
         });
         Ok((service, auth, controller))
     }
 
-    /// Opens the control-plane state with the daemon's settings.
-    async fn open_store(config: &DaemonConfig) -> anyhow::Result<Arc<Store>> {
+    /// Opens the control-plane state with the daemon's settings, starts
+    /// `telemetry` export now that it names the installation, so even a
+    /// start that fails later is exported, and reads where the journal stands
+    /// before this start changes it.
+    async fn open_store(
+        config: &DaemonConfig,
+        telemetry: &crate::telemetry::Telemetry,
+    ) -> anyhow::Result<(Arc<Store>, crate::store::JournalPosition)> {
         let store = Store::open(config.server.database_path())
             .await
             .context("failed to open control-plane state")?
@@ -154,7 +166,9 @@ impl ApplicationService {
             .with_snapshot_uploads(config.snapshots.max_upload_bytes)
             .with_checkouts(config.checkouts.max_bytes);
         info!(path = %config.server.database_path().display(), "opened control-plane state");
-        Ok(Arc::new(store))
+        telemetry.start(store.instance_id());
+        let journaled = store.journal_position().await?;
+        Ok((Arc::new(store), journaled))
     }
 
     /// The hostnames the installation serves itself, which application routes

@@ -15,6 +15,7 @@ pub mod reconcile;
 mod secrets;
 pub mod store;
 pub mod tailnet;
+pub mod telemetry;
 
 mod command;
 mod directories;

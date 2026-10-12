@@ -720,7 +720,8 @@ pub fn health_router() -> Router<ApiState> {
 /// `browser_policy` is set), route authorization, authentication guard, audit
 /// trail, state and `OpenAPI` 3.0
 /// document extension, request ID propagation, error request ID binding and
-/// diagnostic recording, request ID generation, body size limit, and tracing.
+/// diagnostic recording, request ID generation, body size limit, latency
+/// metrics, and tracing.
 fn finish_router(
     router: Router<ApiState>,
     state: ApiState,
@@ -764,26 +765,45 @@ fn finish_router(
         // The propagator stamps errors with their request ID, and the binder
         // echoes that same identifier in every structured error body.
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
-        .layer(middleware::from_fn_with_state(state, bind_error_request_id))
+        .layer(middleware::from_fn_with_state(state.clone(), bind_error_request_id))
         .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
         .layer(DefaultBodyLimit::max(REQUEST_BODY_LIMIT_BYTES))
+        .layer(middleware::from_fn_with_state(state, record_latency))
         .layer(
             TraceLayer::new_for_http()
+                // The `otel.*` and `http.*` fields shape the span telemetry
+                // exports; see `crate::telemetry`.
                 .make_span_with(|request: &Request| {
-                    tracing::info_span!(
+                    let method = request.method();
+                    let route = request.extensions().get::<MatchedPath>().map(MatchedPath::as_str);
+                    let span = tracing::info_span!(
                         "http_request",
-                        method = %request.method(),
+                        method = %method,
                         path = %request.uri().path(),
-                    )
+                        otel.name = %route.map_or_else(|| method.to_string(), |route| format!("{method} {route}")),
+                        otel.kind = "server",
+                        otel.status_code = tracing::field::Empty,
+                        http.request.method = %method,
+                        http.route = tracing::field::Empty,
+                        http.response.status_code = tracing::field::Empty,
+                    );
+                    if let Some(route) = route {
+                        span.record("http.route", route);
+                    }
+                    span
                 })
                 // Successful requests (dashboard assets, polling) are routine,
                 // so only failures are logged at the default level.
                 .on_response(
-                    |response: &Response, latency: std::time::Duration, _: &tracing::Span| {
+                    |response: &Response, latency: std::time::Duration, span: &tracing::Span| {
                         let (status, latency_ms) = (
                             response.status(),
                             u64::try_from(latency.as_millis()).unwrap_or(u64::MAX),
                         );
+                        span.record("http.response.status_code", status.as_u16());
+                        if status.is_server_error() {
+                            span.record("otel.status_code", "ERROR");
+                        }
                         if status.is_client_error() || status.is_server_error() {
                             tracing::info!(%status, latency_ms, "request completed");
                         } else {
@@ -875,6 +895,25 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Read) => secrets::list_stored))
         .routes(granted!(App(SecretsWrite) => secrets::put_stored, secrets::delete_stored))
         .routes(granted!(App(SecretsWrite) => secrets::set_access))
+}
+
+/// Middleware recording each request's latency, under its route template,
+/// for telemetry export.
+async fn record_latency(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    matched: Option<MatchedPath>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let (method, started) = (request.method().clone(), std::time::Instant::now());
+    let response = next.run(request).await;
+    state.telemetry().record_request(
+        &method,
+        matched.as_ref().map(MatchedPath::as_str),
+        response.status(),
+        started.elapsed(),
+    );
+    response
 }
 
 /// Middleware that runs the request inside a `request_context` span and
@@ -1341,34 +1380,6 @@ fn optional_header(headers: &HeaderMap, name: &str) -> Result<Option<String>, Ap
             })
         })
         .transpose()
-}
-
-/// Builds an isolated metrics-only router; no administrative routes are installed.
-pub fn metrics_router(state: ApiState) -> Router {
-    Router::new()
-        .route(
-            "/metrics",
-            get(
-                |axum::extract::State(state): axum::extract::State<ApiState>| async move {
-                    match state.prometheus_metrics().await {
-                        Ok(body) => (
-                            StatusCode::OK,
-                            [(
-                                header::CONTENT_TYPE,
-                                "text/plain; version=0.0.4; charset=utf-8",
-                            )],
-                            body,
-                        ),
-                        Err(_) => (
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            [(header::CONTENT_TYPE, "text/plain")],
-                            "Metrics collection unavailable\n".into(),
-                        ),
-                    }
-                },
-            ),
-        )
-        .with_state(state)
 }
 
 /// Path extractor that keeps Axum path decoding failures inside the API's

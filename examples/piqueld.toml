@@ -116,9 +116,10 @@ log_retention_days = 30
 keep_deployments = 3
 cleanup_interval_seconds = 3600
 
-# Metrics have a separate listener with no administrative API routes.
-[metrics]
-listen = [] # Example: ["127.0.0.1:7846"]
+# Pushes traces, metrics and logs over OTLP/gRPC; off without an endpoint.
+[telemetry]
+# endpoint = "unix:///run/otel/otlp.sock" # or "https://otel.example.com:4317"
+# headers_file = "otlp-headers"           # `name: value` lines, e.g. a token
 
 [notifications]
 enabled = false

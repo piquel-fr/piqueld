@@ -9,6 +9,11 @@ struct Recorded {
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<Recorded>>);
 impl Capture {
+    /// A human-readable console printing results here.
+    fn human_console(&self) -> Console {
+        Console::with_writers(false, false, false, self.writer(), Box::new(io::sink()))
+    }
+
     fn text(&self) -> String {
         String::from_utf8(self.0.lock().unwrap().bytes.clone()).unwrap()
     }
@@ -404,10 +409,10 @@ fn status_and_dns_refresh_list_images_dns_providers_certificate_failures_and_pre
             cleaned_at_ms: Some(7),
         },
         snapshots: None,
+        telemetry: piqueld_client::TelemetryStatus::default(),
     };
     let stdout = Capture::default();
-    let mut console =
-        Console::with_writers(false, false, false, stdout.writer(), Box::new(io::sink()));
+    let mut console = stdout.human_console();
     let ingress = piqueld_client::system::IngressStatus {
         enabled: true,
         healthy: true,
@@ -459,6 +464,27 @@ fn status_and_dns_refresh_list_images_dns_providers_certificate_failures_and_pre
     ] {
         assert!(text.contains(expected), "{text}");
     }
+}
+
+/// Each destination shows its state, and its headers only by their file.
+#[test]
+fn telemetry_status_lists_destinations() {
+    let status = piqueld_client::TelemetryStatus {
+        destinations: vec![piqueld_client::TelemetryDestinationStatus {
+            endpoint: "unix:///run/otel/otlp.sock".into(),
+            headers: Some("from /run/credentials/piqueld.service/otlp-headers".into()),
+            last_success_ms: Some(9),
+            dropped: 3,
+            failing: true,
+        }],
+    };
+    let stdout = Capture::default();
+    let mut console = stdout.human_console();
+    console.emit(&status).unwrap();
+    assert_eq!(
+        stdout.text(),
+        "Telemetry: unix:///run/otel/otlp.sock (failing, last export at Unix ms 9, 3 records dropped, headers from /run/credentials/piqueld.service/otlp-headers)\n"
+    );
 }
 
 #[test]

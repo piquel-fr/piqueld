@@ -569,7 +569,7 @@ fn resource_stats(stats: &DaemonStats) -> AnyView {
                     <h3>"Counters"</h3>
                     <p>
                         {format!(
-                            "Measured {}. Historical graphs require an external metrics collector.",
+                            "Measured {}. For history, export telemetry to a collector over OTLP.",
                             timestamp(stats.sampled_at_ms),
                         )}
                     </p>

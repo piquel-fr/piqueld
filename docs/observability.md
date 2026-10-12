@@ -1,9 +1,10 @@
 # Observability
 
 piqueld keeps structured control-plane history in SQLite. Operation records are
-execution state; events are the independently readable historical record. Metrics
-exposure is optional. There is no OTLP destination, external log exporter,
-collector management, or external daemon-outage monitoring in this implementation.
+execution state; events are the independently readable historical record. The
+daemon can also push its traces, metrics and logs to an OpenTelemetry collector;
+see [telemetry export](#telemetry-export). It does not manage collectors or
+monitor its own outages from outside.
 
 ## History and diagnostics
 
@@ -119,8 +120,8 @@ ID and its browser session (if any) as `session_id`, or, for deployments sync
 starts on push, `system` with `actor` `sync:poll` or `sync:webhook`. `actor` is
 absent for the daemon's other own work.
 
-The metrics listener exports `piqueld_access_denied_total`, the number of
-refused API requests since the daemon started.
+[Telemetry export](#telemetry-export) counts refused API requests as the
+`piqueld.access.denials` metric.
 
 ### Tamper evidence
 
@@ -247,7 +248,8 @@ URLs omitted; only the file a URL was read from is shown.
 Resource snapshots are cached for five seconds. They include process uptime,
 resident memory and CPU, DB/WAL sizes, available disk, retained event/diagnostic
 and build-output counts, operation queues, and pending/failed deliveries. OS
-measurements that are unavailable are null and omitted from metrics, not zero.
+measurements that are unavailable are null and omitted from exported metrics,
+not zero.
 These are current samples; piqueld does not persist a resource time series.
 
 ## Webhooks
@@ -324,34 +326,82 @@ failures. Deletion removes environment-owned queued deliveries; a request alread
 in flight cannot be unsent. Copies already delivered to external systems are
 outside piqueld's deletion policy.
 
-## Optional metrics and future external services
+## Telemetry export
+
+piqueld can push its own telemetry over OTLP/gRPC to a collector, such as the
+OpenTelemetry Collector or Grafana Alloy:
 
 ```toml
-[metrics]
-listen = ["127.0.0.1:9464"] # default [] disables the listener
+[telemetry]
+endpoint = "https://otel.example.com:4317" # or "http://host:4317", "unix:///run/otel/otlp.sock"
+headers_file = "otlp-headers"              # optional
 ```
 
-This separate listener serves only `GET /metrics`, in Prometheus text format. It
-never serves the dashboard or administrative API. Measurements use fixed metric
-names and no application/operation/diagnostic labels. Bind to an address reachable
-by the intended scraper; loopback is only reachable in the host network namespace.
-An enabled listener has no built-in authentication or TLS, so choose its exposure
-accordingly. Its lifetime is supervised with the daemon's API listeners.
+Without an endpoint, nothing is exported. `http://` sends in plain text, so use
+it only on loopback or a private network. `headers_file` holds gRPC metadata sent
+with every export, such as a collector token, as one `name: value` per line. It
+is a [credential file](configuration.md#credential-files): relative paths
+resolve against `$CREDENTIALS_DIRECTORY`, and only its path is ever shown.
+Endpoints cannot carry credentials or a path. Configuration is read at startup;
+restart after changing it.
 
-A future user-deployed Prometheus/collector/Grafana application needs:
+Every record carries the resource attributes `service.name = piqueld`,
+`service.version`, and `service.instance.id`, the installation's ID (`instance_id`
+in `piquelctl status`).
 
-1. Container image services and persistent named volumes for external storage.
-2. A reachable scrape endpoint, or host access for a separately operated log
-   collector. Docker service/build log APIs are bounded snapshots, not an external
-   log-shipping protocol.
-3. Monitoring configuration and Grafana provisioning, either baked into images or
-   supplied through a future file/config mounting feature.
-4. Browser access to Grafana. Services reach each other by manifest name on the
-   application's private network (for example `prometheus:9090`); published
-   ports would make external access straightforward, otherwise users must
-   arrange it themselves.
-5. External retention, dashboards, rules and credentials managed by that
-   application/operator.
+**Traces.** Each [operation](#history-and-diagnostics) is one trace: a root span
+`operation <kind>` from its creation until it finishes (just `operation`, from its
+last attempt, when its environment was deleted before it was exported, as a
+finished deletion's is), a child span per
+execution attempt, and below that a span per journaled action (builds as
+`building_git`, jobs as `run_job`, rollouts as `ensure_service`, waits as
+`wait_for_service`, and so on), timed by the duration the journal records.
+Spans carry `piqueld.application`, `piqueld.environment`, the operation, attempt
+and action IDs, the outcome, and the failure code as `error.type`. Daemon actions
+outside an operation, such as image cleanup, are traces of their own. Trace and
+span IDs are derived from the operation, attempt and action IDs, so an operation
+that continues after a daemon restart stays one trace. Spans are sent when they
+end; an operation retried later sends its root span again with its new end.
+API requests are spans too, named after their route, such as
+`GET /api/v1/environments/{id}`.
 
-piqueld does not need vendor-specific lifecycle integration or an OTLP destination
-for these services. There is intentionally no example application manifest yet.
+**Metrics**, collected every 30 seconds with cumulative temporality:
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `piqueld.deployments` | `application`, `environment`, `outcome` | Finished deployment attempts: `succeeded`, `failed`, `cancelled`, `superseded` |
+| `piqueld.deployment.duration` | same | Their duration in seconds, for attempts that started |
+| `piqueld.builds`, `piqueld.build.duration` | `application`, `environment`, `outcome` | Finished builds (`succeeded`, `failed`, `unknown`) and their duration |
+| `piqueld.operations` | `state` (`running`, `queued`) | Operation queue depth |
+| `piqueld.service.replicas` | `application`, `environment`, `service`, `state` (`desired`, `running`, `healthy`) | Replicas of every deployed service; health is `healthy` against `desired` |
+| `http.server.request.duration` | `http.request.method`, `http.route`, `http.response.status_code` | API latency in seconds |
+| `piqueld.access.denials` | | API requests refused for missing credentials or permission |
+| `piqueld.uptime`, `process.memory.usage`, `process.cpu.time`, `process.cpu.utilization`, `piqueld.database.size` (`file`), `piqueld.disk.available`, `piqueld.events`, `piqueld.diagnostics`, `piqueld.build_output.size`, `piqueld.notification.deliveries` (`state`) | | The [daemon statistics](#api-and-dashboard) |
+
+Prometheus translates the names, such as `piqueld_deployments_total` and
+`piqueld_deployment_duration_seconds`.
+
+**Logs.** The daemon's own log events, at the level `RUST_LOG` selects, and
+every history event, with its kind (`piqueld.event.kind`), message, IDs and
+failure code. Events of an operation or action link to its span. Failures are
+`WARN`, everything else `INFO`.
+
+Export never holds up reconciliation or API requests. Records wait in bounded
+queues, one per signal; a full queue drops new records, and a batch the
+collector does not accept is dropped rather than retried, so an unreachable
+collector costs one request per second at most. A collector that accepts no
+export for a minute raises one `telemetry_export_failed` daemon diagnostic
+(`dependency_health_changed`), notified under `daemon_failures` once it has
+lasted `failure_threshold_seconds`, and a recovery event once exports succeed
+again. Telemetry still queued at shutdown gets five seconds to be sent.
+
+`piquelctl status` and the Daemon status page show each destination: its
+endpoint, the file its headers came from, the last successful export, how many
+records were dropped since the daemon started, and whether it is failing. The
+setting itself appears read-only in the configuration view.
+
+piqueld no longer serves Prometheus metrics itself: the `[metrics]` table was
+removed, and configurations that still set it fail to load. Set
+`telemetry.endpoint` to a collector instead. Prometheus 3 receives OTLP itself
+(over HTTP, with `--web.enable-otlp-receiver`), so the collector can forward
+metrics to it with its `otlphttp` exporter, without a scrape endpoint.
