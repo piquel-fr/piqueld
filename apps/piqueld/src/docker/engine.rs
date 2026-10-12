@@ -10,6 +10,12 @@ use tokio::net::UnixStream;
 // A valid API request may be 2 MiB; Docker adds service metadata around that
 // specification when it is inspected.
 const MAX_SERVICE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+/// Config listings include every config's base64 payload. An environment's
+/// file configs total at most `ServiceFile::MAX_TOTAL_BYTES` per deployment,
+/// and pruning after each operation keeps about two deployments' worth, the
+/// current and rollback specs': this leaves room for many more, so a few
+/// failed prunes in a row never make the listing itself fail.
+pub(super) const MAX_CONFIG_LIST_BYTES: usize = 32 * 1024 * 1024;
 /// Complete budget for one raw service request, from connect to last byte.
 const SERVICE_REQUEST_TIMEOUT: Duration = super::DockerTimeout::Request.duration();
 
@@ -125,20 +131,34 @@ impl BollardDocker {
         self.engine_request(method, path, body).await
     }
 
-    /// Performs one raw Engine request with a JSON `body` through Docker's
-    /// Unix socket, for endpoints Bollard lacks or misrepresents.
-    ///
-    /// 1. Connect and perform an HTTP/1 handshake on the Unix socket.
-    /// 2. Send one `Connection: close` request and read the bounded body.
-    ///
-    /// All steps share one [`SERVICE_REQUEST_TIMEOUT`] deadline; elapsed
-    /// deadlines surface as unavailability. Non-success statuses are returned
-    /// as [`WireError::Response`].
+    /// Performs one raw Engine request whose response is at most
+    /// [`MAX_SERVICE_RESPONSE_BYTES`]; see [`Self::engine_request_bounded`].
     pub(super) async fn engine_request(
         &self,
         method: Method,
         path: &str,
         body: Vec<u8>,
+    ) -> Result<Vec<u8>, WireError> {
+        self.engine_request_bounded(method, path, body, MAX_SERVICE_RESPONSE_BYTES)
+            .await
+    }
+
+    /// Performs one raw Engine request with a JSON `body` through Docker's
+    /// Unix socket, for endpoints Bollard lacks or misrepresents.
+    ///
+    /// 1. Connect and perform an HTTP/1 handshake on the Unix socket.
+    /// 2. Send one `Connection: close` request and read the body, of at most
+    ///    `limit` bytes.
+    ///
+    /// All steps share one [`SERVICE_REQUEST_TIMEOUT`] deadline; elapsed
+    /// deadlines surface as unavailability. Non-success statuses are returned
+    /// as [`WireError::Response`].
+    pub(super) async fn engine_request_bounded(
+        &self,
+        method: Method,
+        path: &str,
+        body: Vec<u8>,
+        limit: usize,
     ) -> Result<Vec<u8>, WireError> {
         let deadline = tokio::time::Instant::now() + SERVICE_REQUEST_TIMEOUT;
         let stream = tokio::time::timeout_at(deadline, UnixStream::connect(self.socket.as_ref()))
@@ -196,7 +216,7 @@ impl BollardDocker {
             let response = sender.send_request(request).await.map_err(|source| {
                 WireError::Public(DockerError::request("send Docker service request", source))
             })?;
-            Self::read_service_response(response).await
+            Self::read_service_response(response, limit).await
         })
         .await;
         drivers.abort_all();
@@ -215,10 +235,11 @@ impl BollardDocker {
 
     /// Collects a bounded response while retaining transport failures.
     ///
-    /// Bodies larger than [`MAX_SERVICE_RESPONSE_BYTES`] are rejected, and
-    /// non-success statuses keep their body for exact error matching.
+    /// Bodies larger than `limit` are rejected, and non-success statuses keep
+    /// their body for exact error matching.
     async fn read_service_response(
         response: hyper::Response<hyper::body::Incoming>,
+        limit: usize,
     ) -> Result<Vec<u8>, WireError> {
         let status = response.status();
         let mut response = response.into_body();
@@ -230,7 +251,7 @@ impl BollardDocker {
             let Ok(data) = frame.into_data() else {
                 continue;
             };
-            if body.len().saturating_add(data.len()) > MAX_SERVICE_RESPONSE_BYTES {
+            if body.len().saturating_add(data.len()) > limit {
                 return Err(WireError::Public(DockerError::Request(
                     "read Docker service response",
                 )));

@@ -3,6 +3,7 @@
 //! new content is a new config. Services mount configs by ID, read-only and
 //! root-owned, and configs no service mounts are removed afterwards.
 
+use super::engine::MAX_CONFIG_LIST_BYTES;
 use super::{BollardDocker, DockerError};
 use base64::Engine as _;
 use hyper::{Method, StatusCode};
@@ -159,7 +160,7 @@ impl BollardDocker {
             url::form_urlencoded::byte_serialize(filters.as_bytes()).collect::<String>()
         );
         let bytes = self
-            .engine_request(Method::GET, &path, Vec::new())
+            .engine_request_bounded(Method::GET, &path, Vec::new(), MAX_CONFIG_LIST_BYTES)
             .await
             .map_err(|error| error.sanitized(kind.list()))?;
         let configs: Vec<Config> = serde_json::from_slice(&bytes)

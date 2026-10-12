@@ -184,9 +184,45 @@ impl SwarmScenario {
     }
 
     /// The web task checked its file's content and that it cannot write it
-    /// before logging; pruning keeps the config while a service mounts it.
+    /// before logging; pruning keeps the config while a service mounts it,
+    /// and removes the rest, even when their listing is far larger than
+    /// other Engine responses.
     async fn assert_files(&self) {
+        use base64::Engine as _;
+        use piqueld_core::manifest::ServiceFile;
+        // Labelled as piqueld labels the environment's file configs.
+        let mut labels = self.labels.clone();
+        labels.remove("io.piqueld.spec-hash");
+        labels.insert("io.piqueld.file".into(), "true".into());
+        // 12 full-size generations list as more than 8 MiB of base64.
+        for generation in 0..12 {
+            let content = format!("{generation:x}").repeat(ServiceFile::MAX_BYTES);
+            self.docker_api_with(
+                "POST",
+                "/configs/create",
+                Some(serde_json::json!({
+                    "Name": format!("piqueld-{}-file-unused-{generation}", self.app),
+                    "Labels": labels,
+                    "Data": base64::engine::general_purpose::STANDARD
+                        .encode(&content[..ServiceFile::MAX_BYTES]),
+                })),
+            )
+            .await;
+        }
         self.engine.docker.prune_files(&self.labels).await.unwrap();
+        let remaining = self
+            .docker_api("GET", "/configs")
+            .await
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|config| {
+                config["Spec"]["Labels"]["io.piqueld.file"] == "true"
+                    && config["Spec"]["Labels"]["io.piqueld.application"] == self.app.as_str()
+            })
+            .map(|config| config["Spec"]["Name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(remaining, [self.service.files[0].config_name.to_string()]);
         assert_eq!(
             self.engine
                 .docker
