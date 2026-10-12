@@ -347,6 +347,55 @@ pub struct Job {
     /// Seconds the job may run before the deployment fails.
     #[serde(default = "default_job_timeout")]
     pub timeout_seconds: u32,
+    /// How the job may use the service's volumes.
+    #[serde(default, skip_serializing_if = "JobVolumeAccess::is_default")]
+    pub volume_access: JobVolumeAccess,
+}
+
+/// How a job may use the volumes its service mounts.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum JobVolumeAccess {
+    /// Every volume is mounted read-only, so the job can run beside the
+    /// services that still write them.
+    #[default]
+    ReadOnly,
+    /// The service's writable volumes stay writable. Every service mounting
+    /// one of them stops before the job runs and restarts with the rollout,
+    /// or with the previous deployment if a job fails.
+    Exclusive,
+}
+
+impl JobVolumeAccess {
+    /// Serde helper: omit the default access when serializing.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Every access, in manifest spelling order.
+    pub const ALL: [Self; 2] = [Self::ReadOnly, Self::Exclusive];
+
+    /// The stable manifest spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::Exclusive => "exclusive",
+        }
+    }
+}
+
+impl std::str::FromStr for JobVolumeAccess {
+    type Err = String;
+
+    /// Parses the manifest spelling, `read-only` or `exclusive`.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|access| access.as_str() == value)
+            .ok_or_else(|| format!("unknown job volume access {value:?}"))
+    }
 }
 
 /// Deployment point at which a job runs.

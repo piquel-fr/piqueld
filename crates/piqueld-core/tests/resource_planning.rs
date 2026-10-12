@@ -1071,6 +1071,15 @@ fn jobs_reuse_their_service_container_under_a_distinct_identity() {
     assert_eq!(job.container.image, service.image);
     assert_eq!(job.container.environment, service.environment);
     assert_eq!(job.container.mounts, service.mounts);
+    // Runs only read volumes unless the job declares exclusive access, also
+    // for targets prepared before the setting existed.
+    assert!(!service.mounts[0].read_only);
+    assert_eq!(job.exclusive_volumes().count(), 0);
+    assert!(job.for_operation("operation-1").container.mounts[0].read_only);
+    let mut legacy = serde_json::to_value(job).unwrap();
+    legacy.as_object_mut().unwrap().remove("volume_access");
+    let legacy: piqueld_core::DesiredJob = serde_json::from_value(legacy).unwrap();
+    assert!(legacy.for_operation("operation-1").container.mounts[0].read_only);
     assert_eq!(job.container.networks, service.networks);
     assert_eq!(job.container.command, ["notes", "migrate"]);
     assert!(job.container.healthcheck.is_none());
@@ -1105,4 +1114,149 @@ fn jobs_reuse_their_service_container_under_a_distinct_identity() {
         Some("operation-1")
     );
     assert!(run.has_valid_identity());
+}
+
+/// The fixture with an exclusive migration of `web`, which waits for `db`.
+fn exclusive_migration() -> piqueld_core::NormalizedApplication {
+    let id = ApplicationId::parse("app-notes-01").unwrap();
+    let mut manifest = parse_toml(&format!(
+        "{}[[spec.services]]\nname = \"db\"\n[spec.services.source]\n\
+         type = \"image\"\nimage = \"ghcr.io/example/notes:1.4.0\"\n\
+         [[spec.jobs]]\nname = \"migrate\"\nservice = \"web\"\n\
+         command = [\"notes\", \"migrate\"]\nrun = \"before-rollout\"\n",
+        include_str!("fixtures/manifests/prebuilt.toml")
+    ))
+    .unwrap()
+    .normalize(id.clone())
+    .to_manifest();
+    manifest.spec.jobs[0].volume_access = piqueld_core::manifest::JobVolumeAccess::Exclusive;
+    for service in &mut manifest.spec.services {
+        if service.name == "web" {
+            service.depends_on = vec!["db".into()];
+        }
+    }
+    manifest.validate().unwrap().normalize(id)
+}
+
+/// Resolves every service of `app` to the fixture image.
+fn resolve_all(app: &piqueld_core::NormalizedApplication) -> ResolvedApplication {
+    let source = resolutions().sources.into_values().next().unwrap();
+    let resolutions = ResolutionSet {
+        secret_names: BTreeMap::new(),
+        sources: app
+            .spec()
+            .services
+            .iter()
+            .map(|service| (service.name.clone(), source.clone()))
+            .collect(),
+    };
+    compile_application(app, &environment(), instance(), &resolutions).unwrap()
+}
+
+#[test]
+fn exclusive_jobs_stop_volume_users_after_dependencies_and_repair_keeps_them_stopped() {
+    let desired = resolve_all(&exclusive_migration());
+    let job = &desired.jobs[0];
+    let web = desired
+        .services
+        .iter()
+        .find(|service| service.logical_name.as_str() == "web")
+        .unwrap();
+    assert_eq!(
+        job.exclusive_volumes().collect::<Vec<_>>(),
+        [&web.mounts[0].volume_name]
+    );
+    assert!(!job.for_operation("operation-1").container.mounts[0].read_only);
+    let plan_for = |observed: &ObservedApplication| {
+        Plan::from_request(
+            &PlanRequest::Reconcile {
+                desired: desired.clone(),
+            },
+            observed,
+        )
+    };
+    let next = |observed: &ObservedApplication| {
+        plan_for(observed)
+            .next_job_preparation(&desired, job, observed)
+            .map(|action| action.kind.to_string())
+    };
+
+    // The dependency starts first, then the running web stops.
+    let mut running = observed(&desired);
+    running
+        .services
+        .retain(|service| service.name == web.name.as_str());
+    assert_eq!(next(&running).as_deref(), Some("ENSURE SERVICE db"));
+    let mut ready = observed(&desired);
+    assert_eq!(next(&ready), Some(format!("REMOVE SERVICE {}", web.name)));
+    ready
+        .services
+        .retain(|service| service.name != web.name.as_str());
+    assert_eq!(next(&ready), None);
+
+    // Repair of the previous target must not restart web while the job may
+    // still run or has changed its volume.
+    let mut repair = plan_for(&ready);
+    assert_eq!(
+        repair.next_repair().unwrap().kind.to_string(),
+        "ENSURE SERVICE web"
+    );
+    repair.preserve_job_prerequisites(&desired, &ready);
+    assert!(repair.next_repair().is_none());
+    assert!(
+        repair
+            .actions
+            .iter()
+            .all(|action| !action.kind.to_string().contains("web")
+                && !action.kind.to_string().contains(web.name.as_str()))
+    );
+}
+
+#[test]
+fn previews_list_jobs_after_their_dependencies_and_warn_about_stopped_services() {
+    let app = exclusive_migration();
+    let desired = resolve_all(&app);
+    let mut plan = Plan::from_request(
+        &PlanRequest::Preview {
+            unresolved: Vec::new(),
+            desired: Some(desired),
+        },
+        &ObservedApplication::default(),
+    );
+    plan.add_jobs(&app, &environment());
+    let names = plan
+        .actions
+        .iter()
+        .map(|action| action.kind.to_string())
+        .collect::<Vec<_>>();
+    let position = |prefix: &str| {
+        names
+            .iter()
+            .position(|name| name.starts_with(prefix))
+            .unwrap()
+    };
+    assert!(position("ENSURE SERVICE db") < position("RUN JOB migrate"));
+    assert!(position("WAIT SERVICE") < position("RUN JOB migrate"));
+    assert!(position("RUN JOB migrate") < position("ENSURE SERVICE web"));
+    assert_eq!(
+        plan.diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.code.as_str(), diagnostic.resource.as_str()))
+            .collect::<Vec<_>>(),
+        [(piqueld_core::codes::JOB_STOPS_SERVICES, "migrate")]
+    );
+
+    // Unresolved sources leave only resolution actions, which jobs follow.
+    let mut plan = Plan::from_request(
+        &PlanRequest::Preview {
+            unresolved: preview_resolution(&app, &ResolutionSet::default()),
+            desired: None,
+        },
+        &ObservedApplication::default(),
+    );
+    plan.add_jobs(&app, &environment());
+    assert_eq!(
+        plan.actions.last().map(|action| action.kind.to_string()),
+        Some("RUN JOB migrate".into())
+    );
 }

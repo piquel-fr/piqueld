@@ -199,7 +199,7 @@ immutable deployment snapshot commit in the same transaction.
 | POST | `/volumes` | `{ "name": "data" }` |
 | DELETE | `/volumes/{volume}` | None; mounted volumes are rejected |
 | PUT | `/routes` | `{ "value": [{ "hostname": "notes.example.com", "service": "web", "port": 3000 }] }`; replaces this application's routes |
-| PUT | `/jobs` | `{ "value": [{ "name": "migrate", "service": "web", "command": ["notes", "migrate"], "run": "before-rollout", "timeout_seconds": 300 }] }`; replaces the jobs, in execution order |
+| PUT | `/jobs` | `{ "value": [{ "name": "migrate", "service": "web", "command": ["notes", "migrate"], "run": "before-rollout", "timeout_seconds": 300, "volume_access": "read-only" }] }`; replaces the jobs, in execution order |
 | PUT | `/variables` | `{ "value": { "defaults": { "domain": "piquel.fr" }, "environments": { "staging": { "domain": "staging.piquel.fr" } } } }`; replaces every variable value |
 | PUT | `/services/{service}/name` | `{ "value": "worker" }` |
 | PUT | `/services/{service}/replicas` | `{ "value": 3 }`, or a reference such as `"${{ vars.web_replicas }}"`; typed fields accept references |
@@ -234,7 +234,10 @@ removing a service removes its routes and jobs and drops it from other services'
 Jobs inherit the referenced service's `depends_on`, including transitive
 dependencies. Those services converge before the job starts; other services
 wait for all jobs to succeed. If a dependency has its own jobs, they must appear
-earlier in the job list (`job_dependency_order_invalid`).
+earlier in the job list (`job_dependency_order_invalid`). `volume_access` is
+`read-only` (the default) or `exclusive`; exclusive access needs a writable
+volume of the service that no startup dependency mounts
+(`job_volume_access_invalid`).
 Routes remain saved while ingress is disabled and become active only after deployment
 with ingress enabled in the daemon's read-only TOML configuration.
 
@@ -471,7 +474,9 @@ monitor window, and `variables`: the value of every reference in scope for the
 selected environment. The manifest is rendered for that environment; a missing
 value fails with 422. A `[spec.environments.<name>]` block naming no
 environment adds a non-blocking `environment_block_unknown` warning. A `start-first` order set on a service with a writable volume adds
-a non-blocking `rollout_start_first_writable_volume` warning to the plan. Manifest
+a non-blocking `rollout_start_first_writable_volume` warning to the plan. Each job
+appears as a `run_job` action where the deployment runs it, and an exclusive job
+adds a non-blocking `job_stops_services` warning naming the services it stops. Manifest
 differences and the runtime plan compare with the environment selected by
 `environment=ID` (by default the application's only environment): its last
 deployment snapshot, not saved configuration, and its observed runtime. Without a

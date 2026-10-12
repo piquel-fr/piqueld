@@ -4,9 +4,9 @@ use super::dependencies::StartupOrder;
 use super::variables::{Template, Typed};
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, Build, FileSource,
-    GitRepository, HealthCheck, Job, ManifestRevision, Mount, ResourceLimits, SecretDeclaration,
-    SecretGenerator, Service, ServiceFile, Source, SourceRepository, ValidatedApplication,
-    ValidatedRollout, ValidatedTemplate, Volume,
+    GitRepository, HealthCheck, Job, JobVolumeAccess, ManifestRevision, Mount, ResourceLimits,
+    SecretDeclaration, SecretGenerator, Service, ServiceFile, Source, SourceRepository,
+    ValidatedApplication, ValidatedRollout, ValidatedTemplate, Volume,
 };
 use crate::{codes, resource::valid_logical_name};
 use serde::{Deserialize, Serialize};
@@ -1311,6 +1311,9 @@ fn validate_jobs(jobs: &[Job], services: &[Service], errors: &mut Vec<Validation
             codes::PROCESS_COMMAND_EXCESSIVE,
             errors,
         );
+        if job.volume_access == JobVolumeAccess::Exclusive {
+            validate_exclusive_job(job, services, &dependencies, &base, errors);
+        }
         if !(1..=Job::MAX_TIMEOUT_SECONDS).contains(&job.timeout_seconds) {
             error(
                 errors,
@@ -1322,6 +1325,53 @@ fn validate_jobs(jobs: &[Job], services: &[Service], errors: &mut Vec<Validation
                 ),
             );
         }
+    }
+}
+
+/// An exclusive job needs a writable volume of its service, and none of its
+/// startup dependencies may mount one: they keep running while it holds them.
+fn validate_exclusive_job(
+    job: &Job,
+    services: &[Service],
+    dependencies: &BTreeSet<&str>,
+    base: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(service) = services.iter().find(|service| service.name == job.service) else {
+        return;
+    };
+    let volumes = service
+        .mounts
+        .iter()
+        .filter(|mount| !mount.read_only)
+        .map(|mount| mount.volume.as_str())
+        .collect::<BTreeSet<_>>();
+    if volumes.is_empty() {
+        error(
+            errors,
+            codes::JOB_VOLUME_ACCESS_INVALID,
+            &format!("{base}.volume_access"),
+            &format!(
+                "exclusive volume access requires service {} to mount a writable volume",
+                job.service
+            ),
+        );
+    }
+    for (dependency, volume) in services
+        .iter()
+        .filter(|service| dependencies.contains(service.name.as_str()))
+        .flat_map(|service| service.mounts.iter().map(move |mount| (service, mount)))
+        .filter(|(_, mount)| volumes.contains(mount.volume.as_str()))
+    {
+        error(
+            errors,
+            codes::JOB_VOLUME_ACCESS_INVALID,
+            &format!("{base}.volume_access"),
+            &format!(
+                "startup dependency {} mounts volume {}, which job {} needs exclusively",
+                dependency.name, volume.volume, job.name
+            ),
+        );
     }
 }
 

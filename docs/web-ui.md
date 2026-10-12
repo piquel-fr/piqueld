@@ -135,7 +135,9 @@ tab adds, edits, reorders, and removes the one-shot jobs that run before each
 rollout, with one row per command element; saving replaces only the job list.
 Jobs inherit the referenced service's startup dependencies, which start or
 update and become healthy first. Other services wait for all jobs to succeed;
-dependency changes remain if a job fails. The Routes tab
+if a job fails, its dependencies return to the running deployment. A job's
+volume access is read-only by default; exclusive access stops the services
+using its writable volumes until the rollout. The Routes tab
 edits hostnames, each with an optional [name](application-manifest.md#routes)
 and pointing at a service port or a redirect with a public or
 private visibility, and shows each deployed route's name, effective visibility, the DNS

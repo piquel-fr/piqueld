@@ -302,6 +302,26 @@
               "action"
             ],
             "type": "object"
+          },
+          {
+            "description": "Run a before-rollout job to completion. Only previews list jobs:\ndeployments run them before planning the rollout.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "run_job"
+                ],
+                "type": "string"
+              },
+              "job": {
+                "description": "Manifest-level job name.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "job",
+              "action"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -412,6 +432,21 @@
               "reason": {
                 "enum": [
                   "volume_retention_policy"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A before-rollout job runs, or needs exclusive use of a volume.",
+            "properties": {
+              "reason": {
+                "enum": [
+                  "deployment_job"
                 ],
                 "type": "string"
               }
@@ -6922,6 +6957,10 @@
             "format": "int32",
             "minimum": 0,
             "type": "integer"
+          },
+          "volume_access": {
+            "$ref": "#/components/schemas/JobVolumeAccess",
+            "description": "How the job may use the service's volumes."
           }
         },
         "required": [
@@ -6940,6 +6979,14 @@
         "description": "Deployment point at which a job runs.",
         "enum": [
           "before-rollout"
+        ],
+        "type": "string"
+      },
+      "JobVolumeAccess": {
+        "description": "How a job may use the volumes its service mounts.",
+        "enum": [
+          "read-only",
+          "exclusive"
         ],
         "type": "string"
       },
@@ -10785,6 +10832,10 @@
             "format": "int32",
             "minimum": 0,
             "type": "integer"
+          },
+          "volume_access": {
+            "$ref": "#/components/schemas/JobVolumeAccess",
+            "description": "How the job may use the service's volumes. The default is omitted, so\nspec hashes of applications that never set it stay unchanged."
           }
         },
         "required": [

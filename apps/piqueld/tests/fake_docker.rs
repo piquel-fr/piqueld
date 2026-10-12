@@ -64,7 +64,8 @@ struct FakeDocker {
     job_starts: Arc<Mutex<Vec<JobStart>>>,
     /// Job services by Docker name, with the operation that started each run
     /// and the exit code the run reports once finished.
-    jobs: Arc<Mutex<BTreeMap<String, (String, i64)>>>,
+    /// Job runs by service name.
+    jobs: Arc<Mutex<BTreeMap<String, JobRunState>>>,
     /// Keeps job runs running.
     hold_jobs: Arc<AtomicBool>,
     /// Fails status checks of started runs.
@@ -85,6 +86,9 @@ struct FakeDocker {
     /// Holds builds once their image exists, until released.
     build_gate: Option<Arc<ResolutionGate>>,
 }
+
+/// A job run's operation, exit code, and deadline.
+type JobRunState = (String, i64, std::time::SystemTime);
 
 /// A started job with the services, networks, and volumes it could see.
 #[derive(Debug, PartialEq)]
@@ -595,7 +599,12 @@ impl DockerApi for FakeDocker {
             .push(format!("job {}", job.logical_name));
         self.jobs.lock().await.insert(
             job.container.name.to_string(),
-            (job.operation().into(), self.job_exit.load(Ordering::SeqCst)),
+            (
+                job.operation().into(),
+                self.job_exit.load(Ordering::SeqCst),
+                std::time::SystemTime::now()
+                    + std::time::Duration::from_secs(u64::from(job.timeout_seconds)),
+            ),
         );
         if self.lose_job_start.swap(false, Ordering::SeqCst) {
             return Err(DockerError::Request("start job"));
@@ -613,14 +622,18 @@ impl DockerApi for FakeDocker {
             .await
             .get(job.container.name.as_str())
             .cloned();
-        let Some((_, exit_code)) = run.filter(|(operation, _)| operation == job.operation()) else {
+        let Some((_, exit_code, deadline)) =
+            run.filter(|(operation, ..)| operation == job.operation())
+        else {
             return Ok(JobStatus::Missing);
         };
         if self.fail_job_status.load(Ordering::SeqCst) {
             return Err(DockerError::Request("inspect job"));
         }
         if self.hold_jobs.load(Ordering::SeqCst) {
-            return Ok(JobStatus::Running);
+            return Ok(JobStatus::Running {
+                deadline: Some(deadline),
+            });
         }
         Ok(JobStatus::Finished {
             exit_code: Some(exit_code),
@@ -655,7 +668,7 @@ impl DockerApi for FakeDocker {
         self.jobs
             .lock()
             .await
-            .retain(|_, (operation, _)| !runs.selects(Some(operation)));
+            .retain(|_, (operation, ..)| !runs.selects(Some(operation)));
         Ok(())
     }
 
@@ -4147,6 +4160,7 @@ fn manifest_with_jobs(
             command: vec!["notes".into(), (*name).into()],
             run: piqueld_core::manifest::JobRun::BeforeRollout,
             timeout_seconds,
+            volume_access: piqueld_core::manifest::JobVolumeAccess::ReadOnly,
         })
         .collect();
     input
@@ -4295,7 +4309,7 @@ async fn failed_or_timed_out_job_dependencies_prevent_jobs_and_other_services() 
 }
 
 #[tokio::test]
-async fn failed_migration_keeps_prerequisites_and_repairs_other_active_services() {
+async fn failed_migration_rolls_back_prerequisites_and_repairs_active_services() {
     for existing_dependencies in [false, true] {
         let harness = ControllerHarness::new().await;
         let mut initial = manifest_with_job_dependencies();
@@ -4329,9 +4343,18 @@ async fn failed_migration_keeps_prerequisites_and_repairs_other_active_services(
             harness.scan_result(&operation).await,
             (OperationState::Failed, Some("job_failed".into()))
         );
-        // Repair must keep both newly created and updated prerequisites, while
-        // continuing to maintain other services against the active target,
-        // including dependents of a converged prerequisite.
+        let replicas = |observed: &piqueld_core::ObservedApplication, name: &str| {
+            observed
+                .services
+                .iter()
+                .find(|service| service.labels[SERVICE_LABEL] == name)
+                .map(|service| service.replicas)
+        };
+        // The job ran against the updated prerequisites.
+        assert_eq!(
+            replicas(&*harness.docker.observed.lock().await, "db"),
+            Some(2)
+        );
         {
             let mut observed = harness.docker.observed.lock().await;
             for service in &mut observed.services {
@@ -4340,25 +4363,20 @@ async fn failed_migration_keeps_prerequisites_and_repairs_other_active_services(
                 }
             }
         }
-        for _ in 0..4 {
+        // The failed deployment ended, so repair returns prerequisites to
+        // the active target, alongside the other active services.
+        for _ in 0..8 {
             assert_eq!(
                 harness.scan_result(&operation).await,
                 (OperationState::Failed, Some("job_failed".into()))
             );
         }
         let observed = harness.docker.observed.lock().await;
-        let replicas = |name: &str| {
-            observed
-                .services
-                .iter()
-                .find(|service| service.labels[SERVICE_LABEL] == name)
-                .unwrap()
-                .replicas
-        };
-        assert_eq!(replicas("db"), 2);
-        assert_eq!(replicas("storage"), 1);
-        assert_eq!(replicas("web"), 1);
-        assert_eq!(replicas("other"), 1);
+        let previous = existing_dependencies.then_some(1);
+        assert_eq!(replicas(&observed, "db"), previous);
+        assert_eq!(replicas(&observed, "storage"), previous);
+        assert_eq!(replicas(&observed, "web"), Some(1));
+        assert_eq!(replicas(&observed, "other"), Some(1));
         assert_eq!(harness.started_jobs().await, ["migrate"]);
         assert_eq!(
             harness
@@ -4371,6 +4389,124 @@ async fn failed_migration_keeps_prerequisites_and_repairs_other_active_services(
             Some(1)
         );
     }
+}
+
+/// The fixture with one exclusive migration of `web`, which mounts `data`.
+fn manifest_with_exclusive_job() -> piqueld_core::manifest::ApplicationManifest {
+    let mut input = manifest_with_jobs(&["migrate"], 300);
+    input.spec.jobs[0].volume_access = piqueld_core::manifest::JobVolumeAccess::Exclusive;
+    input
+}
+
+#[tokio::test]
+async fn exclusive_job_runs_while_its_volume_users_are_stopped() {
+    let harness = ControllerHarness::new().await;
+    let first = harness
+        .applications()
+        .apply(manifest().validate_template().unwrap(), None)
+        .await
+        .unwrap();
+    harness.finish(&first).await;
+    let operation = harness
+        .applications()
+        .apply(
+            manifest_with_exclusive_job().validate_template().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    harness.finish(&operation).await;
+    // The running web wrote the volume, so it stopped before the job and
+    // restarted with the rollout.
+    assert_eq!(
+        *harness.docker.job_starts.lock().await,
+        [JobStart {
+            job: "migrate".into(),
+            services: 0,
+            networks: 1,
+            volumes: 1
+        }]
+    );
+    assert_eq!(harness.docker.observed.lock().await.services.len(), 1);
+}
+
+#[tokio::test]
+async fn failed_exclusive_job_restarts_stopped_services_once_its_run_stopped() {
+    let harness = ControllerHarness::new().await;
+    let first = harness
+        .applications()
+        .apply(manifest().validate_template().unwrap(), None)
+        .await
+        .unwrap();
+    harness.finish(&first).await;
+    harness.docker.job_exit.store(3, Ordering::SeqCst);
+    harness
+        .docker
+        .fail_job_cleanup
+        .store(true, Ordering::SeqCst);
+    let operation = harness
+        .applications()
+        .apply(
+            manifest_with_exclusive_job().validate_template().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    // While the run may still hold the volume, web stays stopped.
+    for _ in 0..3 {
+        assert_eq!(
+            harness.scan_result(&operation).await,
+            (OperationState::Failed, Some("job_failed".into()))
+        );
+        assert_eq!(
+            harness.docker.observed.lock().await.services,
+            [] as [piqueld_core::ObservedService; 0]
+        );
+    }
+    harness
+        .docker
+        .fail_job_cleanup
+        .store(false, Ordering::SeqCst);
+    harness.scan_result(&operation).await;
+    assert!(harness.docker.jobs.lock().await.is_empty());
+    let observed = harness.docker.observed.lock().await;
+    assert_eq!(observed.services.len(), 1);
+    assert_eq!(observed.services[0].labels[SERVICE_LABEL], "web");
+}
+
+#[tokio::test]
+async fn resumed_job_keeps_the_deadline_of_its_start() {
+    let mut harness = ControllerHarness::new().await;
+    harness.docker.hold_jobs.store(true, Ordering::SeqCst);
+    let operation = harness
+        .applications()
+        .apply(
+            manifest_with_jobs(&["migrate"], 300)
+                .validate_template()
+                .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let shutdown = CancellationToken::new();
+    let (scanned, ()) = tokio::join!(harness.controller.scan(&shutdown), async {
+        harness.wait_for_job_starts(1).await;
+        shutdown.cancel();
+    });
+    scanned.unwrap();
+    // The daemon stays down past the run's deadline.
+    for (_, _, deadline) in harness.docker.jobs.lock().await.values_mut() {
+        *deadline = std::time::SystemTime::now() - std::time::Duration::from_secs(1);
+    }
+    harness.reopen().await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        harness.scan_result(&operation),
+    )
+    .await
+    .expect("the resumed run times out at its original deadline");
+    assert_eq!(result, (OperationState::Failed, Some("job_timeout".into())));
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
 }
 
 impl ControllerHarness {
@@ -4443,12 +4579,10 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
     let applications = harness.applications();
     let mut input = manifest_with_jobs(&["migrate"], 300);
     // A run left by an earlier operation is removed before jobs start.
-    harness
-        .docker
-        .jobs
-        .lock()
-        .await
-        .insert("leftover".into(), ("earlier-operation".into(), 0));
+    harness.docker.jobs.lock().await.insert(
+        "leftover".into(),
+        ("earlier-operation".into(), 0, std::time::SystemTime::now()),
+    );
     let first = applications
         .apply(input.clone().validate_template().unwrap(), None)
         .await

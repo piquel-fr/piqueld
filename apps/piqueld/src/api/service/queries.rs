@@ -393,6 +393,7 @@ impl ApplicationService {
     ///
     /// Images are not resolved, so the desired state is only compiled when no
     /// references need resolution; otherwise the plan lists them as unresolved.
+    /// Jobs are listed where the deployment runs them.
     /// New environments still require a reachable runtime. Configuration values
     /// are redacted from the returned plan. Like a deployment, an existing
     /// environment fails with `secret_access_denied` when `app` mounts a
@@ -437,6 +438,7 @@ impl ApplicationService {
             &observed,
         );
         plan.redact_configuration();
+        plan.add_jobs(app, environment);
         Ok(plan)
     }
 }

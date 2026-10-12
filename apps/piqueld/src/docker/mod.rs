@@ -101,7 +101,11 @@ pub enum JobStatus {
     /// The operation has no run of the job; any run of another operation is ignored.
     Missing,
     /// The run has not finished.
-    Running,
+    Running {
+        /// When the run's timeout expires, fixed when it started so resuming
+        /// it never extends it. `None` for runs started without one.
+        deadline: Option<std::time::SystemTime>,
+    },
     /// The run finished.
     Finished {
         /// Container exit code, absent when Docker rejected or stopped the task

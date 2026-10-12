@@ -150,6 +150,7 @@ impl ApplicationService {
         );
         plan.redact_configuration();
         plan.warn_rollouts(app);
+        plan.add_jobs(app, target.id());
         // Compare with what runs, not with a later attempt that never published.
         let operation = self
             .store

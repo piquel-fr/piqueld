@@ -72,9 +72,10 @@ impl<D: DockerApi> Controller<D> {
     }
 
     /// Uses the full rollout plan to check blockers, but executes only shared
-    /// infrastructure and this job's startup dependencies. Replanning preserves
-    /// dependency ordering without promoting the candidate or touching other
-    /// services. Each dependency receives its own convergence budget.
+    /// infrastructure, this job's startup dependencies, and the removal of
+    /// services sharing its exclusive volumes. Replanning preserves dependency
+    /// ordering without promoting the candidate or touching other services.
+    /// Each dependency receives its own convergence budget.
     async fn prepare_job_dependencies(
         &self,
         operation: &Operation,
@@ -83,7 +84,6 @@ impl<D: DockerApi> Controller<D> {
         ownership: &BTreeMap<String, String>,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
-        let dependencies = target.job_dependencies(job);
         let mut deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
         loop {
             let observed = self
@@ -99,21 +99,10 @@ impl<D: DockerApi> Controller<D> {
                 &observed,
             );
             self.check_plan(operation, &plan).await?;
-            let action = plan.actions.iter().find(|action| match &action.kind {
-                ActionKind::EnsureNetwork { .. } | ActionKind::EnsureVolume { .. } => true,
-                ActionKind::EnsureService { service } => {
-                    dependencies.contains(service.logical_name.as_str())
-                }
-                ActionKind::WaitForService { service } => target.services.iter().any(|desired| {
-                    desired.name.as_str() == service
-                        && dependencies.contains(desired.logical_name.as_str())
-                }),
-                _ => false,
-            });
-            let Some(action) = action else {
+            let Some(action) = plan.next_job_preparation(target, job, &observed) else {
                 return Ok(());
             };
-            self.execute_action(action, operation, ownership, cancellation, deadline)
+            self.execute_action(&action, operation, ownership, cancellation, deadline)
                 .await?;
             if matches!(action.kind, ActionKind::WaitForService { .. }) {
                 deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
@@ -245,7 +234,7 @@ impl<D: DockerApi> Controller<D> {
         self.retry(operation, journal, cancellation, || async {
             if matches!(
                 self.docker.job_status(job).await?,
-                JobStatus::Running
+                JobStatus::Running { .. }
                     | JobStatus::Finished {
                         exit_code: Some(0),
                         ..
@@ -290,7 +279,7 @@ impl<D: DockerApi> Controller<D> {
                     exit_code: None,
                 })
             }
-            JobStatus::Running => Err(OperationError::JobTimeout(name)),
+            JobStatus::Running { .. } => Err(OperationError::JobTimeout(name)),
         };
         // Marked last: a truncated log accepts no further notes.
         if truncated {
@@ -332,17 +321,18 @@ impl<D: DockerApi> Controller<D> {
     }
 
     /// Polls until the run stops and returns its status, or `Running` once the
-    /// job's timeout elapsed. When Docker could not report the status up to
-    /// the timeout, its error is returned instead: the outcome is unknown, so
-    /// the run is kept and the retried operation resumes it with a fresh
-    /// timeout, as after a daemon restart.
+    /// run's deadline passed. The deadline was fixed when the run started, so
+    /// resuming after a restart never extends it; runs started without one
+    /// get the job's full timeout from now. When Docker could not report the
+    /// status up to the deadline, its error is returned instead: the outcome
+    /// is unknown, so the run is kept and the retried operation resumes it.
     async fn wait_job(
         &self,
         operation: &Operation,
         job: &DesiredJobRun,
         cancellation: &CancellationToken,
     ) -> Result<JobStatus, OperationError> {
-        let deadline =
+        let mut deadline =
             tokio::time::Instant::now() + Duration::from_secs(u64::from(job.timeout_seconds));
         let mut failure = None;
         loop {
@@ -350,12 +340,20 @@ impl<D: DockerApi> Controller<D> {
             let status = tokio::select! {
                 () = cancellation.cancelled() => return Err(OperationError::Cancelled),
                 () = tokio::time::sleep_until(deadline) => {
-                    return failure.map_or(Ok(JobStatus::Running), |error| Err(OperationError::from(error)));
+                    return failure.map_or(Ok(JobStatus::Running { deadline: None }), |error| Err(OperationError::from(error)));
                 }
                 status = self.docker.job_status(job) => status,
             };
             match status {
-                Ok(JobStatus::Running) => failure = None,
+                Ok(JobStatus::Running { deadline: started }) => {
+                    failure = None;
+                    if let Some(started) = started {
+                        let remaining = started
+                            .duration_since(std::time::SystemTime::now())
+                            .unwrap_or_default();
+                        deadline = tokio::time::Instant::now() + remaining;
+                    }
+                }
                 Ok(status) => return Ok(status),
                 Err(error) => {
                     tracing::warn!(error = ?error, job = %job.logical_name, "job status check failed; retrying");

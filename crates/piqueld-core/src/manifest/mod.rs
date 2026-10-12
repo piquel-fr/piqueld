@@ -36,9 +36,10 @@ pub mod validation;
 
 pub use input::{
     ApplicationManifest, ApplicationSpec, Build, EnvironmentConfig, GitRepository, HealthCheck,
-    Job, JobRun, ManifestRepository, ManifestRevision, Metadata, Mount, PreviewConfig, Redirect,
-    RepositoryManifest, ResourceLimits, Route, SecretDeclaration, SecretEncoding, SecretGenerator,
-    SecretMount, Service, Source, SourceRepository, Variable, Volume,
+    Job, JobRun, JobVolumeAccess, ManifestRepository, ManifestRevision, Metadata, Mount,
+    PreviewConfig, Redirect, RepositoryManifest, ResourceLimits, Route, SecretDeclaration,
+    SecretEncoding, SecretGenerator, SecretMount, Service, Source, SourceRepository, Variable,
+    Volume,
 };
 pub(crate) use validation::valid_image_reference;
 pub use validation::{

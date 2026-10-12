@@ -399,6 +399,25 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
+    /// Whether the unpromoted operation may still roll out its prepared target.
+    /// A failed job or a cancellation ends it once no job container can still
+    /// be running; other failures are retried or reconsidered. Independently,
+    /// the Docker adapter refuses to start a service while a job holds one of
+    /// its volumes, including runs of superseded operations.
+    async fn may_roll_out(&self, operation: &super::Operation) -> Result<bool, StoreError> {
+        let ended = operation.state == OperationState::Cancelled
+            || matches!(
+                operation.error_code.as_deref(),
+                Some("job_failed" | "job_timeout")
+            );
+        Ok(!ended
+            || !self
+                .store
+                .pending_job_cleanup(&operation.environment_id)
+                .await?
+                .is_empty())
+    }
+
     /// Records a diagnostic at most once per environment and code within a pass.
     /// A health job and reconciliation can observe the same failure concurrently;
     /// the lock is held across the write so only one of them records it.
@@ -431,8 +450,9 @@ impl<D: DockerApi> Controller<D> {
     /// Applies at most `Plan::next_repair` per call, under the global
     /// mutation lock and in its own journal entry. Skips deletions, promoted
     /// operations, blocked plans, and removals that would drop resources still
-    /// referenced by routes awaiting cutover. Prepared job prerequisites are
-    /// left to the deployment so repair cannot revert or remove them.
+    /// referenced by routes awaiting cutover. While the deployment may still
+    /// roll out, prepared job prerequisites and services stopped for an
+    /// exclusive job are left to it; once it has ended, repair restores them.
     async fn maintain_active(
         &self,
         id: &piqueld_core::EnvironmentId,
@@ -471,7 +491,12 @@ impl<D: DockerApi> Controller<D> {
         {
             return Ok(());
         }
-        if let Some(prepared) = self.store.prepared_target(operation_id).await? {
+        // Reread under the lock: a retry may have reopened a failed operation.
+        if let Some(prepared) = self.store.prepared_target(operation_id).await?
+            && self
+                .may_roll_out(&self.store.operation(operation_id).await?)
+                .await?
+        {
             plan.preserve_job_prerequisites(&prepared, &observed);
         }
         let Some(action) = plan.next_repair() else {

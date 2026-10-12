@@ -804,6 +804,7 @@ impl DockerApi for BollardDocker {
                     if !desired.has_valid_identity() {
                         return Err(DockerError::OwnershipConflict);
                     }
+                    self.check_volumes_free(desired).await?;
                     let matches = Self::map_request(
                         "find service by name",
                         self.docker

@@ -3508,7 +3508,7 @@ async fn route_field_edits_follow_service_renames_and_removals() {
 #[tokio::test]
 async fn job_field_edit_replaces_jobs_in_order_and_validates_atomically() {
     use piqueld_client::{
-        Job, JobRun,
+        Job, JobRun, JobVolumeAccess,
         edit::{ApplicationEdit, EditOptions},
     };
     let temp = tempfile::tempdir().unwrap();
@@ -3525,6 +3525,7 @@ async fn job_field_edit_replaces_jobs_in_order_and_validates_atomically() {
         command: vec!["notes".into(), name.into()],
         run: JobRun::BeforeRollout,
         timeout_seconds: 60,
+        volume_access: JobVolumeAccess::ReadOnly,
     };
     let options = |generation| EditOptions {
         expected_generation: Some(generation),
