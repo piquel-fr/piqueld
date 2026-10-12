@@ -164,7 +164,7 @@ impl BollardDocker {
             .await?
             .iter()
             .any(|job| Self::spec_mounts(job).any(writes))
-            || self.live_tasks().await?.iter().any(|task| {
+            || self.live_tasks(Some(&labels)).await?.iter().any(|task| {
                 Self::has_labels(task.labels.as_ref(), &labels)
                     && Self::container_mounts(task).any(writes)
             })
@@ -188,19 +188,23 @@ impl BollardDocker {
         Ok(())
     }
 
-    /// Container specifications of tasks that have not stopped. Tasks of
-    /// removed services keep their specification until Swarm stops them, and
-    /// a task may not have created its container yet, so only tasks tell
-    /// whether a container may still start. Swarm can also report a task
-    /// stopped, or reap it, before its container exits, so callers read
-    /// running containers after tasks.
-    async fn live_tasks(&self) -> Result<Vec<TaskSpecContainerSpec>, DockerError> {
-        let tasks = Self::map_request(
-            "list tasks",
-            self.docker
-                .list_tasks(None::<bollard::query_parameters::ListTasksOptions>)
-                .await,
-        )?;
+    /// Container specifications of tasks that have not stopped, of services
+    /// carrying every label in `labels` when given; job runs carry the same
+    /// labels on their service and container. Tasks of removed services keep
+    /// their specification until Swarm stops them, and a task may not have
+    /// created its container yet, so only tasks tell whether a container may
+    /// still start. Swarm can also report a task stopped, or reap it, before
+    /// its container exits, so callers read running containers after tasks.
+    async fn live_tasks(
+        &self,
+        labels: Option<&[String]>,
+    ) -> Result<Vec<TaskSpecContainerSpec>, DockerError> {
+        let options = labels.map(|labels| {
+            ListTasksOptionsBuilder::default()
+                .filters(&HashMap::from([("label", labels.to_vec())]))
+                .build()
+        });
+        let tasks = Self::map_request("list tasks", self.docker.list_tasks(options).await)?;
         Ok(tasks
             .into_iter()
             .filter(|task| {
@@ -303,7 +307,7 @@ impl BollardDocker {
             let options = ListContainersOptionsBuilder::default()
                 .filters(&HashMap::from([("volume", vec![volume.to_string()])]))
                 .build();
-            while self.live_tasks().await?.iter().any(|task| {
+            while self.live_tasks(None).await?.iter().any(|task| {
                 Self::container_mounts(task).any(|(mounted, _)| mounted == volume.as_str())
             }) || !Self::map_request(
                 "list volume containers",
@@ -338,7 +342,7 @@ impl BollardDocker {
         };
         // Tasks before containers: see `live_tasks`.
         while self
-            .live_tasks()
+            .live_tasks(Some(&labels))
             .await?
             .iter()
             .any(|task| selected(task.labels.as_ref()))
