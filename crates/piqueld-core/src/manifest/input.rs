@@ -103,6 +103,25 @@ pub struct ApplicationSpec {
 }
 
 impl ApplicationSpec {
+    /// Disconnects the manifest repository. "self" sources keep building from
+    /// the former repository, and declared environments return to the saved
+    /// manifest, which has no branches to follow.
+    pub fn disconnect(&mut self) {
+        let Some(previous) = self.manifest.take() else {
+            return;
+        };
+        for service in &mut self.services {
+            if let Source::Git { repository, .. } = &mut service.source {
+                repository.resolve_manifest(&previous.repository);
+            }
+        }
+        for config in self.environments.values_mut() {
+            config.branch = None;
+            config.commit = None;
+            config.sync = false;
+        }
+    }
+
     /// Sets `environment`'s visibility ceiling. Blocks declare environments,
     /// so one is kept once it exists, and only a restriction adds one.
     pub fn set_environment_visibility(&mut self, environment: &str, visibility: Visibility) {

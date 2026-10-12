@@ -367,8 +367,9 @@ promote_from = "staging"     # only receives releases promoted from staging
 
 `branch`, `commit` and `sync` need a [manifest repository](#repository-backed-manifests);
 without one, an environment deploys the saved manifest. `promote_from` excludes
-the other three (`environment_source_conflict`), `sync` excludes a pinned
-commit (`environment_sync_pinned`), and `promote_from` must name another
+the other three (`environment_source_conflict`), `sync` excludes its own
+`commit` (`environment_sync_pinned`; one pinned by `spec.manifest` stays opted
+in but never follows pushes), and `promote_from` must name another
 declared environment without leading back to itself (`promotion_source_invalid`,
 `promotion_cycle`). Validation (`app validate`, `app plan`, saving, fetching)
 reports each at its field, e.g. `spec.environments.production.promote_from`.
@@ -389,8 +390,11 @@ the ones it declares:
   has volumes and secrets: it keeps running, and `app show`, `app plan` and
   the dashboard report it until you delete it with `piquelctl env delete`.
 
-Manifests fetched from other branches, one-off `--branch`/`--commit`
-deployments and previews never create or change environments.
+Deployments on push of that branch count too. Manifests fetched from other
+branches, one-off `--branch`/`--commit` deployments and previews never create or
+change environments. Disconnecting the repository drops every declaration's
+`branch`, `commit` and `sync`, returning declared environments to the saved
+manifest.
 
 `app plan` lists what saving a manifest would change, e.g.
 

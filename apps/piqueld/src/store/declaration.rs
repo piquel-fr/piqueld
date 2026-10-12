@@ -91,13 +91,21 @@ impl Store {
                     };
                     let current = Self::live_on(tx, &live, &environment).await?;
                     if let Some(from) = source.promoted_from() {
-                        Self::check_promotion_source_on(
+                        // Declarations are acyclic, so a cycle only goes through
+                        // a change still waiting: this one waits too.
+                        match Self::check_promotion_source_on(
                             tx,
                             application,
                             (current.id(), &environment),
                             from,
                         )
-                        .await?;
+                        .await
+                        {
+                            Err(StoreError::Promotion(super::PromotionError::Cycle { .. })) => {
+                                continue;
+                            }
+                            checked => checked?,
+                        }
                     }
                     let accepting = accepting == Some(current.id());
                     match Self::write_source_on(tx, &current, source, accepting, now).await {

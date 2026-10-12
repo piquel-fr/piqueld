@@ -86,8 +86,8 @@ impl ApplicationSpec {
     /// Returns every problem at its field path: invalid names, branches and
     /// commits; a source on a promoted environment
     /// (`environment_source_conflict`); `branch`, `commit` or `sync` without
-    /// a manifest repository (`manifest_repository_required`); `sync` on a
-    /// pinned environment (`environment_sync_pinned`); and a `promote_from`
+    /// a manifest repository (`manifest_repository_required`); `sync` with its
+    /// own `commit` (`environment_sync_pinned`); and a `promote_from`
     /// naming an undeclared environment (`promotion_source_invalid`) or
     /// leading back to itself (`promotion_cycle`).
     pub fn declared_environments(&self) -> Result<Vec<Declaration>, ValidationErrors> {
@@ -257,7 +257,10 @@ impl ApplicationSpec {
                 .map(|error| fail(&error.path, &error.code, error.message))
                 .collect::<Vec<_>>()
         })?;
-        if config.sync && branch.commit().is_some() {
+        // Only its own pin: one inherited from `spec.manifest`, or from the
+        // revision a deployment fetched, keeps it opted in but not following,
+        // as `piquelctl env sync` does for a pinned environment.
+        if config.sync && config.commit.is_some() {
             return Err(vec![fail(
                 "sync",
                 codes::ENVIRONMENT_SYNC_PINNED,
@@ -583,6 +586,42 @@ mod tests {
                     "releases promoted from staging".into(),
                     false
                 ),
+            ]
+        );
+    }
+
+    /// Disconnecting the repository returns declared environments to the
+    /// saved manifest instead of failing on fields that need one.
+    #[test]
+    fn disconnecting_drops_what_needs_a_repository() {
+        let mut manifest =
+            parse_template_toml(include_str!("../../../../examples/staging-production.toml"))
+                .unwrap()
+                .normalize(ApplicationId::parse("app-notes").unwrap())
+                .to_manifest();
+        manifest
+            .spec
+            .environments
+            .get_mut("staging")
+            .unwrap()
+            .branch = Some("next".into());
+        crate::edit::ApplicationEdit::Repository(None)
+            .apply(&mut manifest)
+            .unwrap();
+        let sources = manifest
+            .validate_template()
+            .unwrap()
+            .spec()
+            .declared_environments()
+            .unwrap()
+            .into_iter()
+            .map(|declaration| (declaration.source.to_string(), declaration.sync))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sources,
+            [
+                ("the saved manifest".into(), false),
+                ("releases promoted from staging".into(), false),
             ]
         );
     }

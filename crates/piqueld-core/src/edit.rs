@@ -335,19 +335,8 @@ impl ApplicationEdit {
     pub fn apply(self, manifest: &mut ApplicationManifest) -> Result<(), EditError> {
         match self {
             Self::Name(name) => manifest.metadata.name = name,
-            Self::Repository(value) => {
-                // Disconnecting keeps "self" sources building from the former repository.
-                if value.is_none()
-                    && let Some(previous) = &manifest.spec.manifest
-                {
-                    for service in &mut manifest.spec.services {
-                        if let Source::Git { repository, .. } = &mut service.source {
-                            repository.resolve_manifest(&previous.repository);
-                        }
-                    }
-                }
-                manifest.spec.manifest = value;
-            }
+            Self::Repository(Some(value)) => manifest.spec.manifest = Some(value),
+            Self::Repository(None) => manifest.spec.disconnect(),
             Self::RepositoryUrl(value) => Self::repository(manifest)?.repository.url = value,
             Self::RepositoryPath(value) => Self::repository(manifest)?.path = value,
             Self::RepositorySync(value) => Self::repository(manifest)?.sync = value,

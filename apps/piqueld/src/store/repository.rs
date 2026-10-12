@@ -186,15 +186,10 @@ impl Store {
         .map_err(StoreError::database)?
         .rows_affected();
         // Even when this environment's own manifest is unchanged, another
-        // environment may have fetched since. The fetched manifest's
-        // connection is the revision it was fetched from.
+        // environment may have fetched since.
         if let (EnvironmentKind::Environment, Some(connection)) =
             (fetching, application.spec().manifest.clone())
-            && fetched
-                .spec()
-                .manifest
-                .as_ref()
-                .is_some_and(|fetched| fetched.repository == connection.repository)
+            && Self::fetched_connection_on(tx, operation, &fetched, &connection).await?
         {
             let saved = fetched.with_manifest(Some(connection));
             Self::converge_environments_on(
@@ -222,6 +217,41 @@ impl Store {
             Self::operation_event(tx, &operation.id, "application_applied", None, now).await?;
         }
         Ok(())
+    }
+
+    /// Whether `fetched`, the manifest `operation` fetched, came from the
+    /// revision `connection` names. Its own connection is the revision it was
+    /// fetched from; sync pins the head it listed of a branch it follows, so
+    /// its deployments of the connection's unpinned branch count too.
+    async fn fetched_connection_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        operation: &Operation,
+        fetched: &ApplicationTemplate,
+        connection: &piqueld_core::manifest::RepositoryManifest,
+    ) -> Result<bool, StoreError> {
+        let Some(fetched) = fetched
+            .spec()
+            .manifest
+            .as_ref()
+            .map(|fetched| &fetched.repository)
+        else {
+            return Ok(false);
+        };
+        let wanted = &connection.repository;
+        if fetched == wanted {
+            return Ok(true);
+        }
+        if fetched.url != wanted.url || fetched.branch != wanted.branch || wanted.commit.is_some() {
+            return Ok(false);
+        }
+        let synced = sqlx::query_scalar!(
+            r#"SELECT actor_system IS NOT NULL AS "synced!: bool" FROM operations WHERE id=?1"#,
+            operation.id
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        Ok(synced)
     }
 }
 
@@ -367,7 +397,18 @@ mod tests {
         else {
             panic!("operation")
         };
-        let op = store.operation(&accepted.operation_id).await.unwrap();
+        prepared(store, environment, &accepted.operation_id, spec).await
+    }
+
+    /// Runs operation `id` of `environment` through fetching a manifest with
+    /// `spec`, returning it and the target it prepares.
+    async fn prepared(
+        store: &Store,
+        environment: &EnvironmentId,
+        id: &str,
+        spec: &str,
+    ) -> (Operation, piqueld_core::ResolvedApplication) {
+        let op = store.operation(id).await.unwrap();
         store
             .transition_operation(
                 &op.id,
@@ -643,7 +684,21 @@ mod tests {
         use piqueld_core::{EnvironmentSource, TrackedBranch};
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path().join("db")).await.unwrap();
-        let application = saved_connection(&store).await;
+        let polled = piqueld_core::manifest::parse_template_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec.manifest]\npath='app.toml'\nsync={mode='poll'}\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='main'").unwrap();
+        let (MutationResponse::Saved(saved), _) = store
+            .accept(
+                Daemon,
+                Mutation::save(polled, None, false),
+                Some(0),
+                false,
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("saved")
+        };
+        let application = ApplicationId::parse(&saved.application_id).unwrap();
         let production = EnvironmentId::default_for(&application);
         let declared = format!(
             "[spec.environments.staging]\nsync=true\n[spec.environments.production]\npromote_from='staging'\n[spec.environments.canary]\nbranch='next'\n{}",
@@ -676,8 +731,47 @@ mod tests {
         // A manifest on another branch declares nothing.
         fetch(&store, &canary.id, &token_spec(false)).await;
         assert_eq!(store.environments(&application).await.unwrap().len(), 3);
-        // The next one from `main` stops staging syncing, and leaves canary,
-        // no longer declared, as it is.
+        // Sync pins the head it listed, and still fetches `main`.
+        let id = staging.id.as_str();
+        let first = "a".repeat(40);
+        sqlx::query!(
+            "UPDATE environments SET synced_commit=?1,synced_at_ms=1 WHERE id=?2",
+            first,
+            id
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let (MutationResponse::Synced(crate::api::SyncOutcome::Deployed(synced)), _) = store
+            .accept(
+                crate::api::Actor::System(piqueld_core::sync::SystemActor::SyncPoll),
+                Mutation::Sync(crate::api::ListedHead {
+                    id: staging.id.clone(),
+                    repository: "https://example.com/notes.git".into(),
+                    branch: piqueld_core::GitBranch::parse("main").unwrap(),
+                    head: "b".repeat(40),
+                    since: store.get(&staging.id).await.unwrap().environment.synced,
+                }),
+                None,
+                false,
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("sync deployment expected")
+        };
+        let (op, target) = prepared(
+            &store,
+            &staging.id,
+            &synced.operation_id,
+            &format!("{declared}\n[spec.environments.qa]\n"),
+        )
+        .await;
+        store.save_prepared(&op, &target).await.unwrap();
+        assert_eq!(store.environments(&application).await.unwrap().len(), 4);
+        // The next one from `main` stops staging syncing, and leaves canary
+        // and qa, no longer declared, as they are.
         fetch(
             &store,
             &staging.id,
@@ -688,7 +782,7 @@ mod tests {
         )
         .await;
         let environments = store.environments(&application).await.unwrap();
-        assert_eq!(environments.len(), 3);
+        assert_eq!(environments.len(), 4);
         assert!(!environments.iter().any(|environment| environment.sync));
     }
 

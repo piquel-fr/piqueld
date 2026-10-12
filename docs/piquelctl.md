@@ -636,9 +636,9 @@ on a service with a writable volume.
 show rendered values, and it lists the value of every variable in scope, such as
 `vars.domain` and `env.name`. A reference without a value fails the plan with
 `variable_value_missing`. Without `--env`, the application's only environment is
-used; with several, the plan compares the saved manifest as written. Plans warn
-with `environment_block_unknown` about `[spec.environments.<name>]` blocks that
-name no environment.
+used; with several, the plan compares the saved manifest as written. Plans list,
+under `Environments:`, how saving the manifest would change the environments it
+[declares](application-manifest.md#declared-environments).
 
 Command, argument, job command, and `depends-on` arrays preserve individual elements; place
 command options before `--`. An empty array clears the setting. Optional limits and pinned
@@ -650,8 +650,9 @@ Git-backed applications keep services, volumes, and the application name under
 repository ownership. The repository URL and manifest path remain editable;
 connecting points every environment at `--branch` (default `main`), and each
 environment's branch then changes with `env branch`. Disconnect explicitly to
-retain the saved manifest (the one last fetched by any environment) and edit it
-locally:
+retain the saved manifest (the one last fetched from the branch `spec.manifest`
+names) and edit it locally; disconnecting also drops declared environments'
+`branch`, `commit` and `sync`, returning them to the saved manifest:
 
 ```console
 piquelctl app repository connect notes https://example.com/infra.git infra/app.toml --yes
