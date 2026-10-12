@@ -64,8 +64,7 @@ Tailscale transport encryption alone does not make an HTTP website a secure
 browser context; remote browser access still needs an HTTPS hostname.
 
 Before the first account exists, the API exposes only authentication/setup
-endpoints (plus static website assets, TCP `/health`, and the optional
-metrics-only listener). Run `piquelctl setup-link` on the daemon host to print
+endpoints (plus static website assets and TCP `/health`). Run `piquelctl setup-link` on the daemon host to print
 the setup link, or add `--open` to also open it in the default browser. The daemon
 serves the link only over its Unix socket, whose group-restricted access is the
 trust boundary; TCP listeners return 404, and after setup it reports that setup is
@@ -286,9 +285,9 @@ separately. Cookie-authenticated mutations require the configured Origin.
 API/CLI credentials use `Authorization: Bearer …`. No tokens are automatically
 renewed. All API listeners require account authentication, regardless of socket
 group membership or Tailscale connectivity; only the
-[host operator](#the-host-operator) on the Unix socket needs none. The optional `metrics.listen`
-endpoint serves only `GET /metrics` and is not authenticated; see
-[observability](observability.md#optional-metrics-and-future-external-services).
+[host operator](#the-host-operator) on the Unix socket needs none. The daemon
+serves no unauthenticated metrics; it pushes them instead, see
+[telemetry export](observability.md#telemetry-export).
 
 Successful registrations, passkey logins, device approvals (with the requesting
 peer address), and account-management actions are logged at `info` level with the

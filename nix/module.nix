@@ -15,6 +15,7 @@ let
   privateIngress = cfg.settings.ingress.private;
   tunnel = cfg.settings.ingress.tunnel;
   destinations = cfg.settings.notifications.destinations;
+  telemetry = cfg.settings.telemetry;
   # `_file` settings name host files. systemd copies each into the unit's
   # private $CREDENTIALS_DIRECTORY, so the files may stay root-only, and the
   # daemon resolves the credential name there.
@@ -45,6 +46,9 @@ let
       }
       // lib.optionalAttrs (tailscale.auth_key_file != null) {
         tailscale.auth_key_file = "ts-auth-key";
+      }
+      // lib.optionalAttrs (telemetry.headers_file != null) {
+        telemetry.headers_file = "otlp-headers";
       }
       // {
         ingress =
@@ -365,10 +369,17 @@ in
             default = 4294967296;
             description = "Most bytes the working trees of all Git checkouts may take at once; a checkout waits for room, and a larger one, or a local snapshot that would be, is refused.";
           };
-          metrics.listen = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            description = "Metrics-only socket addresses; empty disables exposure.";
+          telemetry.endpoint = lib.mkOption {
+            type = lib.types.nullOr (lib.types.strMatching "(https?://|unix:///).+");
+            default = null;
+            example = "unix:///run/otel/otlp.sock";
+            description = "OTLP/gRPC collector receiving the daemon's traces, metrics and logs: https://host:port, http://host:port, or unix:///path. Null disables export.";
+          };
+          telemetry.headers_file = lib.mkOption {
+            # A string, not a path, so the secret is never copied into the Nix store.
+            type = lib.types.nullOr (lib.types.strMatching "/.+");
+            default = null;
+            description = "Host file with gRPC headers for the collector, one `name: value` per line (such as `authorization: Bearer …`), such as an agenix secret, passed to piqueld as a systemd credential.";
           };
           notifications.enabled = lib.mkOption {
             type = lib.types.bool;
@@ -544,6 +555,7 @@ in
           ++ lib.optional (
             tunnel.credentials_file != null
           ) "cloudflared-tunnel:${tunnel.credentials_file}"
+          ++ lib.optional (telemetry.headers_file != null) "otlp-headers:${telemetry.headers_file}"
           ++ lib.concatLists (
             lib.imap0 (
               index: destination:

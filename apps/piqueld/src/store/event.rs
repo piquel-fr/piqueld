@@ -206,6 +206,15 @@ impl Store {
             .filter(|e| e.id == id)
             .ok_or(StoreError::NotFound)
     }
+    /// The ID of the newest event, or 0 without any.
+    /// # Errors
+    /// Returns storage errors.
+    pub(crate) async fn latest_event_id(&self) -> Result<i64, StoreError> {
+        sqlx::query_scalar!(r#"SELECT COALESCE(MAX(id),0) AS "id!: i64" FROM events"#)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(StoreError::database)
+    }
     /// Resolves an occurrence ID to its original contextual event.
     /// # Errors
     /// Returns a storage error or not found.

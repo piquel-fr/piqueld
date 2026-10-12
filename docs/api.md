@@ -635,8 +635,8 @@ metadata. Truncation and expiration are explicit. Output retains the configured
 prefix, defaults to 4 MiB per attempt and expires 30 days after completion.
 Metadata survives operation pruning and is deleted with its environment.
 
-See [observability](observability.md) for diagnostic history, daemon statistics, analytics, metrics
-and webhook delivery configuration.
+See [observability](observability.md) for diagnostic history, daemon statistics, analytics, telemetry
+export and webhook delivery configuration.
 
 Manually set secrets live in one store per application; generated secrets
 belong to their environment. Secret endpoints expose metadata only:

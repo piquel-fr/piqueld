@@ -1,15 +1,7 @@
-//! Metrics listener and webhook notification settings.
+//! Webhook notification settings.
 use super::{ConfigError, Credential, CredentialError, CredentialFile};
 use piqueld_core::observability::NotificationCategory;
 use serde::Deserialize;
-
-/// Metrics-only HTTP endpoints. An empty list disables exposure.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-pub struct MetricsConfig {
-    /// Explicit socket addresses; administrative API routes are never served here.
-    pub listen: Vec<std::net::SocketAddr>,
-}
 
 /// Startup-loaded global notification policy.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]

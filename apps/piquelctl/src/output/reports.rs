@@ -9,7 +9,7 @@ use piqueld_client::{
     MountedSecret, Operation, OperationState, Page, PlanView, PreviewUsage, PreviewView,
     ReleaseAvailability, ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl,
     SavedApplication, SecretMetadata, SecretProblem, ServiceImage, Source, StoredSecret,
-    SystemStatus, UrlState,
+    SystemStatus, TelemetryStatus, UrlState,
     sync::{SyncState, WebhookSecret, WebhookView},
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
@@ -130,9 +130,42 @@ impl Report for StatusReport<'_> {
             Some(previews) => previews.render_human(out)?,
             None => out.label("Previews", "unavailable: the daemon could not count them")?,
         }
+        s.telemetry.render_human(out)?;
         s.dns.render_human(out)
     }
 }
+
+// Where the daemon's own telemetry goes and how its export is going. Headers
+// appear only as the file they were read from.
+report!(TelemetryStatus, self, out, {
+    if self.destinations.is_empty() {
+        return out.label("Telemetry", "not exported ([telemetry] sets no endpoint)");
+    }
+    for destination in &self.destinations {
+        let state = match (destination.failing, destination.last_success_ms) {
+            (true, _) => "failing",
+            (false, Some(_)) => "exporting",
+            (false, None) => "nothing exported yet",
+        };
+        let last = destination
+            .last_success_ms
+            .map(|at| format!(", last export at Unix ms {at}"))
+            .unwrap_or_default();
+        let headers = destination
+            .headers
+            .as_ref()
+            .map(|headers| format!(", headers {headers}"))
+            .unwrap_or_default();
+        out.label(
+            "Telemetry",
+            format_args!(
+                "{} ({state}{last}, {} records dropped{headers})",
+                destination.endpoint, destination.dropped
+            ),
+        )?;
+    }
+    Ok(())
+});
 
 // The built images cleanup kept, and what it removed since the daemon started.
 report!(ImageStatus, self, out, {
