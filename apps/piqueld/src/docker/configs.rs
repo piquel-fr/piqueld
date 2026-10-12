@@ -3,26 +3,24 @@
 //! new content is a new config. Services mount configs by ID, read-only and
 //! root-owned, and configs no service mounts are removed afterwards.
 
-use super::engine::MAX_CONFIG_LIST_BYTES;
 use super::{BollardDocker, DockerError};
 use base64::Engine as _;
 use hyper::{Method, StatusCode};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The parts of an inspected or listed config piqueld reads.
+/// The parts of an inspected config piqueld reads.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub(super) struct Config {
+struct Config {
     #[serde(rename = "ID")]
-    pub(super) id: String,
-    pub(super) spec: ConfigSpec,
+    id: String,
+    spec: ConfigSpec,
 }
 
-/// A config's name, labels, and base64 content.
+/// A config's labels, base64 content, and templating.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub(super) struct ConfigSpec {
-    pub(super) name: String,
+struct ConfigSpec {
     #[serde(default)]
     labels: Option<BTreeMap<String, String>>,
     #[serde(default)]
@@ -30,6 +28,84 @@ pub(super) struct ConfigSpec {
     /// Swarm renders templated configs, so their bytes are not the content.
     #[serde(default)]
     templating: Option<serde_json::Value>,
+}
+
+/// A listed config's identity. Listings carry every config's payload, which
+/// is skipped while decoding.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub(super) struct ListedConfig {
+    #[serde(rename = "ID")]
+    id: String,
+    spec: ListedConfigSpec,
+}
+
+/// A listed config's name.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ListedConfigSpec {
+    name: String,
+}
+
+impl ListedConfig {
+    /// The config's name.
+    pub(super) fn name(&self) -> &str {
+        &self.spec.name
+    }
+}
+
+/// The configs a listed service mounts in its current and previous specs.
+/// Everything else in them, such as environments, is skipped while decoding.
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub(super) struct ServiceConfigs {
+    #[serde(default)]
+    spec: Option<SpecConfigs>,
+    #[serde(default)]
+    previous_spec: Option<SpecConfigs>,
+}
+
+/// `Spec.TaskTemplate.ContainerSpec.Configs[].ConfigID` of a service spec.
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct SpecConfigs {
+    #[serde(default)]
+    task_template: Option<TaskConfigs>,
+}
+
+/// The container of a task template.
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct TaskConfigs {
+    #[serde(default)]
+    container_spec: Option<ContainerConfigs>,
+}
+
+/// The config references of a container.
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ContainerConfigs {
+    #[serde(default)]
+    configs: Option<Vec<ConfigReference>>,
+}
+
+/// One config reference's ID.
+#[derive(Default, serde::Deserialize)]
+struct ConfigReference {
+    #[serde(rename = "ConfigID", default)]
+    config_id: Option<String>,
+}
+
+impl ServiceConfigs {
+    /// IDs of the configs this service's current and previous specs mount.
+    fn ids(self) -> impl Iterator<Item = String> {
+        [self.spec, self.previous_spec]
+            .into_iter()
+            .flatten()
+            .filter_map(|spec| spec.task_template?.container_spec?.configs)
+            .flatten()
+            .filter_map(|config| config.config_id)
+    }
 }
 
 /// What a config holds, which names the Docker requests made for it.
@@ -150,7 +226,7 @@ impl BollardDocker {
         &self,
         kind: ConfigKind,
         labels: &[String],
-        keep: impl Fn(&Config) -> bool,
+        keep: impl Fn(&ListedConfig) -> bool,
     ) -> Result<(), DockerError> {
         // Listed before services, so a config published after this listing
         // is never removed for lack of a service mounting it yet.
@@ -159,22 +235,23 @@ impl BollardDocker {
             "/configs?filters={}",
             url::form_urlencoded::byte_serialize(filters.as_bytes()).collect::<String>()
         );
-        let bytes = self
-            .engine_request_bounded(Method::GET, &path, Vec::new(), MAX_CONFIG_LIST_BYTES)
+        // Both listings stream, as they carry every payload and spec.
+        let mut configs = self
+            .engine_list::<ListedConfig>(&path)
             .await
             .map_err(|error| error.sanitized(kind.list()))?;
-        let configs: Vec<Config> = serde_json::from_slice(&bytes)
-            .map_err(|source| DockerError::request(kind.list(), source))?;
+        configs.retain(|config| !keep(config));
+        if configs.is_empty() {
+            return Ok(());
+        }
         // Bollard's service model omits `PreviousSpec`, so read the raw list.
-        let services = self
-            .engine_request(Method::GET, "/services", Vec::new())
-            .await
-            .map_err(|error| error.sanitized("list services"))?;
-        let services: Vec<serde_json::Value> = serde_json::from_slice(&services)
-            .map_err(|source| DockerError::request("decode services", source))?;
-        let referenced = Self::referenced_configs(&services);
+        let referenced = Self::referenced_configs(
+            self.engine_list::<ServiceConfigs>("/services")
+                .await
+                .map_err(|error| error.sanitized("list services"))?,
+        );
         for config in configs {
-            if keep(&config) || referenced.contains(&config.id) {
+            if referenced.contains(&config.id) {
                 continue;
             }
             match self
@@ -195,18 +272,8 @@ impl BollardDocker {
 
     /// IDs of the configs the listed `services` mount in their current or
     /// previous specs.
-    pub(super) fn referenced_configs(services: &[serde_json::Value]) -> BTreeSet<String> {
-        services
-            .iter()
-            .flat_map(|service| [service.get("Spec"), service.get("PreviousSpec")])
-            .flatten()
-            .filter_map(|spec| {
-                spec.pointer("/TaskTemplate/ContainerSpec/Configs")?
-                    .as_array()
-            })
-            .flatten()
-            .filter_map(|config| Some(config.get("ConfigID")?.as_str()?.to_owned()))
-            .collect()
+    fn referenced_configs(services: Vec<ServiceConfigs>) -> BTreeSet<String> {
+        services.into_iter().flat_map(ServiceConfigs::ids).collect()
     }
 }
 
@@ -218,12 +285,13 @@ mod tests {
     #[test]
     fn previous_specs_keep_their_configs() {
         let spec = |id: &str| serde_json::json!({"TaskTemplate": {"ContainerSpec": {"Configs": [{"ConfigID": id}]}}});
-        let services = [
-            serde_json::json!({"Spec": spec("current"), "PreviousSpec": spec("previous")}),
-            serde_json::json!({"Spec": {"TaskTemplate": {"ContainerSpec": {}}}}),
-        ];
+        let services = serde_json::from_value(serde_json::json!([
+            {"Spec": spec("current"), "PreviousSpec": spec("previous")},
+            {"Spec": {"TaskTemplate": {"ContainerSpec": {"Env": ["LARGE=…"], "Configs": null}}}},
+        ]))
+        .unwrap();
         assert_eq!(
-            BollardDocker::referenced_configs(&services),
+            BollardDocker::referenced_configs(services),
             BTreeSet::from(["current".into(), "previous".into()])
         );
     }

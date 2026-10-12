@@ -123,7 +123,7 @@ impl BollardDocker {
         self.remove_unused_configs(
             ConfigKind::HealthProbe,
             &[HealthProbe::LABEL.to_owned()],
-            |config| config.spec.name == HealthProbe::name(),
+            |config| config.name() == HealthProbe::name(),
         )
         .await
     }
