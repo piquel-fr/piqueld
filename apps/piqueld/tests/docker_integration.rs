@@ -172,7 +172,11 @@ impl SwarmScenario {
     /// web task expects verbatim at `/etc/piqueld-motd`.
     fn motd(app: &EnvironmentId) -> piqueld_core::DesiredFile {
         piqueld_core::DesiredFile {
-            config_name: piqueld_core::DockerConfigName::for_file(app, "hello ${HOME}"),
+            config_name: piqueld_core::DockerConfigName::for_file(
+                app,
+                "hello ${HOME}",
+                piqueld_core::manifest::FileMode::default(),
+            ),
             target: "/etc/piqueld-motd".into(),
             mode: piqueld_core::manifest::FileMode::default(),
             content: "hello ${HOME}".into(),

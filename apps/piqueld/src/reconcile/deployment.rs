@@ -214,11 +214,15 @@ impl<D: DockerApi> Controller<D> {
         template: ApplicationTemplate,
     ) -> Result<ApplicationTemplate, OperationError> {
         let mut files = Vec::new();
+        // Stop at the budget, rather than read every file first.
+        let mut total = template.spec().inline_file_bytes();
         for relative in template.spec().repository_file_paths() {
-            files.push((
-                relative.to_owned(),
-                Self::read_file(checkout, relative).await?,
-            ));
+            let content = Self::read_file(checkout, relative).await?;
+            total += content.len();
+            if total > ServiceFile::MAX_TOTAL_BYTES {
+                return Err(FileCaptureError::TotalTooLarge.into());
+            }
+            files.push((relative.to_owned(), content));
         }
         Ok(template.with_files(files.into_iter().collect())?)
     }

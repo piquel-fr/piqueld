@@ -807,10 +807,12 @@ written. Values that differ between environments belong in environment
 variables, which most such tools expand.
 
 `target` is an absolute, normalized container path, unique among the service's
-mount, secret, and file targets, and outside `/run/secrets` and `/run/piqueld`.
-`mode` is an octal permission from `"0000"` to `"0777"`; files are owned by
-root. Repository files must be UTF-8 text. Directories are not supported: list
-files one by one.
+mount, secret, and file targets. It cannot be a directory holding another of
+them, nor `/run/secrets`, `/run/piqueld`, a path inside them, or a directory
+holding them; files inside a mounted volume's directory are fine. `mode` is an
+octal permission from `"0000"` to `"0777"`; files are owned by root. Contents
+can't be empty (`file_empty`), and repository files must be UTF-8 text.
+Directories are not supported: list files one by one.
 
 Files are read-only: piqueld publishes each content as an immutable Swarm
 config, which Docker always mounts read-only. An image that rewrites its own

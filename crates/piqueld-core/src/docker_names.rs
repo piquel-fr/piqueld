@@ -1,5 +1,6 @@
 //! Distinct names for generated Docker resources. Engine observations remain raw strings.
 
+use crate::manifest::FileMode;
 use crate::names::validated_string;
 use crate::{EnvironmentId, JobName, ResourceKind, ServiceName, VolumeName, docker_resource_name};
 
@@ -36,15 +37,20 @@ validated_string!(
 );
 
 impl DockerConfigName {
-    /// Names the config holding a file's `content` for an environment. Configs
-    /// are immutable, so the name follows the content: new content is a new
-    /// config, and unchanged content keeps its config across deployments.
+    /// Names the config holding a file's `content`, mounted with `mode`, for
+    /// an environment. Configs are immutable, so the name follows the
+    /// content: new content is a new config, and unchanged content keeps its
+    /// config across deployments. Docker materializes a config once per
+    /// container, so files sharing content but not mode need their own.
     #[must_use]
-    pub fn for_file(id: &EnvironmentId, content: &str) -> Self {
+    pub fn for_file(id: &EnvironmentId, content: &str, mode: FileMode) -> Self {
         Self(docker_resource_name(
             id,
             ResourceKind::File,
-            Some(&crate::manifest::files::content_digest(content)),
+            Some(&format!(
+                "{}-{mode}",
+                crate::manifest::files::content_digest(content)
+            )),
         ))
     }
 }

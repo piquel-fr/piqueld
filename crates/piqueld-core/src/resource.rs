@@ -1113,7 +1113,7 @@ fn compile_service(
                         .expect("validated applications captured their repository files"),
                 };
                 DesiredFile {
-                    config_name: DockerConfigName::for_file(environment, content),
+                    config_name: DockerConfigName::for_file(environment, content, file.mode),
                     target: file.target.clone(),
                     mode: file.mode,
                     content: content.to_owned(),

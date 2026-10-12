@@ -1104,16 +1104,25 @@ fn validate_files<'a>(
             ),
         );
     }
+    // Mount, secret, and file targets a file must not contain.
+    let others = targets
+        .iter()
+        .copied()
+        .chain(files.iter().map(|file| file.target.as_str()))
+        .collect::<Vec<_>>();
     for (index, file) in files.iter().enumerate() {
         let path = format!("{base}.files[{index}]");
         validate_absolute_path(&file.target, &format!("{path}.target"), errors);
-        if file.reserved_target() || !targets.insert(&file.target) {
+        if file.reserved_target()
+            || others.iter().any(|other| file.contains(other))
+            || !targets.insert(&file.target)
+        {
             error(
                 errors,
                 codes::FILE_TARGET_INVALID,
                 &format!("{path}.target"),
                 &format!(
-                    "file targets must be unique among the service's mount, secret, and file targets, and outside {}",
+                    "file targets must be unique among the service's mount, secret, and file targets, contain none of them, and stay clear of {}",
                     ServiceFile::RESERVED_DIRECTORIES.join(" and ")
                 ),
             );
@@ -1130,6 +1139,12 @@ fn validate_files<'a>(
                 "repository_path_invalid",
                 &format!("{path}.path"),
                 "file path must remain within the repository root",
+            ),
+            FileSource::Content(content) if content.is_empty() => error(
+                errors,
+                codes::FILE_EMPTY,
+                &format!("{path}.content"),
+                "file content cannot be empty",
             ),
             FileSource::Content(content) if content.len() > ServiceFile::MAX_BYTES => error(
                 errors,

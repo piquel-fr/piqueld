@@ -154,21 +154,30 @@ impl<D: DockerApi> Controller<D> {
     }
 
     /// Completes convergence, then removes the configs of files no service
-    /// mounts any more, and after service deletion retained secrets and a
-    /// deleted preview's volumes (environments have no volume inventory, so
-    /// they keep theirs). Files left over by a deployment are only logged:
-    /// the next operation removes them, while a deletion is retried.
+    /// mounts any more, whether or not it succeeded, and after service
+    /// deletion retained secrets and a deleted preview's volumes
+    /// (environments have no volume inventory, so they keep theirs). The
+    /// environment's next operation waits for this one, and repair for the
+    /// mutation lock, so nothing publishes configs meanwhile. A failed removal is only logged, and left
+    /// to the next operation, except that a deletion is retried.
     async fn execute_and_cleanup(
         &self,
         operation: &Operation,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
         // Keep preparation and persistence state out of the discovery future.
-        Box::pin(self.execute_operation(operation, cancellation)).await?;
-        let pruned = self
-            .docker
-            .prune_files(&self.ownership_labels(&operation.environment_id))
-            .await;
+        let executed = Box::pin(self.execute_operation(operation, cancellation)).await;
+        if cancellation.is_cancelled() {
+            return executed;
+        }
+        let pruned = {
+            // Repair publishes configs too; let it finish mounting them.
+            let _guard = self.mutations.lock().await;
+            self.docker
+                .prune_files(&self.ownership_labels(&operation.environment_id))
+                .await
+        };
+        executed?;
         match pruned {
             Err(error) if operation.kind == OperationKind::Delete => return Err(error.into()),
             Err(error) => tracing::warn!(?error, "removing unused service files failed"),

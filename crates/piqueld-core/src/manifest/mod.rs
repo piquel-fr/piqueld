@@ -316,20 +316,28 @@ fn hash_spec(spec: &impl Serialize, files: &RepositoryFiles) -> String {
 impl<'de> Deserialize<'de> for NormalizedApplication {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         /// Escapes `${{` in every string: rendered values are literal text,
-        /// never references. Files are never templates, so their contents
-        /// are kept as they are.
+        /// never references.
         fn escape(value: &mut serde_json::Value) {
             match value {
                 serde_json::Value::String(text) if Template::mentions_reference(text) => {
                     *text = Template::literal(text).as_str().into();
                 }
                 serde_json::Value::Array(values) => values.iter_mut().for_each(escape),
-                serde_json::Value::Object(values) => values
-                    .iter_mut()
-                    .filter(|(key, _)| *key != "files")
-                    .for_each(|(_, value)| escape(value)),
+                serde_json::Value::Object(values) => values.values_mut().for_each(escape),
                 _ => {}
             }
+        }
+
+        /// The `files` of every service in `spec`, which are never templates,
+        /// so they skip [`escape`] and keep their contents as they are.
+        fn services(
+            spec: &mut serde_json::Value,
+        ) -> impl Iterator<Item = &mut serde_json::Map<String, serde_json::Value>> {
+            spec.get_mut("services")
+                .and_then(serde_json::Value::as_array_mut)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_object_mut)
         }
 
         #[derive(Deserialize)]
@@ -344,7 +352,15 @@ impl<'de> Deserialize<'de> for NormalizedApplication {
             files: RepositoryFiles,
         }
         let mut wire = Wire::deserialize(deserializer)?;
+        let files = services(&mut wire.spec)
+            .map(|service| service.remove("files"))
+            .collect::<Vec<_>>();
         escape(&mut wire.spec);
+        for (service, files) in services(&mut wire.spec).zip(files) {
+            if let Some(files) = files {
+                service.insert("files".into(), files);
+            }
+        }
         ApplicationManifest {
             api_version: wire.api_version,
             kind: wire.kind,

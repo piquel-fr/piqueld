@@ -157,6 +157,8 @@ pub const SECRET_NAME_CONFLICT: &str = "secret_name_conflict";
 pub const FILE_TARGET_INVALID: &str = "file_target_invalid";
 /// A file reads the manifest's repository, but the application has none.
 pub const FILE_REQUIRES_REPOSITORY: &str = "file_requires_repository";
+/// Inline file content is empty, which Swarm configs cannot be.
+pub const FILE_EMPTY: &str = "file_empty";
 /// Inline file content exceeds the per-file budget.
 pub const FILE_TOO_LARGE: &str = "file_too_large";
 /// A service mounts more files than allowed.

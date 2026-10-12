@@ -81,15 +81,28 @@ impl ServiceFile {
     /// probe at [`piqueld_probe::CONTAINER_PATH`].
     pub const RESERVED_DIRECTORIES: [&str; 2] = ["/run/secrets", "/run/piqueld"];
 
-    /// Whether the target is one of [`Self::RESERVED_DIRECTORIES`] or inside one.
+    /// Whether the target is one of [`Self::RESERVED_DIRECTORIES`], inside
+    /// one, or a directory containing one.
     #[must_use]
     pub fn reserved_target(&self) -> bool {
         Self::RESERVED_DIRECTORIES.iter().any(|directory| {
-            self.target
-                .strip_prefix(directory)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            *directory == self.target
+                || inside(&self.target, directory)
+                || inside(directory, &self.target)
         })
     }
+
+    /// Whether a file at the target would shadow `other`, a path inside it.
+    #[must_use]
+    pub fn contains(&self, other: &str) -> bool {
+        inside(other, &self.target)
+    }
+}
+
+/// Whether `path` is strictly inside the directory `directory`.
+fn inside(path: &str, directory: &str) -> bool {
+    path.strip_prefix(directory)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// Octal file permissions from `0000` to `0777`, written as text such as
@@ -204,6 +217,9 @@ pub enum FileCaptureError {
     /// The path names nothing at the fetched commit.
     #[error("repository file {0} does not exist at the fetched commit")]
     Missing(String),
+    /// The file is empty, which Swarm configs cannot be.
+    #[error("repository file {0} is empty")]
+    Empty(String),
     /// The path names a directory, or leaves the repository through a symlink.
     #[error("repository file {0} is not a regular file inside the repository")]
     NotAFile(String),
@@ -232,8 +248,10 @@ impl super::ApplicationSpec {
             .collect()
     }
 
-    /// Total bytes of inline file contents.
-    pub(super) fn inline_file_bytes(&self) -> usize {
+    /// Total bytes of inline file contents, which count towards
+    /// [`ServiceFile::MAX_TOTAL_BYTES`] with the repository files.
+    #[must_use]
+    pub fn inline_file_bytes(&self) -> usize {
         self.services
             .iter()
             .flat_map(|service| &service.files)
@@ -248,9 +266,12 @@ impl super::ApplicationSpec {
     ///
     /// # Errors
     ///
-    /// Returns the first file over [`ServiceFile::MAX_BYTES`], or
-    /// [`FileCaptureError::TotalTooLarge`].
+    /// Returns the first empty file, the first over
+    /// [`ServiceFile::MAX_BYTES`], or [`FileCaptureError::TotalTooLarge`].
     pub(super) fn check_captured(&self, files: &RepositoryFiles) -> Result<(), FileCaptureError> {
+        if let Some((path, _)) = files.0.iter().find(|(_, content)| content.is_empty()) {
+            return Err(FileCaptureError::Empty(path.clone()));
+        }
         if let Some((path, _)) = files
             .0
             .iter()

@@ -77,9 +77,12 @@ fn captured(content: &str) -> RepositoryFiles {
 #[test]
 fn contents_are_mounted_verbatim_and_survive_storage() {
     let content = "${{ vars.missing }} ${HOME} {{ .Values }}";
+    // Only files are kept verbatim when stored, not other values called `files`.
     let template = template(&service(
         "web",
-        &format!("[[spec.services.files]]\ntarget = \"/etc/app.conf\"\ncontent = '{content}'\n"),
+        &format!(
+            "[[spec.services.files]]\ntarget = \"/etc/app.conf\"\ncontent = '{content}'\n[spec.services.environment]\nfiles = '$${{{{ literal }}}}'\n"
+        ),
     ))
     .unwrap();
     let application = render(&template);
@@ -93,6 +96,12 @@ fn contents_are_mounted_verbatim_and_survive_storage() {
     let web = &compile(&application).unwrap().services[0];
     assert_eq!(web.files[0].content, content);
     assert_eq!(web.files[0].mode.bits(), 0o444);
+    assert_eq!(web.environment["files"], "${{ literal }}");
+    // Docker materializes a config once per container, with one mode.
+    assert_ne!(
+        DockerConfigName::for_file(&environment(), content, web.files[0].mode),
+        DockerConfigName::for_file(&environment(), content, "0400".parse().unwrap())
+    );
 }
 
 #[test]
@@ -100,16 +109,19 @@ fn validation_keeps_files_apart_from_mounts_secrets_and_piqueld() {
     let files = [
         ("/etc/a", "path = \"a.yaml\""),
         ("/run/secrets/token", "content = \"x\""),
-        ("/run/piqueld/probe", "content = \"x\""),
+        ("/run/piqueld/probe", "content = \"\""),
         ("/data", "content = \"x\""),
         ("/etc/b", "content = \"x\""),
         ("/etc/b", "content = \"x\""),
         ("etc/c", "content = \"x\""),
+        // A file there would shadow the files and secrets inside.
+        ("/etc", "content = \"x\""),
+        ("/run", "content = \"x\""),
     ]
     .map(|(target, source)| format!("[[spec.services.files]]\ntarget = \"{target}\"\n{source}\n"))
     .concat();
     let oversized = format!(
-        "[[spec.services.files]]\ntarget = \"/etc/large\"\ncontent = \"{}\"\n",
+        "[[spec.services.files]]\ntarget = \"/data/large\"\ncontent = \"{}\"\n",
         "x".repeat(ServiceFile::MAX_BYTES + 1)
     );
     let errors = template(&format!(
@@ -132,6 +144,7 @@ fn validation_keeps_files_apart_from_mounts_secrets_and_piqueld() {
                 codes::FILE_TARGET_INVALID,
                 "spec.services[0].files[1].target"
             ),
+            (codes::FILE_EMPTY, "spec.services[0].files[2].content"),
             (
                 codes::FILE_TARGET_INVALID,
                 "spec.services[0].files[2].target"
@@ -148,7 +161,15 @@ fn validation_keeps_files_apart_from_mounts_secrets_and_piqueld() {
                 codes::MOUNT_TARGET_UNSAFE,
                 "spec.services[0].files[6].target"
             ),
-            (codes::FILE_TOO_LARGE, "spec.services[0].files[7].content"),
+            (
+                codes::FILE_TARGET_INVALID,
+                "spec.services[0].files[7].target"
+            ),
+            (
+                codes::FILE_TARGET_INVALID,
+                "spec.services[0].files[8].target"
+            ),
+            (codes::FILE_TOO_LARGE, "spec.services[0].files[9].content"),
         ]
     );
 }
@@ -184,7 +205,7 @@ fn repository_files_are_captured_hashed_and_mounted_by_content() {
     );
     assert_eq!(
         web.files[0].config_name,
-        DockerConfigName::for_file(&environment(), "a: 1")
+        DockerConfigName::for_file(&environment(), "a: 1", web.files[0].mode)
     );
     // New content is a new config for the service mounting it only, and a
     // new specification.
@@ -217,6 +238,10 @@ fn repository_files_are_captured_hashed_and_mounted_by_content() {
             .clone()
             .with_files(captured(&"x".repeat(ServiceFile::MAX_BYTES + 1))),
         Err(FileCaptureError::TooLarge("otel.yaml".into()))
+    );
+    assert_eq!(
+        template.clone().with_files(captured("")),
+        Err(FileCaptureError::Empty("otel.yaml".into()))
     );
 
     let plan = ManifestChange::between(None, template.spec());

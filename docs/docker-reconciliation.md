@@ -195,8 +195,9 @@ Nix packages all use.
 ## Service files
 
 Each [file](application-manifest.md#files) a service mounts is an immutable
-Swarm config holding its content, named after the environment and the content's
-SHA-256 digest (`piqueld-<environment>-file-…`) and labelled
+Swarm config holding its content, named after the environment, the content's
+SHA-256 digest, and the file's mode (`piqueld-<environment>-file-…`), since
+Docker materializes a config once per container, and labelled
 `io.piqueld.managed`, `io.piqueld.instance`, `io.piqueld.application`, and
 `io.piqueld.file`. Publishing is idempotent: a config with the same name and
 content is reused across deployments, while one holding other content, or
@@ -210,12 +211,13 @@ from the desired ones in name, target, or mode, other than the probe at
 `/run/piqueld/probe`, are drift, which repair restores; references that are not
 root-owned or not mounted by ID are out-of-policy drift.
 
-Once an operation of an environment succeeds, piqueld removes the environment's
-file configs no service mounts any longer, in its current spec or in the
-previous one a rollback would restore. Docker refuses to remove configs in use,
-so a config a concurrent update starts using is kept. A failed removal is
-logged and retried after the next operation, except that deleting an
-environment fails, and is retried, until its configs are gone.
+Once an operation of an environment ends, succeeded or failed, piqueld removes
+the environment's file configs no service mounts any longer, in its current
+spec or in the previous one a rollback would restore. It holds the lock repair
+takes to change services, so no config is removed between being published and
+mounted. A failed removal is logged and retried after the next operation,
+except that deleting an environment fails, and is retried, until its configs
+are gone.
 
 ## Image retention
 
