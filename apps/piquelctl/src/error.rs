@@ -181,6 +181,11 @@ impl CliError {
         self.diagnostic(Diagnostic::CommandTimeout)
     }
 
+    /// Whether one request exceeded `--timeout`.
+    pub(crate) fn is_request_timeout(&self) -> bool {
+        matches!(self.code, Code::Cli(CliCode::RequestTimeout))
+    }
+
     /// Marks the error as an invalid daemon response.
     pub(crate) fn invalid_response(self) -> Self {
         self.diagnostic(Diagnostic::Response(None))

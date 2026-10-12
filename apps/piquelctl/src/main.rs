@@ -138,7 +138,21 @@ async fn run_with_timeout(cli: &Cli, console: &mut Console) -> Result<(), CliErr
             _ => {}
         }
         tokio::select! {
-            result = &mut command => return result,
+            // Requests share the `--timeout` budget, so one can time out at the
+            // command's own deadline, and either branch can then win. Once the
+            // deadline has passed, the command is what timed out.
+            result = &mut command => {
+                return match result {
+                    Err(error)
+                        if error.is_request_timeout()
+                            && interaction_started.is_none()
+                            && Instant::now() >= deadline =>
+                    {
+                        Err(timeout_error(cli.timeout))
+                    }
+                    result => result,
+                };
+            }
             result = &mut interrupt => {
                 result.map_err(|error| CliError::new(
                     ErrorKind::General,
