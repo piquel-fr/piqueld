@@ -1,7 +1,7 @@
 //! Environments the manifest manages (see `piqueld_core::manifest::declaration`):
 //! converging an application's environments to the ones its manifest
 //! declares, and refusing imperative changes to declared ones.
-use super::{Store, StoreError};
+use super::{Store, StoreError, environment::SourceWrite};
 use piqueld_core::manifest::{
     ApplicationSpec, ApplicationTemplate, Declaration, DeclaredSource, EnvironmentChange,
     EnvironmentConfig,
@@ -64,14 +64,17 @@ impl Store {
     /// source is still held by an environment being deleted. When `creating`
     /// the application, its `production` shares its ID, as the one created
     /// for applications that declare none does. Never advances the
-    /// application revision; saving the manifest does.
+    /// application revision; returns whether it changed the source of an
+    /// environment with a deployment in progress, for which the caller must
+    /// (see `write_source_on`). Saving the manifest always does.
     pub(super) async fn converge_environments_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &ApplicationId,
         declarations: &[Declaration],
         (creating, accepting): (bool, Option<&EnvironmentId>),
         now: i64,
-    ) -> Result<(), StoreError> {
+    ) -> Result<bool, StoreError> {
+        let mut deploying = false;
         let environments = Self::environments_on(tx, application.as_str()).await?;
         // Live environments by name, including those created here, which
         // later declarations may promote from.
@@ -136,8 +139,8 @@ impl Store {
                     let accepting = accepting == Some(current.id());
                     match Self::write_source_on(tx, &current, source, accepting, now).await {
                         Err(StoreError::Busy) => {}
-                        changed => {
-                            changed?;
+                        written => {
+                            deploying |= written? == SourceWrite::Changed { deploying: true };
                         }
                     }
                 }
@@ -148,7 +151,7 @@ impl Store {
                 EnvironmentChange::Undeclared { .. } => {}
             }
         }
-        Ok(())
+        Ok(deploying)
     }
 
     /// The source `declared` names, with its promotion source among `live`,

@@ -888,8 +888,12 @@ impl Store {
             Self::environments_on(tx, id.as_str())
                 .await?
                 .into_iter()
+                // Including those whose change to promoted is still waiting
+                // for a deployment in progress.
                 .filter(|environment| {
-                    declared.contains_key(environment.name.as_str())
+                    declared
+                        .get(environment.name.as_str())
+                        .is_some_and(|config| config.promote_from.is_none())
                         && !environment.delete_intent
                         && environment.source.promoted_from().is_none()
                 })
@@ -1461,6 +1465,57 @@ mod tests {
             Err(StoreError::EnvironmentUnknown { environment }) if environment == "stagign"
         ));
         assert_eq!(store.environments(&application).await.unwrap().len(), 1);
+    }
+
+    /// `apply --deploy` never builds an environment its manifest makes
+    /// promoted, even while that change waits for a deployment in progress.
+    #[tokio::test]
+    async fn deploying_a_save_skips_environments_becoming_promoted() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let service = "[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'\n[spec.environments.staging]\n";
+        let save = async |production: &str| {
+            let template = piqueld_core::manifest::parse_template_toml(&format!(
+                "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{service}[spec.environments.production]\n{production}"
+            ))
+            .unwrap();
+            let (MutationResponse::Saved(saved), _) = store
+                .accept(
+                    Actor::Daemon,
+                    Mutation::save(template, None, true),
+                    None,
+                    true,
+                    None,
+                )
+                .await
+                .unwrap()
+            else {
+                panic!("saved response")
+            };
+            saved
+        };
+        // Both build, and production's deployment is still in progress.
+        assert_eq!(save("").await.operation_ids.len(), 2);
+        let saved = save("promote_from='staging'\n").await;
+        let application = ApplicationId::parse(&saved.application_id).unwrap();
+        let production = EnvironmentId::default_for(&application);
+        assert!(
+            store
+                .get(&production)
+                .await
+                .unwrap()
+                .environment
+                .source
+                .promoted_from()
+                .is_none()
+        );
+        let [deployment] = saved.operation_ids.as_slice() else {
+            panic!("only staging deploys")
+        };
+        assert_ne!(
+            store.operation(deployment).await.unwrap().environment_id,
+            production
+        );
     }
 
     /// Receipts recorded before deploy overrides existed must still replay.

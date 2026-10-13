@@ -134,7 +134,9 @@ impl Store {
     /// converged (see `converge_environments_on`). Other branches, one-off
     /// revisions and previews never do. Records `application_applied` when
     /// either manifest changed; neither advances the application revision,
-    /// since repository-backed configuration cannot be edited.
+    /// since repository-backed configuration cannot be edited, unless
+    /// converging changed the source of an environment with a deployment in
+    /// progress, which then leaves it unresolved.
     /// Fails with `secret_name_conflict` when the application's store now holds
     /// a name the fetched manifest declares.
     /// Called in the same transaction that saves the fully prepared runtime target.
@@ -155,10 +157,10 @@ impl Store {
         };
         let fetched: ApplicationTemplate =
             serde_json::from_str(&row.application_json).map_err(StoreError::corrupt)?;
-        let application = Self::application_on(tx, fetched.id().as_str())
+        let stored = Self::application_on(tx, fetched.id().as_str())
             .await?
-            .ok_or(StoreError::NotFound)?
-            .application;
+            .ok_or(StoreError::NotFound)?;
+        let application = stored.application;
         // A secret stored since the manifest was fetched may now share a name
         // with one of its declarations.
         Self::check_declared_against_store_on(
@@ -192,7 +194,7 @@ impl Store {
             && Self::fetched_connection_on(tx, operation, &fetched, &connection).await?
         {
             let saved = fetched.with_manifest(Some(connection));
-            Self::converge_environments_on(
+            if Self::converge_environments_on(
                 tx,
                 application.id(),
                 &saved
@@ -201,7 +203,10 @@ impl Store {
                 (false, Some(&operation.environment_id)),
                 now,
             )
-            .await?;
+            .await?
+            {
+                Self::bump_generation_on(tx, application.id(), stored.generation, None).await?;
+            }
             let saved = saved.canonical_json().map_err(StoreError::corrupt)?;
             let id = application.id().as_str();
             changed += sqlx::query!(
@@ -786,6 +791,55 @@ mod tests {
         let environments = store.environments(&application).await.unwrap();
         assert_eq!(environments.len(), 4);
         assert!(!environments.iter().any(|environment| environment.sync));
+    }
+
+    /// A fetch that changes an environment's source leaves it unresolved, and
+    /// advances the revision when a deployment of it in progress would
+    /// resolve it again, as changing it with `env branch` does.
+    #[tokio::test]
+    async fn fetched_source_changes_leave_environments_unresolved() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let application = saved_connection(&store).await;
+        let production = EnvironmentId::default_for(&application);
+        let canary = |branch: &str| {
+            format!(
+                "[spec.environments.canary]\nbranch='{branch}'\n{}",
+                token_spec(false)
+            )
+        };
+        fetch(&store, &production, &canary("next")).await;
+        let id = store
+            .environments(&application)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|environment| environment.name.as_str() == "canary")
+            .unwrap()
+            .id;
+        let canary_id = id.as_str();
+        sqlx::query!(
+            "UPDATE environments SET resolved_generation=(SELECT generation FROM applications) WHERE id=?1",
+            canary_id
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let generation = store.get(&id).await.unwrap().application.generation;
+        fetch(&store, &production, &canary("release")).await;
+        let current = store.get(&id).await.unwrap();
+        assert_eq!(current.environment.resolved_generation, None);
+        assert_eq!(current.application.generation, generation);
+
+        store
+            .accept(Daemon, Mutation::deploy(id.clone()), None, false, None)
+            .await
+            .unwrap();
+        fetch(&store, &production, &canary("beta")).await;
+        assert_eq!(
+            store.get(&id).await.unwrap().application.generation,
+            generation + 1
+        );
     }
 
     /// A secret stored after a manifest was fetched but before it is accepted

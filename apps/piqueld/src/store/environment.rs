@@ -13,6 +13,15 @@ use piqueld_core::{
 };
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
+/// What [`Store::write_source_on`] did to an environment's source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SourceWrite {
+    /// It already deployed from there.
+    Unchanged,
+    /// It changed, while a deployment of it was in progress or not.
+    Changed { deploying: bool },
+}
+
 impl Store {
     /// Inserts an environment deploying from `source`, opted into sync when
     /// `sync`, initially `not_deployed`, and records its creation. Returns
@@ -236,7 +245,9 @@ impl Store {
         source: EnvironmentSource,
         now: i64,
     ) -> Result<(), StoreError> {
-        if !Self::write_source_on(tx, environment, source, false, now).await? {
+        if Self::write_source_on(tx, environment, source, false, now).await?
+            == SourceWrite::Unchanged
+        {
             return Ok(());
         }
         Self::bump_generation_on(
@@ -249,10 +260,11 @@ impl Store {
     }
 
     /// Changes where an environment deploys from, recording
-    /// `environment_source_changed`, and returns whether it changed. Nothing
-    /// is fetched or deployed: once the caller advances the revision, the
-    /// environment no longer reports its configuration as resolved until its
-    /// next deployment or promotion. Environments being deleted are `Busy`,
+    /// `environment_source_changed`, and returns how. Nothing is fetched or
+    /// deployed: the environment no longer reports its configuration as
+    /// resolved until its next deployment or promotion. A deployment of it
+    /// already in progress would resolve it again, so the caller advances the
+    /// revision when one is. Environments being deleted are `Busy`,
     /// and so are environments with a deployment in progress becoming
     /// promoted, since that deployment may already be fetching or building,
     /// unless it is `accepting` its fetched manifest, past both.
@@ -262,13 +274,13 @@ impl Store {
         source: EnvironmentSource,
         accepting: bool,
         now: i64,
-    ) -> Result<bool, StoreError> {
+    ) -> Result<SourceWrite, StoreError> {
         if environment.delete_intent() {
             return Err(StoreError::Busy);
         }
         let previous = &environment.environment.source;
         if source == *previous {
-            return Ok(false);
+            return Ok(SourceWrite::Unchanged);
         }
         let id = environment.id().as_str();
         let deploying = sqlx::query_scalar!(
@@ -285,7 +297,7 @@ impl Store {
         let (branch, commit, promoted_from) = Self::source_columns(&source);
         sqlx::query!(
             // What sync found on the former branch says nothing about this one.
-            "UPDATE environments SET branch=?1,pinned_commit=?2,promoted_from=?3,synced_commit=NULL,synced_at_ms=NULL,updated_at_ms=?4 WHERE id=?5",
+            "UPDATE environments SET branch=?1,pinned_commit=?2,promoted_from=?3,synced_commit=NULL,synced_at_ms=NULL,resolved_generation=NULL,updated_at_ms=?4 WHERE id=?5",
             branch,
             commit,
             promoted_from,
@@ -310,7 +322,7 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        Ok(true)
+        Ok(SourceWrite::Changed { deploying })
     }
 
     /// Describes `source` in a sentence, naming a promotion source.
