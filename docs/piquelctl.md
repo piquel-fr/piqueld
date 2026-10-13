@@ -97,9 +97,9 @@ and advance it, so a command based on an earlier inspection fails instead of
 acting on a renamed or deleted environment.
 
 Declared environments exist as long as their `[spec.environments.<name>]`
-block does: `env create` and `env delete` refuse them with
-`environment_declared`, naming the environment (remove the block before
-deleting one). When the block sets `branch`, `commit`, `promote_from` or
+block does: `env create`, `env rename` (to or from a declared name) and
+`env delete` refuse them with `environment_declared`, naming the environment
+(remove the block before deleting one, rename the block to rename one). When the block sets `branch`, `commit`, `promote_from` or
 `sync`, `env source`, `env branch` and `env sync` refuse it too; change the
 manifest instead. `app plan` lists, under `Environments:`, what saving a manifest would
 create (`+`), change (`~`), or no longer declare (`!`); `app show` lists how the

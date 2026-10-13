@@ -439,7 +439,7 @@ it deploys renders for it, so environments of one application may use different
 hostnames through variables; two that render the same hostname fail with 409
 `hostname_conflict`. Renaming an environment returns 409 `environment_configured`
 while that manifest has a `[spec.environments.<name>]` block for the old or new
-name. Creating or deleting an environment the saved manifest
+name. Creating, deleting, or renaming to or from a name the saved manifest
 [declares](application-manifest.md#declared-environments), or changing the
 branch, source or sync of one whose block sets its source, returns 409
 `environment_declared`, naming it in `details.environment`. An application

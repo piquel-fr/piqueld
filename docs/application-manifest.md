@@ -419,8 +419,9 @@ applying it with `--deploy` is enough: staging follows `main`, and production
 receives what staging ran once you promote it.
 
 A declared environment's existence belongs to its block, so `piquelctl env
-create` and `env delete` refuse it with `environment_declared`: remove the block
-to delete the environment. When the block sets its source, `env source`,
+create`, `env rename` (to or from a declared name) and `env delete` refuse it
+with `environment_declared`: remove the block to delete the environment, or
+rename the block to rename it. When the block sets its source, `env source`,
 `env branch` and `env sync` refuse it too, and the dashboard shows them
 read-only. Other environments, including every environment of an application
 whose manifest declares none, keep these commands. Field edits configure

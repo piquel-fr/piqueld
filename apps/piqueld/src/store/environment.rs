@@ -121,8 +121,10 @@ impl Store {
     /// application revision. Its runtime is unaffected. Names select
     /// `[spec.environments.<name>]`, so a rename is refused while the saved
     /// manifest configures the old or the new name, rather than silently
-    /// switching the configuration the environment deploys. It stays resolved
-    /// unless its configuration renders the name, e.g. `${{ env.name }}`.
+    /// switching the configuration the environment deploys, and while the
+    /// application's saved manifest declares either (see `check_undeclared`).
+    /// It stays resolved unless its configuration renders the name, e.g.
+    /// `${{ env.name }}`.
     pub(super) async fn rename_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
@@ -146,6 +148,9 @@ impl Store {
             return Err(StoreError::EnvironmentConfigured {
                 environment: configured.clone(),
             });
+        }
+        for declared in [old, name] {
+            Self::check_undeclared(&environment.application.application, declared)?;
         }
         let stale = manifest
             .is_some_and(|manifest| {

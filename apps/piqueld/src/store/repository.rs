@@ -842,6 +842,43 @@ mod tests {
         );
     }
 
+    /// The saved manifest's declarations hold their names even for an
+    /// environment whose own fetched manifest, from another branch, has no
+    /// block: renaming it would leave the declaration to recreate it.
+    #[tokio::test]
+    async fn declared_environments_keep_their_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let application = saved_connection(&store).await;
+        let production = EnvironmentId::default_for(&application);
+        fetch(
+            &store,
+            &production,
+            &format!(
+                "[spec.environments.staging]\nbranch='release'\n{}",
+                token_spec(false)
+            ),
+        )
+        .await;
+        let staging = store
+            .environments(&application)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|environment| environment.name.as_str() == "staging")
+            .unwrap()
+            .id;
+        fetch(&store, &staging, &token_spec(false)).await;
+        let rename = Mutation::RenameEnvironment {
+            id: staging,
+            name: piqueld_core::EnvironmentName::parse("qa").unwrap(),
+        };
+        assert!(matches!(
+            store.accept(Daemon, rename, None, true, None).await,
+            Err(StoreError::EnvironmentDeclared { environment }) if environment.as_str() == "staging"
+        ));
+    }
+
     /// A secret stored after a manifest was fetched but before it is accepted
     /// may not share a name with one of its declarations.
     #[tokio::test]

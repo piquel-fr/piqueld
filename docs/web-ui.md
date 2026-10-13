@@ -361,7 +361,7 @@ environment's card links to its source.
 card reads the manifest of the release last promoted into it.
 
 When the manifest [declares environments](application-manifest.md#declared-environments),
-it owns their existence, so **Delete environment** is disabled for them, and,
+it owns their existence, so **Rename environment** and **Delete environment** are disabled for them, and,
 when an environment's `[spec.environments.<name>]` block sets its source, its
 source and deploy on push: its **Source** card then names that block and is
 read-only, and so is **Deploy on push**. A

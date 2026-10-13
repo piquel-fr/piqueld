@@ -964,7 +964,12 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                 </div>
             </header>
             <form class="stack-sm" on:submit={rename}>
-                <fieldset class="stack-sm" disabled={move || context.action_blocked() || deleting()}>
+                <fieldset
+                    class="stack-sm"
+                    disabled={move || {
+                        context.action_blocked() || deleting() || context.declared(&current())
+                    }}
+                >
                     {text_input("Environment name", name, String::clone, |value, input| *value = input)}
                     <dl class="kv">
                         <dt>"Environment ID"</dt>
@@ -979,6 +984,12 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                         class="btn"
                         disabled={move || {
                             context.action_blocked() || deleting() || name.get() == current()
+                                || context.declared(&current())
+                        }}
+                        title={move || {
+                            context
+                                .declared(&current())
+                                .then(|| format!("The manifest declares [spec.environments.{}]; rename that block instead.", current()))
                         }}
                     >
                         "Rename environment"
