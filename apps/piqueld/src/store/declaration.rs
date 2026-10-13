@@ -189,26 +189,37 @@ impl Store {
     }
 
     /// Blocks declare environments, so an edit through the CLI or dashboard
-    /// that declares the application's first environment declares every
-    /// existing one too, with a block that leaves its source as it is:
-    /// editing configuration never changes which environments the manifest
-    /// reports, or where they deploy from. `before` is the saved manifest,
-    /// `after` the edited one.
-    pub(super) async fn declare_existing_on(
+    /// configures existing environments only: one adding a block for a name no
+    /// environment has fails with `EnvironmentUnknown`, rather than creating
+    /// an environment no edit could remove. An edit that declares the
+    /// application's first environment declares every existing one too, with
+    /// a block that leaves its source as it is: editing configuration never
+    /// changes which environments the manifest reports, or where they deploy
+    /// from. `before` is the saved manifest, `after` the edited one.
+    pub(super) async fn declare_edited_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &ApplicationId,
         before: &ApplicationSpec,
         after: &mut ApplicationSpec,
     ) -> Result<(), StoreError> {
-        if !before.environments.is_empty() || after.environments.is_empty() {
-            return Ok(());
+        let live = Self::environments_on(tx, application.as_str())
+            .await?
+            .into_iter()
+            .filter(|environment| !environment.delete_intent)
+            .map(|environment| environment.name.to_string())
+            .collect::<Vec<_>>();
+        if let Some(environment) = after
+            .environments
+            .keys()
+            .find(|name| !before.environments.contains_key(*name) && !live.contains(name))
+        {
+            return Err(StoreError::EnvironmentUnknown {
+                environment: environment.clone(),
+            });
         }
-        for environment in Self::environments_on(tx, application.as_str()).await? {
-            if !environment.delete_intent {
-                after
-                    .environments
-                    .entry(environment.name.to_string())
-                    .or_default();
+        if before.environments.is_empty() && !after.environments.is_empty() {
+            for name in live {
+                after.environments.entry(name).or_default();
             }
         }
         Ok(())

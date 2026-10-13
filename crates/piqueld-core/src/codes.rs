@@ -163,6 +163,8 @@ pub const PROMOTION_SOURCE_INVALID: &str = "promotion_source_invalid";
 pub const PROMOTION_CYCLE: &str = "promotion_cycle";
 /// The manifest declares the environment, so it owns its source and existence.
 pub const ENVIRONMENT_DECLARED: &str = "environment_declared";
+/// An edit would declare an environment that doesn't exist.
+pub const ENVIRONMENT_UNKNOWN: &str = "environment_unknown";
 /// Manifest that must be literal still references variables.
 pub const VARIABLE_UNRESOLVED: &str = "variable_unresolved";
 /// A declared secret is also set in the application's secret store.

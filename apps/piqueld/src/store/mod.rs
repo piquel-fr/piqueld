@@ -233,6 +233,15 @@ pub enum StoreError {
         /// The declared environment.
         environment: EnvironmentName,
     },
+    /// An edit would add a block, declaring an environment, for a name no
+    /// environment has.
+    #[error(
+        "no environment is named {environment}; declare new environments by adding a [spec.environments.{environment}] block with `piquelctl app apply`"
+    )]
+    EnvironmentUnknown {
+        /// The name no environment has.
+        environment: String,
+    },
     /// A promotion, or a promoted environment's source, was refused.
     #[error(transparent)]
     Promotion(#[from] PromotionError),

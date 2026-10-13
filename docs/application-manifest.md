@@ -423,8 +423,11 @@ create` and `env delete` refuse it with `environment_declared`: remove the block
 to delete the environment. When the block sets its source, `env source`,
 `env branch` and `env sync` refuse it too, and the dashboard shows them
 read-only. Other environments, including every environment of an application
-whose manifest declares none, keep these commands. A field edit that adds the
-first block, such as `piquelctl env visibility` or setting a variable in the
+whose manifest declares none, keep these commands. Field edits configure
+existing environments only: one that would add a block for a name no
+environment has, such as `piquelctl app variable set --env` with a typo, fails
+with `environment_unknown`, so new environments are declared with `app apply`.
+A field edit that adds the first block, such as `piquelctl env visibility` or setting a variable in the
 dashboard, also adds an empty block for every other existing environment, so
 editing configuration never leaves environments undeclared.
 

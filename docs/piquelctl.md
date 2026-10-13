@@ -613,7 +613,8 @@ services wait for all jobs to succeed; after a failed job, repair rolls its
 dependencies back and restarts the services an exclusive job stopped. Jobs of dependency services must come earlier in the saved order.
 
 `app variable set` sets a variable's default, or with `--env NAME` its value in
-the environment named `NAME`, whether or not that environment exists yet, or
+the environment named `NAME`, which must exist (an edit never declares a new
+environment, so an unknown name fails with `environment_unknown`), or
 with `--previews` its value in every preview (`[spec.previews.variables]`). An
 environment's or the previews' value overrides the default, and a variable
 needs no default.

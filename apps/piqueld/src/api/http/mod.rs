@@ -231,6 +231,12 @@ impl ApiError {
                 error.to_string(),
             )
             .details(json!({"environment": environment})),
+            ref error @ StoreError::EnvironmentUnknown { ref environment } => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                piqueld_core::codes::ENVIRONMENT_UNKNOWN,
+                error.to_string(),
+            )
+            .details(json!({"environment": environment})),
             ref error @ StoreError::PreviewRequiresRepository => Self::new(
                 StatusCode::CONFLICT,
                 piqueld_core::codes::PREVIEW_REQUIRES_REPOSITORY,
@@ -346,6 +352,7 @@ impl From<StoreError> for ApiError {
             | StoreError::ConfirmationRequired { .. }
             | StoreError::EnvironmentConfigured { .. }
             | StoreError::EnvironmentDeclared { .. }
+            | StoreError::EnvironmentUnknown { .. }
             | StoreError::PreviewRequiresRepository
             | StoreError::PreviewLimitReached(_)) => Self::from_environment_error(error),
             StoreError::Promotion(error) => Self::from_promotion_error(&error),

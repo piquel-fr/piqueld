@@ -442,7 +442,10 @@ while that manifest has a `[spec.environments.<name>]` block for the old or new
 name. Creating or deleting an environment the saved manifest
 [declares](application-manifest.md#declared-environments), or changing the
 branch, source or sync of one whose block sets its source, returns 409
-`environment_declared`, naming it in `details.environment`. Creating an
+`environment_declared`, naming it in `details.environment`. An application
+edit that would add a `[spec.environments.<name>]` block for a name no
+environment has fails with 422 `environment_unknown`, naming it in
+`details.environment`. Creating an
 environment with a `branch`, or changing the branch of one,
 for an application without a manifest repository fails with 422
 `manifest_repository_required`; an invalid branch or commit fails with
