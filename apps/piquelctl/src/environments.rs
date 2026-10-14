@@ -32,15 +32,19 @@ pub(crate) enum EnvCommand {
     },
     /// Add an environment. It deploys the application's saved manifest or, when
     /// the application is repository-backed, the manifest on its own branch.
+    /// Environments the manifest declares in `[spec.environments.<name>]` are
+    /// created by saving or fetching it instead.
     Create(CreateArgs),
     /// Make an environment receive releases promoted from another one instead
     /// of building, or track its own source again. Nothing is deployed.
+    /// Declared environments take `promote_from` from the manifest instead.
     Source(SourceArgs),
     /// Deploy a release into a promoted environment without building: by
     /// default the one its source environment currently runs.
     Promote(PromoteArgs),
     /// Point an environment of a repository-backed application at another
     /// branch, or pin or unpin its commit. Its next deployment fetches it.
+    /// Declared environments take `branch` and `commit` from the manifest.
     Branch {
         /// Application name or stable ID.
         application: String,
@@ -56,7 +60,8 @@ pub(crate) enum EnvCommand {
     },
     /// Opt an environment into or out of its application's sync: while it is
     /// in, pushes to its branch deploy it, from its next deployment if it was
-    /// never deployed. Pinned environments never sync.
+    /// never deployed. Pinned environments never sync. Declared environments
+    /// take `sync` from the manifest.
     Sync(SyncArgs),
     /// Show one environment and its status.
     Show(EnvironmentArgs),
@@ -74,7 +79,8 @@ pub(crate) enum EnvCommand {
         #[command(flatten)]
         change: ChangeFlags,
     },
-    /// Confirm and delete an environment; named volumes are retained.
+    /// Confirm and delete an environment; named volumes are retained. Remove
+    /// a declared environment's block from the manifest first.
     Delete {
         /// Application name or stable ID.
         application: String,

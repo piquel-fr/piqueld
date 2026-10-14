@@ -178,7 +178,7 @@ impl ManifestRevision {
     pub(crate) fn unbacked(path: &str, errors: &mut Vec<ValidationError>) {
         error(
             errors,
-            "manifest_repository_required",
+            codes::MANIFEST_REPOSITORY_REQUIRED,
             path,
             "the manifest repository applies only when spec.manifest is configured",
         );
@@ -650,6 +650,9 @@ impl ApplicationManifest {
         validate_generated_secrets(&self.spec.secrets, &mut errors);
         validate_jobs(&self.spec.jobs, &self.spec.services, &mut errors);
         self.spec.check_variables(&mut errors);
+        if let Err(invalid) = self.spec.declared_environments() {
+            errors.extend(invalid.0);
+        }
         if !errors.is_empty() {
             return Err(ValidationErrors::sorted(errors));
         }

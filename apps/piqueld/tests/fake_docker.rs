@@ -2843,14 +2843,15 @@ mod repository_deployments {
         assert_eq!(staged, Some(3));
         let (before, production_manifest) = replicas(&production).await;
         assert_eq!(before, Some(1));
-        // An unchanged fetch is still the application's last fetched manifest.
+        // Only a manifest fetched from the branch `spec.manifest` names
+        // becomes the application's saved one.
         let saved_replicas = async || {
             let current = harness.store.get(&production).await.unwrap();
             current.application.application.spec().services[0]
                 .replicas
                 .clone()
         };
-        assert_eq!(saved_replicas().await, release.spec.services[0].replicas);
+        assert_eq!(saved_replicas().await, main.spec.services[0].replicas);
         let deployed = RepositoryFixture::deploy(&harness, &production).await;
         assert_eq!(deployed.state, OperationState::Succeeded);
         assert_eq!(saved_replicas().await, main.spec.services[0].replicas);
@@ -3156,7 +3157,8 @@ mod repository_deployments {
             .await
             .unwrap();
         let application_id = EnvironmentId::parse(saved.application_id).unwrap();
-        // The override is not saved, and saved configuration keeps "self".
+        // The override is not saved, and saved configuration keeps "self":
+        // only the fetch of `main` itself becomes the saved manifest.
         let expected_spec = fetched
             .clone()
             .validate()
@@ -3164,6 +3166,7 @@ mod repository_deployments {
             .normalize(ApplicationId::parse(application_id.as_str()).unwrap())
             .to_manifest()
             .spec;
+        let mut saved_main = false;
         for (revision, expected) in [
             (
                 Some(ManifestRevision::Commit(feature.clone())),
@@ -3172,6 +3175,7 @@ mod repository_deployments {
             (None, main),
             (Some(ManifestRevision::Branch("feature".into())), feature),
         ] {
+            let one_off = revision.clone();
             let deployment =
                 RepositoryFixture::deploy_revision(&harness, &application_id, revision).await;
             assert_eq!(deployment.state, OperationState::Succeeded);
@@ -3179,9 +3183,10 @@ mod repository_deployments {
             assert!(
                 matches!(&stored.resolved.as_ref().unwrap().services[0].source, ResolvedSource::Git { commit, .. } if commit == &expected)
             );
+            saved_main |= one_off.is_none();
             assert_eq!(
-                stored.application.application.to_manifest().spec,
-                expected_spec
+                stored.application.application.to_manifest().spec == expected_spec,
+                saved_main
             );
         }
         // "self" builds the repository the manifest was fetched from, whatever
@@ -5345,30 +5350,35 @@ mod image_retention {
 /// Promoting releases into promoted environments, which never build or fetch.
 mod promotion {
     use super::*;
-    use piqueld::api::{ApplicationError, Mutation, MutationResponse, PromotionMutation};
+    use piqueld::api::ApplicationError;
     use piqueld::store::{PromotionError, StoreError};
     use piqueld_core::api::{
         AcceptedPromotion, DeploymentOrigin, DeploymentView, EnvironmentAccess, PromotionSelection,
         SecretAccess, SecretProblem,
     };
-    use piqueld_core::{EnvironmentName, ReleaseId, manifest::parse_template_toml};
+    use piqueld_core::{ReleaseId, manifest::parse_template_toml};
 
     /// `shop`, whose `web` service renders `ORIGIN` from each environment's
     /// `domain`, with more `staging` and `production` variables, then `spec`.
+    /// It declares `staging`, and `production` promoted from it.
     fn shop_toml(staging: &str, production: &str, spec: &str) -> String {
         format!(
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='shop'\n\
              [spec.environments.staging.variables]\ndomain='staging.example.com'\n{staging}\n\
+             [spec.environments.production]\n{PROMOTED}\
              [spec.environments.production.variables]\ndomain='example.com'\n{production}\n\
              [[spec.services]]\nname='web'\n[spec.services.environment]\nORIGIN='https://${{{{ vars.domain }}}}'\n{spec}"
         )
     }
 
+    /// Declares `production` promoted from `staging` in [`shop_toml`].
+    const PROMOTED: &str = "promote_from='staging'\n";
+
     /// The image source every `shop` deploys unless a test changes it.
     const IMAGE: &str = "[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'";
 
-    /// `shop` saved from `manifest`, with `staging` tracking it and
-    /// `production` promoted from `staging`.
+    /// `shop` saved from `manifest`, which declares `staging` and
+    /// `production`.
     struct Shop {
         harness: ControllerHarness,
         application: ApplicationId,
@@ -5385,38 +5395,29 @@ mod promotion {
                 .await
                 .unwrap();
             let application = ApplicationId::parse(saved.application_id).unwrap();
-            let production = EnvironmentId::default_for(&application);
-            let create = Mutation::CreateEnvironment {
-                application: application.clone(),
-                name: EnvironmentName::parse("staging").unwrap(),
-                source: None,
+            let environments = harness.store.environments(&application).await.unwrap();
+            let named = |name: &str| {
+                environments
+                    .iter()
+                    .find(|environment| environment.name.as_str() == name)
+                    .unwrap()
+                    .id
+                    .clone()
             };
-            let MutationResponse::Environment(staging) = harness
-                .applications()
-                .accept(Daemon, create, None, true, None)
-                .await
-                .unwrap()
-            else {
-                panic!("environment expected")
-            };
-            let shop = Self {
+            let (staging, production) = (named("staging"), named("production"));
+            Self {
                 harness,
                 application,
-                staging: staging.id,
+                staging,
                 production,
-            };
-            shop.set_source(&shop.production, Some(&shop.staging)).await;
-            shop
+            }
         }
 
-        async fn set_source(&self, id: &EnvironmentId, source: Option<&EnvironmentId>) {
-            let mutation = Mutation::Promotion(PromotionMutation::SetSource {
-                id: id.clone(),
-                promote_from: source.cloned(),
-            });
+        /// Saves `manifest` again, converging the environments it declares.
+        async fn save(&self, manifest: &str) {
             self.harness
                 .applications()
-                .accept(Daemon, mutation, None, true, None)
+                .save(parse_template_toml(manifest).unwrap(), None)
                 .await
                 .unwrap();
         }
@@ -5861,31 +5862,33 @@ mod promotion {
     }
 
     /// An environment can't become promoted while a deployment may be
-    /// fetching or building, and retrying a deployment that never prepared
-    /// fails instead of fetching or building once it is promoted.
+    /// fetching or building: its declaration waits for the next convergence.
+    /// Retrying a deployment that never prepared fails instead of fetching or
+    /// building once it is promoted.
     #[tokio::test]
     async fn a_promoted_environment_never_builds_a_deployment_requested_before() {
-        let shop = Shop::new(&shop_toml("", "", IMAGE)).await;
-        shop.set_source(&shop.production, None).await;
+        let promoted = shop_toml("", "", IMAGE);
+        let tracking = promoted.replace(PROMOTED, "");
+        let shop = Shop::new(&tracking).await;
         let requested = shop
             .harness
             .applications()
             .deploy(&shop.production, None)
             .await
             .unwrap();
-        let convert = || {
-            Mutation::Promotion(PromotionMutation::SetSource {
-                id: shop.production.clone(),
-                promote_from: Some(shop.staging.clone()),
-            })
-        };
-        assert!(matches!(
+        let source = || async {
             shop.harness
-                .applications()
-                .accept(Daemon, convert(), None, true, None)
-                .await,
-            Err(ApplicationError::Store(StoreError::Busy))
-        ));
+                .store
+                .get(&shop.production)
+                .await
+                .unwrap()
+                .environment
+                .source
+                .promoted_from()
+                .cloned()
+        };
+        shop.save(&promoted).await;
+        assert_eq!(source().await, None);
 
         // It fails before preparing anything, then the environment is promoted.
         shop.harness
@@ -5903,7 +5906,8 @@ mod promotion {
             .docker
             .incompatible_swarm
             .store(false, Ordering::SeqCst);
-        shop.set_source(&shop.production, Some(&shop.staging)).await;
+        shop.save(&promoted).await;
+        assert_eq!(source().await, Some(shop.staging.clone()));
 
         let pulls = shop.harness.pulls().await;
         let retried = shop

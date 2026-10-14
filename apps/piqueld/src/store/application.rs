@@ -227,7 +227,8 @@ impl Store {
         let id = EnvironmentId::default_for(application.id());
         let source = EnvironmentSource::select(application.spec().manifest.as_ref(), None)?;
         let name = EnvironmentName::default_name();
-        Self::insert_environment_on(tx, application.id(), &id, &name, &source, now).await?;
+        Self::insert_environment_on(tx, application.id(), (&id, &name), &source, false, now)
+            .await?;
         Ok(id)
     }
 

@@ -1,8 +1,8 @@
 //! Typed changes to saved application configuration. No edit performs runtime work.
 use crate::manifest::{
-    ApplicationManifest, Build, EnvironmentConfig, GitRepository, HealthCheck, Job, Mount,
-    RepositoryManifest, ResourceLimits, Rollout, Route, SecretMount, Service, ServiceFile, Source,
-    SourceRepository, Template, Typed, Variable, Visibility, Volume,
+    ApplicationManifest, Build, GitRepository, HealthCheck, Job, Mount, RepositoryManifest,
+    ResourceLimits, Rollout, Route, SecretMount, Service, ServiceFile, Source, SourceRepository,
+    Template, Typed, Variable, Visibility, Volume,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -130,7 +130,8 @@ pub struct Variables {
 
 impl Variables {
     /// Replaces the variable values of `spec`, keeping other environment
-    /// configuration and dropping blocks left empty.
+    /// configuration. Blocks declare environments, so a block left empty is
+    /// kept, and only values add one.
     fn apply(self, spec: &mut crate::manifest::ApplicationSpec) {
         let Self {
             defaults,
@@ -143,10 +144,10 @@ impl Variables {
             config.variables = environments.remove(name).unwrap_or_default();
         }
         for (name, variables) in environments {
-            spec.environments.entry(name).or_default().variables = variables;
+            if !variables.is_empty() {
+                spec.environments.entry(name).or_default().variables = variables;
+            }
         }
-        spec.environments
-            .retain(|_, config| *config != EnvironmentConfig::default());
     }
 
     /// The variable values of `manifest`.
@@ -334,19 +335,8 @@ impl ApplicationEdit {
     pub fn apply(self, manifest: &mut ApplicationManifest) -> Result<(), EditError> {
         match self {
             Self::Name(name) => manifest.metadata.name = name,
-            Self::Repository(value) => {
-                // Disconnecting keeps "self" sources building from the former repository.
-                if value.is_none()
-                    && let Some(previous) = &manifest.spec.manifest
-                {
-                    for service in &mut manifest.spec.services {
-                        if let Source::Git { repository, .. } = &mut service.source {
-                            repository.resolve_manifest(&previous.repository);
-                        }
-                    }
-                }
-                manifest.spec.manifest = value;
-            }
+            Self::Repository(Some(value)) => manifest.spec.manifest = Some(value),
+            Self::Repository(None) => manifest.spec.disconnect(),
             Self::RepositoryUrl(value) => Self::repository(manifest)?.repository.url = value,
             Self::RepositoryPath(value) => Self::repository(manifest)?.path = value,
             Self::RepositorySync(value) => Self::repository(manifest)?.sync = value,

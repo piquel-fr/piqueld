@@ -879,6 +879,47 @@ fn human_plan_keeps_actions_and_diagnostics_when_configuration_matches_the_deplo
     }
 }
 
+/// `app plan` lists how saving the manifest would change the environments it
+/// declares, marking each change.
+#[test]
+fn human_plan_lists_environment_changes() {
+    let directory = tempdir().expect("manifest directory");
+    let manifest = write_manifest(&directory);
+    let server = start_server(true, 1, |_| {
+        let mut preview = plan("app-notes-01");
+        preview["environments"] = json!([
+            {"change": "create", "environment": "staging", "source": {"type": "branch", "branch": "main"}, "sync": true},
+            {"change": "source", "environment": "production",
+             "from": {"type": "branch", "branch": "main"}, "to": {"type": "promoted", "from": "staging"}},
+            {"change": "undeclared", "environment": "qa"},
+        ]);
+        Reply::json(preview)
+    });
+    let output = run_human(
+        &server,
+        &[
+            "app",
+            "plan",
+            "--file",
+            manifest.to_str().expect("manifest path"),
+        ],
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in [
+        "Environments:",
+        "+ staging",
+        "created, deploys from branch main, follows pushes",
+        "~ production",
+        "deploys from releases promoted from staging instead of branch main",
+        "! qa",
+        "no longer declared; kept until deleted with `piquelctl env delete`",
+    ] {
+        assert!(stdout.contains(line), "{line:?} missing from {stdout}");
+    }
+    let _ = server.finish();
+}
+
 #[test]
 fn partial_list_failures_preserve_results_and_context_in_all_modes() {
     for json in [false, true] {

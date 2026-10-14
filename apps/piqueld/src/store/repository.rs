@@ -127,11 +127,16 @@ impl Store {
     /// still follows a branch. Other environments keep their own.
     ///
     /// While the application is still repository-backed, a manifest an
-    /// environment fetched, with the application's own connection, also
-    /// becomes its saved manifest: what application-wide views show and what
-    /// environments deploy after disconnecting. A preview's branch never does. Records `application_applied` when either changed;
-    /// neither advances the application revision, since repository-backed
-    /// configuration cannot be edited.
+    /// environment fetched from the branch and commit `spec.manifest` names,
+    /// with the application's own connection, also becomes its saved manifest:
+    /// what application-wide views show, what environments deploy after
+    /// disconnecting, and what declares its environments, to which they are
+    /// converged (see `converge_environments_on`). Other branches, one-off
+    /// revisions and previews never do. Records `application_applied` when
+    /// either manifest changed; neither advances the application revision,
+    /// since repository-backed configuration cannot be edited, unless
+    /// converging changed the source of an environment with a deployment in
+    /// progress, which then leaves it unresolved.
     /// Fails with `secret_name_conflict` when the application's store now holds
     /// a name the fetched manifest declares.
     /// Called in the same transaction that saves the fully prepared runtime target.
@@ -152,10 +157,10 @@ impl Store {
         };
         let fetched: ApplicationTemplate =
             serde_json::from_str(&row.application_json).map_err(StoreError::corrupt)?;
-        let application = Self::application_on(tx, fetched.id().as_str())
+        let stored = Self::application_on(tx, fetched.id().as_str())
             .await?
-            .ok_or(StoreError::NotFound)?
-            .application;
+            .ok_or(StoreError::NotFound)?;
+        let application = stored.application;
         // A secret stored since the manifest was fetched may now share a name
         // with one of its declarations.
         Self::check_declared_against_store_on(
@@ -186,11 +191,23 @@ impl Store {
         // environment may have fetched since.
         if let (EnvironmentKind::Environment, Some(connection)) =
             (fetching, application.spec().manifest.clone())
+            && Self::fetched_connection_on(tx, operation, &fetched, &connection).await?
         {
-            let saved = fetched
-                .with_manifest(Some(connection))
-                .canonical_json()
-                .map_err(StoreError::corrupt)?;
+            let saved = fetched.with_manifest(Some(connection));
+            if Self::converge_environments_on(
+                tx,
+                application.id(),
+                &saved
+                    .spec()
+                    .declared_environments_since(Some(application.spec()))?,
+                (false, Some(&operation.environment_id)),
+                now,
+            )
+            .await?
+            {
+                Self::bump_generation_on(tx, application.id(), stored.generation, None).await?;
+            }
+            let saved = saved.canonical_json().map_err(StoreError::corrupt)?;
             let id = application.id().as_str();
             changed += sqlx::query!(
                 "UPDATE applications SET desired_json=?1,updated_at_ms=?2 WHERE id=?3 AND desired_json IS NOT ?1",
@@ -207,6 +224,41 @@ impl Store {
             Self::operation_event(tx, &operation.id, "application_applied", None, now).await?;
         }
         Ok(())
+    }
+
+    /// Whether `fetched`, the manifest `operation` fetched, came from the
+    /// revision `connection` names. Its own connection is the revision it was
+    /// fetched from; sync pins the head it listed of a branch it follows, so
+    /// its deployments of the connection's unpinned branch count too.
+    async fn fetched_connection_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        operation: &Operation,
+        fetched: &ApplicationTemplate,
+        connection: &piqueld_core::manifest::RepositoryManifest,
+    ) -> Result<bool, StoreError> {
+        let Some(fetched) = fetched
+            .spec()
+            .manifest
+            .as_ref()
+            .map(|fetched| &fetched.repository)
+        else {
+            return Ok(false);
+        };
+        let wanted = &connection.repository;
+        if fetched == wanted {
+            return Ok(true);
+        }
+        if fetched.url != wanted.url || fetched.branch != wanted.branch || wanted.commit.is_some() {
+            return Ok(false);
+        }
+        let synced = sqlx::query_scalar!(
+            r#"SELECT actor_system IS NOT NULL AS "synced!: bool" FROM operations WHERE id=?1"#,
+            operation.id
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        Ok(synced)
     }
 }
 
@@ -352,7 +404,18 @@ mod tests {
         else {
             panic!("operation")
         };
-        let op = store.operation(&accepted.operation_id).await.unwrap();
+        prepared(store, environment, &accepted.operation_id, spec).await
+    }
+
+    /// Runs operation `id` of `environment` through fetching a manifest with
+    /// `spec`, returning it and the target it prepares.
+    async fn prepared(
+        store: &Store,
+        environment: &EnvironmentId,
+        id: &str,
+        spec: &str,
+    ) -> (Operation, piqueld_core::ResolvedApplication) {
+        let op = store.operation(id).await.unwrap();
         store
             .transition_operation(
                 &op.id,
@@ -363,12 +426,16 @@ mod tests {
             .await
             .unwrap();
         let current = store.get(environment).await.unwrap();
-        let fetched = piqueld_core::manifest::parse_template_toml(&format!(
+        // As fetching does, the connection replaces the file's own before validation.
+        let mut fetched = piqueld_core::manifest::ApplicationManifest::decode_toml(&format!(
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{spec}"
         ))
-        .unwrap()
-        .normalize(current.application.application.id().clone())
-        .with_manifest(current.tracking().unwrap().repository());
+        .unwrap();
+        fetched.spec.manifest = current.tracking().unwrap().repository();
+        let fetched = fetched
+            .validate_template()
+            .unwrap()
+            .normalize(current.application.application.id().clone());
         let rendering = current.render(&fetched, &op.id).unwrap();
         store
             .save_deployment_input(
@@ -537,7 +604,7 @@ mod tests {
         fetch(
             &store,
             &production,
-            &format!("{service}\n[[spec.routes]]\nhostname='notes.example.com'\nservice='web'\nport=80\n[spec.environments.qa.variables]\nlevel='debug'"),
+            &format!("{service}\n[[spec.routes]]\nhostname='notes.example.com'\nservice='web'\nport=80\n[spec.environments.production.variables]\nlevel='debug'"),
         )
         .await;
         // Staging has fetched nothing yet, so it reserves nothing.
@@ -555,7 +622,7 @@ mod tests {
         assert_eq!(reserved(&production).await, ["notes.example.com"]);
         assert_eq!(reserved(&staging.id).await, ["staging.example.com"]);
         assert_eq!(store.get(&production).await.unwrap().own, before);
-        // Only production's own manifest configures `qa`.
+        // Only production's own manifest configures `production`.
         let rename = |id: &EnvironmentId| Mutation::RenameEnvironment {
             id: id.clone(),
             name: piqueld_core::EnvironmentName::parse("qa").unwrap(),
@@ -614,6 +681,202 @@ mod tests {
             "{}[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'",
             if declared { secret } else { "" }
         )
+    }
+
+    /// Fetching a manifest from the branch `spec.manifest` names converges
+    /// the environments it declares, including the fetching one, whose own
+    /// deployment is past building; other branches never do.
+    #[tokio::test]
+    async fn fetches_of_the_connection_branch_converge_declared_environments() {
+        use piqueld_core::{EnvironmentSource, TrackedBranch};
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let polled = piqueld_core::manifest::parse_template_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec.manifest]\npath='app.toml'\nsync={mode='poll'}\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='main'").unwrap();
+        let (MutationResponse::Saved(saved), _) = store
+            .accept(
+                Daemon,
+                Mutation::save(polled, None, false),
+                Some(0),
+                false,
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("saved")
+        };
+        let application = ApplicationId::parse(&saved.application_id).unwrap();
+        let production = EnvironmentId::default_for(&application);
+        let declared = format!(
+            "[spec.environments.staging]\nsync=true\n[spec.environments.production]\npromote_from='staging'\n[spec.environments.canary]\nbranch='next'\n{}",
+            token_spec(false)
+        );
+        fetch(&store, &production, &declared).await;
+        let environments = store.environments(&application).await.unwrap();
+        let named = |name: &str| {
+            environments
+                .iter()
+                .find(|environment| environment.name.as_str() == name)
+                .unwrap()
+                .clone()
+        };
+        let (staging, canary) = (named("staging"), named("canary"));
+        assert_eq!(
+            staging.source,
+            EnvironmentSource::Branch(TrackedBranch::new("main".into(), None).unwrap())
+        );
+        assert!(staging.sync);
+        assert_eq!(
+            canary.source,
+            EnvironmentSource::Branch(TrackedBranch::new("next".into(), None).unwrap())
+        );
+        assert_eq!(
+            named("production").source.promoted_from(),
+            Some(&staging.id)
+        );
+
+        // A manifest on another branch declares nothing.
+        fetch(&store, &canary.id, &token_spec(false)).await;
+        assert_eq!(store.environments(&application).await.unwrap().len(), 3);
+        // Sync pins the head it listed, and still fetches `main`.
+        let id = staging.id.as_str();
+        let first = "a".repeat(40);
+        sqlx::query!(
+            "UPDATE environments SET synced_commit=?1,synced_at_ms=1 WHERE id=?2",
+            first,
+            id
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let (MutationResponse::Synced(crate::api::SyncOutcome::Deployed(synced)), _) = store
+            .accept(
+                crate::api::Actor::System(piqueld_core::sync::SystemActor::SyncPoll),
+                Mutation::Sync(crate::api::ListedHead {
+                    id: staging.id.clone(),
+                    repository: "https://example.com/notes.git".into(),
+                    branch: piqueld_core::GitBranch::parse("main").unwrap(),
+                    head: "b".repeat(40),
+                    since: store.get(&staging.id).await.unwrap().environment.synced,
+                }),
+                None,
+                false,
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("sync deployment expected")
+        };
+        let (op, target) = prepared(
+            &store,
+            &staging.id,
+            &synced.operation_id,
+            &format!("{declared}\n[spec.environments.qa]\n"),
+        )
+        .await;
+        store.save_prepared(&op, &target).await.unwrap();
+        assert_eq!(store.environments(&application).await.unwrap().len(), 4);
+        // The next one from `main` stops staging syncing, and leaves canary
+        // and qa, no longer declared, as they are.
+        fetch(
+            &store,
+            &staging.id,
+            &format!(
+                "[spec.environments.staging]\n[spec.environments.production]\npromote_from='staging'\n{}",
+                token_spec(false)
+            ),
+        )
+        .await;
+        let environments = store.environments(&application).await.unwrap();
+        assert_eq!(environments.len(), 4);
+        assert!(!environments.iter().any(|environment| environment.sync));
+    }
+
+    /// A fetch that changes an environment's source leaves it unresolved, and
+    /// advances the revision when a deployment of it in progress would
+    /// resolve it again, as changing it with `env branch` does.
+    #[tokio::test]
+    async fn fetched_source_changes_leave_environments_unresolved() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let application = saved_connection(&store).await;
+        let production = EnvironmentId::default_for(&application);
+        let canary = |branch: &str| {
+            format!(
+                "[spec.environments.canary]\nbranch='{branch}'\n{}",
+                token_spec(false)
+            )
+        };
+        fetch(&store, &production, &canary("next")).await;
+        let id = store
+            .environments(&application)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|environment| environment.name.as_str() == "canary")
+            .unwrap()
+            .id;
+        let canary_id = id.as_str();
+        sqlx::query!(
+            "UPDATE environments SET resolved_generation=(SELECT generation FROM applications) WHERE id=?1",
+            canary_id
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let generation = store.get(&id).await.unwrap().application.generation;
+        fetch(&store, &production, &canary("release")).await;
+        let current = store.get(&id).await.unwrap();
+        assert_eq!(current.environment.resolved_generation, None);
+        assert_eq!(current.application.generation, generation);
+
+        store
+            .accept(Daemon, Mutation::deploy(id.clone()), None, false, None)
+            .await
+            .unwrap();
+        fetch(&store, &production, &canary("beta")).await;
+        assert_eq!(
+            store.get(&id).await.unwrap().application.generation,
+            generation + 1
+        );
+    }
+
+    /// The saved manifest's declarations hold their names even for an
+    /// environment whose own fetched manifest, from another branch, has no
+    /// block: renaming it would leave the declaration to recreate it.
+    #[tokio::test]
+    async fn declared_environments_keep_their_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let application = saved_connection(&store).await;
+        let production = EnvironmentId::default_for(&application);
+        fetch(
+            &store,
+            &production,
+            &format!(
+                "[spec.environments.staging]\nbranch='release'\n{}",
+                token_spec(false)
+            ),
+        )
+        .await;
+        let staging = store
+            .environments(&application)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|environment| environment.name.as_str() == "staging")
+            .unwrap()
+            .id;
+        fetch(&store, &staging, &token_spec(false)).await;
+        let rename = Mutation::RenameEnvironment {
+            id: staging,
+            name: piqueld_core::EnvironmentName::parse("qa").unwrap(),
+        };
+        assert!(matches!(
+            store.accept(Daemon, rename, None, true, None).await,
+            Err(StoreError::EnvironmentDeclared { environment }) if environment.as_str() == "staging"
+        ));
     }
 
     /// A secret stored after a manifest was fetched but before it is accepted

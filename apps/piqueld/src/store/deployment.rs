@@ -103,8 +103,10 @@ impl Store {
     }
 
     /// Saves edited configuration with the next generation without creating an
-    /// operation, so nothing is deployed until requested. New applications get a
-    /// `production` environment that starts as `not_deployed`. Returns
+    /// operation, so nothing is deployed until requested. Converges the
+    /// environments to the ones it declares (see `converge_environments_on`);
+    /// new applications that declare none get a `production` environment.
+    /// New environments start as `not_deployed`. Returns
     /// `IllegalTransition` while deletion is pending, `AlreadyExists` for a taken
     /// name, `SecretDeleting` for manifests that reference secrets being deleted,
     /// and `secret_name_conflict` for declared secrets the application stores.
@@ -128,19 +130,13 @@ impl Store {
         )
         .await?;
         Self::check_declared_against_store_on(tx, id, &app.spec().secrets).await?;
+        let current = Self::application_on(tx, id)
+            .await?
+            .map(|current| current.application);
         // What sync followed in another repository says nothing about this one.
-        let previous_url = Self::application_on(tx, id).await?.and_then(|current| {
-            Some(
-                current
-                    .application
-                    .spec()
-                    .manifest
-                    .as_ref()?
-                    .repository
-                    .url
-                    .clone(),
-            )
-        });
+        let previous_url = current
+            .as_ref()
+            .and_then(|current| Some(current.spec().manifest.as_ref()?.repository.url.clone()));
         let previous = Self::generation_on(tx, id, expected).await?;
         let generation = previous.checked_add(1).ok_or(StoreError::InvalidInput)?;
         let json = serde_json::to_string(app).map_err(StoreError::corrupt)?;
@@ -151,14 +147,20 @@ impl Store {
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
-        if previous == 0 {
+        let declarations = app
+            .spec()
+            .declared_environments_since(current.as_ref().map(ApplicationTemplate::spec))?;
+        if previous == 0 && declarations.is_empty() {
             Self::create_default_environment_on(tx, app, now).await?;
         }
         Self::follow_connection_on(tx, app, previous_url.as_deref()).await?;
+        Self::converge_environments_on(tx, app.id(), &declarations, (previous == 0, None), now)
+            .await?;
         Ok(SavedApplication {
             application_id: id.into(),
             generation: u64::try_from(generation).map_err(StoreError::corrupt)?,
             operation_id: None,
+            operation_ids: Vec::new(),
         })
     }
 

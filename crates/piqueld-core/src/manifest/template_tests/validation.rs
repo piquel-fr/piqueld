@@ -102,6 +102,7 @@ fn declarations_validate_names_values_and_only_the_first_bad_reference() {
                     EnvironmentConfig {
                         visibility: Visibility::Public,
                         variables: std::collections::BTreeMap::from([(name.into(), value.clone())]),
+                        ..EnvironmentConfig::default()
                     },
                 );
                 format!("spec.environments.production.variables.{name}")
@@ -147,6 +148,7 @@ fn variable_limits_accept_boundaries_and_reject_one_more() {
                     EnvironmentConfig {
                         visibility: Visibility::Public,
                         variables,
+                        ..EnvironmentConfig::default()
                     },
                 );
             } else {
@@ -210,6 +212,7 @@ fn unicode_diagnostic_keys_truncate_on_byte_boundaries_and_echo_on_characters() 
         EnvironmentConfig {
             visibility: Visibility::Public,
             variables: std::collections::BTreeMap::from([(key.clone(), Variable::Integer(1))]),
+            ..EnvironmentConfig::default()
         },
     );
     spec.services[0]
@@ -224,6 +227,7 @@ fn unicode_diagnostic_keys_truncate_on_byte_boundaries_and_echo_on_characters() 
     }
     let mut errors = Vec::new();
     spec.check_variables(&mut errors);
+    errors.extend(spec.declared_environments().unwrap_err().0);
     let errors = ValidationErrors::sorted(errors);
     let short = "é".repeat(127);
     assert_eq!(
@@ -283,6 +287,7 @@ fn references_check_declarations_and_repository_availability_before_rendering() 
         EnvironmentConfig {
             visibility: Visibility::Public,
             variables: std::collections::BTreeMap::from([("only".into(), Variable::Boolean(true))]),
+            ..EnvironmentConfig::default()
         },
     );
     manifest.spec.services[0].command = vec!["${{vars.only}}".into()];

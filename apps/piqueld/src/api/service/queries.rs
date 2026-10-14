@@ -3,8 +3,8 @@ use super::views::{application_view, detail_diagnostics, observed_view, status_v
 use super::{ApplicationError, ApplicationService, BoundaryError};
 use crate::store::{StoreError, StoredEnvironment};
 use piqueld_core::{
-    ApplicationId, EnvironmentId, EnvironmentName, NormalizedApplication, ObservedApplication,
-    Plan, PlanRequest, ResolutionSet,
+    ApplicationId, EnvironmentId, NormalizedApplication, ObservedApplication, Plan, PlanRequest,
+    ResolutionSet,
     access::{AppPermission, Grants, Scope, Target},
     api::{
         ApplicationSummary, ApplicationView, DiagnosticView, EnvironmentDetailView,
@@ -12,7 +12,9 @@ use piqueld_core::{
         PlanView, RouteUrl, ServiceRolloutView,
     },
     compile_application,
-    manifest::{RenderContext, RenderTarget, Rendering, RepositoryManifest, ValidatedTemplate},
+    manifest::{
+        Declaration, RenderContext, RenderTarget, Rendering, RepositoryManifest, ValidatedTemplate,
+    },
     preview_resolution,
 };
 
@@ -219,9 +221,9 @@ impl ApplicationService {
     /// manifest (no baseline after a delete). Without an environment and with
     /// several, diffs the saved manifest without rendering or a runtime plan,
     /// since apply deploys none of them. A new application renders for its
-    /// first environment. An `environment` of another application is
-    /// `NotFound`. `[spec.environments.<name>]` blocks naming no environment
-    /// are warnings. Like a deployment, the rendering fails with
+    /// first environment that builds. An `environment` of another application
+    /// is `NotFound`. Lists how saving it would change the application's
+    /// environments, and the ones it no longer declares. Like a deployment, the rendering fails with
     /// `secret_access_denied` when it mounts a stored secret the environment
     /// may not use.
     /// # Errors
@@ -248,6 +250,10 @@ impl ApplicationService {
             Some(_) => self.store.environments(&id).await?,
             None => Vec::new(),
         };
+        let declarations = template
+            .spec()
+            .declared_environments_since(current.as_ref().map(|current| current.application.spec()))
+            .map_err(StoreError::from)?;
         let environment = self
             .plan_environment(environment, current.is_some(), &id, &environments)
             .await?;
@@ -292,10 +298,9 @@ impl ApplicationService {
                 Plan::default(),
             )
         } else {
-            let rendering = render(
-                RenderTarget::Environment(EnvironmentName::default_name()),
-                None,
-            )?;
+            // What `apply --deploy` deploys first.
+            let first = Declaration::first_building(&declarations);
+            let rendering = render(RenderTarget::Environment(first), None)?;
             let environment = EnvironmentId::default_for(&id);
             let plan = self
                 .preview_plan(&rendering.application, &environment, None)
@@ -303,14 +308,10 @@ impl ApplicationService {
             let changes = ManifestChange::between(None, &rendering.application.spec().to_input());
             (None, false, changes, Some(rendering), plan)
         };
-        let names = match &current {
-            Some(_) => environments
-                .into_iter()
-                .map(|environment| environment.name)
-                .collect(),
-            None => vec![EnvironmentName::default_name()],
-        };
-        plan.warn_environments(&template, &names);
+        let environments = template
+            .spec()
+            .environment_changes(&declarations, current.is_some().then_some(&environments))
+            .map_err(StoreError::from)?;
         let (rollouts, variables) = match rendering {
             Some(rendering) => {
                 plan.warn_rollouts(&rendering.application);
@@ -327,6 +328,7 @@ impl ApplicationService {
             identical,
             operation,
             changes,
+            environments,
             plan,
             rollouts,
             variables,

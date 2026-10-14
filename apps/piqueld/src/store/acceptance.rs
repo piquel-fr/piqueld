@@ -815,6 +815,7 @@ impl Store {
         let id = current.application.id().clone();
         let mut manifest = current.application.to_manifest();
         edit.clone().apply(&mut manifest)?;
+        Self::declare_edited_on(tx, &id, current.application.spec(), &mut manifest.spec).await?;
         let application = manifest.validate_template()?.normalize(id.clone());
         let field = match &edit {
             ApplicationEdit::Name(_) => "name",
@@ -845,6 +846,7 @@ impl Store {
                 application_id: renamed.application_id,
                 generation: renamed.generation,
                 operation_id: None,
+                operation_ids: Vec::new(),
             }
         } else {
             let saved =
@@ -862,22 +864,50 @@ impl Store {
         })
     }
 
-    /// When `deploy` is set, starts a deployment of the just-saved configuration
-    /// to the application's only environment, from its branch when
-    /// repository-backed, and records its operation ID on `saved`.
+    /// When `deploy` is set, starts a deployment of the just-saved
+    /// configuration, from its branch when repository-backed, to the
+    /// application's only environment or, when its manifest declares
+    /// environments, to every declared one that builds: promoted ones wait
+    /// for a promotion. Records the operation IDs on `saved`.
     async fn deploy_saved(
         tx: &mut Transaction<'_, Sqlite>,
         id: &ApplicationId,
         saved: &mut piqueld_core::api::SavedApplication,
         deploy: bool,
     ) -> Result<(), StoreError> {
-        if deploy {
-            let environment = Self::sole_environment_on(tx, id).await?;
+        if !deploy {
+            return Ok(());
+        }
+        let application = Self::application_on(tx, id.as_str())
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        let declared = &application.application.spec().environments;
+        let targets = if declared.is_empty() {
+            vec![Self::sole_environment_on(tx, id).await?]
+        } else {
+            Self::environments_on(tx, id.as_str())
+                .await?
+                .into_iter()
+                // Including those whose change to promoted is still waiting
+                // for a deployment in progress.
+                .filter(|environment| {
+                    declared
+                        .get(environment.name.as_str())
+                        .is_some_and(|config| config.promote_from.is_none())
+                        && !environment.delete_intent
+                        && environment.source.promoted_from().is_none()
+                })
+                .map(|environment| environment.id)
+                .collect()
+        };
+        for environment in targets {
             let environment = Self::environment_on(tx, environment.as_str())
                 .await?
                 .ok_or(StoreError::NotFound)?;
-            saved.operation_id = Some(Self::deploy_revision_on(tx, &environment, None).await?.id);
+            let operation = Self::deploy_revision_on(tx, &environment, None).await?;
+            saved.operation_ids.push(operation.id);
         }
+        saved.operation_id = saved.operation_ids.first().cloned();
         Ok(())
     }
 
@@ -1098,8 +1128,8 @@ mod tests {
         ));
     }
 
-    /// Saves a manifest configuring `staging` and `preview`, then creates the
-    /// environments `staging` and `qa`.
+    /// Saves a manifest declaring `staging` and `preview`, then creates the
+    /// environment `qa`.
     async fn configured_environments(store: &Store) -> (EnvironmentId, EnvironmentId) {
         let (_, [staging, qa]) = environments(
             store,
@@ -1110,7 +1140,8 @@ mod tests {
         (staging, qa)
     }
 
-    /// Saves the application `notes` with `spec`, then creates the environments `names`.
+    /// Saves the application `notes` with `spec`, then creates the
+    /// environments `names` it doesn't declare.
     async fn environments<const N: usize>(
         store: &Store,
         spec: &str,
@@ -1134,8 +1165,16 @@ mod tests {
             panic!("saved response")
         };
         let application = ApplicationId::parse(saved.application_id).unwrap();
+        let declared = store.environments(&application).await.unwrap();
         let mut ids = Vec::new();
         for name in names {
+            if let Some(environment) = declared
+                .iter()
+                .find(|environment| environment.name.as_str() == name)
+            {
+                ids.push(environment.id.clone());
+                continue;
+            }
             let create = Mutation::CreateEnvironment {
                 application: application.clone(),
                 name: EnvironmentName::parse(name).unwrap(),
@@ -1257,6 +1296,225 @@ mod tests {
         assert_eq!(
             store.get(&qa).await.unwrap().environment.name.as_str(),
             "testing"
+        );
+    }
+
+    /// A manifest that declares environments creates exactly those, owns
+    /// their sources, and deploys the ones that build; one it no longer
+    /// declares keeps running until deleted explicitly.
+    #[tokio::test]
+    async fn declared_environments_are_managed_by_the_manifest() {
+        use piqueld_core::EnvironmentSource;
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let service = "[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'\n";
+        let save = |spec: String, deploy: bool| {
+            let template = piqueld_core::manifest::parse_template_toml(&format!(
+                "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{service}{spec}"
+            ))
+            .unwrap();
+            let store = &store;
+            async move {
+                let (MutationResponse::Saved(saved), _) = store
+                    .accept(
+                        Actor::Daemon,
+                        Mutation::save(template, None, deploy),
+                        None,
+                        true,
+                        None,
+                    )
+                    .await
+                    .unwrap()
+                else {
+                    panic!("saved response")
+                };
+                saved
+            }
+        };
+        let saved = save(
+            "[spec.environments.staging]\n[spec.environments.production]\npromote_from='staging'\n"
+                .into(),
+            true,
+        )
+        .await;
+        let application = ApplicationId::parse(&saved.application_id).unwrap();
+        let named = async |name: &str| {
+            store
+                .environments(&application)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|environment| environment.name.as_str() == name)
+        };
+        let (staging, production) = (
+            named("staging").await.unwrap(),
+            named("production").await.unwrap(),
+        );
+        assert_eq!(staging.source, EnvironmentSource::Saved);
+        assert_eq!(production.source.promoted_from(), Some(&staging.id));
+        // Only staging builds; production waits for a promotion.
+        let [deployment] = saved.operation_ids.as_slice() else {
+            panic!("one deployment expected")
+        };
+        assert_eq!(
+            store.operation(deployment).await.unwrap().environment_id,
+            staging.id
+        );
+
+        // Imperative changes to declared environments are refused.
+        for refused in [
+            Mutation::CreateEnvironment {
+                application: application.clone(),
+                name: staging.name.clone(),
+                source: None,
+            },
+            Mutation::Delete {
+                id: production.id.clone(),
+            },
+            Mutation::Promotion(PromotionMutation::SetSource {
+                id: production.id.clone(),
+                promote_from: None,
+            }),
+        ] {
+            assert!(matches!(
+                store.accept(Actor::Daemon, refused, None, true, None).await,
+                Err(StoreError::EnvironmentDeclared { .. })
+            ));
+        }
+
+        // Production builds again, and qa is created; staging, undeclared,
+        // stays until deleted explicitly.
+        save(
+            "[spec.environments.production]\n[spec.environments.qa.variables]\nlevel='debug'\n"
+                .into(),
+            false,
+        )
+        .await;
+        assert_eq!(
+            named("production").await.unwrap().source,
+            EnvironmentSource::Saved
+        );
+        assert!(named("qa").await.is_some());
+        store
+            .accept(
+                Actor::Daemon,
+                Mutation::Delete { id: staging.id },
+                None,
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Blocks that set no source, as every block did before blocks declared
+    /// sources, keep the source an environment was given with `env source`
+    /// across saves, and still allow changing it that way.
+    #[tokio::test]
+    async fn blocks_without_a_source_keep_existing_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let spec = "[spec.environments.staging.variables]\nlevel='debug'\n[spec.environments.production.variables]\nlevel='info'\n";
+        let (application, [staging, production]) =
+            environments(&store, spec, ["staging", "production"]).await;
+        let promote = Mutation::Promotion(PromotionMutation::SetSource {
+            id: production.clone(),
+            promote_from: Some(staging.clone()),
+        });
+        store
+            .accept(Actor::Daemon, promote, None, true, None)
+            .await
+            .unwrap();
+        let template = piqueld_core::manifest::parse_template_toml(&format!(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{spec}"
+        ))
+        .unwrap();
+        store
+            .accept(
+                Actor::Daemon,
+                Mutation::save(template, Some(application.to_string()), false),
+                None,
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+        let source = store.get(&production).await.unwrap().environment.source;
+        assert_eq!(source.promoted_from(), Some(&staging));
+    }
+
+    /// Edits configure existing environments: one adding a block for a name
+    /// no environment has, such as a typo, is refused instead of declaring
+    /// an environment no edit could remove.
+    #[tokio::test]
+    async fn edits_declare_no_new_environments() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (application, _) =
+            environments(&store, "[spec.environments.staging]\n", ["staging"]).await;
+        let typo = Mutation::Edit {
+            id: application.clone(),
+            edit: Box::new(piqueld_core::edit::ApplicationEdit::EnvironmentVisibility {
+                environment: "stagign".into(),
+                visibility: piqueld_core::manifest::Visibility::Private,
+            }),
+            deploy: false,
+        };
+        assert!(matches!(
+            store.accept(Actor::Daemon, typo, None, true, None).await,
+            Err(StoreError::EnvironmentUnknown { environment }) if environment == "stagign"
+        ));
+        assert_eq!(store.environments(&application).await.unwrap().len(), 1);
+    }
+
+    /// `apply --deploy` never builds an environment its manifest makes
+    /// promoted, even while that change waits for a deployment in progress.
+    #[tokio::test]
+    async fn deploying_a_save_skips_environments_becoming_promoted() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let service = "[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'\n[spec.environments.staging]\n";
+        let save = async |production: &str| {
+            let template = piqueld_core::manifest::parse_template_toml(&format!(
+                "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{service}[spec.environments.production]\n{production}"
+            ))
+            .unwrap();
+            let (MutationResponse::Saved(saved), _) = store
+                .accept(
+                    Actor::Daemon,
+                    Mutation::save(template, None, true),
+                    None,
+                    true,
+                    None,
+                )
+                .await
+                .unwrap()
+            else {
+                panic!("saved response")
+            };
+            saved
+        };
+        // Both build, and production's deployment is still in progress.
+        assert_eq!(save("").await.operation_ids.len(), 2);
+        let saved = save("promote_from='staging'\n").await;
+        let application = ApplicationId::parse(&saved.application_id).unwrap();
+        let production = EnvironmentId::default_for(&application);
+        assert!(
+            store
+                .get(&production)
+                .await
+                .unwrap()
+                .environment
+                .source
+                .promoted_from()
+                .is_none()
+        );
+        let [deployment] = saved.operation_ids.as_slice() else {
+            panic!("only staging deploys")
+        };
+        assert_ne!(
+            store.operation(deployment).await.unwrap().environment_id,
+            production
         );
     }
 

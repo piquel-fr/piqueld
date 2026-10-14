@@ -526,7 +526,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path().join("db")).await.unwrap();
         let template = piqueld_core::manifest::parse_template_toml(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec.variables]\ndomain='piquel.fr'\n[spec.environments.staging.variables]\ndomain='staging.piquel.fr'\n[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='nginx:alpine'\n[[spec.routes]]\nhostname='${{ vars.domain }}'\nservice='web'\nport=80",
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec.variables]\ndomain='piquel.fr'\n[spec.environments.production]\n[spec.environments.staging.variables]\ndomain='staging.piquel.fr'\n[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='nginx:alpine'\n[[spec.routes]]\nhostname='${{ vars.domain }}'\nservice='web'\nport=80",
         )
         .unwrap();
         let (MutationResponse::Saved(saved), _) = store
@@ -543,18 +543,14 @@ mod tests {
             panic!("saved response")
         };
         let application = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
-        let staging = Mutation::CreateEnvironment {
-            application: application.clone(),
-            name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
-            source: None,
-        };
-        let (MutationResponse::Environment(staging), _) = store
-            .accept(crate::api::Actor::Daemon, staging, None, true, None)
+        // The manifest declares both environments.
+        let staging = store
+            .environments(&application)
             .await
             .unwrap()
-        else {
-            panic!("environment response")
-        };
+            .into_iter()
+            .find(|environment| environment.name.as_str() == "staging")
+            .unwrap();
         let production = EnvironmentId::default_for(&application);
         let mut deployed = Vec::new();
         for environment in [&production, &staging.id] {

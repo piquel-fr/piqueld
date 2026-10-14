@@ -181,7 +181,7 @@ impl EnvironmentSource {
             }
             (None, None) => Ok(Self::Saved),
             (None, Some(_)) => Err(ValidationErrors(vec![ValidationError {
-                code: "manifest_repository_required".into(),
+                code: crate::codes::MANIFEST_REPOSITORY_REQUIRED.into(),
                 path: "branch".into(),
                 message: "only environments of a repository-backed application follow a branch; connect a manifest repository first".into(),
             }])),

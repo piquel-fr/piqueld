@@ -1,5 +1,6 @@
 //! Public application manifests and their validated, canonical domain model.
 
+pub mod declaration;
 pub(crate) mod dependencies;
 pub mod domain;
 pub mod files;
@@ -12,6 +13,7 @@ pub mod template;
 #[cfg(test)]
 mod template_tests;
 pub mod variables;
+pub use declaration::{Declaration, DeclaredSource, EnvironmentChange};
 pub use domain::{
     HealthExecution, SecretSource, ValidatedBuild, ValidatedHealthCheck, ValidatedResourceLimits,
     ValidatedSecretMount, ValidatedSource,

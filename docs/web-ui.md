@@ -339,8 +339,9 @@ shared by every environment, and, when connecting, the branch and optional commi
 every environment starts following. Deploy fetches that file from the
 environment's branch before preparing service sources. While backing is enabled,
 edit runtime configuration in Git; the repository and path remain editable here.
-The application page shows the manifest last fetched by any environment, and
-reloads it after a fetch unless repository settings are being edited.
+The application page shows the manifest last fetched from the branch
+`spec.manifest` names, and reloads it after a fetch unless repository settings
+are being edited.
 
 Each environment of a repository-backed application follows its own branch.
 **New environment** asks for the branch (by default the one `spec.manifest`
@@ -357,7 +358,19 @@ releases promoted from it. The card says what the environment does now and what 
 selected choice would do; **Save source** applies it, redeploying nothing. A promoted
 environment's card links to its source.
 **New environment** can create a promoted environment directly. Its Variables
-card reads the manifest of the release last promoted into it. A deployment's Snapshot shows the manifest path and revision it was fetched
+card reads the manifest of the release last promoted into it.
+
+When the manifest [declares environments](application-manifest.md#declared-environments),
+it owns their existence, so **Rename environment** and **Delete environment** are disabled for them, and,
+when an environment's `[spec.environments.<name>]` block sets its source, its
+source and deploy on push: its **Source** card then names that block and is
+read-only, and so is **Deploy on push**. A
+**Differs from the manifest** card above the Environments list shows changes
+waiting for the manifest's next save or fetch, and environments it no longer
+declares (*Not declared*), which keep running until deleted. **New environment**
+then says that environments it creates aren't declared.
+
+A deployment's Snapshot shows the manifest path and revision it was fetched
 from, and a warning when the fetched file's own `spec.manifest` names another
 repository or path (`manifest_connection_ignored`); that section is ignored.
 

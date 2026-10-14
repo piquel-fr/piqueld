@@ -7,6 +7,7 @@ mod application;
 mod audit;
 mod auth;
 mod build;
+mod declaration;
 mod deployment;
 mod environment;
 mod event;
@@ -222,6 +223,24 @@ pub enum StoreError {
     EnvironmentConfigured {
         /// Old or new name that has a block.
         environment: EnvironmentName,
+    },
+    /// The saved manifest declares the environment, so it owns whether the
+    /// environment exists and where it deploys from.
+    #[error(
+        "the manifest declares [spec.environments.{environment}], so it decides where {environment} deploys from and whether it exists; change that block instead"
+    )]
+    EnvironmentDeclared {
+        /// The declared environment.
+        environment: EnvironmentName,
+    },
+    /// An edit would add a block, declaring an environment, for a name no
+    /// environment has.
+    #[error(
+        "no environment is named {environment}; declare new environments by adding a [spec.environments.{environment}] block with `piquelctl app apply`"
+    )]
+    EnvironmentUnknown {
+        /// The name no environment has.
+        environment: String,
     },
     /// A promotion, or a promoted environment's source, was refused.
     #[error(transparent)]

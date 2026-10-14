@@ -4,12 +4,12 @@ use crate::{deployments::Deployed, profiles::ProfileSummary};
 use piqueld_client::{
     AcceptedOperation, AcceptedPromotion, ActionReason, ActionRisk, ApplicationId, ApplicationLogs,
     ApplicationSummary, ApplicationView, BranchState, BuildLogPage, BuildRecord, CreatedPreview,
-    DeletedApplication, DeletedPreview, DeploymentOrigin, DnsStatus, EnvironmentDetailView,
-    EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event, FileSource, ImageStatus,
-    LocalSnapshot, MountedSecret, Operation, OperationState, Page, PlanView, PreviewUsage,
-    PreviewView, ReleaseAvailability, ReleaseId, ReleasePlan, ReleaseView, ResolvedSource,
-    RouteUrl, SavedApplication, SecretMetadata, SecretProblem, ServiceFile, ServiceImage, Source,
-    StoredSecret, SystemStatus, UrlState,
+    DeletedApplication, DeletedPreview, DeploymentOrigin, DnsStatus, EnvironmentChange,
+    EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event,
+    FileSource, ImageStatus, LocalSnapshot, ManifestChange, MountedSecret, Operation,
+    OperationState, Page, PlanView, PreviewUsage, PreviewView, ReleaseAvailability, ReleaseId,
+    ReleasePlan, ReleaseView, ResolvedSource, RouteUrl, SavedApplication, SecretMetadata,
+    SecretProblem, ServiceFile, ServiceImage, Source, StoredSecret, SystemStatus, UrlState,
     sync::{SyncState, WebhookSecret, WebhookView},
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
@@ -538,6 +538,11 @@ report!(ShowReport<'_>, self, out, {
     }
     if self.environments.is_empty() {
         out.label("Environments", "none")?;
+    }
+    if !app.drift.is_empty() {
+        out.blank()?;
+        out.heading("Differs from the manifest:")?;
+        Names::environment_changes(out, &app.drift)?;
     }
     for service in &app.application.spec().services {
         out.blank()?;
@@ -1364,11 +1369,20 @@ report!(AcceptedOperation, self, out, {
 #[derive(Serialize)]
 pub(crate) struct SavedDeploymentReport<'a> {
     pub(crate) saved: &'a SavedApplication,
+    /// The first deployment's outcome and operation.
     pub(crate) outcome: OperationState,
     pub(crate) operation: &'a Operation,
+    /// Every deployment, one per environment that builds.
+    pub(crate) operations: &'a [Operation],
 }
 report!(SavedDeploymentReport<'_>, self, out, {
-    self.operation.render_human(out)
+    for (index, operation) in self.operations.iter().enumerate() {
+        if index > 0 {
+            out.blank()?;
+        }
+        operation.render_human(out)?;
+    }
+    Ok(())
 });
 
 /// Accepted reconcile/deploy followed by its awaited outcome and the
@@ -1524,22 +1538,12 @@ impl Names<'_> {
         if !plan.changes.is_empty() {
             out.blank()?;
             out.heading("Changes:")?;
-            for change in &plan.changes {
-                let (marker, value) = match (&change.before, &change.after) {
-                    (None, Some(after)) => ('+', Configuration::value(after)),
-                    (Some(before), None) => ('-', Configuration::value(before)),
-                    (Some(before), Some(after)) => (
-                        '~',
-                        format!(
-                            "{} → {}",
-                            Configuration::value(before),
-                            Configuration::value(after)
-                        ),
-                    ),
-                    (None, None) => ('~', "absent".into()),
-                };
-                out.change(marker, &change.field, &value)?;
-            }
+            Configuration::changes(out, &plan.changes)?;
+        }
+        if !plan.environments.is_empty() {
+            out.blank()?;
+            out.heading("Environments:")?;
+            Self::environment_changes(out, &plan.environments)?;
         }
         let summary = plan.plan.summary();
         out.blank()?;
@@ -1615,13 +1619,52 @@ impl Names<'_> {
     }
 }
 
+impl Names<'_> {
+    /// Renders how the manifest's declarations change environments, one per
+    /// line: `+` creates one, `!` reports one it no longer declares, and `~`
+    /// changes one.
+    fn environment_changes(
+        out: &mut HumanWriter<'_>,
+        changes: &[EnvironmentChange],
+    ) -> io::Result<()> {
+        for change in changes {
+            let marker = match change {
+                EnvironmentChange::Create { .. } => '+',
+                EnvironmentChange::Undeclared { .. } => '!',
+                EnvironmentChange::Source { .. } | EnvironmentChange::Sync { .. } => '~',
+            };
+            out.change(marker, change.environment().as_str(), &change.summary())?;
+        }
+        Ok(())
+    }
+}
+
 report!(PlanView, self, out, { Names(&[]).plan(out, self) });
 
 named!(PlanView, plan, names, out, { names.plan(out, plan) });
 
 /// Human rendering of plan change values, which the daemon sends as JSON text.
 struct Configuration;
+
 impl Configuration {
+    /// Renders manifest field changes, one per line: `+` added, `-` removed,
+    /// `~` changed.
+    fn changes(out: &mut HumanWriter<'_>, changes: &[ManifestChange]) -> io::Result<()> {
+        for change in changes {
+            let (marker, value) = match (&change.before, &change.after) {
+                (None, Some(after)) => ('+', Self::value(after)),
+                (Some(before), None) => ('-', Self::value(before)),
+                (Some(before), Some(after)) => (
+                    '~',
+                    format!("{} → {}", Self::value(before), Self::value(after)),
+                ),
+                (None, None) => ('~', "absent".into()),
+            };
+            out.change(marker, &change.field, &value)?;
+        }
+        Ok(())
+    }
+
     /// Lists the rendered value of each reference, when there are any.
     fn variables(
         out: &mut HumanWriter<'_>,

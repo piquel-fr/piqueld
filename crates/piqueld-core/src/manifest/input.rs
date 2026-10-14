@@ -103,13 +103,40 @@ pub struct ApplicationSpec {
 }
 
 impl ApplicationSpec {
-    /// Sets `environment`'s visibility ceiling, dropping its block when left
-    /// at its defaults, since such a block configures nothing.
+    /// Disconnects the manifest repository. "self" sources keep building from
+    /// the former repository, and declared environments return to the saved
+    /// manifest, which has no branches to follow.
+    pub fn disconnect(&mut self) {
+        let Some(previous) = self.manifest.take() else {
+            return;
+        };
+        for service in &mut self.services {
+            if let Source::Git { repository, .. } = &mut service.source {
+                repository.resolve_manifest(&previous.repository);
+            }
+        }
+        for config in self.environments.values_mut() {
+            config.branch = None;
+            config.commit = None;
+            config.sync = None;
+        }
+    }
+
+    /// Sets `environment`'s visibility ceiling. Blocks declare environments,
+    /// so one is kept once it exists, and only a restriction adds one.
     pub fn set_environment_visibility(&mut self, environment: &str, visibility: Visibility) {
-        let config = self.environments.entry(environment.to_owned()).or_default();
-        config.visibility = visibility;
-        if *config == EnvironmentConfig::default() {
-            self.environments.remove(environment);
+        match self.environments.get_mut(environment) {
+            Some(config) => config.visibility = visibility,
+            None if visibility.is_public() => {}
+            None => {
+                self.environments.insert(
+                    environment.to_owned(),
+                    EnvironmentConfig {
+                        visibility,
+                        ..EnvironmentConfig::default()
+                    },
+                );
+            }
         }
     }
 
@@ -150,10 +177,29 @@ impl ApplicationSpec {
     }
 }
 
-/// Configuration of one environment, `[spec.environments.<name>]`.
+/// Configuration of one environment, `[spec.environments.<name>]`, which
+/// declares it (see [`super::declaration`]). Without `promote_from`, it builds
+/// its own source: the saved manifest, or a branch of `spec.manifest`'s
+/// repository. A block that sets none of `branch`, `commit`, `promote_from`
+/// and `sync` leaves an existing environment's source as it is.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct EnvironmentConfig {
+    /// Branch of the manifest repository it follows; by default the one
+    /// `spec.manifest` names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Full commit it deploys instead of its branch's head.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// Environment whose releases it receives, by `piquelctl env promote`,
+    /// instead of building.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub promote_from: Option<String>,
+    /// Whether pushes to its branch deploy it while the repository syncs
+    /// (`spec.manifest.sync`); off when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync: Option<bool>,
     /// The strictest visibility this environment's routes get. The default,
     /// `public`, restricts nothing; `private` keeps every route on the tailnet.
     #[serde(skip_serializing_if = "Visibility::is_public")]
@@ -164,9 +210,26 @@ pub struct EnvironmentConfig {
     pub variables: BTreeMap<String, Variable>,
 }
 
+impl EnvironmentConfig {
+    /// Whether it sets where the environment deploys from: `branch`,
+    /// `commit`, `promote_from` or `sync`. Blocks without, such as ones only
+    /// setting variables, declare that the environment exists.
+    #[must_use]
+    pub const fn sets_source(&self) -> bool {
+        self.branch.is_some()
+            || self.commit.is_some()
+            || self.promote_from.is_some()
+            || self.sync.is_some()
+    }
+}
+
 impl Default for EnvironmentConfig {
     fn default() -> Self {
         Self {
+            branch: None,
+            commit: None,
+            promote_from: None,
+            sync: None,
             visibility: Visibility::Public,
             variables: BTreeMap::new(),
         }

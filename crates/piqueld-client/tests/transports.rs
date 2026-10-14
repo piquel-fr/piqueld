@@ -61,6 +61,7 @@ async fn capture_toml_apply(headers: HeaderMap, body: String) -> Json<Envelope<S
         data: SavedApplication {
             generation: 1,
             operation_id: Some("op-1".into()),
+            operation_ids: vec!["op-1".into()],
             application_id: "app-1".into(),
         },
     })

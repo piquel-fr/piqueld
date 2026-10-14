@@ -1,0 +1,57 @@
+#:schema https://raw.githubusercontent.com/piquel-fr/piqueld/main/docs/application-manifest.schema.json
+# A repository-backed application whose manifest declares its environments.
+# `staging` builds `main` on every push; `production` never builds and only
+# receives releases promoted from `staging` with `piquelctl env promote`.
+#
+#   piquelctl app apply --file staging-production.toml --deploy
+#
+# creates both, deploys `staging`, and leaves `production` waiting for its
+# first promotion. See docs/application-manifest.md#declared-environments.
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+
+[metadata]
+name = "notes"
+
+[spec.manifest]
+path = "infra/piqueld.toml"
+sync = { mode = "webhook" }
+
+[spec.manifest.repository]
+url = "https://example.com/team/notes.git"
+branch = "main"
+
+[spec.environments.staging]
+sync = true
+visibility = "private"
+
+[spec.environments.staging.variables]
+domain = "staging.notes.example.com"
+
+[spec.environments.production]
+promote_from = "staging"
+
+[spec.environments.production.variables]
+domain = "notes.example.com"
+
+[[spec.services]]
+name = "web"
+
+[spec.services.source]
+type = "git"
+repository = "self"
+
+[spec.services.source.build]
+type = "docker"
+dockerfile = "Dockerfile"
+
+# Runtime configuration, not a build argument, so staging's image can be promoted.
+[spec.services.environment]
+ORIGIN = "https://${{ vars.domain }}"
+
+[[spec.routes]]
+name = "web"
+hostname = "${{ vars.domain }}"
+service = "web"
+port = 8080
+visibility = "public"

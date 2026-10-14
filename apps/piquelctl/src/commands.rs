@@ -9,8 +9,8 @@ use crate::{
     output::{
         Console, TaskOutcome,
         reports::{
-            ApplicationDeletionReport, ApplicationRow, SavedDeploymentReport, ShowReport,
-            StatusReport, ValidManifestReport,
+            ApplicationDeletionReport, ApplicationRow, ShowReport, StatusReport,
+            ValidManifestReport,
         },
     },
     support::{confirm, looks_like_application_id, manifest_name, read_manifest, retry_transport},
@@ -340,7 +340,8 @@ async fn plan_command(console: &mut Console, client: &Client, args: &ManifestArg
 /// 1. Reads the manifest and finds any existing application with the same name.
 /// 2. Confirms, then saves with preconditions: the expected generation (defaulting to
 ///    the current one, or `0` for a new application) and the existing ID, unless `--force`.
-/// 3. If a deployment was accepted and `--no-wait` is unset, waits for it to finish.
+/// 3. Unless `--no-wait`, waits for every accepted deployment to finish: one
+///    per declared environment that builds, or the only environment.
 async fn apply(cli: &Cli, client: &Client, console: &mut Console, args: &ApplyArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
     let name = manifest_name(&manifest, &args.file)?;
@@ -370,18 +371,7 @@ async fn apply(cli: &Cli, client: &Client, console: &mut Console, args: &ApplyAr
         )
     })
     .await?;
-    let Some(operation_id) = saved.operation_id.as_deref() else {
-        return console.emit(&saved);
-    };
-    if args.deployment.no_wait {
-        return console.emit(&saved);
-    }
-    let operation = wait_for_operation(console, client, operation_id).await?;
-    console.emit(&SavedDeploymentReport {
-        saved: &saved,
-        outcome: operation.state,
-        operation: &operation,
-    })
+    crate::editing::finish(console, client, &saved, &args.deployment).await
 }
 
 /// Confirms and deletes an application, all its environments (named volumes

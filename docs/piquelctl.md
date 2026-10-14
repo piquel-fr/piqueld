@@ -80,9 +80,11 @@ piquelctl events --application <application-id> --limit 50
 ```
 
 An application owns the saved manifest; its environments deploy it, each with its
-own deployments, status, volumes, generated secrets, routes, and network. Applications have
-an environment named `production` from creation (existing applications were
-migrated to one that kept their ID). `env` commands select an environment by name
+own deployments, status, volumes, generated secrets, routes, and network. A
+manifest that [declares environments](application-manifest.md#declared-environments)
+gets exactly those when it is saved or fetched from the branch `spec.manifest`
+names; otherwise applications have an environment named `production` from
+creation (existing applications were migrated to one that kept their ID). `env` commands select an environment by name
 or stable ID; `ENV` may be omitted only when the application has exactly one.
 `app deploy`, `app reconcile`, and `app logs` act on the application's only
 environment and fail with an "environment required" input error naming the
@@ -93,6 +95,18 @@ Environment creation, renames and deletions are conditioned on the inspected
 application revision like other mutations (`--expected-generation`, `--force`),
 and advance it, so a command based on an earlier inspection fails instead of
 acting on a renamed or deleted environment.
+
+Declared environments exist as long as their `[spec.environments.<name>]`
+block does: `env create`, `env rename` (to or from a declared name) and
+`env delete` refuse them with `environment_declared`, naming the environment
+(remove the block before deleting one, rename the block to rename one). When the block sets `branch`, `commit`, `promote_from` or
+`sync`, `env source`, `env branch` and `env sync` refuse it too; change the
+manifest instead. `app plan` lists, under `Environments:`, what saving a manifest would
+create (`+`), change (`~`), or no longer declare (`!`); `app show` lists how the
+environments differ from the saved manifest, including environments it no
+longer declares, which keep running until `env delete`. `app apply --deploy`
+deploys every declared environment that builds and waits for each; promoted
+ones wait for `env promote`.
 
 Each environment of a repository-backed application follows its own branch of
 the application's repository; the repository URL and manifest path stay on the
@@ -339,9 +353,9 @@ written to stderr, so stdout remains valid JSON.
 | `app create` / `app rename` / field edits | `SavedApplication`; `--deploy` uses the same output as `app apply --deploy` |
 | `app manifest` | Saved TOML as a JSON string |
 | `app releases` | `{ "items": [ReleaseView], "next_cursor": string or null }` |
-| `app apply` | `SavedApplication` with null `operation_id` |
-| `app apply --deploy --no-wait` | `SavedApplication` with a deployment operation ID |
-| `app apply --deploy` | `{ "saved": SavedApplication, "outcome": OperationState, "operation": Operation }` |
+| `app apply` | `SavedApplication` with null `operation_id` and empty `operation_ids` |
+| `app apply --deploy --no-wait` | `SavedApplication` with the deployment operation IDs in `operation_ids`, the first also in `operation_id` |
+| `app apply --deploy` | `{ "saved": SavedApplication, "outcome": OperationState, "operation": Operation, "operations": [Operation] }`; `outcome` and `operation` are the first deployment's, `operations` every one |
 | `app delete --no-wait` | `{ "deleted": DeletedApplication, "volumes_retained": true }` |
 | `app delete` | `{ "deleted": DeletedApplication, "outcome": "deleted", "volumes_retained": true }` |
 | `env delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": true }` |
@@ -599,7 +613,8 @@ services wait for all jobs to succeed; after a failed job, repair rolls its
 dependencies back and restarts the services an exclusive job stopped. Jobs of dependency services must come earlier in the saved order.
 
 `app variable set` sets a variable's default, or with `--env NAME` its value in
-the environment named `NAME`, whether or not that environment exists yet, or
+the environment named `NAME`, which must exist (an edit never declares a new
+environment, so an unknown name fails with `environment_unknown`), or
 with `--previews` its value in every preview (`[spec.previews.variables]`). An
 environment's or the previews' value overrides the default, and a variable
 needs no default.
@@ -623,9 +638,9 @@ on a service with a writable volume.
 show rendered values, and it lists the value of every variable in scope, such as
 `vars.domain` and `env.name`. A reference without a value fails the plan with
 `variable_value_missing`. Without `--env`, the application's only environment is
-used; with several, the plan compares the saved manifest as written. Plans warn
-with `environment_block_unknown` about `[spec.environments.<name>]` blocks that
-name no environment.
+used; with several, the plan compares the saved manifest as written. Plans list,
+under `Environments:`, how saving the manifest would change the environments it
+[declares](application-manifest.md#declared-environments).
 
 Command, argument, job command, and `depends-on` arrays preserve individual elements; place
 command options before `--`. An empty array clears the setting. Optional limits and pinned
@@ -637,8 +652,9 @@ Git-backed applications keep services, volumes, and the application name under
 repository ownership. The repository URL and manifest path remain editable;
 connecting points every environment at `--branch` (default `main`), and each
 environment's branch then changes with `env branch`. Disconnect explicitly to
-retain the saved manifest (the one last fetched by any environment) and edit it
-locally:
+retain the saved manifest (the one last fetched from the branch `spec.manifest`
+names) and edit it locally; disconnecting also drops declared environments'
+`branch`, `commit` and `sync`, returning them to the saved manifest:
 
 ```console
 piquelctl app repository connect notes https://example.com/infra.git infra/app.toml --yes
