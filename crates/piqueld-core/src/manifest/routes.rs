@@ -107,17 +107,23 @@ impl RouteHostname {
         }
     }
 
-    /// A hostname it matches: itself when exact, or `<label>.<parent>` for a
-    /// wildcard, such as a name to probe it with.
+    /// A hostname this route serves, to probe it with: itself when exact, or
+    /// for a wildcard the first one-character name below its parent that no
+    /// `exact` route claims. One character keeps the name as short as the
+    /// wildcard, so it always fits. `None` when exact routes claim them all.
     ///
-    /// # Errors
-    /// Returns [`HostnameError`] when `label` is not a DNS label or the name
-    /// grows too long.
-    pub fn concrete(&self, label: &str) -> Result<Hostname, HostnameError> {
-        match self.wildcard() {
-            Some(parent) => Hostname::parse(format!("{label}.{parent}")),
-            None => Ok(self.domain()),
-        }
+    /// ```text
+    /// "*.example.com" with exact ["a.example.com"] -> "b.example.com"
+    /// ```
+    #[must_use]
+    pub fn served(&self, exact: &[Hostname]) -> Option<Hostname> {
+        let Some(parent) = self.wildcard() else {
+            return Some(self.domain());
+        };
+        ('a'..='z')
+            .chain('0'..='9')
+            .filter_map(|label| Hostname::parse(format!("{label}.{parent}")).ok())
+            .find(|name| !exact.contains(name))
     }
 }
 
@@ -562,6 +568,20 @@ mod tests {
         );
         // Wildcards are never exact hostnames.
         assert!(Hostname::parse("*.example.com").is_err());
+        // Probes skip names exact routes claim, and fit the longest parent.
+        let claimed = [host("a.tenants.example.com")];
+        assert_eq!(
+            hostname.served(&claimed),
+            Some(host("b.tenants.example.com"))
+        );
+        let longest = format!("*.{}.com", vec!["a".repeat(61); 4].join("."));
+        assert_eq!(longest.len(), 253);
+        assert!(
+            super::RouteHostname::parse(longest)
+                .unwrap()
+                .served(&[])
+                .is_some()
+        );
 
         // A wildcard redirect loops when it reaches a name only it serves.
         let redirect = |to: &str, exact: &str| {

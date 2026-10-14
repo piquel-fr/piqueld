@@ -98,6 +98,20 @@ impl Ingress {
         Ok(self.build_configuration(table, proxies.as_deref(), tunnel.as_deref()))
     }
 
+    /// Every exact hostname, served on this gateway or not, which wildcards
+    /// leave alone: a private route's stays out of a public wildcard even
+    /// while private ingress is off.
+    pub(super) fn exact_hostnames(&self, table: &RoutingTable) -> Vec<Hostname> {
+        table
+            .values()
+            .flatten()
+            .filter(|route| route.hostname.wildcard().is_none())
+            .map(|route| route.hostname.domain())
+            .chain(self.webhook_hostname().cloned())
+            .chain(self.dashboard_hostname().cloned())
+            .collect()
+    }
+
     /// Produces the configuration. Private routes are served only when
     /// `proxies` gives the private listener's trusted PROXY sources. Public
     /// routes are served on the tunnel listener, instead of ports 80/443, when
@@ -121,17 +135,7 @@ impl Ingress {
     ) -> Value {
         let mut public = Listener::default();
         let mut private = Listener::default();
-        // Every exact hostname, served on this gateway or not: a private
-        // route's stays out of a public wildcard even while private ingress
-        // is off.
-        let exact: Vec<Hostname> = table
-            .values()
-            .flatten()
-            .filter(|route| route.hostname.wildcard().is_none())
-            .map(|route| route.hostname.domain())
-            .chain(self.webhook_hostname().cloned())
-            .chain(self.dashboard_hostname().cloned())
-            .collect();
+        let exact = self.exact_hostnames(table);
         let matcher = |host: &RouteHostname| {
             let covered: Vec<&Hostname> = exact.iter().filter(|name| host.matches(name)).collect();
             match host.wildcard() {

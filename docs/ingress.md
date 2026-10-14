@@ -231,9 +231,9 @@ It matches `alice.tenants.example.com`, but neither `tenants.example.com` nor
 - **Visibility and previews.** Wildcards may be public or private, and preview
   hostname templates may start with `*.`, for example
   `*.${{ env.slug }}.dev.example.com`.
-- **Status.** Route probes request `piqueld-probe.<parent>`, a name the wildcard
-  serves, so a ready wildcard route has its DNS and certificate verified like an
-  exact one.
+- **Status.** Route probes request the first one-character name below the
+  parent that no exact route claims, such as `a.<parent>`, so a ready wildcard
+  route has its DNS and certificate verified like an exact one.
 
 ## Cloudflare Tunnel
 

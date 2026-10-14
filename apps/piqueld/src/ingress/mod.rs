@@ -38,8 +38,6 @@ use wire::UnixApi;
 /// Version released with piqueld; upgrades deliberately replace the gateway.
 pub const CADDY_IMAGE: &str =
     "caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b";
-/// Label below a wildcard route's parent that probes of the route request.
-const PROBE_LABEL: &str = "piqueld-probe";
 /// Tailnet client address private probes present, Tailscale's own service address.
 const PROBE_CLIENT: std::net::SocketAddrV4 =
     std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(100, 100, 100, 100), 0);
@@ -661,6 +659,7 @@ impl Ingress {
         let Ok(table) = self.store.routing_table().await else {
             return;
         };
+        let exact = &self.exact_hostnames(&table);
         let (healthy, private) = {
             let health = self.health.read().await;
             (health.healthy, health.private.clone())
@@ -672,7 +671,8 @@ impl Ingress {
         let private = &private;
         let mut probes = stream::iter(routes)
             .map(|(id, route)| async move {
-                let (state, mut message) = self.route_state(&id, &route, healthy, private).await;
+                let (state, mut message) =
+                    self.route_state(&id, &route, exact, healthy, private).await;
                 let dns = self.route_dns(&route.hostname);
                 // Until the route is ready, a DNS conflict or failure explains it.
                 if let Some(problem) = dns.message.filter(|_| state != "ready") {
@@ -719,6 +719,7 @@ impl Ingress {
         &self,
         id: &EnvironmentId,
         route: &ValidatedRoute,
+        exact: &[Hostname],
         healthy: bool,
         private: &PrivateIngressStatus,
     ) -> (&'static str, String) {
@@ -761,7 +762,10 @@ impl Ingress {
             return ("pending", private.message.clone());
         }
         let result = async {
-            let hostname = route.hostname.concrete(PROBE_LABEL)?;
+            let hostname = route
+                .hostname
+                .served(exact)
+                .context("every one-character name below the wildcard has its own exact route")?;
             if is_private {
                 self.probe_private(&hostname, &private.addresses).await
             } else {
