@@ -201,14 +201,15 @@ pub(super) fn within_budget(
     within
 }
 
-/// Validates exports and imports of the application `name`, whose services
-/// are `services`:
+/// Validates exports and imports of an application whose services are
+/// `services`:
 /// - names are valid, and environments once rendered;
 /// - each export names a declared service, at most once, and grants at least
-///   one other application, each once;
-/// - each import names another application, and each service of it once.
+///   one application, each once;
+/// - each import names each service of an application once.
+///
+/// An application may name itself: its environments then link to each other.
 pub(super) fn validate(
-    name: &str,
     services: &BTreeSet<&str>,
     exports: &[Export],
     imports: &[Import],
@@ -247,14 +248,6 @@ pub(super) fn validate(
         for (position, application) in export.applications.iter().enumerate() {
             let path = format!("{path}[{position}]");
             validate_name(application, &path, errors);
-            if application == name {
-                error(
-                    errors,
-                    codes::LINK_SELF,
-                    &path,
-                    "an application's services already reach each other",
-                );
-            }
             if !granted.insert(application) {
                 error(
                     errors,
@@ -270,14 +263,6 @@ pub(super) fn validate(
         let path = format!("spec.imports[{index}]");
         validate_name(&import.application, &format!("{path}.application"), errors);
         validate_name(&import.service, &format!("{path}.service"), errors);
-        if import.application == name {
-            error(
-                errors,
-                codes::LINK_SELF,
-                &format!("{path}.application"),
-                "an application's services already reach each other",
-            );
-        }
         if !imported.insert((&import.application, &import.service)) {
             error(
                 errors,

@@ -199,8 +199,6 @@ pub const EXPORT_DUPLICATE: &str = "export_duplicate";
 pub const EXPORT_APPLICATIONS_EMPTY: &str = "export_applications_empty";
 /// A service of another application is imported more than once.
 pub const IMPORT_DUPLICATE: &str = "import_duplicate";
-/// An application exports to or imports from itself.
-pub const LINK_SELF: &str = "link_self";
 /// An import does not connect: its environment is missing or does not
 /// export the service to the importer.
 pub const IMPORT_UNCONNECTED: &str = "import_unconnected";

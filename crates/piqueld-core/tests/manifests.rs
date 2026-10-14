@@ -1226,9 +1226,7 @@ service = "api"
             codes::EXPORT_APPLICATIONS_EMPTY,
             "spec.exports[0].applications",
         ),
-        (codes::LINK_SELF, "spec.exports[1].applications[0]"),
         (codes::EXPORT_DUPLICATE, "spec.exports[1].applications[2]"),
-        (codes::LINK_SELF, "spec.imports[0].application"),
         (codes::NAME_INVALID, "spec.imports[1].environment"),
         (codes::IMPORT_DUPLICATE, "spec.imports[2].service"),
     ];

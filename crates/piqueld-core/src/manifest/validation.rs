@@ -668,7 +668,6 @@ impl ApplicationManifest {
         validate_generated_secrets(&self.spec.secrets, &mut errors);
         validate_jobs(&self.spec.jobs, &self.spec.services, &mut errors);
         super::links::validate(
-            &self.metadata.name,
             &self
                 .spec
                 .services

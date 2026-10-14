@@ -1164,11 +1164,18 @@ not export the service to this environment. `app plan` warns about imports that
 would not connect (`import_unconnected`). They also list the environments
 importing an environment's services.
 
+**Names.** Exports and imports name applications, so manifests stay portable
+across installations. A grant follows the name, not the application: renaming
+or deleting an application does not revoke the grants naming it, and an
+application later created or renamed to that name receives them. Update the
+exports of applications whose importers are renamed or deleted; `env show`
+lists who imports each environment's services. An application may name itself,
+linking its environments to each other, such as a preview to `staging`.
+
 **Validation.** An export names a service of its application, at most once
-(`export_service_missing`, `export_duplicate`), and at least one other
-application (`export_applications_empty`); an import names another
-application and each of its services once (`import_duplicate`). Neither may
-name its own application (`link_self`).
+(`export_service_missing`, `export_duplicate`), and at least one application
+(`export_applications_empty`); an import names each service of an application
+once (`import_duplicate`).
 
 Besides applying a manifest, links can be edited with `piquelctl app export`
 and `app import`, the dashboard's Links tab, or

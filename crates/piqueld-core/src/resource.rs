@@ -769,6 +769,11 @@ impl ResolvedApplication {
                 for service in &mut self.services {
                     service.networks.push(name.clone());
                 }
+                // Jobs run before rollout, so they reach imports too.
+                for job in &mut self.jobs {
+                    job.container.networks.push(name.clone());
+                    job.container.networks.sort();
+                }
                 let mut labels = ownership.labels();
                 labels.insert(LINK_LABEL.into(), link.exporter.to_string());
                 self.networks.push(DesiredNetwork { name, labels });

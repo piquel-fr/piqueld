@@ -155,6 +155,13 @@ impl ApplicationService {
         plan.redact_configuration();
         plan.warn_rollouts(app);
         plan.add_jobs(app, target.id());
+        let spec = app.spec();
+        plan.warn_links(
+            &self
+                .store
+                .link_report(target.id(), Some((&spec.exports, &spec.imports)))
+                .await?,
+        );
         // Compare with what runs, not with a later attempt that never published.
         let operation = self
             .store
