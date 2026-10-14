@@ -2150,6 +2150,117 @@ fn job_commands_edit_the_loaded_jobs_and_save_the_whole_list() {
 }
 
 #[test]
+fn link_commands_edit_the_loaded_links_and_save_the_whole_list() {
+    let saved_export = json!({"service": "web", "applications": ["billing"]});
+    let saved_import = json!({"application": "auth", "service": "api"});
+    for (arguments, field, expected) in [
+        // Setting an exported service replaces who may import it.
+        (
+            vec![
+                "app",
+                "export",
+                "set",
+                "app-notes-01",
+                "web",
+                "--applications",
+                "auth,billing",
+                "--previews",
+                "--yes",
+            ],
+            "exports",
+            json!([{"service": "web", "applications": ["auth", "billing"], "previews": true}]),
+        ),
+        (
+            vec!["app", "export", "remove", "app-notes-01", "web", "--yes"],
+            "exports",
+            json!([]),
+        ),
+        // Importing again replaces the environment it reaches.
+        (
+            vec![
+                "app",
+                "import",
+                "add",
+                "app-notes-01",
+                "auth",
+                "api",
+                "--environment",
+                "staging",
+                "--yes",
+            ],
+            "imports",
+            json!([{"application": "auth", "service": "api", "environment": "staging"}]),
+        ),
+        (
+            vec![
+                "app",
+                "import",
+                "add",
+                "app-notes-01",
+                "billing",
+                "invoices",
+                "--yes",
+            ],
+            "imports",
+            json!([saved_import.clone(), {"application": "billing", "service": "invoices"}]),
+        ),
+        (
+            vec![
+                "app",
+                "import",
+                "remove",
+                "app-notes-01",
+                "auth",
+                "api",
+                "--yes",
+            ],
+            "imports",
+            json!([]),
+        ),
+    ] {
+        let mut view = app_view("app-notes-01", "notes");
+        view["application"]["spec"]["exports"] = json!([saved_export.clone()]);
+        view["application"]["spec"]["imports"] = json!([saved_import.clone()]);
+        let server = start_server(false, 2, move |request| {
+            if request.method == "GET" {
+                return Reply::json(view.clone());
+            }
+            assert_eq!(request.method, "PUT");
+            assert_eq!(
+                request.path,
+                format!(
+                    "/api/v1/applications/app-notes-01/{field}?deploy=false&expected_generation=1&force=false"
+                )
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&request.body).unwrap(),
+                json!({"value": expected})
+            );
+            Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
+        });
+        let output = run(&server, &arguments);
+        assert_eq!(assert_json_success(&output)["generation"], 2);
+        assert_eq!(server.finish().len(), 2);
+    }
+
+    let server = start_server(false, 1, |_| Reply::json(app_view("app-notes-01", "notes")));
+    let output = run(
+        &server,
+        &[
+            "app",
+            "import",
+            "remove",
+            "app-notes-01",
+            "auth",
+            "api",
+            "--yes",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(server.finish().len(), 1);
+}
+
+#[test]
 fn field_edit_deploy_is_explicit_and_no_wait_returns_the_saved_receipt() {
     let server = start_server(false, 2, |request| {
         if request.method == "GET" {

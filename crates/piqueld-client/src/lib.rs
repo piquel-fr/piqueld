@@ -36,6 +36,8 @@ pub use piqueld_core::access;
 pub use piqueld_core::audit;
 /// Stable API error and diagnostic codes.
 pub use piqueld_core::codes;
+/// Private links between applications.
+pub use piqueld_core::links;
 /// Tailnet identities and the token bindings they satisfy.
 pub use piqueld_core::tailnet;
 
@@ -60,12 +62,12 @@ pub use environments::{
 };
 pub use piqueld_core::manifest::{
     ApplicationManifest, ApplicationSpec, ApplicationTemplate, Build, DeclaredSource,
-    EnvironmentChange, EnvironmentConfig, FileMode, FileSource, GitRepository, HealthCheck, Job,
-    JobRun, JobVolumeAccess, ManifestRepository, ManifestRevision, Metadata, Mount, Redirect,
-    RedirectStatus, RepositoryManifest, ResourceLimits, Rollout, RolloutOrder, RolloutOrderSource,
-    Route, RouteTarget, SecretMount, SecretSource, Service, ServiceFile, Source, SourceRepository,
-    SystemVariable, Template, Typed, ValidatedBuild, ValidatedRollout, ValidatedSource, Variable,
-    VariableValue, Visibility, Volume,
+    EnvironmentChange, EnvironmentConfig, Export, FileMode, FileSource, GitRepository, HealthCheck,
+    Import, Job, JobRun, JobVolumeAccess, ManifestRepository, ManifestRevision, Metadata, Mount,
+    Redirect, RedirectStatus, RepositoryManifest, ResourceLimits, Rollout, RolloutOrder,
+    RolloutOrderSource, Route, RouteTarget, SecretMount, SecretSource, Service, ServiceFile,
+    Source, SourceRepository, SystemVariable, Template, Typed, ValidatedBuild, ValidatedRollout,
+    ValidatedSource, Variable, VariableValue, Visibility, Volume,
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{

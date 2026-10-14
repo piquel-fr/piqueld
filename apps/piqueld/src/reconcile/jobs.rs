@@ -90,14 +90,16 @@ impl<D: DockerApi> Controller<D> {
                 .observe_with_retry(operation, cancellation, deadline)
                 .await?;
             let accepted_routes = self.store.applied_routes(&operation.environment_id).await?;
-            let plan = Plan::from_request(
-                &PlanRequest::Reconcile {
-                    desired: target
+            let desired = self
+                .store
+                .with_links(
+                    target
                         .clone()
                         .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
-                },
-                &observed,
-            );
+                    &observed,
+                )
+                .await?;
+            let plan = Plan::from_request(&PlanRequest::Reconcile { desired }, &observed);
             self.check_plan(operation, &plan).await?;
             let Some(action) = plan.next_job_preparation(target, job, &observed) else {
                 return Ok(());

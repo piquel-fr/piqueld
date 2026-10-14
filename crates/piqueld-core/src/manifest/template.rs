@@ -85,6 +85,8 @@ impl ValidatedTemplate {
         spec.volumes.sort();
         spec.routes.sort();
         spec.secrets.sort();
+        spec.exports.sort();
+        spec.imports.sort();
         ApplicationTemplate {
             id,
             api_version: APPLICATION_API_VERSION.into(),

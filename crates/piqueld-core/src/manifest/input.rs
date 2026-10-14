@@ -90,6 +90,12 @@ pub struct ApplicationSpec {
     /// One-shot jobs, run in declared order at their deployment point.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<Job>,
+    /// Services other applications may reach over private links.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exports: Vec<super::links::Export>,
+    /// Services of other applications this application reaches.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<super::links::Import>,
     /// Default values of variables referenced as `${{ vars.<name> }}`, used by
     /// environments that set no value of their own.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]

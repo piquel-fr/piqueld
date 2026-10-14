@@ -421,6 +421,16 @@
       "rustType": "piqueld_core::edit::JobsValue"
     },
     {
+      "schema": "ExportsValue",
+      "name": "ExportsValue",
+      "rustType": "piqueld_core::edit::ExportsValue"
+    },
+    {
+      "schema": "ImportsValue",
+      "name": "ImportsValue",
+      "rustType": "piqueld_core::edit::ImportsValue"
+    },
+    {
       "schema": "Volume",
       "name": "Volume",
       "rustType": "piqueld_core::manifest::Volume"

@@ -101,7 +101,8 @@ impl<D: DockerApi> Controller<D> {
                                         let failure=super::OperationError::Journal(error);
                                         self.store.report_diagnostic(&failure.diagnostic(),Some(&id)).await;
                                     }
-                                    id
+                                    let relinked=self.relinked(&application).await;
+                                    (id,relinked)
                                 });
                             }
                     }
@@ -109,12 +110,27 @@ impl<D: DockerApi> Controller<D> {
                 Some(id)=health_jobs.next(), if !health_jobs.is_empty()=> {
                     health_active.remove(&id);
                 }
-                Some(id)=jobs.next(), if !jobs.is_empty()=> {
+                Some((id,relinked))=jobs.next(), if !jobs.is_empty()=> {
                     active.remove(&id);
                     requested=true;
+                    // Linked environments project the change on their next scan.
+                    if relinked { next_scan=tokio::time::Instant::now(); }
                 }
             }
         }
+    }
+
+    /// Whether the exports or imports `before` deployed changed since, so the
+    /// environments it links to must replan now rather than at the next full
+    /// scan. Read failures count as unchanged; the next full scan replans anyway.
+    async fn relinked(&self, before: &StoredEnvironment) -> bool {
+        let links = |target: Option<&piqueld_core::ResolvedApplication>| {
+            target.map(|target| (target.exports.clone(), target.imports.clone()))
+        };
+        self.store
+            .get(before.id())
+            .await
+            .is_ok_and(|after| links(after.resolved.as_ref()) != links(before.resolved.as_ref()))
     }
 
     /// Recovers interrupted work on the first pass, prunes history on full
@@ -325,7 +341,13 @@ impl<D: DockerApi> Controller<D> {
             }
         } else if let Some(target) = target {
             PlanRequest::Reconcile {
-                desired: target.clone().with_ingress(self.ingress_enabled()),
+                desired: self
+                    .store
+                    .with_links(
+                        target.clone().with_ingress(self.ingress_enabled()),
+                        &observed,
+                    )
+                    .await?,
             }
         } else {
             return Ok(());
@@ -470,14 +492,16 @@ impl<D: DockerApi> Controller<D> {
         };
         let accepted_routes = self.store.applied_routes(id).await?;
         let observed = self.docker.observe(id).await?;
-        let mut plan = Plan::from_request(
-            &PlanRequest::Reconcile {
-                desired: target
+        let desired = self
+            .store
+            .with_links(
+                target
                     .clone()
                     .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
-            },
-            &observed,
-        );
+                &observed,
+            )
+            .await?;
+        let mut plan = Plan::from_request(&PlanRequest::Reconcile { desired }, &observed);
         if plan.is_blocked() {
             return Ok(());
         }

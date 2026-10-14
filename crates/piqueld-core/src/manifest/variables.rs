@@ -769,6 +769,14 @@ impl ApplicationSpec {
                 visit,
             );
         }
+        for (index, import) in self.imports.iter_mut().enumerate() {
+            if let Some(environment) = &mut import.environment {
+                visit(
+                    &format!("spec.imports[{index}].environment"),
+                    Slot::Text(environment),
+                );
+            }
+        }
     }
 
     /// Every declared variable value, keyed by path: the defaults, each

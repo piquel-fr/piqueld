@@ -18,12 +18,12 @@ use piqueld_core::{
     ApplicationId,
     api::{Envelope, SavedApplication},
     edit::{
-        ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, FilesValue, HealthValue,
-        JobsValue, MemoryValue, MountsValue, OptionalStringValue, ReplicasValue,
-        RepositorySyncValue, RepositoryValue, ResourcesValue, RolloutValue, RoutesValue,
-        SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue,
-        StringValue, StringsValue, TemplateValue, TemplatesValue, VariablesValue, VisibilityValue,
-        VolumesValue,
+        ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, ExportsValue, FilesValue,
+        HealthValue, ImportsValue, JobsValue, MemoryValue, MountsValue, OptionalStringValue,
+        ReplicasValue, RepositorySyncValue, RepositoryValue, ResourcesValue, RolloutValue,
+        RoutesValue, SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral, ServiceProcess,
+        SourceValue, StringValue, StringsValue, TemplateValue, TemplatesValue, VariablesValue,
+        VisibilityValue, VolumesValue,
     },
     manifest::{Mount, Service, ServiceFile, Volume},
 };
@@ -85,6 +85,8 @@ macro_rules! edit_endpoint {
 }
 edit_endpoint!(set_application_volumes, put, "/api/v1/applications/{id}/volumes", (id: String = "id"), VolumesValue, body::<VolumesValue>, |_, body: VolumesValue| ApplicationEdit::Volumes(body.value));
 edit_endpoint!(set_application_routes, put, "/api/v1/applications/{id}/routes", (id: String = "id"), RoutesValue, body::<RoutesValue>, |_, body: RoutesValue| ApplicationEdit::Routes(body.value));
+edit_endpoint!(set_application_exports, put, "/api/v1/applications/{id}/exports", (id: String = "id"), ExportsValue, body::<ExportsValue>, |_, body: ExportsValue| ApplicationEdit::Exports(body.value));
+edit_endpoint!(set_application_imports, put, "/api/v1/applications/{id}/imports", (id: String = "id"), ImportsValue, body::<ImportsValue>, |_, body: ImportsValue| ApplicationEdit::Imports(body.value));
 edit_endpoint!(set_application_jobs, put, "/api/v1/applications/{id}/jobs", (id: String = "id"), JobsValue, body::<JobsValue>, |_, body: JobsValue| ApplicationEdit::Jobs(body.value));
 edit_endpoint!(set_application_name, put, "/api/v1/applications/{id}/name", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::Name(body.value));
 edit_endpoint!(set_application_variables, put, "/api/v1/applications/{id}/variables", (id: String = "id"), VariablesValue, body::<VariablesValue>, |_, body: VariablesValue| ApplicationEdit::Variables(body.value));
@@ -320,6 +322,8 @@ pub(super) fn router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Write) => set_application_volumes))
         .routes(granted!(App(Write) => set_application_routes))
         .routes(granted!(App(Write) => set_application_jobs))
+        .routes(granted!(App(Write) => set_application_exports))
+        .routes(granted!(App(Write) => set_application_imports))
         .routes(granted!(App(Write) => set_application_name))
         .routes(granted!(App(Write) => set_application_variables))
         .routes(granted!(App(Write) => set_environment_visibility))

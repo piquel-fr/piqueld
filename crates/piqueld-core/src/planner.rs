@@ -2,8 +2,8 @@
 
 use crate::manifest::dependencies::StartupOrder;
 use crate::resource::{
-    Convergence, DesiredJob, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
-    ResolutionRequirement, ResolvedApplication,
+    Convergence, DesiredJob, DesiredNetwork, DesiredService, DesiredVolume, LINK_LABEL,
+    ObservedApplication, ResolutionRequirement, ResolvedApplication,
 };
 use crate::{EnvironmentId, InstanceId};
 use serde::{Deserialize, Serialize};
@@ -920,7 +920,9 @@ impl Plan {
     }
 
     /// Removes owned networks no longer desired once `cleanup_ready`; must run
-    /// after service removal so no removed network is still attached.
+    /// after service removal so no removed network is still attached. A link
+    /// network stays while the exporter's services are still attached: they
+    /// leave it once the exporter's next reconciliation sees the link gone.
     fn remove_obsolete_networks(
         &mut self,
         desired: &ResolvedApplication,
@@ -937,7 +939,15 @@ impl Plan {
             .filter(|network| !wanted.contains(network.name.as_str()))
         {
             if network.is_owned_by(&desired.instance_id, &desired.id) {
-                if cleanup_ready {
+                if network.in_use && network.labels.contains_key(LINK_LABEL) {
+                    self.diagnostics.push(PlanDiagnostic {
+                        code: codes::CLEANUP_DEFERRED.into(),
+                        severity: DiagnosticSeverity::Info,
+                        resource: network.name.clone(),
+                        message: "the link network remains until the exporting environment's services leave it".into(),
+                        blocking: false,
+                    });
+                } else if cleanup_ready {
                     self.actions.push(PlanAction::new(
                         ActionKind::RemoveNetwork {
                             name: network.name.clone(),

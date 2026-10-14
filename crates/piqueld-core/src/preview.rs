@@ -151,6 +151,9 @@ impl ManifestChange {
             fields.insert(path, Value::Object(route));
         }
         entries("volumes", "name", &mut fields);
+        for (path, export) in entries("exports", "service", &mut fields) {
+            fields.insert(path, Value::Object(export));
+        }
         // Jobs run in declared order, so a reordering is a change of its own.
         let mut order = Vec::new();
         for (path, job) in entries("jobs", "name", &mut fields) {
@@ -161,6 +164,23 @@ impl ManifestChange {
         }
         if !order.is_empty() {
             fields.insert("jobs.order".into(), Value::Array(order));
+        }
+        // An import is identified by its alias, `<service>.<application>`.
+        if let Value::Array(imports) = take("imports") {
+            for mut import in imports.into_iter().filter_map(|item| match item {
+                Value::Object(item) => Some(item),
+                _ => None,
+            }) {
+                let (Some(Value::String(service)), Some(Value::String(application))) =
+                    (import.remove("service"), import.remove("application"))
+                else {
+                    continue;
+                };
+                fields.insert(
+                    format!("imports.{service}.{application}"),
+                    Value::Object(import),
+                );
+            }
         }
         if let Value::Object(variables) = take("variables") {
             for (name, value) in variables {
@@ -256,6 +276,31 @@ impl crate::Plan {
                     blocking: false,
                 }),
         );
+    }
+
+    /// Warns about each import of `links` that would not connect.
+    pub fn warn_links(&mut self, links: &crate::links::LinkReport) {
+        use crate::links::ImportState;
+        self.warn(links.imports.iter().filter_map(|import| {
+            let reason = match import.state {
+                ImportState::Connected => return None,
+                ImportState::EnvironmentMissing => format!(
+                    "{} has no deployed environment {}; {} stays unreachable until it has one",
+                    import.application, import.environment, import.alias
+                ),
+                ImportState::NotExported => format!(
+                    "{} {} does not export {} to this environment; {} stays unreachable until it does",
+                    import.application, import.environment, import.service, import.alias
+                ),
+            };
+            Some(PlanDiagnostic {
+                code: codes::IMPORT_UNCONNECTED.into(),
+                severity: DiagnosticSeverity::Warning,
+                resource: import.alias.clone(),
+                message: reason,
+                blocking: false,
+            })
+        }));
     }
 
     /// Lists each job where a deployment runs it: after source resolution,

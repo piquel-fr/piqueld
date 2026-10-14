@@ -2,6 +2,7 @@
 mod deployments;
 mod environments;
 mod jobs;
+mod links;
 mod logs;
 mod navigation;
 mod previews;
@@ -38,7 +39,7 @@ use secrets::{EnvironmentSecrets, SecretFileSettings};
 use settings::{MetadataSettings, NewService, RepositorySettings, VolumeSettings};
 use std::collections::BTreeSet;
 
-const APPLICATION_TABS: [&str; 13] = [
+const APPLICATION_TABS: [&str; 14] = [
     "Overview",
     "Environments",
     "Previews",
@@ -48,6 +49,7 @@ const APPLICATION_TABS: [&str; 13] = [
     "Routes",
     "Volumes",
     "Jobs",
+    "Links",
     "Secrets",
     "Releases",
     "Builds",
@@ -1188,7 +1190,8 @@ fn ApplicationSettings() -> impl IntoView {
         <div hidden={move || {
             !matches!(
                 context.tab.get(),
-                "Source" | "Services" | "Variables" | "Routes" | "Volumes" | "Jobs" | "Secrets"
+                "Source" | "Services" | "Variables" | "Routes" | "Volumes" | "Jobs" | "Links"
+                    | "Secrets"
             )
         }}>
             <div class="stack">
@@ -1198,7 +1201,7 @@ fn ApplicationSettings() -> impl IntoView {
                         .then(|| {
                             notice(
                                 Tone::Info,
-                                "Runtime configuration is managed in Git. This page shows the manifest last fetched by any environment; each environment's page shows what it deploys from its own branch. Disconnect the repository in Source to edit services, variables, routes, volumes, jobs, and secret files here.",
+                                "Runtime configuration is managed in Git. This page shows the manifest last fetched by any environment; each environment's page shows what it deploys from its own branch. Disconnect the repository in Source to edit services, variables, routes, volumes, jobs, links, and secret files here.",
                             )
                         })
                 }} <div hidden={move || context.tab.get() != "Source"}>
@@ -1232,6 +1235,9 @@ fn ApplicationSettings() -> impl IntoView {
                             </div>
                             <div hidden={move || context.tab.get() != "Jobs"}>
                                 <jobs::JobSettings />
+                            </div>
+                            <div hidden={move || context.tab.get() != "Links"}>
+                                <links::LinkSettings />
                             </div>
                             <div hidden={move || context.tab.get() != "Secrets"}>
                                 <SecretFileSettings />

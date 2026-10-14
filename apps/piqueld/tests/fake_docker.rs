@@ -460,6 +460,18 @@ impl DockerApi for FakeDocker {
         }
         drop(slow);
         let mut observed = observed.clone();
+        observed.linked_networks = observed
+            .networks
+            .iter()
+            .filter(|network| {
+                network
+                    .labels
+                    .get(piqueld_core::resource::LINK_LABEL)
+                    .map(String::as_str)
+                    == Some(application.as_str())
+            })
+            .cloned()
+            .collect();
         if self.isolate_observations {
             let belongs = |labels: &BTreeMap<String, String>| {
                 labels
@@ -498,6 +510,7 @@ impl DockerApi for FakeDocker {
             name: desired.name.to_string(),
             runtime_configuration_matches: true,
             labels: desired.labels.clone(),
+            in_use: false,
         });
         Ok(())
     }
@@ -1166,6 +1179,96 @@ async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
     );
 }
 
+/// Two applications linked by an export and an import connect once both
+/// deploy: the importer creates the link network, and the exporter's service
+/// joins it on its next scan under `<service>.<application>`.
+#[tokio::test]
+async fn linked_applications_join_the_importers_network() {
+    use piqueld_core::links::ImportState;
+    let mut harness = ControllerHarness::new().await;
+    harness.docker = Arc::new(FakeDocker {
+        isolate_observations: true,
+        ..FakeDocker::default()
+    });
+    harness.controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
+    let deploy = |name: &str, edit: fn(&mut piqueld_core::manifest::ApplicationManifest)| {
+        let mut manifest = harness.application.to_manifest();
+        manifest.metadata.name = name.into();
+        edit(&mut manifest);
+        let application = manifest
+            .validate()
+            .unwrap()
+            .normalize(ApplicationId::parse(format!("app-{name}-0001")).unwrap());
+        let resolved = compile_application(
+            &application,
+            &environment(&application),
+            InstanceId::parse(harness.store.instance_id()).unwrap(),
+            &harness.resolutions,
+        )
+        .unwrap();
+        let store = Arc::clone(&harness.store);
+        async move {
+            store
+                .save_application(
+                    &ApplicationTemplate::from(&application),
+                    Some(&resolved),
+                    None,
+                )
+                .await
+                .unwrap();
+            resolved.id
+        }
+    };
+    let auth = deploy("auth", |manifest| {
+        manifest.spec.exports.push(piqueld_core::manifest::Export {
+            service: "web".into(),
+            applications: vec!["notes".into()],
+            previews: false,
+        });
+    })
+    .await;
+    let notes = deploy("notes", |manifest| {
+        manifest.spec.imports.push(piqueld_core::manifest::Import {
+            application: "auth".into(),
+            service: "web".into(),
+            environment: None,
+        });
+    })
+    .await;
+    for _ in 0..3 {
+        harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+    }
+
+    let network = piqueld_core::DockerNetworkName::for_link(&notes, &auth);
+    let importer = harness.docker.observe(&notes).await.unwrap();
+    assert!(
+        importer
+            .networks
+            .iter()
+            .any(|observed| observed.name == network.as_str())
+    );
+    assert!(importer.services[0].networks.iter().any(|attachment| {
+        attachment.network == network.as_str() && attachment.aliases.is_empty()
+    }));
+    let exporter = harness.docker.observe(&auth).await.unwrap();
+    assert!(
+        exporter.services[0]
+            .networks
+            .contains(&piqueld_core::resource::NetworkAttachment {
+                network: network.to_string(),
+                aliases: vec!["web.auth".into()],
+            })
+    );
+    let report = harness.store.link_report(&notes, None).await.unwrap();
+    assert_eq!(report.imports[0].state, ImportState::Connected);
+    let report = harness.store.link_report(&auth, None).await.unwrap();
+    assert_eq!(report.importers[0].application.as_str(), "notes");
+}
+
 #[tokio::test]
 async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
     let harness = ControllerHarness::new().await;
@@ -1437,6 +1540,7 @@ async fn controller_refuses_a_foreign_same_name_network() {
         name: resolved.networks[0].name.to_string(),
         runtime_configuration_matches: true,
         labels: foreign_labels(&environment(&application)),
+        in_use: false,
     };
     let docker = Arc::new(FakeDocker::with_observed(ObservedApplication {
         networks: vec![foreign],
@@ -5177,6 +5281,7 @@ async fn blocked_deployment_runs_no_jobs() {
                 .to_string(),
             runtime_configuration_matches: true,
             labels: foreign_labels(&operation.environment_id),
+            in_use: false,
         });
     assert_eq!(
         harness.scan_result(&operation).await,

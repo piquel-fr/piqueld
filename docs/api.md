@@ -202,6 +202,8 @@ immutable deployment snapshot commit in the same transaction.
 | DELETE | `/volumes/{volume}` | None; mounted volumes are rejected |
 | PUT | `/routes` | `{ "value": [{ "hostname": "notes.example.com", "service": "web", "port": 3000 }] }`; replaces this application's routes |
 | PUT | `/jobs` | `{ "value": [{ "name": "migrate", "service": "web", "command": ["notes", "migrate"], "run": "before-rollout", "timeout_seconds": 300, "volume_access": "read-only" }] }`; replaces the jobs, in execution order |
+| PUT | `/exports` | `{ "value": [{ "service": "api", "applications": ["notes"], "previews": false }] }`; replaces the services other applications may reach |
+| PUT | `/imports` | `{ "value": [{ "application": "auth", "service": "api", "environment": "staging" }] }`; replaces the services of other applications this one reaches; `environment` is optional |
 | PUT | `/variables` | `{ "value": { "defaults": { "domain": "piquel.fr" }, "environments": { "staging": { "domain": "staging.piquel.fr" } } } }`; replaces every variable value |
 | PUT | `/services/{service}/name` | `{ "value": "worker" }` |
 | PUT | `/services/{service}/replicas` | `{ "value": 3 }`, or a reference such as `"${{ vars.web_replicas }}"`; typed fields accept references |
@@ -230,9 +232,9 @@ source/check settings require the appropriate variant; switch variants through
 missing resources are rejected. Optional values must explicitly use null to clear.
 The same validation and Git ownership rules apply even with `force=true`.
 Disconnecting a repository preserves saved services and volumes for local editing.
-Renaming a service updates its routes, its jobs, and dependents' `depends_on`;
-removing a service removes its routes and jobs and drops it from other services'
-`depends_on`.
+Renaming a service updates its routes, its jobs, its export, and dependents'
+`depends_on`; removing a service removes its routes, jobs, and export and drops
+it from other services' `depends_on`.
 Jobs inherit the referenced service's `depends_on`, including transitive
 dependencies. Those services converge before the job starts; other services
 wait for all jobs to succeed. If a dependency has its own jobs, they must appear

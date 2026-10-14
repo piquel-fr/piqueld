@@ -196,6 +196,16 @@ pub(crate) enum AppCommand {
         #[command(subcommand)]
         command: crate::editing::JobCommand,
     },
+    /// Let other applications reach services of this one privately.
+    Export {
+        #[command(subcommand)]
+        command: crate::editing::ExportCommand,
+    },
+    /// Reach services other applications export, as `<service>.<application>`.
+    Import {
+        #[command(subcommand)]
+        command: crate::editing::ImportCommand,
+    },
     /// Set or remove manifest variables and their values per environment.
     Variable {
         #[command(subcommand)]

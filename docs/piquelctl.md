@@ -558,6 +558,14 @@ piquelctl app job set notes migrate web --timeout-seconds 600 --yes -- notes mig
 piquelctl app job set notes migrate web --volume-access exclusive --yes -- notes migrate
 piquelctl app job move notes migrate 1 --yes
 piquelctl app job remove notes migrate --yes
+piquelctl app export set auth api --applications notes,billing --yes
+piquelctl app export set auth api --applications notes --previews --yes
+piquelctl app export list auth
+piquelctl app export remove auth api --yes
+piquelctl app import add notes auth api --yes
+piquelctl app import add notes auth api --environment staging --yes
+piquelctl app import list notes
+piquelctl app import remove notes auth api --yes
 piquelctl app variable set notes domain piquel.fr --yes
 piquelctl app variable set notes domain staging.piquel.fr --env staging --yes
 piquelctl app variable set notes web_replicas 3 --env production --yes
@@ -611,6 +619,14 @@ their transitive dependencies start or update and pass health checks before
 the job runs. Configure dependencies with `app service depends-on`. Other
 services wait for all jobs to succeed; after a failed job, repair rolls its
 dependencies back and restarts the services an exclusive job stopped. Jobs of dependency services must come earlier in the saved order.
+`export set` lets the listed applications reach a service through a
+[link](application-manifest.md#links), replacing who may if it was already
+exported; `--previews` lets their previews too. `import add` reaches another
+application's exported service as `<service>.<application>`, in the
+environment named like each importing one unless `--environment` names one (it
+accepts `${{ vars.<name> }}`). Like jobs, link edits preserve the others and
+use the inspected generation. `env show` lists each import of the environment
+and whether it connects, and the environments importing its services.
 
 `app variable set` sets a variable's default, or with `--env NAME` its value in
 the environment named `NAME`, which must exist (an edit never declares a new

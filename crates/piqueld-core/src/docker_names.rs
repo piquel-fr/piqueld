@@ -2,7 +2,9 @@
 
 use crate::manifest::FileMode;
 use crate::names::validated_string;
+use crate::resource::LINK_LABEL;
 use crate::{EnvironmentId, JobName, ResourceKind, ServiceName, VolumeName, docker_resource_name};
+use std::collections::BTreeMap;
 
 validated_string!(
     /// A Docker network name, distinct from logical names and other resource kinds.
@@ -60,6 +62,28 @@ impl DockerNetworkName {
     #[must_use]
     pub fn is_for_application(&self, id: &EnvironmentId) -> bool {
         self == &Self::for_application(id) || self == &Self::for_ingress(id)
+    }
+
+    /// Whether this is a network `owner` owns, given its `labels`: its private
+    /// or ingress network, or a link network to the exporter its link label names.
+    #[must_use]
+    pub fn is_canonical(&self, owner: &EnvironmentId, labels: &BTreeMap<String, String>) -> bool {
+        self.is_for_application(owner)
+            || labels
+                .get(LINK_LABEL)
+                .and_then(|exporter| EnvironmentId::parse(exporter.clone()).ok())
+                .is_some_and(|exporter| self == &Self::for_link(owner, &exporter))
+    }
+
+    /// Derives the network `importer` owns for its link to `exporter`, which
+    /// the exporter's linked services join.
+    #[must_use]
+    pub fn for_link(importer: &EnvironmentId, exporter: &EnvironmentId) -> Self {
+        Self(docker_resource_name(
+            importer,
+            ResourceKind::Network,
+            Some(&format!("link-{exporter}")),
+        ))
     }
 
     /// Derives a separate network for this application's exposed services.

@@ -338,9 +338,15 @@ impl<D: DockerApi> Controller<D> {
             let accepted_routes = self.store.applied_routes(&operation.environment_id).await?;
             let runtime_request = match &request {
                 PlanRequest::Reconcile { desired } => PlanRequest::Reconcile {
-                    desired: desired
-                        .clone()
-                        .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
+                    desired: self
+                        .store
+                        .with_links(
+                            desired
+                                .clone()
+                                .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
+                            &observed,
+                        )
+                        .await?,
                 },
                 _ => request.clone(),
             };

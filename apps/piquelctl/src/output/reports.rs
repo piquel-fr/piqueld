@@ -6,10 +6,12 @@ use piqueld_client::{
     ApplicationSummary, ApplicationView, BranchState, BuildLogPage, BuildRecord, CreatedPreview,
     DeletedApplication, DeletedPreview, DeploymentOrigin, DnsStatus, EnvironmentChange,
     EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event,
-    FileSource, ImageStatus, LocalSnapshot, ManifestChange, MountedSecret, Operation,
-    OperationState, Page, PlanView, PreviewUsage, PreviewView, ReleaseAvailability, ReleaseId,
-    ReleasePlan, ReleaseView, ResolvedSource, RouteUrl, SavedApplication, SecretMetadata,
-    SecretProblem, ServiceFile, ServiceImage, Source, StoredSecret, SystemStatus, UrlState,
+    Export, FileSource, ImageStatus, Import, LocalSnapshot, ManifestChange, MountedSecret,
+    Operation, OperationState, Page, PlanView, PreviewUsage, PreviewView, ReleaseAvailability,
+    ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl, SavedApplication,
+    SecretMetadata, SecretProblem, ServiceFile, ServiceImage, Source, StoredSecret, SystemStatus,
+    Template, UrlState,
+    links::ImportState,
     sync::{SyncState, WebhookSecret, WebhookView},
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
@@ -219,6 +221,55 @@ impl Report for Vec<FileRow> {
             out.line(format_args!(
                 "{}  {}  {}  {source}",
                 row.service, row.file.target, row.file.mode
+            ))?;
+        }
+        Ok(())
+    }
+}
+
+/// `export list` result.
+impl Report for Vec<Export> {
+    type Json = [Export];
+    fn json(&self) -> &Self::Json {
+        self
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        if self.is_empty() {
+            return out.line("No exports.");
+        }
+        out.heading("SERVICE  APPLICATIONS  PREVIEWS")?;
+        for export in self {
+            out.line(format_args!(
+                "{}  {}  {}",
+                export.service,
+                export.applications.join(","),
+                if export.previews { "yes" } else { "no" }
+            ))?;
+        }
+        Ok(())
+    }
+}
+
+/// `import list` result.
+impl Report for Vec<Import> {
+    type Json = [Import];
+    fn json(&self) -> &Self::Json {
+        self
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        if self.is_empty() {
+            return out.line("No imports.");
+        }
+        out.heading("NAME  ENVIRONMENT")?;
+        for import in self {
+            out.line(format_args!(
+                "{}.{}  {}",
+                import.service,
+                import.application,
+                import
+                    .environment
+                    .as_ref()
+                    .map_or("same name", Template::as_str)
             ))?;
         }
         Ok(())
@@ -939,6 +990,29 @@ report!(EnvironmentShowReport<'_>, self, out, {
         .flat_map(|manifest| MountedSecret::list(manifest, environment, self.stored));
     for (name, mounted) in secrets {
         out.label("Secret", format_args!("{name}: {mounted}"))?;
+    }
+    for import in self.detail.links.iter().flat_map(|links| &links.imports) {
+        let state = match import.state {
+            ImportState::Connected => "connected",
+            ImportState::EnvironmentMissing => "waiting: the environment has not deployed",
+            ImportState::NotExported => "waiting: not exported to this environment",
+        };
+        out.label(
+            "Import",
+            format_args!(
+                "{} from {} {}: {state}",
+                import.alias, import.application, import.environment
+            ),
+        )?;
+    }
+    for importer in self.detail.links.iter().flat_map(|links| &links.importers) {
+        out.label(
+            "Imported by",
+            format_args!(
+                "{} {}: {}",
+                importer.application, importer.environment, importer.service
+            ),
+        )?;
     }
     out.urls(self.detail.urls.iter().flatten())
 });

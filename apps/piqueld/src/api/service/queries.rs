@@ -130,6 +130,7 @@ impl ApplicationService {
             (None, None) => None,
         };
         let urls = self.urls(&stored, &observed_view.services).await?;
+        let links = self.store.link_report(id, None).await?;
         Ok(EnvironmentDetailView {
             manifest,
             release,
@@ -140,6 +141,7 @@ impl ApplicationService {
             latest_operation,
             diagnostics,
             urls: Some(urls),
+            links: Some(links),
         })
     }
     /// The manifest a promotion from `source` would deploy next: that of the
@@ -418,17 +420,16 @@ impl ApplicationService {
         let resolutions = ResolutionSet::default();
         let unresolved = preview_resolution(app, &resolutions);
         let desired = if unresolved.is_empty() {
-            Some(
-                compile_application(
-                    app,
-                    environment,
-                    piqueld_core::InstanceId::parse(self.store.instance_id())
-                        .map_err(StoreError::corrupt)?,
-                    &resolutions,
-                )
-                .map_err(BoundaryError::Compilation)?
-                .with_ingress(self.ingress.as_ref().is_some_and(|ingress| ingress.enabled)),
+            let desired = compile_application(
+                app,
+                environment,
+                piqueld_core::InstanceId::parse(self.store.instance_id())
+                    .map_err(StoreError::corrupt)?,
+                &resolutions,
             )
+            .map_err(BoundaryError::Compilation)?
+            .with_ingress(self.ingress.as_ref().is_some_and(|ingress| ingress.enabled));
+            Some(self.store.with_links(desired, &observed).await?)
         } else {
             None
         };
@@ -441,6 +442,15 @@ impl ApplicationService {
         );
         plan.redact_configuration();
         plan.add_jobs(app, environment);
+        if current.is_some() {
+            let spec = app.spec();
+            plan.warn_links(
+                &self
+                    .store
+                    .link_report(environment, Some((&spec.exports, &spec.imports)))
+                    .await?,
+            );
+        }
         Ok(plan)
     }
 }

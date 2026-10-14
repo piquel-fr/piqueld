@@ -1,8 +1,8 @@
 //! Typed changes to saved application configuration. No edit performs runtime work.
 use crate::manifest::{
-    ApplicationManifest, Build, GitRepository, HealthCheck, Job, Mount, RepositoryManifest,
-    ResourceLimits, Rollout, Route, SecretMount, Service, ServiceFile, Source, SourceRepository,
-    Template, Typed, Variable, Visibility, Volume,
+    ApplicationManifest, Build, Export, GitRepository, HealthCheck, Import, Job, Mount,
+    RepositoryManifest, ResourceLimits, Rollout, Route, SecretMount, Service, ServiceFile, Source,
+    SourceRepository, Template, Typed, Variable, Visibility, Volume,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -46,6 +46,8 @@ value_request! {
     VolumesValue: Vec<Volume>;
     RoutesValue: Vec<Route>;
     JobsValue: Vec<Job>;
+    ExportsValue: Vec<Export>;
+    ImportsValue: Vec<Import>;
     RepositoryValue: Option<RepositoryManifest>;
     RepositorySyncValue: crate::sync::RepositorySync;
     VisibilityValue: Visibility;
@@ -103,6 +105,10 @@ pub enum ApplicationEdit {
     Routes(Vec<Route>),
     /// Replace the one-shot jobs; their order is their execution order.
     Jobs(Vec<Job>),
+    /// Replace the services other applications may reach.
+    Exports(Vec<Export>),
+    /// Replace the services of other applications this one reaches.
+    Imports(Vec<Import>),
     /// Remove a volume declaration; validation rejects remaining mounts.
     RemoveVolume(String),
     /// Replace every variable value.
@@ -389,6 +395,8 @@ impl ApplicationEdit {
             Self::Volumes(volumes) => manifest.spec.volumes = volumes,
             Self::Routes(routes) => manifest.spec.routes = routes,
             Self::Jobs(jobs) => manifest.spec.jobs = jobs,
+            Self::Exports(exports) => manifest.spec.exports = exports,
+            Self::Imports(imports) => manifest.spec.imports = imports,
             Self::AddVolume(volume) => {
                 if manifest.spec.volumes.iter().any(|v| v.name == volume.name) {
                     return Err(EditError::AlreadyExists {
@@ -432,8 +440,9 @@ impl ApplicationEdit {
                 "connect a manifest repository before editing its settings",
             ))
     }
-    /// Repoints routes, jobs, and dependencies naming service `old` to `new`, or
-    /// drops them when `new` is `None` because the service was removed.
+    /// Repoints routes, jobs, exports, and dependencies naming service `old`
+    /// to `new`, or drops them when `new` is `None` because the service was
+    /// removed. Renaming an exported service renames its link alias.
     fn retarget_service(manifest: &mut ApplicationManifest, old: &str, new: Option<&String>) {
         manifest.spec.routes.retain_mut(|route| {
             if route.service.as_deref() != Some(old) {
@@ -447,6 +456,12 @@ impl ApplicationEdit {
                 return true;
             }
             new.inspect(|new| job.service.clone_from(new)).is_some()
+        });
+        manifest.spec.exports.retain_mut(|export| {
+            if export.service != old {
+                return true;
+            }
+            new.inspect(|new| export.service.clone_from(new)).is_some()
         });
         for service in &mut manifest.spec.services {
             service.depends_on.retain_mut(|dependency| {

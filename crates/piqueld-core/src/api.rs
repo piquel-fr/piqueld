@@ -658,6 +658,10 @@ pub struct EnvironmentDetailView {
     /// that predate URL readiness, which is not the same as no routes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub urls: Option<Vec<RouteUrl>>,
+    /// The private links the current runtime target takes part in. Absent
+    /// from daemons that predate links.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<crate::links::LinkReport>,
 }
 
 impl EnvironmentDetailView {

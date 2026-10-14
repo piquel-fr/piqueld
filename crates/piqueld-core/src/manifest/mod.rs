@@ -6,6 +6,7 @@ pub mod domain;
 pub mod files;
 pub mod input;
 pub mod limits;
+pub mod links;
 pub mod rollout;
 pub mod routes;
 pub mod template;
@@ -22,6 +23,7 @@ pub use files::{
     FileCaptureError, FileMode, FileModeError, FileSource, RepositoryFiles, ServiceFile,
 };
 pub use limits::{PreviewLimits, PreviewLimitsError};
+pub use links::{Export, Import, ValidatedExport, ValidatedImport};
 pub use rollout::{Rollout, RolloutOrder, RolloutOrderSource, RolloutPolicy, ValidatedRollout};
 pub use routes::{
     Hostname, RedirectStatus, RedirectUrl, RouteHostname, RouteTarget, ValidatedRedirect,
@@ -140,6 +142,8 @@ fn normalize_spec(spec: &mut ValidatedSpec) {
     spec.volumes.sort();
     spec.routes.sort();
     spec.secrets.sort();
+    spec.exports.sort();
+    spec.imports.sort();
 }
 
 impl NormalizedApplication {
