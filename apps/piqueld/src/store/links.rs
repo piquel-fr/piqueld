@@ -126,6 +126,10 @@ impl Store {
     /// The links `target` takes part in: its imports and exports as it
     /// declares them, against every other environment's active target.
     async fn links_of(&self, target: &ResolvedApplication) -> Result<Vec<Link>, StoreError> {
+        // Most targets declare no links, so they skip the read.
+        if target.exports.is_empty() && target.imports.is_empty() {
+            return Ok(Vec::new());
+        }
         let parties = self
             .link_parties_with(
                 &target.id,

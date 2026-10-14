@@ -1,14 +1,15 @@
 use super::{
     ApplicationState, Arc, CancellationToken, Controller, DockerApi, Duration, MAX_PAGE_SIZE,
-    Notify, OperationState, Plan, PlanRequest, StoreError, StoredEnvironment, blocked_plan_message,
+    Notify, Operation, OperationKind, OperationState, Plan, PlanRequest, StoreError,
+    StoredEnvironment, blocked_plan_message,
 };
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::collections::{HashMap, HashSet};
 use tracing::Instrument;
 
 /// Result of a discovery pass: whether it was a full scan, and each selected
-/// environment with the ID of its latest operation.
-type Discovered = (bool, Vec<(StoredEnvironment, String)>);
+/// environment with its latest operation.
+type Discovered = (bool, Vec<(StoredEnvironment, Operation)>);
 /// Application/diagnostic-code pairs already recorded during one discovery pass.
 type ScanFailures = Arc<tokio::sync::Mutex<HashSet<(piqueld_core::EnvironmentId, String)>>>;
 
@@ -62,7 +63,8 @@ impl<D: DockerApi> Controller<D> {
                     if let Some((full,applications))=result {
                             recovered=true;
                             let failures = ScanFailures::default();
-                            for (application,operation_id) in applications {
+                            for (application,operation) in applications {
+                                let operation_id=operation.id.clone();
                                 let id=application.id().clone();
                                 // Full scans refresh health, with at most one job per application.
                                 if full && health_active.insert(id.clone()) {
@@ -101,7 +103,7 @@ impl<D: DockerApi> Controller<D> {
                                         let failure=super::OperationError::Journal(error);
                                         self.store.report_diagnostic(&failure.diagnostic(),Some(&id)).await;
                                     }
-                                    let relinked=self.relinked(&application).await;
+                                    let relinked=self.relinked(&application,&operation).await;
                                     (id,relinked)
                                 });
                             }
@@ -120,13 +122,22 @@ impl<D: DockerApi> Controller<D> {
         }
     }
 
-    /// Whether the exports or imports `before` deployed changed since, so the
-    /// environments it links to must replan now rather than at the next full
-    /// scan. Read failures count as unchanged; the next full scan replans anyway.
-    async fn relinked(&self, before: &StoredEnvironment) -> bool {
+    /// Whether the environments `before` links to must replan now rather than
+    /// at the next full scan, after `operation` ran on it: when it starts being
+    /// deleted, which unlinks it as soon as it is requested, or when the
+    /// exports or imports it deploys changed. Read failures count as
+    /// unchanged; the next full scan replans anyway.
+    async fn relinked(&self, before: &StoredEnvironment, operation: &Operation) -> bool {
         let links = |target: Option<&piqueld_core::ResolvedApplication>| {
             target.map(|target| (target.exports.clone(), target.imports.clone()))
         };
+        if operation.kind == OperationKind::Delete {
+            // Only its first run, so retries don't keep forcing full scans.
+            return operation.state == OperationState::Requested
+                && before.resolved.as_ref().is_some_and(|target| {
+                    !target.exports.is_empty() || !target.imports.is_empty()
+                });
+        }
         self.store
             .get(before.id())
             .await
@@ -169,7 +180,10 @@ impl<D: DockerApi> Controller<D> {
     /// Pages through all environments and selects those needing work. A full scan
     /// selects every environment with an operation; otherwise only requested,
     /// cleanly running, or retry-due operations are selected.
-    async fn discover(&self, full: bool) -> Result<Vec<(StoredEnvironment, String)>, StoreError> {
+    async fn discover(
+        &self,
+        full: bool,
+    ) -> Result<Vec<(StoredEnvironment, Operation)>, StoreError> {
         let mut cursor = None;
         let mut applications = Vec::new();
         loop {
@@ -185,7 +199,7 @@ impl<D: DockerApi> Controller<D> {
                             && operation.error_code.is_none())
                         || Self::retry_due(&operation))
                 {
-                    applications.push((app, operation.id));
+                    applications.push((app, operation));
                 }
             }
             cursor = page.next_cursor;

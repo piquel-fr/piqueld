@@ -282,8 +282,9 @@ environment owns, named after it and the exporting environment
 ownership labels plus `io.piqueld.link=<exporter environment ID>`. Every service
 of the importer joins it without an alias; the exporter's imported services
 join it with their link alias, `<service>.<application>`, and no other service
-does, so a link never joins either environment's private network. Job services
-join no link.
+does, so a link never joins either environment's private network. The
+importer's job containers join its link networks too, so jobs reach its
+imports.
 
 Links are resolved from both environments' active targets whenever either is
 planned, like ingress, and are never part of a prepared target. The importer
@@ -292,14 +293,15 @@ labelled for it, checks their owner and name, and attaches its services only
 to those that exist; an attachment to any other network is drift. When an
 operation changes the exports or imports an environment deploys, the
 controller runs a full scan right away, so the other side attaches or
-detaches within seconds rather than at the next scan interval.
+detaches within seconds rather than at the next scan interval, as it does once
+the deletion of an environment with links is requested.
 
 Removing a link detaches both sides; the importer removes its obsolete link
 network only once no container is attached to it any longer (Docker refuses
 otherwise), deferring cleanup while the exporter's services are still on it.
 Deleting an environment that is being imported from, or that imports, detaches
-the other side on its next plan; the importer's deletion retries until its link
-networks are gone.
+the other side; the importer's deletion retries until its link networks are
+gone.
 
 ## Ingress coordination
 
