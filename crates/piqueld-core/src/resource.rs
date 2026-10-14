@@ -653,6 +653,10 @@ pub struct ResolvedApplication {
     /// Services of other applications this environment reaches, as deployed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub imports: Vec<crate::manifest::ValidatedImport>,
+    /// The applications `exports` and `imports` name, bound when the target
+    /// is saved; see [`crate::links::bind`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: crate::links::Bindings,
 }
 
 impl ResolvedApplication {
@@ -1033,6 +1037,7 @@ fn compile(
         routes: app.spec().routes.clone(),
         exports: app.spec().exports.clone(),
         imports: app.spec().imports.clone(),
+        bindings: BTreeMap::new(),
         id: environment.clone(),
         name: app.metadata().name.clone(),
         instance_id,

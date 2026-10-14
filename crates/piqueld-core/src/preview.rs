@@ -73,6 +73,28 @@ impl ManifestChange {
             .collect()
     }
 
+    /// Exports, keyed by service, and imports, keyed by their alias and
+    /// valued by the environment they name, if any.
+    fn link_fields(spec: &ApplicationSpec) -> BTreeMap<String, Value> {
+        let exports = spec.exports.iter().map(|export| {
+            let mut value = serde_json::to_value(export).unwrap_or(Value::Null);
+            if let Value::Object(object) = &mut value {
+                object.remove("service");
+            }
+            (format!("exports.{}", export.service), value)
+        });
+        let imports = spec.imports.iter().map(|import| {
+            (
+                format!("imports.{}.{}", import.service, import.application),
+                import
+                    .environment
+                    .as_ref()
+                    .map_or(Value::Null, |environment| environment.as_str().into()),
+            )
+        });
+        exports.chain(imports).collect()
+    }
+
     /// Flattens a specification into comparable field paths. Services and jobs
     /// contribute one entry per top-level setting except `name`, and services
     /// one per file, keyed by target, which summarizes inline content by size
@@ -91,9 +113,11 @@ impl ManifestChange {
     /// environments.staging.variables.domain -> "staging.example.com"
     /// environments.staging.visibility       -> "private"
     /// previews.visibility                   -> "public"
+    /// exports.api                           -> {"applications":["notes"]}
+    /// imports.api.auth                      -> "staging"
     /// ```
     fn fields(spec: &ApplicationSpec) -> BTreeMap<String, Value> {
-        let mut fields = BTreeMap::new();
+        let mut fields = Self::link_fields(spec);
         for service in &spec.services {
             for file in &service.files {
                 let source = match &file.source {
@@ -151,9 +175,6 @@ impl ManifestChange {
             fields.insert(path, Value::Object(route));
         }
         entries("volumes", "name", &mut fields);
-        for (path, export) in entries("exports", "service", &mut fields) {
-            fields.insert(path, Value::Object(export));
-        }
         // Jobs run in declared order, so a reordering is a change of its own.
         let mut order = Vec::new();
         for (path, job) in entries("jobs", "name", &mut fields) {
@@ -164,23 +185,6 @@ impl ManifestChange {
         }
         if !order.is_empty() {
             fields.insert("jobs.order".into(), Value::Array(order));
-        }
-        // An import is identified by its alias, `<service>.<application>`.
-        if let Value::Array(imports) = take("imports") {
-            for mut import in imports.into_iter().filter_map(|item| match item {
-                Value::Object(item) => Some(item),
-                _ => None,
-            }) {
-                let (Some(Value::String(service)), Some(Value::String(application))) =
-                    (import.remove("service"), import.remove("application"))
-                else {
-                    continue;
-                };
-                fields.insert(
-                    format!("imports.{service}.{application}"),
-                    Value::Object(import),
-                );
-            }
         }
         if let Value::Object(variables) = take("variables") {
             for (name, value) in variables {

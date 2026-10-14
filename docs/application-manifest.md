@@ -1154,9 +1154,13 @@ Deploying the other side is not needed; it adjusts within seconds. Deployments
 never wait for a link: until the exporter deploys its export, `api.auth` does
 not resolve in `notes`, so its services should retry, as they would while
 `api` restarts. Joining or leaving a link rolls the exported service and the
-importing services out again, as any network change does. Imports and exports
-name applications, so renaming one changes the names its exported services
-answer to, and disconnects the links naming it until they are updated.
+importing services out again, as any network change does. Renaming the
+exporting application changes the names its services answer to.
+
+Jobs reach the links of the deployment they run in, but the exporter joins a
+link only once the importing deployment is promoted, after its jobs. A job
+that needs a new import therefore can't reach it on the deployment that adds
+it: deploy the import first.
 
 `env show` and the environment's Overview in the dashboard list each import
 and whether it connects, or why not: the environment has not deployed, or does
@@ -1165,12 +1169,17 @@ would not connect (`import_unconnected`). They also list the environments
 importing an environment's services.
 
 **Names.** Exports and imports name applications, so manifests stay portable
-across installations. A grant follows the name, not the application: renaming
-or deleting an application does not revoke the grants naming it, and an
-application later created or renamed to that name receives them. Update the
-exports of applications whose importers are renamed or deleted; `env show`
-lists who imports each environment's services. An application may name itself,
-linking its environments to each other, such as a preview to `staging`.
+across installations. Deploying an environment binds each name its exports and
+imports use to the application holding it then, and its links follow that
+application, like a stored secret's access list follows environments:
+renaming the application keeps them, and an application later taking a freed
+name connects nothing. Later deployments keep a binding while its application
+exists, and bind a name anew only once it is gone. A name no application held
+at deployment matches whichever application takes it, until the next
+deployment binds it, so an export may name an application created later. An
+application may
+name itself, linking its environments to each other, such as a preview to
+`staging`.
 
 **Validation.** An export names a service of its application, at most once
 (`export_service_missing`, `export_duplicate`), and at least one application

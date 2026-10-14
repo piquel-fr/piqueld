@@ -341,13 +341,7 @@ impl<D: DockerApi> Controller<D> {
             }
         } else if let Some(target) = target {
             PlanRequest::Reconcile {
-                desired: self
-                    .store
-                    .with_links(
-                        target.clone().with_ingress(self.ingress_enabled()),
-                        &observed,
-                    )
-                    .await?,
+                desired: self.runtime_target(target, &[], &observed).await?,
             }
         } else {
             return Ok(());
@@ -493,13 +487,7 @@ impl<D: DockerApi> Controller<D> {
         let accepted_routes = self.store.applied_routes(id).await?;
         let observed = self.docker.observe(id).await?;
         let desired = self
-            .store
-            .with_links(
-                target
-                    .clone()
-                    .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
-                &observed,
-            )
+            .runtime_target(&target, &accepted_routes, &observed)
             .await?;
         let mut plan = Plan::from_request(&PlanRequest::Reconcile { desired }, &observed);
         if plan.is_blocked() {

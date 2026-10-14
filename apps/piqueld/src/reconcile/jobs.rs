@@ -93,13 +93,7 @@ impl<D: DockerApi> Controller<D> {
                 .await?;
             let accepted_routes = self.store.applied_routes(&operation.environment_id).await?;
             let desired = self
-                .store
-                .with_links(
-                    target
-                        .clone()
-                        .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
-                    &observed,
-                )
+                .runtime_target(target, &accepted_routes, &observed)
                 .await?;
             let projected = desired
                 .jobs

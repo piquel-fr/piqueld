@@ -1006,21 +1006,20 @@ impl EnvironmentHarness {
             .await
             .unwrap();
         let production = environment(&harness.application);
-        let MutationResponse::Environment(staging) = applications
-            .accept(
-                Daemon,
-                Mutation::CreateEnvironment {
-                    application: harness.application.id().clone(),
-                    name: EnvironmentName::parse("staging").unwrap(),
-                    source: None,
-                },
-                Some(saved.generation),
-                false,
-                None,
-            )
-            .await
-            .unwrap()
-        else {
+        // Boxed: accepting a mutation holds a whole manifest across awaits.
+        let MutationResponse::Environment(staging) = Box::pin(applications.accept(
+            Daemon,
+            Mutation::CreateEnvironment {
+                application: harness.application.id().clone(),
+                name: EnvironmentName::parse("staging").unwrap(),
+                source: None,
+            },
+            Some(saved.generation),
+            false,
+            None,
+        ))
+        .await
+        .unwrap() else {
             panic!("created staging")
         };
         // Creating an environment bumps the application generation.
@@ -1078,7 +1077,7 @@ impl EnvironmentHarness {
 
 #[tokio::test]
 async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
-    let fixture = EnvironmentHarness::new().await;
+    let fixture = Box::pin(EnvironmentHarness::new()).await;
     let harness = &fixture.harness;
     let store = &harness.store;
     let production = &fixture.production;
@@ -5494,11 +5493,14 @@ mod promotion {
     impl Shop {
         async fn new(manifest: &str) -> Self {
             let harness = ControllerHarness::new().await;
-            let saved = harness
-                .applications()
-                .save(parse_template_toml(manifest).unwrap(), Some(0))
-                .await
-                .unwrap();
+            // Boxed: saving holds a whole manifest across awaits.
+            let saved = Box::pin(
+                harness
+                    .applications()
+                    .save(parse_template_toml(manifest).unwrap(), Some(0)),
+            )
+            .await
+            .unwrap();
             let application = ApplicationId::parse(saved.application_id).unwrap();
             let environments = harness.store.environments(&application).await.unwrap();
             let named = |name: &str| {

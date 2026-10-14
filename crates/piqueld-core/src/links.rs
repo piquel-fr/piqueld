@@ -5,18 +5,54 @@
 //! exports the service to `I`'s application, and to previews when `I` is one.
 //! Both sides are read from their active targets, so a link appears or goes
 //! away when either side deploys, and never from a manifest only saved.
+//!
+//! Manifests name applications, but deploying binds each name to the
+//! application holding it ([`bind`]): links then follow that application,
+//! renamed or not, and another one taking a freed name gains nothing.
 
 use crate::manifest::{ValidatedExport, ValidatedImport};
-use crate::{ApplicationName, EnvironmentId, ServiceName};
+use crate::{ApplicationId, ApplicationName, EnvironmentId, ServiceName};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
+
+/// The application each name an environment's exports and imports use is
+/// bound to.
+pub type Bindings = BTreeMap<ApplicationName, ApplicationId>;
+
+/// Binds each application `exports` and `imports` name: to the application
+/// `previous` bound it to, while that one still exists, else to the one
+/// holding the name in `applications`. A name no application holds stays
+/// unbound, and matches whichever application holds it until the
+/// environment deploys again.
+#[must_use]
+pub fn bind(
+    exports: &[ValidatedExport],
+    imports: &[ValidatedImport],
+    previous: &Bindings,
+    applications: &Bindings,
+) -> Bindings {
+    exports
+        .iter()
+        .flat_map(|export| &export.applications)
+        .chain(imports.iter().map(|import| &import.application))
+        .filter_map(|name| {
+            let id = previous
+                .get(name)
+                .filter(|id| applications.values().any(|existing| existing == *id))
+                .or_else(|| applications.get(name))?;
+            Some((name.clone(), id.clone()))
+        })
+        .collect()
+}
 
 /// One environment's identity and the links its active target declares.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LinkParty {
     /// Environment identity.
     pub environment: EnvironmentId,
+    /// Its application's identity.
+    pub application_id: ApplicationId,
     /// Current name of its application.
     pub application: ApplicationName,
     /// Environment name, or a preview's slug.
@@ -27,6 +63,8 @@ pub struct LinkParty {
     pub exports: Vec<ValidatedExport>,
     /// Services of other applications it reaches.
     pub imports: Vec<ValidatedImport>,
+    /// The applications its exports and imports name, as deployed.
+    pub bindings: Bindings,
 }
 
 /// A link between two environments: the `services` of `exporter` that every
@@ -104,11 +142,24 @@ impl LinkParty {
             .map_or(self.name.as_str(), |environment| environment.as_str())
     }
 
-    /// Whether this environment exports `service` to `importer`.
+    /// Whether `name`, as this environment's exports or imports use it, is
+    /// `other`'s application: the one it bound the name to, or the one
+    /// holding the name while it is unbound.
+    fn names(&self, name: &ApplicationName, other: &Self) -> bool {
+        self.bindings.get(name).map_or_else(
+            || *name == other.application,
+            |id| *id == other.application_id,
+        )
+    }
+
+    /// Whether this environment exports `service` to `importer`'s application.
     fn exports_to(&self, service: &ServiceName, importer: &Self) -> bool {
         self.exports.iter().any(|export| {
             export.service == *service
-                && export.applications.contains(&importer.application)
+                && export
+                    .applications
+                    .iter()
+                    .any(|name| self.names(name, importer))
                 && (!importer.preview || export.previews)
         })
     }
@@ -124,7 +175,7 @@ impl LinkParty {
             .iter()
             .find(|party| {
                 !party.preview
-                    && party.application == import.application
+                    && self.names(&import.application, party)
                     && party.name == self.target(import)
                     && party.environment != self.environment
             })
@@ -208,12 +259,31 @@ mod tests {
     fn party(id: &str, application: &str, name: &str) -> LinkParty {
         LinkParty {
             environment: EnvironmentId::parse(format!("{id}-0000000")).unwrap(),
+            application_id: ApplicationId::parse(format!("app-{application}")).unwrap(),
             application: ApplicationName::parse(application).unwrap(),
             name: name.into(),
             preview: false,
             exports: Vec::new(),
             imports: Vec::new(),
+            bindings: Bindings::new(),
         }
+    }
+
+    /// Binds every party's names as deploying each now would.
+    fn deployed(mut parties: Vec<LinkParty>) -> Vec<LinkParty> {
+        let applications = parties
+            .iter()
+            .map(|party| (party.application.clone(), party.application_id.clone()))
+            .collect::<Bindings>();
+        for party in &mut parties {
+            party.bindings = bind(
+                &party.exports,
+                &party.imports,
+                &party.bindings,
+                &applications,
+            );
+        }
+        parties
     }
 
     fn export(service: &str, applications: &[&str], previews: bool) -> ValidatedExport {
@@ -245,7 +315,7 @@ mod tests {
         notes.imports = vec![import("auth", "api", None)];
         let mut other = party("d", "other", "staging");
         other.imports = vec![import("auth", "api", None)];
-        let parties = [auth_staging, auth_production, notes, other];
+        let parties = deployed(vec![auth_staging, auth_production, notes, other]);
 
         let links = links(&parties);
         assert_eq!(links.len(), 1);
@@ -270,9 +340,9 @@ mod tests {
         preview.imports = vec![import("auth", "api", Some("staging"))];
         let mut missing = party("c", "notes", "production");
         missing.imports = vec![import("auth", "api", None)];
-        let mut parties = vec![auth, preview, missing];
+        let mut parties = deployed(vec![auth, preview, missing]);
 
-        assert!(links(&parties).is_empty());
+        assert_eq!(links(&parties), Vec::new());
         assert_eq!(
             report(&parties[1].environment, &parties).imports[0].state,
             ImportState::NotExported
@@ -302,7 +372,7 @@ mod tests {
             import("auth", "events", None),
             import("auth", "admin", None),
         ];
-        let links = links(&[auth, notes]);
+        let links = links(&deployed(vec![auth, notes]));
         assert_eq!(links.len(), 1);
         assert_eq!(
             links[0]
@@ -312,5 +382,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["api", "events"]
         );
+    }
+
+    #[test]
+    fn grants_follow_the_application_bound_when_deployed_not_its_name() {
+        let mut auth = party("a", "auth", "staging");
+        auth.exports = vec![export("api", &["notes"], false)];
+        let mut notes = party("b", "notes", "staging");
+        notes.imports = vec![import("auth", "api", None)];
+        let mut parties = deployed(vec![auth, notes]);
+        assert_eq!(links(&parties).len(), 1);
+
+        // notes is renamed, and another application takes its name: notes
+        // keeps its link, the newcomer gets none, even after auth redeploys.
+        parties[1].application = ApplicationName::parse("journal").unwrap();
+        let mut impostor = party("c", "notes", "staging");
+        impostor.application_id = ApplicationId::parse("app-impostor").unwrap();
+        impostor.imports = vec![import("auth", "api", None)];
+        parties.push(impostor);
+        let parties = deployed(parties);
+        let links = links(&parties);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].importer, parties[1].environment);
+        assert_eq!(
+            report(&parties[2].environment, &parties).imports[0].state,
+            ImportState::NotExported
+        );
+    }
+
+    #[test]
+    fn unbound_names_match_the_application_holding_them() {
+        let mut auth = party("a", "auth", "staging");
+        auth.exports = vec![export("api", &["notes"], false)];
+        // auth deploys before notes exists, so its grant stays unbound.
+        let auth = deployed(vec![auth]).remove(0);
+        assert_eq!(auth.bindings, Bindings::new());
+        let mut notes = party("b", "notes", "staging");
+        notes.imports = vec![import("auth", "api", None)];
+        let notes = deployed(vec![auth.clone(), notes]).remove(1);
+        assert_eq!(links(&[auth, notes]).len(), 1);
     }
 }

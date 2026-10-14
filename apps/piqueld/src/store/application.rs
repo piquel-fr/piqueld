@@ -77,7 +77,12 @@ impl Store {
         let environment = Self::sole_environment_on(&mut tx, app.id()).await?;
         let operation =
             Self::insert_operation(&mut tx, &environment, OperationKind::Apply, now_ms()).await?;
+        let mut resolved = resolved.cloned();
+        if let Some(resolved) = &mut resolved {
+            Self::bind_links_on(&mut tx, resolved).await?;
+        }
         let resolved = resolved
+            .as_ref()
             .map(serde_json::to_string)
             .transpose()
             .map_err(StoreError::corrupt)?;

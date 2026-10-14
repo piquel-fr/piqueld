@@ -339,13 +339,7 @@ impl<D: DockerApi> Controller<D> {
             let runtime_request = match &request {
                 PlanRequest::Reconcile { desired } => PlanRequest::Reconcile {
                     desired: self
-                        .store
-                        .with_links(
-                            desired
-                                .clone()
-                                .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
-                            &observed,
-                        )
+                        .runtime_target(desired, &accepted_routes, &observed)
                         .await?,
                 },
                 _ => request.clone(),
@@ -594,8 +588,7 @@ impl<D: DockerApi> Controller<D> {
         self.store
             .save_prepared(operation, &prepared)
             .await
-            .map_err(OperationError::from)?;
-        Ok(prepared)
+            .map_err(OperationError::from)
     }
 
     /// Fails with `Superseded` when a newer operation exists for the environment,

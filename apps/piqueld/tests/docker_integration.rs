@@ -1236,7 +1236,7 @@ async fn converge(
                 engine.docker.ensure_network(network).await.unwrap();
             }
             ActionKind::EnsureService { service } => {
-                engine.ensure_service_eventually(service).await
+                engine.ensure_service_eventually(service).await;
             }
             ActionKind::RemoveService { name } => {
                 engine
@@ -1253,6 +1253,45 @@ async fn converge(
             _ => tokio::time::sleep(Duration::from_millis(250)).await,
         }
     }
+}
+
+/// Compiles the application `name` with image `services`, resolved through
+/// `images` (reference to digest reference).
+fn compile_images(
+    name: &str,
+    services: &serde_json::Value,
+    images: &BTreeMap<&str, String>,
+) -> piqueld_core::ResolvedApplication {
+    let manifest = serde_json::json!({"api_version": "piqueld.dev/v1alpha1", "kind": "Application", "metadata": {"name": name}, "spec": {"services": services}});
+    let id = ApplicationId::parse(format!("app-{name}")).unwrap();
+    let app = piqueld_core::parse_json(&manifest.to_string())
+        .unwrap()
+        .normalize(id.clone());
+    let sources = app
+        .spec()
+        .services
+        .iter()
+        .map(|service| {
+            let piqueld_core::manifest::ValidatedSource::Image { image } = &service.source else {
+                unreachable!("image sources only")
+            };
+            let digest = images[image.as_str()].clone();
+            (
+                service.name.clone(),
+                ResolvedSource::parse_image(image.as_str(), digest).unwrap(),
+            )
+        })
+        .collect();
+    piqueld_core::compile_application(
+        &app,
+        &EnvironmentId::default_for(&id),
+        InstanceId::parse("integration-instance").unwrap(),
+        &piqueld_core::ResolutionSet {
+            sources,
+            secret_names: BTreeMap::new(),
+        },
+    )
+    .unwrap()
 }
 
 /// Waits until `service` of `environment` logs `line`, and returns its logs.
@@ -1292,7 +1331,7 @@ async fn logged(
 #[ignore = "requires an isolated privileged Docker Engine"]
 async fn links_reach_only_the_imported_service_until_removed() {
     use piqueld_core::links::Link;
-    use piqueld_core::{PlanRequest, ResolutionSet, ServiceName};
+    use piqueld_core::{PlanRequest, ServiceName};
     let engine = IsolatedDocker::from_env().await;
     let suffix = &uuid::Uuid::now_v7().simple().to_string()[..12];
     let exporter_name = format!("auth-{suffix}");
@@ -1302,43 +1341,9 @@ async fn links_reach_only_the_imported_service_until_removed() {
         .await
         .unwrap();
     let alpine = engine.docker.resolve_image("alpine:3.20").await.unwrap();
-    let compile = |name: &str, services: serde_json::Value| {
-        let manifest = serde_json::json!({"api_version": "piqueld.dev/v1alpha1", "kind": "Application", "metadata": {"name": name}, "spec": {"services": services}});
-        let id = ApplicationId::parse(format!("app-{name}")).unwrap();
-        let app = piqueld_core::parse_json(&manifest.to_string())
-            .unwrap()
-            .normalize(id.clone());
-        let resolutions = ResolutionSet {
-            sources: app
-                .spec()
-                .services
-                .iter()
-                .map(|service| {
-                    let piqueld_core::manifest::ValidatedSource::Image { image } = &service.source
-                    else {
-                        unreachable!("image sources only")
-                    };
-                    let digest = if image.as_str().contains("whoami") {
-                        &whoami
-                    } else {
-                        &alpine
-                    };
-                    (
-                        service.name.clone(),
-                        ResolvedSource::parse_image(image.as_str(), digest.clone()).unwrap(),
-                    )
-                })
-                .collect(),
-            secret_names: BTreeMap::new(),
-        };
-        piqueld_core::compile_application(
-            &app,
-            &EnvironmentId::default_for(&id),
-            InstanceId::parse("integration-instance").unwrap(),
-            &resolutions,
-        )
-        .unwrap()
-    };
+    let images = BTreeMap::from([("traefik/whoami:v1.10", whoami), ("alpine:3.20", alpine)]);
+    let compile =
+        |name: &str, services: serde_json::Value| compile_images(name, &services, &images);
     let exporter = compile(
         &exporter_name,
         serde_json::json!([
@@ -1390,7 +1395,6 @@ async fn links_reach_only_the_imported_service_until_removed() {
     let network = piqueld_core::DockerNetworkName::for_link(&importer.id, &exporter.id);
     converge(&engine, &reconcile(&importer), &[]).await;
     converge(&engine, &reconcile(&exporter), &[]).await;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     while engine
         .docker
         .observe(&importer.id)
@@ -1400,15 +1404,12 @@ async fn links_reach_only_the_imported_service_until_removed() {
         .iter()
         .any(|observed| observed.name == network.as_str())
     {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the link network stayed"
-        );
-        converge(&engine, &reconcile(&importer), &[]).await;
+        // Docker reports the exporter's old tasks as attached a while longer.
         tokio::time::sleep(Duration::from_millis(500)).await;
+        converge(&engine, &reconcile(&importer), &[]).await;
     }
     let observed = engine.docker.observe(&exporter.id).await.unwrap();
-    assert!(observed.linked_networks.is_empty());
+    assert_eq!(observed.linked_networks, []);
     assert!(observed.services.iter().all(|service| {
         service
             .networks

@@ -1111,9 +1111,7 @@ async fn ingress_caddy_routes_tls_network_changes_and_disable() {
     scenario
         .committed_replacement_survives_stale_cleanup()
         .await;
-    scenario
-        .unavailable_network_does_not_block_withdrawals()
-        .await;
+    Box::pin(scenario.unavailable_network_does_not_block_withdrawals()).await;
     scenario
         .add_application_without_interrupting_traffic()
         .await;

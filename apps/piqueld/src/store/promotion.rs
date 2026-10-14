@@ -496,7 +496,7 @@ impl Store {
         self.store_generated_on(tx, target.id(), &promotion.generated)
             .await?;
         let pins = Self::pin_secrets_on(tx, &operation, &rendering.application).await?;
-        let resolved = compile_release(
+        let mut resolved = compile_release(
             &rendering.application,
             target.id(),
             instance,
@@ -504,6 +504,7 @@ impl Store {
             pins,
         )
         .map_err(ValidationErrors::from)?;
+        Box::pin(Self::bind_links_on(tx, &mut resolved)).await?;
         let (manifest, variables) = Self::snapshot_json(Some(&rendering))?;
         let template = release
             .template()

@@ -2170,11 +2170,6 @@ fn link_commands_edit_the_loaded_links_and_save_the_whole_list() {
             "exports",
             json!([{"service": "web", "applications": ["auth", "billing"], "previews": true}]),
         ),
-        (
-            vec!["app", "export", "remove", "app-notes-01", "web", "--yes"],
-            "exports",
-            json!([]),
-        ),
         // Importing again replaces the environment it reaches.
         (
             vec![

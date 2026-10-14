@@ -489,15 +489,19 @@ impl Store {
     /// Stores the target on the running, latest operation, records any fetched
     /// repository manifest as the environment's own and the release the target
     /// runs, adds a preview's volumes to its inventory before they exist, and
-    /// records `target_resolved`.
+    /// records `target_resolved`. Binds the applications its links name
+    /// first, and returns the target as saved.
     /// # Errors
     /// Returns storage errors or `IllegalTransition` for obsolete preparation.
     pub async fn save_prepared(
         &self,
         operation: &Operation,
         resolved: &ResolvedApplication,
-    ) -> Result<(), StoreError> {
+    ) -> Result<ResolvedApplication, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
+        let mut resolved = resolved.clone();
+        Box::pin(Self::bind_links_on(&mut tx, &mut resolved)).await?;
+        let resolved = &resolved;
         let json = serde_json::to_string(resolved).map_err(StoreError::corrupt)?;
         let changed=sqlx::query!("UPDATE operations SET target_json=?1 WHERE id=?2 AND state='running' AND id=(SELECT latest.id FROM operations latest WHERE latest.environment_id=operations.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",json,operation.id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         if changed != 1 {
@@ -526,7 +530,8 @@ impl Store {
         )
         .await?;
         Self::operation_event(&mut tx, &operation.id, "target_resolved", None, now).await?;
-        Self::commit_environment_changes(tx, [operation.environment_id.as_str()]).await
+        Self::commit_environment_changes(tx, [operation.environment_id.as_str()]).await?;
+        Ok(resolved.clone())
     }
 
     /// Publishes the prepared target after ownership and configuration checks pass.

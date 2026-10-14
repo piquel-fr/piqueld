@@ -62,6 +62,25 @@ impl<D> Controller<D> {
         self.ingress.as_ref().is_some_and(|ingress| ingress.enabled)
     }
 
+    /// `target` as reconciliation plans it against `observed`: with the
+    /// ingress networks its routes and the `accepted` ones need, and the links
+    /// it takes part in. Prepared targets never carry either.
+    async fn runtime_target(
+        &self,
+        target: &piqueld_core::ResolvedApplication,
+        accepted: &[piqueld_core::manifest::ValidatedRoute],
+        observed: &piqueld_core::ObservedApplication,
+    ) -> Result<piqueld_core::ResolvedApplication, StoreError> {
+        self.store
+            .with_links(
+                target
+                    .clone()
+                    .with_ingress_routes(self.ingress_enabled(), accepted),
+                observed,
+            )
+            .await
+    }
+
     /// Applies the daemon's validated reconciliation timing configuration.
     #[must_use]
     pub fn with_config(mut self, config: &crate::config::ReconciliationConfig) -> Self {

@@ -1264,10 +1264,12 @@ fn previews_list_jobs_after_their_dependencies_and_warn_about_stopped_services()
     );
 }
 
-#[test]
-fn links_join_the_importer_and_only_imported_services_on_the_importers_network() {
-    use piqueld_core::links::Link;
-    use piqueld_core::resource::LINK_LABEL;
+/// An importer and an exporter environment, and the link between them.
+fn linked_environments() -> (
+    ResolvedApplication,
+    ResolvedApplication,
+    piqueld_core::links::Link,
+) {
     let compiled = |id: &str| {
         compile_application(
             &application(),
@@ -1279,19 +1281,26 @@ fn links_join_the_importer_and_only_imported_services_on_the_importers_network()
     };
     let importer = compiled("env-importer");
     let exporter = compiled("env-exporter");
-    let name = DockerNetworkName::for_link(&importer.id, &exporter.id);
-    let link = Link {
+    let link = piqueld_core::links::Link {
         importer: importer.id.clone(),
         exporter: exporter.id.clone(),
         exporter_application: piqueld_core::ApplicationName::parse("auth").unwrap(),
         services: [piqueld_core::ServiceName::parse("web").unwrap()].into(),
     };
+    (importer, exporter, link)
+}
+
+#[test]
+fn links_join_the_importer_and_only_imported_services_on_the_importers_network() {
+    use piqueld_core::resource::LINK_LABEL;
+    let (importer, exporter, link) = linked_environments();
+    let name = DockerNetworkName::for_link(&importer.id, &exporter.id);
 
     // The importer owns the network, which all of its services join unaliased.
-    let imported = importer
+    let as_importer = importer
         .clone()
         .with_links(std::slice::from_ref(&link), &ObservedApplication::default());
-    let network = imported
+    let network = as_importer
         .networks
         .iter()
         .find(|network| network.name == name)
@@ -1299,7 +1308,7 @@ fn links_join_the_importer_and_only_imported_services_on_the_importers_network()
     assert!(network.has_valid_identity());
     assert_eq!(network.labels[LINK_LABEL], exporter.id.as_str());
     assert!(
-        imported.services[0]
+        as_importer.services[0]
             .network_attachments()
             .contains(&NetworkAttachment {
                 network: name.to_string(),
@@ -1336,21 +1345,38 @@ fn links_join_the_importer_and_only_imported_services_on_the_importers_network()
         exporter,
         "a network another environment owns is never joined"
     );
-    let exported = exporter
+    let as_exporter = exporter
         .clone()
         .with_links(std::slice::from_ref(&link), &linked(network.labels.clone()));
-    assert!(exported.networks.iter().all(|network| network.name != name));
     assert!(
-        exported.services[0]
+        as_exporter
+            .networks
+            .iter()
+            .all(|network| network.name != name)
+    );
+    assert!(
+        as_exporter.services[0]
             .network_attachments()
             .contains(&NetworkAttachment {
                 network: name.to_string(),
                 aliases: vec!["web.auth".into()],
             })
     );
+}
 
-    // Once the link is gone, the importer keeps its network while the
-    // exporter's containers are attached, then removes it.
+/// Once the link is gone, the importer keeps its network while the
+/// exporter's containers are attached, then removes it.
+#[test]
+fn importers_remove_link_networks_once_nothing_is_attached() {
+    let (importer, exporter, link) = linked_environments();
+    let name = DockerNetworkName::for_link(&importer.id, &exporter.id);
+    let network = importer
+        .clone()
+        .with_links(std::slice::from_ref(&link), &ObservedApplication::default())
+        .networks
+        .into_iter()
+        .find(|network| network.name == name)
+        .unwrap();
     let mut runtime = observed(&importer);
     runtime.networks.push(ObservedNetwork {
         name: name.to_string(),

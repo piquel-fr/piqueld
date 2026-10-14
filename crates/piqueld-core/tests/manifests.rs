@@ -1188,7 +1188,7 @@ service = "events"
         app.spec().imports[0]
             .environment
             .as_ref()
-            .map(|e| e.as_str()),
+            .map(piqueld_core::EnvironmentName::as_str),
         Some("staging")
     );
     let reparsed = parse_toml(&app.export_toml().unwrap())
