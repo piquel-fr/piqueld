@@ -50,7 +50,7 @@
         },
         "routes": {
           "default": [],
-          "description": "Exact-hostname HTTP routes, activated on deployment.",
+          "description": "HTTP routes by hostname, activated on deployment.",
           "items": {
             "$ref": "#/definitions/Route"
           },
@@ -632,7 +632,7 @@
       "properties": {
         "hostname": {
           "$ref": "#/definitions/Template",
-          "description": "Exact public DNS hostname."
+          "description": "Public DNS hostname, exact or a wildcard such as `*.example.com`\nmatching every name one label below `example.com`."
         },
         "name": {
           "description": "Stable name, unique within the application, that selects this route in\nevery environment and preview, e.g. `piquelctl env url --route web`.\nDeclared after `hostname`, so routes stay ordered by hostname.",

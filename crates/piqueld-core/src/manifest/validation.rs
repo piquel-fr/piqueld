@@ -429,29 +429,14 @@ fn valid_path_indices(mut value: &str) -> bool {
 pub(super) const ROUTE_TARGET_MESSAGE: &str =
     "route must set either both `service` and `port`, or `redirect`";
 
-fn validate_redirect(
-    redirect: &super::Redirect,
-    hostname: Option<&str>,
-    path: &str,
-    errors: &mut Vec<ValidationError>,
-) {
-    let Some(to) = redirect.to.as_literal() else {
-        return;
-    };
-    match super::RedirectUrl::parse(to) {
-        Ok(to) if hostname.is_some_and(|hostname| to.hostname() == hostname) => error(
-            errors,
-            "route_redirect_loop",
-            &format!("{path}.redirect.to"),
-            "redirect must target a different hostname than the route",
-        ),
-        Ok(_) => {}
-        Err(source) => error(
+fn validate_redirect(redirect: &super::Redirect, path: &str, errors: &mut Vec<ValidationError>) {
+    if let Some(Err(source)) = redirect.to.as_literal().map(super::RedirectUrl::parse) {
+        error(
             errors,
             "route_redirect_invalid",
             &format!("{path}.redirect.to"),
             &source.to_string(),
-        ),
+        );
     }
     if let Err(source) = super::RedirectStatus::try_from(redirect.status) {
         error(
@@ -463,9 +448,25 @@ fn validate_redirect(
     }
 }
 
+/// Whether a redirect from `hostname` to `to` reaches the route itself: its
+/// own hostname, or a name its wildcard matches that no exact route in
+/// `exact` claims.
+fn redirect_loops(hostname: &str, to: &str, exact: &BTreeSet<String>) -> bool {
+    let (Ok(hostname), Ok(to)) = (
+        super::RouteHostname::parse(hostname),
+        super::RedirectUrl::parse(to),
+    ) else {
+        return false;
+    };
+    hostname.as_str() == to.hostname()
+        || super::Hostname::parse(to.hostname())
+            .is_ok_and(|to| hostname.matches(&to) && !exact.contains(to.as_str()))
+}
+
 impl ApplicationManifest {
     /// Canonicalizes route hostnames in place (lowercase, trailing dot removed),
-    /// then checks hostname syntax, uniqueness, the target service, and the port.
+    /// then checks hostname syntax, uniqueness, the target service, the port,
+    /// and that redirects do not loop.
     /// Hostnames that reference variables are checked once rendered. Names
     /// are literal, so they are checked here and stay the same everywhere.
     fn validate_routes(&mut self, errors: &mut Vec<ValidationError>) {
@@ -496,13 +497,13 @@ impl ApplicationManifest {
             let path = format!("spec.routes[{index}]");
             if hostname
                 .as_ref()
-                .is_some_and(|hostname| super::Hostname::parse(hostname).is_err())
+                .is_some_and(|hostname| super::RouteHostname::parse(hostname).is_err())
             {
                 error(
                     errors,
                     "route_hostname_invalid",
                     &format!("{path}.hostname"),
-                    "an exact public ASCII DNS hostname is required",
+                    "an exact public ASCII DNS hostname, or `*.` followed by one, is required",
                 );
             }
             if let Some(hostname) = hostname.clone()
@@ -534,10 +535,22 @@ impl ApplicationManifest {
                         );
                     }
                 }
-                (None, None, Some(redirect)) => {
-                    validate_redirect(redirect, hostname.as_deref(), &path, errors);
-                }
+                (None, None, Some(redirect)) => validate_redirect(redirect, &path, errors),
                 _ => error(errors, "route_target_invalid", &path, ROUTE_TARGET_MESSAGE),
+            }
+        }
+        for (index, route) in self.spec.routes.iter().enumerate() {
+            if let (Some(hostname), Some(to)) = (
+                route.hostname.as_literal(),
+                route.redirect.as_ref().and_then(|r| r.to.as_literal()),
+            ) && redirect_loops(&hostname, &to, &hostnames)
+            {
+                error(
+                    errors,
+                    "route_redirect_loop",
+                    &format!("spec.routes[{index}].redirect.to"),
+                    "redirect must target a hostname the route does not serve",
+                );
             }
         }
     }

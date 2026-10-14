@@ -24,8 +24,8 @@ pub use files::{
 pub use limits::{PreviewLimits, PreviewLimitsError};
 pub use rollout::{Rollout, RolloutOrder, RolloutOrderSource, RolloutPolicy, ValidatedRollout};
 pub use routes::{
-    Hostname, RedirectStatus, RedirectUrl, RouteTarget, ValidatedRedirect, ValidatedRoute,
-    Visibility, VisibilityError,
+    Hostname, RedirectStatus, RedirectUrl, RouteHostname, RouteTarget, ValidatedRedirect,
+    ValidatedRoute, Visibility, VisibilityError,
 };
 pub use template::{ApplicationTemplate, Rendering, ValidatedTemplate};
 pub use variables::{

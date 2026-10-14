@@ -213,7 +213,7 @@ mod tests {
 
     fn route() -> ValidatedRoute {
         ValidatedRoute {
-            hostname: crate::manifest::Hostname::parse("notes.example.com").unwrap(),
+            hostname: crate::manifest::RouteHostname::parse("notes.example.com").unwrap(),
             name: Some(RouteName::parse("web").unwrap()),
             visibility: Visibility::Public,
             target: RouteTarget::Service {

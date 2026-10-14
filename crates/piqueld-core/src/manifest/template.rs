@@ -5,8 +5,9 @@ use super::domain::{ValidatedMetadata, ValidatedSpec};
 use super::variables::{RenderContext, RenderTarget, VariableValue};
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, ApplicationSpec,
-    FileCaptureError, Hostname, ManifestRevision, Metadata, NormalizedApplication, RepositoryFiles,
-    RepositoryManifest, SecretSource, ValidatedApplication, ValidationError, ValidationErrors,
+    FileCaptureError, ManifestRevision, Metadata, NormalizedApplication, RepositoryFiles,
+    RepositoryManifest, RouteHostname, SecretSource, ValidatedApplication, ValidationError,
+    ValidationErrors,
 };
 use crate::{ApplicationId, ApplicationName, EnvironmentName, codes};
 use serde::{Deserialize, Serialize};
@@ -259,13 +260,13 @@ impl ApplicationTemplate {
     /// The hostnames `target` routes before anything is deployed, from the
     /// routes whose hostname renders without a deployment.
     #[must_use]
-    pub fn hostnames(&self, target: &RenderTarget) -> Vec<Hostname> {
+    pub fn hostnames(&self, target: &RenderTarget) -> Vec<RouteHostname> {
         self.saved(target)
             .routes
             .iter()
             .filter_map(|route| route.hostname.as_literal())
             .filter_map(|hostname| {
-                Hostname::parse(
+                RouteHostname::parse(
                     hostname
                         .strip_suffix('.')
                         .unwrap_or(&hostname)

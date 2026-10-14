@@ -1263,6 +1263,84 @@ async fn each_listener_serves_only_its_own_routes() {
 }
 
 #[tokio::test]
+async fn exact_hostnames_win_over_wildcards_covering_them() {
+    let directory = tempfile::tempdir().unwrap();
+    let ingress = private_ingress(&directory)
+        .await
+        .with_webhooks(Some(Hostname::parse("hooks.example.com").unwrap()));
+    let routes = |visibility: &str, host: &str| {
+        let mut manifest = application("one", host, "body").to_manifest();
+        manifest.spec.routes[0].visibility = visibility.parse().unwrap();
+        manifest.validate().unwrap().spec().routes.clone()
+    };
+    let table: crate::store::ingress::RoutingTable = [
+        ("env-deeper", routes("public", "api.eu.example.com")),
+        ("env-exact", routes("public", "www.example.com")),
+        ("env-private", routes("private", "admin.example.com")),
+        ("env-wildcard", routes("public", "*.example.com")),
+    ]
+    .map(|(id, routes)| (EnvironmentId::parse(id).unwrap(), routes))
+    .into();
+    let edge = ["172.20.0.0/16".to_owned()];
+    let configuration = ingress.build_configuration(&table, Some(&edge), None);
+    let servers = &configuration["apps"]["http"]["servers"];
+    let matchers = |server: &str, host: &str| {
+        servers[server]["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|route| route["match"][0]["host"][0] == host)
+            .map(|route| route["match"][0].clone())
+            .collect::<Vec<_>>()
+    };
+    // The wildcard's probe, proxy and redirect leave out every exact
+    // hostname it covers, even one served on another listener, but not
+    // deeper ones.
+    let excluded = json!([{"host":["www.example.com", "admin.example.com", "hooks.example.com"]}]);
+    let wildcard = matchers("public", "*.example.com");
+    assert_eq!(wildcard.len(), 2);
+    for matcher in wildcard
+        .iter()
+        .chain(&matchers("public_http", "*.example.com"))
+    {
+        assert_eq!(matcher["not"], excluded, "{matcher}");
+    }
+    assert!(
+        matchers("public", "www.example.com")
+            .iter()
+            .all(|matcher| matcher.get("not").is_none())
+    );
+    // Caddy obtains no certificate for it: DNS-01 does.
+    let public = &servers["public"];
+    assert_eq!(
+        public["tls_connection_policies"][0]["match"]["sni"],
+        json!([
+            "api.eu.example.com",
+            "www.example.com",
+            "*.example.com",
+            "hooks.example.com"
+        ])
+    );
+    assert_eq!(
+        public["automatic_https"]["skip_certificates"],
+        json!(["*.example.com"])
+    );
+    let wildcard = RouteHostname::parse("*.example.com").unwrap();
+    assert!(ingress.dns01_hostnames(&table).contains(&wildcard));
+    // Through a tunnel, Cloudflare terminates its TLS.
+    let directory = tempfile::tempdir().unwrap();
+    let tunneled = private_ingress(&directory)
+        .await
+        .with_tunnel(&crate::config::TunnelConfig {
+            credentials: Some(crate::config::TunnelCredentials {
+                id: "6ff42ae2-765d-4adf-8112-31c55c1551ef".parse().unwrap(),
+                file: "{}".into(),
+            }),
+        });
+    assert!(!tunneled.dns01_hostnames(&table).contains(&wildcard));
+}
+
+#[tokio::test]
 async fn the_apps_node_forwards_to_the_private_listener_without_privileges() {
     let directory = tempfile::tempdir().unwrap();
     let ingress = private_ingress(&directory).await;
@@ -1490,7 +1568,7 @@ async fn the_dashboard_hostname_is_a_private_host_forwarded_to_the_daemon() {
     // Its certificate comes from DNS-01, like private routes'.
     assert_eq!(
         ingress.dns01_hostnames(&RoutingTable::new()),
-        [dashboard.clone()].into()
+        [dashboard.clone().into()].into()
     );
     // Until the private listener runs, it is served nowhere.
     let configuration = ingress.build_configuration(&RoutingTable::new(), None, None);

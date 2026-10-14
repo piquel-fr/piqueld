@@ -19,8 +19,11 @@
 //! with this daemon's configuration, such as a new ingress mode. Each
 //! hostname's plan is checked again just before its records change.
 //!
+//! A wildcard route's records are the wildcard's own (`*.<parent>`).
+//!
 //! **Ownership.** piqueld only changes the records of names it owns: those
-//! with a `_piqueld.<hostname>` TXT record holding the installation ID, and
+//! with a `_piqueld.<hostname>` TXT record holding the installation ID
+//! (`_piqueld._wildcard.<parent>` for wildcards), and
 //! no other installation's. A name already holding A/AAAA/CNAME records, or
 //! another installation's ownership record, is a `dns_conflict` and never
 //! written. Claimed names are
@@ -39,7 +42,7 @@ use crate::dns::provider::{DnsProvider, Found, Record, RecordId, Zone};
 use anyhow::{Context, Result};
 use piqueld_core::{
     api::DnsRecordState,
-    manifest::{Hostname, Visibility},
+    manifest::{Hostname, RouteHostname, Visibility},
     observability::DiagnosticCode,
 };
 use std::{
@@ -161,7 +164,7 @@ impl Ingress {
         }
         let mut tick = tokio::time::interval(Duration::from_secs(10));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut last: Option<(BTreeMap<Hostname, Plan>, Instant, bool)> = None;
+        let mut last: Option<(BTreeMap<RouteHostname, Plan>, Instant, bool)> = None;
         loop {
             tokio::select! { ()=cancellation.cancelled()=>return, _=tick.tick()=>{} }
             if cancellation
@@ -194,9 +197,9 @@ impl Ingress {
     /// (or stopped) with this daemon's configuration, such as a new ingress
     /// mode after a restart, every record is kept. Hostnames outside the zones
     /// of providers managing records are manual.
-    async fn plan_records(&self) -> Result<BTreeMap<Hostname, Plan>> {
+    async fn plan_records(&self) -> Result<BTreeMap<RouteHostname, Plan>> {
         // `None` is manual.
-        let mut wanted: BTreeMap<Hostname, Option<Desired>> = BTreeMap::new();
+        let mut wanted: BTreeMap<RouteHostname, Option<Desired>> = BTreeMap::new();
         let addresses: Vec<IpAddr> = self
             .health
             .read()
@@ -215,12 +218,12 @@ impl Ingress {
             // public route, from the gateway's own configuration.
             if let Some(hostname) = self.webhook_hostname() {
                 let desired = self.desired_records(Visibility::Public, &addresses);
-                wanted.insert(hostname.clone(), desired);
+                wanted.insert(hostname.clone().into(), desired);
             }
             // The dashboard hostname is served on the private listener.
             if let Some(hostname) = self.dashboard_hostname() {
                 let desired = self.desired_records(Visibility::Private, &addresses);
-                wanted.insert(hostname.clone(), desired);
+                wanted.insert(hostname.clone().into(), desired);
             }
             for route in self.store.routing_table().await?.into_values().flatten() {
                 wanted
@@ -246,7 +249,7 @@ impl Ingress {
         let dns = &self.certificates.dns;
         let mut plan = BTreeMap::new();
         for (hostname, desired) in wanted {
-            let owner = dns.zone_for(&hostname).await;
+            let owner = dns.zone_for(&hostname.domain()).await;
             let entry = match (desired, owner) {
                 (Some(desired), Ok((provider, zone))) if dns.manages_records(provider) => {
                     // Writing them would fail on every pass.
@@ -311,7 +314,7 @@ impl Ingress {
     /// change, and a hostname whose plan changed waits for the next pass.
     async fn reconcile_records(
         &self,
-        plan: &BTreeMap<Hostname, Plan>,
+        plan: &BTreeMap<RouteHostname, Plan>,
         cancellation: &CancellationToken,
     ) -> bool {
         let mut states = BTreeMap::new();
@@ -335,7 +338,7 @@ impl Ingress {
     }
 
     /// Applies one hostname's `plan`, unless it changed since it was made.
-    async fn converge(&self, hostname: &Hostname, plan: &Plan) -> Result<RouteDns> {
+    async fn converge(&self, hostname: &RouteHostname, plan: &Plan) -> Result<RouteDns> {
         let Plan::Managed {
             provider,
             zone,
@@ -368,7 +371,7 @@ impl Ingress {
     /// published even when nothing else changed.
     async fn converge_records(
         &self,
-        hostname: &Hostname,
+        hostname: &RouteHostname,
         provider: usize,
         zone: &Zone,
         desired: Option<&BTreeSet<Record>>,
@@ -462,7 +465,7 @@ impl Ingress {
     }
 
     /// The DNS state of `hostname` from the latest pass.
-    pub(super) fn route_dns(&self, hostname: &Hostname) -> RouteDns {
+    pub(super) fn route_dns(&self, hostname: &RouteHostname) -> RouteDns {
         self.records
             .read()
             .expect("DNS record state lock")
@@ -477,13 +480,19 @@ struct Site<'a> {
     provider: &'a DnsProvider,
     http: &'a reqwest::Client,
     zone: &'a Zone,
-    hostname: &'a Hostname,
+    hostname: &'a RouteHostname,
 }
 
 impl Site<'_> {
-    /// The ownership record's name: `_piqueld.<hostname>`.
+    /// The ownership record's name: `_piqueld.<hostname>`, or
+    /// `_piqueld._wildcard.<parent>` for a wildcard, since providers only
+    /// accept `*` as a name's first label. Hostnames cannot contain `_`, so
+    /// the two never collide.
     fn owner(&self) -> String {
-        format!("_piqueld.{}", self.hostname)
+        match self.hostname.wildcard() {
+            Some(parent) => format!("_piqueld._wildcard.{parent}"),
+            None => format!("_piqueld.{}", self.hostname),
+        }
     }
 
     /// The hostname's A/AAAA/CNAME records, and the TXT records of its

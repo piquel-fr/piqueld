@@ -21,7 +21,11 @@ use hickory_resolver::{
     net::runtime::TokioRuntimeProvider,
 };
 use hyper::Method;
-use piqueld_core::{event::Event, manifest::Hostname, observability::EventFilter};
+use piqueld_core::{
+    event::Event,
+    manifest::{Hostname, RouteHostname},
+    observability::EventFilter,
+};
 use serde_json::json;
 use std::{collections::BTreeSet, net::SocketAddr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -39,6 +43,13 @@ fn hosts(names: &[&str]) -> BTreeSet<Hostname> {
     names
         .iter()
         .map(|name| Hostname::parse(*name).unwrap())
+        .collect()
+}
+
+fn routes(names: &[&str]) -> BTreeSet<RouteHostname> {
+    names
+        .iter()
+        .map(|name| RouteHostname::parse(*name).unwrap())
         .collect()
 }
 
@@ -453,7 +464,7 @@ impl Scenario {
         tokio::fs::write(&root_path, &root).await.unwrap();
         let ingress = self.pebble_ingress(&root_path);
         let admin = self.deploy_private_route().await;
-        let desired = hosts(&["admin.example.test", "www.example.test", "example.test"]);
+        let desired = routes(&["admin.example.test", "www.example.test", "example.test"]);
         let now = crate::store::now_ms();
         let expires = self.dns01_issue(&ingress, &desired, now).await;
         self.private_listener_serves_private_routes(&ingress).await;
@@ -463,13 +474,95 @@ impl Scenario {
         self.dns01_cancel(&root_path, now).await;
         self.dns01_leftover(&ingress, now).await;
         self.dns01_retire(&ingress, now, expires).await;
+        self.wildcard_routes(&ingress, now).await;
         // Restore the scenario gateway's own configuration.
         ingress.synchronize().await.unwrap();
     }
 
+    /// A public wildcard route is served with its own DNS-01 certificate.
+    /// Names one label below its parent reach its service with their own
+    /// `Host`, an exact route of another application under the same parent
+    /// still wins, and a name two labels deep is not matched.
+    async fn wildcard_routes(&self, ingress: &Ingress, now: i64) {
+        let tenants = super::application(
+            "tenants",
+            "*.tenants.example.test",
+            "{http.request.host} {http.request.header.X-Forwarded-Host}",
+        );
+        let exact = super::application("exact", "exact.tenants.example.test", "exact");
+        super::deploy(&self.store, &self.controller, tenants).await;
+        super::deploy(&self.store, &self.controller, exact).await;
+        let desired = routes(&["*.tenants.example.test"]);
+        let table = self.store.routing_table().await.unwrap();
+        assert!(ingress.dns01_hostnames(&table).is_superset(&desired));
+        ingress
+            .maintain_certificates(&desired, now, &CancellationToken::new())
+            .await;
+        ingress.synchronize().await.unwrap();
+
+        // Caddy issues the exact route's certificate itself, just now.
+        let body = |host: &'static str| async move {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    if let Ok(response) = self.untrusted(host, self.tls_port).await {
+                        break response.text().await.unwrap();
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            })
+            .await
+            .expect("the route answers")
+        };
+        // `X-Forwarded-Host` keeps the request's port, random here.
+        for host in ["alice.tenants.example.test", "bob.tenants.example.test"] {
+            assert_eq!(body(host).await, format!("{host} {host}:{}", self.tls_port));
+        }
+        assert_eq!(body("exact.tenants.example.test").await, "exact");
+        let response = self
+            .untrusted("alice.tenants.example.test", self.tls_port)
+            .await
+            .unwrap();
+        let served = response
+            .extensions()
+            .get::<reqwest::tls::TlsInfo>()
+            .unwrap()
+            .peer_certificate()
+            .unwrap();
+        assert_eq!(
+            served,
+            self.stored_leaf("_wildcard.tenants.example.test.pem").await
+        );
+
+        // Two labels deep: no certificate, and plain HTTP gets a 404.
+        assert!(
+            self.untrusted("a.b.tenants.example.test", self.tls_port)
+                .await
+                .is_err()
+        );
+        let plain = |host: &'static str| {
+            self.client
+                .get(format!("http://127.0.0.1:{}/", self.plain_port))
+                .header("Host", host)
+                .send()
+        };
+        assert_eq!(
+            plain("alice.tenants.example.test").await.unwrap().status(),
+            308
+        );
+        assert_eq!(
+            plain("a.b.tenants.example.test").await.unwrap().status(),
+            404
+        );
+    }
+
     /// Two children share the zone's wildcard and the apex gets an exact name;
     /// the private listener serves them. Returns the latest expiry.
-    async fn dns01_issue(&self, ingress: &Ingress, desired: &BTreeSet<Hostname>, now: i64) -> i64 {
+    async fn dns01_issue(
+        &self,
+        ingress: &Ingress,
+        desired: &BTreeSet<RouteHostname>,
+        now: i64,
+    ) -> i64 {
         use std::os::unix::fs::PermissionsExt;
         tokio::time::timeout(
             Duration::from_mins(3),
@@ -519,7 +612,12 @@ impl Scenario {
     }
 
     /// With a third of the lifetime left both are renewed, and nothing else.
-    async fn dns01_renew(&self, ingress: &Ingress, desired: &BTreeSet<Hostname>, expires: i64) {
+    async fn dns01_renew(
+        &self,
+        ingress: &Ingress,
+        desired: &BTreeSet<RouteHostname>,
+        expires: i64,
+    ) {
         let stored = self.stored_leaf("_wildcard.example.test.pem").await;
         ingress
             .maintain_certificates(desired, expires - 86_400_000, &CancellationToken::new())
@@ -544,7 +642,7 @@ impl Scenario {
         provider
             .servfail(http, "_acme-challenge.fail.example.test", true)
             .await;
-        let failing = hosts(&["x.fail.example.test"]);
+        let failing = routes(&["x.fail.example.test"]);
         ingress
             .maintain_certificates(&failing, now, &CancellationToken::new())
             .await;
@@ -595,7 +693,7 @@ impl Scenario {
         ingress.certificates.dns.nameservers =
             Some(vec![vec![SocketAddr::from(([127, 0, 0, 1], 1))]]);
         let shutdown = CancellationToken::new();
-        let cancelled = hosts(&["x.cancel.example.test"]);
+        let cancelled = routes(&["x.cancel.example.test"]);
         tokio::join!(
             ingress.maintain_certificates(&cancelled, now, &shutdown),
             async {
@@ -653,7 +751,7 @@ impl Scenario {
             Some(Challenge { provider, zone, id }),
         );
         ingress
-            .maintain_certificates(&[hostname].into(), now, &CancellationToken::new())
+            .maintain_certificates(&[hostname.into()].into(), now, &CancellationToken::new())
             .await;
         let status = ingress.dns_status().await;
         let issued = status

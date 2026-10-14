@@ -4,7 +4,7 @@ use piqueld_core::{
     EnvironmentId,
     access::Scope,
     api::RouteStatus,
-    manifest::{Hostname, ValidatedRoute},
+    manifest::{Hostname, RouteHostname, ValidatedRoute},
 };
 use sqlx::{Sqlite, SqliteConnection, SqliteExecutor, Transaction};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -37,7 +37,7 @@ impl Store {
     pub(crate) async fn reserve_installation_hostnames(
         &self,
         hostnames: &[Hostname],
-    ) -> Result<Vec<Hostname>, StoreError> {
+    ) -> Result<Vec<RouteHostname>, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         sqlx::query!("DELETE FROM installation_hostnames")
             .execute(&mut *tx)
@@ -60,7 +60,7 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)?;
         let mut conflicts = Vec::new();
         for hostname in routed {
-            let hostname = Hostname::parse(hostname).map_err(StoreError::corrupt)?;
+            let hostname = RouteHostname::parse(hostname).map_err(StoreError::corrupt)?;
             if hostnames.iter().any(|domain| hostname.is_within(domain)) {
                 conflicts.push(hostname);
             }
@@ -163,7 +163,7 @@ impl Store {
         .into_iter()
         .collect();
         for hostname in names.difference(&reserved) {
-            let parsed = Hostname::parse(hostname.as_str()).map_err(StoreError::corrupt)?;
+            let parsed = RouteHostname::parse(hostname.as_str()).map_err(StoreError::corrupt)?;
             if installation.iter().any(|domain| parsed.is_within(domain)) {
                 return Err(StoreError::HostnameConflict {
                     hostname: hostname.clone(),
@@ -350,13 +350,13 @@ impl Store {
 
     /// Hostnames whose DNS records piqueld manages, including those of
     /// removed routes until their records are deleted.
-    pub(crate) async fn dns_records(&self) -> Result<BTreeSet<Hostname>, StoreError> {
+    pub(crate) async fn dns_records(&self) -> Result<BTreeSet<RouteHostname>, StoreError> {
         sqlx::query_scalar!("SELECT hostname FROM dns_records")
             .fetch_all(&self.pool)
             .await
             .map_err(StoreError::database)?
             .into_iter()
-            .map(|hostname| Hostname::parse(hostname).map_err(StoreError::corrupt))
+            .map(|hostname| RouteHostname::parse(hostname).map_err(StoreError::corrupt))
             .collect()
     }
 
@@ -364,7 +364,7 @@ impl Store {
     /// the first one, and whether changes it staged are `unpublished`.
     pub(crate) async fn track_dns_records(
         &self,
-        hostname: &Hostname,
+        hostname: &RouteHostname,
         unpublished: bool,
     ) -> Result<(), StoreError> {
         let hostname = hostname.as_str();
@@ -382,7 +382,7 @@ impl Store {
     /// Whether changes staged for `hostname` may not be published yet.
     pub(crate) async fn dns_records_unpublished(
         &self,
-        hostname: &Hostname,
+        hostname: &RouteHostname,
     ) -> Result<bool, StoreError> {
         let hostname = hostname.as_str();
         Ok(sqlx::query_scalar!(
@@ -396,7 +396,10 @@ impl Store {
     }
 
     /// Forgets `hostname` once its DNS records are deleted.
-    pub(crate) async fn release_dns_records(&self, hostname: &Hostname) -> Result<(), StoreError> {
+    pub(crate) async fn release_dns_records(
+        &self,
+        hostname: &RouteHostname,
+    ) -> Result<(), StoreError> {
         let hostname = hostname.as_str();
         sqlx::query!("DELETE FROM dns_records WHERE hostname=?1", hostname)
             .execute(&self.pool)

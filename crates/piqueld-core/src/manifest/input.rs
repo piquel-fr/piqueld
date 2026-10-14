@@ -81,7 +81,7 @@ pub struct ApplicationSpec {
     pub services: Vec<Service>,
     /// Declared named volumes.
     pub volumes: Vec<Volume>,
-    /// Exact-hostname HTTP routes, activated on deployment.
+    /// HTTP routes by hostname, activated on deployment.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<Route>,
     /// Secrets whose values piqueld generates once per environment.
@@ -751,7 +751,8 @@ pub enum SecretEncoding {
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
-    /// Exact public DNS hostname.
+    /// Public DNS hostname, exact or a wildcard such as `*.example.com`
+    /// matching every name one label below `example.com`.
     pub hostname: Template,
     /// Stable name, unique within the application, that selects this route in
     /// every environment and preview, e.g. `piquelctl env url --route web`.

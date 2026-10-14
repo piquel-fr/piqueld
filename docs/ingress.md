@@ -1,8 +1,9 @@
 # Managed HTTP ingress
 
 Piqueld manages one Caddy gateway for a single-node installation used by one trusted
-person or team. Applications own exact-host routes; the installation owns the
-listeners and certificate storage. Routes are public (the internet) or private (the
+person or team. Applications own routes by hostname, exact or
+[wildcard](#wildcard-routes); the installation owns the listeners and certificate
+storage. Routes are public (the internet) or private (the
 tailnet only, the default). Public routes arrive on ports 80 and 443, or through a
 [Cloudflare Tunnel](#cloudflare-tunnel) with no inbound port at all. Apps must
 implement their own authentication.
@@ -56,8 +57,8 @@ routes, so two environments of one application cannot share hostnames: creating 
 second environment of an application with routes fails with `hostname_conflict`
 until environments can override hostnames.
 The backend serves plain HTTP on its internal port. WebSockets and streaming are
-supported. Wildcards, path rewriting/routing, tunnels, arbitrary TCP/UDP, and
-HTTPS backends are outside this release.
+supported. Path rewriting/routing, arbitrary TCP/UDP, and HTTPS backends are
+outside this release.
 
 ## Public and private routes
 
@@ -178,7 +179,8 @@ disabled.
 Unless piqueld [manages them](#managed-dns-records), DNS records are created
 manually. Each private hostname needs A and AAAA records pointing at the apps
 node's tailnet addresses, which status and `piquelctl app
-route list` show. A wildcard per environment (for example `staging.piquel.fr`
+route list` show; a [wildcard route](#wildcard-routes) needs them on its
+wildcard name. A wildcard record per environment (for example `staging.piquel.fr`
 plus `*.staging.piquel.fr`) means new routes need no DNS change. Names are not
 secret: they appear in public DNS and certificate transparency logs; only
 reachability is restricted. Some routers' DNS-rebinding protection drops answers
@@ -187,6 +189,51 @@ in `100.64.0.0/10`; allowlist the domain on the router, or use Tailscale split D
 Private routes get their certificates through [DNS-01](#dns-01-certificates). A
 private hostname outside every configured provider zone reports `failed` with that
 cause.
+
+## Wildcard routes
+
+A route whose hostname starts with `*.` serves every name exactly one label below
+its parent, like a wildcard certificate, so one route serves a subdomain per user
+or tenant without a manifest change for each:
+
+```toml
+[[spec.routes]]
+hostname = "*.tenants.example.com"   # alice.tenants.example.com, bob.tenants.example.com
+service = "web"
+port = 3000
+visibility = "public"
+```
+
+It matches `alice.tenants.example.com`, but neither `tenants.example.com` nor
+`a.b.tenants.example.com`. The backend receives the requested name in `Host` and
+`X-Forwarded-Host`, and tells tenants apart with it.
+
+- **Precedence.** An exact hostname always wins over a wildcard covering it,
+  whichever application owns it and on whichever listener it is served: a
+  private route's, the [webhook hostname](#push-webhooks) or the
+  [dashboard hostname](#dashboard-hostname) are never served by a public
+  wildcard. A wildcard therefore never captures an existing hostname. A forged
+  request for such a name on the wildcard's listener completes TLS with the
+  wildcard's certificate, then receives a 404.
+- **Reservations.** A wildcard reserves its pattern, `*.tenants.example.com`,
+  not every name it matches. Another application may still route an exact name
+  below it, which then wins. Hostnames reserved by the installation, and their
+  subdomains, cannot be covered by a wildcard route.
+- **Certificates.** A wildcard route always uses its own wildcard certificate,
+  `*.tenants.example.com`, through [DNS-01](#dns-01-certificates), so a DNS
+  provider must cover its zone, even for a public route. Exact routes below it
+  keep their own certificates. With a [Cloudflare Tunnel](#cloudflare-tunnel),
+  Cloudflare terminates a public wildcard's TLS, and Universal SSL covers only
+  one label below the zone.
+- **DNS.** The wildcard needs a wildcard record, `*.tenants.example.com`, with the
+  records an exact route of its visibility needs. Managed DNS creates it
+  ([managed DNS records](#managed-dns-records)); otherwise, create it by hand.
+- **Visibility and previews.** Wildcards may be public or private, and preview
+  hostname templates may start with `*.`, for example
+  `*.${{ env.slug }}.dev.example.com`.
+- **Status.** Route probes request `piqueld-probe.<parent>`, a name the wildcard
+  serves, so a ready wildcard route has its DNS and certificate verified like an
+  exact one.
 
 ## Cloudflare Tunnel
 
@@ -402,16 +449,18 @@ DNS-01 instead of Caddy's automatic HTTPS. piqueld obtains them itself through t
 stock Caddy through its admin API (`tls.certificates.load_pem`). Automatic HTTPS
 is off on the private listener, so Caddy never attempts HTTP-01 for them. DNS
 credentials stay in the daemon, so a compromised gateway cannot take over a
-domain. Public routes keep Caddy's automatic HTTPS.
+domain. Exact public routes keep Caddy's automatic HTTPS.
 
 A hostname is covered by the wildcard of its parent domain when that parent is
-the provider's zone or lies inside it, and by its exact name otherwise:
+the provider's zone or lies inside it, and by its exact name otherwise. A
+[wildcard route](#wildcard-routes) is covered by its own wildcard; public ones
+get theirs through DNS-01 too, unless a Cloudflare Tunnel terminates their TLS:
 
 | Hostname | Certificate |
 | --- | --- |
 | `admin.piquel.fr` | `*.piquel.fr` |
 | `staging.piquel.fr` | `*.piquel.fr` (same certificate) |
-| `auth.staging.piquel.fr`, `admin.staging.piquel.fr` | `*.staging.piquel.fr` |
+| `auth.staging.piquel.fr`, `admin.staging.piquel.fr`, `*.staging.piquel.fr` | `*.staging.piquel.fr` |
 | `piquel.fr` | `piquel.fr` (the parent `fr` is outside the zone) |
 
 All previews under `*.dev.piquel.fr` therefore share one certificate.
@@ -468,12 +517,14 @@ the provider with the longest matching zone, as for certificates.
 
 The [webhook hostname](#push-webhooks) gets a public route's records.
 
-Private routes never get public addresses. Managed records are exact hostnames,
-never wildcards: existing manual wildcards keep working, and the more specific
-managed records override them.
+Private routes never get public addresses. A [wildcard route](#wildcard-routes)
+gets its records on its wildcard name, `*.<parent>`; exact routes' records are
+more specific, so they override it, like existing manual wildcards.
 
 **Ownership.** piqueld only changes records it owns. Before writing a hostname's
-records, it creates a `_piqueld.<hostname>` TXT record holding the installation ID.
+records, it creates a `_piqueld.<hostname>` TXT record holding the installation ID
+(`_piqueld._wildcard.<parent>` for a wildcard, since providers accept `*` only as
+a name's first label).
 A hostname that already has A, AAAA or CNAME records without that ownership record,
 or that another installation also claims, is never written: its route reports
 `dns_conflict`, with the existing records, until the operator removes them.
@@ -646,7 +697,9 @@ redirects, unknown-host rejection, network separation, gateway replacement failu
 and recovery, unrelated deployments during a stalled gateway update, withdrawals
 with a broken app network, a backend cutover held behind a failing health check,
 and forwarded client addresses arriving from the injected ingress range. With
-Pebble-issued DNS-01 certificates, it checks that each listener serves only its
+Pebble-issued DNS-01 certificates, it checks that a public wildcard route serves
+two names below it with their own `Host`, that an exact route below it still
+wins and that a name two labels deep is not matched, that each listener serves only its
 own routes (a forged Host or SNI for a private route on the public listener gets a
 404 and no certificate), that a public → private change withdraws the route from
 the public listener, that the PROXY v2 client address reaches backends in
