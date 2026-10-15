@@ -34,10 +34,15 @@
 //!
 //! Known hosts redirect HTTP to HTTPS, then either proxy to their Swarm service's
 //! internal HTTP port or answer with their configured redirect. Caddy
-//! obtains/renews certificates for public hosts automatically. Private hosts use
-//! the DNS-01 certificates piqueld loads as PEM, so automatic HTTPS is off on
-//! the private servers. Explicit redirects keep unknown HTTP hosts on the final
-//! 404 handler.
+//! obtains/renews certificates for exact public hosts automatically. Private
+//! hosts and public wildcards use the DNS-01 certificates piqueld loads as
+//! PEM, so automatic HTTPS is off on the private servers and skips public
+//! wildcards. Explicit redirects keep unknown HTTP hosts on the final 404
+//! handler.
+//!
+//! A wildcard host matches every name one label below its parent, except
+//! the exact hostnames of any listener: exact routes, and the webhook and
+//! dashboard hostnames, always win, so a wildcard never captures them.
 
 use super::{
     DASHBOARD_SOCKET, Ingress, WEBHOOK_SOCKET,
@@ -49,7 +54,7 @@ use crate::store::ingress::RoutingTable;
 use anyhow::Result;
 use piqueld_core::{
     DockerServiceName, EnvironmentId,
-    manifest::{RouteTarget, ValidatedRoute, Visibility},
+    manifest::{Hostname, RouteHostname, RouteTarget, ValidatedRoute, Visibility},
 };
 use serde_json::{Value, json};
 
@@ -61,7 +66,7 @@ struct Listener {
     /// HTTP routes redirecting each host to HTTPS.
     redirects: Vec<Value>,
     /// Hostnames, which the TLS connection policy accepts as SNI.
-    hosts: Vec<String>,
+    hosts: Vec<RouteHostname>,
 }
 
 impl Ingress {
@@ -93,12 +98,26 @@ impl Ingress {
         Ok(self.build_configuration(table, proxies.as_deref(), tunnel.as_deref()))
     }
 
+    /// Every exact hostname, served on this gateway or not, which wildcards
+    /// leave alone: a private route's stays out of a public wildcard even
+    /// while private ingress is off.
+    pub(super) fn exact_hostnames(&self, table: &RoutingTable) -> Vec<Hostname> {
+        table
+            .values()
+            .flatten()
+            .filter(|route| route.hostname.wildcard().is_none())
+            .map(|route| route.hostname.domain())
+            .chain(self.webhook_hostname().cloned())
+            .chain(self.dashboard_hostname().cloned())
+            .collect()
+    }
+
     /// Produces the configuration. Private routes are served only when
     /// `proxies` gives the private listener's trusted PROXY sources. Public
     /// routes are served on the tunnel listener, instead of ports 80/443, when
     /// `tunnel` gives the edge subnets `cloudflared` connects from. Exact-host
     /// routes enable automatic TLS without on-demand certificate issuance for
-    /// arbitrary hosts.
+    /// arbitrary hosts; wildcards use DNS-01 certificates.
     ///
     /// Each route yields a probe handler, a reverse proxy, and an HTTP redirect
     /// on its listener; every server ends with a 404 fallback.
@@ -106,6 +125,7 @@ impl Ingress {
     /// ```text
     /// app.example.com -> reverse_proxy <swarm service name>:<port>
     /// http://app.example.com/x -> 308 https://app.example.com/x
+    /// *.example.com, except exact hostnames -> reverse_proxy ...
     /// ```
     pub(super) fn build_configuration(
         &self,
@@ -115,6 +135,14 @@ impl Ingress {
     ) -> Value {
         let mut public = Listener::default();
         let mut private = Listener::default();
+        let exact = self.exact_hostnames(table);
+        let matcher = |host: &RouteHostname| {
+            let covered: Vec<&Hostname> = exact.iter().filter(|name| host.matches(name)).collect();
+            match host.wildcard() {
+                Some(_) if !covered.is_empty() => json!({"host":[host],"not":[{"host":covered}]}),
+                _ => json!({"host":[host]}),
+            }
+        };
         for (id, routes) in table {
             for route in routes {
                 let listener = match route.visibility {
@@ -122,21 +150,23 @@ impl Ingress {
                     Visibility::Private if proxies.is_some() => &mut private,
                     Visibility::Private => continue,
                 };
-                let host = route.hostname.as_str();
+                let host = matcher(&route.hostname);
+                let mut probe = host.clone();
+                probe["path"] = json!(["/.well-known/piqueld-ingress"]);
                 let handler = Self::handler(id, route, tunnel.is_some());
-                listener.serve(host, [
+                listener.serve(&route.hostname, &host, [
                     // A bounded, side-effect-free endpoint lets the daemon distinguish
                     // this gateway from a different server behind an incorrect DNS record.
-                    json!({"match":[{"host":[host],"path":["/.well-known/piqueld-ingress"]}],"handle":[{"handler":"static_response","body":self.instance_id}],"terminal":true}),
-                    json!({"match":[{"host":[host]}],"handle":[handler],"terminal":true}),
+                    json!({"match":[probe],"handle":[{"handler":"static_response","body":self.instance_id}],"terminal":true}),
+                    json!({"match":[host],"handle":[handler],"terminal":true}),
                 ]);
             }
         }
         // Only the webhook path reaches the daemon, through its own socket,
         // which serves nothing else. Its other paths fall through to the 404.
         if let Some(host) = self.webhook_hostname() {
-            let host = host.as_str();
-            public.serve(host, [json!({
+            let host = RouteHostname::from(host.clone());
+            public.serve(&host, &matcher(&host), [json!({
                 "match":[{"host":[host],"path":[format!("{WEBHOOK_PATH}*")]}],
                 "handle":[
                     {"handler":"request_body","max_size":WEBHOOK_BODY_LIMIT},
@@ -149,8 +179,8 @@ impl Ingress {
         // tailnet client from `X-Forwarded-For`: one upstream connection
         // carries many clients' requests.
         if let Some(host) = self.dashboard_hostname().filter(|_| proxies.is_some()) {
-            let host = host.as_str();
-            private.serve(host, [json!({
+            let host = RouteHostname::from(host.clone());
+            private.serve(&host, &matcher(&host), [json!({
                 "match":[{"host":[host]}],
                 "handle":[{
                     "handler":"reverse_proxy",
@@ -239,14 +269,24 @@ impl Ingress {
 
 impl Listener {
     /// An HTTPS server on `listen` that completes TLS only for this listener's
-    /// hostnames, even with no hostnames at all.
+    /// hostnames, even with no hostnames at all. Caddy obtains no certificate
+    /// for wildcards, which only DNS-01 can prove, and still manages exact
+    /// hostnames that a loaded DNS-01 wildcard certificate covers, so they
+    /// never depend on it.
     fn https_server(&self, listen: &[String]) -> Value {
         let mut routes = self.https.clone();
         routes.push(Self::not_found());
+        let wildcards: Vec<&RouteHostname> = self
+            .hosts
+            .iter()
+            .filter(|host| host.wildcard().is_some())
+            .collect();
         json!({
             "protocols":["h1","h2"],"listen":listen,"routes":routes,"strict_sni_host":true,
             "tls_connection_policies":[{"match":{"sni":self.hosts}}],
-            "automatic_https":{"disable_redirects":true}
+            "automatic_https":{
+                "disable_redirects":true,"skip_certificates":wildcards,"ignore_loaded_certificates":true
+            }
         })
     }
 
@@ -266,11 +306,16 @@ impl Listener {
     }
 
     /// Serves `host` with its HTTPS `routes`, and redirects its HTTP
-    /// requests to HTTPS.
-    fn serve(&mut self, host: &str, routes: impl IntoIterator<Item = Value>) {
-        self.hosts.push(host.to_owned());
+    /// requests, those `matcher` matches, to HTTPS.
+    fn serve(
+        &mut self,
+        host: &RouteHostname,
+        matcher: &Value,
+        routes: impl IntoIterator<Item = Value>,
+    ) {
+        self.hosts.push(host.clone());
         self.https.extend(routes);
-        self.redirects.push(json!({"match":[{"host":[host]}],"handle":[{"handler":"static_response","status_code":308,"headers":{"Location":["https://{http.request.host}{http.request.uri}"]}}],"terminal":true}));
+        self.redirects.push(json!({"match":[matcher],"handle":[{"handler":"static_response","status_code":308,"headers":{"Location":["https://{http.request.host}{http.request.uri}"]}}],"terminal":true}));
     }
 
     /// Aborts connections whose peer is outside `remote_ip`'s ranges.

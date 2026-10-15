@@ -8,7 +8,10 @@ use crate::{
     ingress::tests::{application, request_deployment},
     store::Store,
 };
-use piqueld_core::{EnvironmentId, manifest::ValidatedRoute};
+use piqueld_core::{
+    EnvironmentId,
+    manifest::{RouteHostname, ValidatedRoute},
+};
 use std::sync::Arc;
 
 const PUBLIC: &str = "203.0.113.10";
@@ -90,7 +93,8 @@ impl Harness {
     /// Saves an application, returning its environment and the route to
     /// `host` with `visibility`.
     async fn route(&self, host: &str, visibility: &str) -> (EnvironmentId, ValidatedRoute) {
-        let app = application(host.split('.').next().unwrap(), host, "body");
+        let name = host.trim_start_matches("*.").split('.').next().unwrap();
+        let app = application(name, host, "body");
         let (id, _) = request_deployment(&self.store, app.clone()).await;
         let mut manifest = app.to_manifest();
         manifest.spec.routes[0].visibility = visibility.parse().unwrap();
@@ -125,7 +129,7 @@ impl Harness {
     }
 
     fn state(&self, host: &str) -> RouteDns {
-        self.ingress.route_dns(&Hostname::parse(host).unwrap())
+        self.ingress.route_dns(&RouteHostname::parse(host).unwrap())
     }
 
     /// Phases of the journal actions that started since the last call.
@@ -277,6 +281,30 @@ async fn records_are_written_once_applied_and_never_on_foreign_names() {
     assert!(
         conflict.message.unwrap().contains("A 198.51.100.1"),
         "conflict names the record"
+    );
+}
+
+#[tokio::test]
+async fn wildcards_get_records_with_ownership_beside_their_parent() {
+    let harness = Harness::new(true).await;
+    let (id, wildcard) = harness.route("*.tenants.example.com", "public").await;
+    harness.stage(&id, &[wildcard], true).await;
+    harness.apply().await;
+    assert!(harness.pass().await);
+    // Providers accept `*` only as a name's first label.
+    assert_eq!(
+        harness.provider.dump(),
+        [
+            format!(
+                "_piqueld._wildcard.tenants.example.com TXT {:?}",
+                harness.store.instance_id()
+            ),
+            format!("*.tenants.example.com A {PUBLIC}"),
+        ]
+    );
+    assert_eq!(
+        harness.state("*.tenants.example.com").state,
+        DnsRecordState::Managed
     );
 }
 
@@ -545,7 +573,7 @@ async fn tunnel_routes_wait_in_zones_that_cannot_proxy() {
     // Nothing is claimed or written, and the pass does not fail.
     assert!(Harness::pass_of(&tunnel).await);
     harness.unchanged();
-    let state = tunnel.route_dns(&Hostname::parse("www.example.com").unwrap());
+    let state = tunnel.route_dns(&RouteHostname::parse("www.example.com").unwrap());
     assert_eq!(state.state, DnsRecordState::Pending);
     assert!(state.message.unwrap().contains("Cloudflare"));
 }

@@ -132,8 +132,11 @@ pub enum StoreError {
         /// Current logical secret version.
         actual: i64,
     },
-    /// An exact public hostname belongs to another environment or the installation.
-    #[error("hostname {hostname} is reserved by another environment or this installation")]
+    /// A public hostname belongs to another environment, another
+    /// application's wildcard, or the installation.
+    #[error(
+        "hostname {hostname} is reserved by another environment, another application's wildcard, or this installation"
+    )]
     HostnameConflict {
         /// Conflicting canonical public hostname.
         hostname: String,

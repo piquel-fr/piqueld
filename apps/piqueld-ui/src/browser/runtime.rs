@@ -276,19 +276,26 @@ fn detail_view(
     .into_any()
 }
 
-/// Table row for one URL: a link with its name, state, and what keeps it pending.
+/// Table row for one URL: a link with its name, state, and what keeps it
+/// pending. A wildcard's URL stands for many names, so it is not a link.
 fn url_row(url: &RouteUrl) -> AnyView {
     let tone = match url.state {
         UrlState::Ready => Tone::Ok,
         UrlState::Pending => Tone::Pending,
     };
+    let link = if url.url.contains('*') {
+        view! { <code>{url.url.clone()}</code> }.into_any()
+    } else {
+        view! {
+            <a href={url.url.clone()} target="_blank" rel="noopener noreferrer">
+                {url.url.clone()}
+            </a>
+        }
+        .into_any()
+    };
     view! {
         <tr>
-            <td>
-                <a href={url.url.clone()} target="_blank" rel="noopener noreferrer">
-                    {url.url.clone()}
-                </a>
-            </td>
+            <td>{link}</td>
             <td>{route_name(url.name.clone())}</td>
             <td>{url.visibility.to_string()}</td>
             <td>

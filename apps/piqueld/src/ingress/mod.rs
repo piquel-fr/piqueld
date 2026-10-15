@@ -21,7 +21,7 @@ use futures_util::{StreamExt, stream};
 use piqueld_core::{
     EnvironmentId,
     api::{DnsRecords, IngressStatus, PrivateIngressStatus, PublicIngressStatus, RouteStatus},
-    manifest::{Hostname, ValidatedRoute, Visibility},
+    manifest::{Hostname, RouteHostname, ValidatedRoute, Visibility},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -106,7 +106,7 @@ pub struct Ingress {
     /// A/AAAA records point at.
     public_addresses: Vec<IpAddr>,
     /// Each route hostname's DNS record state from the latest pass.
-    records: std::sync::RwLock<BTreeMap<Hostname, records::RouteDns>>,
+    records: std::sync::RwLock<BTreeMap<RouteHostname, records::RouteDns>>,
     /// Set once the gateway has converged, or stopped, with this daemon's
     /// configuration; DNS records wait for it.
     gateway_converged: std::sync::atomic::AtomicBool,
@@ -394,17 +394,18 @@ impl Ingress {
 
     /// Hostnames served with DNS-01 certificates instead of Caddy's automatic
     /// HTTPS: private routes and the dashboard hostname, which a public CA
-    /// cannot reach, while private ingress is enabled.
-    fn dns01_hostnames(&self, table: &RoutingTable) -> BTreeSet<Hostname> {
-        if self.node.is_none() {
-            return BTreeSet::new();
-        }
+    /// cannot reach, while private ingress is enabled, and public wildcards,
+    /// which only DNS-01 can prove, unless Cloudflare terminates their TLS.
+    fn dns01_hostnames(&self, table: &RoutingTable) -> BTreeSet<RouteHostname> {
         table
             .values()
             .flatten()
-            .filter(|route| route.visibility == Visibility::Private)
+            .filter(|route| match route.visibility {
+                Visibility::Private => self.node.is_some(),
+                Visibility::Public => self.tunnel.is_none() && route.hostname.wildcard().is_some(),
+            })
             .map(|route| route.hostname.clone())
-            .chain(self.dashboard_hostname().cloned())
+            .chain(self.dashboard_hostname().cloned().map(RouteHostname::from))
             .collect()
     }
 
@@ -658,6 +659,7 @@ impl Ingress {
         let Ok(table) = self.store.routing_table().await else {
             return;
         };
+        let exact = &self.exact_hostnames(&table);
         let (healthy, private) = {
             let health = self.health.read().await;
             (health.healthy, health.private.clone())
@@ -669,7 +671,8 @@ impl Ingress {
         let private = &private;
         let mut probes = stream::iter(routes)
             .map(|(id, route)| async move {
-                let (state, mut message) = self.route_state(&id, &route, healthy, private).await;
+                let (state, mut message) =
+                    self.route_state(&id, &route, exact, healthy, private).await;
                 let dns = self.route_dns(&route.hostname);
                 // Until the route is ready, a DNS conflict or failure explains it.
                 if let Some(problem) = dns.message.filter(|_| state != "ready") {
@@ -716,6 +719,7 @@ impl Ingress {
         &self,
         id: &EnvironmentId,
         route: &ValidatedRoute,
+        exact: &[Hostname],
         healthy: bool,
         private: &PrivateIngressStatus,
     ) -> (&'static str, String) {
@@ -730,17 +734,16 @@ impl Ingress {
             };
         }
         let is_private = route.visibility == Visibility::Private;
-        if is_private {
-            if self.node.is_none() {
-                return if private.healthy {
-                    ("disabled", "Private ingress is disabled in daemon TOML ([ingress.private]), so this private route is not served".into())
-                } else {
-                    ("failed", private.message.clone())
-                };
-            }
-            if let Some(problem) = self.certificates.problem(&route.hostname) {
-                return ("failed", format!("No DNS-01 certificate: {problem}"));
-            }
+        if is_private && self.node.is_none() {
+            return if private.healthy {
+                ("disabled", "Private ingress is disabled in daemon TOML ([ingress.private]), so this private route is not served".into())
+            } else {
+                ("failed", private.message.clone())
+            };
+        }
+        // Only routes needing a DNS-01 certificate can lack one.
+        if let Some(problem) = self.certificates.problem(&route.hostname) {
+            return ("failed", format!("No DNS-01 certificate: {problem}"));
         }
         // A broken app must not hide verified readiness for unrelated
         // routes. Only probe destinations acknowledged by the gateway.
@@ -758,13 +761,19 @@ impl Ingress {
         if is_private && !private.healthy {
             return ("pending", private.message.clone());
         }
-        let result = if is_private {
-            self.probe_private(&route.hostname, &private.addresses)
-                .await
-        } else {
-            self.probe_https(&self.client, &format!("https://{}", route.hostname))
-                .await
-        };
+        let result = async {
+            let hostname = route
+                .hostname
+                .served(exact)
+                .context("every one-character name below the wildcard has its own exact route")?;
+            if is_private {
+                self.probe_private(&hostname, &private.addresses).await
+            } else {
+                self.probe_https(&self.client, &format!("https://{hostname}"))
+                    .await
+            }
+        }
+        .await;
         match result {
             Ok(()) if is_private => ("ready", "DNS points at the apps node and the private listener serves trusted HTTPS; the tailnet hop and backend health are reported separately".into()),
             Ok(()) if self.tunnel.is_some() => ("ready", "DNS and trusted HTTPS through the Cloudflare Tunnel verified from this daemon; backend health is reported separately".into()),

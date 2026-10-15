@@ -5,10 +5,11 @@
 //!
 //! Each certificate covers one name: the wildcard of a hostname's parent when
 //! that parent lies inside the provider's zone, otherwise the exact hostname.
+//! Wildcard routes use their own wildcard.
 //!
 //! ```text
 //! admin.piquel.fr, staging.piquel.fr         -> *.piquel.fr
-//! auth.staging.piquel.fr                     -> *.staging.piquel.fr
+//! auth.staging.piquel.fr, *.staging.piquel.fr -> *.staging.piquel.fr
 //! piquel.fr (parent `fr` is outside the zone) -> piquel.fr
 //! ```
 //!
@@ -38,7 +39,7 @@ use instant_acme::{
 };
 use piqueld_core::{
     api::{CertificateStatus, DnsStatus},
-    manifest::Hostname,
+    manifest::{Hostname, RouteHostname},
     observability::DiagnosticCode,
 };
 use std::{
@@ -71,10 +72,14 @@ pub(crate) enum CertificateName {
 
 impl CertificateName {
     /// The name covering `hostname`, which belongs to `zone`.
-    pub(crate) fn covering(hostname: &Hostname, zone: &Hostname) -> Self {
+    pub(crate) fn covering(hostname: &RouteHostname, zone: &Hostname) -> Self {
+        if let Some(parent) = hostname.wildcard() {
+            return Self::Wildcard(parent);
+        }
+        let hostname = hostname.domain();
         match hostname.parent() {
             Some(parent) if parent.is_within(zone) => Self::Wildcard(parent),
-            _ => Self::Exact(hostname.clone()),
+            _ => Self::Exact(hostname),
         }
     }
 
@@ -197,7 +202,7 @@ type Owner = Result<(usize, Zone), ZoneError>;
 struct Entry {
     stored: Option<Stored>,
     /// Hostnames that currently need this certificate.
-    hostnames: BTreeSet<Hostname>,
+    hostnames: BTreeSet<RouteHostname>,
     /// Latest failure, cleared by a successful issuance.
     error: Option<String>,
     /// Why no provider zone owns the hostnames, recomputed every pass.
@@ -293,7 +298,7 @@ impl Certificates {
 
     /// Why `hostname` has no certificate to serve: no provider zone owns it,
     /// or its issuance failed. `None` while one is stored or being issued.
-    pub(super) fn problem(&self, hostname: &Hostname) -> Option<String> {
+    pub(super) fn problem(&self, hostname: &RouteHostname) -> Option<String> {
         let entries = self.entries.read().expect("certificate state lock");
         entries
             .values()
@@ -308,11 +313,12 @@ impl Certificates {
     ///
     /// A hostname no zone owns, for instance while discovery fails after a
     /// restart, keeps a stored certificate covering it and reports why.
-    async fn due(&self, desired: &BTreeSet<Hostname>, now_ms: i64) -> Vec<Due> {
+    async fn due(&self, desired: &BTreeSet<RouteHostname>, now_ms: i64) -> Vec<Due> {
         self.dns.refresh().await;
-        let mut wanted: BTreeMap<CertificateName, (BTreeSet<Hostname>, Owner)> = BTreeMap::new();
+        let mut wanted: BTreeMap<CertificateName, (BTreeSet<RouteHostname>, Owner)> =
+            BTreeMap::new();
         for hostname in desired {
-            let owner = self.dns.zone_for(hostname).await;
+            let owner = self.dns.zone_for(&hostname.domain()).await;
             let name = match &owner {
                 Ok((_, zone)) => CertificateName::covering(hostname, &zone.name),
                 Err(_) => self.stored_covering(hostname),
@@ -355,14 +361,19 @@ impl Certificates {
     }
 
     /// The stored certificate covering `hostname`: its parent's wildcard or
-    /// its exact name. Without one, its exact name.
-    fn stored_covering(&self, hostname: &Hostname) -> CertificateName {
+    /// its exact name. Without one, its exact name. A wildcard route has only
+    /// its own wildcard.
+    fn stored_covering(&self, hostname: &RouteHostname) -> CertificateName {
+        let hostname = match hostname.wildcard() {
+            Some(parent) => return CertificateName::Wildcard(parent),
+            None => hostname.domain(),
+        };
         let entries = self.entries.read().expect("certificate state lock");
         hostname
             .parent()
             .map(CertificateName::Wildcard)
             .filter(|wildcard| entries.get(wildcard).is_some_and(|e| e.stored.is_some()))
-            .unwrap_or_else(|| CertificateName::Exact(hostname.clone()))
+            .unwrap_or(CertificateName::Exact(hostname))
     }
 
     /// Replaces the leftover challenge record of `name`, returning the old one.
@@ -478,7 +489,7 @@ impl Ingress {
     /// its TXT record; the pass stops after it.
     pub(super) async fn maintain_certificates(
         &self,
-        desired: &BTreeSet<Hostname>,
+        desired: &BTreeSet<RouteHostname>,
         now_ms: i64,
         cancellation: &CancellationToken,
     ) {
@@ -872,6 +883,10 @@ mod tests {
         Hostname::parse(name).unwrap()
     }
 
+    fn route(name: &str) -> RouteHostname {
+        RouteHostname::parse(name).unwrap()
+    }
+
     #[test]
     fn hostnames_share_their_parent_wildcard_inside_the_zone() {
         for (hostname, zone, name) in [
@@ -883,8 +898,11 @@ mod tests {
             // A delegated child zone cannot answer for its parent's wildcard.
             ("dev.piquel.fr", "dev.piquel.fr", "dev.piquel.fr"),
             ("a.dev.piquel.fr", "dev.piquel.fr", "*.dev.piquel.fr"),
+            // Wildcard routes, even of a zone's apex, use their own wildcard.
+            ("*.piquel.fr", "piquel.fr", "*.piquel.fr"),
+            ("*.dev.piquel.fr", "dev.piquel.fr", "*.dev.piquel.fr"),
         ] {
-            let covering = CertificateName::covering(&host(hostname), &host(zone));
+            let covering = CertificateName::covering(&route(hostname), &host(zone));
             assert_eq!(covering.to_string(), name, "{hostname} in {zone}");
             assert_eq!(
                 CertificateName::from_file(&covering.file()),
@@ -932,16 +950,16 @@ mod tests {
                 ..Entry::default()
             },
         );
-        let desired = [host("admin.piquel.fr"), host("other.fr")].into();
+        let desired = [route("admin.piquel.fr"), route("other.fr")].into();
         assert!(certificates.due(&desired, 0).await.is_empty());
         assert_eq!(
             certificates.loaded(),
             [("chain".to_owned(), "key".to_owned())]
         );
         // Only the hostname without a stored certificate fails its route.
-        assert_eq!(certificates.problem(&host("admin.piquel.fr")), None);
+        assert_eq!(certificates.problem(&route("admin.piquel.fr")), None);
         assert_eq!(
-            certificates.problem(&host("other.fr")).as_deref(),
+            certificates.problem(&route("other.fr")).as_deref(),
             Some("no configured DNS provider zone contains other.fr")
         );
         let problems: Vec<_> = certificates

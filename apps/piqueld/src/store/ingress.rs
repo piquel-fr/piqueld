@@ -4,7 +4,7 @@ use piqueld_core::{
     EnvironmentId,
     access::Scope,
     api::RouteStatus,
-    manifest::{Hostname, ValidatedRoute},
+    manifest::{Hostname, RouteHostname, ValidatedRoute},
 };
 use sqlx::{Sqlite, SqliteConnection, SqliteExecutor, Transaction};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -37,7 +37,7 @@ impl Store {
     pub(crate) async fn reserve_installation_hostnames(
         &self,
         hostnames: &[Hostname],
-    ) -> Result<Vec<Hostname>, StoreError> {
+    ) -> Result<Vec<RouteHostname>, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         sqlx::query!("DELETE FROM installation_hostnames")
             .execute(&mut *tx)
@@ -60,12 +60,40 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)?;
         let mut conflicts = Vec::new();
         for hostname in routed {
-            let hostname = Hostname::parse(hostname).map_err(StoreError::corrupt)?;
+            let hostname = RouteHostname::parse(hostname).map_err(StoreError::corrupt)?;
             if hostnames.iter().any(|domain| hostname.is_within(domain)) {
                 conflicts.push(hostname);
             }
         }
         Ok(conflicts)
+    }
+
+    /// Whether `hostname` is exact and another application than the
+    /// environment's reserves the wildcard matching it. Names that wildcard
+    /// serves stay its own, so an exact route never takes them over.
+    async fn under_foreign_wildcard(
+        connection: &mut SqliteConnection,
+        hostname: &RouteHostname,
+        environment_id: &str,
+    ) -> Result<bool, StoreError> {
+        let Some(parent) = hostname
+            .wildcard()
+            .is_none()
+            .then(|| hostname.domain().parent())
+            .flatten()
+        else {
+            return Ok(false);
+        };
+        let wildcard = format!("*.{parent}");
+        Ok(sqlx::query_scalar!(
+            r#"SELECT 1 AS "covered!: bool" FROM hostname_reservations r JOIN environments owner ON owner.id=r.environment_id JOIN environments contender ON contender.id=?2 WHERE r.hostname=?1 AND owner.application_id<>contender.application_id"#,
+            wildcard,
+            environment_id
+        )
+        .fetch_optional(connection)
+        .await
+        .map_err(StoreError::database)?
+        .is_some())
     }
 
     /// Loads the hostnames reserved for the installation itself.
@@ -117,7 +145,8 @@ impl Store {
     /// of the manifest it deploys, rendered for this environment, its resolved
     /// spec, its latest operation's target and rendered deployment manifest,
     /// desired and applied gateway routes), rejects any newly within an
-    /// installation hostname, then replaces the environment's
+    /// installation hostname or exactly below another application's
+    /// wildcard, then replaces the environment's
     /// `hostname_reservations` rows. Names it reserved before the installation
     /// claimed them stay reserved, though never routed, so the gateway's
     /// acknowledgements and the environment's operations keep working until
@@ -163,8 +192,13 @@ impl Store {
         .into_iter()
         .collect();
         for hostname in names.difference(&reserved) {
-            let parsed = Hostname::parse(hostname.as_str()).map_err(StoreError::corrupt)?;
+            let parsed = RouteHostname::parse(hostname.as_str()).map_err(StoreError::corrupt)?;
             if installation.iter().any(|domain| parsed.is_within(domain)) {
+                return Err(StoreError::HostnameConflict {
+                    hostname: hostname.clone(),
+                });
+            }
+            if Self::under_foreign_wildcard(&mut *connection, &parsed, environment_id).await? {
                 return Err(StoreError::HostnameConflict {
                     hostname: hostname.clone(),
                 });
@@ -350,13 +384,13 @@ impl Store {
 
     /// Hostnames whose DNS records piqueld manages, including those of
     /// removed routes until their records are deleted.
-    pub(crate) async fn dns_records(&self) -> Result<BTreeSet<Hostname>, StoreError> {
+    pub(crate) async fn dns_records(&self) -> Result<BTreeSet<RouteHostname>, StoreError> {
         sqlx::query_scalar!("SELECT hostname FROM dns_records")
             .fetch_all(&self.pool)
             .await
             .map_err(StoreError::database)?
             .into_iter()
-            .map(|hostname| Hostname::parse(hostname).map_err(StoreError::corrupt))
+            .map(|hostname| RouteHostname::parse(hostname).map_err(StoreError::corrupt))
             .collect()
     }
 
@@ -364,7 +398,7 @@ impl Store {
     /// the first one, and whether changes it staged are `unpublished`.
     pub(crate) async fn track_dns_records(
         &self,
-        hostname: &Hostname,
+        hostname: &RouteHostname,
         unpublished: bool,
     ) -> Result<(), StoreError> {
         let hostname = hostname.as_str();
@@ -382,7 +416,7 @@ impl Store {
     /// Whether changes staged for `hostname` may not be published yet.
     pub(crate) async fn dns_records_unpublished(
         &self,
-        hostname: &Hostname,
+        hostname: &RouteHostname,
     ) -> Result<bool, StoreError> {
         let hostname = hostname.as_str();
         Ok(sqlx::query_scalar!(
@@ -396,7 +430,10 @@ impl Store {
     }
 
     /// Forgets `hostname` once its DNS records are deleted.
-    pub(crate) async fn release_dns_records(&self, hostname: &Hostname) -> Result<(), StoreError> {
+    pub(crate) async fn release_dns_records(
+        &self,
+        hostname: &RouteHostname,
+    ) -> Result<(), StoreError> {
         let hostname = hostname.as_str();
         sqlx::query!("DELETE FROM dns_records WHERE hostname=?1", hostname)
             .execute(&self.pool)
@@ -415,10 +452,15 @@ mod tests {
     use std::fmt::Write as _;
 
     fn app(name: &str, hostname: Option<&str>) -> NormalizedApplication {
+        routed(name, hostname.as_slice())
+    }
+
+    /// An application routing each of `hostnames` to its service.
+    fn routed(name: &str, hostnames: &[&str]) -> NormalizedApplication {
         let mut text = format!(
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='nginx:alpine'"
         );
-        if let Some(hostname) = hostname {
+        for hostname in hostnames {
             write!(
                 text,
                 "\n[[spec.routes]]\nhostname='{hostname}'\nservice='web'\nport=80"
@@ -491,6 +533,38 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wildcards_keep_the_names_they_serve_from_other_applications() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        // An exact name claimed first stays its owner's, and wins.
+        save(
+            &store,
+            app("exact", Some("early.tenants.example.com")),
+            false,
+        )
+        .await
+        .unwrap();
+        save(&store, app("tenants", Some("*.tenants.example.com")), false)
+            .await
+            .unwrap();
+        assert!(matches!(
+            save(&store, app("other", Some("late.tenants.example.com")), false).await,
+            Err(StoreError::HostnameConflict { hostname }) if hostname == "late.tenants.example.com"
+        ));
+        // Names it does not match are free, and its own application may
+        // route exact names below it.
+        save(
+            &store,
+            app("other", Some("a.late.tenants.example.com")),
+            false,
+        )
+        .await
+        .unwrap();
+        let both = ["*.tenants.example.com", "admin.tenants.example.com"];
+        save(&store, routed("tenants", &both), false).await.unwrap();
     }
 
     #[tokio::test]

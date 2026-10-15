@@ -1,4 +1,5 @@
-//! Exact public hostnames and validated HTTP route destinations.
+//! Public hostnames, route hostnames that may be wildcards, and validated HTTP
+//! route destinations.
 
 use super::{ValidationErrors, input, variables::Template};
 use crate::{RouteName, ServiceName, names::validated_string};
@@ -43,6 +44,93 @@ impl Hostname {
     pub fn parent(&self) -> Option<Self> {
         let (_, parent) = self.as_str().split_once('.')?;
         Self::parse(parent).ok()
+    }
+}
+
+validated_string!(
+    /// A route's canonical hostname: an exact [`Hostname`], or `*.<parent>`
+    /// matching every name exactly one label below a hostname, like a
+    /// wildcard certificate. Exact routes win over a wildcard covering them.
+    RouteHostname, RouteHostnameError,
+    "hostname must be an exact public DNS name, or `*.` followed by one (use ASCII/Punycode, without a scheme, path, or port)",
+    |value: &str| value.len() <= 253
+        && Hostname::parse(value.strip_prefix("*.").unwrap_or(value)).is_ok()
+);
+
+impl RouteHostname {
+    /// The hostname whose direct children a wildcard matches; `None` when
+    /// exact.
+    ///
+    /// ```text
+    /// "*.example.com"   -> "example.com"
+    /// "api.example.com" -> none
+    /// ```
+    #[must_use]
+    pub fn wildcard(&self) -> Option<Hostname> {
+        self.as_str()
+            .strip_prefix("*.")
+            .map(|parent| Hostname(parent.to_owned()))
+    }
+
+    /// The exact hostname, or a wildcard's parent: the domain that holds its
+    /// DNS records and certificate.
+    #[must_use]
+    pub fn domain(&self) -> Hostname {
+        self.wildcard()
+            .unwrap_or_else(|| Hostname(self.as_str().to_owned()))
+    }
+
+    /// Whether every name it matches is `domain` or one of its subdomains.
+    ///
+    /// ```text
+    /// "*.example.com" within "example.com"     -> true
+    /// "*.example.com" within "api.example.com" -> false
+    /// ```
+    #[must_use]
+    pub fn is_within(&self, domain: &Hostname) -> bool {
+        self.domain().is_within(domain)
+    }
+
+    /// Whether requests for `hostname` reach this route, unless an exact
+    /// route claims `hostname`.
+    ///
+    /// ```text
+    /// "*.example.com" matches "api.example.com"   -> true
+    /// "*.example.com" matches "a.b.example.com"   -> false
+    /// "*.example.com" matches "example.com"       -> false
+    /// ```
+    #[must_use]
+    pub fn matches(&self, hostname: &Hostname) -> bool {
+        match self.wildcard() {
+            Some(parent) => hostname.parent().is_some_and(|other| other == parent),
+            None => self.as_str() == hostname.as_str(),
+        }
+    }
+
+    /// A hostname this route serves, to probe it with: itself when exact, or
+    /// for a wildcard the first one-character name below its parent that no
+    /// `exact` route claims. One character keeps the name as short as the
+    /// wildcard, so it always fits. `None` when exact routes claim them all.
+    ///
+    /// ```text
+    /// "*.example.com" with exact ["a.example.com"] -> "b.example.com"
+    /// ```
+    #[must_use]
+    pub fn served(&self, exact: &[Hostname]) -> Option<Hostname> {
+        let Some(parent) = self.wildcard() else {
+            return Some(self.domain());
+        };
+        ('a'..='z')
+            .chain('0'..='9')
+            .filter_map(|label| Hostname::parse(format!("{label}.{parent}")).ok())
+            .find(|name| !exact.contains(name))
+    }
+}
+
+/// Every exact hostname is a route hostname.
+impl From<Hostname> for RouteHostname {
+    fn from(hostname: Hostname) -> Self {
+        Self(hostname.0)
     }
 }
 
@@ -302,8 +390,8 @@ impl fmt::Display for RouteTarget {
 /// Validated, application-owned HTTP route; TLS terminates at the gateway.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 pub struct ValidatedRoute {
-    /// Exact canonical public hostname.
-    pub hostname: Hostname,
+    /// Canonical public hostname, exact or a wildcard.
+    pub hostname: RouteHostname,
     /// Stable name, unique within the application. Declared after
     /// `hostname`, so routes stay ordered by hostname.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -362,7 +450,7 @@ impl ValidatedRoute {
                 .map(RouteName::parse)
                 .transpose()
                 .map_err(|e| invalid(&e))?,
-            hostname: Hostname::parse(literal(route.hostname)?).map_err(|e| invalid(&e))?,
+            hostname: RouteHostname::parse(literal(route.hostname)?).map_err(|e| invalid(&e))?,
             visibility: route.visibility,
             target: fields.try_into().map_err(|e| invalid(&e))?,
         })
@@ -397,7 +485,7 @@ impl ValidatedRoute {
 
 #[cfg(test)]
 mod tests {
-    use super::{RouteTarget, ValidatedRoute};
+    use super::{Hostname, RouteTarget, ValidatedRoute};
     use crate::{
         ApplicationId, EnvironmentId, InstanceId, ResolutionSet, ResolvedSource, ServiceName,
         api::RouteStatus, compile_application, parse_toml,
@@ -423,7 +511,11 @@ mod tests {
             app
         );
         for host in [
-            "*.example.com",
+            "*.com",
+            "a.*.example.com",
+            "*.*.example.com",
+            "*example.com",
+            "*",
             "https://example.com",
             "example.com/path",
             "example.com:443",
@@ -451,6 +543,60 @@ mod tests {
             .unwrap()
             .normalize(app.id().clone());
         assert_ne!(app.spec_hash(), without.spec_hash());
+    }
+
+    #[test]
+    fn wildcards_match_one_label_below_their_parent() {
+        let route = "[[spec.routes]]\nhostname='*.Tenants.Example.COM.'\nservice='web'\nport=3000";
+        let app = parse_toml(&manifest(route))
+            .unwrap()
+            .normalize(ApplicationId::parse("test-app").unwrap());
+        let hostname = &app.spec().routes[0].hostname;
+        assert_eq!(hostname.as_str(), "*.tenants.example.com");
+        assert_eq!(hostname.domain().as_str(), "tenants.example.com");
+        let host = |name: &str| Hostname::parse(name).unwrap();
+        assert!(hostname.matches(&host("alice.tenants.example.com")));
+        assert!(!hostname.matches(&host("a.alice.tenants.example.com")));
+        assert!(!hostname.matches(&host("tenants.example.com")));
+        assert!(hostname.is_within(&host("example.com")));
+        assert!(!hostname.is_within(&host("alice.tenants.example.com")));
+        assert_eq!(
+            parse_toml(&app.export_toml().unwrap())
+                .unwrap()
+                .normalize(app.id().clone()),
+            app
+        );
+        // Wildcards are never exact hostnames.
+        assert!(Hostname::parse("*.example.com").is_err());
+        // Probes skip names exact routes claim, and fit the longest parent.
+        let claimed = [host("a.tenants.example.com")];
+        assert_eq!(
+            hostname.served(&claimed),
+            Some(host("b.tenants.example.com"))
+        );
+        let longest = format!("*.{}.com", vec!["a".repeat(61); 4].join("."));
+        assert_eq!(longest.len(), 253);
+        assert!(
+            super::RouteHostname::parse(longest)
+                .unwrap()
+                .served(&[])
+                .is_some()
+        );
+
+        // A wildcard redirect loops when it reaches a name only it serves.
+        let redirect = |to: &str, exact: &str| {
+            parse_toml(&manifest(&format!(
+                "[[spec.routes]]\nhostname='*.example.com'\nredirect={{to='{to}'}}\n{exact}"
+            )))
+        };
+        let www = "[[spec.routes]]\nhostname='www.example.com'\nservice='web'\nport=3000";
+        assert!(redirect("https://www.example.com", www).is_ok());
+        assert!(redirect("https://example.com", "").is_ok());
+        let errors = redirect("https://www.example.com", "").unwrap_err();
+        assert!(
+            errors.0.iter().any(|e| e.code == "route_redirect_loop"),
+            "{errors:?}"
+        );
     }
 
     #[test]
