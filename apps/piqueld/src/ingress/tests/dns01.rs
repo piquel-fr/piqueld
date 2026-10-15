@@ -500,38 +500,36 @@ impl Scenario {
             .await;
         ingress.synchronize().await.unwrap();
 
-        // Caddy issues the exact route's certificate itself, just now.
-        let body = |host: &'static str| async move {
-            tokio::time::timeout(Duration::from_secs(30), async {
-                loop {
-                    if let Ok(response) = self.untrusted(host, self.tls_port).await {
-                        break response.text().await.unwrap();
-                    }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
-            })
-            .await
-            .expect("the route answers")
+        // The certificate `host` is served and its response body, once it answers.
+        let answer = |host: &'static str| async move {
+            let response = self.untrusted(host, self.tls_port).await.ok()?;
+            let certificate = response
+                .extensions()
+                .get::<reqwest::tls::TlsInfo>()?
+                .peer_certificate()?
+                .to_vec();
+            Some((certificate, response.text().await.ok()?))
         };
+        let wildcard = self.stored_leaf("_wildcard.tenants.example.test.pem").await;
         // `X-Forwarded-Host` keeps the request's port, random here.
         for host in ["alice.tenants.example.test", "bob.tenants.example.test"] {
-            assert_eq!(body(host).await, format!("{host} {host}:{}", self.tls_port));
+            let body = format!("{host} {host}:{}", self.tls_port);
+            assert_eq!(answer(host).await, Some((wildcard.clone(), body)));
         }
-        assert_eq!(body("exact.tenants.example.test").await, "exact");
-        let response = self
-            .untrusted("alice.tenants.example.test", self.tls_port)
-            .await
-            .unwrap();
-        let served = response
-            .extensions()
-            .get::<reqwest::tls::TlsInfo>()
-            .unwrap()
-            .peer_certificate()
-            .unwrap();
-        assert_eq!(
-            served,
-            self.stored_leaf("_wildcard.tenants.example.test.pem").await
-        );
+        // Caddy issues the exact route's own certificate, just now, though
+        // the loaded wildcard certificate covers it.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match answer("exact.tenants.example.test").await {
+                    Some((certificate, body)) if certificate != wildcard => {
+                        break assert_eq!(body, "exact");
+                    }
+                    _ => tokio::time::sleep(Duration::from_millis(200)).await,
+                }
+            }
+        })
+        .await
+        .expect("the exact route gets its own certificate");
 
         // Two labels deep: no certificate, and plain HTTP gets a 404.
         assert!(

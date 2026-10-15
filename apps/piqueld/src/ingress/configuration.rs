@@ -270,7 +270,9 @@ impl Ingress {
 impl Listener {
     /// An HTTPS server on `listen` that completes TLS only for this listener's
     /// hostnames, even with no hostnames at all. Caddy obtains no certificate
-    /// for wildcards, which only DNS-01 can prove.
+    /// for wildcards, which only DNS-01 can prove, and still manages exact
+    /// hostnames that a loaded DNS-01 wildcard certificate covers, so they
+    /// never depend on it.
     fn https_server(&self, listen: &[String]) -> Value {
         let mut routes = self.https.clone();
         routes.push(Self::not_found());
@@ -282,7 +284,9 @@ impl Listener {
         json!({
             "protocols":["h1","h2"],"listen":listen,"routes":routes,"strict_sni_host":true,
             "tls_connection_policies":[{"match":{"sni":self.hosts}}],
-            "automatic_https":{"disable_redirects":true,"skip_certificates":wildcards}
+            "automatic_https":{
+                "disable_redirects":true,"skip_certificates":wildcards,"ignore_loaded_certificates":true
+            }
         })
     }
 

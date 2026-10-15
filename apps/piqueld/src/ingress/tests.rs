@@ -1321,9 +1321,13 @@ async fn exact_hostnames_win_over_wildcards_covering_them() {
             "hooks.example.com"
         ])
     );
+    // Caddy manages exact names a loaded wildcard certificate covers.
     assert_eq!(
-        public["automatic_https"]["skip_certificates"],
-        json!(["*.example.com"])
+        public["automatic_https"],
+        json!({
+            "disable_redirects":true,"skip_certificates":["*.example.com"],
+            "ignore_loaded_certificates":true
+        })
     );
     let wildcard = RouteHostname::parse("*.example.com").unwrap();
     assert!(ingress.dns01_hostnames(&table).contains(&wildcard));
