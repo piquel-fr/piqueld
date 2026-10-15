@@ -222,12 +222,13 @@ It matches `alice.tenants.example.com`, but neither `tenants.example.com` nor
   application routed before the wildcard stays that application's, and wins
   too. Hostnames reserved by the installation, and their subdomains, cannot be
   covered by a wildcard route.
-- **Certificates.** A wildcard route always uses its own wildcard certificate,
-  `*.tenants.example.com`, through [DNS-01](#dns-01-certificates), so a DNS
-  provider must cover its zone, even for a public route. Exact routes below it
-  keep their own certificates. With a [Cloudflare Tunnel](#cloudflare-tunnel),
-  Cloudflare terminates a public wildcard's TLS, and Universal SSL covers only
-  one label below the zone.
+- **Certificates.** A wildcard route served by piqueld uses its own wildcard
+  certificate, `*.tenants.example.com`, through [DNS-01](#dns-01-certificates),
+  so a DNS provider must cover its zone, even for a public route. Exact routes
+  below it keep their own certificates. With a
+  [Cloudflare Tunnel](#cloudflare-tunnel), Cloudflare terminates a public
+  wildcard's TLS instead, so it needs no DNS provider, and Universal SSL covers
+  only one label below the zone.
 - **DNS.** The wildcard needs a wildcard record, `*.tenants.example.com`, with the
   records an exact route of its visibility needs. Managed DNS creates it
   ([managed DNS records](#managed-dns-records)); otherwise, create it by hand.
