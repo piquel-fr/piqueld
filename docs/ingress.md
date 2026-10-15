@@ -216,9 +216,12 @@ It matches `alice.tenants.example.com`, but neither `tenants.example.com` nor
   request for such a name on the wildcard's listener completes TLS with the
   wildcard's certificate, then receives a 404.
 - **Reservations.** A wildcard reserves its pattern, `*.tenants.example.com`,
-  not every name it matches. Another application may still route an exact name
-  below it, which then wins. Hostnames reserved by the installation, and their
-  subdomains, cannot be covered by a wildcard route.
+  and keeps the names it matches from other applications: only its own
+  application may add an exact route below it, such as
+  `admin.tenants.example.com`, which then wins. An exact name another
+  application routed before the wildcard stays that application's, and wins
+  too. Hostnames reserved by the installation, and their subdomains, cannot be
+  covered by a wildcard route.
 - **Certificates.** A wildcard route always uses its own wildcard certificate,
   `*.tenants.example.com`, through [DNS-01](#dns-01-certificates), so a DNS
   provider must cover its zone, even for a public route. Exact routes below it

@@ -1141,8 +1141,9 @@ starting with `*.`, such as `*.tenants.example.com`, is a
 [wildcard route](ingress.md#wildcard-routes): it serves every name one label below
 `tenants.example.com` that no exact route claims. `*` is allowed only as the
 first label.
-A hostname belongs to one application across saved, captured, and deployed state;
-a wildcard's is its pattern, not the names it matches.
+A hostname belongs to one application across saved, captured, and deployed state.
+Other applications cannot add exact routes below a wildcard, unless they routed
+that name first.
 Conflicts fail atomically with `hostname_conflict`, including when ingress is off.
 
 Save does not change live routes. Deploy activates additions/destination changes

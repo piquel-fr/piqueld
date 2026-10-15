@@ -490,8 +490,9 @@ impl Scenario {
             "{http.request.host} {http.request.header.X-Forwarded-Host}",
         );
         let exact = super::application("exact", "exact.tenants.example.test", "exact");
-        super::deploy(&self.store, &self.controller, tenants).await;
+        // Another application's exact name below the wildcard is routed first.
         super::deploy(&self.store, &self.controller, exact).await;
+        super::deploy(&self.store, &self.controller, tenants).await;
         let desired = routes(&["*.tenants.example.test"]);
         let table = self.store.routing_table().await.unwrap();
         assert!(ingress.dns01_hostnames(&table).is_superset(&desired));

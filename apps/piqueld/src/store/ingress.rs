@@ -68,6 +68,34 @@ impl Store {
         Ok(conflicts)
     }
 
+    /// Whether `hostname` is exact and another application than the
+    /// environment's reserves the wildcard matching it. Names that wildcard
+    /// serves stay its own, so an exact route never takes them over.
+    async fn under_foreign_wildcard(
+        connection: &mut SqliteConnection,
+        hostname: &RouteHostname,
+        environment_id: &str,
+    ) -> Result<bool, StoreError> {
+        let Some(parent) = hostname
+            .wildcard()
+            .is_none()
+            .then(|| hostname.domain().parent())
+            .flatten()
+        else {
+            return Ok(false);
+        };
+        let wildcard = format!("*.{parent}");
+        Ok(sqlx::query_scalar!(
+            r#"SELECT 1 AS "covered!: bool" FROM hostname_reservations r JOIN environments owner ON owner.id=r.environment_id JOIN environments contender ON contender.id=?2 WHERE r.hostname=?1 AND owner.application_id<>contender.application_id"#,
+            wildcard,
+            environment_id
+        )
+        .fetch_optional(connection)
+        .await
+        .map_err(StoreError::database)?
+        .is_some())
+    }
+
     /// Loads the hostnames reserved for the installation itself.
     async fn installation_hostnames<'e>(
         executor: impl SqliteExecutor<'e>,
@@ -117,7 +145,8 @@ impl Store {
     /// of the manifest it deploys, rendered for this environment, its resolved
     /// spec, its latest operation's target and rendered deployment manifest,
     /// desired and applied gateway routes), rejects any newly within an
-    /// installation hostname, then replaces the environment's
+    /// installation hostname or exactly below another application's
+    /// wildcard, then replaces the environment's
     /// `hostname_reservations` rows. Names it reserved before the installation
     /// claimed them stay reserved, though never routed, so the gateway's
     /// acknowledgements and the environment's operations keep working until
@@ -165,6 +194,11 @@ impl Store {
         for hostname in names.difference(&reserved) {
             let parsed = RouteHostname::parse(hostname.as_str()).map_err(StoreError::corrupt)?;
             if installation.iter().any(|domain| parsed.is_within(domain)) {
+                return Err(StoreError::HostnameConflict {
+                    hostname: hostname.clone(),
+                });
+            }
+            if Self::under_foreign_wildcard(&mut *connection, &parsed, environment_id).await? {
                 return Err(StoreError::HostnameConflict {
                     hostname: hostname.clone(),
                 });
@@ -418,10 +452,15 @@ mod tests {
     use std::fmt::Write as _;
 
     fn app(name: &str, hostname: Option<&str>) -> NormalizedApplication {
+        routed(name, hostname.as_slice())
+    }
+
+    /// An application routing each of `hostnames` to its service.
+    fn routed(name: &str, hostnames: &[&str]) -> NormalizedApplication {
         let mut text = format!(
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='nginx:alpine'"
         );
-        if let Some(hostname) = hostname {
+        for hostname in hostnames {
             write!(
                 text,
                 "\n[[spec.routes]]\nhostname='{hostname}'\nservice='web'\nport=80"
@@ -494,6 +533,38 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wildcards_keep_the_names_they_serve_from_other_applications() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        // An exact name claimed first stays its owner's, and wins.
+        save(
+            &store,
+            app("exact", Some("early.tenants.example.com")),
+            false,
+        )
+        .await
+        .unwrap();
+        save(&store, app("tenants", Some("*.tenants.example.com")), false)
+            .await
+            .unwrap();
+        assert!(matches!(
+            save(&store, app("other", Some("late.tenants.example.com")), false).await,
+            Err(StoreError::HostnameConflict { hostname }) if hostname == "late.tenants.example.com"
+        ));
+        // Names it does not match are free, and its own application may
+        // route exact names below it.
+        save(
+            &store,
+            app("other", Some("a.late.tenants.example.com")),
+            false,
+        )
+        .await
+        .unwrap();
+        let both = ["*.tenants.example.com", "admin.tenants.example.com"];
+        save(&store, routed("tenants", &both), false).await.unwrap();
     }
 
     #[tokio::test]

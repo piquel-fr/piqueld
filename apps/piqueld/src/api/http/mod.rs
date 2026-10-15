@@ -316,7 +316,7 @@ impl ApiError {
             StoreError::HostnameConflict { hostname } => Self::new(
                 StatusCode::CONFLICT,
                 "hostname_conflict",
-                "Hostname is reserved by another environment or this installation",
+                "Hostname is reserved by another environment, another application's wildcard, or this installation",
             )
             .details(json!({"hostname": hostname})),
             ref error @ StoreError::SharedHostnameConflict {
