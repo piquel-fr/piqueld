@@ -224,14 +224,20 @@ pub fn report(environment: &EnvironmentId, parties: &[LinkParty]) -> LinkReport 
     let imports = party
         .imports
         .iter()
-        .map(|import| ImportStatus {
-            application: import.application.clone(),
-            service: import.service.clone(),
-            environment: party.target(import).to_owned(),
-            alias: import.alias(),
-            state: party
-                .resolve(import, parties)
-                .map_or_else(|state| state, |_| ImportState::Connected),
+        .map(|import| {
+            let resolved = party.resolve(import, parties);
+            // A renamed exporter keeps the link, under its current name.
+            let application = resolved
+                .as_ref()
+                .map_or(&import.application, |exporter| &exporter.application)
+                .clone();
+            ImportStatus {
+                alias: crate::manifest::links::alias(&import.service, &application),
+                application,
+                service: import.service.clone(),
+                environment: party.target(import).to_owned(),
+                state: resolved.map_or_else(|state| state, |_| ImportState::Connected),
+            }
         })
         .collect();
     let mut importers = parties
@@ -408,6 +414,13 @@ mod tests {
             report(&parties[2].environment, &parties).imports[0].state,
             ImportState::NotExported
         );
+
+        // Renaming auth keeps notes' link, which reports auth's new name.
+        let mut parties = parties;
+        parties[0].application = ApplicationName::parse("identity").unwrap();
+        let report = report(&parties[1].environment, &parties);
+        assert_eq!(report.imports[0].state, ImportState::Connected);
+        assert_eq!(report.imports[0].alias, "api.identity");
     }
 
     #[test]

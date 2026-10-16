@@ -747,6 +747,13 @@ impl ResolvedApplication {
         self
     }
 
+    /// Whether the target declares exports or imports, without which it takes
+    /// part in no link.
+    #[must_use]
+    pub fn has_links(&self) -> bool {
+        !self.exports.is_empty() || !self.imports.is_empty()
+    }
+
     /// Projects `links` this environment takes part in into networks and
     /// attachments. The importer owns one network per link, which all of its
     /// services join. The exporter's linked services join it once `observed`

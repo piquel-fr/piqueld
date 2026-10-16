@@ -71,7 +71,7 @@ impl Store {
         connection: &mut SqliteConnection,
         target: &mut ResolvedApplication,
     ) -> Result<(), StoreError> {
-        if target.exports.is_empty() && target.imports.is_empty() {
+        if !target.has_links() {
             target.bindings.clear();
             return Ok(());
         }
@@ -126,8 +126,7 @@ impl Store {
     /// The links `target` takes part in: its imports and exports as it
     /// declares them, against every other environment's active target.
     async fn links_of(&self, target: &ResolvedApplication) -> Result<Vec<Link>, StoreError> {
-        // Most targets declare no links, so they skip the read.
-        if target.exports.is_empty() && target.imports.is_empty() {
+        if !target.has_links() {
             return Ok(Vec::new());
         }
         let parties = self

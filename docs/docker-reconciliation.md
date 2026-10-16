@@ -290,11 +290,13 @@ Links are resolved from both environments' active targets whenever either is
 planned, like ingress, and are never part of a prepared target. The importer
 creates the network in its own plan. The exporter observes the link networks
 labelled for it, checks their owner and name, and attaches its services only
-to those that exist; an attachment to any other network is drift. When an
-operation changes the exports or imports an environment deploys, the
-controller runs a full scan right away, so the other side attaches or
-detaches within seconds rather than at the next scan interval, as it does once
-the deletion of an environment with links is requested.
+to those that exist; an attachment to any other network is drift. The
+controller runs a full scan right away when the importer creates a link
+network, when an operation changes the exports or imports an environment
+deploys, and when the deletion of an environment with links is first
+attempted, so the other side attaches or detaches within seconds rather than
+at the next scan interval. The exporter thus joins while the importer's
+services are still starting.
 
 Removing a link detaches both sides; the importer removes its obsolete link
 network only once no container is attached to it any longer (Docker refuses

@@ -57,6 +57,10 @@ impl<D: DockerApi> Controller<D> {
             tokio::select! {
                 ()=cancellation.cancelled()=>return Ok(()),
                 ()=wake.notified()=>requested=true,
+                ()=self.relink.notified()=>{
+                    next_scan=tokio::time::Instant::now();
+                    requested=true;
+                }
                 _=tick.tick()=>requested=true,
                 result=async { match discovery.as_mut() {Some(discovery)=>discovery.await,None=>std::future::pending().await} }=> {
                     discovery=None;
@@ -97,14 +101,22 @@ impl<D: DockerApi> Controller<D> {
                                 }
                                 let token=cancellation.child_token();
                                 active.insert(id.clone(),(operation_id,token.clone()));
+                                // A deletion unlinks the environment as soon as it is requested;
+                                // only its first run asks the other side to replan, not retries.
+                                if operation.kind==OperationKind::Delete
+                                    && operation.state==OperationState::Requested
+                                    && application.resolved.as_ref().is_some_and(piqueld_core::ResolvedApplication::has_links)
+                                {
+                                    self.relink.notify_one();
+                                }
                                 let scan_failures=Arc::clone(&failures);
                                 jobs.push(async move {
                                     if let Err(error)=Box::pin(self.scan_application(&application,&token,&scan_failures)).await {
                                         let failure=super::OperationError::Journal(error);
                                         self.store.report_diagnostic(&failure.diagnostic(),Some(&id)).await;
                                     }
-                                    let relinked=self.relinked(&application,&operation).await;
-                                    (id,relinked)
+                                    if self.relinked(&application).await { self.relink.notify_one(); }
+                                    id
                                 });
                             }
                     }
@@ -112,32 +124,21 @@ impl<D: DockerApi> Controller<D> {
                 Some(id)=health_jobs.next(), if !health_jobs.is_empty()=> {
                     health_active.remove(&id);
                 }
-                Some((id,relinked))=jobs.next(), if !jobs.is_empty()=> {
+                Some(id)=jobs.next(), if !jobs.is_empty()=> {
                     active.remove(&id);
                     requested=true;
-                    // Linked environments project the change on their next scan.
-                    if relinked { next_scan=tokio::time::Instant::now(); }
                 }
             }
         }
     }
 
-    /// Whether the environments `before` links to must replan now rather than
-    /// at the next full scan, after `operation` ran on it: when it starts being
-    /// deleted, which unlinks it as soon as it is requested, or when the
-    /// exports or imports it deploys changed. Read failures count as
-    /// unchanged; the next full scan replans anyway.
-    async fn relinked(&self, before: &StoredEnvironment, operation: &Operation) -> bool {
+    /// Whether the exports or imports `before` deployed changed since, so the
+    /// environments it links to must replan now rather than at the next full
+    /// scan. Read failures count as unchanged; the next full scan replans anyway.
+    async fn relinked(&self, before: &StoredEnvironment) -> bool {
         let links = |target: Option<&piqueld_core::ResolvedApplication>| {
             target.map(|target| (target.exports.clone(), target.imports.clone()))
         };
-        if operation.kind == OperationKind::Delete {
-            // Only its first run, so retries don't keep forcing full scans.
-            return operation.state == OperationState::Requested
-                && before.resolved.as_ref().is_some_and(|target| {
-                    !target.exports.is_empty() || !target.imports.is_empty()
-                });
-        }
         self.store
             .get(before.id())
             .await
