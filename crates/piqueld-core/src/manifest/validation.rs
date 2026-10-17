@@ -3,10 +3,10 @@
 use super::dependencies::StartupOrder;
 use super::variables::{Template, Typed};
 use super::{
-    APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, Build, FileSource,
-    GitRepository, HealthCheck, Job, JobVolumeAccess, ManifestRevision, Mount, ResourceLimits,
-    SecretDeclaration, SecretGenerator, Service, ServiceFile, Source, SourceRepository,
-    ValidatedApplication, ValidatedRollout, ValidatedTemplate, Volume,
+    APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, ApplicationSpec, Build,
+    FileSource, GitRepository, HealthCheck, Job, JobVolumeAccess, ManifestRevision,
+    RepositoryManifest, ResourceLimits, SecretGenerator, Service, ServiceFile, Source,
+    SourceRepository, ValidatedApplication, ValidatedRollout, ValidatedTemplate,
 };
 use crate::{codes, resource::valid_logical_name};
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,7 @@ const MAX_BUILD_ARG_TOTAL_BYTES: usize = 262_144;
 const MAX_PROCESS_ELEMENTS: usize = 128;
 const MAX_PROCESS_ELEMENT_BYTES: usize = 4_096;
 const MAX_MOUNTS_PER_SERVICE: usize = 32;
+const MAX_SECRET_MOUNTS_PER_SERVICE: usize = 64;
 const MAX_HEALTHCHECK_INTERVAL_SECONDS: u32 = 3_600;
 pub(super) const MAX_CPU_MILLIS: u32 = 1_048_576;
 /// Accepted replica counts of a service.
@@ -62,12 +63,11 @@ impl Build {
                 .as_literal()
                 .is_some_and(|value| !valid_repository_path(&value))
             {
-                error(
-                    errors,
-                    "repository_path_invalid",
-                    &format!("{path}.{field}"),
+                errors.push(ValidationError::new(
+                    codes::REPOSITORY_PATH_INVALID,
+                    format!("{path}.{field}"),
                     "path must be relative to the repository root and remain within it",
-                );
+                ));
             }
         }
         VariableMap::BUILD_ARGS.validate(args, path, errors);
@@ -77,26 +77,24 @@ impl Build {
             .filter_map(|(key, value)| Some(key.len() + value.as_literal()?.len() + 1))
             .sum();
         if total > MAX_BUILD_ARG_TOTAL_BYTES {
-            error(
-                errors,
+            errors.push(ValidationError::new(
                 codes::BUILD_ARG_TOTAL_EXCESSIVE,
-                &format!("{path}.args"),
-                &format!("build arguments must total at most {MAX_BUILD_ARG_TOTAL_BYTES} bytes"),
-            );
+                format!("{path}.args"),
+                format!("build arguments must total at most {MAX_BUILD_ARG_TOTAL_BYTES} bytes"),
+            ));
         }
         if target
             .as_ref()
             .and_then(Template::as_literal)
             .is_some_and(|target| !valid_build_target(&target))
         {
-            error(
-                errors,
+            errors.push(ValidationError::new(
                 codes::BUILD_TARGET_INVALID,
-                &format!("{path}.target"),
-                &format!(
+                format!("{path}.target"),
+                format!(
                     "build target must start with a letter, use letters, digits, '-', '_', or '.', and be at most {MAX_IDENTIFIER_BYTES} bytes"
                 ),
-            );
+            ));
         }
     }
 }
@@ -115,12 +113,11 @@ impl GitRepository {
             .flatten()
             .any(|value| Template::mentions_reference(value))
         {
-            error(
-                errors,
+            errors.push(ValidationError::new(
                 codes::VARIABLE_NOT_ALLOWED,
                 path,
                 "repository URLs, branches, and commits cannot reference variables",
-            );
+            ));
         }
         let inline_credentials = self.url.split_once("://").is_some_and(|(scheme, rest)| {
             let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or_default();
@@ -131,57 +128,65 @@ impl GitRepository {
             })
         });
         if inline_credentials {
-            error(
-                errors,
-                "git_credentials_inline",
+            errors.push(ValidationError::new(
+                codes::GIT_CREDENTIALS_INLINE,
                 path,
                 "configure Git credentials on the host, not in repository URLs",
-            );
+            ));
         }
         if self.url.is_empty()
             || self.url.len() > 4096
             || self.url.starts_with('-')
             || self.url.chars().any(char::is_control)
         {
-            error(
-                errors,
-                "git_repository_invalid",
+            errors.push(ValidationError::new(
+                codes::GIT_REPOSITORY_INVALID,
                 path,
                 "repository URL must be a nonempty Git location",
-            );
+            ));
         }
-        if !valid_git_branch(&self.branch) {
-            error(
-                errors,
-                "git_branch_invalid",
-                path,
-                "branch must be a valid Git branch name",
-            );
-        }
-        if self
-            .commit
-            .as_ref()
-            .is_some_and(|value| !valid_git_commit(value))
-        {
-            error(
-                errors,
-                "git_commit_invalid",
-                path,
-                "commit must be a full lowercase hexadecimal Git hash",
-            );
+        if let Err(invalid) = crate::TrackedBranch::new(self.branch.clone(), self.commit.clone()) {
+            errors.extend(invalid.0.into_iter().map(|error| ValidationError {
+                path: path.into(),
+                ..error
+            }));
         }
     }
 }
 
 impl ManifestRevision {
+    /// Points `manifest`, a specification's repository connection, at this
+    /// revision for one deployment.
+    ///
+    /// # Errors
+    /// Rejects applications without a manifest repository and invalid revisions.
+    pub(crate) fn apply(
+        &self,
+        manifest: &mut Option<RepositoryManifest>,
+    ) -> Result<(), ValidationErrors> {
+        let mut errors = Vec::new();
+        let path = "spec.manifest.repository";
+        match manifest {
+            Some(manifest) => {
+                manifest.repository = manifest.repository.at(self);
+                manifest.repository.validate(path, &mut errors);
+            }
+            None => Self::unbacked(path, &mut errors),
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ValidationErrors(errors))
+        }
+    }
+
     /// Records that `path` needs a repository-backed manifest.
     pub(crate) fn unbacked(path: &str, errors: &mut Vec<ValidationError>) {
-        error(
-            errors,
+        errors.push(ValidationError::new(
             codes::MANIFEST_REPOSITORY_REQUIRED,
             path,
             "the manifest repository applies only when spec.manifest is configured",
-        );
+        ));
     }
 }
 
@@ -247,10 +252,53 @@ pub struct ValidationError {
     pub message: String,
 }
 
+impl ValidationError {
+    /// An error with the stable `code` at the manifest field `path`.
+    #[must_use]
+    pub fn new(
+        code: impl Into<String>,
+        path: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: code.into(),
+            path: path.into(),
+            message: message.into(),
+        }
+    }
+}
+
 /// All independently discoverable manifest errors, in stable path order.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(transparent)]
 pub struct ValidationErrors(pub Vec<ValidationError>);
+
+impl ValidationErrors {
+    /// Orders errors by path, then code.
+    pub(crate) fn sorted(mut errors: Vec<ValidationError>) -> Self {
+        errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
+        Self(errors)
+    }
+
+    /// One decode failure. Serde messages carry the rejected field and
+    /// location, and may echo a mistyped value back to its submitter.
+    /// Manifests reference secrets by name only, so they are safe to return.
+    fn decode(path: &str, message: String) -> Self {
+        ValidationError::new(
+            codes::MANIFEST_DECODE_FAILED,
+            safe_decode_path(path),
+            message,
+        )
+        .into()
+    }
+}
+
+/// A single error.
+impl From<ValidationError> for ValidationErrors {
+    fn from(error: ValidationError) -> Self {
+        Self(vec![error])
+    }
+}
 
 impl fmt::Display for ValidationErrors {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -308,19 +356,6 @@ pub fn parse_toml(input: &str) -> Result<ValidatedApplication, ValidationErrors>
 /// reference, or one decode error naming the rejected input and its location.
 pub fn parse_json(input: &str) -> Result<ValidatedApplication, ValidationErrors> {
     parse_template_json(input)?.into_literal()
-}
-
-impl ValidationErrors {
-    /// One decode failure. Serde messages carry the rejected field and
-    /// location, and may echo a mistyped value back to its submitter.
-    /// Manifests reference secrets by name only, so they are safe to return.
-    fn decode(path: &str, message: String) -> Self {
-        Self(vec![ValidationError {
-            code: codes::MANIFEST_DECODE_FAILED.into(),
-            path: safe_decode_path(path),
-            message,
-        }])
-    }
 }
 
 /// Redacts map keys and unknown components from a serde decode path.
@@ -445,22 +480,24 @@ fn valid_path_indices(mut value: &str) -> bool {
 pub(super) const ROUTE_TARGET_MESSAGE: &str =
     "route must set either both `service` and `port`, or `redirect`";
 
-fn validate_redirect(redirect: &super::Redirect, path: &str, errors: &mut Vec<ValidationError>) {
-    if let Some(Err(source)) = redirect.to.as_literal().map(super::RedirectUrl::parse) {
-        error(
-            errors,
-            "route_redirect_invalid",
-            &format!("{path}.redirect.to"),
-            &source.to_string(),
-        );
-    }
-    if let Err(source) = super::RedirectStatus::try_from(redirect.status) {
-        error(
-            errors,
-            "route_redirect_status_invalid",
-            &format!("{path}.redirect.status"),
-            &source.to_string(),
-        );
+impl super::Redirect {
+    /// Checks a literal destination URL and the status code of the redirect
+    /// of the route at `path`.
+    fn validate(&self, path: &str, errors: &mut Vec<ValidationError>) {
+        if let Some(Err(source)) = self.to.as_literal().map(super::RedirectUrl::parse) {
+            errors.push(ValidationError::new(
+                codes::ROUTE_REDIRECT_INVALID,
+                format!("{path}.redirect.to"),
+                source.to_string(),
+            ));
+        }
+        if let Err(source) = super::RedirectStatus::try_from(self.status) {
+            errors.push(ValidationError::new(
+                codes::ROUTE_REDIRECT_STATUS_INVALID,
+                format!("{path}.redirect.status"),
+                source.to_string(),
+            ));
+        }
     }
 }
 
@@ -493,20 +530,17 @@ impl ApplicationManifest {
                 let path = format!("spec.routes[{index}].name");
                 validate_name(name, &path, errors);
                 if !names.insert(name.clone()) {
-                    error(
-                        errors,
+                    errors.push(ValidationError::new(
                         codes::ROUTE_NAME_DUPLICATE,
                         &path,
                         "route name is already used in this application",
-                    );
+                    ));
                 }
             }
-            let hostname = route.hostname.as_literal().map(|hostname| {
-                hostname
-                    .strip_suffix('.')
-                    .unwrap_or(&hostname)
-                    .to_ascii_lowercase()
-            });
+            let hostname = route
+                .hostname
+                .as_literal()
+                .map(|hostname| super::RouteHostname::canonicalize(&hostname));
             if let Some(hostname) = &hostname {
                 route.hostname = Template::literal(hostname);
             }
@@ -515,44 +549,44 @@ impl ApplicationManifest {
                 .as_ref()
                 .is_some_and(|hostname| super::RouteHostname::parse(hostname).is_err())
             {
-                error(
-                    errors,
-                    "route_hostname_invalid",
-                    &format!("{path}.hostname"),
+                errors.push(ValidationError::new(
+                    codes::ROUTE_HOSTNAME_INVALID,
+                    format!("{path}.hostname"),
                     "an exact public ASCII DNS hostname, or `*.` followed by one, is required",
-                );
+                ));
             }
             if let Some(hostname) = hostname.clone()
                 && !hostnames.insert(hostname)
             {
-                error(
-                    errors,
-                    "route_hostname_duplicate",
-                    &format!("{path}.hostname"),
+                errors.push(ValidationError::new(
+                    codes::ROUTE_HOSTNAME_DUPLICATE,
+                    format!("{path}.hostname"),
                     "hostname is already used in this application",
-                );
+                ));
             }
             match (&route.service, route.port, &route.redirect) {
                 (Some(service), Some(port), None) => {
                     if !self.spec.services.iter().any(|s| &s.name == service) {
-                        error(
-                            errors,
-                            "route_service_missing",
-                            &format!("{path}.service"),
+                        errors.push(ValidationError::new(
+                            codes::ROUTE_SERVICE_MISSING,
+                            format!("{path}.service"),
                             "route must reference a service in this application",
-                        );
+                        ));
                     }
                     if port == 0 {
-                        error(
-                            errors,
-                            "route_port_invalid",
-                            &format!("{path}.port"),
+                        errors.push(ValidationError::new(
+                            codes::ROUTE_PORT_INVALID,
+                            format!("{path}.port"),
                             "HTTP backend port must be 1..=65535",
-                        );
+                        ));
                     }
                 }
-                (None, None, Some(redirect)) => validate_redirect(redirect, &path, errors),
-                _ => error(errors, "route_target_invalid", &path, ROUTE_TARGET_MESSAGE),
+                (None, None, Some(redirect)) => redirect.validate(&path, errors),
+                _ => errors.push(ValidationError::new(
+                    codes::ROUTE_TARGET_INVALID,
+                    &path,
+                    ROUTE_TARGET_MESSAGE,
+                )),
             }
         }
         for (index, route) in self.spec.routes.iter().enumerate() {
@@ -561,12 +595,11 @@ impl ApplicationManifest {
                 route.redirect.as_ref().and_then(|r| r.to.as_literal()),
             ) && redirect_loops(&hostname, &to, &hostnames)
             {
-                error(
-                    errors,
-                    "route_redirect_loop",
-                    &format!("spec.routes[{index}].redirect.to"),
+                errors.push(ValidationError::new(
+                    codes::ROUTE_REDIRECT_LOOP,
+                    format!("spec.routes[{index}].redirect.to"),
                     "redirect must target a hostname the route does not serve",
-                );
+                ));
             }
         }
     }
@@ -618,30 +651,28 @@ impl ApplicationManifest {
     /// Returns all detected manifest validation errors.
     pub fn validate_template(mut self) -> Result<ValidatedTemplate, ValidationErrors> {
         let mut errors = Vec::new();
-        validate_header(&self, &mut errors);
+        self.validate_header(&mut errors);
         if let Some(manifest) = &self.spec.manifest {
             manifest
                 .repository
                 .validate("spec.manifest.repository", &mut errors);
             manifest.sync.validate("spec.manifest.sync", &mut errors);
             if Template::mentions_reference(&manifest.path) {
-                error(
-                    &mut errors,
+                errors.push(ValidationError::new(
                     codes::VARIABLE_NOT_ALLOWED,
                     "spec.manifest.path",
                     "the manifest path cannot reference variables",
-                );
+                ));
             } else if !valid_repository_path(&manifest.path) {
-                error(
-                    &mut errors,
-                    "repository_path_invalid",
+                errors.push(ValidationError::new(
+                    codes::REPOSITORY_PATH_INVALID,
                     "spec.manifest.path",
                     "manifest path must remain within the repository root",
-                );
+                ));
             }
         }
         // Bound work before walking attacker-controlled collections.
-        if !validate_budgets(&self, &mut errors) {
+        if !self.spec.within_budgets(&mut errors) {
             return Err(ValidationErrors::sorted(errors));
         }
         self.validate_routes(&mut errors);
@@ -657,38 +688,29 @@ impl ApplicationManifest {
             codes::VOLUME_NAME_DUPLICATE,
             &mut errors,
         );
-        validate_services(
-            &self.spec.services,
-            &volume_names,
-            self.spec.manifest.is_some(),
-            &mut errors,
-        );
-        validate_dependencies(&self.spec.services, &mut errors);
-        if self.spec.inline_file_bytes() > ServiceFile::MAX_TOTAL_BYTES {
-            error(
+        for (index, service) in self.spec.services.iter().enumerate() {
+            service.validate(
+                &format!("spec.services[{index}]"),
+                &volume_names,
+                self.spec.manifest.is_some(),
                 &mut errors,
+            );
+        }
+        self.spec.validate_dependencies(&mut errors);
+        if self.spec.inline_file_bytes() > ServiceFile::MAX_TOTAL_BYTES {
+            errors.push(ValidationError::new(
                 codes::FILE_TOTAL_EXCESSIVE,
                 "spec.services",
-                &format!(
+                format!(
                     "inline file contents must total at most {} bytes",
                     ServiceFile::MAX_TOTAL_BYTES
                 ),
-            );
+            ));
         }
-        validate_volumes(&self.spec.volumes, &mut errors);
-        validate_generated_secrets(&self.spec.secrets, &mut errors);
-        validate_jobs(&self.spec.jobs, &self.spec.services, &mut errors);
-        super::links::validate(
-            &self
-                .spec
-                .services
-                .iter()
-                .map(|service| service.name.as_str())
-                .collect(),
-            &self.spec.exports,
-            &self.spec.imports,
-            &mut errors,
-        );
+        self.spec.validate_volumes(&mut errors);
+        self.spec.validate_generated_secrets(&mut errors);
+        self.spec.validate_jobs(&mut errors);
+        self.spec.validate_links(&mut errors);
         self.spec.check_variables(&mut errors);
         if let Err(invalid) = self.spec.declared_environments() {
             errors.extend(invalid.0);
@@ -717,95 +739,245 @@ impl ApplicationManifest {
     pub fn validate(self) -> Result<ValidatedApplication, ValidationErrors> {
         self.validate_template()?.into_literal()
     }
+
+    /// Checks the API version, kind, and application name.
+    fn validate_header(&self, errors: &mut Vec<ValidationError>) {
+        if self.api_version != APPLICATION_API_VERSION {
+            errors.push(ValidationError::new(
+                codes::API_VERSION_UNSUPPORTED,
+                "api_version",
+                "unsupported application API version",
+            ));
+        }
+        if self.kind != APPLICATION_KIND {
+            errors.push(ValidationError::new(
+                codes::KIND_UNSUPPORTED,
+                "kind",
+                "resource kind must be Application",
+            ));
+        }
+        validate_name(&self.metadata.name, "metadata.name", errors);
+    }
 }
 
-/// Checks the API version, kind, and application name.
-fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError>) {
-    if input.api_version != APPLICATION_API_VERSION {
-        error(
-            errors,
-            codes::API_VERSION_UNSUPPORTED,
-            "api_version",
-            "unsupported application API version",
-        );
+impl ApplicationSpec {
+    /// Checks route, service, volume, secret, and per-service dependency counts;
+    /// returns `false` when a budget is exceeded.
+    fn within_budgets(&self, errors: &mut Vec<ValidationError>) -> bool {
+        let mut within_budget = true;
+        if self.routes.len() > MAX_ROUTES {
+            errors.push(ValidationError::new(
+                codes::ROUTES_LIMIT,
+                "spec.routes",
+                format!("at most {MAX_ROUTES} routes are allowed per application"),
+            ));
+            within_budget = false;
+        }
+        if self.services.len() > MAX_SERVICES {
+            errors.push(ValidationError::new(
+                codes::SERVICE_COUNT_EXCESSIVE,
+                "spec.services",
+                format!("an application must declare at most {MAX_SERVICES} services"),
+            ));
+            within_budget = false;
+        } else {
+            // Unique dependencies name other services, so a valid list is shorter.
+            for (index, service) in self.services.iter().enumerate() {
+                if service.depends_on.len() > MAX_SERVICES {
+                    errors.push(ValidationError::new(
+                        codes::SERVICE_DEPENDENCY_COUNT_EXCESSIVE,
+                        format!("spec.services[{index}].depends_on"),
+                        format!("a service must list at most {MAX_SERVICES} dependencies"),
+                    ));
+                    within_budget = false;
+                }
+            }
+        }
+        if self.volumes.len() > MAX_VOLUMES {
+            errors.push(ValidationError::new(
+                codes::VOLUME_COUNT_EXCESSIVE,
+                "spec.volumes",
+                format!("an application must declare at most {MAX_VOLUMES} volumes"),
+            ));
+            within_budget = false;
+        }
+        if self.secrets.len() > MAX_GENERATED_SECRETS {
+            errors.push(ValidationError::new(
+                codes::SECRETS_EXCESSIVE,
+                "spec.secrets",
+                format!("an application must declare at most {MAX_GENERATED_SECRETS} secrets"),
+            ));
+            within_budget = false;
+        }
+        if self.jobs.len() > Job::MAX_PER_APPLICATION {
+            errors.push(ValidationError::new(
+                codes::JOB_COUNT_EXCESSIVE,
+                "spec.jobs",
+                format!(
+                    "an application must declare at most {} jobs",
+                    Job::MAX_PER_APPLICATION
+                ),
+            ));
+            within_budget = false;
+        }
+        self.links_within_budget(errors) && within_budget
     }
-    if input.kind != APPLICATION_KIND {
-        error(
-            errors,
-            codes::KIND_UNSUPPORTED,
-            "kind",
-            "resource kind must be Application",
-        );
-    }
-    validate_name(&input.metadata.name, "metadata.name", errors);
-}
 
-/// Checks route, service, volume, secret, and per-service dependency counts;
-/// returns `false` when a budget is exceeded.
-fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationError>) -> bool {
-    let mut within_budget = true;
-    if input.spec.routes.len() > MAX_ROUTES {
-        error(
-            errors,
-            "routes_limit",
-            "spec.routes",
-            &format!("at most {MAX_ROUTES} routes are allowed per application"),
-        );
-        within_budget = false;
-    }
-    if input.spec.services.len() > MAX_SERVICES {
-        error(
-            errors,
-            codes::SERVICE_COUNT_EXCESSIVE,
-            "spec.services",
-            &format!("an application must declare at most {MAX_SERVICES} services"),
-        );
-        within_budget = false;
-    } else {
-        // Unique dependencies name other services, so a valid list is shorter.
-        for (index, service) in input.spec.services.iter().enumerate() {
-            if service.depends_on.len() > MAX_SERVICES {
-                error(
-                    errors,
-                    codes::SERVICE_DEPENDENCY_COUNT_EXCESSIVE,
-                    &format!("spec.services[{index}].depends_on"),
-                    &format!("a service must list at most {MAX_SERVICES} dependencies"),
-                );
-                within_budget = false;
+    /// Dependencies must name other services once each and must not form a cycle.
+    fn validate_dependencies(&self, errors: &mut Vec<ValidationError>) {
+        let services = &self.services;
+        let names = services
+            .iter()
+            .map(|service| service.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for (index, service) in services.iter().enumerate() {
+            let mut listed = BTreeSet::new();
+            for (dependency_index, dependency) in service.depends_on.iter().enumerate() {
+                let path = format!("spec.services[{index}].depends_on[{dependency_index}]");
+                if !names.contains(dependency.as_str()) {
+                    errors.push(ValidationError::new(
+                        codes::SERVICE_DEPENDENCY_MISSING,
+                        &path,
+                        "dependency must name a service in this application",
+                    ));
+                } else if !listed.insert(dependency) {
+                    errors.push(ValidationError::new(
+                        codes::SERVICE_DEPENDENCY_DUPLICATE,
+                        &path,
+                        "dependency is listed more than once",
+                    ));
+                }
+            }
+        }
+        let (_, cyclic) = services.startup_order();
+        let cyclic = cyclic
+            .into_iter()
+            .map(|service| service.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for (index, service) in services.iter().enumerate() {
+            if cyclic.contains(service.name.as_str()) {
+                errors.push(ValidationError::new(
+                    codes::SERVICE_DEPENDENCY_CYCLE,
+                    format!("spec.services[{index}].depends_on"),
+                    "dependencies must not form or lead into a cycle",
+                ));
             }
         }
     }
-    if input.spec.volumes.len() > MAX_VOLUMES {
-        error(
-            errors,
-            codes::VOLUME_COUNT_EXCESSIVE,
-            "spec.volumes",
-            &format!("an application must declare at most {MAX_VOLUMES} volumes"),
-        );
-        within_budget = false;
-    }
-    if input.spec.secrets.len() > MAX_GENERATED_SECRETS {
-        error(
-            errors,
-            "secrets_excessive",
-            "spec.secrets",
-            &format!("an application must declare at most {MAX_GENERATED_SECRETS} secrets"),
-        );
-        within_budget = false;
-    }
-    if input.spec.jobs.len() > Job::MAX_PER_APPLICATION {
-        error(
-            errors,
-            codes::JOB_COUNT_EXCESSIVE,
+
+    /// Checks every job: a unique valid name, a declared service, an order after
+    /// the jobs of its service's startup dependencies, a command, its volume
+    /// access, and its timeout.
+    fn validate_jobs(&self, errors: &mut Vec<ValidationError>) {
+        let (jobs, services) = (&self.jobs, &self.services);
+        unique_names(
+            jobs.iter().map(|job| &job.name),
             "spec.jobs",
-            &format!(
-                "an application must declare at most {} jobs",
-                Job::MAX_PER_APPLICATION
-            ),
+            codes::JOB_NAME_DUPLICATE,
+            errors,
         );
-        within_budget = false;
+        for (index, job) in jobs.iter().enumerate() {
+            let base = format!("spec.jobs[{index}]");
+            validate_name(&job.name, &format!("{base}.name"), errors);
+            if !services.iter().any(|service| service.name == job.service) {
+                errors.push(ValidationError::new(
+                    codes::JOB_SERVICE_MISSING,
+                    format!("{base}.service"),
+                    "job must reference a service in this application",
+                ));
+            }
+            let dependencies = services.dependencies_of(&job.service);
+            for prerequisite in jobs[index..]
+                .iter()
+                .filter(|prerequisite| dependencies.contains(prerequisite.service.as_str()))
+            {
+                errors.push(ValidationError::new(
+                    codes::JOB_DEPENDENCY_ORDER_INVALID,
+                    format!("{base}.service"),
+                    format!(
+                        "job {} for dependency service {} must run before job {}",
+                        prerequisite.name, prerequisite.service, job.name
+                    ),
+                ));
+            }
+            if job.command.first().is_none_or(|value| {
+                value
+                    .as_literal()
+                    .is_some_and(|value| value.trim().is_empty())
+            }) {
+                errors.push(ValidationError::new(
+                    codes::PROCESS_COMMAND_INVALID,
+                    format!("{base}.command"),
+                    "a job command must start with a non-empty executable",
+                ));
+            }
+            validate_process_arguments(
+                &job.command,
+                &format!("{base}.command"),
+                codes::PROCESS_COMMAND_EXCESSIVE,
+                errors,
+            );
+            if job.volume_access == JobVolumeAccess::Exclusive {
+                job.validate_exclusive_access(services, &dependencies, &base, errors);
+            }
+            if !(1..=Job::MAX_TIMEOUT_SECONDS).contains(&job.timeout_seconds) {
+                errors.push(ValidationError::new(
+                    codes::JOB_TIMEOUT_INVALID,
+                    format!("{base}.timeout_seconds"),
+                    format!(
+                        "job timeout must be between 1 and {} seconds",
+                        Job::MAX_TIMEOUT_SECONDS
+                    ),
+                ));
+            }
+        }
     }
-    super::links::within_budget(&input.spec.exports, &input.spec.imports, errors) && within_budget
+
+    /// Checks each declared volume name.
+    fn validate_volumes(&self, errors: &mut Vec<ValidationError>) {
+        for (index, volume) in self.volumes.iter().enumerate() {
+            validate_name(&volume.name, &format!("spec.volumes[{index}].name"), errors);
+        }
+    }
+
+    /// Checks generated secret declarations: unique valid names, random byte counts
+    /// in `RANDOM_SECRET_BYTES`, and RSA sizes in `RSA_SECRET_BITS`. Invalid
+    /// generator parameters are reported at `spec.secrets[i].generate.bytes` or
+    /// `.bits` with `secret_generator_invalid`.
+    fn validate_generated_secrets(&self, errors: &mut Vec<ValidationError>) {
+        let secrets = &self.secrets;
+        unique_names(
+            secrets.iter().map(|secret| &secret.name),
+            "spec.secrets",
+            codes::SECRET_NAME_DUPLICATE,
+            errors,
+        );
+        for (index, secret) in secrets.iter().enumerate() {
+            let path = format!("spec.secrets[{index}]");
+            validate_name(&secret.name, &format!("{path}.name"), errors);
+            match secret.generate {
+                SecretGenerator::Random { bytes, .. } if !RANDOM_SECRET_BYTES.contains(&bytes) => {
+                    errors.push(ValidationError::new(
+                        codes::SECRET_GENERATOR_INVALID,
+                        format!("{path}.generate.bytes"),
+                        format!(
+                            "random secrets must use {}-{} bytes",
+                            RANDOM_SECRET_BYTES.start(),
+                            RANDOM_SECRET_BYTES.end()
+                        ),
+                    ));
+                }
+                SecretGenerator::Rsa { bits } if !RSA_SECRET_BITS.contains(&bits) => {
+                    errors.push(ValidationError::new(
+                        codes::SECRET_GENERATOR_INVALID,
+                        format!("{path}.generate.bits"),
+                        "RSA keys must use 2048, 3072, or 4096 bits",
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 impl Source {
@@ -825,57 +997,55 @@ impl Source {
     }
 }
 
-/// Validates every service: name, replicas, source, secrets, files,
-/// environment, mounts, process arguments, health check, and resource limits.
-///
-/// `volume_names` holds declared volumes for mount references, and
-/// `manifest_backed` allows `"self"` Git sources and repository files. Secret
-/// targets must be unique under `/run/secrets/` and must not collide with
-/// mount targets; file targets collide with neither.
-fn validate_services(
-    services: &[Service],
-    volume_names: &BTreeSet<String>,
-    manifest_backed: bool,
-    errors: &mut Vec<ValidationError>,
-) {
-    for (index, service) in services.iter().enumerate() {
-        let base = format!("spec.services[{index}]");
-        validate_name(&service.name, &format!("{base}.name"), errors);
-        if service
+impl Service {
+    /// Validates the service at `base`: name, replicas, source, secrets, files,
+    /// environment, mounts, process arguments, health check, and resource limits.
+    ///
+    /// `volume_names` holds declared volumes for mount references, and
+    /// `manifest_backed` allows `"self"` Git sources and repository files. Secret
+    /// targets must be unique under `/run/secrets/` and must not collide with
+    /// mount targets; file targets collide with neither.
+    fn validate(
+        &self,
+        base: &str,
+        volume_names: &BTreeSet<String>,
+        manifest_backed: bool,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        validate_name(&self.name, &format!("{base}.name"), errors);
+        if self
             .replicas
             .literal()
             .is_some_and(|replicas| !REPLICAS.contains(replicas))
         {
-            error(
-                errors,
+            errors.push(ValidationError::new(
                 codes::REPLICAS_OUT_OF_RANGE,
-                &format!("{base}.replicas"),
-                &format!(
+                format!("{base}.replicas"),
+                format!(
                     "replicas must be between {} and {}",
                     REPLICAS.start(),
                     REPLICAS.end()
                 ),
-            );
+            ));
         }
-        if let Source::Image { image } = &service.source
+        if let Source::Image { image } = &self.source
             && image
                 .as_literal()
                 .is_some_and(|image| !valid_image_reference(&image))
         {
-            error(
-                errors,
+            errors.push(ValidationError::new(
                 codes::IMAGE_INVALID,
-                &format!("{base}.source.image"),
+                format!("{base}.source.image"),
                 "image must be a valid registry reference without credentials or a URL scheme",
-            );
+            ));
         }
-        service.source.validate_git(&base, manifest_backed, errors);
-        let mut targets = service
+        self.source.validate_git(base, manifest_backed, errors);
+        let mut targets = self
             .mounts
             .iter()
             .map(|m| m.target.as_str())
             .collect::<BTreeSet<_>>();
-        for (index, secret) in service.secrets.iter().enumerate() {
+        for (index, secret) in self.secrets.iter().enumerate() {
             let path = format!("{base}.secrets[{index}]");
             // Names that reference variables are validated once rendered.
             if let Some(name) = secret.name.as_literal() {
@@ -883,118 +1053,204 @@ fn validate_services(
             }
             validate_absolute_path(&secret.target, &format!("{path}.target"), errors);
             if !secret.target.starts_with("/run/secrets/") || !targets.insert(&secret.target) {
-                error(
-                    errors,
-                    "secret_target_invalid",
+                errors.push(ValidationError::new(
+                    codes::SECRET_TARGET_INVALID,
                     &path,
                     "secret targets must be unique file paths under /run/secrets",
-                );
+                ));
             }
         }
-        if service.secrets.len() > 64 {
-            error(
-                errors,
-                "secrets_excessive",
-                &base,
-                "at most 64 secret file mounts per service",
-            );
+        if self.secrets.len() > MAX_SECRET_MOUNTS_PER_SERVICE {
+            errors.push(ValidationError::new(
+                codes::SECRETS_EXCESSIVE,
+                base,
+                format!("at most {MAX_SECRET_MOUNTS_PER_SERVICE} secret file mounts per service"),
+            ));
         }
-        validate_files(&service.files, &base, manifest_backed, &mut targets, errors);
-        VariableMap::ENVIRONMENT.validate(&service.environment, &base, errors);
-        validate_mounts(&service.mounts, &base, volume_names, errors);
+        self.validate_files(base, manifest_backed, &mut targets, errors);
+        VariableMap::ENVIRONMENT.validate(&self.environment, base, errors);
+        self.validate_mounts(base, volume_names, errors);
         validate_process_arguments(
-            &service.command,
+            &self.command,
             &format!("{base}.command"),
             codes::PROCESS_COMMAND_EXCESSIVE,
             errors,
         );
         validate_process_arguments(
-            &service.arguments,
+            &self.arguments,
             &format!("{base}.arguments"),
             codes::PROCESS_ARGUMENTS_EXCESSIVE,
             errors,
         );
-        if service
+        if self
             .command
             .first()
             .and_then(Template::as_literal)
             .is_some_and(|value| value.trim().is_empty())
         {
-            error(
-                errors,
-                "process_command_invalid",
-                &format!("{base}.command[0]"),
+            errors.push(ValidationError::new(
+                codes::PROCESS_COMMAND_INVALID,
+                format!("{base}.command[0]"),
                 "an explicit container command must start with a non-empty executable",
-            );
+            ));
         }
-        if let Some(healthcheck) = &service.healthcheck {
-            validate_health(healthcheck, &format!("{base}.healthcheck"), errors);
+        if let Some(healthcheck) = &self.healthcheck {
+            healthcheck.validate(&format!("{base}.healthcheck"), errors);
         }
-        validate_resources(service.resources.as_ref(), &base, errors);
-        validate_rollout(&service.rollout, &base, errors);
+        if let Some(resources) = &self.resources {
+            resources.validate(base, errors);
+        }
+        self.rollout.validate(base, errors);
     }
-}
 
-/// Checks a literal rollout monitor window.
-fn validate_rollout(rollout: &super::Rollout, base: &str, errors: &mut Vec<ValidationError>) {
-    if rollout
-        .monitor_seconds
-        .as_ref()
-        .and_then(Typed::literal)
-        .is_some_and(|seconds| !(1..=ValidatedRollout::MAX_MONITOR_SECONDS).contains(seconds))
-    {
-        error(
-            errors,
-            codes::ROLLOUT_MONITOR_INVALID,
-            &format!("{base}.rollout.monitor_seconds"),
-            &format!(
-                "rollout monitor must be between 1 and {} seconds",
-                ValidatedRollout::MAX_MONITOR_SECONDS
-            ),
-        );
+    /// Checks file count, that each target is safe and collides with no other
+    /// target in `targets` (mounts, secrets, and earlier files) or a reserved
+    /// directory, that repository paths stay inside a repository the application
+    /// has, and that inline contents fit one Swarm config.
+    fn validate_files<'a>(
+        &'a self,
+        base: &str,
+        manifest_backed: bool,
+        targets: &mut BTreeSet<&'a str>,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let files = &self.files;
+        if files.len() > ServiceFile::MAX_PER_SERVICE {
+            errors.push(ValidationError::new(
+                codes::FILE_COUNT_EXCESSIVE,
+                format!("{base}.files"),
+                format!(
+                    "a service must mount at most {} files",
+                    ServiceFile::MAX_PER_SERVICE
+                ),
+            ));
+        }
+        // Mount, secret, and file targets a file must not contain.
+        let others = targets
+            .iter()
+            .copied()
+            .chain(files.iter().map(|file| file.target.as_str()))
+            .collect::<Vec<_>>();
+        for (index, file) in files.iter().enumerate() {
+            let path = format!("{base}.files[{index}]");
+            validate_absolute_path(&file.target, &format!("{path}.target"), errors);
+            if file.reserved_target()
+                || others.iter().any(|other| file.contains(other))
+                || !targets.insert(&file.target)
+            {
+                errors.push(ValidationError::new(
+                    codes::FILE_TARGET_INVALID,
+                    format!("{path}.target"),
+                    format!(
+                        "file targets must be unique among the service's mount, secret, and file targets, contain none of them, and stay clear of {}",
+                        ServiceFile::RESERVED_DIRECTORIES.join(" and ")
+                    ),
+                ));
+            }
+            let (code, field, message) = match &file.source {
+                FileSource::Path(_) if !manifest_backed => (
+                    codes::FILE_REQUIRES_REPOSITORY,
+                    "path",
+                    "only applications whose manifest comes from a repository can mount repository files; set content instead".to_owned(),
+                ),
+                FileSource::Path(relative) if !valid_repository_path(relative) => (
+                    codes::REPOSITORY_PATH_INVALID,
+                    "path",
+                    "file path must remain within the repository root".to_owned(),
+                ),
+                FileSource::Content(content) if content.is_empty() => (
+                    codes::FILE_EMPTY,
+                    "content",
+                    "file content cannot be empty".to_owned(),
+                ),
+                FileSource::Content(content) if content.len() > ServiceFile::MAX_BYTES => (
+                    codes::FILE_TOO_LARGE,
+                    "content",
+                    format!(
+                        "file content must be at most {} bytes",
+                        ServiceFile::MAX_BYTES
+                    ),
+                ),
+                FileSource::Path(_) | FileSource::Content(_) => continue,
+            };
+            errors.push(ValidationError::new(
+                code,
+                format!("{path}.{field}"),
+                message,
+            ));
+        }
     }
-}
 
-/// Dependencies must name other services once each and must not form a cycle.
-fn validate_dependencies(services: &[Service], errors: &mut Vec<ValidationError>) {
-    let names = services
-        .iter()
-        .map(|service| service.name.as_str())
-        .collect::<BTreeSet<_>>();
-    for (index, service) in services.iter().enumerate() {
-        let mut listed = BTreeSet::new();
-        for (dependency_index, dependency) in service.depends_on.iter().enumerate() {
-            let path = format!("spec.services[{index}].depends_on[{dependency_index}]");
-            if !names.contains(dependency.as_str()) {
-                error(
-                    errors,
-                    codes::SERVICE_DEPENDENCY_MISSING,
-                    &path,
-                    "dependency must name a service in this application",
-                );
-            } else if !listed.insert(dependency) {
-                error(
-                    errors,
-                    codes::SERVICE_DEPENDENCY_DUPLICATE,
-                    &path,
-                    "dependency is listed more than once",
-                );
+    /// Checks mount count, that each mount references a declared volume, and that
+    /// targets are safe and unique.
+    fn validate_mounts(
+        &self,
+        base: &str,
+        volume_names: &BTreeSet<String>,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let mounts = &self.mounts;
+        let mut targets = BTreeSet::new();
+        if mounts.len() > MAX_MOUNTS_PER_SERVICE {
+            errors.push(ValidationError::new(
+                codes::MOUNT_COUNT_EXCESSIVE,
+                format!("{base}.mounts"),
+                format!("a service must declare at most {MAX_MOUNTS_PER_SERVICE} mounts"),
+            ));
+        }
+        for (index, mount) in mounts.iter().enumerate() {
+            let path = format!("{base}.mounts[{index}]");
+            if !volume_names.contains(&mount.volume) {
+                errors.push(ValidationError::new(
+                    codes::MOUNT_VOLUME_MISSING,
+                    format!("{path}.volume"),
+                    "mount references an undeclared volume",
+                ));
+            }
+            validate_absolute_path(&mount.target, &format!("{path}.target"), errors);
+            // HTTP health checks mount piqueld-probe there.
+            if mount.target == piqueld_probe::CONTAINER_PATH
+                || mount
+                    .target
+                    .starts_with(&format!("{}/", piqueld_probe::CONTAINER_PATH))
+            {
+                errors.push(ValidationError::new(
+                    codes::MOUNT_TARGET_UNSAFE,
+                    format!("{path}.target"),
+                    format!(
+                        "mount target {} is reserved for piqueld's health probe",
+                        piqueld_probe::CONTAINER_PATH
+                    ),
+                ));
+            }
+            if !targets.insert(mount.target.clone()) {
+                errors.push(ValidationError::new(
+                    codes::MOUNT_TARGET_DUPLICATE,
+                    format!("{path}.target"),
+                    "mount target is duplicated in this service",
+                ));
             }
         }
     }
-    let (_, cyclic) = services.startup_order();
-    let cyclic = cyclic
-        .into_iter()
-        .map(|service| service.name.as_str())
-        .collect::<BTreeSet<_>>();
-    for (index, service) in services.iter().enumerate() {
-        if cyclic.contains(service.name.as_str()) {
-            error(
-                errors,
-                codes::SERVICE_DEPENDENCY_CYCLE,
-                &format!("spec.services[{index}].depends_on"),
-                "dependencies must not form or lead into a cycle",
-            );
+}
+
+impl super::Rollout {
+    /// Checks a literal rollout monitor window.
+    fn validate(&self, base: &str, errors: &mut Vec<ValidationError>) {
+        if self
+            .monitor_seconds
+            .as_ref()
+            .and_then(Typed::literal)
+            .is_some_and(|seconds| !(1..=ValidatedRollout::MAX_MONITOR_SECONDS).contains(seconds))
+        {
+            errors.push(ValidationError::new(
+                codes::ROLLOUT_MONITOR_INVALID,
+                format!("{base}.rollout.monitor_seconds"),
+                format!(
+                    "rollout monitor must be between 1 and {} seconds",
+                    ValidatedRollout::MAX_MONITOR_SECONDS
+                ),
+            ));
         }
     }
 }
@@ -1049,60 +1305,54 @@ impl VariableMap {
     ) {
         let Self { noun, field, .. } = self;
         if values.len() > MAX_VARIABLE_ENTRIES {
-            error(
-                errors,
+            errors.push(ValidationError::new(
                 self.count_excessive,
-                &format!("{base}.{field}"),
-                &format!("a service must declare at most {MAX_VARIABLE_ENTRIES} {noun} entries"),
-            );
+                format!("{base}.{field}"),
+                format!("a service must declare at most {MAX_VARIABLE_ENTRIES} {noun} entries"),
+            ));
         }
         for (key, value) in values {
             let key_echo = safe_key_echo(key);
             if Template::mentions_reference(key) {
-                error(
-                    errors,
+                errors.push(ValidationError::new(
                     codes::VARIABLE_NOT_ALLOWED,
-                    &format!("{base}.{field}.name"),
-                    &format!("{noun} key {key_echo} cannot reference variables"),
-                );
+                    format!("{base}.{field}.name"),
+                    format!("{noun} key {key_echo} cannot reference variables"),
+                ));
             } else if !valid_env_name(key) || key.len() > MAX_IDENTIFIER_BYTES {
-                error(
-                    errors,
+                errors.push(ValidationError::new(
                     self.name_invalid,
-                    &format!("{base}.{field}.name"),
-                    &format!(
+                    format!("{base}.{field}.name"),
+                    format!(
                         "{noun} key {key_echo} is invalid: names must use letters, digits, and underscores, cannot start with a digit, and must be at most {MAX_IDENTIFIER_BYTES} bytes"
                     ),
-                );
+                ));
             }
             if self.reserved == Some(key.as_str()) {
-                error(
-                    errors,
+                errors.push(ValidationError::new(
                     self.name_invalid,
-                    &format!("{base}.{field}.name"),
-                    &format!("{noun} key {key_echo} is reserved for piqueld ingress"),
-                );
+                    format!("{base}.{field}.name"),
+                    format!("{noun} key {key_echo} is reserved for piqueld ingress"),
+                ));
             }
             let Some(value) = value.as_literal() else {
                 continue;
             };
             if value.contains('\0') {
-                error(
-                    errors,
+                errors.push(ValidationError::new(
                     self.value_invalid,
-                    &format!("{base}.{field}.value"),
-                    &format!("{noun} value for key {key_echo} cannot contain NUL"),
-                );
+                    format!("{base}.{field}.value"),
+                    format!("{noun} value for key {key_echo} cannot contain NUL"),
+                ));
             }
             if value.len() > MAX_VARIABLE_VALUE_BYTES {
-                error(
-                    errors,
+                errors.push(ValidationError::new(
                     self.value_excessive,
-                    &format!("{base}.{field}.value"),
-                    &format!(
+                    format!("{base}.{field}.value"),
+                    format!(
                         "{noun} value for key {key_echo} must be at most {MAX_VARIABLE_VALUE_BYTES} bytes"
                     ),
-                );
+                ));
             }
         }
     }
@@ -1125,447 +1375,189 @@ fn safe_key_echo(key: &str) -> String {
     format!("'{sanitized}'")
 }
 
-/// Checks file count, that each target is safe and collides with no other
-/// target in `targets` (mounts, secrets, and earlier files) or a reserved
-/// directory, that repository paths stay inside a repository the application
-/// has, and that inline contents fit one Swarm config.
-fn validate_files<'a>(
-    files: &'a [ServiceFile],
-    base: &str,
-    manifest_backed: bool,
-    targets: &mut BTreeSet<&'a str>,
-    errors: &mut Vec<ValidationError>,
-) {
-    if files.len() > ServiceFile::MAX_PER_SERVICE {
-        error(
-            errors,
-            codes::FILE_COUNT_EXCESSIVE,
-            &format!("{base}.files"),
-            &format!(
-                "a service must mount at most {} files",
-                ServiceFile::MAX_PER_SERVICE
-            ),
-        );
-    }
-    // Mount, secret, and file targets a file must not contain.
-    let others = targets
-        .iter()
-        .copied()
-        .chain(files.iter().map(|file| file.target.as_str()))
-        .collect::<Vec<_>>();
-    for (index, file) in files.iter().enumerate() {
-        let path = format!("{base}.files[{index}]");
-        validate_absolute_path(&file.target, &format!("{path}.target"), errors);
-        if file.reserved_target()
-            || others.iter().any(|other| file.contains(other))
-            || !targets.insert(&file.target)
+impl ResourceLimits {
+    /// Checks optional limits: at least one limit set, CPU in `1..=MAX_CPU_MILLIS`,
+    /// and memory nonzero and representable as Docker's `i64`.
+    fn validate(&self, base: &str, errors: &mut Vec<ValidationError>) {
+        if self.cpu_millis.is_none() && self.memory_bytes.is_none() {
+            errors.push(ValidationError::new(
+                codes::RESOURCE_LIMITS_EMPTY,
+                format!("{base}.resources"),
+                "resource limits must configure CPU, memory, or both",
+            ));
+        }
+        let cpu_millis = self.cpu_millis.as_ref().and_then(Typed::literal);
+        let memory_bytes = self.memory_bytes.as_ref().and_then(Typed::literal);
+        if cpu_millis == Some(&0) {
+            errors.push(ValidationError::new(
+                codes::CPU_LIMIT_INVALID,
+                format!("{base}.self.cpu_millis"),
+                "CPU limit must be greater than zero",
+            ));
+        }
+        if cpu_millis.is_some_and(|value| *value > MAX_CPU_MILLIS) {
+            errors.push(ValidationError::new(
+                codes::CPU_LIMIT_EXCESSIVE,
+                format!("{base}.self.cpu_millis"),
+                format!("CPU limit must be at most {MAX_CPU_MILLIS} millicores"),
+            ));
+        }
+        if memory_bytes == Some(&0)
+            || memory_bytes.is_some_and(|value| i64::try_from(*value).is_err())
         {
-            error(
-                errors,
-                codes::FILE_TARGET_INVALID,
-                &format!("{path}.target"),
-                &format!(
-                    "file targets must be unique among the service's mount, secret, and file targets, contain none of them, and stay clear of {}",
-                    ServiceFile::RESERVED_DIRECTORIES.join(" and ")
-                ),
-            );
-        }
-        match &file.source {
-            FileSource::Path(_) if !manifest_backed => error(
-                errors,
-                codes::FILE_REQUIRES_REPOSITORY,
-                &format!("{path}.path"),
-                "only applications whose manifest comes from a repository can mount repository files; set content instead",
-            ),
-            FileSource::Path(relative) if !valid_repository_path(relative) => error(
-                errors,
-                "repository_path_invalid",
-                &format!("{path}.path"),
-                "file path must remain within the repository root",
-            ),
-            FileSource::Content(content) if content.is_empty() => error(
-                errors,
-                codes::FILE_EMPTY,
-                &format!("{path}.content"),
-                "file content cannot be empty",
-            ),
-            FileSource::Content(content) if content.len() > ServiceFile::MAX_BYTES => error(
-                errors,
-                codes::FILE_TOO_LARGE,
-                &format!("{path}.content"),
-                &format!(
-                    "file content must be at most {} bytes",
-                    ServiceFile::MAX_BYTES
-                ),
-            ),
-            FileSource::Path(_) | FileSource::Content(_) => {}
+            errors.push(ValidationError::new(
+                codes::MEMORY_LIMIT_INVALID,
+                format!("{base}.self.memory_bytes"),
+                "memory limit must be greater than zero and fit the runtime value",
+            ));
         }
     }
 }
 
-/// Checks mount count, that each mount references a declared volume, and that
-/// targets are safe and unique.
-fn validate_mounts(
-    mounts: &[Mount],
-    base: &str,
-    volume_names: &BTreeSet<String>,
-    errors: &mut Vec<ValidationError>,
-) {
-    let mut targets = BTreeSet::new();
-    if mounts.len() > MAX_MOUNTS_PER_SERVICE {
-        error(
-            errors,
-            codes::MOUNT_COUNT_EXCESSIVE,
-            &format!("{base}.mounts"),
-            &format!("a service must declare at most {MAX_MOUNTS_PER_SERVICE} mounts"),
-        );
-    }
-    for (index, mount) in mounts.iter().enumerate() {
-        let path = format!("{base}.mounts[{index}]");
-        if !volume_names.contains(&mount.volume) {
-            error(
-                errors,
-                codes::MOUNT_VOLUME_MISSING,
-                &format!("{path}.volume"),
-                "mount references an undeclared volume",
-            );
-        }
-        validate_absolute_path(&mount.target, &format!("{path}.target"), errors);
-        // HTTP health checks mount piqueld-probe there.
-        if mount.target == piqueld_probe::CONTAINER_PATH
-            || mount
-                .target
-                .starts_with(&format!("{}/", piqueld_probe::CONTAINER_PATH))
-        {
-            error(
-                errors,
-                codes::MOUNT_TARGET_UNSAFE,
-                &format!("{path}.target"),
-                &format!(
-                    "mount target {} is reserved for piqueld's health probe",
-                    piqueld_probe::CONTAINER_PATH
-                ),
-            );
-        }
-        if !targets.insert(mount.target.clone()) {
-            error(
-                errors,
-                codes::MOUNT_TARGET_DUPLICATE,
-                &format!("{path}.target"),
-                "mount target is duplicated in this service",
-            );
-        }
-    }
-}
-
-/// Checks optional limits: at least one limit set, CPU in `1..=MAX_CPU_MILLIS`,
-/// and memory nonzero and representable as Docker's `i64`.
-fn validate_resources(
-    resources: Option<&ResourceLimits>,
-    base: &str,
-    errors: &mut Vec<ValidationError>,
-) {
-    let Some(resources) = resources else { return };
-    if resources.cpu_millis.is_none() && resources.memory_bytes.is_none() {
-        error(
-            errors,
-            codes::RESOURCE_LIMITS_EMPTY,
-            &format!("{base}.resources"),
-            "resource limits must configure CPU, memory, or both",
-        );
-    }
-    let cpu_millis = resources.cpu_millis.as_ref().and_then(Typed::literal);
-    let memory_bytes = resources.memory_bytes.as_ref().and_then(Typed::literal);
-    if cpu_millis == Some(&0) {
-        error(
-            errors,
-            codes::CPU_LIMIT_INVALID,
-            &format!("{base}.resources.cpu_millis"),
-            "CPU limit must be greater than zero",
-        );
-    }
-    if cpu_millis.is_some_and(|value| *value > MAX_CPU_MILLIS) {
-        error(
-            errors,
-            codes::CPU_LIMIT_EXCESSIVE,
-            &format!("{base}.resources.cpu_millis"),
-            &format!("CPU limit must be at most {MAX_CPU_MILLIS} millicores"),
-        );
-    }
-    if memory_bytes == Some(&0) || memory_bytes.is_some_and(|value| i64::try_from(*value).is_err())
-    {
-        error(
-            errors,
-            codes::MEMORY_LIMIT_INVALID,
-            &format!("{base}.resources.memory_bytes"),
-            "memory limit must be greater than zero and fit the runtime value",
-        );
-    }
-}
-
-fn validate_jobs(jobs: &[Job], services: &[Service], errors: &mut Vec<ValidationError>) {
-    unique_names(
-        jobs.iter().map(|job| &job.name),
-        "spec.jobs",
-        codes::JOB_NAME_DUPLICATE,
-        errors,
-    );
-    for (index, job) in jobs.iter().enumerate() {
-        let base = format!("spec.jobs[{index}]");
-        validate_name(&job.name, &format!("{base}.name"), errors);
-        if !services.iter().any(|service| service.name == job.service) {
-            error(
-                errors,
-                codes::JOB_SERVICE_MISSING,
-                &format!("{base}.service"),
-                "job must reference a service in this application",
-            );
-        }
-        let dependencies = services.dependencies_of(&job.service);
-        for prerequisite in jobs[index..]
+impl Job {
+    /// An exclusive job needs a writable volume of its service, and none of its
+    /// startup dependencies may mount one: they keep running while it holds them.
+    fn validate_exclusive_access(
+        &self,
+        services: &[Service],
+        dependencies: &BTreeSet<&str>,
+        base: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Some(service) = services.iter().find(|service| service.name == self.service) else {
+            return;
+        };
+        let volumes = service
+            .mounts
             .iter()
-            .filter(|prerequisite| dependencies.contains(prerequisite.service.as_str()))
+            .filter(|mount| !mount.read_only)
+            .map(|mount| mount.volume.as_str())
+            .collect::<BTreeSet<_>>();
+        if volumes.is_empty() {
+            errors.push(ValidationError::new(
+                codes::JOB_VOLUME_ACCESS_INVALID,
+                format!("{base}.volume_access"),
+                format!(
+                    "exclusive volume access requires service {} to mount a writable volume",
+                    self.service
+                ),
+            ));
+        }
+        for (dependency, volume) in services
+            .iter()
+            .filter(|service| dependencies.contains(service.name.as_str()))
+            .flat_map(|service| service.mounts.iter().map(move |mount| (service, mount)))
+            .filter(|(_, mount)| volumes.contains(mount.volume.as_str()))
         {
-            error(
-                errors,
-                codes::JOB_DEPENDENCY_ORDER_INVALID,
-                &format!("{base}.service"),
-                &format!(
-                    "job {} for dependency service {} must run before job {}",
-                    prerequisite.name, prerequisite.service, job.name
+            errors.push(ValidationError::new(
+                codes::JOB_VOLUME_ACCESS_INVALID,
+                format!("{base}.volume_access"),
+                format!(
+                    "startup dependency {} mounts volume {}, which job {} needs exclusively",
+                    dependency.name, volume.volume, self.name
                 ),
-            );
-        }
-        if job.command.first().is_none_or(|value| {
-            value
-                .as_literal()
-                .is_some_and(|value| value.trim().is_empty())
-        }) {
-            error(
-                errors,
-                codes::PROCESS_COMMAND_INVALID,
-                &format!("{base}.command"),
-                "a job command must start with a non-empty executable",
-            );
-        }
-        validate_process_arguments(
-            &job.command,
-            &format!("{base}.command"),
-            codes::PROCESS_COMMAND_EXCESSIVE,
-            errors,
-        );
-        if job.volume_access == JobVolumeAccess::Exclusive {
-            validate_exclusive_job(job, services, &dependencies, &base, errors);
-        }
-        if !(1..=Job::MAX_TIMEOUT_SECONDS).contains(&job.timeout_seconds) {
-            error(
-                errors,
-                codes::JOB_TIMEOUT_INVALID,
-                &format!("{base}.timeout_seconds"),
-                &format!(
-                    "job timeout must be between 1 and {} seconds",
-                    Job::MAX_TIMEOUT_SECONDS
-                ),
-            );
+            ));
         }
     }
 }
 
-/// An exclusive job needs a writable volume of its service, and none of its
-/// startup dependencies may mount one: they keep running while it holds them.
-fn validate_exclusive_job(
-    job: &Job,
-    services: &[Service],
-    dependencies: &BTreeSet<&str>,
-    base: &str,
-    errors: &mut Vec<ValidationError>,
-) {
-    let Some(service) = services.iter().find(|service| service.name == job.service) else {
-        return;
-    };
-    let volumes = service
-        .mounts
-        .iter()
-        .filter(|mount| !mount.read_only)
-        .map(|mount| mount.volume.as_str())
-        .collect::<BTreeSet<_>>();
-    if volumes.is_empty() {
-        error(
-            errors,
-            codes::JOB_VOLUME_ACCESS_INVALID,
-            &format!("{base}.volume_access"),
-            &format!(
-                "exclusive volume access requires service {} to mount a writable volume",
-                job.service
-            ),
-        );
-    }
-    for (dependency, volume) in services
-        .iter()
-        .filter(|service| dependencies.contains(service.name.as_str()))
-        .flat_map(|service| service.mounts.iter().map(move |mount| (service, mount)))
-        .filter(|(_, mount)| volumes.contains(mount.volume.as_str()))
-    {
-        error(
-            errors,
-            codes::JOB_VOLUME_ACCESS_INVALID,
-            &format!("{base}.volume_access"),
-            &format!(
-                "startup dependency {} mounts volume {}, which job {} needs exclusively",
-                dependency.name, volume.volume, job.name
-            ),
-        );
-    }
-}
-
-/// Checks each declared volume name.
-fn validate_volumes(volumes: &[Volume], errors: &mut Vec<ValidationError>) {
-    for (index, volume) in volumes.iter().enumerate() {
-        validate_name(&volume.name, &format!("spec.volumes[{index}].name"), errors);
-    }
-}
-
-/// Checks generated secret declarations: unique valid names, random byte counts
-/// in `RANDOM_SECRET_BYTES`, and RSA sizes in `RSA_SECRET_BITS`. Invalid
-/// generator parameters are reported at `spec.secrets[i].generate.bytes` or
-/// `.bits` with `secret_generator_invalid`.
-fn validate_generated_secrets(secrets: &[SecretDeclaration], errors: &mut Vec<ValidationError>) {
-    unique_names(
-        secrets.iter().map(|secret| &secret.name),
-        "spec.secrets",
-        "secret_name_duplicate",
-        errors,
-    );
-    for (index, secret) in secrets.iter().enumerate() {
-        let path = format!("spec.secrets[{index}]");
-        validate_name(&secret.name, &format!("{path}.name"), errors);
-        match secret.generate {
-            SecretGenerator::Random { bytes, .. } if !RANDOM_SECRET_BYTES.contains(&bytes) => {
-                error(
-                    errors,
-                    "secret_generator_invalid",
-                    &format!("{path}.generate.bytes"),
-                    &format!(
-                        "random secrets must use {}-{} bytes",
-                        RANDOM_SECRET_BYTES.start(),
-                        RANDOM_SECRET_BYTES.end()
-                    ),
-                );
+impl HealthCheck {
+    /// Validates a health check's probe, then its timing: interval in
+    /// `1..=MAX_HEALTHCHECK_INTERVAL_SECONDS` and timeout in `1..=interval`.
+    ///
+    /// HTTP paths must be normalized absolute paths without query or fragment.
+    fn validate(&self, path: &str, errors: &mut Vec<ValidationError>) {
+        let (interval, timeout) = match self {
+            HealthCheck::Http {
+                port,
+                path: request_path,
+                interval_seconds,
+                timeout_seconds,
+            } => {
+                if port.literal() == Some(&0) {
+                    errors.push(ValidationError::new(
+                        codes::PORT_INVALID,
+                        format!("{path}.port"),
+                        "health-check port must be between 1 and 65535",
+                    ));
+                }
+                let request_path = request_path.as_literal().unwrap_or_else(|| "/".into());
+                let valid_path = request_path == "/"
+                    || (request_path.starts_with('/')
+                        && !request_path.ends_with('/')
+                        && request_path
+                            .split('/')
+                            .skip(1)
+                            .all(|part| !part.is_empty() && part != "." && part != ".."));
+                if request_path.len() > 2048
+                    || !valid_path
+                    || request_path.contains(['\\', '?', '#'])
+                    || request_path
+                        .chars()
+                        .any(|character| character.is_whitespace() || character.is_control())
+                {
+                    errors.push(ValidationError::new(
+                        codes::HEALTHCHECK_PATH_INVALID,
+                        format!("{path}.path"),
+                        "HTTP health-check path must start with / and contain no whitespace",
+                    ));
+                }
+                (interval_seconds.literal(), timeout_seconds.literal())
             }
-            SecretGenerator::Rsa { bits } if !RSA_SECRET_BITS.contains(&bits) => {
-                error(
-                    errors,
-                    "secret_generator_invalid",
-                    &format!("{path}.generate.bits"),
-                    "RSA keys must use 2048, 3072, or 4096 bits",
-                );
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Validates a health check's probe, then its timing: interval in
-/// `1..=MAX_HEALTHCHECK_INTERVAL_SECONDS` and timeout in `1..=interval`.
-///
-/// HTTP paths must be normalized absolute paths without query or fragment.
-fn validate_health(value: &HealthCheck, path: &str, errors: &mut Vec<ValidationError>) {
-    let (interval, timeout) = match value {
-        HealthCheck::Http {
-            port,
-            path: request_path,
-            interval_seconds,
-            timeout_seconds,
-        } => {
-            if port.literal() == Some(&0) {
-                error(
-                    errors,
-                    codes::PORT_INVALID,
-                    &format!("{path}.port"),
-                    "health-check port must be between 1 and 65535",
-                );
-            }
-            let request_path = request_path.as_literal().unwrap_or_else(|| "/".into());
-            let valid_path = request_path == "/"
-                || (request_path.starts_with('/')
-                    && !request_path.ends_with('/')
-                    && request_path
-                        .split('/')
-                        .skip(1)
-                        .all(|part| !part.is_empty() && part != "." && part != ".."));
-            if request_path.len() > 2048
-                || !valid_path
-                || request_path.contains(['\\', '?', '#'])
-                || request_path
-                    .chars()
-                    .any(|character| character.is_whitespace() || character.is_control())
-            {
-                error(
-                    errors,
-                    codes::HEALTHCHECK_PATH_INVALID,
-                    &format!("{path}.path"),
-                    "HTTP health-check path must start with / and contain no whitespace",
-                );
-            }
-            (interval_seconds.literal(), timeout_seconds.literal())
-        }
-        HealthCheck::Command {
-            command,
-            interval_seconds,
-            timeout_seconds,
-        } => {
-            if command.first().is_none_or(|value| {
-                value
-                    .as_literal()
-                    .is_some_and(|value| value.trim().is_empty())
-            }) || command
-                .iter()
-                .any(|value| value.as_literal().is_some_and(|value| value.contains('\0')))
-            {
-                error(
-                    errors,
-                    codes::HEALTHCHECK_COMMAND_INVALID,
-                    &format!("{path}.command"),
-                    "health-check command must contain at least one NUL-free argument",
-                );
-            }
-            validate_process_arguments(
+            HealthCheck::Command {
                 command,
-                &format!("{path}.command"),
-                codes::PROCESS_COMMAND_EXCESSIVE,
-                errors,
-            );
-            (interval_seconds.literal(), timeout_seconds.literal())
+                interval_seconds,
+                timeout_seconds,
+            } => {
+                if command.first().is_none_or(|value| {
+                    value
+                        .as_literal()
+                        .is_some_and(|value| value.trim().is_empty())
+                }) || command
+                    .iter()
+                    .any(|value| value.as_literal().is_some_and(|value| value.contains('\0')))
+                {
+                    errors.push(ValidationError::new(
+                        codes::HEALTHCHECK_COMMAND_INVALID,
+                        format!("{path}.command"),
+                        "health-check command must contain at least one NUL-free argument",
+                    ));
+                }
+                validate_process_arguments(
+                    command,
+                    &format!("{path}.command"),
+                    codes::PROCESS_COMMAND_EXCESSIVE,
+                    errors,
+                );
+                (interval_seconds.literal(), timeout_seconds.literal())
+            }
+        };
+        let Some(&interval) = interval else {
+            return;
+        };
+        if interval == 0 {
+            errors.push(ValidationError::new(
+                codes::HEALTHCHECK_INTERVAL_INVALID,
+                format!("{path}.interval_seconds"),
+                "health-check interval must be greater than zero",
+            ));
         }
-    };
-    let Some(&interval) = interval else {
-        return;
-    };
-    if interval == 0 {
-        error(
-            errors,
-            codes::HEALTHCHECK_INTERVAL_INVALID,
-            &format!("{path}.interval_seconds"),
-            "health-check interval must be greater than zero",
-        );
-    }
-    if interval > MAX_HEALTHCHECK_INTERVAL_SECONDS {
-        error(
-            errors,
+        if interval > MAX_HEALTHCHECK_INTERVAL_SECONDS {
+            errors.push(ValidationError::new(
             codes::HEALTHCHECK_INTERVAL_EXCESSIVE,
-            &format!("{path}.interval_seconds"),
-            &format!(
+            format!("{path}.interval_seconds"),
+            format!(
                 "health-check interval must be at most {MAX_HEALTHCHECK_INTERVAL_SECONDS} seconds"
             ),
-        );
-    }
-    if interval > 0 && timeout.is_some_and(|&timeout| timeout == 0 || timeout > interval) {
-        error(
-            errors,
-            codes::HEALTHCHECK_TIMEOUT_INVALID,
-            &format!("{path}.timeout_seconds"),
-            "health-check timeout must be greater than zero and no longer than its interval",
-        );
+        ));
+        }
+        if interval > 0 && timeout.is_some_and(|&timeout| timeout == 0 || timeout > interval) {
+            errors.push(ValidationError::new(
+                codes::HEALTHCHECK_TIMEOUT_INVALID,
+                format!("{path}.timeout_seconds"),
+                "health-check timeout must be greater than zero and no longer than its interval",
+            ));
+        }
     }
 }
 
@@ -1579,12 +1571,11 @@ fn unique_names<'a>(
     let mut found = BTreeSet::new();
     for (index, name) in names.enumerate() {
         if !found.insert(name.clone()) {
-            error(
-                errors,
+            errors.push(ValidationError::new(
                 duplicate_code,
-                &format!("{path}[{index}].name"),
+                format!("{path}[{index}].name"),
                 "name is duplicated",
-            );
+            ));
         }
     }
     found
@@ -1593,19 +1584,17 @@ fn unique_names<'a>(
 /// Reports `NAME_INVALID` unless `value` is a safe logical resource name.
 pub(super) fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     if Template::mentions_reference(value) {
-        error(
-            errors,
+        errors.push(ValidationError::new(
             codes::VARIABLE_NOT_ALLOWED,
             path,
             "names cannot reference variables",
-        );
+        ));
     } else if !valid_logical_name(value) {
-        error(
-            errors,
+        errors.push(ValidationError::new(
             codes::NAME_INVALID,
             path,
             "names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-        );
+        ));
     }
 }
 
@@ -1660,23 +1649,15 @@ pub(crate) fn valid_image_reference(value: &str) -> bool {
     if name.is_empty() || name.len() > 255 {
         return false;
     }
-    let components = name.split('/').collect::<Vec<_>>();
-    if components.iter().any(|component| component.is_empty()) {
+    if name.split('/').any(str::is_empty) {
         return false;
     }
-    let first_is_registry = components.len() > 1
-        && (components[0].contains(['.', ':']) || components[0].eq_ignore_ascii_case("localhost"));
-    let repository_components = if first_is_registry {
-        if !valid_registry_authority(components[0]) {
-            return false;
-        }
-        &components[1..]
-    } else {
-        components.as_slice()
+    let repository = match registry_component(name) {
+        Some(registry) if !valid_registry_authority(registry) => return false,
+        Some(registry) => &name[registry.len() + 1..],
+        None => name,
     };
-    repository_components
-        .iter()
-        .all(|component| valid_repository_component(component))
+    repository.split('/').all(valid_repository_component)
 }
 
 /// Whether a registry authority is `localhost` or DNS-like labels, with an
@@ -1701,12 +1682,16 @@ fn valid_registry_authority(value: &str) -> bool {
             }))
 }
 
-/// Returns the leading registry host of an image name, if it has one.
-fn first_registry_component(name: &str) -> Option<&str> {
-    let components = name.split('/').collect::<Vec<_>>();
-    let first_is_registry = components.len() > 1
-        && (components[0].contains(['.', ':']) || components[0].eq_ignore_ascii_case("localhost"));
-    first_is_registry.then(|| components[0])
+/// Returns the leading registry host of an image name, if it has one: a
+/// first path component containing `.` or `:`, or `localhost`.
+///
+/// ```text
+/// "ghcr.io/org/app" -> "ghcr.io"
+/// "org/app", "app"  -> none
+/// ```
+pub(crate) fn registry_component(name: &str) -> Option<&str> {
+    let (first, _) = name.split_once('/')?;
+    (first.contains(['.', ':']) || first.eq_ignore_ascii_case("localhost")).then_some(first)
 }
 
 /// Lowercases the registry host of an image reference; other parts are case-sensitive.
@@ -1722,7 +1707,7 @@ fn canonicalize_image_reference(value: &str) -> String {
     let (name, digest) = value
         .split_once('@')
         .map_or((value, None), |(name, digest)| (name, Some(digest)));
-    let Some(registry) = first_registry_component(name) else {
+    let Some(registry) = registry_component(name) else {
         return value.to_owned();
     };
     let lowered = registry.to_ascii_lowercase();
@@ -1801,12 +1786,11 @@ fn valid_image_digest(value: &str) -> bool {
 fn validate_absolute_path(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     let components = value.split('/').skip(1);
     if Template::mentions_reference(value) {
-        error(
-            errors,
+        errors.push(ValidationError::new(
             codes::VARIABLE_NOT_ALLOWED,
             path,
             "container paths cannot reference variables",
-        );
+        ));
     } else if !value.starts_with('/')
         || value == "/"
         || value.ends_with('/')
@@ -1817,12 +1801,11 @@ fn validate_absolute_path(value: &str, path: &str, errors: &mut Vec<ValidationEr
             .into_iter()
             .any(|part| part.is_empty() || part.len() > 255 || part == ".." || part == ".")
     {
-        error(
-            errors,
-            "mount_target_unsafe",
+        errors.push(ValidationError::new(
+            codes::MOUNT_TARGET_UNSAFE,
             path,
             "mount target must be an absolute, normalized container path below root",
-        );
+        ));
     }
 }
 
@@ -1857,41 +1840,29 @@ fn validate_process_arguments(
     errors: &mut Vec<ValidationError>,
 ) {
     if values.len() > MAX_PROCESS_ELEMENTS {
-        error(
-            errors,
+        errors.push(ValidationError::new(
             excessive_code,
             path,
-            &format!("the list must contain at most {MAX_PROCESS_ELEMENTS} elements"),
-        );
+            format!("the list must contain at most {MAX_PROCESS_ELEMENTS} elements"),
+        ));
     }
     for (index, value) in values.iter().enumerate() {
         let Some(value) = value.as_literal() else {
             continue;
         };
         if value.contains('\0') {
-            error(
-                errors,
+            errors.push(ValidationError::new(
                 codes::PROCESS_ARGUMENT_INVALID,
-                &format!("{path}[{index}]"),
+                format!("{path}[{index}]"),
                 "container process arguments cannot contain NUL",
-            );
+            ));
         }
         if value.len() > MAX_PROCESS_ELEMENT_BYTES {
-            error(
-                errors,
+            errors.push(ValidationError::new(
                 excessive_code,
-                &format!("{path}[{index}]"),
-                &format!("each element must be at most {MAX_PROCESS_ELEMENT_BYTES} bytes"),
-            );
+                format!("{path}[{index}]"),
+                format!("each element must be at most {MAX_PROCESS_ELEMENT_BYTES} bytes"),
+            ));
         }
     }
-}
-
-/// Appends one validation error.
-pub(super) fn error(errors: &mut Vec<ValidationError>, code: &str, path: &str, message: &str) {
-    errors.push(ValidationError {
-        code: code.into(),
-        path: path.into(),
-        message: message.into(),
-    });
 }

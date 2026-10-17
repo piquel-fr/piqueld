@@ -1,5 +1,29 @@
 //! Public application manifests and their validated, canonical domain model.
 
+// Sorts every order-insensitive collection of a specification (services by
+// name, their mounts, secrets, files, and dependencies, then volumes, routes,
+// generated secrets, exports, and imports) so equivalent manifests serialize and hash
+// identically. Process arguments and other ordered lists are untouched. Both
+// `ApplicationSpec` and `ValidatedSpec` have these fields.
+macro_rules! sort_unordered {
+    ($spec:expr) => {{
+        let spec = &mut $spec;
+        spec.services
+            .sort_by(|left, right| left.name.cmp(&right.name));
+        for service in &mut spec.services {
+            service.mounts.sort();
+            service.secrets.sort();
+            service.files.sort();
+            service.depends_on.sort();
+        }
+        spec.volumes.sort();
+        spec.routes.sort();
+        spec.secrets.sort();
+        spec.exports.sort();
+        spec.imports.sort();
+    }};
+}
+
 pub mod declaration;
 pub(crate) mod dependencies;
 pub mod domain;
@@ -13,7 +37,9 @@ pub mod template;
 /// Shared tests for manifest variables and templates.
 #[cfg(test)]
 mod template_tests;
+pub mod validation;
 pub mod variables;
+
 pub use declaration::{Declaration, DeclaredSource, EnvironmentChange};
 pub use domain::{
     HealthExecution, SecretSource, ValidatedBuild, ValidatedHealthCheck, ValidatedResourceLimits,
@@ -21,6 +47,13 @@ pub use domain::{
 };
 pub use files::{
     FileCaptureError, FileMode, FileModeError, FileSource, RepositoryFiles, ServiceFile,
+};
+pub use input::{
+    ApplicationManifest, ApplicationSpec, Build, EnvironmentConfig, GitRepository, HealthCheck,
+    Job, JobRun, JobVolumeAccess, ManifestRepository, ManifestRevision, Metadata, Mount,
+    PreviewConfig, Redirect, RepositoryManifest, ResourceLimits, Route, SecretDeclaration,
+    SecretEncoding, SecretGenerator, SecretMount, Service, Source, SourceRepository, Variable,
+    Volume,
 };
 pub use limits::{PreviewLimits, PreviewLimitsError};
 pub use links::{Export, Import, ValidatedExport, ValidatedImport};
@@ -30,28 +63,18 @@ pub use routes::{
     ValidatedRoute, Visibility, VisibilityError,
 };
 pub use template::{ApplicationTemplate, Rendering, ValidatedTemplate};
+pub use validation::{
+    ValidationError, ValidationErrors, parse_json, parse_template_json, parse_template_toml,
+    parse_toml, safe_decode_path, valid_git_branch, valid_git_commit, valid_repository_path,
+};
+pub(crate) use validation::{registry_component, valid_image_reference};
 pub use variables::{
     GitRevision, PREVIEW_DEPLOYMENT_ID, RenderContext, RenderTarget, SystemVariable, Template,
     TemplateError, Typed, VariableValue,
 };
 
-use domain::{ValidatedMetadata, ValidatedSpec};
-pub mod validation;
-
-pub use input::{
-    ApplicationManifest, ApplicationSpec, Build, EnvironmentConfig, GitRepository, HealthCheck,
-    Job, JobRun, JobVolumeAccess, ManifestRepository, ManifestRevision, Metadata, Mount,
-    PreviewConfig, Redirect, RepositoryManifest, ResourceLimits, Route, SecretDeclaration,
-    SecretEncoding, SecretGenerator, SecretMount, Service, Source, SourceRepository, Variable,
-    Volume,
-};
-pub(crate) use validation::valid_image_reference;
-pub use validation::{
-    ValidationError, ValidationErrors, parse_json, parse_template_json, parse_template_toml,
-    parse_toml, safe_decode_path, valid_git_branch, valid_git_commit, valid_repository_path,
-};
-
 use crate::{ApplicationId, ApplicationName};
+use domain::{ValidatedMetadata, ValidatedSpec};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use utoipa::ToSchema;
@@ -115,7 +138,7 @@ impl ValidatedApplication {
     #[must_use]
     pub fn normalize(self, id: ApplicationId) -> NormalizedApplication {
         let mut spec = self.spec;
-        normalize_spec(&mut spec);
+        sort_unordered!(spec);
         NormalizedApplication {
             id,
             api_version: APPLICATION_API_VERSION.into(),
@@ -125,25 +148,6 @@ impl ValidatedApplication {
             files: RepositoryFiles::default(),
         }
     }
-}
-
-/// Sorts every order-insensitive collection (services by name, mounts,
-/// secrets, volumes, routes) so equivalent manifests serialize and hash
-/// identically. Process arguments and other ordered lists are untouched.
-fn normalize_spec(spec: &mut ValidatedSpec) {
-    spec.services
-        .sort_by(|left, right| left.name.cmp(&right.name));
-    for service in &mut spec.services {
-        service.mounts.sort();
-        service.secrets.sort();
-        service.files.sort();
-        service.depends_on.sort();
-    }
-    spec.volumes.sort();
-    spec.routes.sort();
-    spec.secrets.sort();
-    spec.exports.sort();
-    spec.imports.sort();
 }
 
 impl NormalizedApplication {
@@ -202,20 +206,8 @@ impl NormalizedApplication {
         mut self,
         revision: &ManifestRevision,
     ) -> Result<Self, ValidationErrors> {
-        let mut errors = Vec::new();
-        let path = "spec.manifest.repository";
-        match &mut self.spec.manifest {
-            Some(manifest) => {
-                manifest.repository = manifest.repository.at(revision);
-                manifest.repository.validate(path, &mut errors);
-            }
-            None => ManifestRevision::unbacked(path, &mut errors),
-        }
-        if errors.is_empty() {
-            Ok(self)
-        } else {
-            Err(ValidationErrors(errors))
-        }
+        revision.apply(&mut self.spec.manifest)?;
+        Ok(self)
     }
 
     /// Pins `"self"` Git sources to `commit`, the revision this manifest was read
@@ -237,7 +229,7 @@ impl NormalizedApplication {
     /// Reapplies canonical ordering. This operation is idempotent.
     #[must_use]
     pub fn normalize(mut self) -> Self {
-        normalize_spec(&mut self.spec);
+        sort_unordered!(self.spec);
         self
     }
 
@@ -246,12 +238,12 @@ impl NormalizedApplication {
     /// The envelope covers only the canonical spec and the captured contents
     /// of repository files, so cosmetic metadata edits do not change the hash
     /// or redeploy services.
-    #[must_use]
     ///
     /// # Panics
     ///
     /// Panics only if the internal normalized manifest cannot be serialized,
     /// which indicates a bug in the domain types.
+    #[must_use]
     pub fn spec_hash(&self) -> String {
         let mut normalized = self.clone().normalize();
         // Manifest location does not change the desired runtime resources.

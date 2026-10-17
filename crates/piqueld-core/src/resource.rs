@@ -6,11 +6,11 @@ use crate::manifest::domain::{
 use crate::names::validated_string;
 use crate::{
     ApplicationName, DockerConfigName, DockerNetworkName, DockerServiceName, DockerVolumeName,
-    EnvironmentId, JobName, ResourceKind, ServiceName, VolumeName, docker_resource_name,
+    EnvironmentId, JobName, ResourceKind, ServiceName, VolumeName, codes, docker_resource_name,
     manifest::{
         FileMode, FileSource, JobRun, JobVolumeAccess, NormalizedApplication, RepositoryFiles,
         RolloutPolicy, SourceRepository, ValidatedHealthCheck, ValidatedResourceLimits,
-        ValidatedRollout, ValidatedSource, valid_image_reference,
+        ValidatedRollout, ValidatedSource, registry_component, valid_image_reference,
     },
 };
 use crate::{BuildInputs, ImageReference, ImmutableImage, Release, RepositoryDigest};
@@ -909,11 +909,7 @@ impl From<Vec<CompileError>> for crate::ValidationErrors {
         Self(
             errors
                 .into_iter()
-                .map(|error| crate::ValidationError {
-                    code: error.code,
-                    path: error.resource,
-                    message: error.message,
-                })
+                .map(|error| crate::ValidationError::new(error.code, error.resource, error.message))
                 .collect(),
         )
     }
@@ -1087,7 +1083,7 @@ fn validate_application(
                 && app.files().get(path).is_none()
             {
                 errors.push(CompileError {
-                    code: crate::codes::FILE_UNRESOLVED.into(),
+                    code: codes::FILE_UNRESOLVED.into(),
                     resource: service.name.to_string(),
                     message: format!("repository file {path} was not captured with the manifest"),
                 });
@@ -1096,7 +1092,7 @@ fn validate_application(
         for secret in &service.secrets {
             if !resolutions.secret_names.contains_key(&secret.name) {
                 errors.push(CompileError {
-                    code: "secret_unresolved".into(),
+                    code: codes::SECRET_UNRESOLVED.into(),
                     resource: service.name.to_string(),
                     message: format!("secret {} has not been pinned", secret.name),
                 });
@@ -1115,13 +1111,13 @@ fn validate_application(
         };
         if !incompatible.is_empty() {
             errors.extend(incompatible.into_iter().map(|field| CompileError {
-                code: crate::codes::RELEASE_INCOMPATIBLE.into(),
+                code: codes::RELEASE_INCOMPATIBLE.into(),
                 resource: format!("{}.{field}", service.name),
                 message: "renders differently in this environment than in the release, whose images were built from it".into(),
             }));
         } else if !resolved_source_matches(&service.source, resolved) {
             errors.push(CompileError {
-                code: crate::codes::SOURCE_RESOLUTION_MISMATCH.into(),
+                code: codes::SOURCE_RESOLUTION_MISMATCH.into(),
                 resource: service.name.to_string(),
                 message: "resolved source does not immutably resolve the normalized service source"
                     .into(),
@@ -1142,7 +1138,7 @@ fn unresolved_errors(
         .map(|requirement| match requirement {
             ResolutionRequirement::ResolveImage { service, .. }
             | ResolutionRequirement::BuildGit { service, .. } => CompileError {
-                code: crate::codes::SOURCE_UNRESOLVED.into(),
+                code: codes::SOURCE_UNRESOLVED.into(),
                 resource: service.to_string(),
                 message: "service source has not been resolved to an immutable image".into(),
             },
@@ -1342,31 +1338,29 @@ pub fn image_repository(reference: &str) -> Option<String> {
     if repository.is_empty() {
         return None;
     }
-    let mut components = repository.split('/');
-    let first = components.next()?;
-    let explicit_registry = repository.contains('/')
-        && (first.contains(['.', ':']) || first.eq_ignore_ascii_case("localhost"));
-    if repository.contains('/')
-        && (first.eq_ignore_ascii_case("docker.io")
-            || first.eq_ignore_ascii_case("index.docker.io"))
-    {
-        let path = &repository[first.len() + 1..];
-        Some(if path.contains('/') {
-            format!("docker.io/{path}")
-        } else {
-            format!("docker.io/library/{path}")
-        })
-    } else if explicit_registry {
-        Some(format!(
-            "{}{}",
-            first.to_ascii_lowercase(),
-            &repository[first.len()..]
-        ))
-    } else if repository.contains('/') {
-        Some(format!("docker.io/{repository}"))
+    let path = match repository.split_once('/') {
+        Some((host, path))
+            if host.eq_ignore_ascii_case("docker.io")
+                || host.eq_ignore_ascii_case("index.docker.io") =>
+        {
+            path
+        }
+        _ => match registry_component(repository) {
+            Some(registry) => {
+                return Some(format!(
+                    "{}{}",
+                    registry.to_ascii_lowercase(),
+                    &repository[registry.len()..]
+                ));
+            }
+            None => repository,
+        },
+    };
+    Some(if path.contains('/') {
+        format!("docker.io/{path}")
     } else {
-        Some(format!("docker.io/library/{repository}"))
-    }
+        format!("docker.io/library/{path}")
+    })
 }
 
 /// Lifecycle state of an observed Docker task.

@@ -8,6 +8,7 @@
 //! hints that something moved; its payload is never trusted.
 
 use crate::api::EnvironmentView;
+use crate::codes;
 use crate::manifest::{RepositoryManifest, ValidationError};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -54,15 +55,15 @@ impl RepositorySync {
         if let Self::Poll { interval_seconds } = self
             && !(Self::MIN_INTERVAL..=Self::MAX_INTERVAL).contains(&interval_seconds)
         {
-            errors.push(ValidationError {
-                code: "sync_interval_invalid".into(),
-                path: format!("{path}.interval_seconds"),
-                message: format!(
+            errors.push(ValidationError::new(
+                codes::SYNC_INTERVAL_INVALID,
+                format!("{path}.interval_seconds"),
+                format!(
                     "the poll interval must be between {} and {} seconds",
                     Self::MIN_INTERVAL,
                     Self::MAX_INTERVAL
                 ),
-            });
+            ));
         }
     }
 }

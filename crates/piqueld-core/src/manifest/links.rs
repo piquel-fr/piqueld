@@ -7,9 +7,9 @@
 //! declared in its own manifest, so each application's owners control their
 //! half. [`crate::links`] resolves links from deployed targets.
 
-use super::validation::{error, validate_name};
+use super::validation::validate_name;
 use super::variables::Template;
-use super::{ValidationError, ValidationErrors};
+use super::{ApplicationSpec, ValidationError, ValidationErrors};
 use crate::{ApplicationName, EnvironmentName, ServiceName, codes};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -92,7 +92,7 @@ pub fn alias(service: &ServiceName, application: &ApplicationName) -> String {
 }
 
 impl Export {
-    /// Converts input already checked by [`validate`].
+    /// Converts input already checked by [`ApplicationSpec::validate_links`].
     pub(super) fn into_validated(self, index: usize) -> Result<ValidatedExport, ValidationErrors> {
         let path = format!("spec.exports[{index}]");
         Ok(ValidatedExport {
@@ -126,7 +126,7 @@ impl ValidatedExport {
 }
 
 impl Import {
-    /// Converts input already checked by [`validate`] and rendered.
+    /// Converts input already checked by [`ApplicationSpec::validate_links`] and rendered.
     pub(super) fn into_validated(self, index: usize) -> Result<ValidatedImport, ValidationErrors> {
         let path = format!("spec.imports[{index}]");
         Ok(ValidatedImport {
@@ -142,7 +142,7 @@ impl Import {
                     let path = format!("{path}.environment");
                     let literal = environment
                         .as_literal()
-                        .ok_or_else(|| ValidationErrors::unresolved(&path))?;
+                        .ok_or_else(|| ValidationError::unresolved(&path))?;
                     EnvironmentName::parse(literal)
                         .map_err(|source| ValidationErrors::invalid_name(&path, source))
                 })
@@ -166,120 +166,111 @@ impl ValidatedImport {
     }
 }
 
-/// Checks the link budgets; returns `false` when one is exceeded.
-pub(super) fn within_budget(
-    exports: &[Export],
-    imports: &[Import],
-    errors: &mut Vec<ValidationError>,
-) -> bool {
-    let mut within = true;
-    for (path, count) in [
-        ("spec.exports", exports.len()),
-        ("spec.imports", imports.len()),
-    ] {
-        if count > MAX_LINKS {
-            error(
-                errors,
-                codes::LINK_COUNT_EXCESSIVE,
-                path,
-                &format!("an application must declare at most {MAX_LINKS} of these"),
-            );
-            within = false;
-        }
-    }
-    for (index, export) in exports.iter().enumerate() {
-        if export.applications.len() > MAX_LINKS {
-            error(
-                errors,
-                codes::LINK_COUNT_EXCESSIVE,
-                &format!("spec.exports[{index}].applications"),
-                &format!("an export must grant at most {MAX_LINKS} applications"),
-            );
-            within = false;
-        }
-    }
-    within
-}
-
-/// Validates exports and imports of an application whose services are
-/// `services`:
-/// - names are valid, and environments once rendered;
-/// - each export names a declared service, at most once, and grants at least
-///   one application, each once;
-/// - each import names each service of an application once.
-///
-/// An application may name itself: its environments then link to each other.
-pub(super) fn validate(
-    services: &BTreeSet<&str>,
-    exports: &[Export],
-    imports: &[Import],
-    errors: &mut Vec<ValidationError>,
-) {
-    let mut exported = BTreeSet::new();
-    for (index, export) in exports.iter().enumerate() {
-        let path = format!("spec.exports[{index}]");
-        validate_name(&export.service, &format!("{path}.service"), errors);
-        if !services.contains(export.service.as_str()) {
-            error(
-                errors,
-                codes::EXPORT_SERVICE_MISSING,
-                &format!("{path}.service"),
-                "an export must reference a service in this application",
-            );
-        }
-        if !exported.insert(&export.service) {
-            error(
-                errors,
-                codes::EXPORT_DUPLICATE,
-                &format!("{path}.service"),
-                "the service is already exported",
-            );
-        }
-        let path = format!("{path}.applications");
-        if export.applications.is_empty() {
-            error(
-                errors,
-                codes::EXPORT_APPLICATIONS_EMPTY,
-                &path,
-                "an export must grant at least one application",
-            );
-        }
-        let mut granted = BTreeSet::new();
-        for (position, application) in export.applications.iter().enumerate() {
-            let path = format!("{path}[{position}]");
-            validate_name(application, &path, errors);
-            if !granted.insert(application) {
-                error(
-                    errors,
-                    codes::EXPORT_DUPLICATE,
-                    &path,
-                    "the application is already granted",
-                );
+impl ApplicationSpec {
+    /// Checks the link budgets; returns `false` when one is exceeded.
+    pub(super) fn links_within_budget(&self, errors: &mut Vec<ValidationError>) -> bool {
+        let (exports, imports) = (&self.exports, &self.imports);
+        let mut within = true;
+        for (path, count) in [
+            ("spec.exports", exports.len()),
+            ("spec.imports", imports.len()),
+        ] {
+            if count > MAX_LINKS {
+                errors.push(ValidationError::new(
+                    codes::LINK_COUNT_EXCESSIVE,
+                    path,
+                    format!("an application must declare at most {MAX_LINKS} of these"),
+                ));
+                within = false;
             }
         }
-    }
-    let mut imported = BTreeSet::new();
-    for (index, import) in imports.iter().enumerate() {
-        let path = format!("spec.imports[{index}]");
-        validate_name(&import.application, &format!("{path}.application"), errors);
-        validate_name(&import.service, &format!("{path}.service"), errors);
-        if !imported.insert((&import.application, &import.service)) {
-            error(
-                errors,
-                codes::IMPORT_DUPLICATE,
-                &format!("{path}.service"),
-                "the service is already imported",
-            );
+        for (index, export) in exports.iter().enumerate() {
+            if export.applications.len() > MAX_LINKS {
+                errors.push(ValidationError::new(
+                    codes::LINK_COUNT_EXCESSIVE,
+                    format!("spec.exports[{index}].applications"),
+                    format!("an export must grant at most {MAX_LINKS} applications"),
+                ));
+                within = false;
+            }
         }
-        if let Some(environment) = import.environment.as_ref().and_then(Template::as_literal)
-            && EnvironmentName::parse(environment).is_err()
-        {
-            error(
-                errors,
-                codes::NAME_INVALID,
-                &format!("{path}.environment"),
-                "environment names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-            );
+        within
+    }
+
+    /// Validates exports and imports:
+    /// - names are valid, and environments once rendered;
+    /// - each export names a declared service, at most once, and grants at least
+    ///   one application, each once;
+    /// - each import names each service of an application once.
+    ///
+    /// An application may name itself: its environments then link to each other.
+    pub(super) fn validate_links(&self, errors: &mut Vec<ValidationError>) {
+        let (exports, imports) = (&self.exports, &self.imports);
+        let services = self
+            .services
+            .iter()
+            .map(|service| service.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut exported = BTreeSet::new();
+        for (index, export) in exports.iter().enumerate() {
+            let path = format!("spec.exports[{index}]");
+            validate_name(&export.service, &format!("{path}.service"), errors);
+            if !services.contains(export.service.as_str()) {
+                errors.push(ValidationError::new(
+                    codes::EXPORT_SERVICE_MISSING,
+                    format!("{path}.service"),
+                    "an export must reference a service in this application",
+                ));
+            }
+            if !exported.insert(&export.service) {
+                errors.push(ValidationError::new(
+                    codes::EXPORT_DUPLICATE,
+                    format!("{path}.service"),
+                    "the service is already exported",
+                ));
+            }
+            let path = format!("{path}.applications");
+            if export.applications.is_empty() {
+                errors.push(ValidationError::new(
+                    codes::EXPORT_APPLICATIONS_EMPTY,
+                    &path,
+                    "an export must grant at least one application",
+                ));
+            }
+            let mut granted = BTreeSet::new();
+            for (position, application) in export.applications.iter().enumerate() {
+                let path = format!("{path}[{position}]");
+                validate_name(application, &path, errors);
+                if !granted.insert(application) {
+                    errors.push(ValidationError::new(
+                        codes::EXPORT_DUPLICATE,
+                        &path,
+                        "the application is already granted",
+                    ));
+                }
+            }
+        }
+        let mut imported = BTreeSet::new();
+        for (index, import) in imports.iter().enumerate() {
+            let path = format!("spec.imports[{index}]");
+            validate_name(&import.application, &format!("{path}.application"), errors);
+            validate_name(&import.service, &format!("{path}.service"), errors);
+            if !imported.insert((&import.application, &import.service)) {
+                errors.push(ValidationError::new(
+                    codes::IMPORT_DUPLICATE,
+                    format!("{path}.service"),
+                    "the service is already imported",
+                ));
+            }
+            if let Some(environment) = import.environment.as_ref().and_then(Template::as_literal)
+                && let Err(source) = EnvironmentName::parse(environment)
+            {
+                errors.push(ValidationError::new(
+                    codes::NAME_INVALID,
+                    format!("{path}.environment"),
+                    source.to_string(),
+                ));
+            }
         }
     }
 }

@@ -12,7 +12,7 @@ use crate::manifest::{
 };
 use crate::{
     ApplicationName, EnvironmentId, EnvironmentName, GitBranch, NormalizedApplication,
-    PlanDiagnostic, PreviewSlot, PreviewSlug,
+    PlanDiagnostic, PreviewSlot, PreviewSlug, codes,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -180,11 +180,12 @@ impl EnvironmentSource {
                 TrackedBranch::of(&connection.repository).map(Self::Branch)
             }
             (None, None) => Ok(Self::Saved),
-            (None, Some(_)) => Err(ValidationErrors(vec![ValidationError {
-                code: crate::codes::MANIFEST_REPOSITORY_REQUIRED.into(),
-                path: "branch".into(),
-                message: "only environments of a repository-backed application follow a branch; connect a manifest repository first".into(),
-            }])),
+            (None, Some(_)) => Err(ValidationError::new(
+                codes::MANIFEST_REPOSITORY_REQUIRED,
+                "branch",
+                "only environments of a repository-backed application follow a branch; connect a manifest repository first",
+            )
+            .into()),
         }
     }
 
@@ -246,21 +247,21 @@ impl TrackedBranch {
     pub fn new(branch: String, commit: Option<String>) -> Result<Self, ValidationErrors> {
         let mut errors = Vec::new();
         if !valid_git_branch(&branch) {
-            errors.push(ValidationError {
-                code: "git_branch_invalid".into(),
-                path: "branch".into(),
-                message: "branch must be a valid Git branch name".into(),
-            });
+            errors.push(ValidationError::new(
+                codes::GIT_BRANCH_INVALID,
+                "branch",
+                "branch must be a valid Git branch name",
+            ));
         }
         if commit
             .as_deref()
             .is_some_and(|commit| !valid_git_commit(commit))
         {
-            errors.push(ValidationError {
-                code: "git_commit_invalid".into(),
-                path: "commit".into(),
-                message: "commit must be a full lowercase hexadecimal Git hash".into(),
-            });
+            errors.push(ValidationError::new(
+                codes::GIT_COMMIT_INVALID,
+                "commit",
+                "commit must be a full lowercase hexadecimal Git hash",
+            ));
         }
         if errors.is_empty() {
             Ok(Self { branch, commit })
