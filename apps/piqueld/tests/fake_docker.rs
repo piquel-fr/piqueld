@@ -1,14 +1,21 @@
 //! Reconciliation coverage using the real Docker seam and an in-memory backend.
 
-#[path = "support/git.rs"]
-mod git_fixture;
-
 #[path = "support/application.rs"]
 mod application_fixture;
-use application_fixture::TestApplications;
-use piqueld::api::Actor::Daemon;
+#[path = "support/git.rs"]
+mod git_fixture;
+#[path = "support/poll.rs"]
+mod poll;
+#[path = "support/prebuilt.rs"]
+mod prebuilt;
+#[path = "support/repository.rs"]
+mod repository;
+#[path = "support/sqlite.rs"]
+mod sqlite;
 
+use application_fixture::TestApplications;
 use async_trait::async_trait;
+use piqueld::api::Actor::Daemon;
 use piqueld::docker::{
     DockerApi, DockerError, ImageBuild, ImageSource, JobOutput, JobRuns, JobStatus, LocalImage,
     SwarmState, resolve_image_digest,
@@ -16,19 +23,18 @@ use piqueld::docker::{
 use piqueld::reconcile::Controller;
 use piqueld::store::Store;
 use piqueld_core::Sha256Digest;
-use piqueld_core::manifest::ApplicationTemplate;
+use piqueld_core::manifest::{ApplicationManifest, ApplicationTemplate};
 use piqueld_core::planner::PlanRequest;
 use piqueld_core::resource::{
     APPLICATION_LABEL, Convergence, DesiredService, INSTANCE_LABEL, MANAGED_LABEL,
     ObservedApplication, ObservedNetwork, ObservedService, ObservedTask, ObservedVolume,
-    ResolutionSet, ResolvedApplication, ResolvedSource, SERVICE_LABEL, SPEC_HASH_LABEL, TaskState,
-    compile_application, image_repository,
+    ResolvedApplication, ResolvedSource, SERVICE_LABEL, SPEC_HASH_LABEL, TaskState,
+    image_repository,
 };
-use piqueld_core::{
-    ApplicationId, EnvironmentId, InstanceId, NormalizedApplication, Plan, parse_toml,
-};
+use piqueld_core::{ApplicationId, EnvironmentId, Event, InstanceId, NormalizedApplication, Plan};
 use piqueld_core::{Operation, OperationState};
-use sqlx::{Connection, SqliteConnection};
+use poll::eventually;
+use prebuilt::manifest;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -36,9 +42,13 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicI64, Ordering},
     },
+    time::Duration,
 };
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+
+/// How often tests poll for work the controller finishes in the background.
+const POLL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Default)]
 struct FakeDocker {
@@ -55,16 +65,17 @@ struct FakeDocker {
     /// Service ensures and convergences as `ensure name` / `converged name`, in order.
     rollout: Arc<Mutex<Vec<String>>>,
     incompatible_swarm: Arc<AtomicBool>,
-    resolution_gate: Option<Arc<ResolutionGate>>,
+    /// Holds resolutions of `/slow:` images until released.
+    resolution_gate: Option<Arc<Gate>>,
+    /// Observes only the requested environment's resources.
     isolate_observations: bool,
     mutations: Arc<Probe>,
     images: Arc<Probe>,
     observations: Arc<Probe>,
+    /// The exit code job runs report once finished.
     job_exit: Arc<AtomicI64>,
     job_starts: Arc<Mutex<Vec<JobStart>>>,
-    /// Job services by Docker name, with the operation that started each run
-    /// and the exit code the run reports once finished.
-    /// Job runs by service name.
+    /// Job runs by Docker service name.
     jobs: Arc<Mutex<BTreeMap<String, JobRunState>>>,
     /// Keeps job runs running.
     hold_jobs: Arc<AtomicBool>,
@@ -84,7 +95,7 @@ struct FakeDocker {
     /// The engine's images; builds and pulls add theirs.
     local_images: Arc<Mutex<Vec<LocalImage>>>,
     /// Holds builds once their image exists, until released.
-    build_gate: Option<Arc<ResolutionGate>>,
+    build_gate: Option<Arc<Gate>>,
 }
 
 /// A job run's operation, exit code, and deadline.
@@ -97,6 +108,48 @@ struct JobStart {
     services: usize,
     networks: usize,
     volumes: usize,
+}
+
+/// Holds a fake Docker call once it is entered, until released.
+#[derive(Default)]
+struct Gate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl Gate {
+    async fn pass(&self) {
+        self.entered.notify_one();
+        self.release.notified().await;
+    }
+}
+
+/// Counts the concurrent and total calls of one kind of Docker request.
+#[derive(Default)]
+struct Probe {
+    active: std::sync::atomic::AtomicUsize,
+    maximum: std::sync::atomic::AtomicUsize,
+    total: std::sync::atomic::AtomicUsize,
+}
+
+/// One call counted by [`Probe::enter`], until dropped.
+struct ProbeGuard<'a>(&'a Probe);
+
+impl Drop for ProbeGuard<'_> {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Probe {
+    async fn enter(&self) -> ProbeGuard<'_> {
+        let guard = ProbeGuard(self);
+        self.total.fetch_add(1, Ordering::SeqCst);
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.maximum.fetch_max(active, Ordering::SeqCst);
+        tokio::task::yield_now().await;
+        guard
+    }
 }
 
 /// Programmatic hook: the tag is re-pointed after this many remaining pulls.
@@ -143,6 +196,24 @@ struct RegistryView {
     registry: Arc<Mutex<RegistryState>>,
 }
 
+#[async_trait]
+impl ImageSource for RegistryView {
+    async fn repo_digests(&self, reference: &str) -> Result<Option<Vec<String>>, DockerError> {
+        let state = self.registry.lock().await;
+        let repository = image_repository(reference).expect("test references are valid");
+        Ok(Some(vec![format!(
+            "{repository}@sha256:{}",
+            state.digest(reference)
+        )]))
+    }
+
+    async fn pull(&self, reference: &str) -> Result<(), DockerError> {
+        self.registry.lock().await.pull(reference);
+        Ok(())
+    }
+}
+
+/// An [`ImageSource`] whose references always have the same repo digests.
 struct FixedImageSource(Vec<String>);
 
 #[async_trait]
@@ -157,15 +228,8 @@ impl ImageSource for FixedImageSource {
 }
 
 impl FakeDocker {
-    fn with_observed(observed: ObservedApplication) -> Self {
-        Self {
-            observed: Arc::new(Mutex::new(observed)),
-            deny_network_removal: Arc::default(),
-            registry: Arc::new(Mutex::new(RegistryState::default())),
-            ..Self::default()
-        }
-    }
-
+    /// Degrades the running web service of `id` and waits for the controller
+    /// to repair it.
     async fn assert_active_repair(&self, id: &EnvironmentId) {
         {
             let mut observed = self.observed.lock().await;
@@ -177,13 +241,8 @@ impl FakeDocker {
             service.replicas = 9;
             service.convergence = Convergence::Degraded;
         }
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            loop {
-                if self.observe(id).await.unwrap().services[0].replicas == 1 {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
+        eventually(Duration::from_secs(3), POLL, async || {
+            (self.observe(id).await.unwrap().services[0].replicas == 1).then_some(())
         })
         .await
         .expect("active target is repaired while candidate image pull is blocked");
@@ -232,25 +291,39 @@ impl FakeDocker {
                 .is_some_and(|value| Sha256Digest::parse(value.clone()).is_ok());
         labels_match && spec_hash_valid
     }
-}
 
-#[async_trait]
-impl ImageSource for RegistryView {
-    async fn repo_digests(&self, reference: &str) -> Result<Option<Vec<String>>, DockerError> {
-        let state = self.registry.lock().await;
-        let repository = image_repository(reference).expect("test references are valid");
-        Ok(Some(vec![format!(
-            "{repository}@sha256:{}",
-            state.digest(reference)
-        )]))
+    /// Refuses changing or removing a resource labelled `existing`, if it
+    /// exists, unless `ownership` owns it.
+    fn check_owned(
+        existing: Option<&BTreeMap<String, String>>,
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        match existing {
+            Some(labels) if !Self::ownership_matches(labels, ownership) => {
+                Err(DockerError::OwnershipConflict)
+            }
+            _ => Ok(()),
+        }
     }
 
-    async fn pull(&self, reference: &str) -> Result<(), DockerError> {
-        self.registry.lock().await.pull(reference);
+    /// Refuses reusing a network or volume owned by someone else or labelled
+    /// as a service, or one Docker configured differently.
+    fn check_reusable(
+        labels: &BTreeMap<String, String>,
+        runtime_configuration_matches: bool,
+        desired: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        if !Self::ownership_matches(labels, desired) || labels.contains_key(SERVICE_LABEL) {
+            return Err(DockerError::OwnershipConflict);
+        }
+        if !runtime_configuration_matches {
+            return Err(DockerError::ConfigurationConflict);
+        }
         Ok(())
     }
 }
 
+/// How Docker reports `desired` once it runs as declared.
 fn observed_service(desired: &DesiredService) -> ObservedService {
     ObservedService {
         secrets: desired.secrets.clone(),
@@ -341,6 +414,7 @@ impl DockerApi for FakeDocker {
         Ok(SwarmState::Ready)
     }
 
+    /// Builds image `b`s, unless the Dockerfile says `build-fails`.
     async fn build_image(&self, build: &ImageBuild<'_>) -> Result<Sha256Digest, DockerError> {
         assert!(build.context.is_dir());
         let contents = tokio::fs::read_to_string(&build.dockerfile).await.unwrap();
@@ -361,11 +435,11 @@ impl DockerApi for FakeDocker {
         })
         .await;
         if let Some(gate) = &self.build_gate {
-            gate.entered.notify_one();
-            gate.release.notified().await;
+            gate.pass().await;
         }
         Ok(id)
     }
+
     /// Build output is not recorded.
     async fn build_image_recorded(
         &self,
@@ -374,6 +448,7 @@ impl DockerApi for FakeDocker {
     ) -> Result<Sha256Digest, DockerError> {
         self.build_image(build).await
     }
+
     /// The reconciler never runs commands.
     async fn create_exec(
         &self,
@@ -383,6 +458,7 @@ impl DockerApi for FakeDocker {
     ) -> Result<Option<piqueld::docker::Exec>, DockerError> {
         Err(DockerError::Unavailable("create exec"))
     }
+
     async fn run_exec(
         &self,
         _exec: &piqueld::docker::Exec,
@@ -390,13 +466,13 @@ impl DockerApi for FakeDocker {
     ) -> Result<i64, DockerError> {
         Err(DockerError::Unavailable("run exec"))
     }
+
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
         let _probe = self.images.enter().await;
         if reference.contains("/slow:")
             && let Some(gate) = &self.resolution_gate
         {
-            gate.entered.notify_one();
-            gate.release.notified().await;
+            gate.pass().await;
         }
         let digest = resolve_image_digest(
             &RegistryView {
@@ -510,15 +586,11 @@ impl DockerApi for FakeDocker {
             .iter()
             .find(|network| network.name == desired.name.as_str())
         {
-            if !Self::ownership_matches(&existing.labels, &desired.labels)
-                || existing.labels.contains_key(SERVICE_LABEL)
-            {
-                return Err(DockerError::OwnershipConflict);
-            }
-            if !existing.runtime_configuration_matches {
-                return Err(DockerError::ConfigurationConflict);
-            }
-            return Ok(());
+            return Self::check_reusable(
+                &existing.labels,
+                existing.runtime_configuration_matches,
+                &desired.labels,
+            );
         }
         observed.networks.push(ObservedNetwork {
             name: desired.name.to_string(),
@@ -540,15 +612,11 @@ impl DockerApi for FakeDocker {
             .iter()
             .find(|volume| volume.name == desired.name.as_str())
         {
-            if !Self::ownership_matches(&existing.labels, &desired.labels)
-                || existing.labels.contains_key(SERVICE_LABEL)
-            {
-                return Err(DockerError::OwnershipConflict);
-            }
-            if !existing.runtime_configuration_matches {
-                return Err(DockerError::ConfigurationConflict);
-            }
-            return Ok(());
+            return Self::check_reusable(
+                &existing.labels,
+                existing.runtime_configuration_matches,
+                &desired.labels,
+            );
         }
         observed.volumes.push(ObservedVolume {
             name: desired.name.to_string(),
@@ -564,14 +632,11 @@ impl DockerApi for FakeDocker {
     ) -> Result<(), DockerError> {
         let _probe = self.mutations.enter().await;
         let mut observed = self.observed.lock().await;
-        if let Some(existing) = observed
+        let existing = observed
             .services
             .iter()
-            .find(|service| service.name == desired.name.as_str())
-            && !Self::ownership_matches(&existing.labels, &desired.labels)
-        {
-            return Err(DockerError::OwnershipConflict);
-        }
+            .find(|service| service.name == desired.name.as_str());
+        Self::check_owned(existing.map(|service| &service.labels), &desired.labels)?;
         observed
             .services
             .retain(|service| service.name != desired.name.as_str());
@@ -596,14 +661,11 @@ impl DockerApi for FakeDocker {
     ) -> Result<(), DockerError> {
         let _probe = self.mutations.enter().await;
         let mut observed = self.observed.lock().await;
-        if let Some(existing) = observed
+        let existing = observed
             .services
             .iter()
-            .find(|service| service.name == name)
-            && !Self::ownership_matches(&existing.labels, ownership)
-        {
-            return Err(DockerError::OwnershipConflict);
-        }
+            .find(|service| service.name == name);
+        Self::check_owned(existing.map(|service| &service.labels), ownership)?;
         observed.services.retain(|service| service.name != name);
         Ok(())
     }
@@ -623,9 +685,7 @@ impl DockerApi for FakeDocker {
         else {
             return Ok(());
         };
-        if !Self::ownership_matches(&existing.labels, ownership) {
-            return Err(DockerError::OwnershipConflict);
-        }
+        Self::check_owned(Some(&existing.labels), ownership)?;
         existing
             .networks
             .retain(|attachment| attachment.network != network);
@@ -653,8 +713,7 @@ impl DockerApi for FakeDocker {
             (
                 job.operation().into(),
                 self.job_exit.load(Ordering::SeqCst),
-                std::time::SystemTime::now()
-                    + std::time::Duration::from_secs(u64::from(job.timeout_seconds)),
+                std::time::SystemTime::now() + Duration::from_secs(u64::from(job.timeout_seconds)),
             ),
         );
         if self.lose_job_start.swap(false, Ordering::SeqCst) {
@@ -733,14 +792,11 @@ impl DockerApi for FakeDocker {
         }
         let _probe = self.mutations.enter().await;
         let mut observed = self.observed.lock().await;
-        if let Some(existing) = observed
+        let existing = observed
             .networks
             .iter()
-            .find(|network| network.name == name)
-            && !Self::ownership_matches(&existing.labels, ownership)
-        {
-            return Err(DockerError::OwnershipConflict);
-        }
+            .find(|network| network.name == name);
+        Self::check_owned(existing.map(|network| &network.labels), ownership)?;
         if Self::attached(&observed.services, name) {
             return Err(DockerError::Request("remove a network in use"));
         }
@@ -755,11 +811,8 @@ impl DockerApi for FakeDocker {
     ) -> Result<(), DockerError> {
         let _probe = self.mutations.enter().await;
         let mut observed = self.observed.lock().await;
-        if let Some(existing) = observed.volumes.iter().find(|volume| volume.name == name)
-            && !Self::ownership_matches(&existing.labels, ownership)
-        {
-            return Err(DockerError::OwnershipConflict);
-        }
+        let existing = observed.volumes.iter().find(|volume| volume.name == name);
+        Self::check_owned(existing.map(|volume| &volume.labels), ownership)?;
         observed.volumes.retain(|volume| volume.name != name);
         Ok(())
     }
@@ -770,50 +823,7 @@ fn environment(application: &NormalizedApplication) -> EnvironmentId {
     EnvironmentId::default_for(application.id())
 }
 
-fn application() -> piqueld_core::NormalizedApplication {
-    parse_toml(include_str!(
-        "../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
-    ))
-    .expect("fixture is valid")
-    .normalize(ApplicationId::parse("app-fake-docker-01").expect("valid application ID"))
-}
-
-async fn fixture_store(
-    directory: &tempfile::TempDir,
-) -> (
-    Arc<Store>,
-    piqueld_core::NormalizedApplication,
-    ResolvedApplication,
-) {
-    let store = Arc::new(
-        Store::open(directory.path().join("control-plane.db"))
-            .await
-            .expect("fresh database opens"),
-    );
-    let application = application();
-    let resolutions = ResolutionSet {
-        secret_names: std::collections::BTreeMap::default(),
-        sources: [(
-            piqueld_core::ServiceName::parse("web").unwrap(),
-            ResolvedSource::parse_image(
-                "ghcr.io/example/notes:1.4.0",
-                format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
-            )
-            .unwrap(),
-        )]
-        .into_iter()
-        .collect(),
-    };
-    let resolved = compile_application(
-        &application,
-        &environment(&application),
-        InstanceId::parse(store.instance_id()).expect("store instance ID is valid"),
-        &resolutions,
-    )
-    .expect("fixture resolves");
-    (store, application, resolved)
-}
-
+/// Labels of the same application that another installation owns.
 fn foreign_labels(application_id: &EnvironmentId) -> BTreeMap<String, String> {
     BTreeMap::from([
         (MANAGED_LABEL.into(), "true".into()),
@@ -823,12 +833,71 @@ fn foreign_labels(application_id: &EnvironmentId) -> BTreeMap<String, String> {
     ])
 }
 
+/// `manifest` with its first service mounting stored secret `token`.
+fn with_token(mut manifest: ApplicationManifest) -> ApplicationManifest {
+    manifest.spec.services[0]
+        .secrets
+        .push(piqueld_core::manifest::SecretMount {
+            name: "token".into(),
+            target: "/run/secrets/token".into(),
+        });
+    manifest
+}
+
+/// The fixture manifest with before-rollout jobs that reuse its `web` service.
+fn manifest_with_jobs(jobs: &[&str], timeout_seconds: u32) -> ApplicationManifest {
+    let mut input = manifest();
+    input.spec.jobs = jobs
+        .iter()
+        .map(|name| piqueld_core::manifest::Job {
+            name: (*name).into(),
+            service: "web".into(),
+            command: vec!["notes".into(), (*name).into()],
+            run: piqueld_core::manifest::JobRun::BeforeRollout,
+            timeout_seconds,
+            volume_access: piqueld_core::manifest::JobVolumeAccess::ReadOnly,
+        })
+        .collect();
+    input
+}
+
+/// A migration whose database depends on storage, plus an unrelated service.
+fn manifest_with_job_dependencies() -> ApplicationManifest {
+    let mut input = manifest_with_jobs(&["migrate"], 300);
+    input.spec.services[0].depends_on = vec!["db".into()];
+    for (name, dependencies) in [
+        ("db", vec!["storage".into()]),
+        ("storage", vec![]),
+        ("other", vec![]),
+    ] {
+        let mut service = input.spec.services[0].clone();
+        service.name = name.into();
+        service.depends_on = dependencies;
+        service.mounts.clear();
+        service.healthcheck = Some(piqueld_core::manifest::HealthCheck::Command {
+            command: vec!["ready".into()],
+            interval_seconds: 1.into(),
+            timeout_seconds: 1.into(),
+        });
+        input.spec.services.push(service);
+    }
+    input
+}
+
+/// The fixture with one exclusive migration of `web`, which mounts `data`.
+fn manifest_with_exclusive_job() -> ApplicationManifest {
+    let mut input = manifest_with_jobs(&["migrate"], 300);
+    input.spec.jobs[0].volume_access = piqueld_core::manifest::JobVolumeAccess::Exclusive;
+    input
+}
+
+/// A store, the prebuilt fixture resolved for it, and a controller over a
+/// fake Docker backend.
 struct ControllerHarness {
     _directory: tempfile::TempDir,
     database_path: PathBuf,
     store: Arc<Store>,
-    application: piqueld_core::NormalizedApplication,
-    resolutions: ResolutionSet,
+    application: NormalizedApplication,
     resolved: ResolvedApplication,
     docker: Arc<FakeDocker>,
     controller: Controller<FakeDocker>,
@@ -836,6 +905,10 @@ struct ControllerHarness {
 
 impl ControllerHarness {
     async fn new() -> Self {
+        Self::with_docker(FakeDocker::default()).await
+    }
+
+    async fn with_docker(docker: FakeDocker) -> Self {
         let directory = tempfile::tempdir().expect("temporary directory");
         let database_path = directory.path().join("control-plane.db");
         let store = Arc::new(
@@ -843,48 +916,70 @@ impl ControllerHarness {
                 .await
                 .expect("fresh database opens"),
         );
-        let application = application();
-        let resolutions = ResolutionSet {
-            secret_names: std::collections::BTreeMap::default(),
-            sources: [(
-                piqueld_core::ServiceName::parse("web").unwrap(),
-                ResolvedSource::parse_image(
-                    "ghcr.io/example/notes:1.4.0",
-                    format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
-                )
-                .unwrap(),
-            )]
-            .into_iter()
-            .collect(),
-        };
-        let resolved = compile_application(
-            &application,
-            &environment(&application),
-            InstanceId::parse(store.instance_id()).expect("store instance ID is valid"),
-            &resolutions,
-        )
-        .expect("fixture resolves");
-        let docker = Arc::new(FakeDocker::default());
+        let application = prebuilt::application("app-fake-docker-01");
+        let resolved = prebuilt::resolve(&application, store.instance_id());
+        let docker = Arc::new(docker);
         let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store));
         Self {
             _directory: directory,
             database_path,
             store,
             application,
-            resolutions,
             resolved,
             docker,
             controller,
         }
     }
 
-    fn reconcile_plan(
-        desired: ResolvedApplication,
-        observed: &ObservedApplication,
-    ) -> piqueld_core::Plan {
-        Plan::from_request(&PlanRequest::Reconcile { desired }, observed)
+    /// Replaces the application, resolving it again.
+    fn set_application(&mut self, application: NormalizedApplication) {
+        self.resolved = prebuilt::resolve(&application, self.store.instance_id());
+        self.application = application;
     }
 
+    /// Gives the controller `timeout` to wait for each convergence.
+    fn set_convergence_timeout(&mut self, timeout: Duration) {
+        self.controller = Controller::new(Arc::clone(&self.docker), Arc::clone(&self.store))
+            .with_retry_policy(piqueld::reconcile::RetryPolicy {
+                convergence_timeout: timeout,
+                ..piqueld::reconcile::RetryPolicy::default()
+            });
+    }
+
+    fn applications(&self) -> TestApplications {
+        TestApplications::new(
+            Arc::clone(&self.store),
+            self.controller
+                .runtime(Arc::new(tokio::sync::Notify::new())),
+        )
+    }
+
+    /// Saves and deploys `manifest`, expecting generation `expected`.
+    async fn apply(&self, manifest: ApplicationManifest, expected: Option<u64>) -> Operation {
+        // Boxed: accepting a mutation holds a whole manifest across awaits.
+        Box::pin(
+            self.applications()
+                .apply(manifest.validate_template().unwrap(), expected),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Saves `manifest` without deploying, expecting generation `expected`.
+    async fn save(
+        &self,
+        manifest: ApplicationManifest,
+        expected: Option<u64>,
+    ) -> piqueld_core::api::SavedApplication {
+        Box::pin(
+            self.applications()
+                .save(manifest.validate_template().unwrap(), expected),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Journals the application with its resolved target.
     async fn create(&self) -> Operation {
         self.store
             .save_application(
@@ -896,20 +991,105 @@ impl ControllerHarness {
             .expect("application saved")
     }
 
+    /// Stores a value for the application's secret `token`, replacing
+    /// version `generation`.
+    async fn store_token(&self, application: &EnvironmentId, generation: i64, value: &[u8]) {
+        self.store
+            .put_stored_secret(
+                Daemon,
+                &ApplicationId::parse(application.as_str()).unwrap(),
+                "token",
+                generation,
+                value.to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Runs one reconciliation scan.
+    async fn scan(&self) {
+        self.controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+    }
+
+    /// Scans once and expects `operation` to have succeeded.
+    async fn finish(&self, operation: &Operation) {
+        self.scan().await;
+        let recorded = self.operation(&operation.id).await;
+        assert_eq!(recorded.state, OperationState::Succeeded, "{recorded:?}");
+    }
+
+    /// Scans once and returns the operation's resulting state and error code.
+    async fn scan_result(&self, operation: &Operation) -> (OperationState, Option<String>) {
+        self.scan().await;
+        let operation = self.operation(&operation.id).await;
+        (operation.state, operation.error_code)
+    }
+
+    async fn operation(&self, id: &str) -> Operation {
+        self.store.operation(id).await.unwrap()
+    }
+
+    /// The events operation `id` recorded.
+    async fn operation_events(&self, id: &str) -> Vec<Event> {
+        self.store
+            .filtered_events(
+                &piqueld_core::observability::EventFilter {
+                    operation_id: Some(id.to_owned()),
+                    ..Default::default()
+                },
+                &piqueld::store::Visibility::ALL,
+                None,
+                100,
+            )
+            .await
+            .unwrap()
+            .items
+    }
+
+    /// The target environment `id` runs.
+    async fn target(&self, id: &EnvironmentId) -> ResolvedApplication {
+        self.store.get(id).await.unwrap().resolved.unwrap()
+    }
+
+    /// Image pulls so far, across references.
+    async fn pulls(&self) -> u64 {
+        self.docker.registry.lock().await.pulls.values().sum()
+    }
+
+    /// Direct access to the harness database.
+    async fn database(&self) -> sqlx::SqliteConnection {
+        sqlite::connect(&self.database_path).await
+    }
+
+    /// Marks `operation_id` running, as a daemon interrupted mid-operation
+    /// leaves it.
     async fn interrupt(&self, operation_id: &str) {
-        let mut connection = SqliteConnection::connect(&format!(
-            "sqlite://{}?mode=rwc",
-            self.database_path.display()
-        ))
-        .await
-        .expect("database can be inspected");
         sqlx::query(
             "UPDATE operations SET state='running',started_at_ms=created_at_ms,updated_at_ms=created_at_ms WHERE id=?1",
         )
         .bind(operation_id)
-        .execute(&mut connection)
+        .execute(&mut self.database().await)
         .await
         .expect("operation can be interrupted");
+    }
+
+    /// Moves a persisted failure beyond its retry backoff without sleeping.
+    async fn expire_backoff(&self, operation: &Operation) {
+        sqlx::query("UPDATE operations SET updated_at_ms=1 WHERE id=?1")
+            .bind(&operation.id)
+            .execute(&mut self.database().await)
+            .await
+            .unwrap();
+    }
+
+    /// Simulates a daemon restart: reopens the database behind a fresh controller.
+    async fn reopen(&mut self) {
+        self.store = Arc::new(Store::open(&self.database_path).await.unwrap());
+        self.controller = Controller::new(Arc::clone(&self.docker), Arc::clone(&self.store));
     }
 
     async fn assert_recovered(&self, operation_id: &str) {
@@ -919,11 +1099,7 @@ impl ControllerHarness {
             .await
             .expect("status is readable");
         assert_eq!(status.state, piqueld::store::ApplicationState::Ready);
-        let operation = self
-            .store
-            .operation(operation_id)
-            .await
-            .expect("operation journal is readable");
+        let operation = self.operation(operation_id).await;
         assert_eq!(operation.state, OperationState::Succeeded);
         let observed = self
             .docker
@@ -934,30 +1110,32 @@ impl ControllerHarness {
         assert_eq!(observed.services.len(), 1);
     }
 
-    async fn replace(&self) -> (Operation, ResolvedApplication) {
+    /// Journals the application with two `web` replicas.
+    async fn replace(&self) -> Operation {
         let mut replacement = self.application.to_manifest();
         replacement.spec.services[0].replicas = 2.into();
         let replacement = replacement
             .validate()
             .unwrap()
             .normalize(self.application.id().clone());
-        let replacement_resolved = compile_application(
-            &replacement,
-            &environment(&replacement),
-            InstanceId::parse(self.store.instance_id()).expect("store instance ID is valid"),
-            &self.resolutions,
-        )
-        .expect("replacement resolves");
-        let replaced = self
-            .store
+        self.store
             .save_application(
                 &ApplicationTemplate::from(&replacement),
-                Some(&replacement_resolved),
+                Some(&prebuilt::resolve(&replacement, self.store.instance_id())),
                 None,
             )
             .await
-            .expect("application replacement is durable");
-        (replaced, replacement_resolved)
+            .expect("application replacement is durable")
+    }
+
+    /// The replicas Docker runs of the first service.
+    async fn replicas(&self) -> u16 {
+        self.docker
+            .observe(&environment(&self.application))
+            .await
+            .unwrap()
+            .services[0]
+            .replicas
     }
 
     async fn repair_drift(&self) {
@@ -966,19 +1144,8 @@ impl ControllerHarness {
             observed.services[0].replicas = 1;
             observed.services[0].convergence = Convergence::Degraded;
         }
-        self.controller
-            .scan(&CancellationToken::new())
-            .await
-            .expect("drift repair converges");
-        assert_eq!(
-            self.docker
-                .observe(&environment(&self.application))
-                .await
-                .unwrap()
-                .services[0]
-                .replicas,
-            2
-        );
+        self.scan().await;
+        assert_eq!(self.replicas().await, 2);
     }
 
     async fn delete(&self) -> Operation {
@@ -998,9 +1165,166 @@ impl ControllerHarness {
             .observe(&environment(&self.application))
             .await
             .expect("final observation");
-        assert_eq!(observed.services, [] as [piqueld_core::ObservedService; 0]);
-        assert_eq!(observed.networks, [] as [piqueld_core::ObservedNetwork; 0]);
+        assert_eq!(observed.services, [] as [ObservedService; 0]);
+        assert_eq!(observed.networks, [] as [ObservedNetwork; 0]);
         assert_eq!(observed.volumes.len(), 1);
+    }
+
+    /// Seeds the application's resources as Docker would run them, checks
+    /// planning then finds nothing to do, and journals the application.
+    async fn seed_matching_runtime(&self) -> Operation {
+        self.docker
+            .ensure_network(&self.resolved.networks[0])
+            .await
+            .expect("network is seeded");
+        self.docker
+            .ensure_volume(&self.resolved.volumes[0])
+            .await
+            .expect("volume is seeded");
+        self.docker
+            .ensure_service(&self.resolved.services[0])
+            .await
+            .expect("service is seeded");
+        let observed = self
+            .docker
+            .observe(&environment(&self.application))
+            .await
+            .expect("matching observation");
+        let plan = Plan::from_request(
+            &PlanRequest::Reconcile {
+                desired: self.resolved.clone(),
+            },
+            &observed,
+        );
+        assert_eq!(plan.actions, [] as [piqueld_core::PlanAction; 0]);
+        self.create().await
+    }
+
+    /// Journals the application over Docker resources another installation
+    /// already created, as `foreign` adds them, and asserts one scan journals
+    /// the conflict as a degraded, failed operation, leaving them untouched.
+    async fn assert_refuses_foreign(&self, foreign: impl FnOnce(&mut ObservedApplication)) {
+        foreign(&mut *self.docker.observed.lock().await);
+        let foreign = self.docker.observed.lock().await.clone();
+        let created = self.create().await;
+        self.scan().await;
+        let status = self
+            .store
+            .status(&environment(&self.application))
+            .await
+            .expect("status is readable");
+        assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
+        assert_eq!(
+            self.operation(&created.id).await.state,
+            OperationState::Failed
+        );
+        let observed = self.docker.observed.lock().await;
+        // Nothing replaced them, and nothing else appeared beside them.
+        assert_eq!(observed.services.len(), foreign.services.len());
+        assert_eq!(observed.networks.len(), foreign.networks.len());
+        assert_eq!(observed.volumes.len(), foreign.volumes.len());
+        assert!(
+            foreign
+                .services
+                .iter()
+                .all(|service| observed.services.contains(service))
+        );
+        assert!(
+            foreign
+                .networks
+                .iter()
+                .all(|network| observed.networks.contains(network))
+        );
+        assert!(
+            foreign
+                .volumes
+                .iter()
+                .all(|volume| observed.volumes.contains(volume))
+        );
+    }
+
+    /// Names of the jobs started so far, in start order.
+    async fn started_jobs(&self) -> Vec<String> {
+        self.docker
+            .job_starts
+            .lock()
+            .await
+            .iter()
+            .map(|start| start.job.clone())
+            .collect()
+    }
+
+    /// Waits until `count` job runs have been started.
+    async fn wait_for_job_starts(&self, count: usize) {
+        eventually(Duration::from_secs(10), POLL, async || {
+            (self.docker.job_starts.lock().await.len() >= count).then_some(())
+        })
+        .await
+        .expect("job starts");
+    }
+
+    /// The application's newest build record and its retained output.
+    async fn latest_run(
+        &self,
+        application: &EnvironmentId,
+    ) -> (piqueld_core::api::BuildRecord, String) {
+        let run = self
+            .store
+            .builds(
+                None,
+                Some(application),
+                &piqueld_core::access::Scope::All,
+                None,
+                10,
+            )
+            .await
+            .unwrap()
+            .items
+            .remove(0);
+        let output = self
+            .store
+            .build_logs(run.id, None, None)
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        (run, output)
+    }
+
+    async fn assert_git_build_history(&self, id: &EnvironmentId) {
+        let builds = self
+            .store
+            .builds(None, Some(id), &piqueld_core::access::Scope::All, None, 50)
+            .await
+            .unwrap();
+        assert_eq!(
+            builds.items.len(),
+            3,
+            "one record per executed preparation, not per accepted/replayed request"
+        );
+        assert_eq!(builds.items[0].state, piqueld_core::api::BuildState::Failed);
+        assert!(
+            builds
+                .items
+                .iter()
+                .all(|b| b.commit.is_some() && b.log_bytes > 0)
+        );
+        assert!(
+            builds.items[1..].iter().all(
+                |b| b.state == piqueld_core::api::BuildState::Succeeded && b.image_id.is_some()
+            )
+        );
+        assert!(
+            self.store
+                .build_logs(builds.items[0].id, None, None)
+                .await
+                .unwrap()
+                .items
+                .iter()
+                .any(|chunk| chunk.text.contains("Build failed"))
+        );
     }
 }
 
@@ -1017,31 +1341,17 @@ impl EnvironmentHarness {
     async fn new() -> Self {
         use piqueld::api::{Mutation, MutationResponse};
         use piqueld_core::EnvironmentName;
-        let mut harness = ControllerHarness::new().await;
-        let mut manifest = harness.application.to_manifest();
-        manifest.spec.services[0]
-            .secrets
-            .push(piqueld_core::manifest::SecretMount {
-                name: "token".into(),
-                target: "/run/secrets/token".into(),
-            });
-        harness.application = manifest
+        let mut harness = ControllerHarness::with_docker(FakeDocker {
+            isolate_observations: true,
+            ..FakeDocker::default()
+        })
+        .await;
+        harness.application = with_token(harness.application.to_manifest())
             .validate()
             .unwrap()
             .normalize(harness.application.id().clone());
-        harness.docker = Arc::new(FakeDocker {
-            isolate_observations: true,
-            ..FakeDocker::default()
-        });
-        harness.controller =
-            Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
         let store = &harness.store;
-        let applications = TestApplications::new(
-            Arc::clone(store),
-            harness
-                .controller
-                .runtime(Arc::new(tokio::sync::Notify::new())),
-        );
+        let applications = harness.applications();
         let saved = store
             .save_application(&ApplicationTemplate::from(&harness.application), None, None)
             .await
@@ -1066,25 +1376,11 @@ impl EnvironmentHarness {
         // Creating an environment bumps the application generation.
         let generation = saved.generation + 1;
         // One stored value; each environment mounts its own Docker copy.
-        store
-            .put_stored_secret(
-                Daemon,
-                harness.application.id(),
-                "token",
-                0,
-                b"shared token".to_vec(),
-                None,
-            )
-            .await
-            .unwrap();
+        harness.store_token(&production, 0, b"shared token").await;
         for id in [&production, &staging.id] {
             applications.deploy(id, Some(generation)).await.unwrap();
         }
-        harness
-            .controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
+        harness.scan().await;
         Self {
             harness,
             applications,
@@ -1108,11 +1404,22 @@ impl EnvironmentHarness {
             )
             .await
             .unwrap();
-        self.harness
-            .controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
+        self.harness.scan().await;
+    }
+}
+
+/// Captures traces written as JSON lines.
+#[derive(Clone, Default)]
+struct TraceCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for TraceCapture {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -1223,19 +1530,12 @@ async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
 /// unexported `worker`, and `notes`, which imports it, then scans until they
 /// are linked. Returns the harness and both environments.
 async fn linked_harness() -> (ControllerHarness, EnvironmentId, EnvironmentId) {
-    let mut harness = ControllerHarness::new().await;
-    harness.docker = Arc::new(FakeDocker {
+    let harness = ControllerHarness::with_docker(FakeDocker {
         isolate_observations: true,
         ..FakeDocker::default()
-    });
-    harness.controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
-    let web = piqueld_core::ServiceName::parse("web").unwrap();
-    let source = harness.resolutions.sources[&web].clone();
-    harness
-        .resolutions
-        .sources
-        .insert(piqueld_core::ServiceName::parse("worker").unwrap(), source);
-    let deploy = |name: &str, edit: fn(&mut piqueld_core::manifest::ApplicationManifest)| {
+    })
+    .await;
+    let deploy = |name: &str, edit: fn(&mut ApplicationManifest)| {
         let mut manifest = harness.application.to_manifest();
         manifest.metadata.name = name.into();
         edit(&mut manifest);
@@ -1243,13 +1543,7 @@ async fn linked_harness() -> (ControllerHarness, EnvironmentId, EnvironmentId) {
             .validate()
             .unwrap()
             .normalize(ApplicationId::parse(format!("app-{name}-0001")).unwrap());
-        let resolved = compile_application(
-            &application,
-            &environment(&application),
-            InstanceId::parse(harness.store.instance_id()).unwrap(),
-            &harness.resolutions,
-        )
-        .unwrap();
+        let resolved = prebuilt::resolve(&application, harness.store.instance_id());
         let store = Arc::clone(&harness.store);
         async move {
             store
@@ -1283,11 +1577,7 @@ async fn linked_harness() -> (ControllerHarness, EnvironmentId, EnvironmentId) {
     })
     .await;
     for _ in 0..3 {
-        harness
-            .controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
+        harness.scan().await;
     }
 
     (harness, auth, notes)
@@ -1369,11 +1659,7 @@ async fn revoked_links_close_while_the_exporters_plan_is_blocked() {
     }
     harness.store.request_delete(&notes).await.unwrap();
     for _ in 0..3 {
-        harness
-            .controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
+        harness.scan().await;
     }
     assert!(matches!(
         harness.store.get(&notes).await,
@@ -1402,11 +1688,7 @@ async fn deleting_an_exporter_removes_networks_its_deleted_importers_left() {
     let network = piqueld_core::DockerNetworkName::for_link(&notes, &auth);
     let scan = || async {
         for _ in 0..3 {
-            harness
-                .controller
-                .scan(&CancellationToken::new())
-                .await
-                .unwrap();
+            harness.scan().await;
         }
     };
     let leftover = harness
@@ -1446,47 +1728,22 @@ async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
     let harness = ControllerHarness::new().await;
     let created = harness.create().await;
     harness.interrupt(&created.id).await;
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .expect("controller converges the operation");
+    harness.scan().await;
     harness.assert_recovered(&created.id).await;
 
     harness.replace().await;
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .expect("replacement converges");
-    assert_eq!(
-        harness
-            .docker
-            .observe(&environment(&harness.application))
-            .await
-            .unwrap()
-            .services[0]
-            .replicas,
-        2
-    );
+    harness.scan().await;
+    assert_eq!(harness.replicas().await, 2);
 
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .expect("matching state is idempotent");
+    harness.scan().await;
     harness.repair_drift().await;
     let deletion = harness.delete().await;
     harness
         .docker
         .deny_network_removal
         .store(true, Ordering::Relaxed);
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
-    let blocked = harness.store.operation(&deletion.id).await.unwrap();
+    harness.scan().await;
+    let blocked = harness.operation(&deletion.id).await;
     assert_eq!(blocked.state, OperationState::Running);
     assert_eq!(blocked.error_code.as_deref(), Some("ownership_conflict"));
     assert!(blocked.finished_at_ms.is_none());
@@ -1502,11 +1759,7 @@ async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
         .docker
         .deny_network_removal
         .store(false, Ordering::Relaxed);
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .expect("delete converges");
+    harness.scan().await;
     harness.assert_deleted().await;
     assert!(matches!(
         harness.store.operation(&deletion.id).await,
@@ -1517,44 +1770,10 @@ async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
 #[tokio::test]
 async fn controller_executes_actions_introduced_by_fresh_planning() {
     let harness = ControllerHarness::new().await;
-    harness
-        .docker
-        .ensure_network(&harness.resolved.networks[0])
-        .await
-        .expect("network is seeded");
-    harness
-        .docker
-        .ensure_volume(&harness.resolved.volumes[0])
-        .await
-        .expect("volume is seeded");
-    harness
-        .docker
-        .ensure_service(&harness.resolved.services[0])
-        .await
-        .expect("service is seeded");
-    let observed = harness
-        .docker
-        .observe(&environment(&harness.application))
-        .await
-        .expect("matching observation");
-    let plan = ControllerHarness::reconcile_plan(harness.resolved.clone(), &observed);
-    assert_eq!(plan.actions, [] as [piqueld_core::PlanAction; 0]);
-    harness
-        .store
-        .save_application(
-            &ApplicationTemplate::from(&harness.application),
-            Some(&harness.resolved),
-            None,
-        )
-        .await
-        .expect("matching application is journaled");
+    harness.seed_matching_runtime().await;
 
     harness.docker.observed.lock().await.networks.clear();
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .expect("fresh action converges");
+    harness.scan().await;
 
     let status = harness
         .store
@@ -1568,187 +1787,57 @@ async fn controller_executes_actions_introduced_by_fresh_planning() {
 #[tokio::test]
 async fn superseded_operations_do_not_plan_stale_runtime_state() {
     let harness = ControllerHarness::new().await;
-    harness
-        .docker
-        .ensure_network(&harness.resolved.networks[0])
-        .await
-        .expect("network is seeded");
-    harness
-        .docker
-        .ensure_volume(&harness.resolved.volumes[0])
-        .await
-        .expect("volume is seeded");
-    harness
-        .docker
-        .ensure_service(&harness.resolved.services[0])
-        .await
-        .expect("service is seeded");
-    let observed = harness
-        .docker
-        .observe(&environment(&harness.application))
-        .await
-        .expect("matching observation");
-    let plan = ControllerHarness::reconcile_plan(harness.resolved.clone(), &observed);
-    assert_eq!(plan.actions, [] as [piqueld_core::PlanAction; 0]);
-    let stale = harness
-        .store
-        .save_application(
-            &ApplicationTemplate::from(&harness.application),
-            Some(&harness.resolved),
-            None,
-        )
-        .await
-        .expect("matching application is journaled");
+    let stale = harness.seed_matching_runtime().await;
 
     harness.docker.observed.lock().await.networks.clear();
-    let (replacement, _) = harness.replace().await;
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .expect("the latest desired state converges");
+    let replacement = harness.replace().await;
+    harness.scan().await;
 
-    let stale_operation = harness
-        .store
-        .operation(&stale.id)
-        .await
-        .expect("superseded operation is readable");
+    let stale_operation = harness.operation(&stale.id).await;
     assert_eq!(stale_operation.state, OperationState::Superseded);
-    let replacement_operation = harness
-        .store
-        .operation(&replacement.id)
-        .await
-        .expect("replacement operation is readable");
+    let replacement_operation = harness.operation(&replacement.id).await;
     assert_eq!(replacement_operation.state, OperationState::Succeeded);
 }
 
 #[tokio::test]
 async fn controller_refuses_a_foreign_same_name_service() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let (store, application, resolved) = fixture_store(&directory).await;
-    let mut foreign_service_labels = foreign_labels(&environment(&application));
-    foreign_service_labels.insert(SERVICE_LABEL.into(), "web".into());
+    let harness = ControllerHarness::new().await;
+    let mut labels = foreign_labels(&environment(&harness.application));
+    labels.insert(SERVICE_LABEL.into(), "web".into());
     let foreign = ObservedService {
-        labels: foreign_service_labels,
-        ..observed_service(&resolved.services[0])
+        labels,
+        ..observed_service(&harness.resolved.services[0])
     };
-    let created = store
-        .save_application(
-            &ApplicationTemplate::from(&application),
-            Some(&resolved),
-            None,
-        )
-        .await
-        .expect("application is created");
-    let docker = Arc::new(FakeDocker::with_observed(ObservedApplication {
-        services: vec![foreign],
-        ..ObservedApplication::default()
-    }));
-    let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store));
-    controller
-        .scan(&CancellationToken::new())
-        .await
-        .expect("ownership conflict is journaled");
-    let status = store
-        .status(&environment(&application))
-        .await
-        .expect("status is readable");
-    assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
-    let operation = store
-        .operation(&created.id)
-        .await
-        .expect("failed operation is readable");
-    assert_eq!(operation.state, OperationState::Failed);
-    assert_eq!(
-        docker
-            .observe(&environment(&application))
-            .await
-            .unwrap()
-            .services
-            .len(),
-        1
-    );
-}
-
-/// Runs one reconciliation against a pre-seeded foreign fixture and asserts the
-/// conflict is journaled as a degraded, failed operation.
-async fn assert_foreign_fixture_refuses_reconciliation(
-    docker: &Arc<FakeDocker>,
-    store: &Arc<Store>,
-    application: &piqueld_core::NormalizedApplication,
-    resolved: &ResolvedApplication,
-) -> Operation {
-    let created = store
-        .save_application(
-            &ApplicationTemplate::from(application),
-            Some(resolved),
-            None,
-        )
-        .await
-        .expect("application is created");
-    let controller = Controller::new(Arc::clone(docker), Arc::clone(store));
-    controller
-        .scan(&CancellationToken::new())
-        .await
-        .expect("ownership conflict is journaled");
-    let status = store
-        .status(&environment(application))
-        .await
-        .expect("status is readable");
-    assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
-    let operation = store
-        .operation(&created.id)
-        .await
-        .expect("failed operation is readable");
-    assert_eq!(operation.state, OperationState::Failed);
-    created
+    harness
+        .assert_refuses_foreign(|observed| observed.services.push(foreign))
+        .await;
 }
 
 #[tokio::test]
 async fn controller_refuses_a_foreign_same_name_network() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let (store, application, resolved) = fixture_store(&directory).await;
+    let harness = ControllerHarness::new().await;
     let foreign = ObservedNetwork {
-        name: resolved.networks[0].name.to_string(),
+        name: harness.resolved.networks[0].name.to_string(),
         runtime_configuration_matches: true,
-        labels: foreign_labels(&environment(&application)),
+        labels: foreign_labels(&environment(&harness.application)),
         in_use: false,
     };
-    let docker = Arc::new(FakeDocker::with_observed(ObservedApplication {
-        networks: vec![foreign],
-        ..ObservedApplication::default()
-    }));
-    assert_foreign_fixture_refuses_reconciliation(&docker, &store, &application, &resolved).await;
-    // The foreign network must survive untouched.
-    let observed = docker.observe(&environment(&application)).await.unwrap();
-    assert_eq!(observed.networks.len(), 1);
-    assert_eq!(
-        observed.networks[0].labels.get(INSTANCE_LABEL),
-        Some(&"other-instance".to_string())
-    );
+    harness
+        .assert_refuses_foreign(|observed| observed.networks.push(foreign))
+        .await;
 }
 
 #[tokio::test]
 async fn controller_refuses_a_foreign_same_name_volume() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let (store, application, resolved) = fixture_store(&directory).await;
+    let harness = ControllerHarness::new().await;
     let foreign = ObservedVolume {
-        name: resolved.volumes[0].name.to_string(),
+        name: harness.resolved.volumes[0].name.to_string(),
         runtime_configuration_matches: true,
-        labels: foreign_labels(&environment(&application)),
+        labels: foreign_labels(&environment(&harness.application)),
     };
-    let docker = Arc::new(FakeDocker::with_observed(ObservedApplication {
-        volumes: vec![foreign],
-        ..ObservedApplication::default()
-    }));
-    assert_foreign_fixture_refuses_reconciliation(&docker, &store, &application, &resolved).await;
-    // The foreign volume must survive untouched.
-    let observed = docker.observe(&environment(&application)).await.unwrap();
-    assert_eq!(observed.volumes.len(), 1);
-    assert_eq!(
-        observed.volumes[0].labels.get(INSTANCE_LABEL),
-        Some(&"other-instance".to_string())
-    );
+    harness
+        .assert_refuses_foreign(|observed| observed.volumes.push(foreign))
+        .await;
 }
 
 #[tokio::test]
@@ -1806,100 +1895,19 @@ async fn image_resolution_fails_sanitized_when_the_tag_never_settles() {
     ));
 }
 
-#[derive(Default)]
-struct ResolutionGate {
-    entered: tokio::sync::Notify,
-    release: tokio::sync::Notify,
-}
-
-#[derive(Default)]
-struct Probe {
-    active: std::sync::atomic::AtomicUsize,
-    maximum: std::sync::atomic::AtomicUsize,
-    total: std::sync::atomic::AtomicUsize,
-}
-struct ProbeGuard<'a>(&'a Probe);
-impl Drop for ProbeGuard<'_> {
-    fn drop(&mut self) {
-        self.0.active.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-impl Probe {
-    async fn enter(&self) -> ProbeGuard<'_> {
-        let guard = ProbeGuard(self);
-        self.total.fetch_add(1, Ordering::SeqCst);
-        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-        self.maximum.fetch_max(active, Ordering::SeqCst);
-        tokio::task::yield_now().await;
-        guard
-    }
-}
-
-impl ControllerHarness {
-    fn applications(&self) -> TestApplications {
-        TestApplications::new(
-            Arc::clone(&self.store),
-            self.controller
-                .runtime(Arc::new(tokio::sync::Notify::new())),
-        )
-    }
-
-    async fn finish(&self, operation: &Operation) {
-        self.controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
-        let recorded = self.store.operation(&operation.id).await.unwrap();
-        assert_eq!(recorded.state, OperationState::Succeeded, "{recorded:?}");
-    }
-
-    /// Moves a persisted failure beyond its retry backoff without sleeping.
-    async fn expire_backoff(&self, operation: &Operation) {
-        let mut connection =
-            SqliteConnection::connect(&format!("sqlite://{}", self.database_path.display()))
-                .await
-                .unwrap();
-        sqlx::query("UPDATE operations SET updated_at_ms=1 WHERE id=?1")
-            .bind(&operation.id)
-            .execute(&mut connection)
-            .await
-            .unwrap();
-    }
-
-    /// Simulates a daemon restart: reopens the database behind a fresh controller.
-    async fn reopen(&mut self) {
-        self.store = Arc::new(Store::open(&self.database_path).await.unwrap());
-        self.controller = Controller::new(Arc::clone(&self.docker), Arc::clone(&self.store));
-    }
-
-    async fn target(&self, id: &EnvironmentId) -> ResolvedApplication {
-        self.store.get(id).await.unwrap().resolved.unwrap()
-    }
-
-    async fn pulls(&self) -> u64 {
-        self.docker.registry.lock().await.pulls.values().sum()
-    }
-}
-
 #[tokio::test]
 async fn save_and_deploy_are_durable_before_resolution_and_reconcile_reuses_images() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let manifest = manifest();
-    let accepted = applications
-        .apply(manifest.clone().validate_template().unwrap(), Some(0))
-        .await
-        .unwrap();
+    let accepted = harness.apply(manifest.clone(), Some(0)).await;
     assert_eq!(harness.pulls().await, 0);
     let stored = harness.store.get(&accepted.environment_id).await.unwrap();
     assert_eq!(stored.application.generation, 1);
     assert!(stored.resolved.is_none());
     harness.finish(&accepted).await;
     let pulls = harness.pulls().await;
-    let repeated = applications
-        .save(manifest.clone().validate_template().unwrap(), Some(1))
-        .await
-        .unwrap();
+    let repeated = harness.save(manifest.clone(), Some(1)).await;
     assert!(repeated.operation_id.is_none());
     assert_eq!(repeated.generation, 2);
     assert_eq!(harness.pulls().await, pulls);
@@ -1949,17 +1957,11 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let mut manifest = manifest();
-    let first = applications
-        .apply(manifest.clone().validate_template().unwrap(), Some(0))
-        .await
-        .unwrap();
+    let first = harness.apply(manifest.clone(), Some(0)).await;
     manifest.spec.services[0]
         .environment
         .insert("CHANGED".into(), "yes".into());
-    let second = applications
-        .apply(manifest.clone().validate_template().unwrap(), Some(1))
-        .await
-        .unwrap();
+    let second = harness.apply(manifest.clone(), Some(1)).await;
     assert_eq!(second.generation, 2);
     assert!(matches!(
         applications
@@ -1979,10 +1981,7 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
             .is_err()
     );
     manifest.spec.services[0].environment.clear();
-    let third = applications
-        .apply(manifest.clone().validate_template().unwrap(), Some(2))
-        .await
-        .unwrap();
+    let third = harness.apply(manifest.clone(), Some(2)).await;
     assert!(
         harness
             .store
@@ -2028,7 +2027,7 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
     assert_eq!(deleting.application.generation, 4);
     assert!(deleting.delete_intent());
     assert_eq!(
-        harness.store.operation(&deletion.id).await.unwrap().state,
+        harness.operation(&deletion.id).await.state,
         OperationState::Requested
     );
 }
@@ -2060,7 +2059,7 @@ async fn periodic_recovery_reuses_failed_prepared_target_and_records_health_chan
     harness.expire_backoff(&operation).await;
     harness.finish(&operation).await;
     assert_eq!(harness.pulls().await, 0);
-    let completed = harness.store.operation(&operation.id).await.unwrap();
+    let completed = harness.operation(&operation.id).await;
     assert_eq!(completed.attempt, 2);
     let observed = harness
         .docker
@@ -2096,19 +2095,14 @@ async fn periodic_recovery_reuses_failed_prepared_target_and_records_health_chan
 
 #[tokio::test]
 async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_discarded() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = Arc::new(
-        Store::open(directory.path().join("state.db"))
-            .await
-            .unwrap(),
-    );
-    let gate = Arc::new(ResolutionGate::default());
-    let docker = Arc::new(FakeDocker {
+    let gate = Arc::new(Gate::default());
+    let harness = ControllerHarness::with_docker(FakeDocker {
         resolution_gate: Some(Arc::clone(&gate)),
         isolate_observations: true,
         ..FakeDocker::default()
-    });
-    let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store));
+    })
+    .await;
+    let (store, docker, controller) = (harness.store, harness.docker, harness.controller);
     let wake = Arc::new(tokio::sync::Notify::new());
     let applications =
         TestApplications::new(Arc::clone(&store), controller.runtime(Arc::clone(&wake)));
@@ -2136,10 +2130,10 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
     let token = cancellation.clone();
     let controller_task = tokio::spawn(async move {
         controller
-            .run(wake, std::time::Duration::from_millis(50), 10, 30, token)
+            .run(wake, Duration::from_millis(50), 10, 30, token)
             .await
     });
-    tokio::time::timeout(std::time::Duration::from_secs(3), gate.entered.notified())
+    tokio::time::timeout(Duration::from_secs(3), gate.entered.notified())
         .await
         .expect("pull started");
     docker.assert_active_repair(&accepted.environment_id).await;
@@ -2149,13 +2143,8 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
         .apply(fast.validate_template().unwrap(), None)
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if store.operation(&fast.id).await.unwrap().state == OperationState::Succeeded {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+    eventually(Duration::from_secs(3), POLL, async || {
+        (store.operation(&fast.id).await.unwrap().state == OperationState::Succeeded).then_some(())
     })
     .await
     .expect("unrelated application completes while slow pull is pending");
@@ -2176,16 +2165,12 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
         .delete(&accepted.environment_id, None)
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if matches!(
-                store.operation(&deleted.id).await,
-                Err(piqueld::store::StoreError::NotFound)
-            ) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+    eventually(Duration::from_secs(3), POLL, async || {
+        matches!(
+            store.operation(&deleted.id).await,
+            Err(piqueld::store::StoreError::NotFound)
+        )
+        .then_some(())
     })
     .await
     .expect("delete supersedes pending preparation without waiting for its pull");
@@ -2196,36 +2181,25 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
 
 #[tokio::test]
 async fn controller_enforces_global_io_bounds_on_a_single_thread() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = Arc::new(
-        Store::open(directory.path().join("state.db"))
-            .await
-            .unwrap(),
-    );
-    let docker = Arc::new(FakeDocker {
+    let harness = ControllerHarness::with_docker(FakeDocker {
         isolate_observations: true,
         ..FakeDocker::default()
-    });
-    let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store));
-    let applications = TestApplications::new(
-        Arc::clone(&store),
-        controller.runtime(Arc::new(tokio::sync::Notify::new())),
-    );
+    })
+    .await;
     for index in 0..12 {
         let mut manifest = manifest();
         manifest.metadata.name = format!("app-{index}");
-        applications
-            .apply(manifest.validate_template().unwrap(), None)
-            .await
-            .unwrap();
+        harness.apply(manifest, None).await;
     }
-    controller.scan(&CancellationToken::new()).await.unwrap();
+    harness.scan().await;
+    let docker = &harness.docker;
     assert_eq!(docker.mutations.maximum.load(Ordering::SeqCst), 1);
     assert!((1..=2).contains(&docker.images.maximum.load(Ordering::SeqCst)));
     assert!((1..=8).contains(&docker.observations.maximum.load(Ordering::SeqCst)));
-    for app in store.list(None, 100).await.unwrap().items {
+    for app in harness.store.list(None, 100).await.unwrap().items {
         assert_eq!(
-            store
+            harness
+                .store
                 .latest_operation_for_environment(app.id())
                 .await
                 .unwrap()
@@ -2236,22 +2210,12 @@ async fn controller_enforces_global_io_bounds_on_a_single_thread() {
     }
 }
 
-fn manifest() -> piqueld_core::manifest::ApplicationManifest {
-    toml::from_str(include_str!(
-        "../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
-    ))
-    .unwrap()
-}
-
 #[tokio::test]
 async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resources() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let mut input = manifest();
-    let first = applications
-        .apply(input.clone().validate_template().unwrap(), Some(0))
-        .await
-        .unwrap();
+    let first = harness.apply(input.clone(), Some(0)).await;
     harness.finish(&first).await;
     let pulls = harness.pulls().await;
     let piqueld_core::Source::Image { image } = &input.spec.services[0].source else {
@@ -2268,10 +2232,7 @@ async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resour
     input.spec.services[0]
         .environment
         .insert("TOKEN".into(), "private-value".into());
-    let changed = applications
-        .save(input.clone().validate_template().unwrap(), Some(1))
-        .await
-        .unwrap();
+    let changed = harness.save(input.clone(), Some(1)).await;
     assert!(changed.operation_id.is_none());
     assert_eq!(harness.pulls().await, pulls);
     let app = harness.store.get(&first.environment_id).await.unwrap();
@@ -2347,25 +2308,15 @@ async fn failed_preparation_preserves_active_repair_and_save_does_not_retry() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let mut input = manifest();
-    let first = applications
-        .apply(input.clone().validate_template().unwrap(), None)
-        .await
-        .unwrap();
+    let first = harness.apply(input.clone(), None).await;
     harness.finish(&first).await;
     input.spec.services[0].source = piqueld_core::Source::Image {
         image: "ghcr.io/example/unstable:1".into(),
     };
     harness.docker.arm_tag_flips(100).await;
-    let failed = applications
-        .apply(input.clone().validate_template().unwrap(), None)
-        .await
-        .unwrap();
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
-    let failure = harness.store.operation(&failed.id).await.unwrap();
+    let failed = harness.apply(input.clone(), None).await;
+    harness.scan().await;
+    let failure = harness.operation(&failed.id).await;
     assert_eq!(failure.state, OperationState::Failed);
     assert_eq!(failure.phase.as_deref(), Some("resolving_image"));
     assert_eq!(failure.resource.as_deref(), Some("web"));
@@ -2388,18 +2339,14 @@ async fn failed_preparation_preserves_active_repair_and_save_does_not_retry() {
         panic!("saved configuration")
     };
     assert!(saved.operation_id.is_none());
-    assert_eq!(harness.store.operation(&failed.id).await.unwrap(), failure);
+    assert_eq!(harness.operation(&failed.id).await, failure);
     assert_eq!(harness.pulls().await, pulls);
     {
         let mut observed = harness.docker.observed.lock().await;
         observed.services[0].replicas = 9;
         observed.services[0].convergence = Convergence::Degraded;
     }
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
+    harness.scan().await;
     assert_eq!(harness.docker.observed.lock().await.services[0].replicas, 1);
     let stored = harness.store.get(&first.environment_id).await.unwrap();
     assert_eq!(stored.environment.resolved_generation, Some(1));
@@ -2411,34 +2358,17 @@ async fn failed_preparation_preserves_active_repair_and_save_does_not_retry() {
 
 #[tokio::test]
 async fn convergence_timeout_closes_the_waiting_action_as_failed() {
-    let harness = ControllerHarness::new().await;
+    let mut harness = ControllerHarness::new().await;
     harness
         .docker
         .stall_convergence
         .store(true, Ordering::SeqCst);
     // The deadline covers network, volume and service creation before the wait
     // starts. Leave headroom so a loaded runner still reaches the waiting action.
-    let controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store))
-        .with_retry_policy(piqueld::reconcile::RetryPolicy {
-            convergence_timeout: std::time::Duration::from_secs(3),
-            ..piqueld::reconcile::RetryPolicy::default()
-        });
+    harness.set_convergence_timeout(Duration::from_secs(3));
     let created = harness.create().await;
-    controller.scan(&CancellationToken::new()).await.unwrap();
-    let events = harness
-        .store
-        .filtered_events(
-            &piqueld_core::observability::EventFilter {
-                operation_id: Some(created.id.clone()),
-                ..Default::default()
-            },
-            &piqueld::store::Visibility::ALL,
-            None,
-            100,
-        )
-        .await
-        .unwrap()
-        .items;
+    harness.scan().await;
+    let events = harness.operation_events(&created.id).await;
     assert!(
         events.iter().any(|event| event.kind == "action_failed"
             && event.error_code.as_deref() == Some("convergence_timeout")
@@ -2458,71 +2388,35 @@ async fn convergence_timeout_closes_the_waiting_action_as_failed() {
 async fn deploy_dependents(
     services: &[(&str, &[&str])],
     slow: &[(&str, usize)],
-    convergence_timeout: std::time::Duration,
+    convergence_timeout: Duration,
 ) -> (OperationState, Vec<String>) {
     use std::fmt::Write;
-    let directory = tempfile::tempdir().unwrap();
-    let store = Arc::new(
-        Store::open(directory.path().join("control-plane.db"))
-            .await
-            .unwrap(),
-    );
     let mut manifest = String::from(
         "api_version = \"piqueld.dev/v1alpha1\"\nkind = \"Application\"\n[metadata]\nname = \"notes\"\n",
     );
     for (name, depends_on) in services {
         write!(
             manifest,
-            "[[spec.services]]\nname = \"{name}\"\ndepends_on = {depends_on:?}\n[spec.services.source]\ntype = \"image\"\nimage = \"ghcr.io/example/notes:1.4.0\"\n"
+            "[[spec.services]]\nname = \"{name}\"\ndepends_on = {depends_on:?}\n[spec.services.source]\ntype = \"image\"\nimage = \"{}\"\n",
+            prebuilt::IMAGE
         )
         .unwrap();
     }
-    let application = parse_toml(&manifest)
-        .unwrap()
-        .normalize(ApplicationId::parse("app-dependents-01").unwrap());
-    let source = ResolvedSource::parse_image(
-        "ghcr.io/example/notes:1.4.0",
-        format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
-    )
-    .unwrap();
-    let resolutions = ResolutionSet {
-        secret_names: BTreeMap::default(),
-        sources: application
-            .spec()
-            .services
-            .iter()
-            .map(|service| (service.name.clone(), source.clone()))
-            .collect(),
-    };
-    let resolved = compile_application(
-        &application,
-        &environment(&application),
-        InstanceId::parse(store.instance_id()).unwrap(),
-        &resolutions,
-    )
-    .unwrap();
-    let docker = Arc::new(FakeDocker::default());
-    docker.slow_services.lock().await.extend(
+    let mut harness = ControllerHarness::new().await;
+    harness.set_application(
+        piqueld_core::parse_toml(&manifest)
+            .unwrap()
+            .normalize(ApplicationId::parse("app-dependents-01").unwrap()),
+    );
+    harness.docker.slow_services.lock().await.extend(
         slow.iter()
             .map(|(name, observations)| ((*name).to_owned(), *observations)),
     );
-    let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store)).with_retry_policy(
-        piqueld::reconcile::RetryPolicy {
-            convergence_timeout,
-            ..piqueld::reconcile::RetryPolicy::default()
-        },
-    );
-    let created = store
-        .save_application(
-            &ApplicationTemplate::from(&application),
-            Some(&resolved),
-            None,
-        )
-        .await
-        .unwrap();
-    controller.scan(&CancellationToken::new()).await.unwrap();
-    let state = store.operation(&created.id).await.unwrap().state;
-    (state, docker.rollout.lock().await.clone())
+    harness.set_convergence_timeout(convergence_timeout);
+    let created = harness.create().await;
+    harness.scan().await;
+    let state = harness.operation(&created.id).await.state;
+    (state, harness.docker.rollout.lock().await.clone())
 }
 
 #[tokio::test]
@@ -2531,7 +2425,7 @@ async fn dependents_roll_out_once_their_dependencies_converge() {
     let rollout = deploy_dependents(
         &[("db", &[]), ("server", &["db"]), ("worker", &[])],
         &[("db", 3)],
-        std::time::Duration::from_mins(2),
+        Duration::from_mins(2),
     )
     .await;
     assert_eq!(
@@ -2555,7 +2449,7 @@ async fn each_dependency_gets_the_full_convergence_timeout() {
     let rollout = deploy_dependents(
         &[("db", &[]), ("api", &["db"]), ("web", &["api"])],
         &[("db", 6), ("api", 6), ("web", 6)],
-        std::time::Duration::from_secs(3),
+        Duration::from_secs(3),
     )
     .await;
     assert_eq!(
@@ -2578,10 +2472,7 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
     let mut input = manifest();
     let fixture = git_fixture::GitBuildFixture::new();
     input.spec.services[0].source = fixture.source.clone();
-    let first = applications
-        .apply(input.clone().validate_template().unwrap(), Some(0))
-        .await
-        .unwrap();
+    let first = harness.apply(input.clone(), Some(0)).await;
     let deploy = || Mutation::deploy(first.environment_id.clone());
     let MutationResponse::Operation(replacement) = applications
         .accept(Daemon, deploy(), None, true, None)
@@ -2591,14 +2482,10 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
         panic!("deployment")
     };
     assert_eq!(
-        harness.store.operation(&first.id).await.unwrap().state,
+        harness.operation(&first.id).await.state,
         OperationState::Superseded
     );
-    let replacement = harness
-        .store
-        .operation(&replacement.operation_id)
-        .await
-        .unwrap();
+    let replacement = harness.operation(&replacement.operation_id).await;
     harness.finish(&replacement).await;
     let active = harness
         .store
@@ -2622,28 +2509,13 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
         panic!("expected operation")
     };
     assert_eq!(accepted.operation_id, replay.operation_id);
-    let operation = harness
-        .store
-        .operation(&accepted.operation_id)
-        .await
-        .unwrap();
+    let operation = harness.operation(&accepted.operation_id).await;
     harness.finish(&operation).await;
     assert!(harness.pulls().await > pulls);
-    let piqueld_core::Source::Git { build, .. } = &mut input.spec.services[0].source else {
-        unreachable!()
-    };
-    let piqueld_core::manifest::Build::Docker { dockerfile, .. } = build;
-    *dockerfile = "Failfile".into();
-    let failed = applications
-        .apply(input.validate_template().unwrap(), Some(1))
-        .await
-        .unwrap();
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
-    let failure = harness.store.operation(&failed.id).await.unwrap();
+    input.spec.services[0].source = fixture.failing_source();
+    let failed = harness.apply(input, Some(1)).await;
+    harness.scan().await;
+    let failure = harness.operation(&failed.id).await;
     assert_eq!(failure.state, OperationState::Failed);
     assert_eq!(failure.phase.as_deref(), Some("building_git"));
     assert_eq!(failure.resource.as_deref(), Some("web"));
@@ -2671,31 +2543,19 @@ async fn mixed_sources_report_the_failing_source() {
         let mut input = manifest();
         let mut git_service = input.spec.services[0].clone();
         git_service.name = "git-service".into();
-        git_service.source = fixture.source.clone();
         if git_fails {
-            let piqueld_core::Source::Git { build, .. } = &mut git_service.source else {
-                unreachable!()
-            };
-            let piqueld_core::manifest::Build::Docker { dockerfile, .. } = build;
-            *dockerfile = "Failfile".into();
+            git_service.source = fixture.failing_source();
         } else {
+            git_service.source = fixture.source.clone();
             input.spec.services[0].source = piqueld_core::Source::Image {
                 image: "ghcr.io/example/unstable:1".into(),
             };
             harness.docker.arm_tag_flips(100).await;
         }
         input.spec.services.push(git_service);
-        let operation = harness
-            .applications()
-            .apply(input.validate_template().unwrap(), Some(0))
-            .await
-            .unwrap();
-        harness
-            .controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
-        let failure = harness.store.operation(&operation.id).await.unwrap();
+        let operation = harness.apply(input, Some(0)).await;
+        harness.scan().await;
+        let failure = harness.operation(&operation.id).await;
         assert_eq!(failure.state, OperationState::Failed);
         let (phase, service, code) = if git_fails {
             ("building_git", "git-service", "git_build_failed")
@@ -2713,52 +2573,18 @@ mod repository_deployments {
     use piqueld::api::{ApplicationError, Mutation, MutationResponse, PreviewMutation};
     use piqueld::store::StoreError;
     use piqueld_core::manifest::{
-        ApplicationManifest, GitRepository, ManifestRevision, RepositoryManifest, SourceRepository,
+        GitRepository, ManifestRevision, RepositoryManifest, SourceRepository,
     };
     use piqueld_core::{EnvironmentName, TrackedBranch};
+    use repository::Repository;
 
-    impl git_fixture::GitBuildFixture {
-        pub fn failing_source(&self) -> piqueld_core::Source {
-            let mut source = self.source.clone();
-            let piqueld_core::Source::Git { build, .. } = &mut source else {
-                unreachable!()
-            };
-            let piqueld_core::manifest::Build::Docker { dockerfile, .. } = build;
-            *dockerfile = "Failfile".into();
-            source
-        }
-    }
-
-    struct RepositoryFixture {
-        directory: tempfile::TempDir,
-    }
-
-    impl RepositoryFixture {
-        fn new() -> Self {
-            let fixture = Self {
-                directory: tempfile::tempdir().unwrap(),
-            };
-            fixture.git(&["init", "--initial-branch=main"]);
-            fixture
-        }
-        fn git(&self, args: &[&str]) -> String {
-            let output = std::process::Command::new("git")
-                .current_dir(self.directory.path())
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8(output.stdout).unwrap().trim().to_owned()
-        }
+    impl Repository {
+        /// The fixture manifest, connected to `path` in this repository.
         fn manifest(&self, path: &str) -> ApplicationManifest {
             let mut application = manifest();
             application.spec.manifest = Some(RepositoryManifest {
                 repository: GitRepository {
-                    url: self.directory.path().display().to_string(),
+                    url: self.path().display().to_string(),
                     branch: "main".into(),
                     commit: None,
                 },
@@ -2767,90 +2593,54 @@ mod repository_deployments {
             });
             application
         }
+
+        /// Writes `manifest` to `path`, without committing it.
         fn write(&self, path: &str, manifest: &ApplicationManifest) {
             std::fs::write(
-                self.directory.path().join(path),
+                self.path().join(path),
                 serde_json::to_vec(manifest).unwrap(),
             )
             .unwrap();
         }
-        fn commit(&self) -> String {
-            self.git(&["add", "--all"]);
-            self.git(&[
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "commit",
-                "--allow-empty",
-                "-m",
-                "fixture",
-            ]);
-            self.git(&["rev-parse", "HEAD"])
-        }
+
         /// Commits `manifest` and a new `Dockerfile` on `feat/local` of a
-        /// clone, a branch this repository never has, and bundles it against
-        /// `base`. Returns the snapshot commit and the bundle.
+        /// working copy, a branch this repository never has, and bundles it
+        /// against `base`. Returns the snapshot commit and the bundle.
         fn snapshot(&self, manifest: &ApplicationManifest, base: &str) -> (String, Vec<u8>) {
-            let work = tempfile::tempdir().unwrap();
-            let git = |args: &[&str]| {
-                let output = std::process::Command::new("git")
-                    .current_dir(work.path())
-                    .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
-                    .args(args)
-                    .output()
-                    .unwrap();
-                assert!(output.status.success(), "{output:?}");
-                String::from_utf8(output.stdout).unwrap().trim().to_owned()
-            };
-            git(&[
-                "clone",
-                "-q",
-                &self.directory.path().display().to_string(),
-                ".",
-            ]);
-            git(&["switch", "-qc", "feat/local"]);
+            let work = self.working_copy();
+            work.git(&["switch", "-qc", "feat/local"]);
             let manifest = serde_json::to_vec(manifest).unwrap();
-            std::fs::write(work.path().join("app.json"), manifest).unwrap();
-            std::fs::write(work.path().join("Dockerfile"), "FROM alpine:3.21\n").unwrap();
-            git(&["add", "--all"]);
-            git(&["commit", "-qm", "snapshot"]);
-            let bundle = work.path().join(".git/snapshot.bundle");
-            let bundle_path = bundle.display().to_string();
-            let excluded = format!("^{base}");
-            git(&[
-                "bundle",
-                "create",
-                "-q",
-                &bundle_path,
-                "refs/heads/feat/local",
-                &excluded,
+            let commit = work.commit(&[
+                ("app.json", &manifest),
+                ("Dockerfile", b"FROM alpine:3.21\n"),
             ]);
-            (git(&["rev-parse", "HEAD"]), std::fs::read(bundle).unwrap())
+            (commit, work.bundle("feat/local", Some(base)))
         }
-        /// Builds `Dockerfile` from the manifest's own repository and revision.
-        fn self_source() -> piqueld_core::Source {
-            piqueld_core::Source::Git {
-                repository: SourceRepository::Manifest(
-                    piqueld_core::manifest::ManifestRepository::Manifest,
-                ),
-                build: piqueld_core::manifest::Build::Docker {
-                    dockerfile: "Dockerfile".into(),
-                    context: ".".into(),
-                    args: std::collections::BTreeMap::new(),
-                    target: None,
-                },
-            }
+    }
+
+    /// Builds `Dockerfile` from the manifest's own repository and revision.
+    fn self_source() -> piqueld_core::Source {
+        piqueld_core::Source::Git {
+            repository: SourceRepository::Manifest(
+                piqueld_core::manifest::ManifestRepository::Manifest,
+            ),
+            build: git_fixture::dockerfile_build(),
         }
-        async fn deploy(harness: &ControllerHarness, id: &EnvironmentId) -> Operation {
-            Self::deploy_revision(harness, id, None).await
+    }
+
+    impl ControllerHarness {
+        /// Deploys `id`, fetching its tracked manifest, and runs the controller.
+        async fn deploy(&self, id: &EnvironmentId) -> Operation {
+            self.deploy_revision(id, None).await
         }
+
+        /// Deploys `id` at `revision`, or what it tracks, and runs the controller.
         async fn deploy_revision(
-            harness: &ControllerHarness,
+            &self,
             id: &EnvironmentId,
             revision: Option<ManifestRevision>,
         ) -> Operation {
-            let MutationResponse::Operation(accepted) = harness
+            let MutationResponse::Operation(accepted) = self
                 .applications()
                 .accept(
                     Daemon,
@@ -2867,64 +2657,77 @@ mod repository_deployments {
             else {
                 panic!("operation expected")
             };
-            harness
-                .controller
-                .scan(&CancellationToken::new())
+            self.scan().await;
+            self.operation(&accepted.operation_id).await
+        }
+
+        /// The warnings recorded on `operation`'s deployment.
+        async fn warnings(&self, operation: &Operation) -> Vec<String> {
+            let deployments = self
+                .store
+                .deployments(&operation.environment_id, None, 3)
                 .await
                 .unwrap();
-            harness
-                .store
-                .operation(&accepted.operation_id)
+            deployments
+                .items
+                .into_iter()
+                .filter(|deployment| deployment.operation.id == operation.id)
+                .flat_map(|deployment| deployment.warnings)
+                .map(|warning| warning.code)
+                .collect()
+        }
+
+        /// Creates `name`, an environment of `production`'s application following `branch`.
+        async fn create_environment(
+            &self,
+            production: &EnvironmentId,
+            name: &str,
+            branch: &str,
+        ) -> EnvironmentId {
+            let application = self.store.get(production).await.unwrap();
+            let MutationResponse::Environment(environment) = self
+                .applications()
+                .accept(
+                    Daemon,
+                    Mutation::CreateEnvironment {
+                        application: application.environment.application_id,
+                        name: EnvironmentName::parse(name).unwrap(),
+                        source: Some(piqueld::api::SourceChoice::Branch(
+                            TrackedBranch::new(branch.into(), None).unwrap(),
+                        )),
+                    },
+                    None,
+                    true,
+                    None,
+                )
                 .await
                 .unwrap()
+            else {
+                panic!("environment expected")
+            };
+            environment.id
         }
-    }
 
-    /// The warnings recorded on `operation`'s deployment.
-    async fn warnings(harness: &ControllerHarness, operation: &Operation) -> Vec<String> {
-        let deployments = harness
-            .store
-            .deployments(&operation.environment_id, None, 3)
-            .await
-            .unwrap();
-        deployments
-            .items
-            .into_iter()
-            .filter(|deployment| deployment.operation.id == operation.id)
-            .flat_map(|deployment| deployment.warnings)
-            .map(|warning| warning.code)
-            .collect()
-    }
-
-    /// Creates `name`, an environment of `production`'s application following `branch`.
-    async fn create_environment(
-        harness: &ControllerHarness,
-        production: &EnvironmentId,
-        name: &str,
-        branch: &str,
-    ) -> EnvironmentId {
-        let application = harness.store.get(production).await.unwrap();
-        let MutationResponse::Environment(environment) = harness
-            .applications()
-            .accept(
-                Daemon,
-                Mutation::CreateEnvironment {
-                    application: application.environment.application_id,
-                    name: EnvironmentName::parse(name).unwrap(),
-                    source: Some(piqueld::api::SourceChoice::Branch(
-                        TrackedBranch::new(branch.into(), None).unwrap(),
-                    )),
-                },
-                None,
-                true,
-                None,
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("environment expected")
-        };
-        environment.id
+        /// Runs `mutation` of a preview and the controller, and returns how its
+        /// operation ended, unless a deletion removed it, with the preview.
+        async fn run_preview(
+            &self,
+            mutation: Mutation,
+        ) -> (Option<Operation>, Option<EnvironmentId>) {
+            let (operation, preview) = match self
+                .applications()
+                .accept(Daemon, mutation, None, false, None)
+                .await
+                .unwrap()
+            {
+                MutationResponse::Preview(created) => (created.operation, Some(created.preview.id)),
+                MutationResponse::Operation(operation) => (operation, None),
+                _ => panic!("preview operation expected"),
+            };
+            self.scan().await;
+            let operation = self.store.operation(&operation.operation_id).await.ok();
+            (operation, preview)
+        }
     }
 
     /// Repository files are read at the commit each deployment fetches, mount
@@ -2933,7 +2736,7 @@ mod repository_deployments {
     #[tokio::test]
     async fn repository_files_are_captured_at_the_fetched_commit() {
         use piqueld_core::manifest::{FileMode, FileSource, ServiceFile};
-        let repository = RepositoryFixture::new();
+        let repository = Repository::new();
         let harness = ControllerHarness::new().await;
         let mut main = repository.manifest("app.json");
         main.spec.services[0].files = vec![ServiceFile {
@@ -2942,14 +2745,10 @@ mod repository_deployments {
             mode: FileMode::default(),
         }];
         repository.write("app.json", &main);
-        let otel = repository.directory.path().join("otel.yaml");
+        let otel = repository.path().join("otel.yaml");
         std::fs::write(&otel, "home: ${HOME}\n").unwrap();
-        repository.commit();
-        let first = harness
-            .applications()
-            .apply(main.clone().validate_template().unwrap(), Some(0))
-            .await
-            .unwrap();
+        repository.commit(&[]);
+        let first = harness.apply(main.clone(), Some(0)).await;
         harness.finish(&first).await;
         let environment = first.environment_id;
         let deployed = async || {
@@ -2962,14 +2761,14 @@ mod repository_deployments {
         assert_eq!(deployed().await, "home: ${HOME}\n");
 
         std::fs::write(&otel, "home: /root\n").unwrap();
-        repository.commit();
-        let changed = RepositoryFixture::deploy(&harness, &environment).await;
+        repository.commit(&[]);
+        let changed = harness.deploy(&environment).await;
         assert_eq!(changed.state, OperationState::Succeeded);
         assert_eq!(deployed().await, "home: /root\n");
 
         std::fs::remove_file(&otel).unwrap();
-        repository.commit();
-        let missing = RepositoryFixture::deploy(&harness, &environment).await;
+        repository.commit(&[]);
+        let missing = harness.deploy(&environment).await;
         assert_eq!(
             (missing.state, missing.error_code.as_deref()),
             (OperationState::Failed, Some("manifest_invalid"))
@@ -2986,7 +2785,7 @@ mod repository_deployments {
     /// may be omitted.
     #[tokio::test]
     async fn fetched_connections_are_ignored_with_a_warning() {
-        let repository = RepositoryFixture::new();
+        let repository = Repository::new();
         let harness = ControllerHarness::new().await;
         let initial = repository.manifest("app.json");
         let mut redirected = initial.clone();
@@ -2996,15 +2795,11 @@ mod repository_deployments {
         declared.repository.branch = "release".into();
         redirected.spec.services[0].replicas = 2.into();
         repository.write("app.json", &redirected);
-        repository.commit();
-        let first = harness
-            .applications()
-            .apply(initial.clone().validate_template().unwrap(), Some(0))
-            .await
-            .unwrap();
+        repository.commit(&[]);
+        let first = harness.apply(initial.clone(), Some(0)).await;
         harness.finish(&first).await;
         assert_eq!(
-            warnings(&harness, &first).await,
+            harness.warnings(&first).await,
             ["manifest_connection_ignored"]
         );
         let current = harness.store.get(&first.environment_id).await.unwrap();
@@ -3029,10 +2824,10 @@ mod repository_deployments {
             .insert("REVISION".into(), "${{ git.sha }}".into());
         for file in [branched, bare] {
             repository.write("app.json", &file);
-            repository.commit();
-            let deployed = RepositoryFixture::deploy(&harness, &first.environment_id).await;
+            repository.commit(&[]);
+            let deployed = harness.deploy(&first.environment_id).await;
             assert_eq!(deployed.state, OperationState::Succeeded);
-            assert_eq!(warnings(&harness, &deployed).await, Vec::<String>::new());
+            assert_eq!(harness.warnings(&deployed).await, Vec::<String>::new());
             let current = harness.store.get(&first.environment_id).await.unwrap();
             assert_eq!(
                 current.tracking().unwrap().repository(),
@@ -3044,16 +2839,12 @@ mod repository_deployments {
     /// Every deployment of a branch records its head for sync to follow from.
     #[tokio::test]
     async fn deployments_record_the_branch_head_sync_follows_from() {
-        let repository = RepositoryFixture::new();
+        let repository = Repository::new();
         let harness = ControllerHarness::new().await;
         let main = repository.manifest("app.json");
         repository.write("app.json", &main);
-        let first = repository.commit();
-        let production = harness
-            .applications()
-            .apply(main.clone().validate_template().unwrap(), Some(0))
-            .await
-            .unwrap();
+        let first = repository.commit(&[]);
+        let production = harness.apply(main.clone(), Some(0)).await;
         harness.finish(&production).await;
         let production = production.environment_id;
         let synced = async || {
@@ -3070,13 +2861,10 @@ mod repository_deployments {
         assert_eq!(synced().await.as_deref(), Some(first.as_str()));
         // A one-off deployment of an older commit records the branch's head
         // then, so it stays until the branch moves.
-        let second = repository.commit();
-        let deployed = RepositoryFixture::deploy_revision(
-            &harness,
-            &production,
-            Some(ManifestRevision::Commit(first.clone())),
-        )
-        .await;
+        let second = repository.commit(&[]);
+        let deployed = harness
+            .deploy_revision(&production, Some(ManifestRevision::Commit(first.clone())))
+            .await;
         assert_eq!(deployed.state, OperationState::Succeeded);
         assert_eq!(synced().await.as_deref(), Some(second.as_str()));
     }
@@ -3085,25 +2873,23 @@ mod repository_deployments {
     /// branch, and a fetch for one never changes what the other deploys.
     #[tokio::test]
     async fn environments_on_different_branches_deploy_independently() {
-        let repository = RepositoryFixture::new();
+        let repository = Repository::new();
         let harness = ControllerHarness::new().await;
         let mut main = repository.manifest("app.json");
         repository.write("app.json", &main);
-        repository.commit();
+        repository.commit(&[]);
         repository.git(&["checkout", "-b", "release"]);
         let mut release = main.clone();
         release.spec.services[0].replicas = 3.into();
         repository.write("app.json", &release);
-        repository.commit();
+        repository.commit(&[]);
         repository.git(&["checkout", "main"]);
-        let production = harness
-            .applications()
-            .apply(main.clone().validate_template().unwrap(), Some(0))
-            .await
-            .unwrap();
+        let production = harness.apply(main.clone(), Some(0)).await;
         harness.finish(&production).await;
         let production = production.environment_id;
-        let staging = create_environment(&harness, &production, "staging", "release").await;
+        let staging = harness
+            .create_environment(&production, "staging", "release")
+            .await;
         let replicas = async |environment: &EnvironmentId| {
             let current = harness.store.get(environment).await.unwrap();
             (
@@ -3113,7 +2899,7 @@ mod repository_deployments {
                 current.own,
             )
         };
-        let deployed = RepositoryFixture::deploy(&harness, &staging).await;
+        let deployed = harness.deploy(&staging).await;
         assert_eq!(deployed.state, OperationState::Succeeded);
         let (staged, fetched) = replicas(&staging).await;
         assert_eq!(staged, Some(3));
@@ -3128,14 +2914,14 @@ mod repository_deployments {
                 .clone()
         };
         assert_eq!(saved_replicas().await, main.spec.services[0].replicas);
-        let deployed = RepositoryFixture::deploy(&harness, &production).await;
+        let deployed = harness.deploy(&production).await;
         assert_eq!(deployed.state, OperationState::Succeeded);
         assert_eq!(saved_replicas().await, main.spec.services[0].replicas);
         // A new main commit reaches production only, when it deploys.
         main.spec.services[0].replicas = 2.into();
         repository.write("app.json", &main);
-        repository.commit();
-        let deployed = RepositoryFixture::deploy(&harness, &production).await;
+        repository.commit(&[]);
+        let deployed = harness.deploy(&production).await;
         assert_eq!(deployed.state, OperationState::Succeeded);
         assert_eq!(replicas(&production).await.0, Some(2));
         assert_ne!(replicas(&production).await.1, production_manifest);
@@ -3156,16 +2942,13 @@ mod repository_deployments {
             .await
             .unwrap();
         assert_eq!(replicas(&staging).await.0, Some(3));
-        let deployed = RepositoryFixture::deploy(&harness, &staging).await;
+        let deployed = harness.deploy(&staging).await;
         assert_eq!(deployed.state, OperationState::Succeeded);
         assert_eq!(replicas(&staging).await.0, Some(2));
         // One-off revisions deploy another branch without changing staging's.
-        let deployed = RepositoryFixture::deploy_revision(
-            &harness,
-            &staging,
-            Some(ManifestRevision::Branch("release".into())),
-        )
-        .await;
+        let deployed = harness
+            .deploy_revision(&staging, Some(ManifestRevision::Branch("release".into())))
+            .await;
         assert_eq!(deployed.state, OperationState::Succeeded);
         assert_eq!(replicas(&staging).await.0, Some(3));
         let current = harness.store.get(&staging).await.unwrap();
@@ -3177,52 +2960,21 @@ mod repository_deployments {
         );
     }
 
-    /// Runs `mutation` of a preview and the controller, and returns how its
-    /// operation ended, unless a deletion removed it, with the preview.
-    async fn run_preview(
-        harness: &ControllerHarness,
-        mutation: Mutation,
-    ) -> (Option<Operation>, Option<EnvironmentId>) {
-        let (operation, preview) = match harness
-            .applications()
-            .accept(Daemon, mutation, None, false, None)
-            .await
-            .unwrap()
-        {
-            MutationResponse::Preview(created) => (created.operation, Some(created.preview.id)),
-            MutationResponse::Operation(operation) => (operation, None),
-            _ => panic!("preview operation expected"),
-        };
-        harness
-            .controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
-        let operation = harness.store.operation(&operation.operation_id).await.ok();
-        (operation, preview)
-    }
-
     /// Deleting a preview removes every volume it ever created, including one
     /// its branch's manifest later dropped, while environments keep theirs.
     /// Unlike environments, it records no release.
     #[tokio::test]
     async fn deleting_a_preview_removes_every_volume_it_ever_created() {
-        let repository = RepositoryFixture::new();
-        let mut harness = ControllerHarness::new().await;
-        harness.docker = Arc::new(FakeDocker {
+        let repository = Repository::new();
+        let harness = ControllerHarness::with_docker(FakeDocker {
             isolate_observations: true,
             ..FakeDocker::default()
-        });
-        harness.controller =
-            Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
+        })
+        .await;
         let main = repository.manifest("app.json");
         repository.write("app.json", &main);
-        repository.commit();
-        let production = harness
-            .applications()
-            .apply(main.clone().validate_template().unwrap(), Some(0))
-            .await
-            .unwrap();
+        repository.commit(&[]);
+        let production = harness.apply(main.clone(), Some(0)).await;
         harness.finish(&production).await;
         repository.git(&["checkout", "-b", "feat/cache"]);
         let mut cached = main.clone();
@@ -3237,7 +2989,7 @@ mod repository_deployments {
             .unwrap(),
         );
         repository.write("app.json", &cached);
-        repository.commit();
+        repository.commit(&[]);
         let volumes = async || {
             let observed = harness.docker.observed.lock().await;
             observed
@@ -3248,9 +3000,8 @@ mod repository_deployments {
         };
         let before = volumes().await;
 
-        let (created, preview) = run_preview(
-            &harness,
-            Mutation::Preview(PreviewMutation::Create {
+        let (created, preview) = harness
+            .run_preview(Mutation::Preview(PreviewMutation::Create {
                 application: harness
                     .store
                     .get(&production.environment_id)
@@ -3260,9 +3011,8 @@ mod repository_deployments {
                     .application_id,
                 branch: "feat/cache".parse().unwrap(),
                 slot: None,
-            }),
-        )
-        .await;
+            }))
+            .await;
         assert_eq!(created.unwrap().state, OperationState::Succeeded);
         let preview = preview.unwrap();
         // Previews never record releases; the environment that deployed did.
@@ -3277,14 +3027,12 @@ mod repository_deployments {
         );
         // The branch drops the cache volume; the preview keeps it until deleted.
         repository.write("app.json", &main);
-        repository.commit();
-        let (deployed, _) = run_preview(
-            &harness,
-            Mutation::Preview(PreviewMutation::Deploy {
+        repository.commit(&[]);
+        let (deployed, _) = harness
+            .run_preview(Mutation::Preview(PreviewMutation::Deploy {
                 id: preview.clone(),
-            }),
-        )
-        .await;
+            }))
+            .await;
         assert_eq!(deployed.unwrap().state, OperationState::Succeeded);
         let inventory = harness.store.preview_volumes(&preview).await.unwrap();
         assert_eq!(inventory.len(), 2);
@@ -3292,13 +3040,11 @@ mod repository_deployments {
         let current = volumes().await;
         assert!(inventory.iter().all(|name| current.contains(name)));
 
-        let (deleted, _) = run_preview(
-            &harness,
-            Mutation::Preview(PreviewMutation::Delete {
+        let (deleted, _) = harness
+            .run_preview(Mutation::Preview(PreviewMutation::Delete {
                 id: preview.clone(),
-            }),
-        )
-        .await;
+            }))
+            .await;
         assert!(deleted.is_none(), "{deleted:?}");
         assert!(matches!(
             harness.store.get(&preview).await,
@@ -3311,36 +3057,32 @@ mod repository_deployments {
 
     #[tokio::test]
     async fn missing_invalid_and_failed_build_manifests_preserve_accepted_configuration() {
-        let repository = RepositoryFixture::new();
-        repository.commit();
+        let repository = Repository::new();
+        repository.commit(&[]);
         let harness = ControllerHarness::new().await;
         let initial = repository.manifest("app.json");
         repository.write("app.json", &initial);
-        repository.commit();
-        let first = harness
-            .applications()
-            .apply(initial.clone().validate_template().unwrap(), Some(0))
-            .await
-            .unwrap();
+        repository.commit(&[]);
+        let first = harness.apply(initial.clone(), Some(0)).await;
         harness.finish(&first).await;
         let before = harness.store.get(&first.environment_id).await.unwrap();
-        std::fs::remove_file(repository.directory.path().join("app.json")).unwrap();
-        repository.commit();
-        let missing = RepositoryFixture::deploy(&harness, &first.environment_id).await;
+        std::fs::remove_file(repository.path().join("app.json")).unwrap();
+        repository.commit(&[]);
+        let missing = harness.deploy(&first.environment_id).await;
         assert_eq!(missing.error_code.as_deref(), Some("manifest_not_found"));
         let mut invalid = initial.clone();
         invalid.metadata.name = "different-application".into();
         repository.write("app.json", &invalid);
-        repository.commit();
-        let invalid = RepositoryFixture::deploy(&harness, &first.environment_id).await;
+        repository.commit(&[]);
+        let invalid = harness.deploy(&first.environment_id).await;
         assert_eq!(invalid.error_code.as_deref(), Some("manifest_invalid"));
         let build = git_fixture::GitBuildFixture::new();
         let mut failing = initial.clone();
         failing.spec.manifest = None;
         failing.spec.services[0].source = build.failing_source();
         repository.write("app.json", &failing);
-        repository.commit();
-        let failed = RepositoryFixture::deploy(&harness, &first.environment_id).await;
+        repository.commit(&[]);
+        let failed = harness.deploy(&first.environment_id).await;
         assert_eq!(failed.error_code.as_deref(), Some("git_build_failed"));
         let after = harness.store.get(&first.environment_id).await.unwrap();
         assert_eq!(before.application, after.application);
@@ -3360,26 +3102,22 @@ mod repository_deployments {
 
     #[tokio::test]
     async fn retry_after_reopening_store_uses_fetched_manifest_and_new_deploy_fetches_again() {
-        let repository = RepositoryFixture::new();
+        let repository = Repository::new();
         let mut harness = ControllerHarness::new().await;
         let initial = repository.manifest("app.json");
         repository.write("app.json", &initial);
-        repository.commit();
-        let first = harness
-            .applications()
-            .apply(initial.clone().validate_template().unwrap(), Some(0))
-            .await
-            .unwrap();
+        repository.commit(&[]);
+        let first = harness.apply(initial.clone(), Some(0)).await;
         harness.finish(&first).await;
         let build = git_fixture::GitBuildFixture::new();
         let mut candidate = initial.clone();
         candidate.spec.services[0].source = build.failing_source();
         repository.write("app.json", &candidate);
-        repository.commit();
-        let failed = RepositoryFixture::deploy(&harness, &first.environment_id).await;
+        repository.commit(&[]);
+        let failed = harness.deploy(&first.environment_id).await;
         assert_eq!(failed.error_code.as_deref(), Some("git_build_failed"));
         repository.write("app.json", &initial);
-        repository.commit();
+        repository.commit(&[]);
         harness.reopen().await;
         let retry = harness
             .applications()
@@ -3387,51 +3125,33 @@ mod repository_deployments {
             .await
             .unwrap();
         assert_eq!(retry.id, failed.id);
-        harness
-            .controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
+        harness.scan().await;
         assert_eq!(
-            harness.store.operation(&retry.id).await.unwrap().state,
+            harness.operation(&retry.id).await.state,
             OperationState::Failed
         );
         assert_eq!(
-            RepositoryFixture::deploy(&harness, &first.environment_id)
-                .await
-                .state,
+            harness.deploy(&first.environment_id).await.state,
             OperationState::Succeeded
         );
     }
 
     #[tokio::test]
     async fn self_sources_build_the_manifest_commit_including_one_time_revisions() {
-        let repository = RepositoryFixture::new();
+        let repository = Repository::new();
         let harness = ControllerHarness::new().await;
         let mut fetched = repository.manifest("app.json");
-        fetched.spec.services[0].source = RepositoryFixture::self_source();
+        fetched.spec.services[0].source = self_source();
         repository.write("app.json", &fetched);
-        std::fs::write(
-            repository.directory.path().join("Dockerfile"),
-            "FROM alpine:3.20\n",
-        )
-        .unwrap();
-        let main = repository.commit();
+        std::fs::write(repository.path().join("Dockerfile"), "FROM alpine:3.20\n").unwrap();
+        let main = repository.commit(&[]);
         repository.git(&["checkout", "-b", "feature"]);
-        std::fs::write(
-            repository.directory.path().join("Dockerfile"),
-            "FROM alpine:3.21\n",
-        )
-        .unwrap();
-        let feature = repository.commit();
+        std::fs::write(repository.path().join("Dockerfile"), "FROM alpine:3.21\n").unwrap();
+        let feature = repository.commit(&[]);
         repository.git(&["checkout", "main"]);
         let mut bootstrap = repository.manifest("app.json");
         bootstrap.spec.services.clear();
-        let saved = harness
-            .applications()
-            .save(bootstrap.validate_template().unwrap(), Some(0))
-            .await
-            .unwrap();
+        let saved = harness.save(bootstrap, Some(0)).await;
         let application_id = EnvironmentId::parse(saved.application_id).unwrap();
         // The override is not saved, and saved configuration keeps "self":
         // only the fetch of `main` itself becomes the saved manifest.
@@ -3452,8 +3172,7 @@ mod repository_deployments {
             (Some(ManifestRevision::Branch("feature".into())), feature),
         ] {
             let one_off = revision.clone();
-            let deployment =
-                RepositoryFixture::deploy_revision(&harness, &application_id, revision).await;
+            let deployment = harness.deploy_revision(&application_id, revision).await;
             assert_eq!(deployment.state, OperationState::Succeeded);
             let stored = harness.store.get(&application_id).await.unwrap();
             assert!(
@@ -3470,8 +3189,8 @@ mod repository_deployments {
         let mut moved = fetched;
         moved.spec.manifest.as_mut().unwrap().repository.url = "/elsewhere".into();
         repository.write("app.json", &moved);
-        let head = repository.commit();
-        let deployment = RepositoryFixture::deploy(&harness, &application_id).await;
+        let head = repository.commit(&[]);
+        let deployment = harness.deploy(&application_id).await;
         assert_eq!(deployment.state, OperationState::Succeeded);
         let stored = harness.store.get(&application_id).await.unwrap();
         assert!(
@@ -3485,24 +3204,16 @@ mod repository_deployments {
     /// came from, and sync records the branch as absent.
     #[tokio::test]
     async fn local_snapshots_deploy_their_manifest_and_build_self_sources_from_the_snapshot() {
-        let repository = RepositoryFixture::new();
+        let repository = Repository::new();
         let harness = ControllerHarness::new().await;
         let mut fetched = repository.manifest("app.json");
-        fetched.spec.services[0].source = RepositoryFixture::self_source();
+        fetched.spec.services[0].source = self_source();
         repository.write("app.json", &fetched);
-        std::fs::write(
-            repository.directory.path().join("Dockerfile"),
-            "FROM alpine:3.20\n",
-        )
-        .unwrap();
-        let base = repository.commit();
+        std::fs::write(repository.path().join("Dockerfile"), "FROM alpine:3.20\n").unwrap();
+        let base = repository.commit(&[]);
         let mut bootstrap = repository.manifest("app.json");
         bootstrap.spec.services.clear();
-        let saved = harness
-            .applications()
-            .save(bootstrap.validate_template().unwrap(), Some(0))
-            .await
-            .unwrap();
+        let saved = harness.save(bootstrap, Some(0)).await;
         let application = ApplicationId::parse(saved.application_id).unwrap();
 
         // The snapshot changes the manifest and the Dockerfile on a branch
@@ -3534,16 +3245,8 @@ mod repository_deployments {
         let MutationResponse::Preview(created) = created else {
             panic!("preview expected")
         };
-        harness
-            .controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
-        let operation = harness
-            .store
-            .operation(&created.operation.operation_id)
-            .await
-            .unwrap();
+        harness.scan().await;
+        let operation = harness.operation(&created.operation.operation_id).await;
         assert_eq!(operation.state, OperationState::Succeeded);
         let stored = harness.store.get(&created.preview.id).await.unwrap();
         let service = &stored.resolved.as_ref().unwrap().services[0];
@@ -3576,41 +3279,37 @@ mod repository_deployments {
 
     #[tokio::test]
     async fn retry_after_reopening_store_builds_self_sources_at_the_fetched_commit() {
-        let repository = RepositoryFixture::new();
+        let repository = Repository::new();
         let mut harness = ControllerHarness::new().await;
-        repository.commit();
+        repository.commit(&[]);
         repository.git(&["checkout", "-b", "feature"]);
         let mut fetched = repository.manifest("app.json");
         let mut built = fetched.spec.services[0].clone();
         built.name = "built".into();
-        built.source = RepositoryFixture::self_source();
+        built.source = self_source();
         fetched.spec.services.push(built);
         repository.write("app.json", &fetched);
-        let dockerfile = repository.directory.path().join("Dockerfile");
+        let dockerfile = repository.path().join("Dockerfile");
         std::fs::write(&dockerfile, "FROM alpine:3.20\n").unwrap();
-        let pinned = repository.commit();
+        let pinned = repository.commit(&[]);
         let mut bootstrap = repository.manifest("app.json");
         bootstrap.spec.services.clear();
-        let saved = harness
-            .applications()
-            .save(bootstrap.validate_template().unwrap(), Some(0))
-            .await
-            .unwrap();
+        let saved = harness.save(bootstrap, Some(0)).await;
         let application_id = EnvironmentId::parse(saved.application_id).unwrap();
         // The image service fails preparation after the manifest is fetched.
         harness.docker.arm_tag_flips(100).await;
-        let failed = RepositoryFixture::deploy_revision(
-            &harness,
-            &application_id,
-            Some(ManifestRevision::Branch("feature".into())),
-        )
-        .await;
+        let failed = harness
+            .deploy_revision(
+                &application_id,
+                Some(ManifestRevision::Branch("feature".into())),
+            )
+            .await;
         assert_eq!(
             failed.error_code.as_deref(),
             Some("image_resolution_failed")
         );
         std::fs::write(&dockerfile, "FROM alpine:3.21\n").unwrap();
-        repository.commit();
+        repository.commit(&[]);
         harness.reopen().await;
         harness.docker.arm_tag_flips(0).await;
         let retry = harness
@@ -3633,44 +3332,35 @@ mod repository_deployments {
 
     #[tokio::test]
     async fn bootstrap_can_pin_manifest_revision_independently_from_git_build_revision() {
-        let repository = RepositoryFixture::new();
+        let repository = Repository::new();
         let harness = ControllerHarness::new().await;
-        let build_repository = RepositoryFixture::new();
+        let build_repository = Repository::new();
         std::fs::write(
-            build_repository.directory.path().join("Dockerfile"),
+            build_repository.path().join("Dockerfile"),
             "FROM alpine:3.20\n",
         )
         .unwrap();
-        let build_commit = build_repository.commit();
+        let build_commit = build_repository.commit(&[]);
         let mut fetched = repository.manifest("app.json");
         fetched.spec.services[0].source = piqueld_core::Source::Git {
             repository: piqueld_core::manifest::SourceRepository::Git(GitRepository {
-                url: build_repository.directory.path().display().to_string(),
+                url: build_repository.path().display().to_string(),
                 branch: "main".into(),
                 commit: Some(build_commit.clone()),
             }),
-            build: piqueld_core::manifest::Build::Docker {
-                dockerfile: "Dockerfile".into(),
-                context: ".".into(),
-                args: std::collections::BTreeMap::new(),
-                target: None,
-            },
+            build: git_fixture::dockerfile_build(),
         };
         repository.write("app.json", &fetched);
-        let pinned = repository.commit();
+        let pinned = repository.commit(&[]);
         let mut bootstrap = repository.manifest("app.json");
         bootstrap.spec.services.clear();
         bootstrap.spec.manifest.as_mut().unwrap().repository.commit = Some(pinned);
         fetched.metadata.name = "wrong-later-name".into();
         repository.write("app.json", &fetched);
-        repository.commit();
-        let saved = harness
-            .applications()
-            .save(bootstrap.validate_template().unwrap(), Some(0))
-            .await
-            .unwrap();
+        repository.commit(&[]);
+        let saved = harness.save(bootstrap, Some(0)).await;
         let application_id = EnvironmentId::parse(saved.application_id).unwrap();
-        let deployment = RepositoryFixture::deploy(&harness, &application_id).await;
+        let deployment = harness.deploy(&application_id).await;
         assert_eq!(deployment.state, OperationState::Succeeded);
         let resolved = harness
             .store
@@ -3682,20 +3372,6 @@ mod repository_deployments {
         assert!(
             matches!(&resolved.services[0].source, ResolvedSource::Git { commit, .. } if commit == &build_commit)
         );
-    }
-}
-
-#[derive(Clone, Default)]
-struct TraceCapture(Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl std::io::Write for TraceCapture {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 
@@ -3717,23 +3393,13 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
         manifest.spec.services[0]
             .environment
             .insert("TOKEN".into(), "must-not-appear-in-traces".into());
-        harness.application = manifest
+        let application = manifest
             .validate()
             .unwrap()
             .normalize(harness.application.id().clone());
-        harness.resolved = compile_application(
-            &harness.application,
-            &environment(&harness.application),
-            InstanceId::parse(harness.store.instance_id()).unwrap(),
-            &harness.resolutions,
-        )
-        .unwrap();
+        harness.set_application(application);
         let operation = harness.create().await;
-        harness
-            .controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
+        harness.scan().await;
         (harness.application.id().to_string(), operation.id)
     };
     let text = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
@@ -3764,50 +3430,11 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
     }));
 }
 
-impl ControllerHarness {
-    async fn assert_git_build_history(&self, id: &EnvironmentId) {
-        let builds = self
-            .store
-            .builds(None, Some(id), &piqueld_core::access::Scope::All, None, 50)
-            .await
-            .unwrap();
-        assert_eq!(
-            builds.items.len(),
-            3,
-            "one record per executed preparation, not per accepted/replayed request"
-        );
-        assert_eq!(builds.items[0].state, piqueld_core::api::BuildState::Failed);
-        assert!(
-            builds
-                .items
-                .iter()
-                .all(|b| b.commit.is_some() && b.log_bytes > 0)
-        );
-        assert!(
-            builds.items[1..].iter().all(
-                |b| b.state == piqueld_core::api::BuildState::Succeeded && b.image_id.is_some()
-            )
-        );
-        assert!(
-            self.store
-                .build_logs(builds.items[0].id, None, None)
-                .await
-                .unwrap()
-                .items
-                .iter()
-                .any(|chunk| chunk.text.contains("Build failed"))
-        );
-    }
-}
-
 #[tokio::test]
 async fn unavailable_action_journal_prevents_runtime_mutations() {
     let harness = ControllerHarness::new().await;
     harness.create().await;
-    let mut connection =
-        SqliteConnection::connect(&format!("sqlite://{}", harness.database_path.display()))
-            .await
-            .unwrap();
+    let mut connection = harness.database().await;
     sqlx::query("CREATE TRIGGER reject_action_journal BEFORE INSERT ON events WHEN NEW.kind='action_requested' BEGIN SELECT RAISE(FAIL,'journal unavailable'); END").execute(&mut connection).await.unwrap();
     assert!(
         harness
@@ -3833,11 +3460,7 @@ async fn unavailable_action_journal_prevents_runtime_mutations() {
         .execute(&mut connection)
         .await
         .unwrap();
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
+    harness.scan().await;
     assert!(harness.docker.mutations.maximum.load(Ordering::SeqCst) > 0);
 }
 
@@ -3845,13 +3468,9 @@ async fn unavailable_action_journal_prevents_runtime_mutations() {
 async fn full_scan_records_one_docker_failure_for_overlapping_observers() {
     let harness = ControllerHarness::new().await;
     let operation = harness.create().await;
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
+    harness.scan().await;
     assert_eq!(
-        harness.store.operation(&operation.id).await.unwrap().state,
+        harness.operation(&operation.id).await.state,
         OperationState::Succeeded
     );
     let observed_before = harness.docker.observations.total.load(Ordering::SeqCst);
@@ -3859,9 +3478,6 @@ async fn full_scan_records_one_docker_failure_for_overlapping_observers() {
         .docker
         .fail_observations
         .store(true, Ordering::SeqCst);
-    let store = Arc::clone(&harness.store);
-    let docker = Arc::clone(&harness.docker);
-    let application_id = harness.application.id().clone();
     let cancellation = CancellationToken::new();
     let token = cancellation.clone();
     let controller = harness.controller;
@@ -3869,48 +3485,40 @@ async fn full_scan_records_one_docker_failure_for_overlapping_observers() {
         controller
             .run(
                 Arc::new(tokio::sync::Notify::new()),
-                std::time::Duration::from_mins(1),
+                Duration::from_mins(1),
                 0,
                 0,
                 token,
             )
             .await
     });
-    let recorded = || {
-        let store = Arc::clone(&store);
-        let application_id = application_id.to_string();
-        async move {
-            store
-                .filtered_events(
-                    &piqueld_core::observability::EventFilter {
-                        environment_id: Some(application_id),
-                        kind: Some("diagnostic".into()),
-                        error_code: Some("docker_unavailable".into()),
-                        ..Default::default()
-                    },
-                    &piqueld::store::Visibility::ALL,
-                    None,
-                    10,
-                )
-                .await
-                .unwrap()
-                .items
-                .len()
-        }
+    let recorded = async || {
+        harness
+            .store
+            .filtered_events(
+                &piqueld_core::observability::EventFilter {
+                    environment_id: Some(harness.application.id().to_string()),
+                    kind: Some("diagnostic".into()),
+                    error_code: Some("docker_unavailable".into()),
+                    ..Default::default()
+                },
+                &piqueld::store::Visibility::ALL,
+                None,
+                10,
+            )
+            .await
+            .unwrap()
+            .items
+            .len()
     };
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if docker.observations.total.load(Ordering::SeqCst) >= observed_before + 2
-                && recorded().await > 0
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+    eventually(Duration::from_secs(5), POLL, async || {
+        (harness.docker.observations.total.load(Ordering::SeqCst) >= observed_before + 2
+            && recorded().await > 0)
+            .then_some(())
     })
     .await
     .expect("health and reconciliation observers finished their failed Docker calls");
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
     cancellation.cancel();
     task.await.unwrap().unwrap();
     assert_eq!(recorded().await, 1);
@@ -3920,28 +3528,13 @@ async fn full_scan_records_one_docker_failure_for_overlapping_observers() {
 async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_versions() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
-    let first = applications
-        .apply(manifest().validate_template().unwrap(), Some(0))
-        .await
-        .unwrap();
+    let first = harness.apply(manifest(), Some(0)).await;
     harness.finish(&first).await;
     let app = piqueld_core::ApplicationId::parse(first.environment_id.as_str()).unwrap();
-    let store = &harness.store;
-    store
-        .put_stored_secret(Daemon, &app, "token", 0, b"version-one".to_vec(), None)
-        .await
-        .unwrap();
-    let mut input = manifest();
-    input.spec.services[0]
-        .secrets
-        .push(piqueld_core::manifest::SecretMount {
-            name: "token".into(),
-            target: "/run/secrets/token".into(),
-        });
-    let deployment = applications
-        .apply(input.validate_template().unwrap(), Some(1))
-        .await
-        .unwrap();
+    harness
+        .store_token(&first.environment_id, 0, b"version-one")
+        .await;
+    let deployment = harness.apply(with_token(manifest()), Some(1)).await;
     harness.finish(&deployment).await;
     let target = harness.target(&first.environment_id).await;
     let old = target.secret_names["token"].clone();
@@ -3949,15 +3542,10 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
         harness.docker.secret_values.lock().await[&old],
         b"version-one"
     );
-    store
-        .put_stored_secret(Daemon, &app, "token", 1, b"version-two".to_vec(), None)
-        .await
-        .unwrap();
     harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
+        .store_token(&first.environment_id, 1, b"version-two")
+        .await;
+    harness.scan().await;
     assert_eq!(
         harness.target(&first.environment_id).await,
         target,
@@ -3987,18 +3575,9 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
     );
 
     // Historical completed deployments must not block deletion forever.
-    let clean = applications
-        .apply(manifest().validate_template().unwrap(), Some(2))
-        .await
-        .unwrap();
+    let clean = harness.apply(manifest(), Some(2)).await;
     harness.finish(&clean).await;
-    let service = piqueld::api::ApplicationService::new(
-        Arc::clone(&harness.store),
-        harness
-            .controller
-            .runtime(Arc::new(tokio::sync::Notify::new())),
-    );
-    service
+    applications
         .delete_stored_secret(Daemon, &app, "token", 2)
         .await
         .unwrap();
@@ -4010,10 +3589,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
 async fn application_deletion_journals_secret_cleanup_failures() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
-    let first = applications
-        .apply(manifest().validate_template().unwrap(), Some(0))
-        .await
-        .unwrap();
+    let first = harness.apply(manifest(), Some(0)).await;
     harness.finish(&first).await;
     harness
         .store
@@ -4028,25 +3604,8 @@ async fn application_deletion_journals_secret_cleanup_failures() {
         .delete(&first.environment_id, Some(1))
         .await
         .unwrap();
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
-    let events = harness
-        .store
-        .filtered_events(
-            &piqueld_core::observability::EventFilter {
-                operation_id: Some(deletion.id.clone()),
-                ..Default::default()
-            },
-            &piqueld::store::Visibility::ALL,
-            None,
-            100,
-        )
-        .await
-        .unwrap()
-        .items;
+    harness.scan().await;
+    let events = harness.operation_events(&deletion.id).await;
     let phases = |kind: &str| {
         events
             .iter()
@@ -4065,24 +3624,9 @@ async fn application_deletion_journals_secret_cleanup_failures() {
 #[tokio::test]
 async fn missing_stored_secrets_fail_deployment_with_their_names() {
     let harness = ControllerHarness::new().await;
-    let mut input = manifest();
-    input.spec.services[0]
-        .secrets
-        .push(piqueld_core::manifest::SecretMount {
-            name: "token".into(),
-            target: "/run/secrets/token".into(),
-        });
-    let failed = harness
-        .applications()
-        .apply(input.validate_template().unwrap(), Some(0))
-        .await
-        .unwrap();
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
-    let result = harness.store.operation(&failed.id).await.unwrap();
+    let failed = harness.apply(with_token(manifest()), Some(0)).await;
+    harness.scan().await;
+    let result = harness.operation(&failed.id).await;
     assert_eq!(result.error_code.as_deref(), Some("secret_missing"));
     assert!(result.error_message.as_deref().unwrap().contains("token"));
 }
@@ -4091,35 +3635,11 @@ async fn missing_stored_secrets_fail_deployment_with_their_names() {
 async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollouts() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
-    let initial = applications
-        .apply(manifest().validate_template().unwrap(), Some(0))
-        .await
-        .unwrap();
+    let initial = harness.apply(manifest(), Some(0)).await;
     harness.finish(&initial).await;
     let id = &initial.environment_id;
-    harness
-        .store
-        .put_stored_secret(
-            Daemon,
-            &piqueld_core::ApplicationId::parse(initial.environment_id.as_str()).unwrap(),
-            "token",
-            0,
-            b"original".to_vec(),
-            None,
-        )
-        .await
-        .unwrap();
-    let mut input = manifest();
-    input.spec.services[0]
-        .secrets
-        .push(piqueld_core::manifest::SecretMount {
-            name: "token".into(),
-            target: "/run/secrets/token".into(),
-        });
-    let deployed = applications
-        .apply(input.validate_template().unwrap(), Some(1))
-        .await
-        .unwrap();
+    harness.store_token(id, 0, b"original").await;
+    let deployed = harness.apply(with_token(manifest()), Some(1)).await;
     harness.finish(&deployed).await;
     let target = harness.target(id).await;
     let original = harness.docker.observe(id).await.unwrap();
@@ -4127,29 +3647,14 @@ async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollou
     std::fs::remove_file(harness.database_path.with_file_name("secrets.key")).unwrap();
     harness.store.recover_secret_key(Daemon).await.unwrap();
     let failed = applications.deploy(id, None).await.unwrap();
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
-    let result = harness.store.operation(&failed.id).await.unwrap();
+    harness.scan().await;
+    let result = harness.operation(&failed.id).await;
     assert_eq!(result.error_code.as_deref(), Some("secret_unavailable"));
     assert!(result.error_message.as_deref().unwrap().contains("token"));
     assert_eq!(harness.target(id).await, target);
     assert_eq!(harness.docker.observe(id).await.unwrap(), original);
 
-    harness
-        .store
-        .put_stored_secret(
-            Daemon,
-            &piqueld_core::ApplicationId::parse(initial.environment_id.as_str()).unwrap(),
-            "token",
-            1,
-            b"replacement".to_vec(),
-            None,
-        )
-        .await
-        .unwrap();
+    harness.store_token(id, 1, b"replacement").await;
     let replacement = applications.deploy(id, None).await.unwrap();
     harness.finish(&replacement).await;
     let new_target = harness.target(id).await;
@@ -4167,61 +3672,21 @@ async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollou
 #[tokio::test]
 async fn missing_secret_key_fails_rollout_before_docker_mutation() {
     let harness = ControllerHarness::new().await;
-    let applications = harness.applications();
-    let first = applications
-        .apply(manifest().validate_template().unwrap(), Some(0))
-        .await
-        .unwrap();
+    let first = harness.apply(manifest(), Some(0)).await;
     harness.finish(&first).await;
     harness
-        .store
-        .put_stored_secret(
-            Daemon,
-            &piqueld_core::ApplicationId::parse(first.environment_id.as_str()).unwrap(),
-            "token",
-            0,
-            b"value".to_vec(),
-            None,
-        )
-        .await
-        .unwrap();
+        .store_token(&first.environment_id, 0, b"value")
+        .await;
     std::fs::remove_file(harness.database_path.with_file_name("secrets.key")).unwrap();
-    let mut input = manifest();
-    input.spec.services[0]
-        .secrets
-        .push(piqueld_core::manifest::SecretMount {
-            name: "token".into(),
-            target: "/run/secrets/token".into(),
-        });
-    let deployment = applications
-        .apply(input.validate_template().unwrap(), Some(1))
-        .await
-        .unwrap();
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
-    let operation = harness.store.operation(&deployment.id).await.unwrap();
+    let deployment = harness.apply(with_token(manifest()), Some(1)).await;
+    harness.scan().await;
+    let operation = harness.operation(&deployment.id).await;
     assert_eq!(
         operation.error_code.as_deref(),
         Some("secret_storage_unavailable")
     );
     assert!(harness.docker.secret_values.lock().await.is_empty());
-    let events = harness
-        .store
-        .filtered_events(
-            &piqueld_core::observability::EventFilter {
-                operation_id: Some(deployment.id.clone()),
-                ..Default::default()
-            },
-            &piqueld::store::Visibility::ALL,
-            None,
-            100,
-        )
-        .await
-        .unwrap()
-        .items;
+    let events = harness.operation_events(&deployment.id).await;
     let service = |kind: &str| {
         events
             .iter()
@@ -4244,29 +3709,21 @@ async fn missing_secret_key_fails_rollout_before_docker_mutation() {
 
 #[tokio::test]
 async fn preparation_timeout_is_retried_after_backoff() {
-    let mut harness = ControllerHarness::new().await;
-    let gate = Arc::new(ResolutionGate::default());
-    harness.docker = Arc::new(FakeDocker {
+    let gate = Arc::new(Gate::default());
+    let mut harness = ControllerHarness::with_docker(FakeDocker {
         resolution_gate: Some(Arc::clone(&gate)),
         ..FakeDocker::default()
-    });
+    })
+    .await;
     harness.controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store))
-        .with_prepare_timeout(std::time::Duration::from_millis(100));
+        .with_prepare_timeout(Duration::from_millis(100));
     let mut manifest = manifest();
     manifest.spec.services[0].source = piqueld_core::Source::Image {
         image: "ghcr.io/example/slow:1".into(),
     };
-    let operation = harness
-        .applications()
-        .apply(manifest.validate_template().unwrap(), None)
-        .await
-        .unwrap();
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
-    let failed = harness.store.operation(&operation.id).await.unwrap();
+    let operation = harness.apply(manifest, None).await;
+    harness.scan().await;
+    let failed = harness.operation(&operation.id).await;
     assert_eq!(failed.state, OperationState::Failed);
     assert_eq!(failed.error_code.as_deref(), Some("preparation_timeout"));
     assert!(
@@ -4279,16 +3736,12 @@ async fn preparation_timeout_is_retried_after_backoff() {
     );
     assert_eq!(
         harness.docker.observed.lock().await.services,
-        [] as [piqueld_core::ObservedService; 0]
+        [] as [ObservedService; 0]
     );
     harness.expire_backoff(&operation).await;
     harness.controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
     gate.release.notify_one();
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
+    harness.scan().await;
     let latest = harness
         .store
         .latest_operation_for_environment(&operation.environment_id)
@@ -4306,41 +3759,23 @@ async fn changed_swarm_topology_blocks_preparation_and_recovers_after_backoff() 
         .docker
         .incompatible_swarm
         .store(true, Ordering::SeqCst);
-    let operation = harness
-        .applications()
-        .apply(manifest().validate_template().unwrap(), None)
-        .await
-        .unwrap();
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
+    let operation = harness.apply(manifest(), None).await;
+    harness.scan().await;
     assert_eq!(
-        harness
-            .store
-            .operation(&operation.id)
-            .await
-            .unwrap()
-            .error_code
-            .as_deref(),
+        harness.operation(&operation.id).await.error_code.as_deref(),
         Some("swarm_topology_unsupported")
     );
     assert!(harness.docker.registry.lock().await.pulls.is_empty());
     assert_eq!(
         harness.docker.observed.lock().await.networks,
-        [] as [piqueld_core::ObservedNetwork; 0]
+        [] as [ObservedNetwork; 0]
     );
     harness
         .docker
         .incompatible_swarm
         .store(false, Ordering::SeqCst);
     harness.expire_backoff(&operation).await;
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
+    harness.scan().await;
     let latest = harness
         .store
         .latest_operation_for_environment(&operation.environment_id)
@@ -4352,22 +3787,17 @@ async fn changed_swarm_topology_blocks_preparation_and_recovers_after_backoff() 
 
 #[tokio::test]
 async fn topology_change_during_preparation_blocks_promotion_and_mutation() {
-    let mut harness = ControllerHarness::new().await;
-    let gate = Arc::new(ResolutionGate::default());
-    harness.docker = Arc::new(FakeDocker {
+    let gate = Arc::new(Gate::default());
+    let harness = ControllerHarness::with_docker(FakeDocker {
         resolution_gate: Some(Arc::clone(&gate)),
         ..FakeDocker::default()
-    });
-    harness.controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
+    })
+    .await;
     let mut manifest = manifest();
     manifest.spec.services[0].source = piqueld_core::Source::Image {
         image: "ghcr.io/example/slow:1".into(),
     };
-    let operation = harness
-        .applications()
-        .apply(manifest.validate_template().unwrap(), None)
-        .await
-        .unwrap();
+    let operation = harness.apply(manifest, None).await;
     let cancellation = CancellationToken::new();
     let scan = harness.controller.scan(&cancellation);
     let change_topology = async {
@@ -4381,13 +3811,7 @@ async fn topology_change_during_preparation_blocks_promotion_and_mutation() {
     let (result, ()) = tokio::join!(scan, change_topology);
     result.unwrap();
     assert_eq!(
-        harness
-            .store
-            .operation(&operation.id)
-            .await
-            .unwrap()
-            .error_code
-            .as_deref(),
+        harness.operation(&operation.id).await.error_code.as_deref(),
         Some("swarm_topology_unsupported")
     );
     assert!(
@@ -4401,7 +3825,7 @@ async fn topology_change_during_preparation_blocks_promotion_and_mutation() {
     );
     assert_eq!(
         harness.docker.observed.lock().await.networks,
-        [] as [piqueld_core::ObservedNetwork; 0]
+        [] as [ObservedNetwork; 0]
     );
 }
 
@@ -4409,76 +3833,20 @@ async fn topology_change_during_preparation_blocks_promotion_and_mutation() {
 async fn deletion_proceeds_after_another_node_joins() {
     let harness = ControllerHarness::new().await;
     harness.create().await;
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
+    harness.scan().await;
     harness
         .docker
         .incompatible_swarm
         .store(true, Ordering::SeqCst);
     harness.delete().await;
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
+    harness.scan().await;
     harness.assert_deleted().await;
-}
-
-/// The fixture manifest with before-rollout jobs that reuse its `web` service.
-fn manifest_with_jobs(
-    jobs: &[&str],
-    timeout_seconds: u32,
-) -> piqueld_core::manifest::ApplicationManifest {
-    let mut input = manifest();
-    input.spec.jobs = jobs
-        .iter()
-        .map(|name| piqueld_core::manifest::Job {
-            name: (*name).into(),
-            service: "web".into(),
-            command: vec!["notes".into(), (*name).into()],
-            run: piqueld_core::manifest::JobRun::BeforeRollout,
-            timeout_seconds,
-            volume_access: piqueld_core::manifest::JobVolumeAccess::ReadOnly,
-        })
-        .collect();
-    input
-}
-
-/// A migration whose database depends on storage, plus an unrelated service.
-fn manifest_with_job_dependencies() -> piqueld_core::manifest::ApplicationManifest {
-    let mut input = manifest_with_jobs(&["migrate"], 300);
-    input.spec.services[0].depends_on = vec!["db".into()];
-    for (name, dependencies) in [
-        ("db", vec!["storage".into()]),
-        ("storage", vec![]),
-        ("other", vec![]),
-    ] {
-        let mut service = input.spec.services[0].clone();
-        service.name = name.into();
-        service.depends_on = dependencies;
-        service.mounts.clear();
-        service.healthcheck = Some(piqueld_core::manifest::HealthCheck::Command {
-            command: vec!["ready".into()],
-            interval_seconds: 1.into(),
-            timeout_seconds: 1.into(),
-        });
-        input.spec.services.push(service);
-    }
-    input
 }
 
 #[tokio::test]
 async fn job_dependencies_converge_before_migration_and_other_services() {
     let mut harness = ControllerHarness::new().await;
-    harness.controller = harness
-        .controller
-        .with_retry_policy(piqueld::reconcile::RetryPolicy {
-            convergence_timeout: std::time::Duration::from_secs(3),
-            ..Default::default()
-        });
+    harness.set_convergence_timeout(Duration::from_secs(3));
     harness
         .docker
         .slow_services
@@ -4493,11 +3861,7 @@ async fn job_dependencies_converge_before_migration_and_other_services() {
     storage_job.name = "initialize-storage".into();
     storage_job.service = "storage".into();
     input.spec.jobs.insert(0, storage_job);
-    let operation = harness
-        .applications()
-        .apply(input.validate_template().unwrap(), None)
-        .await
-        .unwrap();
+    let operation = harness.apply(input, None).await;
     harness.finish(&operation).await;
     assert_eq!(
         *harness.docker.job_starts.lock().await,
@@ -4536,13 +3900,7 @@ async fn job_dependencies_converge_before_migration_and_other_services() {
 async fn failed_or_timed_out_job_dependencies_prevent_jobs_and_other_services() {
     for failed in [false, true] {
         let mut harness = ControllerHarness::new().await;
-        harness.controller =
-            harness
-                .controller
-                .with_retry_policy(piqueld::reconcile::RetryPolicy {
-                    convergence_timeout: std::time::Duration::from_secs(3),
-                    ..Default::default()
-                });
+        harness.set_convergence_timeout(Duration::from_secs(3));
         harness
             .docker
             .stall_convergence
@@ -4551,16 +3909,7 @@ async fn failed_or_timed_out_job_dependencies_prevent_jobs_and_other_services() 
             .docker
             .fail_convergence
             .store(failed, Ordering::SeqCst);
-        let operation = harness
-            .applications()
-            .apply(
-                manifest_with_job_dependencies()
-                    .validate_template()
-                    .unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
+        let operation = harness.apply(manifest_with_job_dependencies(), None).await;
         assert_eq!(
             harness.scan_result(&operation).await,
             (
@@ -4602,11 +3951,7 @@ async fn failed_migration_rolls_back_prerequisites_and_repairs_active_services()
                 .services
                 .retain(|service| matches!(service.name.as_str(), "web" | "other"));
         }
-        let first = harness
-            .applications()
-            .apply(initial.validate_template().unwrap(), None)
-            .await
-            .unwrap();
+        let first = harness.apply(initial, None).await;
         harness.finish(&first).await;
         let mut replacement = manifest_with_job_dependencies();
         for service in &mut replacement.spec.services {
@@ -4615,16 +3960,12 @@ async fn failed_migration_rolls_back_prerequisites_and_repairs_active_services()
             }
         }
         harness.docker.job_exit.store(3, Ordering::SeqCst);
-        let operation = harness
-            .applications()
-            .apply(replacement.validate_template().unwrap(), None)
-            .await
-            .unwrap();
+        let operation = harness.apply(replacement, None).await;
         assert_eq!(
             harness.scan_result(&operation).await,
             (OperationState::Failed, Some("job_failed".into()))
         );
-        let replicas = |observed: &piqueld_core::ObservedApplication, name: &str| {
+        let replicas = |observed: &ObservedApplication, name: &str| {
             observed
                 .services
                 .iter()
@@ -4672,30 +4013,12 @@ async fn failed_migration_rolls_back_prerequisites_and_repairs_active_services()
     }
 }
 
-/// The fixture with one exclusive migration of `web`, which mounts `data`.
-fn manifest_with_exclusive_job() -> piqueld_core::manifest::ApplicationManifest {
-    let mut input = manifest_with_jobs(&["migrate"], 300);
-    input.spec.jobs[0].volume_access = piqueld_core::manifest::JobVolumeAccess::Exclusive;
-    input
-}
-
 #[tokio::test]
 async fn exclusive_job_runs_while_its_volume_users_are_stopped() {
     let harness = ControllerHarness::new().await;
-    let first = harness
-        .applications()
-        .apply(manifest().validate_template().unwrap(), None)
-        .await
-        .unwrap();
+    let first = harness.apply(manifest(), None).await;
     harness.finish(&first).await;
-    let operation = harness
-        .applications()
-        .apply(
-            manifest_with_exclusive_job().validate_template().unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+    let operation = harness.apply(manifest_with_exclusive_job(), None).await;
     harness.finish(&operation).await;
     // The running web wrote the volume, so it stopped before the job and
     // restarted with the rollout.
@@ -4714,25 +4037,14 @@ async fn exclusive_job_runs_while_its_volume_users_are_stopped() {
 #[tokio::test]
 async fn failed_exclusive_job_restarts_stopped_services_once_its_run_stopped() {
     let harness = ControllerHarness::new().await;
-    let first = harness
-        .applications()
-        .apply(manifest().validate_template().unwrap(), None)
-        .await
-        .unwrap();
+    let first = harness.apply(manifest(), None).await;
     harness.finish(&first).await;
     harness.docker.job_exit.store(3, Ordering::SeqCst);
     harness
         .docker
         .fail_job_cleanup
         .store(true, Ordering::SeqCst);
-    let operation = harness
-        .applications()
-        .apply(
-            manifest_with_exclusive_job().validate_template().unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+    let operation = harness.apply(manifest_with_exclusive_job(), None).await;
     // While the run may still hold the volume, web stays stopped.
     for _ in 0..3 {
         assert_eq!(
@@ -4741,7 +4053,7 @@ async fn failed_exclusive_job_restarts_stopped_services_once_its_run_stopped() {
         );
         assert_eq!(
             harness.docker.observed.lock().await.services,
-            [] as [piqueld_core::ObservedService; 0]
+            [] as [ObservedService; 0]
         );
     }
     harness
@@ -4760,15 +4072,8 @@ async fn resumed_job_keeps_the_deadline_of_its_start() {
     let mut harness = ControllerHarness::new().await;
     harness.docker.hold_jobs.store(true, Ordering::SeqCst);
     let operation = harness
-        .applications()
-        .apply(
-            manifest_with_jobs(&["migrate"], 300)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
     let shutdown = CancellationToken::new();
     let (scanned, ()) = tokio::join!(harness.controller.scan(&shutdown), async {
         harness.wait_for_job_starts(1).await;
@@ -4777,97 +4082,26 @@ async fn resumed_job_keeps_the_deadline_of_its_start() {
     scanned.unwrap();
     // The daemon stays down past the run's deadline.
     for (_, _, deadline) in harness.docker.jobs.lock().await.values_mut() {
-        *deadline = std::time::SystemTime::now() - std::time::Duration::from_secs(1);
+        *deadline = std::time::SystemTime::now() - Duration::from_secs(1);
     }
     harness.reopen().await;
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        harness.scan_result(&operation),
-    )
-    .await
-    .expect("the resumed run times out at its original deadline");
+    let result = tokio::time::timeout(Duration::from_secs(30), harness.scan_result(&operation))
+        .await
+        .expect("the resumed run times out at its original deadline");
     assert_eq!(result, (OperationState::Failed, Some("job_timeout".into())));
     assert_eq!(harness.started_jobs().await, ["migrate"]);
-}
-
-impl ControllerHarness {
-    /// Names of the jobs started so far, in start order.
-    async fn started_jobs(&self) -> Vec<String> {
-        self.docker
-            .job_starts
-            .lock()
-            .await
-            .iter()
-            .map(|start| start.job.clone())
-            .collect()
-    }
-
-    /// The application's newest build record and its retained output.
-    async fn latest_run(
-        &self,
-        application: &EnvironmentId,
-    ) -> (piqueld_core::api::BuildRecord, String) {
-        let run = self
-            .store
-            .builds(
-                None,
-                Some(application),
-                &piqueld_core::access::Scope::All,
-                None,
-                10,
-            )
-            .await
-            .unwrap()
-            .items
-            .remove(0);
-        let output = self
-            .store
-            .build_logs(run.id, None, None)
-            .await
-            .unwrap()
-            .items
-            .into_iter()
-            .map(|line| line.text)
-            .collect();
-        (run, output)
-    }
-
-    /// Scans once and returns the operation's resulting state and error code.
-    async fn scan_result(&self, operation: &Operation) -> (OperationState, Option<String>) {
-        self.controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
-        let operation = self.store.operation(&operation.id).await.unwrap();
-        (operation.state, operation.error_code)
-    }
-
-    /// Waits until `count` job runs have been started.
-    async fn wait_for_job_starts(&self, count: usize) {
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while self.docker.job_starts.lock().await.len() < count {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("job starts");
-    }
 }
 
 #[tokio::test]
 async fn before_rollout_jobs_gate_service_changes_and_record_output() {
     let harness = ControllerHarness::new().await;
-    let applications = harness.applications();
     let mut input = manifest_with_jobs(&["migrate"], 300);
     // A run left by an earlier operation is removed before jobs start.
     harness.docker.jobs.lock().await.insert(
         "leftover".into(),
         ("earlier-operation".into(), 0, std::time::SystemTime::now()),
     );
-    let first = applications
-        .apply(input.clone().validate_template().unwrap(), None)
-        .await
-        .unwrap();
+    let first = harness.apply(input.clone(), None).await;
     harness.finish(&first).await;
     // The first job sees its network and volume but no service yet.
     assert_eq!(
@@ -4900,10 +4134,7 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
         .truncate_job_output
         .store(true, Ordering::SeqCst);
     input.spec.services[0].replicas = 2.into();
-    let failed = applications
-        .apply(input.validate_template().unwrap(), None)
-        .await
-        .unwrap();
+    let failed = harness.apply(input, None).await;
     assert_eq!(
         harness.scan_result(&failed).await,
         (OperationState::Failed, Some("job_failed".into()))
@@ -4934,15 +4165,9 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
 async fn failed_job_keeps_an_unchanged_application_degraded() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
-    let first = applications
-        .apply(
-            manifest_with_jobs(&["migrate"], 300)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+    let first = harness
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
     harness.finish(&first).await;
     harness.docker.job_exit.store(3, Ordering::SeqCst);
     let redeploy = applications
@@ -4965,15 +4190,8 @@ async fn retried_operation_skips_jobs_that_already_succeeded() {
     let harness = ControllerHarness::new().await;
     *harness.docker.conflicting_job.lock().await = Some("seed".into());
     let operation = harness
-        .applications()
-        .apply(
-            manifest_with_jobs(&["migrate", "seed"], 300)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        .apply(manifest_with_jobs(&["migrate", "seed"], 300), None)
+        .await;
     assert_eq!(
         harness.scan_result(&operation).await,
         (OperationState::Failed, Some("ownership_conflict".into()))
@@ -4990,15 +4208,8 @@ async fn job_run_accepted_before_a_lost_response_is_not_started_again() {
     let harness = ControllerHarness::new().await;
     harness.docker.lose_job_start.store(true, Ordering::SeqCst);
     let operation = harness
-        .applications()
-        .apply(
-            manifest_with_jobs(&["migrate"], 300)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
     harness.finish(&operation).await;
     assert_eq!(harness.started_jobs().await, ["migrate"]);
 }
@@ -5008,15 +4219,8 @@ async fn restarted_daemon_resumes_a_running_job() {
     let mut harness = ControllerHarness::new().await;
     harness.docker.hold_jobs.store(true, Ordering::SeqCst);
     let operation = harness
-        .applications()
-        .apply(
-            manifest_with_jobs(&["migrate"], 300)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
     let shutdown = CancellationToken::new();
     let (scanned, ()) = tokio::join!(harness.controller.scan(&shutdown), async {
         harness.wait_for_job_starts(1).await;
@@ -5039,24 +4243,14 @@ async fn restarted_daemon_resumes_a_running_job() {
 #[tokio::test]
 async fn superseded_job_run_is_stopped() {
     let harness = ControllerHarness::new().await;
-    let applications = harness.applications();
     harness.docker.hold_jobs.store(true, Ordering::SeqCst);
-    let first = applications
-        .apply(
-            manifest_with_jobs(&["migrate"], 300)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+    let first = harness
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
     let cancellation = CancellationToken::new();
     let (scanned, second) = tokio::join!(harness.controller.scan(&cancellation), async {
         harness.wait_for_job_starts(1).await;
-        applications
-            .apply(manifest().validate_template().unwrap(), None)
-            .await
-            .unwrap()
+        harness.apply(manifest(), None).await
     });
     scanned.unwrap();
     // The replacement deployment declares no jobs, so the superseded
@@ -5073,15 +4267,8 @@ async fn job_timeout_keeps_output_and_stops_the_run() {
     let harness = ControllerHarness::new().await;
     harness.docker.hold_jobs.store(true, Ordering::SeqCst);
     let operation = harness
-        .applications()
-        .apply(
-            manifest_with_jobs(&["migrate"], 1)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        .apply(manifest_with_jobs(&["migrate"], 1), None)
+        .await;
     assert_eq!(
         harness.scan_result(&operation).await,
         (OperationState::Failed, Some("job_timeout".into()))
@@ -5092,7 +4279,7 @@ async fn job_timeout_keeps_output_and_stops_the_run() {
     assert!(harness.docker.jobs.lock().await.is_empty());
     assert_eq!(
         harness.docker.observed.lock().await.services,
-        [] as [piqueld_core::ObservedService; 0]
+        [] as [ObservedService; 0]
     );
 }
 
@@ -5105,49 +4292,28 @@ async fn timed_out_job_cleanup_retries_after_restart_without_rerunning() {
         .fail_job_cleanup
         .store(true, Ordering::SeqCst);
     let operation = harness
-        .applications()
-        .apply(
-            manifest_with_jobs(&["migrate"], 1)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        .apply(manifest_with_jobs(&["migrate"], 1), None)
+        .await;
     assert_eq!(
         harness.scan_result(&operation).await,
         (OperationState::Failed, Some("job_timeout".into()))
     );
-    let failed = harness.store.operation(&operation.id).await.unwrap();
+    let failed = harness.operation(&operation.id).await;
     // Repeated scans retry stopping, without changing the job's failure or
     // starting another run while Docker is unavailable.
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
+    harness.scan().await;
     assert_eq!(harness.docker.jobs.lock().await.len(), 1);
-    assert_eq!(
-        harness.store.operation(&operation.id).await.unwrap(),
-        failed
-    );
+    assert_eq!(harness.operation(&operation.id).await, failed);
 
     harness.reopen().await;
     harness
         .docker
         .fail_job_cleanup
         .store(false, Ordering::SeqCst);
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
+    harness.scan().await;
     assert!(harness.docker.jobs.lock().await.is_empty());
     assert_eq!(harness.started_jobs().await, ["migrate"]);
-    assert_eq!(
-        harness.store.operation(&operation.id).await.unwrap(),
-        failed
-    );
+    assert_eq!(harness.operation(&operation.id).await, failed);
     assert!(
         harness
             .store
@@ -5169,22 +4335,12 @@ async fn job_cleanup_still_runs_when_outcome_recording_fails() {
         "CREATE TRIGGER reject_job_outcome BEFORE INSERT ON events WHEN NEW.phase='run_job' AND NEW.kind='action_failed' BEGIN SELECT RAISE(FAIL,'journal unavailable'); END",
     ] {
         let harness = ControllerHarness::new().await;
-        let mut connection =
-            SqliteConnection::connect(&format!("sqlite://{}", harness.database_path.display()))
-                .await
-                .unwrap();
+        let mut connection = harness.database().await;
         sqlx::query(trigger).execute(&mut connection).await.unwrap();
         harness.docker.hold_jobs.store(true, Ordering::SeqCst);
         let operation = harness
-            .applications()
-            .apply(
-                manifest_with_jobs(&["migrate"], 1)
-                    .validate_template()
-                    .unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
+            .apply(manifest_with_jobs(&["migrate"], 1), None)
+            .await;
         assert_eq!(
             harness.scan_result(&operation).await,
             (OperationState::Failed, Some("job_timeout".into()))
@@ -5194,11 +4350,7 @@ async fn job_cleanup_still_runs_when_outcome_recording_fails() {
             .execute(&mut connection)
             .await
             .unwrap();
-        harness
-            .controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
+        harness.scan().await;
         assert_eq!(harness.started_jobs().await, ["migrate"]);
     }
 }
@@ -5211,15 +4363,8 @@ async fn pending_cleanup_blocks_the_next_job() {
         .fail_job_cleanup
         .store(true, Ordering::SeqCst);
     let operation = harness
-        .applications()
-        .apply(
-            manifest_with_jobs(&["migrate", "seed"], 300)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        .apply(manifest_with_jobs(&["migrate", "seed"], 300), None)
+        .await;
     assert_eq!(
         harness.scan_result(&operation).await,
         (OperationState::Failed, Some("docker_request_failed".into()))
@@ -5234,12 +4379,7 @@ async fn pending_cleanup_blocks_the_next_job() {
         (OperationState::Failed, Some("docker_request_failed".into()))
     );
     assert_eq!(
-        harness
-            .store
-            .operation(&operation.id)
-            .await
-            .unwrap()
-            .consecutive_failures,
+        harness.operation(&operation.id).await.consecutive_failures,
         2
     );
     assert_eq!(harness.started_jobs().await, ["migrate"]);
@@ -5259,15 +4399,8 @@ async fn unknown_job_status_keeps_the_run_for_a_retry() {
     harness.docker.hold_jobs.store(true, Ordering::SeqCst);
     harness.docker.fail_job_status.store(true, Ordering::SeqCst);
     let operation = harness
-        .applications()
-        .apply(
-            manifest_with_jobs(&["migrate"], 1)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        .apply(manifest_with_jobs(&["migrate"], 1), None)
+        .await;
     // Docker never reported the status, so the outcome is unknown: the
     // failure is transient and the run keeps going.
     assert_eq!(
@@ -5296,47 +4429,35 @@ async fn unknown_job_status_keeps_the_run_for_a_retry() {
 async fn recorded_success_survives_a_crash_before_cleanup() {
     let mut harness = ControllerHarness::new().await;
     let operation = harness
-        .applications()
-        .apply(
-            manifest_with_jobs(&["migrate"], 300)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
     let held = harness.docker.hold_job_cleanup.lock().await;
     // The success is stored before the run is removed; dropping the scan
     // there is a crash.
-    let succeeded = async {
-        loop {
-            let builds = harness
-                .store
-                .builds(
-                    None,
-                    Some(&operation.environment_id),
-                    &piqueld_core::access::Scope::All,
-                    None,
-                    10,
-                )
-                .await
-                .unwrap();
-            if builds
-                .items
-                .first()
-                .is_some_and(|run| run.state == piqueld_core::api::BuildState::Succeeded)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    };
+    let succeeded = eventually(Duration::from_secs(10), POLL, async || {
+        let builds = harness
+            .store
+            .builds(
+                None,
+                Some(&operation.environment_id),
+                &piqueld_core::access::Scope::All,
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        builds
+            .items
+            .first()
+            .is_some_and(|run| run.state == piqueld_core::api::BuildState::Succeeded)
+            .then_some(())
+    });
     let shutdown = CancellationToken::new();
     tokio::select! {
         result = harness.controller.scan(&shutdown) => {
             panic!("scan finished while cleanup was held: {result:?}");
         }
-        recorded = tokio::time::timeout(std::time::Duration::from_secs(10), succeeded) => {
+        recorded = succeeded => {
             recorded.expect("success recorded while cleanup was held");
         }
     }
@@ -5358,15 +4479,8 @@ async fn retry_reruns_a_failed_run_left_in_place() {
         .fail_job_cleanup
         .store(true, Ordering::SeqCst);
     let operation = harness
-        .applications()
-        .apply(
-            manifest_with_jobs(&["migrate"], 300)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
     assert_eq!(
         harness.scan_result(&operation).await,
         (OperationState::Failed, Some("job_failed".into()))
@@ -5398,15 +4512,8 @@ async fn job_outcome_survives_output_and_cleanup_failures() {
         .fail_job_cleanup
         .store(true, Ordering::SeqCst);
     let operation = harness
-        .applications()
-        .apply(
-            manifest_with_jobs(&["migrate"], 300)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
     harness.finish(&operation).await;
     let (run, output) = harness.latest_run(&operation.environment_id).await;
     assert_eq!(
@@ -5433,15 +4540,8 @@ async fn job_outcome_survives_output_and_cleanup_failures() {
 async fn blocked_deployment_runs_no_jobs() {
     let harness = ControllerHarness::new().await;
     let operation = harness
-        .applications()
-        .apply(
-            manifest_with_jobs(&["migrate"], 300)
-                .validate_template()
-                .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
     harness
         .docker
         .observed
@@ -5489,10 +4589,7 @@ mod image_retention {
         async fn deploy_git_build(&self, fixture: &git_fixture::GitBuildFixture) -> Operation {
             let mut input = manifest();
             input.spec.services[0].source = fixture.source.clone();
-            self.applications()
-                .apply(input.validate_template().unwrap(), Some(0))
-                .await
-                .unwrap()
+            self.apply(input, Some(0)).await
         }
 
         /// IDs of the images left in the engine.
@@ -5549,14 +4646,12 @@ mod image_retention {
 
     #[tokio::test]
     async fn an_image_built_for_a_deployment_in_preparation_survives_cleanup() {
-        let mut harness = ControllerHarness::new().await;
-        let gate = Arc::new(ResolutionGate::default());
-        harness.docker = Arc::new(FakeDocker {
+        let gate = Arc::new(Gate::default());
+        let harness = ControllerHarness::with_docker(FakeDocker {
             build_gate: Some(Arc::clone(&gate)),
             ..FakeDocker::default()
-        });
-        harness.controller =
-            Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
+        })
+        .await;
         let fixture = git_fixture::GitBuildFixture::new();
         let operation = harness.deploy_git_build(&fixture).await;
         let cancellation = CancellationToken::new();
@@ -5578,7 +4673,7 @@ mod image_retention {
         gate.release.notify_one();
         scan.await.unwrap();
         assert_eq!(
-            harness.store.operation(&operation.id).await.unwrap().state,
+            harness.operation(&operation.id).await.state,
             OperationState::Succeeded
         );
         assert!(harness.controller.clean_images().await.unwrap());
@@ -5590,7 +4685,7 @@ mod image_retention {
         let harness = ControllerHarness::new().await;
         let in_use: ImagesInUse = harness.controller.images_in_use().await;
         let web = ServiceName::parse("web").unwrap();
-        let pulled = harness.resolutions.sources[&web].clone();
+        let pulled = prebuilt::resolutions(&harness.application).sources[&web].clone();
         let digest = pulled.repository_digest().unwrap().to_string();
 
         in_use
@@ -5736,10 +4831,8 @@ mod promotion {
             let accepted = self.promote_current().await.unwrap();
             let operation = self
                 .harness
-                .store
                 .operation(&accepted.operation.operation_id)
-                .await
-                .unwrap();
+                .await;
             self.harness.finish(&operation).await;
             accepted
         }
@@ -5896,10 +4989,8 @@ mod promotion {
         assert_ne!(shop.release(&second.id).await, release);
         let promoted = shop
             .harness
-            .store
             .operation(&accepted.operation.operation_id)
-            .await
-            .unwrap();
+            .await;
         assert_eq!(promoted.state, OperationState::Succeeded);
         assert_eq!(
             shop.deployment(&promoted.id).await.release,
@@ -5934,12 +5025,7 @@ mod promotion {
             })
             .await
             .unwrap();
-        let operation = shop
-            .harness
-            .store
-            .operation(&again.operation.operation_id)
-            .await
-            .unwrap();
+        let operation = shop.harness.operation(&again.operation.operation_id).await;
         shop.harness.finish(&operation).await;
         assert_eq!(again.origin, DeploymentOrigin::Release);
         assert_eq!(
@@ -6175,12 +5261,8 @@ mod promotion {
             .docker
             .incompatible_swarm
             .store(true, Ordering::SeqCst);
-        shop.harness
-            .controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
-        let failed = shop.harness.store.operation(&requested.id).await.unwrap();
+        shop.harness.scan().await;
+        let failed = shop.harness.operation(&requested.id).await;
         assert_eq!(failed.state, OperationState::Failed);
         shop.harness
             .docker
@@ -6197,12 +5279,8 @@ mod promotion {
             .await
             .unwrap();
         assert_eq!(retried.id, requested.id);
-        shop.harness
-            .controller
-            .scan(&CancellationToken::new())
-            .await
-            .unwrap();
-        let failed = shop.harness.store.operation(&requested.id).await.unwrap();
+        shop.harness.scan().await;
+        let failed = shop.harness.operation(&requested.id).await;
         assert_eq!(failed.state, OperationState::Failed);
         assert_eq!(failed.error_code.as_deref(), Some("environment_promoted"));
         assert_eq!(shop.harness.pulls().await, pulls);

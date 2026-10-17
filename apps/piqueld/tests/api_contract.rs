@@ -1,22 +1,44 @@
 //! Focused API/client coverage for the polling application lifecycle.
 
+#[path = "support/poll.rs"]
+mod poll;
+#[path = "support/repository.rs"]
+mod repository;
+#[path = "support/sqlite.rs"]
+mod sqlite;
+
 use async_trait::async_trait;
-use axum::{body::Body, http::Request, serve};
-use http_body_util::BodyExt;
+use axum::{body::Body, serve};
+use http::{HeaderMap, Method, Request, StatusCode};
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
+use hyper_util::rt::TokioIo;
 use piqueld::api::Actor::Daemon;
 use piqueld::api::http::{
     ApiState, Authenticator, EmbeddedBundle, UiAssets, api_router, router, web_router,
 };
 use piqueld::application::{BoundaryError, RuntimeBoundary};
 use piqueld::store::{Store, StoredEnvironment};
-use piqueld_client::{AcceptedOperation, ApplyApplicationRequest, Client};
+use piqueld_client::{AcceptedOperation, ApplyApplicationRequest, Client, ClientError};
+use piqueld_core::api::SavedApplication;
 use piqueld_core::{
     InstanceId, NormalizedApplication, ObservedApplication, ResolutionSet, compile_application,
     manifest::{ApplicationManifest, ApplicationTemplate, Source, ValidatedSource},
     planner::ActionKind,
     resource::{ResolvedSource, image_repository},
 };
-use std::{collections::BTreeMap, future::IntoFuture, sync::Arc};
+use poll::eventually;
+use repository::Repository;
+use std::{
+    collections::BTreeMap,
+    future::IntoFuture,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tower::ServiceExt;
@@ -46,6 +68,13 @@ impl Authenticator for FakeAuth {
     }
 }
 
+/// The bearer token [`seed_account`] gives the administrator [`FakeAuth`]
+/// signs in as.
+fn admin_token() -> String {
+    format!("{:x<43}", "contract-admin")
+}
+
+/// Holds secret removal once it starts, until released.
 #[derive(Default)]
 struct CleanupGate {
     started: tokio::sync::Notify,
@@ -55,7 +84,23 @@ struct CleanupGate {
 struct FakeRuntime {
     cleanup_gate: Option<Arc<CleanupGate>>,
     instance: InstanceId,
-    unavailable: std::sync::atomic::AtomicBool,
+    unavailable: AtomicBool,
+}
+
+impl FakeRuntime {
+    /// A reachable runtime owned by `store`'s installation.
+    fn new(store: &Store) -> Self {
+        Self {
+            cleanup_gate: None,
+            instance: InstanceId::parse(store.instance_id()).expect("valid instance ID"),
+            unavailable: AtomicBool::new(false),
+        }
+    }
+
+    /// Makes Docker unreachable, or reachable again.
+    fn set_unavailable(&self, unavailable: bool) {
+        self.unavailable.store(unavailable, Ordering::Relaxed);
+    }
 }
 
 #[async_trait]
@@ -94,7 +139,7 @@ impl RuntimeBoundary for FakeRuntime {
         request: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<piqueld::docker::Exec>, BoundaryError> {
         if request.command.as_slice()[0] == "slow" {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
         let id = match request.command.as_slice()[0].as_str() {
             "block" => "exec-blocked",
@@ -156,10 +201,7 @@ impl RuntimeBoundary for FakeRuntime {
     fn trigger_reconciliation(&self) {}
 
     async fn readiness(&self) -> (bool, bool) {
-        (
-            true,
-            !self.unavailable.load(std::sync::atomic::Ordering::Relaxed),
-        )
+        (true, !self.unavailable.load(Ordering::Relaxed))
     }
 
     async fn remove_secrets(
@@ -226,7 +268,7 @@ impl RuntimeBoundary for FakeRuntime {
     }
 
     async fn check_available(&self) -> Result<(), BoundaryError> {
-        if self.unavailable.load(std::sync::atomic::Ordering::Relaxed) {
+        if self.unavailable.load(Ordering::Relaxed) {
             return Err(piqueld::docker::DockerError::Unavailable("observe application").into());
         }
         Ok(())
@@ -241,6 +283,7 @@ impl RuntimeBoundary for FakeRuntime {
     }
 }
 
+/// The contract manifest: `notes`, with one `web` service running an image.
 fn manifest() -> ApplicationManifest {
     serde_json::from_value(serde_json::json!({
         "api_version": "piqueld.dev/v1alpha1",
@@ -252,6 +295,414 @@ fn manifest() -> ApplicationManifest {
         }]}
     }))
     .expect("fixture is valid")
+}
+
+/// Applies the contract manifest as a new application.
+fn new_application() -> ApplyApplicationRequest {
+    ApplyApplicationRequest {
+        manifest: manifest(),
+        expected_generation: Some(0),
+        expected_application_id: None,
+    }
+}
+
+/// The contract daemon's database in `temp`.
+fn database(temp: &TempDir) -> PathBuf {
+    temp.path().join("state.db")
+}
+
+/// The contract daemon's state in `temp`, over [`FakeRuntime`].
+async fn state(temp: &TempDir) -> ApiState {
+    state_with(temp, None).await
+}
+
+/// [`state`] with the daemon's `[snapshots] max_upload_bytes`, if given.
+async fn state_with(temp: &TempDir, max_upload_bytes: Option<std::num::NonZeroU64>) -> ApiState {
+    let store = Store::open(database(temp))
+        .await
+        .expect("fresh database opens");
+    let store = match max_upload_bytes {
+        Some(limit) => store.with_snapshot_uploads(limit),
+        None => store,
+    };
+    contract_state(temp, Arc::new(store)).await.1
+}
+
+/// The runtime and state of a contract daemon over `store`, opened in
+/// `temp`.
+async fn contract_state(temp: &TempDir, store: Arc<Store>) -> (Arc<FakeRuntime>, ApiState) {
+    // `FakeAuth` signs requests in with this administrator's credential,
+    // which mutations re-read from the database.
+    seed_account(&database(temp), "contract-admin", &[("admin", None)]).await;
+    let runtime = Arc::new(FakeRuntime::new(&store));
+    (Arc::clone(&runtime), ApiState::new(store, runtime))
+}
+
+/// The real authenticator of the contract daemon in `temp`.
+async fn auth(temp: &TempDir) -> piqueld::auth::Auth {
+    let store = Store::open(database(temp)).await.unwrap();
+    piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap()
+}
+
+/// Saves `manifest` as a new application, without deploying it.
+async fn save(state: &ApiState, manifest: ApplicationManifest) -> SavedApplication {
+    let mutation = piqueld::api::Mutation::save(manifest.validate_template().unwrap(), None, false);
+    let Ok(piqueld::api::MutationResponse::Saved(saved)) =
+        state.accept(Daemon, mutation, Some(0), false, None).await
+    else {
+        panic!("save response");
+    };
+    saved
+}
+
+/// Seeds an account holding `grants` (permission, optional application ID)
+/// with a non-expiring token, returning the token. The account and credential
+/// share `name` as their ID; seeding an existing account again adds grants.
+async fn seed_account(database: &Path, name: &str, grants: &[(&str, Option<&str>)]) -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let token = format!("{name:x<43}");
+    let hash = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(token.as_bytes()));
+    let mut connection = sqlite::connect(database).await;
+    sqlx::query(
+        "INSERT OR IGNORE INTO auth_users(id,username,display_name,created_at) VALUES(?1,?1,'',1)",
+    )
+    .bind(name)
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    sqlx::query("INSERT OR IGNORE INTO auth_credentials(id,user_id,secret_hash,kind,name,created_at,last_used_at) VALUES(?1,?1,?2,'token','test',1,4102444800)")
+        .bind(name)
+        .bind(hash)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    for (permission, application) in grants {
+        sqlx::query("INSERT INTO auth_grants(user_id,permission,application_id) VALUES(?1,?2,?3)")
+            .bind(name)
+            .bind(permission)
+            .bind(application)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+    token
+}
+
+/// Runs `sql` against the database at `database`.
+async fn execute(database: &Path, sql: &str) {
+    sqlx::query(sql)
+        .execute(&mut sqlite::connect(database).await)
+        .await
+        .unwrap();
+}
+
+/// The status and code of an API error response.
+#[derive(Debug, PartialEq)]
+struct ApiError {
+    status: u16,
+    code: String,
+}
+
+impl ApiError {
+    fn new(status: u16, code: &str) -> Self {
+        Self {
+            status,
+            code: code.to_owned(),
+        }
+    }
+}
+
+/// The status and code of `error`, which must be an API error response.
+fn api_error(error: ClientError) -> ApiError {
+    match error {
+        ClientError::Api { status, error } => ApiError {
+            status: status.as_u16(),
+            code: error.code,
+        },
+        other => panic!("API error expected, got {other:?}"),
+    }
+}
+
+/// Stand-in for the compile-time bundle: a shell, unhashed assets (including
+/// a short all-hex stem that must not read as a digest), and a content-hashed
+/// asset, mirroring what the build script emits.
+static TEST_BUNDLE: &EmbeddedBundle = &[
+    ("added.css", b"body{}" as &'static [u8]),
+    ("app.js", b"console.log('dashboard');" as &'static [u8]),
+    (
+        "index.html",
+        b"<!doctype html><html><body><main>dashboard-shell</main></body></html>" as &'static [u8],
+    ),
+    ("piqueld-ui-a1b2c3d4_bg.wasm", b"\0asm" as &'static [u8]),
+];
+
+/// A `GET` of `uri` from a local client.
+fn request(uri: &str) -> Request<Body> {
+    request_as(Method::GET, uri)
+}
+
+/// A bodiless `method` request of `uri` from a local client.
+fn request_as(method: Method, uri: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .header("host", "localhost")
+        .uri(uri)
+        .body(Body::empty())
+        .expect("request is valid")
+}
+
+/// A response read to its end.
+struct Received {
+    status: StatusCode,
+    headers: HeaderMap,
+    body: Bytes,
+}
+
+impl Received {
+    async fn read<B>(response: http::Response<B>) -> Self
+    where
+        B: hyper::body::Body,
+        B::Error: std::fmt::Debug,
+    {
+        let (parts, body) = response.into_parts();
+        Self {
+            status: parts.status,
+            headers: parts.headers,
+            body: body.collect().await.expect("body is readable").to_bytes(),
+        }
+    }
+
+    fn text(&self) -> &str {
+        std::str::from_utf8(&self.body).expect("response is UTF-8")
+    }
+
+    /// The JSON body, or null when there is none.
+    fn json(&self) -> serde_json::Value {
+        serde_json::from_slice(&self.body).unwrap_or_default()
+    }
+
+    fn header(&self, name: impl http::header::AsHeaderName) -> Option<&str> {
+        self.headers
+            .get(name)
+            .map(|value| value.to_str().expect("header is text"))
+    }
+
+    /// The error code of the JSON body.
+    fn code(&self) -> String {
+        self.json()["code"].as_str().unwrap_or_default().to_owned()
+    }
+
+    fn assert_error(&self, status: StatusCode, code: &str) {
+        assert_eq!(self.status, status);
+        assert_eq!(self.code(), code);
+    }
+
+    /// Asserts the response's status and media type are documented for
+    /// `method` `path` in `document`, and that errors are correlated bodies.
+    fn assert_documented(&self, document: &serde_json::Value, method: &Method, path: &str) {
+        let status = self.status.as_u16().to_string();
+        let operation = &document["paths"][path][method.as_str().to_lowercase()];
+        let response = &operation["responses"][&status];
+        assert!(
+            !response.is_null(),
+            "undocumented {method} {path} -> {status}"
+        );
+        let media_type = self
+            .header(http::header::CONTENT_TYPE)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        assert!(
+            !response["content"][media_type].is_null(),
+            "undocumented response media type for {method} {path}: {media_type}"
+        );
+        if self.status.is_client_error() || self.status.is_server_error() {
+            let error: piqueld_core::api::ErrorBody = serde_json::from_slice(&self.body).unwrap();
+            assert_ne!(error.code, "");
+            assert_ne!(error.message, "");
+            let header_id = self.header("x-request-id").expect("request ID header");
+            assert_ne!(header_id, "");
+            assert_eq!(error.request_id, header_id);
+        }
+    }
+}
+
+/// In-process requests to a router.
+trait InProcess {
+    /// Sends `request` and returns the response, whose body may stream.
+    async fn open(&self, request: Request<Body>) -> axum::response::Response;
+
+    /// Sends `request` and reads the whole response.
+    async fn send(&self, request: Request<Body>) -> Received;
+
+    /// Sends a JSON request as bearer `token`, returning the status and the
+    /// JSON body.
+    async fn call(
+        &self,
+        token: &str,
+        method: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (u16, serde_json::Value);
+
+    /// Sends a bodiless request as bearer `token`, returning the status.
+    async fn status(&self, token: &str, method: &str, uri: &str) -> u16 {
+        self.call(token, method, uri, serde_json::Value::Null)
+            .await
+            .0
+    }
+}
+
+impl InProcess for axum::Router {
+    async fn open(&self, request: Request<Body>) -> axum::response::Response {
+        self.clone()
+            .oneshot(request)
+            .await
+            .expect("router responds")
+    }
+
+    async fn send(&self, request: Request<Body>) -> Received {
+        Received::read(self.open(request).await).await
+    }
+
+    async fn call(
+        &self,
+        token: &str,
+        method: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = self.send(request).await;
+        (response.status.as_u16(), response.json())
+    }
+}
+
+/// Where a [`Server`] listens.
+enum Endpoint {
+    Tcp(std::net::SocketAddr),
+    Unix(PathBuf),
+}
+
+/// A router served on a local socket until dropped.
+struct Server {
+    endpoint: Endpoint,
+    task: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+impl Server {
+    async fn tcp(router: axum::Router) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("TCP binds");
+        let endpoint = Endpoint::Tcp(listener.local_addr().expect("TCP address"));
+        let task = tokio::spawn(serve(listener, router).into_future());
+        Self { endpoint, task }
+    }
+
+    /// [`Self::tcp`], telling handlers each client's address, as tailnet
+    /// listeners do.
+    async fn tcp_with_peers(router: axum::Router) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("TCP binds");
+        let endpoint = Endpoint::Tcp(listener.local_addr().expect("TCP address"));
+        let service = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
+        let task = tokio::spawn(serve(listener, service).into_future());
+        Self { endpoint, task }
+    }
+
+    /// Serves `router` on a Unix socket at `path`, which must be short.
+    fn unix(router: axum::Router, path: &Path) -> Self {
+        let listener = tokio::net::UnixListener::bind(path).expect("Unix socket binds");
+        let task = tokio::spawn(serve(listener, router).into_future());
+        Self {
+            endpoint: Endpoint::Unix(path.to_owned()),
+            task,
+        }
+    }
+
+    /// The TCP address served.
+    fn address(&self) -> std::net::SocketAddr {
+        match &self.endpoint {
+            Endpoint::Tcp(address) => *address,
+            Endpoint::Unix(path) => panic!("{} is a Unix socket", path.display()),
+        }
+    }
+
+    fn client(&self) -> Client {
+        match &self.endpoint {
+            Endpoint::Tcp(address) => Client::tcp(&format!("http://{address}/")).unwrap(),
+            Endpoint::Unix(path) => Client::unix(path),
+        }
+    }
+
+    /// Sends one raw HTTP/1.1 request, from `localhost` unless `headers` name
+    /// another host, and reads the whole response.
+    async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Vec<u8>,
+    ) -> Received {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(http::header::CONTENT_LENGTH, body.len());
+        if !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("host"))
+        {
+            builder = builder.header("host", "localhost");
+        }
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let request = builder
+            .body(Full::new(Bytes::from(body)))
+            .expect("request builds");
+        match &self.endpoint {
+            Endpoint::Tcp(address) => {
+                let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+                Self::exchange(stream, request).await
+            }
+            Endpoint::Unix(path) => {
+                let stream = tokio::net::UnixStream::connect(path).await.unwrap();
+                Self::exchange(stream, request).await
+            }
+        }
+    }
+
+    /// Sends `request` over a fresh HTTP/1.1 connection on `stream`.
+    async fn exchange<S>(stream: S, request: Request<Full<Bytes>>) -> Received
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .expect("handshake");
+        tokio::spawn(async move {
+            let _ = connection.with_upgrades().await;
+        });
+        Received::read(sender.send_request(request).await.expect("response")).await
+    }
+
+    /// Asserts the server is still serving, rather than having failed.
+    fn assert_running(&self) {
+        assert!(!self.task.is_finished(), "the server stopped");
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 #[tokio::test]
@@ -268,7 +719,7 @@ async fn fake_runtime_accepts_digest_pinned_requested_images() {
     let runtime = FakeRuntime {
         cleanup_gate: None,
         instance: InstanceId::parse("test").unwrap(),
-        unavailable: std::sync::atomic::AtomicBool::new(false),
+        unavailable: AtomicBool::new(false),
     };
 
     runtime
@@ -281,66 +732,11 @@ async fn fake_runtime_accepts_digest_pinned_requested_images() {
         .expect("digest-pinned image resolves");
 }
 
-async fn state(temp: &TempDir) -> ApiState {
-    state_with(temp, None).await
-}
-
-/// [`state`] with the daemon's `[snapshots] max_upload_bytes`, if given.
-async fn state_with(temp: &TempDir, max_upload_bytes: Option<std::num::NonZeroU64>) -> ApiState {
-    let store = Store::open(temp.path().join("state.db"))
-        .await
-        .expect("fresh database opens");
-    let store = match max_upload_bytes {
-        Some(limit) => store.with_snapshot_uploads(limit),
-        None => store,
-    };
-    state_on(temp, Arc::new(store)).await
-}
-
-/// [`state`] over `store`, opened in `temp`.
-async fn state_on(temp: &TempDir, store: Arc<Store>) -> ApiState {
-    // `FakeAuth` signs requests in with this administrator's credential,
-    // which mutations re-read from the database.
-    seed_account(
-        &temp.path().join("state.db"),
-        "contract-admin",
-        &[("admin", None)],
-    )
-    .await;
-    let instance = InstanceId::parse(store.instance_id().to_owned()).expect("valid instance ID");
-    ApiState::new(
-        Arc::clone(&store),
-        Arc::new(FakeRuntime {
-            cleanup_gate: None,
-            instance,
-            unavailable: std::sync::atomic::AtomicBool::new(false),
-        }),
-    )
-}
-
-/// Stand-in for the compile-time bundle: a shell, unhashed assets (including
-/// a short all-hex stem that must not read as a digest), and a content-hashed
-/// asset, mirroring what the build script emits.
-static TEST_BUNDLE: &EmbeddedBundle = &[
-    ("added.css", b"body{}" as &'static [u8]),
-    ("app.js", b"console.log('dashboard');" as &'static [u8]),
-    (
-        "index.html",
-        b"<!doctype html><html><body><main>dashboard-shell</main></body></html>" as &'static [u8],
-    ),
-    ("piqueld-ui-a1b2c3d4_bg.wasm", b"\0asm" as &'static [u8]),
-];
-
 #[tokio::test]
 async fn typed_client_exercises_polling_lifecycle_over_tcp() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("TCP listener binds");
-    let address = listener.local_addr().expect("listener address is readable");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
-    let client = Client::tcp(&format!("http://{address}/")).expect("valid client endpoint");
-    let manifest = manifest();
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
+    let client = server.client();
 
     assert!(
         client
@@ -350,16 +746,20 @@ async fn typed_client_exercises_polling_lifecycle_over_tcp() {
             .items
             .is_empty()
     );
-    assert!(
-        matches!(client.build_logs(999,None,None).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
-    );
-    assert_create_plan(&client, &manifest).await;
-    let created = create_and_inspect(&client, &manifest).await;
-    let replaced = replace_and_plan(&client, &created, manifest).await;
-    assert_ne!(created.operation_id, replaced.operation_id);
-    delete(&client, &replaced).await;
+    let missing = client.build_logs(999, None, None).await.unwrap_err();
+    assert_eq!(api_error(missing).status, 404);
+    assert_lifecycle(&client).await;
+}
 
-    server.abort();
+/// Plans, creates and inspects, replaces, and deletes the contract
+/// application through `client`.
+async fn assert_lifecycle(client: &Client) {
+    let manifest = manifest();
+    assert_create_plan(client, &manifest).await;
+    let created = create_and_inspect(client, &manifest).await;
+    let replaced = replace_and_plan(client, &created, manifest).await;
+    assert_ne!(created.operation_id, replaced.operation_id);
+    delete(client, &replaced).await;
 }
 
 async fn assert_create_plan(client: &Client, manifest: &ApplicationManifest) {
@@ -455,17 +855,10 @@ async fn compiled_dashboard_serves_assets_without_inline_scripts() {
         panic!("embedded-ui must resolve to the compiled bundle");
     };
     let application = web_router(state(&temp).await, assets, FakeAuth);
-    let response = application
-        .clone()
-        .oneshot(request("/dashboard/"))
-        .await
-        .expect("compiled dashboard request succeeds");
-    assert_eq!(response.status(), axum::http::StatusCode::OK);
-    let csp = response.headers()["content-security-policy"]
-        .to_str()
-        .expect("CSP is text")
-        .to_owned();
-    let html = response_text(response).await.1;
+    let shell = application.send(request("/dashboard/")).await;
+    assert_eq!(shell.status, StatusCode::OK);
+    let csp = shell.header("content-security-policy").expect("CSP");
+    let html = shell.text();
     assert!(
         csp.contains("script-src 'self' 'wasm-unsafe-eval';"),
         "{csp}"
@@ -497,209 +890,75 @@ async fn compiled_dashboard_serves_assets_without_inline_scripts() {
         );
     }
     for (name, expected) in bundle {
-        let response = application
-            .clone()
-            .oneshot(request(&format!("/dashboard/{name}")))
-            .await
-            .expect("compiled asset request succeeds");
-        assert_eq!(response.status(), axum::http::StatusCode::OK, "{name}");
-        let body = response
-            .into_body()
-            .collect()
-            .await
-            .expect("asset body")
-            .to_bytes();
-        assert_eq!(body.as_ref(), *expected, "{name}");
+        let asset = application
+            .send(request(&format!("/dashboard/{name}")))
+            .await;
+        assert_eq!(asset.status, StatusCode::OK, "{name}");
+        assert_eq!(asset.body.as_ref(), *expected, "{name}");
     }
 }
 
 async fn assert_dashboard_routes(application: &axum::Router) {
-    let root = response_text(
-        application
-            .clone()
-            .oneshot(request("/"))
-            .await
-            .expect("root request succeeds"),
-    )
-    .await;
-    assert_eq!(root.0, axum::http::StatusCode::PERMANENT_REDIRECT);
-    assert_eq!(root.2.as_deref(), Some("/dashboard/"));
-
-    let dashboard_root = response_text(
-        application
-            .clone()
-            .oneshot(request("/dashboard"))
-            .await
-            .expect("dashboard root request succeeds"),
-    )
-    .await;
-    assert_eq!(dashboard_root.0, axum::http::StatusCode::PERMANENT_REDIRECT);
-    assert_eq!(dashboard_root.2.as_deref(), Some("/dashboard/"));
-
-    let dashboard = response_text(
-        application
-            .clone()
-            .oneshot(request("/dashboard/"))
-            .await
-            .expect("dashboard request succeeds"),
-    )
-    .await;
-    assert_eq!(dashboard.0, axum::http::StatusCode::OK);
-    assert!(dashboard.1.contains("dashboard-shell"));
-
-    let deep_link = response_text(
-        application
-            .clone()
-            .oneshot(request("/dashboard/applications/notes"))
-            .await
-            .expect("deep link request succeeds"),
-    )
-    .await;
-    assert_eq!(deep_link.0, axum::http::StatusCode::OK);
-    assert!(deep_link.1.contains("dashboard-shell"));
-
-    let asset = response_text(
-        application
-            .clone()
-            .oneshot(request("/dashboard/app.js"))
-            .await
-            .expect("asset request succeeds"),
-    )
-    .await;
-    assert_eq!(asset.0, axum::http::StatusCode::OK);
-    assert!(asset.1.contains("console.log"));
-
-    let hashed = response_text(
-        application
-            .clone()
-            .oneshot(request("/dashboard/piqueld-ui-a1b2c3d4_bg.wasm"))
-            .await
-            .expect("hashed asset request succeeds"),
-    )
-    .await;
-    assert_eq!(hashed.0, axum::http::StatusCode::OK);
-    assert!(hashed.1.starts_with('\u{0}'));
-
-    let missing_asset = response_text(
-        application
-            .clone()
-            .oneshot(request("/dashboard/missing.js"))
-            .await
-            .expect("missing asset request succeeds"),
-    )
-    .await;
-    assert_eq!(missing_asset.0, axum::http::StatusCode::NOT_FOUND);
-    assert!(!missing_asset.1.contains("dashboard-shell"));
-
-    let api_error = response_text(
-        application
-            .clone()
-            .oneshot(request("/api/v1/unknown"))
-            .await
-            .expect("unknown API request succeeds"),
-    )
-    .await;
-    assert_eq!(api_error.0, axum::http::StatusCode::NOT_FOUND);
-    assert!(api_error.1.contains("endpoint_not_found"));
-    assert!(!api_error.1.contains("dashboard-shell"));
-
-    let outside = response_text(
-        application
-            .clone()
-            .oneshot(request("/unknown"))
-            .await
-            .expect("unknown web request succeeds"),
-    )
-    .await;
-    assert_eq!(outside.0, axum::http::StatusCode::NOT_FOUND);
-    assert!(!outside.1.contains("dashboard-shell"));
+    for uri in ["/", "/dashboard"] {
+        let redirect = application.send(request(uri)).await;
+        assert_eq!(redirect.status, StatusCode::PERMANENT_REDIRECT, "{uri}");
+        assert_eq!(
+            redirect.header(http::header::LOCATION),
+            Some("/dashboard/"),
+            "{uri}"
+        );
+    }
+    for uri in ["/dashboard/", "/dashboard/applications/notes"] {
+        let shell = application.send(request(uri)).await;
+        assert_eq!(shell.status, StatusCode::OK, "{uri}");
+        assert!(shell.text().contains("dashboard-shell"), "{uri}");
+    }
+    let asset = application.send(request("/dashboard/app.js")).await;
+    assert_eq!(asset.status, StatusCode::OK);
+    assert!(asset.text().contains("console.log"));
+    let hashed = application
+        .send(request("/dashboard/piqueld-ui-a1b2c3d4_bg.wasm"))
+        .await;
+    assert_eq!(hashed.status, StatusCode::OK);
+    assert!(hashed.body.starts_with(b"\0"));
+    for uri in ["/dashboard/missing.js", "/api/v1/unknown", "/unknown"] {
+        let missing = application.send(request(uri)).await;
+        assert_eq!(missing.status, StatusCode::NOT_FOUND, "{uri}");
+        assert!(!missing.text().contains("dashboard-shell"), "{uri}");
+        if uri.starts_with("/api/") {
+            assert!(missing.text().contains("endpoint_not_found"), "{uri}");
+        }
+    }
 }
 
 async fn assert_api_routes(application: &axum::Router) {
-    let health = response_text(
-        application
-            .clone()
-            .oneshot(request("/health"))
-            .await
-            .expect("health request succeeds"),
-    )
-    .await;
-    assert_eq!(health.0, axum::http::StatusCode::OK);
-    assert_eq!(health.1, r#"{"status":"ok"}"#);
+    let health = application.send(request("/health")).await;
+    assert_eq!(health.status, StatusCode::OK);
+    assert_eq!(health.text(), r#"{"status":"ok"}"#);
 
-    let openapi = response_text(
-        application
-            .clone()
-            .oneshot(request("/api/v1/openapi.json"))
-            .await
-            .expect("OpenAPI request succeeds"),
-    )
-    .await;
-    assert_eq!(openapi.0, axum::http::StatusCode::OK);
-    let openapi: serde_json::Value = serde_json::from_str(&openapi.1).unwrap();
+    let openapi = application.send(request("/api/v1/openapi.json")).await;
+    assert_eq!(openapi.status, StatusCode::OK);
+    let openapi = openapi.json();
     assert_eq!(openapi["openapi"], "3.0.3");
     assert!(openapi["paths"]["/api/v1/environments/{id}/detail"].is_object());
 }
 
 async fn assert_api_only_and_ui_modes(temp: &TempDir) {
     let api_only = api_router(state(temp).await, FakeAuth);
-    let unix_root = response_text(
-        api_only
-            .clone()
-            .oneshot(request("/"))
-            .await
-            .expect("API-only root request succeeds"),
-    )
-    .await;
-    assert_eq!(unix_root.0, axum::http::StatusCode::NOT_FOUND);
-    assert!(!unix_root.1.contains("endpoint_not_found"));
-
-    let unix_health = response_text(
-        api_only
-            .clone()
-            .oneshot(request("/health"))
-            .await
-            .expect("API-only health request succeeds"),
-    )
-    .await;
-    assert_eq!(unix_health.0, axum::http::StatusCode::NOT_FOUND);
-
-    let api_only_error = response_text(
-        api_only
-            .oneshot(request("/api/v1/unknown"))
-            .await
-            .expect("API-only unknown request succeeds"),
-    )
-    .await;
-    assert_eq!(api_only_error.0, axum::http::StatusCode::NOT_FOUND);
-    assert!(api_only_error.1.contains("endpoint_not_found"));
+    let root = api_only.send(request("/")).await;
+    assert_eq!(root.status, StatusCode::NOT_FOUND);
+    assert!(!root.text().contains("endpoint_not_found"));
+    let health = api_only.send(request("/health")).await;
+    assert_eq!(health.status, StatusCode::NOT_FOUND);
+    let unknown = api_only.send(request("/api/v1/unknown")).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    assert!(unknown.text().contains("endpoint_not_found"));
 
     let disabled = web_router(state(temp).await, UiAssets::Disabled, FakeAuth);
-    let disabled_root = response_text(
-        disabled
-            .clone()
-            .oneshot(request("/"))
-            .await
-            .expect("disabled UI root request succeeds"),
-    )
-    .await;
-    assert_eq!(disabled_root.0, axum::http::StatusCode::NOT_FOUND);
-    let disabled_dashboard = response_text(
-        disabled
-            .oneshot(request("/dashboard/"))
-            .await
-            .expect("disabled UI dashboard request succeeds"),
-    )
-    .await;
-    assert_eq!(disabled_dashboard.0, axum::http::StatusCode::NOT_FOUND);
-}
-
-fn request(uri: &str) -> Request<Body> {
-    Request::builder()
-        .header("host", "localhost")
-        .uri(uri)
-        .body(Body::empty())
-        .expect("request is valid")
+    for uri in ["/", "/dashboard/"] {
+        let response = disabled.send(request(uri)).await;
+        assert_eq!(response.status, StatusCode::NOT_FOUND, "{uri}");
+    }
 }
 
 #[tokio::test]
@@ -710,97 +969,52 @@ async fn dashboard_responses_carry_security_headers() {
         UiAssets::Embedded(TEST_BUNDLE),
         FakeAuth,
     );
-    let shell = application
-        .clone()
-        .oneshot(request("/dashboard/"))
-        .await
-        .expect("dashboard request succeeds");
-    assert_eq!(shell.status(), axum::http::StatusCode::OK);
-    let headers = shell.headers().clone();
-    let csp = headers
-        .get("content-security-policy")
-        .and_then(|value| value.to_str().ok())
+    let shell = application.send(request("/dashboard/")).await;
+    assert_eq!(shell.status, StatusCode::OK);
+    let csp = shell
+        .header("content-security-policy")
         .expect("dashboard carries a content security policy");
     assert!(csp.contains("default-src 'self'"), "{csp}");
     assert!(csp.contains("wasm-unsafe-eval"), "{csp}");
     assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
-    assert_eq!(headers["x-content-type-options"], "nosniff");
-    assert_eq!(headers["referrer-policy"], "no-referrer");
+    assert_eq!(shell.header("x-content-type-options"), Some("nosniff"));
+    assert_eq!(shell.header("referrer-policy"), Some("no-referrer"));
 
     let head = application
-        .clone()
-        .oneshot(
-            Request::builder()
-                .header("host", "localhost")
-                .method(Method::HEAD)
-                .uri("/dashboard/")
-                .body(Body::empty())
-                .expect("HEAD request is valid"),
-        )
-        .await
-        .expect("dashboard HEAD succeeds");
-    assert_eq!(head.status(), StatusCode::OK);
-    assert!(
-        head.into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes()
-            .is_empty()
-    );
+        .send(request_as(Method::HEAD, "/dashboard/"))
+        .await;
+    assert_eq!(head.status, StatusCode::OK);
+    assert!(head.body.is_empty());
 
-    let method_not_allowed = application
-        .clone()
-        .oneshot(
-            Request::builder()
-                .header("host", "localhost")
-                .method(Method::POST)
-                .uri("/dashboard/")
-                .body(Body::empty())
-                .expect("POST request is valid"),
-        )
-        .await
-        .expect("dashboard POST completes");
-    assert_eq!(method_not_allowed.status(), StatusCode::METHOD_NOT_ALLOWED);
-    assert_eq!(
-        method_not_allowed.headers().get(http::header::ALLOW),
-        Some(&HeaderValue::from_static("GET, HEAD"))
-    );
+    let post = application
+        .send(request_as(Method::POST, "/dashboard/"))
+        .await;
+    assert_eq!(post.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(post.header(http::header::ALLOW), Some("GET, HEAD"));
     for (method, path, status) in [
         (Method::GET, "/", StatusCode::PERMANENT_REDIRECT),
         (Method::GET, "/dashboard/missing.js", StatusCode::NOT_FOUND),
         (Method::POST, "/dashboard", StatusCode::METHOD_NOT_ALLOWED),
     ] {
-        let response = application
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .header("host", "localhost")
-                    .method(method)
-                    .uri(path)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), status);
+        let response = application.send(request_as(method, path)).await;
+        assert_eq!(response.status, status);
         for name in [
             "content-security-policy",
             "x-content-type-options",
             "referrer-policy",
         ] {
             assert_eq!(
-                response.headers().get_all(name).iter().count(),
+                response.headers.get_all(name).iter().count(),
                 1,
                 "{path}: {name}"
             );
-            assert_eq!(response.headers().get(name), headers.get(name));
+            assert_eq!(response.header(name), shell.header(name));
         }
     }
     for path in ["/health", "/api/v1/missing"] {
-        let response = application.clone().oneshot(request(path)).await.unwrap();
+        let response = application.send(request(path)).await;
         assert!(
-            !response.headers().contains_key("content-security-policy"),
+            !response.headers.contains_key("content-security-policy"),
             "{path}"
         );
     }
@@ -816,92 +1030,30 @@ async fn dashboard_cache_policy_tracks_content_hashing_and_shell_fallbacks() {
     );
 
     let hashed = application
-        .clone()
-        .oneshot(request("/dashboard/piqueld-ui-a1b2c3d4_bg.wasm"))
-        .await
-        .expect("hashed asset request succeeds");
+        .send(request("/dashboard/piqueld-ui-a1b2c3d4_bg.wasm"))
+        .await;
+    assert_eq!(hashed.header("content-type"), Some("application/wasm"));
     assert_eq!(
-        header_value(&hashed, "content-type"),
-        Some("application/wasm")
-    );
-    assert_eq!(
-        header_value(&hashed, "cache-control"),
+        hashed.header("cache-control"),
         Some("public, max-age=31536000, immutable")
     );
 
-    let unhashed = application
-        .clone()
-        .oneshot(request("/dashboard/app.js"))
-        .await
-        .expect("unhashed asset request succeeds");
+    let unhashed = application.send(request("/dashboard/app.js")).await;
     assert_eq!(
-        header_value(&unhashed, "content-type"),
+        unhashed.header("content-type"),
         Some("text/javascript; charset=utf-8")
     );
-    assert_eq!(header_value(&unhashed, "cache-control"), Some("no-cache"));
+    assert_eq!(unhashed.header("cache-control"), Some("no-cache"));
 
     // A short all-hex stem is an ordinary name, not a content digest.
-    let hex_stemmed = application
-        .clone()
-        .oneshot(request("/dashboard/added.css"))
-        .await
-        .expect("hex-stemmed asset request succeeds");
-    assert_eq!(
-        header_value(&hex_stemmed, "cache-control"),
-        Some("no-cache")
-    );
+    let hex_stemmed = application.send(request("/dashboard/added.css")).await;
+    assert_eq!(hex_stemmed.header("cache-control"), Some("no-cache"));
 
+    // The shell, also served for deep links, is never cached.
     for path in ["/dashboard/", "/dashboard/applications/notes"] {
-        let shell = response_text(
-            application
-                .clone()
-                .oneshot(request(path))
-                .await
-                .unwrap_or_else(|_| panic!("{path} succeeds")),
-        )
-        .await;
-        assert_eq!(shell.0, axum::http::StatusCode::OK, "{path}");
-        assert!(shell.1.contains("dashboard-shell"), "{path}");
+        let shell = application.send(request(path)).await;
+        assert_eq!(shell.header("cache-control"), Some("no-store"), "{path}");
     }
-
-    let shell_headers = application
-        .clone()
-        .oneshot(request("/dashboard/"))
-        .await
-        .expect("shell request succeeds");
-    assert_eq!(
-        header_value(&shell_headers, "cache-control"),
-        Some("no-store")
-    );
-}
-
-fn header_value<'a>(response: &'a axum::response::Response, name: &str) -> Option<&'a str> {
-    response
-        .headers()
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-}
-
-async fn response_text(
-    response: axum::response::Response,
-) -> (axum::http::StatusCode, String, Option<String>) {
-    let status = response.status();
-    let location = response
-        .headers()
-        .get(axum::http::header::LOCATION)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("response body is readable")
-        .to_bytes();
-    (
-        status,
-        String::from_utf8(body.into_iter().collect()).expect("response is UTF-8"),
-        location,
-    )
 }
 
 async fn replace_and_plan(
@@ -944,294 +1096,126 @@ async fn delete(client: &Client, created: &AcceptedOperation) {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Raw-transport helpers and negative-path coverage restored from the former
-// in-crate API suite.
-// ---------------------------------------------------------------------------
-
-use http::{HeaderMap, HeaderValue, Method, Request as HttpRequest, StatusCode, Uri};
-use http_body_util::Full;
-use hyper::body::Bytes;
-use hyper_util::rt::TokioIo;
-
-struct RawResponse {
-    status: StatusCode,
-    headers: HeaderMap,
-    body: serde_json::Value,
-}
-
-impl RawResponse {
-    fn assert_error(&self, status: StatusCode, code: &str) {
-        assert_eq!(self.status, status);
-        assert_eq!(self.code(), code);
-    }
-
-    fn code(&self) -> &str {
-        self.body
-            .get("code")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-    }
-
-    fn request_id(&self) -> Option<&str> {
-        self.body
-            .get("request_id")
-            .and_then(serde_json::Value::as_str)
-    }
-}
-
-async fn send_raw(
-    target: Target<'_>,
-    method: Method,
-    path: &str,
-    headers: &[(&str, &str)],
-    body: Vec<u8>,
-) -> RawResponse {
-    let uri = Uri::builder().path_and_query(path).build().expect("uri");
-    let mut builder = HttpRequest::builder()
-        .method(method)
-        .uri(uri)
-        .header(http::header::CONTENT_LENGTH, body.len());
-    if !headers
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case("host"))
-    {
-        builder = builder.header("host", "localhost");
-    }
-    for (name, value) in headers {
-        builder = builder.header(*name, *value);
-    }
-    let request = builder
-        .body(Full::new(Bytes::from(body)))
-        .expect("request builds");
-    let response = match target {
-        Target::Tcp(address) => {
-            let stream = tokio::net::TcpStream::connect(address)
-                .await
-                .expect("tcp connects");
-            let (mut sender, connection) =
-                hyper::client::conn::http1::handshake(TokioIo::new(stream))
-                    .await
-                    .expect("handshake");
-            tokio::spawn(async move {
-                let _ = connection.with_upgrades().await;
-            });
-            sender.send_request(request).await.expect("response")
-        }
-        Target::Unix(path) => {
-            let stream = tokio::net::UnixStream::connect(path)
-                .await
-                .expect("unix connects");
-            let (mut sender, connection) =
-                hyper::client::conn::http1::handshake(TokioIo::new(stream))
-                    .await
-                    .expect("handshake");
-            tokio::spawn(async move {
-                let _ = connection.with_upgrades().await;
-            });
-            sender.send_request(request).await.expect("response")
-        }
-    };
-    let status = response.status();
-    let headers = response.headers().clone();
-    let bytes = BodyExt::collect(response.into_body())
-        .await
-        .expect("body collects")
-        .to_bytes();
-    let body = if bytes.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
-    };
-    RawResponse {
-        status,
-        headers,
-        body,
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Target<'a> {
-    Tcp(std::net::SocketAddr),
-    Unix(&'a std::path::Path),
-}
-
 #[tokio::test]
 async fn transport_failures_are_structured_safe_and_request_ids_pair() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let state = state(&temp).await;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let tcp_server = tokio::spawn(serve(listener, router(state.clone(), FakeAuth)).into_future());
-    let socket = temp.path().join("api.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let unix_server = tokio::spawn(serve(listener, api_router(state, FakeAuth)).into_future());
-
-    for target in [Target::Tcp(address), Target::Unix(&socket)] {
-        target.assert_failures().await;
-    }
-    for server in [tcp_server, unix_server] {
-        server.abort();
-        assert!(server.await.unwrap_err().is_cancelled());
+    let servers = [
+        Server::tcp(router(state.clone(), FakeAuth)).await,
+        Server::unix(api_router(state, FakeAuth), &temp.path().join("api.sock")),
+    ];
+    for server in &servers {
+        assert_transport_failures(server).await;
+        server.assert_running();
     }
 }
 
-impl Target<'_> {
-    async fn assert_failures(self) {
-        let huge = format!(
-            "{{\"manifest\": {{\"padding\": \"{}\"}}}}",
-            "x".repeat(3 * 1024 * 1024)
-        );
-        let too_large = send_raw(
-            self,
+/// Asserts `server` refuses oversized, misrouted, and malformed requests
+/// with structured errors, and pairs response bodies' request IDs with
+/// their headers.
+async fn assert_transport_failures(server: &Server) {
+    let huge = format!(
+        "{{\"manifest\": {{\"padding\": \"{}\"}}}}",
+        "x".repeat(3 * 1024 * 1024)
+    );
+    let json = [("content-type", "application/json")];
+    let too_large = server
+        .send(
             Method::POST,
             "/api/v1/applications/apply",
-            &[("content-type", "application/json")],
+            &json,
             huge.into_bytes(),
         )
         .await;
-        assert_eq!(too_large.status, StatusCode::PAYLOAD_TOO_LARGE);
-        assert_eq!(too_large.code(), "request_body_too_large");
-
-        let missing = send_raw(self, Method::GET, "/api/v1/does-not-exist", &[], Vec::new()).await;
-        assert_eq!(missing.status, StatusCode::NOT_FOUND);
-        assert_eq!(missing.code(), "endpoint_not_found");
-
-        let not_allowed =
-            send_raw(self, Method::PUT, "/api/v1/applications", &[], Vec::new()).await;
-        assert_eq!(not_allowed.status, StatusCode::METHOD_NOT_ALLOWED);
-        assert_eq!(not_allowed.code(), "method_not_allowed");
-
-        let bad_cursor = send_raw(
-            self,
-            Method::GET,
-            "/api/v1/applications?cursor=bogus",
-            &[],
-            Vec::new(),
-        )
-        .await;
-        assert_eq!(bad_cursor.status, StatusCode::BAD_REQUEST);
-        assert_eq!(bad_cursor.code(), "pagination_invalid");
-
-        let bad_limit = send_raw(
-            self,
-            Method::GET,
-            "/api/v1/applications?limit=0",
-            &[],
-            Vec::new(),
-        )
-        .await;
-        assert_eq!(bad_limit.status, StatusCode::BAD_REQUEST);
-
-        let oversized_page = send_raw(
-            self,
-            Method::GET,
-            "/api/v1/applications?limit=101",
-            &[],
-            Vec::new(),
-        )
-        .await;
-        assert_eq!(oversized_page.status, StatusCode::BAD_REQUEST);
-
-        let malformed = send_raw(
-            self,
+    too_large.assert_error(StatusCode::PAYLOAD_TOO_LARGE, "request_body_too_large");
+    let malformed = server
+        .send(
             Method::POST,
             "/api/v1/applications/plan",
-            &[("content-type", "application/json")],
+            &json,
             b"{\"manifest\": {\"broken\"".to_vec(),
         )
         .await;
-        assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
-        assert_eq!(malformed.code(), "json_malformed");
+    malformed.assert_error(StatusCode::BAD_REQUEST, "json_malformed");
 
-        let repeated_branch = send_raw(
-            self,
+    for (method, path, status, code) in [
+        (
+            Method::GET,
+            "/api/v1/does-not-exist",
+            StatusCode::NOT_FOUND,
+            "endpoint_not_found",
+        ),
+        (
+            Method::PUT,
+            "/api/v1/applications",
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+        ),
+        (
+            Method::GET,
+            "/api/v1/applications?cursor=bogus",
+            StatusCode::BAD_REQUEST,
+            "pagination_invalid",
+        ),
+        (
             Method::POST,
             "/api/v1/environments/doesnotexist1/deploy?branch=a&branch=b",
-            &[],
-            Vec::new(),
-        )
-        .await;
-        assert_eq!(repeated_branch.status, StatusCode::BAD_REQUEST);
-        assert_eq!(repeated_branch.code(), "query_invalid");
+            StatusCode::BAD_REQUEST,
+            "query_invalid",
+        ),
+    ] {
+        let response = server.send(method, path, &[], Vec::new()).await;
+        assert_eq!((response.status, response.code().as_str()), (status, code));
+    }
+    for page in ["limit=0", "limit=101"] {
+        let path = format!("/api/v1/applications?{page}");
+        let response = server.send(Method::GET, &path, &[], Vec::new()).await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{page}");
+    }
 
-        let paired = send_raw(
-            self,
+    let paired = server
+        .send(
             Method::GET,
             "/api/v1/applications/doesnotexist1",
             &[],
             Vec::new(),
         )
         .await;
-        assert_eq!(paired.status, StatusCode::NOT_FOUND);
-        let header_id = paired
-            .headers
-            .get("x-request-id")
-            .and_then(|value| value.to_str().ok())
-            .expect("request id header");
-        assert_eq!(paired.request_id(), Some(header_id));
-    }
+    assert_eq!(paired.status, StatusCode::NOT_FOUND);
+    let header_id = paired.header("x-request-id").expect("request id header");
+    assert_eq!(paired.json()["request_id"].as_str(), Some(header_id));
 }
 
 #[tokio::test]
 async fn method_not_allowed_advertises_only_the_matched_route_methods() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
-    let address = listener.local_addr().expect("address");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
 
     // The Allow header advertises only the methods registered for the matched
     // route; Axum serves HEAD automatically for every GET route.
-    let collection = send_raw(
-        Target::Tcp(address),
-        Method::PUT,
-        "/api/v1/applications",
-        &[],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(
-        collection.headers.get(http::header::ALLOW),
-        Some(&HeaderValue::from_static("GET, HEAD, POST"))
-    );
-
-    let by_id = send_raw(
-        Target::Tcp(address),
-        Method::POST,
-        "/api/v1/applications/app-notes-01",
-        &[],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(by_id.status, StatusCode::METHOD_NOT_ALLOWED);
-    assert_eq!(
-        by_id.headers.get(http::header::ALLOW),
-        Some(&HeaderValue::from_static("GET, HEAD, DELETE"))
-    );
-
-    let health = send_raw(
-        Target::Tcp(address),
-        Method::POST,
-        "/health",
-        &[],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(health.status, StatusCode::METHOD_NOT_ALLOWED);
-    assert_eq!(
-        health.headers.get(http::header::ALLOW),
-        Some(&HeaderValue::from_static("GET, HEAD"))
-    );
-
-    server.abort();
+    for (method, path, allowed) in [
+        (Method::PUT, "/api/v1/applications", "GET, HEAD, POST"),
+        (
+            Method::POST,
+            "/api/v1/applications/app-notes-01",
+            "GET, HEAD, DELETE",
+        ),
+        (Method::POST, "/health", "GET, HEAD"),
+    ] {
+        let response = server.send(method, path, &[], Vec::new()).await;
+        assert_eq!(response.status, StatusCode::METHOD_NOT_ALLOWED, "{path}");
+        assert_eq!(
+            response.header(http::header::ALLOW),
+            Some(allowed),
+            "{path}"
+        );
+    }
 }
 
 #[tokio::test]
 async fn manifest_validation_media_types_and_unknown_fields_are_rejected_safely() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
-    let address = listener.local_addr().expect("address");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
 
     let invalid_manifest = r#"
 api_version = "piqueld.dev/v1alpha1"
@@ -1244,28 +1228,29 @@ name = "web"
 type = "image"
 image = ""
 "#;
-    let validation = send_raw(
-        Target::Tcp(address),
-        Method::POST,
-        "/api/v1/applications/plan",
-        &[("content-type", "application/toml")],
-        invalid_manifest.as_bytes().to_vec(),
-    )
-    .await;
+    let validation = server
+        .send(
+            Method::POST,
+            "/api/v1/applications/plan",
+            &[("content-type", "application/toml")],
+            invalid_manifest.as_bytes().to_vec(),
+        )
+        .await;
     validation.assert_error(
         StatusCode::UNPROCESSABLE_ENTITY,
         "manifest_validation_failed",
     );
-    let malformed_toml = send_raw(
-        Target::Tcp(address),
-        Method::POST,
-        "/api/v1/applications/plan",
-        &[("content-type", "text/toml")],
-        b"api_version = ".to_vec(),
-    )
-    .await;
+    let malformed_toml = server
+        .send(
+            Method::POST,
+            "/api/v1/applications/plan",
+            &[("content-type", "text/toml")],
+            b"api_version = ".to_vec(),
+        )
+        .await;
     malformed_toml.assert_error(StatusCode::BAD_REQUEST, "toml_malformed");
-    let message = malformed_toml.body["details"]["errors"][0]["message"]
+    let body = malformed_toml.json();
+    let message = body["details"]["errors"][0]["message"]
         .as_str()
         .unwrap_or_default();
     assert!(
@@ -1276,25 +1261,21 @@ image = ""
         "manifest": manifest(),
         "surprise": true
     });
-    let unknown = send_raw(
-        Target::Tcp(address),
-        Method::POST,
-        "/api/v1/applications/apply",
-        &[("content-type", "application/json")],
-        serde_json::to_vec(&unknown_field).expect("serializes"),
-    )
-    .await;
+    let unknown = server
+        .send(
+            Method::POST,
+            "/api/v1/applications/apply",
+            &[("content-type", "application/json")],
+            serde_json::to_vec(&unknown_field).expect("serializes"),
+        )
+        .await;
     unknown.assert_error(StatusCode::BAD_REQUEST, "json_malformed");
-
-    server.abort();
 }
 
 #[tokio::test]
 async fn toml_save_exposes_summary_and_full_configuration() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
-    let address = listener.local_addr().expect("address");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
 
     let valid_toml = r#"
 api_version = "piqueld.dev/v1alpha1"
@@ -1308,66 +1289,60 @@ replicas = 2
 type = "image"
 image = "ghcr.io/example/notes:1"
 "#;
-    let created = send_raw(
-        Target::Tcp(address),
-        Method::POST,
-        "/api/v1/applications/apply",
-        &[
-            ("content-type", "application/toml"),
-            ("x-expected-generation", "0"),
-        ],
-        valid_toml.as_bytes().to_vec(),
-    )
-    .await;
+    let created = server
+        .send(
+            Method::POST,
+            "/api/v1/applications/apply",
+            &[
+                ("content-type", "application/toml"),
+                ("x-expected-generation", "0"),
+            ],
+            valid_toml.as_bytes().to_vec(),
+        )
+        .await;
     assert_eq!(created.status, StatusCode::OK);
-    assert!(created.body["data"]["operation_id"].is_null());
-    let application_id = created.body["data"]["application_id"]
+    let created = created.json();
+    assert!(created["data"]["operation_id"].is_null());
+    let application_id = created["data"]["application_id"]
         .as_str()
         .expect("accepted application ID");
 
-    let listed = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/applications",
-        &[],
-        Vec::new(),
-    )
-    .await;
-    let summary = &listed.body["data"]["items"][0];
+    let listed = server
+        .send(Method::GET, "/api/v1/applications", &[], Vec::new())
+        .await
+        .json();
+    let summary = &listed["data"]["items"][0];
     assert_eq!(summary["id"], application_id);
     assert_eq!(summary["name"], "tomlnotes");
     assert!(summary.get("application").is_none());
 
-    let full = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        &format!("/api/v1/applications/{application_id}"),
-        &[],
-        Vec::new(),
-    )
-    .await;
+    let full = server
+        .send(
+            Method::GET,
+            &format!("/api/v1/applications/{application_id}"),
+            &[],
+            Vec::new(),
+        )
+        .await;
     assert_eq!(full.status, StatusCode::OK);
-    assert_eq!(full.body["data"]["application"]["id"], application_id);
+    let full = full.json();
+    assert_eq!(full["data"]["application"]["id"], application_id);
     assert_eq!(
-        full.body["data"]["application"]["spec"]["services"][0]["name"],
+        full["data"]["application"]["spec"]["services"][0]["name"],
         "web"
     );
-
-    server.abort();
 }
 
 #[tokio::test]
 async fn tcp_rejects_untrusted_authorities() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
-    let address = listener.local_addr().expect("address");
-    let application = piqueld::api::http::web_router_with_hosts(
+    let server = Server::tcp(piqueld::api::http::web_router_with_hosts(
         state(&temp).await,
         UiAssets::Disabled,
         FakeAuth,
         vec!["daemon.example.ts.net".into()],
-    );
-    let server = tokio::spawn(serve(listener, application).into_future());
+    ))
+    .await;
     for (host, expected) in [
         ("attacker.example", StatusCode::FORBIDDEN),
         ("127.0.0.1:7845", StatusCode::OK),
@@ -1380,36 +1355,33 @@ async fn tcp_rejects_untrusted_authorities() {
             StatusCode::FORBIDDEN,
         ),
     ] {
-        let response = send_raw(
-            Target::Tcp(address),
-            Method::GET,
-            "/api/v1/system/status",
-            &[("host", host)],
-            Vec::new(),
-        )
-        .await;
+        let response = server
+            .send(
+                Method::GET,
+                "/api/v1/system/status",
+                &[("host", host)],
+                Vec::new(),
+            )
+            .await;
         assert_eq!(response.status, expected, "host {host}");
         assert!(response.headers.contains_key("x-request-id"));
     }
-    server.abort();
 }
 
 #[tokio::test]
 async fn tcp_login_uses_canonical_origin_behind_https_proxy() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp).await;
-    let store = Store::open(temp.path().join("state.db")).await.unwrap();
+    let store = Store::open(database(&temp)).await.unwrap();
     let origin = "https://daemon.example.ts.net:8443";
     let auth = piqueld::auth::Auth::new(&store, origin).unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let application = piqueld::api::http::web_router_with_hosts(
+    let server = Server::tcp(piqueld::api::http::web_router_with_hosts(
         state,
         UiAssets::Disabled,
         auth,
         vec!["daemon.example.ts.net".into()],
-    );
-    let server = tokio::spawn(serve(listener, application).into_future());
+    ))
+    .await;
     // A TLS proxy forwards an ordinary HTTP request, retaining the browser's
     // HTTPS Origin. Its upstream Host may preserve the name or use localhost.
     for (host, browser_origin, site, expected_error) in [
@@ -1468,36 +1440,28 @@ async fn tcp_login_uses_canonical_origin_behind_https_proxy() {
         if let Some(origin) = browser_origin {
             headers.push(("origin", origin));
         }
-        let response = send_raw(
-            Target::Tcp(address),
-            Method::POST,
-            "/api/v1/auth/login/start",
-            &headers,
-            Vec::new(),
-        )
-        .await;
+        let response = server
+            .send(
+                Method::POST,
+                "/api/v1/auth/login/start",
+                &headers,
+                Vec::new(),
+            )
+            .await;
         if let Some(code) = expected_error {
             response.assert_error(StatusCode::FORBIDDEN, code);
         } else {
             assert_eq!(response.status, StatusCode::OK, "headers {headers:?}");
-            assert!(
-                response.headers["set-cookie"]
-                    .to_str()
-                    .unwrap()
-                    .contains("Secure")
-            );
-            serde_json::from_value::<piqueld_core::auth::Ceremony>(response.body).unwrap();
+            assert!(response.header("set-cookie").unwrap().contains("Secure"));
+            serde_json::from_value::<piqueld_core::auth::Ceremony>(response.json()).unwrap();
         }
     }
-    server.abort();
 }
 
 #[tokio::test]
 async fn tcp_rejects_cross_site_mutations_without_creating_deployments() {
     let temp = tempfile::tempdir().unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
     // Apply is a real POST handler, so successful controls prove the
     // middleware allows same-origin and non-browser clients through.
     for (headers, expected) in [
@@ -1519,42 +1483,34 @@ async fn tcp_rejects_cross_site_mutations_without_creating_deployments() {
         ),
         (vec![], StatusCode::UNSUPPORTED_MEDIA_TYPE),
     ] {
-        let response = send_raw(
-            Target::Tcp(address),
-            Method::POST,
-            "/api/v1/applications/apply",
-            &headers,
-            Vec::new(),
-        )
-        .await;
+        let response = server
+            .send(
+                Method::POST,
+                "/api/v1/applications/apply",
+                &headers,
+                Vec::new(),
+            )
+            .await;
         assert_eq!(response.status, expected, "headers {headers:?}");
     }
-    let client = Client::tcp(&format!("http://{address}")).unwrap();
-    let saved = client
-        .apply_application(&ApplyApplicationRequest {
-            manifest: manifest(),
-            expected_generation: Some(0),
-            expected_application_id: None,
-        })
-        .await
-        .unwrap();
+    let client = server.client();
+    let saved = client.apply_application(&new_application()).await.unwrap();
     for action in ["deploy", "reconcile"] {
-        let response = send_raw(
-            Target::Tcp(address),
-            Method::POST,
-            &format!(
-                "/api/v1/applications/{}/{action}?force=true",
-                saved.application_id
-            ),
-            &[
-                ("sec-fetch-site", "cross-site"),
-                ("content-type", "application/x-www-form-urlencoded"),
-            ],
-            Vec::new(),
-        )
-        .await;
-        assert_eq!(response.status, StatusCode::FORBIDDEN);
-        assert_eq!(response.body["code"], "browser_access_denied");
+        let response = server
+            .send(
+                Method::POST,
+                &format!(
+                    "/api/v1/applications/{}/{action}?force=true",
+                    saved.application_id
+                ),
+                &[
+                    ("sec-fetch-site", "cross-site"),
+                    ("content-type", "application/x-www-form-urlencoded"),
+                ],
+                Vec::new(),
+            )
+            .await;
+        response.assert_error(StatusCode::FORBIDDEN, "browser_access_denied");
     }
     assert!(
         client
@@ -1564,19 +1520,14 @@ async fn tcp_rejects_cross_site_mutations_without_creating_deployments() {
             .items
             .is_empty()
     );
-    server.abort();
 }
 
 #[tokio::test]
 async fn typed_edits_enforce_the_tcp_browser_policy() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let address = api.address;
     let client = &api.client;
-    let saved = client
-        .apply_application(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let saved = api.save().await;
     for (method, field, body) in [
         (
             Method::PUT,
@@ -1585,20 +1536,21 @@ async fn typed_edits_enforce_the_tcp_browser_policy() {
         ),
         (Method::DELETE, "services/web", Vec::new()),
     ] {
-        let response = send_raw(
-            Target::Tcp(address),
-            method,
-            &format!(
-                "/api/v1/applications/{}/{field}?force=true&deploy=true",
-                saved.application_id
-            ),
-            &[
-                ("sec-fetch-site", "cross-site"),
-                ("content-type", "application/json"),
-            ],
-            body,
-        )
-        .await;
+        let response = api
+            .server
+            .send(
+                method,
+                &format!(
+                    "/api/v1/applications/{}/{field}?force=true&deploy=true",
+                    saved.application_id
+                ),
+                &[
+                    ("sec-fetch-site", "cross-site"),
+                    ("content-type", "application/json"),
+                ],
+                body,
+            )
+            .await;
         response.assert_error(StatusCode::FORBIDDEN, "browser_access_denied");
     }
     let unchanged = client.application(&saved.application_id).await.unwrap();
@@ -1612,21 +1564,22 @@ async fn typed_edits_enforce_the_tcp_browser_policy() {
             .items
             .is_empty()
     );
-    let edit = send_raw(
-        Target::Tcp(address),
-        Method::PUT,
-        &format!(
-            "/api/v1/applications/{}/services/web/replicas?expected_generation=1",
-            saved.application_id
-        ),
-        &[
-            ("origin", "http://localhost"),
-            ("sec-fetch-site", "same-origin"),
-            ("content-type", "application/json"),
-        ],
-        br#"{"value":3}"#.to_vec(),
-    )
-    .await;
+    let edit = api
+        .server
+        .send(
+            Method::PUT,
+            &format!(
+                "/api/v1/applications/{}/services/web/replicas?expected_generation=1",
+                saved.application_id
+            ),
+            &[
+                ("origin", "http://localhost"),
+                ("sec-fetch-site", "same-origin"),
+                ("content-type", "application/json"),
+            ],
+            br#"{"value":3}"#.to_vec(),
+        )
+        .await;
     assert_eq!(edit.status, StatusCode::OK);
     let edited = client.application(&saved.application_id).await.unwrap();
     assert_eq!(edited.generation, saved.generation + 1);
@@ -1636,22 +1589,15 @@ async fn typed_edits_enforce_the_tcp_browser_policy() {
 #[tokio::test]
 async fn served_openapi_document_matches_the_generated_snapshot_and_resolves_refs() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
-    let address = listener.local_addr().expect("address");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
 
-    let document_response = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/openapi.json",
-        &[],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(document_response.status, StatusCode::OK);
+    let response = server
+        .send(Method::GET, "/api/v1/openapi.json", &[], Vec::new())
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
     let generated =
         serde_json::to_value(piqueld::api::http::openapi_document()).expect("document serializes");
-    assert_eq!(document_response.body, generated);
+    assert_eq!(response.json(), generated);
     for schema in ["ImageReference", "RepositoryDigest", "ImmutableImage"] {
         assert!(
             generated
@@ -1687,10 +1633,8 @@ async fn served_openapi_document_matches_the_generated_snapshot_and_resolves_ref
         );
     }
     let mut unresolved = Vec::new();
-    collect_unresolved_refs(&generated, &text, &mut unresolved);
+    collect_unresolved_refs(&generated, &generated, &mut unresolved);
     assert!(unresolved.is_empty(), "unresolved refs: {unresolved:?}");
-
-    server.abort();
 }
 
 fn assert_nullable_reference(schema: &serde_json::Value, reference: &str) {
@@ -1708,15 +1652,18 @@ fn assert_nullable_reference(schema: &serde_json::Value, reference: &str) {
     }));
 }
 
-fn collect_unresolved_refs(value: &serde_json::Value, document: &str, out: &mut Vec<String>) {
+/// Collects into `out` every `$ref` in `value` that resolves to nothing in
+/// `document`.
+fn collect_unresolved_refs(
+    value: &serde_json::Value,
+    document: &serde_json::Value,
+    out: &mut Vec<String>,
+) {
     match value {
         serde_json::Value::Object(map) => {
             if let Some(reference) = map.get("$ref").and_then(serde_json::Value::as_str) {
                 let pointer = reference.strip_prefix("#").unwrap_or(reference);
-                let resolved = document
-                    .parse::<serde_json::Value>()
-                    .is_ok_and(|doc| doc.pointer(pointer).is_some());
-                if !resolved {
+                if document.pointer(pointer).is_none() {
                     out.push(reference.to_owned());
                 }
             }
@@ -1735,57 +1682,26 @@ fn collect_unresolved_refs(value: &serde_json::Value, document: &str, out: &mut 
 
 #[tokio::test]
 async fn typed_client_exercises_the_lifecycle_over_a_unix_socket() {
-    let temp = tempfile::tempdir_in(".").expect("temporary directory");
-    let data_dir = temp.path().join("state");
-    std::fs::create_dir(&data_dir).expect("data dir exists");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700))
-            .expect("data dir is private");
-    }
-    // The fixture is owned by this process; Nix's synthetic root is not.
-    let cwd = std::env::current_dir().expect("working directory");
-    piqueld::prepare_data_dir(data_dir.strip_prefix(&cwd).expect("fixture is below cwd"))
-        .await
-        .expect("data dir prepares");
-    // Keep the socket path short enough for Unix even in deeply nested worktrees.
-    let socket_dir = tempfile::tempdir().expect("socket directory");
-    let socket_path = socket_dir.path().join("contract.sock");
-    let listener = tokio::net::UnixListener::bind(&socket_path).expect("unix binds");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
-    let client = Client::unix(&socket_path);
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let socket = temp.path().join("contract.sock");
+    let server = Server::unix(router(state(&temp).await, FakeAuth), &socket);
+    let client = server.client();
 
     let status = client.system_status().await.expect("status over unix");
     assert_eq!(status.api_version, "v1");
-
-    assert_create_plan(&client, &manifest()).await;
-    let created = create_and_inspect(&client, &manifest()).await;
-    let replaced = replace_and_plan(&client, &created, manifest()).await;
-    assert_ne!(created.operation_id, replaced.operation_id);
-    delete(&client, &replaced).await;
-
-    server.abort();
+    assert_lifecycle(&client).await;
 }
 
 #[tokio::test]
 async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contract() {
     let temp = tempfile::tempdir().unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let task = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
-    let client = Client::tcp(&format!("http://{address}")).unwrap();
-    let mut request = ApplyApplicationRequest {
-        manifest: manifest(),
-        expected_generation: Some(0),
-        expected_application_id: None,
-    };
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
+    let client = server.client();
+    let mut request = new_application();
     let first = client.apply_and_deploy(&request).await.unwrap();
     assert_eq!(first.generation, 1);
     let stale = client.apply_and_deploy(&request).await.unwrap_err();
-    assert!(
-        matches!(stale,piqueld_client::ClientError::Api {status,..} if status==axum::http::StatusCode::CONFLICT)
-    );
+    assert_eq!(api_error(stale).status, 409);
     request.expected_generation = Some(1);
     request.expected_application_id = Some(first.environment_id.clone());
     request.manifest.spec.services[0].replicas = 2.into();
@@ -1798,7 +1714,7 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
         .await
         .unwrap_err();
     assert!(
-        matches!(unbacked, piqueld_client::ClientError::Api { error, .. } if error.details.to_string().contains("manifest_repository_required"))
+        matches!(unbacked, ClientError::Api { error, .. } if error.details.to_string().contains("manifest_repository_required"))
     );
     let refreshed = client
         .deploy_environment(&first.environment_id, 2, None)
@@ -1851,58 +1767,151 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
         repeated.operations[0].operation_id,
         deletion.operations[0].operation_id
     );
-    task.abort();
 }
 
+/// The contract daemon served over TCP, with a client, until dropped.
 struct AcceptanceApi {
     client: Client,
-    address: std::net::SocketAddr,
     runtime: Arc<FakeRuntime>,
     store: Arc<Store>,
-    task: tokio::task::JoinHandle<std::io::Result<()>>,
+    server: Server,
 }
 
 impl AcceptanceApi {
     async fn start(temp: &TempDir) -> Self {
-        let store = Arc::new(Store::open(temp.path().join("state.db")).await.unwrap());
-        seed_account(
-            &temp.path().join("state.db"),
-            "contract-admin",
-            &[("admin", None)],
-        )
-        .await;
-        let instance = InstanceId::parse(store.instance_id()).unwrap();
-        let runtime = Arc::new(FakeRuntime {
-            cleanup_gate: None,
-            instance,
-            unavailable: std::sync::atomic::AtomicBool::new(false),
-        });
-        let state = ApiState::new(Arc::clone(&store), runtime.clone());
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let client = Client::tcp(&format!("http://{address}")).unwrap();
-        let task = tokio::spawn(serve(listener, router(state, FakeAuth)).into_future());
+        let store = Arc::new(Store::open(database(temp)).await.unwrap());
+        let (runtime, state) = contract_state(temp, Arc::clone(&store)).await;
+        let server = Server::tcp(router(state, FakeAuth)).await;
         Self {
-            client,
-            address,
+            client: server.client(),
             runtime,
             store,
-            task,
+            server,
         }
     }
 
-    fn request() -> ApplyApplicationRequest {
-        ApplyApplicationRequest {
-            manifest: manifest(),
-            expected_generation: Some(0),
-            expected_application_id: None,
+    /// Saves the contract manifest as a new application.
+    async fn save(&self) -> SavedApplication {
+        self.client
+            .apply_application(&new_application())
+            .await
+            .unwrap()
+    }
+
+    /// Saves and deploys the contract manifest as a new application.
+    async fn deploy(&self) -> AcceptedOperation {
+        self.client
+            .apply_and_deploy(&new_application())
+            .await
+            .unwrap()
+    }
+
+    /// The same daemon, routed in process.
+    fn router(&self) -> axum::Router {
+        router(
+            ApiState::new(Arc::clone(&self.store), self.runtime.clone()),
+            FakeAuth,
+        )
+    }
+
+    /// Runs operation `id` to success, or to failure with `error`.
+    async fn finish_operation(&self, id: &str, error: Option<(&str, &str)>) {
+        use piqueld_core::OperationState;
+        self.store
+            .transition_operation(id, OperationState::Requested, OperationState::Running, None)
+            .await
+            .unwrap();
+        let state = if error.is_some() {
+            OperationState::Failed
+        } else {
+            OperationState::Succeeded
+        };
+        self.store
+            .transition_operation(id, OperationState::Running, state, error)
+            .await
+            .unwrap();
+    }
+
+    /// The rendered configuration deployment `operation` of `environment` captured.
+    async fn deployed(&self, environment: &str, operation: &str) -> NormalizedApplication {
+        self.client
+            .deployments(environment, None)
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|deployment| deployment.operation.id == operation)
+            .and_then(|deployment| deployment.application)
+            .expect("deployment captured a rendered manifest")
+    }
+
+    async fn finish_deletion(&self, deletion: &piqueld_core::api::DeletedApplication) {
+        for accepted in &deletion.operations {
+            self.store
+                .transition_operation(
+                    &accepted.operation_id,
+                    piqueld_core::OperationState::Requested,
+                    piqueld_core::OperationState::Running,
+                    None,
+                )
+                .await
+                .unwrap();
+            let operation = self.store.operation(&accepted.operation_id).await.unwrap();
+            self.store
+                .finish_delete_operation(&operation)
+                .await
+                .unwrap();
         }
     }
-}
 
-impl Drop for AcceptanceApi {
-    fn drop(&mut self) {
-        self.task.abort();
+    /// Applies `edit` at the current generation, returning the saved manifest.
+    async fn edit_field(
+        &self,
+        id: &str,
+        edit: piqueld_client::edit::ApplicationEdit,
+    ) -> piqueld_core::manifest::ApplicationManifest {
+        let generation = self.client.application(id).await.unwrap().generation;
+        self.client
+            .edit_application(
+                id,
+                &edit,
+                &piqueld_client::edit::EditOptions {
+                    expected_generation: Some(generation),
+                    ..piqueld_client::edit::EditOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        self.manifest(id).await
+    }
+
+    /// Applies `edit` to `web`, returning the saved service.
+    async fn edit_service_field(
+        &self,
+        id: &str,
+        edit: piqueld_client::edit::ServiceEdit,
+    ) -> piqueld_core::manifest::Service {
+        self.edit_field(
+            id,
+            piqueld_client::edit::ApplicationEdit::Service {
+                name: "web".into(),
+                edit,
+            },
+        )
+        .await
+        .spec
+        .services
+        .remove(0)
+    }
+
+    /// Application `id`'s saved manifest.
+    async fn manifest(&self, id: &str) -> ApplicationManifest {
+        self.client
+            .application(id)
+            .await
+            .unwrap()
+            .application
+            .to_manifest()
     }
 }
 
@@ -1910,7 +1919,7 @@ impl Drop for AcceptanceApi {
 async fn acceptance_receipts_survive_restart_and_supersession() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let request = AcceptanceApi::request();
+    let request = new_application();
     let keyed = api.client.clone().with_request_id("apply-command-1");
     let accepted = keyed.apply_and_deploy(&request).await.unwrap();
     let mut replacement = request.clone();
@@ -1941,9 +1950,7 @@ async fn acceptance_receipts_survive_restart_and_supersession() {
         piqueld_core::OperationState::Superseded
     );
     let error = keyed.apply_and_deploy(&replacement).await.unwrap_err();
-    assert!(
-        matches!(error,piqueld_client::ClientError::Api {error,..} if error.code=="request_id_conflict")
-    );
+    assert_eq!(api_error(error).code, "request_id_conflict");
     // Two concurrent requests still produce exactly one durable acceptance.
     let mut fresh = request.clone();
     fresh.manifest.metadata.name = "another".into();
@@ -1959,11 +1966,7 @@ async fn acceptance_receipts_survive_restart_and_supersession() {
 async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let accepted = api
-        .client
-        .apply_and_deploy(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let accepted = api.deploy().await;
     let request = piqueld_client::RenameApplicationRequest {
         name: "renamed".into(),
         expected_generation: Some(1),
@@ -1973,9 +1976,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
         .rename_application(&accepted.environment_id, &request)
         .await
         .unwrap_err();
-    assert!(
-        matches!(error,piqueld_client::ClientError::Api {error,..} if error.code=="application_busy")
-    );
+    assert_eq!(api_error(error).code, "application_busy");
     api.finish_operation(
         &accepted.operation_id,
         Some(("image_resolution_rejected", "image unavailable")),
@@ -2006,7 +2007,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
             .state,
         piqueld_core::OperationState::Failed
     );
-    let mut identical = AcceptanceApi::request();
+    let mut identical = new_application();
     identical.manifest.metadata.name = "renamed".into();
     identical.expected_generation = Some(2);
     identical.expected_application_id = Some(accepted.environment_id.clone());
@@ -2022,19 +2023,13 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
         piqueld_core::OperationState::Failed
     );
     // The old name now identifies a different app. A captured ID must prevent overwriting it.
-    let old_name = api
-        .client
-        .apply_and_deploy(&AcceptanceApi::request())
-        .await
-        .unwrap();
-    let mut stale = AcceptanceApi::request();
+    let old_name = api.deploy().await;
+    let mut stale = new_application();
     stale.expected_generation = Some(1);
     stale.expected_application_id = Some(accepted.environment_id);
     stale.manifest.spec.services[0].replicas = 3.into();
     let error = api.client.apply_and_deploy(&stale).await.unwrap_err();
-    assert!(
-        matches!(error,piqueld_client::ClientError::Api {error,..} if error.code=="identity_conflict")
-    );
+    assert_eq!(api_error(error).code, "identity_conflict");
     assert_eq!(
         api.client
             .application(&old_name.environment_id)
@@ -2050,32 +2045,20 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
 
 #[tokio::test]
 async fn receipt_failure_rolls_back_acceptance_and_expired_keys_are_reusable() {
-    use sqlx::Connection;
     let temp = tempfile::tempdir().unwrap();
+    let database = database(&temp);
     let api = AcceptanceApi::start(&temp).await;
-    let mut connection = sqlx::SqliteConnection::connect(&format!(
-        "sqlite://{}",
-        temp.path().join("state.db").display()
-    ))
-    .await
-    .unwrap();
-    sqlx::query("CREATE TRIGGER reject_receipt BEFORE INSERT ON request_receipts BEGIN SELECT RAISE(ABORT,'injected receipt failure'); END").execute(&mut connection).await.unwrap();
+    execute(&database, "CREATE TRIGGER reject_receipt BEFORE INSERT ON request_receipts BEGIN SELECT RAISE(ABORT,'injected receipt failure'); END").await;
     let keyed = api.client.clone().with_request_id("atomic-command");
-    let request = AcceptanceApi::request();
+    let request = new_application();
     assert!(keyed.apply_and_deploy(&request).await.is_err());
     assert_eq!(
         api.store.list(None, 50).await.unwrap().items,
-        [] as [piqueld::store::StoredEnvironment; 0]
+        [] as [StoredEnvironment; 0]
     );
-    sqlx::query("DROP TRIGGER reject_receipt")
-        .execute(&mut connection)
-        .await
-        .unwrap();
+    execute(&database, "DROP TRIGGER reject_receipt").await;
     let accepted = keyed.apply_and_deploy(&request).await.unwrap();
-    sqlx::query("UPDATE request_receipts SET expires_at_ms=0")
-        .execute(&mut connection)
-        .await
-        .unwrap();
+    execute(&database, "UPDATE request_receipts SET expires_at_ms=0").await;
     let refreshed = keyed
         .deploy_environment(&accepted.environment_id, 1, None)
         .await
@@ -2087,7 +2070,7 @@ async fn receipt_failure_rolls_back_acceptance_and_expired_keys_are_reusable() {
 async fn preview_resolves_images_again_and_redacts_manifest_and_runtime_configuration() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let mut request = AcceptanceApi::request();
+    let mut request = new_application();
     request.manifest.spec.services[0]
         .environment
         .insert("TOKEN".into(), "old-private-value".into());
@@ -2097,12 +2080,8 @@ async fn preview_resolves_images_again_and_redacts_manifest_and_runtime_configur
         .validate()
         .unwrap()
         .normalize(piqueld_core::ApplicationId::parse("app-preview-01").unwrap());
-    let runtime = FakeRuntime {
-        cleanup_gate: None,
-        instance: InstanceId::parse(api.store.instance_id()).unwrap(),
-        unavailable: std::sync::atomic::AtomicBool::new(false),
-    };
-    let target = runtime
+    let target = api
+        .runtime
         .prepare(
             &piqueld_core::EnvironmentId::default_for(normalized.id()),
             &normalized,
@@ -2162,79 +2141,22 @@ async fn preview_resolves_images_again_and_redacts_manifest_and_runtime_configur
     );
 }
 
-impl AcceptanceApi {
-    fn assert_error(error: piqueld_client::ClientError, code: &str) {
-        assert!(
-            matches!(error, piqueld_client::ClientError::Api { error, .. } if error.code == code)
-        );
-    }
-
-    async fn finish_operation(&self, id: &str, error: Option<(&str, &str)>) {
-        use piqueld_core::OperationState;
-        self.store
-            .transition_operation(id, OperationState::Requested, OperationState::Running, None)
-            .await
-            .unwrap();
-        let state = if error.is_some() {
-            OperationState::Failed
-        } else {
-            OperationState::Succeeded
-        };
-        self.store
-            .transition_operation(id, OperationState::Running, state, error)
-            .await
-            .unwrap();
-    }
-
-    /// The rendered configuration deployment `operation` of `environment` captured.
-    async fn deployed(&self, environment: &str, operation: &str) -> NormalizedApplication {
-        self.client
-            .deployments(environment, None)
-            .await
-            .unwrap()
-            .items
-            .into_iter()
-            .find(|deployment| deployment.operation.id == operation)
-            .and_then(|deployment| deployment.application)
-            .expect("deployment captured a rendered manifest")
-    }
-
-    async fn finish_deletion(&self, deletion: &piqueld_core::api::DeletedApplication) {
-        for accepted in &deletion.operations {
-            self.store
-                .transition_operation(
-                    &accepted.operation_id,
-                    piqueld_core::OperationState::Requested,
-                    piqueld_core::OperationState::Running,
-                    None,
-                )
-                .await
-                .unwrap();
-            let operation = self.store.operation(&accepted.operation_id).await.unwrap();
-            self.store
-                .finish_delete_operation(&operation)
-                .await
-                .unwrap();
-        }
-    }
-}
-
 #[tokio::test]
 async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let mut request = AcceptanceApi::request();
+    let mut request = new_application();
     request.expected_generation = None;
-    AcceptanceApi::assert_error(
-        api.client.apply_and_deploy(&request).await.unwrap_err(),
-        "precondition_required",
+    assert_eq!(
+        api_error(api.client.apply_and_deploy(&request).await.unwrap_err()).code,
+        "precondition_required"
     );
     request.expected_generation = Some(0);
     let accepted = api.client.apply_and_deploy(&request).await.unwrap();
     request.expected_generation = Some(1);
-    AcceptanceApi::assert_error(
-        api.client.apply_and_deploy(&request).await.unwrap_err(),
-        "precondition_required",
+    assert_eq!(
+        api_error(api.client.apply_and_deploy(&request).await.unwrap_err()).code,
+        "precondition_required"
     );
     request.expected_application_id = Some(accepted.environment_id.clone());
     request.manifest.spec.services[0].replicas = 2.into();
@@ -2245,20 +2167,29 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
         api.client.apply_and_deploy(&competing)
     );
     assert_ne!(first.is_ok(), second.is_ok());
-    AcceptanceApi::assert_error(first.err().or(second.err()).unwrap(), "generation_conflict");
-    AcceptanceApi::assert_error(
-        api.client
-            .delete_application_with_generation(&accepted.environment_id, None)
-            .await
-            .unwrap_err(),
-        "precondition_required",
+    assert_eq!(
+        api_error(first.err().or(second.err()).unwrap()).code,
+        "generation_conflict"
     );
-    AcceptanceApi::assert_error(
-        api.client
-            .delete_application_with_generation(&accepted.environment_id, Some(1))
-            .await
-            .unwrap_err(),
-        "generation_conflict",
+    assert_eq!(
+        api_error(
+            api.client
+                .delete_application_with_generation(&accepted.environment_id, None)
+                .await
+                .unwrap_err()
+        )
+        .code,
+        "precondition_required"
+    );
+    assert_eq!(
+        api_error(
+            api.client
+                .delete_application_with_generation(&accepted.environment_id, Some(1))
+                .await
+                .unwrap_err()
+        )
+        .code,
+        "generation_conflict"
     );
     let refreshed = api
         .client
@@ -2290,7 +2221,7 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
 async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let mut request = AcceptanceApi::request();
+    let mut request = new_application();
     request.expected_generation = None;
     let original = api
         .client
@@ -2303,18 +2234,14 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
         .await
         .unwrap();
     api.finish_deletion(&deletion).await;
-    let replacement = api
-        .client
-        .apply_and_deploy(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let replacement = api.deploy().await;
     assert_ne!(replacement.environment_id, original.environment_id);
     request.expected_generation = Some(1);
     request.expected_application_id = Some(original.environment_id);
     request.manifest.spec.services[0].replicas = 4.into();
-    AcceptanceApi::assert_error(
-        api.client.apply_and_deploy(&request).await.unwrap_err(),
-        "identity_conflict",
+    assert_eq!(
+        api_error(api.client.apply_and_deploy(&request).await.unwrap_err()).code,
+        "identity_conflict"
     );
     let forced = api
         .client
@@ -2356,7 +2283,7 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
 async fn forced_receipts_replay_after_restart_without_overwriting_newer_intent() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let request = AcceptanceApi::request();
+    let request = new_application();
     let keyed = api.client.clone().with_request_id("forced-command");
     let accepted = keyed
         .apply_and_deploy_with_force(&request, true)
@@ -2393,9 +2320,9 @@ async fn forced_receipts_replay_after_restart_without_overwriting_newer_intent()
         .unwrap();
     assert_eq!(current.generation, newer.generation);
     assert_eq!(current.application.spec().services[0].replicas, 3.into());
-    AcceptanceApi::assert_error(
-        keyed.apply_and_deploy(&request).await.unwrap_err(),
-        "request_id_conflict",
+    assert_eq!(
+        api_error(keyed.apply_and_deploy(&request).await.unwrap_err()).code,
+        "request_id_conflict"
     );
     let separately_invoked = api.client.clone().with_request_id("new-forced-command");
     let reapplied = separately_invoked
@@ -2409,28 +2336,30 @@ async fn forced_receipts_replay_after_restart_without_overwriting_newer_intent()
 async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let accepted = api
-        .client
-        .apply_and_deploy(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let accepted = api.deploy().await;
     let mut rename = piqueld_client::RenameApplicationRequest {
         name: "renamed".into(),
         expected_generation: None,
     };
-    AcceptanceApi::assert_error(
-        api.client
-            .rename_application(&accepted.environment_id, &rename)
-            .await
-            .unwrap_err(),
-        "precondition_required",
+    assert_eq!(
+        api_error(
+            api.client
+                .rename_application(&accepted.environment_id, &rename)
+                .await
+                .unwrap_err()
+        )
+        .code,
+        "precondition_required"
     );
-    AcceptanceApi::assert_error(
-        api.client
-            .rename_application_with_force(&accepted.environment_id, &rename, true)
-            .await
-            .unwrap_err(),
-        "application_busy",
+    assert_eq!(
+        api_error(
+            api.client
+                .rename_application_with_force(&accepted.environment_id, &rename, true)
+                .await
+                .unwrap_err()
+        )
+        .code,
+        "application_busy"
     );
     api.finish_operation(&accepted.operation_id, None).await;
     rename.expected_generation = Some(99);
@@ -2441,17 +2370,17 @@ async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
         .unwrap();
     assert_eq!(renamed.generation, 2);
     assert_eq!(renamed.application_id, accepted.environment_id);
-    api.client
-        .apply_and_deploy(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    api.deploy().await;
     rename.name = "notes".into();
-    AcceptanceApi::assert_error(
-        api.client
-            .rename_application_with_force(&accepted.environment_id, &rename, true)
-            .await
-            .unwrap_err(),
-        "application_name_collision",
+    assert_eq!(
+        api_error(
+            api.client
+                .rename_application_with_force(&accepted.environment_id, &rename, true)
+                .await
+                .unwrap_err()
+        )
+        .code,
+        "application_name_collision"
     );
 }
 
@@ -2459,12 +2388,10 @@ async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
 async fn docker_outage_allows_acceptance_and_preserves_receipt_replay() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let request = AcceptanceApi::request();
+    let request = new_application();
     let keyed = api.client.clone().with_request_id("outage-replay");
     let accepted = keyed.apply_and_deploy(&request).await.unwrap();
-    api.runtime
-        .unavailable
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    api.runtime.set_unavailable(true);
     assert_eq!(
         keyed.apply_and_deploy(&request).await.unwrap().operation_id,
         accepted.operation_id
@@ -2473,14 +2400,13 @@ async fn docker_outage_allows_acceptance_and_preserves_receipt_replay() {
     changed.expected_generation = Some(accepted.generation);
     changed.expected_application_id = Some(accepted.environment_id.clone());
     changed.manifest.spec.services[0].replicas = 2.into();
-    assert!(
-        matches!(api.client.plan_application(&changed, None).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status==StatusCode::SERVICE_UNAVAILABLE)
-    );
+    let unavailable = api.client.plan_application(&changed, None).await;
+    assert_eq!(api_error(unavailable.unwrap_err()).status, 503);
     let next = api.client.apply_and_deploy(&changed).await.unwrap();
     assert_ne!(next.operation_id, accepted.operation_id);
-    AcceptanceApi::assert_error(
-        keyed.apply_and_deploy(&changed).await.unwrap_err(),
-        "request_id_conflict",
+    assert_eq!(
+        api_error(keyed.apply_and_deploy(&changed).await.unwrap_err()).code,
+        "request_id_conflict"
     );
 }
 
@@ -2490,25 +2416,25 @@ trait DeployFixture {
     async fn apply_and_deploy(
         &self,
         request: &ApplyApplicationRequest,
-    ) -> Result<AcceptedOperation, piqueld_client::ClientError>;
+    ) -> Result<AcceptedOperation, ClientError>;
     async fn apply_and_deploy_with_force(
         &self,
         request: &ApplyApplicationRequest,
         force: bool,
-    ) -> Result<AcceptedOperation, piqueld_client::ClientError>;
+    ) -> Result<AcceptedOperation, ClientError>;
 }
 impl DeployFixture for Client {
     async fn apply_and_deploy(
         &self,
         request: &ApplyApplicationRequest,
-    ) -> Result<AcceptedOperation, piqueld_client::ClientError> {
+    ) -> Result<AcceptedOperation, ClientError> {
         self.apply_and_deploy_with_force(request, false).await
     }
     async fn apply_and_deploy_with_force(
         &self,
         request: &ApplyApplicationRequest,
         force: bool,
-    ) -> Result<AcceptedOperation, piqueld_client::ClientError> {
+    ) -> Result<AcceptedOperation, ClientError> {
         let saved = self
             .apply_application_with_options(request, force, true)
             .await?;
@@ -2524,10 +2450,8 @@ impl DeployFixture for Client {
 async fn saved_configuration_preview_and_deployment_are_separate_even_offline() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    api.runtime
-        .unavailable
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    let mut request = AcceptanceApi::request();
+    api.runtime.set_unavailable(true);
+    let mut request = new_application();
     request.manifest.spec.services.clear();
     let saved = api.client.apply_application(&request).await.unwrap();
     assert!(saved.operation_id.is_none());
@@ -2586,9 +2510,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
             .await
             .is_err()
     );
-    api.runtime
-        .unavailable
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+    api.runtime.set_unavailable(false);
     request.expected_generation = Some(saved.generation);
     let preview = api.client.plan_application(&request, None).await.unwrap();
     assert!(!preview.identical);
@@ -2599,11 +2521,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
 async fn deploy_after_rename_captures_saved_name_and_spec() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let accepted = api
-        .client
-        .apply_and_deploy(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let accepted = api.deploy().await;
     api.finish_operation(&accepted.operation_id, None).await;
     api.client
         .rename_application(
@@ -2615,7 +2533,7 @@ async fn deploy_after_rename_captures_saved_name_and_spec() {
         )
         .await
         .unwrap();
-    let mut edited = AcceptanceApi::request();
+    let mut edited = new_application();
     edited.manifest.metadata.name = "renamed".into();
     edited.manifest.spec.services[0].replicas = 2.into();
     edited.expected_generation = Some(2);
@@ -2645,11 +2563,7 @@ async fn deploy_after_rename_captures_saved_name_and_spec() {
 async fn unavailable_observation_does_not_claim_services_are_missing() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let accepted = api
-        .client
-        .apply_and_deploy(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let accepted = api.deploy().await;
     let id = piqueld_core::EnvironmentId::parse(&accepted.environment_id).unwrap();
     let app = api.store.get(&id).await.unwrap();
     let target = api
@@ -2679,9 +2593,7 @@ async fn unavailable_observation_does_not_claim_services_are_missing() {
         .set_status_for_operation(&op.id, piqueld_core::ApplicationState::Ready, None)
         .await
         .unwrap();
-    api.runtime
-        .unavailable
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    api.runtime.set_unavailable(true);
     let detail = api
         .client
         .environment_detail(&accepted.environment_id)
@@ -2700,14 +2612,12 @@ async fn unavailable_observation_does_not_claim_services_are_missing() {
 async fn downloaded_manifest_round_trips_saved_configuration_without_docker() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    api.runtime
-        .unavailable
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    let mut request = AcceptanceApi::request();
-    request.manifest.spec.services[0]
+    api.runtime.set_unavailable(true);
+    let mut apply = new_application();
+    apply.manifest.spec.services[0]
         .environment
         .insert("MESSAGE".into(), "quotes \" and newline\n".into());
-    request.manifest.spec.manifest = Some(piqueld_core::manifest::RepositoryManifest {
+    apply.manifest.spec.manifest = Some(piqueld_core::manifest::RepositoryManifest {
         repository: piqueld_core::manifest::GitRepository {
             url: "https://example.com/repo.git".into(),
             branch: "main".into(),
@@ -2716,34 +2626,23 @@ async fn downloaded_manifest_round_trips_saved_configuration_without_docker() {
         path: "infra/app.toml".into(),
         sync: piqueld_core::sync::RepositorySync::Off,
     });
-    let saved = api.client.apply_application(&request).await.unwrap();
-    let response = router(
-        ApiState::new(api.store.clone(), api.runtime.clone()),
-        FakeAuth,
-    )
-    .oneshot(
-        Request::builder()
-            .header("host", "localhost")
-            .uri(format!(
-                "/api/v1/applications/{}/manifest",
-                saved.application_id
-            ))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(response.status(), 200);
-    assert_eq!(response.headers()["content-type"], "application/toml");
-    assert_eq!(response.headers()["cache-control"], "no-store");
+    let saved = api.client.apply_application(&apply).await.unwrap();
+    let response = api
+        .router()
+        .send(request(&format!(
+            "/api/v1/applications/{}/manifest",
+            saved.application_id
+        )))
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.header("content-type"), Some("application/toml"));
+    assert_eq!(response.header("cache-control"), Some("no-store"));
     assert_eq!(
-        response.headers()["content-disposition"],
-        "attachment; filename=\"notes.toml\""
+        response.header("content-disposition"),
+        Some("attachment; filename=\"notes.toml\"")
     );
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let downloaded: ApplicationManifest =
-        toml::from_str(std::str::from_utf8(&bytes).unwrap()).unwrap();
-    assert_eq!(downloaded, request.manifest);
+    let downloaded: ApplicationManifest = toml::from_str(response.text()).unwrap();
+    assert_eq!(downloaded, apply.manifest);
     assert!(
         api.client
             .deployments(&saved.application_id, None)
@@ -2757,9 +2656,7 @@ async fn downloaded_manifest_round_trips_saved_configuration_without_docker() {
 #[tokio::test]
 async fn routed_statuses_and_media_types_are_documented_in_openapi() {
     let temp = tempfile::tempdir().unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
     let document = serde_json::to_value(piqueld::api::http::openapi_document()).unwrap();
     let cases = [
         (Method::GET, "/system/status", 200),
@@ -2777,66 +2674,28 @@ async fn routed_statuses_and_media_types_are_documented_in_openapi() {
     ];
     for (method, suffix, status) in cases {
         let path = format!("/api/v1{suffix}");
-        let response = send_raw(
-            Target::Tcp(address),
-            method.clone(),
-            &path.replace("{id}", "app-missing"),
-            &[("content-type", "application/json")],
-            if method == Method::POST {
-                b"{}".to_vec()
-            } else {
-                Vec::new()
-            },
-        )
-        .await;
+        let response = server
+            .send(
+                method.clone(),
+                &path.replace("{id}", "app-missing"),
+                &[("content-type", "application/json")],
+                if method == Method::POST {
+                    b"{}".to_vec()
+                } else {
+                    Vec::new()
+                },
+            )
+            .await;
         assert_eq!(response.status.as_u16(), status, "{method} {path}");
         response.assert_documented(&document, &method, &path);
-    }
-    server.abort();
-}
-
-impl RawResponse {
-    fn assert_documented(&self, document: &serde_json::Value, method: &Method, path: &str) {
-        let status = self.status.as_u16().to_string();
-        let operation = &document["paths"][path][method.as_str().to_lowercase()];
-        let response = &operation["responses"][&status];
-        assert!(
-            !response.is_null(),
-            "undocumented {method} {path} -> {status}"
-        );
-        let media_type = self.headers[http::header::CONTENT_TYPE]
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap();
-        assert!(
-            !response["content"][media_type].is_null(),
-            "undocumented response media type for {method} {path}: {media_type}"
-        );
-        if self.status.is_client_error() || self.status.is_server_error() {
-            let error: piqueld_core::api::ErrorBody =
-                serde_json::from_value(self.body.clone()).unwrap();
-            assert_ne!(error.code, "");
-            assert_ne!(error.message, "");
-            let header_id = self
-                .headers
-                .get("x-request-id")
-                .and_then(|value| value.to_str().ok())
-                .expect("request ID header");
-            assert_ne!(header_id, "");
-            assert_eq!(error.request_id, header_id);
-        }
     }
 }
 
 #[tokio::test]
 async fn application_log_snapshot_validates_bounds_and_preserves_task_identity() {
     let temp = tempfile::tempdir().unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
-    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
+    let client = server.client();
     let app = create_and_inspect(&client, &manifest()).await;
     let logs = client
         .environment_logs(&app.environment_id, Some("web"), 5, 60)
@@ -2861,11 +2720,8 @@ async fn application_log_snapshot_validates_bounds_and_preserves_task_identity()
             .environment_logs(&app.environment_id, Some("web"), tail, since)
             .await
             .unwrap_err();
-        assert!(
-            matches!(error, piqueld_client::ClientError::Api { status, .. } if status.as_u16() == 400)
-        );
+        assert_eq!(api_error(error).status, 400);
     }
-    server.abort();
 }
 
 /// Exec rechecks the caller's grants when the command starts, so access lost
@@ -2877,14 +2733,8 @@ async fn exec_rechecks_grants_when_the_command_starts() {
     use piqueld_core::access::Denied;
     let temp = tempfile::tempdir().unwrap();
     let state = state(&temp).await;
-    let mutation =
-        piqueld::api::Mutation::save(manifest().validate_template().unwrap(), None, false);
-    let Ok(piqueld::api::MutationResponse::Saved(saved)) =
-        state.accept(Daemon, mutation, Some(0), false, None).await
-    else {
-        panic!("save response");
-    };
-    let database = temp.path().join("state.db");
+    let saved = save(&state, manifest()).await;
+    let database = database(&temp);
     let grant = [("apps:exec", Some(saved.application_id.as_str()))];
     seed_account(&database, "operator", &grant).await;
     let environment = piqueld_core::EnvironmentId::parse(saved.application_id.as_str()).unwrap();
@@ -2927,16 +2777,11 @@ async fn exec_rechecks_grants_when_the_command_starts() {
             credential_id: Some("operator".into()),
         })
     );
-    let mut connection = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!(
-        "sqlite:{}",
-        database.display()
-    ))
-    .await
-    .unwrap();
-    sqlx::query("DELETE FROM auth_grants WHERE user_id='operator'")
-        .execute(&mut connection)
-        .await
-        .unwrap();
+    execute(
+        &database,
+        "DELETE FROM auth_grants WHERE user_id='operator'",
+    )
+    .await;
     assert!(matches!(
         state.exec(caller, &environment, &request, "operator").await,
         Err(piqueld::api::ApplicationError::Store(StoreError::Denied(
@@ -2954,7 +2799,7 @@ async fn receipts_replay_only_for_their_account() {
     use piqueld::store::{Caller, StoreError};
     let temp = tempfile::tempdir().unwrap();
     let state = state(&temp).await;
-    let database = temp.path().join("state.db");
+    let database = database(&temp);
     seed_account(&database, "author", &[("apps:create", None)]).await;
     let grants = [("apps:create", None), ("apps:write", None)];
     seed_account(&database, "other", &grants).await;
@@ -2993,26 +2838,19 @@ async fn exec_streams_over_both_transports_and_records_history_without_the_comma
     use tokio_tungstenite::tungstenite::Message;
     let temp = tempfile::tempdir().unwrap();
     let state = state(&temp).await;
-    let socket_dir = tempfile::tempdir().unwrap();
-    let socket = socket_dir.path().join("exec.sock");
-    let unix = tokio::net::UnixListener::bind(&socket).unwrap();
-    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = tcp.local_addr().unwrap();
-    let servers = [
-        tokio::spawn(serve(unix, api_router(state.clone(), FakeAuth)).into_future()),
-        tokio::spawn(serve(tcp, router(state, FakeAuth)).into_future()),
-    ];
+    let unix = Server::unix(
+        api_router(state.clone(), FakeAuth),
+        &temp.path().join("exec.sock"),
+    );
+    let tcp = Server::tcp(router(state, FakeAuth)).await;
     let request = |service: &str| ExecRequest {
         service: service.parse().unwrap(),
         command: ExecCommand::parse(vec!["invite".into(), "create".into()]).unwrap(),
         stdin: true,
         tty: None,
     };
-    let app = create_and_inspect(&Client::unix(&socket), &manifest()).await;
-    for client in [
-        Client::unix(&socket),
-        Client::tcp(&format!("http://{address}/")).unwrap(),
-    ] {
+    let app = create_and_inspect(&unix.client(), &manifest()).await;
+    for client in [unix.client(), tcp.client()] {
         let (mut output, mut input) = client
             .exec(&app.environment_id, &request("web"))
             .await
@@ -3043,7 +2881,8 @@ async fn exec_streams_over_both_transports_and_records_history_without_the_comma
         ));
     }
     // Completion is recorded before the final frame is sent.
-    let commands = Client::unix(&socket)
+    let commands = unix
+        .client()
         .events(None, Some(&app.environment_id), None, 100)
         .await
         .unwrap()
@@ -3062,26 +2901,20 @@ async fn exec_streams_over_both_transports_and_records_history_without_the_comma
     );
 
     // A client detaching from a quiet session gets a clean Close reply.
-    let (mut socket, _) = tokio_tungstenite::client_async(
-        format!(
-            "ws://{address}/api/v1/environments/{}/exec",
-            app.environment_id
-        ),
-        tokio::net::TcpStream::connect(address).await.unwrap(),
-    )
-    .await
-    .unwrap();
+    let url = format!(
+        "ws://{}/api/v1/environments/{}/exec",
+        tcp.address(),
+        app.environment_id
+    );
+    let (mut socket, _) = connect_exec(tcp.address(), url, None).await;
     let start = serde_json::to_string(&request("web")).unwrap();
     socket.send(Message::text(start)).await.unwrap();
     socket.close(None).await.unwrap();
-    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next()).await;
+    let reply = tokio::time::timeout(Duration::from_secs(5), socket.next()).await;
     assert!(
         matches!(reply, Ok(Some(Ok(Message::Close(_))))),
         "{reply:?}"
     );
-    for server in servers {
-        server.abort();
-    }
 }
 
 #[tokio::test]
@@ -3089,9 +2922,7 @@ async fn readiness_distinguishes_engine_reachability_and_does_not_gate_saves() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
     assert!(api.client.system_readiness().await.unwrap().ready);
-    api.runtime
-        .unavailable
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    api.runtime.set_unavailable(true);
     let readiness = api.client.system_readiness().await.unwrap();
     assert!(!readiness.ready);
     assert!(matches!(
@@ -3105,24 +2936,9 @@ async fn readiness_distinguishes_engine_reachability_and_does_not_gate_saves() {
     assert!(
         matches!(readiness.swarm, piqueld_core::api::DependencyStatus::Failed { message } if message == "A compatible single-node Swarm manager is required")
     );
-    let response = router(
-        ApiState::new(api.store.clone(), api.runtime.clone()),
-        FakeAuth,
-    )
-    .oneshot(
-        Request::builder()
-            .header("host", "localhost")
-            .uri("/api/v1/system/readiness")
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(response.status(), 503);
-    api.client
-        .apply_application(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let response = api.router().send(request("/api/v1/system/readiness")).await;
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    api.save().await;
     assert_eq!(api.client.system_status().await.unwrap().status, "running");
 }
 
@@ -3132,7 +2948,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
     let service = ApplicationService::new(api.store.clone(), api.runtime.clone());
-    let request = AcceptanceApi::request();
+    let apply = new_application();
     // The same account as the HTTP client, since receipts replay only for theirs.
     let caller = piqueld::api::Actor::Account(piqueld::store::Caller {
         credential_id: "contract-admin",
@@ -3142,7 +2958,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
         .accept(
             caller,
             Mutation::save(
-                request.manifest.clone().validate_template().unwrap(),
+                apply.manifest.clone().validate_template().unwrap(),
                 None,
                 true,
             ),
@@ -3159,7 +2975,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
         .client
         .clone()
         .with_request_id("shared-command")
-        .apply_and_deploy(&request)
+        .apply_and_deploy(&apply)
         .await
         .unwrap();
     assert_eq!(saved.operation_id, Some(replay.operation_id));
@@ -3171,21 +2987,15 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
         .await
         .unwrap();
     let response = api_router(service.clone(), FakeAuth)
-        .oneshot(
-            Request::builder()
-                .header("host", "localhost")
-                .uri(format!("/api/v1/environments/{id}/detail"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let body: serde_json::Value =
-        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(body["data"], serde_json::to_value(direct).unwrap());
+        .send(request(&format!("/api/v1/environments/{id}/detail")))
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response.json()["data"],
+        serde_json::to_value(direct).unwrap()
+    );
 
-    let mut changed = request.clone();
+    let mut changed = apply.clone();
     changed.expected_generation = Some(saved.generation);
     changed.expected_application_id = Some(saved.application_id);
     changed.manifest.spec.services[0].replicas = 2.into();
@@ -3387,11 +3197,7 @@ async fn environment_visibility_edits_cap_routes_in_the_saved_manifest() {
     };
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let saved = api
-        .client
-        .apply_application(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let saved = api.save().await;
     let id = &saved.application_id;
     let set = |visibility, generation| {
         let client = &api.client;
@@ -3447,11 +3253,7 @@ async fn route_field_edits_follow_service_renames_and_removals() {
     };
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let saved = api
-        .client
-        .apply_application(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let saved = api.save().await;
     let id = &saved.application_id;
     let route = Route::service(
         "notes.example.com".into(),
@@ -3520,11 +3322,7 @@ async fn job_field_edit_replaces_jobs_in_order_and_validates_atomically() {
     };
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let saved = api
-        .client
-        .apply_application(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let saved = api.save().await;
     let id = &saved.application_id;
     let job = |name: &str, service: &str| Job {
         name: name.into(),
@@ -3564,7 +3362,7 @@ async fn job_field_edit_replaces_jobs_in_order_and_validates_atomically() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&error, piqueld_client::ClientError::Api { status, error }
+        matches!(&error, ClientError::Api { status, error }
             if *status == http::StatusCode::UNPROCESSABLE_ENTITY
                 && error.details.to_string().contains("job_service_missing")),
         "{error:?}"
@@ -3584,14 +3382,8 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
     use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    api.runtime
-        .unavailable
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    let saved = api
-        .client
-        .apply_application(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    api.runtime.set_unavailable(true);
+    let saved = api.save().await;
     let id = &saved.application_id;
     let edit = ApplicationEdit::Service {
         name: "web".into(),
@@ -3627,9 +3419,7 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
         .edit_application(id, &edit, &options)
         .await
         .unwrap_err();
-    assert!(
-        matches!(stale, piqueld_client::ClientError::Api { error, .. } if error.code == "generation_conflict")
-    );
+    assert_eq!(api_error(stale).code, "generation_conflict");
     let replay = keyed.edit_application(id, &edit, &options).await.unwrap();
     assert_eq!(replay.generation, receipt.generation);
     let deploy = EditOptions {
@@ -3687,11 +3477,7 @@ async fn field_edits_validate_atomically_and_preserve_git_ownership() {
     };
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let saved = api
-        .client
-        .apply_application(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let saved = api.save().await;
     let id = &saved.application_id;
     let options = EditOptions {
         expected_generation: Some(1),
@@ -3707,7 +3493,7 @@ async fn field_edits_validate_atomically_and_preserve_git_ownership() {
         .await
         .unwrap_err();
     assert!(
-        matches!(error, piqueld_client::ClientError::Api { status, error } if status == http::StatusCode::UNPROCESSABLE_ENTITY && !error.details.is_null())
+        matches!(error, ClientError::Api { status, error } if status == http::StatusCode::UNPROCESSABLE_ENTITY && !error.details.is_null())
     );
     assert_eq!(api.client.application(id).await.unwrap().generation, 1);
     let repository = ApplicationEdit::Repository(Some(RepositoryManifest {
@@ -3737,9 +3523,7 @@ async fn field_edits_validate_atomically_and_preserve_git_ownership() {
         .edit_application(id, &blocked, &options)
         .await
         .unwrap_err();
-    assert!(
-        matches!(error, piqueld_client::ClientError::Api { error, .. } if error.code == "repository_managed")
-    );
+    assert_eq!(api_error(error).code, "repository_managed");
     api.client
         .edit_application(
             id,
@@ -3779,11 +3563,7 @@ async fn concurrent_field_edits_reject_stale_revisions_without_losing_updates() 
     use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let saved = api
-        .client
-        .apply_application(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let saved = api.save().await;
     let replicas = ApplicationEdit::Service {
         name: "web".into(),
         edit: ServiceEdit::Replicas(4.into()),
@@ -3808,9 +3588,7 @@ async fn concurrent_field_edits_reject_stale_revisions_without_losing_updates() 
     } else {
         (&env, b.unwrap_err())
     };
-    assert!(
-        matches!(error, piqueld_client::ClientError::Api { error, .. } if error.code == "generation_conflict")
-    );
+    assert_eq!(api_error(error).code, "generation_conflict");
     let options = EditOptions {
         expected_generation: Some(2),
         ..EditOptions::default()
@@ -3830,60 +3608,12 @@ async fn concurrent_field_edits_reject_stale_revisions_without_losing_updates() 
     assert_eq!(manifest.spec.services[0].environment["X"], "y");
 }
 
-impl AcceptanceApi {
-    async fn edit_field(
-        &self,
-        id: &str,
-        edit: piqueld_client::edit::ApplicationEdit,
-    ) -> piqueld_core::manifest::ApplicationManifest {
-        let generation = self.client.application(id).await.unwrap().generation;
-        self.client
-            .edit_application(
-                id,
-                &edit,
-                &piqueld_client::edit::EditOptions {
-                    expected_generation: Some(generation),
-                    ..piqueld_client::edit::EditOptions::default()
-                },
-            )
-            .await
-            .unwrap();
-        self.client
-            .application(id)
-            .await
-            .unwrap()
-            .application
-            .to_manifest()
-    }
-    async fn edit_service_field(
-        &self,
-        id: &str,
-        edit: piqueld_client::edit::ServiceEdit,
-    ) -> piqueld_core::manifest::Service {
-        self.edit_field(
-            id,
-            piqueld_client::edit::ApplicationEdit::Service {
-                name: "web".into(),
-                edit,
-            },
-        )
-        .await
-        .spec
-        .services
-        .remove(0)
-    }
-}
-
 #[tokio::test]
 async fn field_edit_source_endpoints_preserve_other_git_settings() {
     use piqueld_client::{Build, GitRepository, SourceRepository, edit::ServiceEdit};
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let saved = api
-        .client
-        .apply_application(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let saved = api.save().await;
     let id = &saved.application_id;
     let source = Source::Git {
         repository: SourceRepository::Git(GitRepository {
@@ -3974,11 +3704,7 @@ async fn field_edit_health_process_and_resource_endpoints_clear_optional_values(
     use piqueld_client::{HealthCheck, edit::ServiceEdit};
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let saved = api
-        .client
-        .apply_application(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let saved = api.save().await;
     let id = &saved.application_id;
     api.edit_service_field(
         id,
@@ -4107,7 +3833,7 @@ async fn field_edit_resource_lifecycle_rejects_referenced_volume_removal() {
         .await
         .unwrap_err();
     assert!(
-        matches!(error, piqueld_client::ClientError::Api { status, .. } if status == http::StatusCode::UNPROCESSABLE_ENTITY)
+        matches!(error, ClientError::Api { status, .. } if status == http::StatusCode::UNPROCESSABLE_ENTITY)
     );
     assert_eq!(
         api.client.application(id).await.unwrap().generation,
@@ -4158,11 +3884,7 @@ async fn field_edit_receipts_survive_restart_and_reject_key_reuse() {
     use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let saved = api
-        .client
-        .apply_application(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let saved = api.save().await;
     let edit = ApplicationEdit::Service {
         name: "web".into(),
         edit: ServiceEdit::Replicas(3.into()),
@@ -4194,28 +3916,14 @@ async fn field_edit_receipts_survive_restart_and_reject_key_reuse() {
         .edit_application(&saved.application_id, &changed, &options)
         .await
         .unwrap_err();
-    assert!(
-        matches!(error, piqueld_client::ClientError::Api { error, .. } if error.code == "request_id_conflict")
-    );
+    assert_eq!(api_error(error).code, "request_id_conflict");
 }
 
 #[tokio::test]
 async fn field_edit_requires_an_explicit_value_and_revision() {
     let temp = tempfile::tempdir().unwrap();
     let state = state(&temp).await;
-    let saved = state
-        .accept(
-            Daemon,
-            piqueld::api::Mutation::save(manifest().validate_template().unwrap(), None, false),
-            Some(0),
-            false,
-            None,
-        )
-        .await
-        .unwrap();
-    let piqueld::api::MutationResponse::Saved(saved) = saved else {
-        panic!("save receipt")
-    };
+    let saved = save(&state, manifest()).await;
     let app = router(state, FakeAuth);
     for (query, body, status) in [
         ("?expected_generation=1", "{}", StatusCode::BAD_REQUEST),
@@ -4232,8 +3940,7 @@ async fn field_edit_requires_an_explicit_value_and_revision() {
         ),
     ] {
         let response = app
-            .clone()
-            .oneshot(
+            .send(
                 Request::builder()
                     .method(Method::PUT)
                     .uri(format!(
@@ -4245,9 +3952,8 @@ async fn field_edit_requires_an_explicit_value_and_revision() {
                     .body(Body::from(body))
                     .unwrap(),
             )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), status, "body {body}");
+            .await;
+        assert_eq!(response.status, status, "body {body}");
     }
 }
 
@@ -4256,11 +3962,7 @@ async fn typed_edits_record_safe_field_history() {
     use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let saved = api
-        .client
-        .apply_application(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let saved = api.save().await;
     let edit = ApplicationEdit::Service {
         name: "web".into(),
         edit: ServiceEdit::EnvironmentEntry(("SECRET".into(), Some("private-value".into()))),
@@ -4300,20 +4002,14 @@ async fn typed_edits_record_safe_field_history() {
 async fn diagnostic_ids_correlate_api_failures_and_metrics_routes_are_isolated() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let app = api
-        .client
-        .apply_and_deploy(&AcceptanceApi::request())
-        .await
-        .unwrap();
-    api.runtime
-        .unavailable
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let app = api.deploy().await;
+    api.runtime.set_unavailable(true);
     let error = api
         .client
         .environment_logs(&app.environment_id, Some("web"), 5, 60)
         .await
         .unwrap_err();
-    let piqueld_client::ClientError::Api { error, .. } = error else {
+    let ClientError::Api { error, .. } = error else {
         panic!("API error");
     };
     let id = error.details["diagnostic_id"].as_str().unwrap();
@@ -4345,33 +4041,18 @@ async fn diagnostic_ids_correlate_api_failures_and_metrics_routes_are_isolated()
     assert!(api.client.daemon_stats().await.unwrap().diagnostics > 0);
     let metrics =
         piqueld::api::http::metrics_router(ApiState::new(api.store.clone(), api.runtime.clone()));
-    let response = metrics.clone().oneshot(request("/metrics")).await.unwrap();
-    assert_eq!(response.status(), 200);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    assert!(
-        std::str::from_utf8(&body)
-            .unwrap()
-            .contains("piqueld_database_bytes")
-    );
-    assert_eq!(
-        metrics
-            .oneshot(request("/api/v1/applications"))
-            .await
-            .unwrap()
-            .status(),
-        404
-    );
+    let response = metrics.send(request("/metrics")).await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert!(response.text().contains("piqueld_database_bytes"));
+    let applications = metrics.send(request("/api/v1/applications")).await;
+    assert_eq!(applications.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let app = api
-        .client
-        .apply_and_deploy(&AcceptanceApi::request())
-        .await
-        .unwrap();
+    let app = api.deploy().await;
     api.finish_operation(
         &app.operation_id,
         Some(("service_update_failed", "Update paused")),
@@ -4384,21 +4065,15 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
         .unwrap()
         .items;
     let after = events[events.len() - 2].id;
-    let router = router(
-        ApiState::new(api.store.clone(), api.runtime.clone()),
-        FakeAuth,
-    );
+    let router = api.router();
     for limit in [0, 101] {
         let response = router
-            .clone()
-            .oneshot(request(&format!("/api/v1/events/stream?limit={limit}")))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 400);
+            .send(request(&format!("/api/v1/events/stream?limit={limit}")))
+            .await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
     }
     let response = router
-        .clone()
-        .oneshot(
+        .open(
             Request::builder()
                 .uri("/api/v1/events/stream?errors_only=true&limit=1")
                 .header("host", "localhost")
@@ -4406,12 +4081,11 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
                 .body(Body::empty())
                 .unwrap(),
         )
-        .await
-        .unwrap();
+        .await;
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["content-type"], "text/event-stream");
     let mut body = response.into_body();
-    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    let frame = tokio::time::timeout(Duration::from_secs(2), async {
         let mut bytes = Vec::new();
         loop {
             let frame = body.frame().await.unwrap().unwrap();
@@ -4431,10 +4105,9 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
     assert!(text.contains(&format!("id: v1:{}", events.last().unwrap().id)));
     api.store.prune_events(i64::MAX).await.unwrap();
     let response = router
-        .oneshot(request(&format!("/api/v1/events/stream?cursor=v1:{after}")))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 410);
+        .send(request(&format!("/api/v1/events/stream?cursor=v1:{after}")))
+        .await;
+    assert_eq!(response.status, StatusCode::GONE);
 }
 
 /// Every documented operation except the public sign-in endpoints must reject
@@ -4455,17 +4128,10 @@ async fn every_documented_operation_requires_authentication() {
         "/api/v1/auth/device/poll",
     ];
     let temp = TempDir::new().unwrap();
-    let store = Arc::new(Store::open(temp.path().join("state.db")).await.unwrap());
+    let store = Arc::new(Store::open(database(&temp)).await.unwrap());
     let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
-    let instance = InstanceId::parse(store.instance_id().to_owned()).unwrap();
-    let state = ApiState::new(
-        Arc::clone(&store),
-        Arc::new(FakeRuntime {
-            cleanup_gate: None,
-            instance,
-            unavailable: std::sync::atomic::AtomicBool::new(false),
-        }),
-    );
+    let runtime = Arc::new(FakeRuntime::new(&store));
+    let state = ApiState::new(store, runtime);
     let document = piqueld::api::http::openapi_document();
     let paths = document["paths"].as_object().unwrap();
     let mut checked = 0;
@@ -4494,8 +4160,7 @@ async fn every_documented_operation_requires_authentication() {
                 }
                 let method = method.to_ascii_uppercase();
                 let response = listener
-                    .clone()
-                    .oneshot(
+                    .send(
                         Request::builder()
                             .method(method.as_str())
                             .uri(&uri)
@@ -4504,64 +4169,21 @@ async fn every_documented_operation_requires_authentication() {
                             .body(Body::from("{}"))
                             .unwrap(),
                     )
-                    .await
-                    .unwrap();
+                    .await;
                 assert_eq!(
-                    response.status(),
-                    axum::http::StatusCode::UNAUTHORIZED,
+                    response.status,
+                    StatusCode::UNAUTHORIZED,
                     "{method} {path} must require authentication"
                 );
-                assert_eq!(response.headers()["x-request-id"], "anonymous-contract");
-                let body = response.into_body().collect().await.unwrap().to_bytes();
-                let error: piqueld_core::api::ErrorBody = serde_json::from_slice(&body).unwrap();
+                assert_eq!(response.header("x-request-id"), Some("anonymous-contract"));
+                let error: piqueld_core::api::ErrorBody =
+                    serde_json::from_slice(&response.body).unwrap();
                 assert_eq!(error.request_id, "anonymous-contract");
                 checked += 1;
             }
         }
     }
     assert!(checked > 60, "only {checked} operations were checked");
-}
-
-/// Seeds an account holding `grants` (permission, optional application ID)
-/// with a non-expiring token, returning the token. The account and credential
-/// share `name` as their ID; seeding an existing account again adds grants.
-async fn seed_account(
-    database: &std::path::Path,
-    name: &str,
-    grants: &[(&str, Option<&str>)],
-) -> String {
-    use base64::Engine as _;
-    use sha2::Digest as _;
-    use sqlx::Connection as _;
-    let token = format!("{name:x<43}");
-    let hash = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(sha2::Sha256::digest(token.as_bytes()));
-    let mut connection = sqlx::SqliteConnection::connect(&format!("sqlite:{}", database.display()))
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT OR IGNORE INTO auth_users(id,username,display_name,created_at) VALUES(?1,?1,'',1)",
-    )
-    .bind(name)
-    .execute(&mut connection)
-    .await
-    .unwrap();
-    sqlx::query("INSERT OR IGNORE INTO auth_credentials(id,user_id,secret_hash,kind,name,created_at,last_used_at) VALUES(?1,?1,?2,'token','test',1,4102444800)")
-        .bind(name)
-        .bind(hash)
-        .execute(&mut connection)
-        .await
-        .unwrap();
-    for (permission, application) in grants {
-        sqlx::query("INSERT INTO auth_grants(user_id,permission,application_id) VALUES(?1,?2,?3)")
-            .bind(name)
-            .bind(permission)
-            .bind(application)
-            .execute(&mut connection)
-            .await
-            .unwrap();
-    }
-    token
 }
 
 /// Two applications, `blog` and `shop`, served by the real authenticator, with
@@ -4584,23 +4206,16 @@ struct GrantFixture {
 impl GrantFixture {
     async fn new() -> Self {
         let temp = TempDir::new().unwrap();
-        let database = temp.path().join("state.db");
+        let database = database(&temp);
         // Authentication shares the store, which tells connections that
         // access changed.
         let store = Arc::new(Store::open(&database).await.unwrap());
-        let state = state_on(&temp, Arc::clone(&store)).await;
+        let (_, state) = contract_state(&temp, Arc::clone(&store)).await;
         let mut ids = Vec::new();
         for name in ["blog", "shop"] {
             let mut input = manifest();
             input.metadata.name = name.into();
-            let mutation =
-                piqueld::api::Mutation::save(input.validate_template().unwrap(), None, false);
-            let actor = Daemon;
-            let response = state.accept(actor, mutation, Some(0), false, None).await;
-            let Ok(piqueld::api::MutationResponse::Saved(saved)) = response else {
-                panic!("save response");
-            };
-            ids.push(saved.application_id);
+            ids.push(save(&state, input).await.application_id);
         }
         let blog = Some(ids[0].as_str());
         let deployer = seed_account(&database, "deployer", &[("apps:deploy", blog)]).await;
@@ -4642,37 +4257,26 @@ impl GrantFixture {
     /// Reads the audit trail at `uri` as `token` once it holds `count`
     /// records, since they are written in the background.
     async fn audit(&self, token: &str, uri: &str, count: usize) -> serde_json::Value {
-        // Records are written in the background; allow for a loaded machine.
-        for _ in 0..500 {
-            let (status, body) = self.call(token, "GET", uri, serde_json::Value::Null).await;
-            assert_eq!(status, 200, "{body}");
-            if body["data"]["items"].as_array().unwrap().len() >= count {
-                return body;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        panic!("audit trail at {uri} never held {count} records");
+        // Allow for a loaded machine.
+        eventually(
+            Duration::from_secs(10),
+            Duration::from_millis(20),
+            async || {
+                let (status, body) = self
+                    .router
+                    .call(token, "GET", uri, serde_json::Value::Null)
+                    .await;
+                assert_eq!(status, 200, "{body}");
+                (body["data"]["items"].as_array().unwrap().len() >= count).then_some(body)
+            },
+        )
+        .await
+        .unwrap_or_else(|| panic!("audit trail at {uri} never held {count} records"))
     }
 
-    /// Sends a JSON request as `token`, returning the status and JSON body.
-    async fn call(
-        &self,
-        token: &str,
-        method: &str,
-        uri: &str,
-        body: serde_json::Value,
-    ) -> (u16, serde_json::Value) {
-        let request = Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("authorization", format!("Bearer {token}"))
-            .header("content-type", "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap();
-        let response = self.router.clone().oneshot(request).await.unwrap();
-        let status = response.status().as_u16();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        (status, serde_json::from_slice(&body).unwrap_or_default())
+    /// Serves the fixture's router over TCP.
+    async fn serve(&self) -> Server {
+        Server::tcp(self.router.clone()).await
     }
 }
 
@@ -4684,11 +4288,12 @@ async fn grants_hide_applications_and_name_missing_permissions() {
     let f = GrantFixture::new().await;
     let none = serde_json::Value::Null;
     for uri in ["/api/v1/applications", "/api/v1/builds"] {
-        let (status, body) = f.call(&f.lead, "GET", uri, none.clone()).await;
+        let (status, body) = f.router.call(&f.lead, "GET", uri, none.clone()).await;
         assert_eq!(status, 200, "{uri}");
         assert_eq!(body["data"]["items"], serde_json::json!([]), "{uri}");
     }
     let (status, body) = f
+        .router
         .call(&f.deployer, "GET", "/api/v1/applications", none.clone())
         .await;
     assert_eq!(status, 200);
@@ -4706,16 +4311,13 @@ async fn grants_hide_applications_and_name_missing_permissions() {
         "/api/v1/environments/env-unknown".to_owned(),
     ] {
         assert_eq!(
-            f.call(&f.deployer, "GET", &uri, none.clone()).await.0,
+            f.router.status(&f.deployer, "GET", &uri).await,
             404,
             "{uri}"
         );
     }
     let deploy = format!("/api/v1/environments/{}/deploy?force=true", f.blog);
-    assert_eq!(
-        f.call(&f.deployer, "POST", &deploy, none.clone()).await.0,
-        202
-    );
+    assert_eq!(f.router.status(&f.deployer, "POST", &deploy).await, 202);
     let staging = serde_json::json!({"name": "staging"});
     for (uri, method, body, permission) in [
         (
@@ -4749,7 +4351,7 @@ async fn grants_hide_applications_and_name_missing_permissions() {
             "system:read",
         ),
     ] {
-        let (status, body) = f.call(&f.deployer, method, &uri, body).await;
+        let (status, body) = f.router.call(&f.deployer, method, &uri, body).await;
         assert_eq!(status, 403, "{method} {uri}");
         assert_eq!(body["code"], "permission_denied");
         assert_eq!(body["details"]["permission"], permission);
@@ -4774,10 +4376,7 @@ async fn audit_trail_records_callers_and_outcomes() {
         ("GET", format!("{blog}/manifest"), 200),
         ("GET", "/api/v1/applications".to_owned(), 200),
     ] {
-        assert_eq!(
-            f.call(&f.deployer, method, &uri, none.clone()).await.0,
-            status
-        );
+        assert_eq!(f.router.status(&f.deployer, method, &uri).await, status);
     }
     let body = f.audit(&f.deployer, "/api/v1/audit", 5).await;
     // Records are written in the background, so their order is not asserted.
@@ -4820,30 +4419,30 @@ async fn audit_trail_records_callers_and_outcomes() {
         .into()
     );
     let others = "/api/v1/audit?user_id=creator";
-    assert_eq!(
-        f.call(&f.deployer, "GET", others, none.clone()).await.0,
-        403
-    );
+    assert_eq!(f.router.status(&f.deployer, "GET", others).await, 403);
     // A cross-site write is refused, yet still names its valid caller.
     let foreign = Request::post("/api/v1/applications")
         .header("authorization", format!("Bearer {}", f.deployer))
         .header("origin", "https://attacker.example")
         .body(Body::empty())
         .unwrap();
-    let response = f.router.clone().oneshot(foreign).await.unwrap();
-    assert_eq!(response.status(), 403);
+    assert_eq!(f.router.send(foreign).await.status, 403);
     // So is a throttled one, once the peer's sign-in start allowance is spent.
     let mut status = 0;
     for _ in 0..31 {
         let start = serde_json::json!({});
         status = f
+            .router
             .call(&f.deployer, "POST", "/api/v1/auth/device/start", start)
             .await
             .0;
     }
     assert_eq!(status, 429);
     let unknown = "pqd_0000000000000000000000000000000000000000000";
-    let (status, _) = f.call(unknown, "GET", "/api/v1/applications", none).await;
+    let (status, _) = f
+        .router
+        .call(unknown, "GET", "/api/v1/applications", none)
+        .await;
     assert_eq!(status, 401);
     let body = f.audit(&f.auditor, "/api/v1/audit?outcome=denied", 7).await;
     let anonymous: Vec<_> = body["data"]["items"]
@@ -4870,20 +4469,15 @@ async fn audit_trail_records_callers_and_outcomes() {
 #[tokio::test]
 async fn own_audit_trails_reveal_nothing_hidden() {
     let f = GrantFixture::new().await;
-    let none = serde_json::Value::Null;
     let hidden = format!("/api/v1/environments/{}", f.shop);
-    assert_eq!(
-        f.call(&f.deployer, "GET", &hidden, none.clone()).await.0,
-        404
-    );
+    assert_eq!(f.router.status(&f.deployer, "GET", &hidden).await, 404);
     // Refusals before authorization, like a cross-site request, are no hint.
     let foreign = Request::delete(&hidden)
         .header("authorization", format!("Bearer {}", f.deployer))
         .header("origin", "https://attacker.example")
         .body(Body::empty())
         .unwrap();
-    let response = f.router.clone().oneshot(foreign).await.unwrap();
-    assert_eq!(response.status(), 403);
+    assert_eq!(f.router.send(foreign).await.status, 403);
     let body = f.audit(&f.deployer, "/api/v1/audit", 2).await;
     for event in body["data"]["items"].as_array().unwrap() {
         assert_eq!(event["environment_id"], f.shop.as_str());
@@ -4899,18 +4493,19 @@ async fn own_audit_trails_reveal_nothing_hidden() {
         "days": 1
     });
     let (status, created) = f
+        .router
         .call(&f.deployer, "POST", "/api/v1/auth/manage", create)
         .await;
     assert_eq!(status, 200, "{created}");
     let token = created["token"].as_str().unwrap();
     let manifest = format!("/api/v1/applications/{}/manifest", f.blog);
-    assert_eq!(f.call(token, "GET", &manifest, none.clone()).await.0, 200);
+    assert_eq!(f.router.status(token, "GET", &manifest).await, 200);
     let body = f.audit(token, "/api/v1/audit", 1).await;
     let items = body["data"]["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "{body}");
     assert_eq!(items[0]["action"], "GET /api/v1/applications/{id}/manifest");
     let account = "/api/v1/audit?credential_id=deployer";
-    assert_eq!(f.call(token, "GET", account, none).await.0, 403);
+    assert_eq!(f.router.status(token, "GET", account).await, 403);
 }
 
 /// The trail's hash chain verifies intact, and checking it needs `audit:read`.
@@ -4919,19 +4514,16 @@ async fn verifying_the_audit_chain_needs_audit_read() {
     let f = GrantFixture::new().await;
     let none = serde_json::Value::Null;
     let deploy = format!("/api/v1/environments/{}/deploy?force=true", f.blog);
-    assert_eq!(
-        f.call(&f.deployer, "POST", &deploy, none.clone()).await.0,
-        202
-    );
+    assert_eq!(f.router.status(&f.deployer, "POST", &deploy).await, 202);
     f.audit(&f.auditor, "/api/v1/audit", 1).await;
     let verify = "/api/v1/audit/verify";
-    let (status, body) = f.call(&f.auditor, "GET", verify, none.clone()).await;
+    let (status, body) = f.router.call(&f.auditor, "GET", verify, none.clone()).await;
     assert_eq!(
         (status, &body["data"]["broken_at"]),
         (200, &serde_json::Value::Null)
     );
     assert_eq!(body["data"]["checked"], 1);
-    assert_eq!(f.call(&f.deployer, "GET", verify, none).await.0, 403);
+    assert_eq!(f.router.status(&f.deployer, "GET", verify).await, 403);
 }
 
 /// A command refused when it starts, after its connection was authorized
@@ -4939,35 +4531,25 @@ async fn verifying_the_audit_chain_needs_audit_read() {
 #[tokio::test]
 async fn exec_refusals_after_the_upgrade_are_audited() {
     use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+    use tokio_tungstenite::tungstenite::Message;
     let f = GrantFixture::new().await;
-    let database = f.temp.path().join("state.db");
     let grants = [
         ("apps:exec", Some(f.blog.as_str())),
         ("apps:read", Some(f.blog.as_str())),
     ];
-    let operator = seed_account(&database, "operator", &grants).await;
-    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = tcp.local_addr().unwrap();
-    let server = tokio::spawn(serve(tcp, f.router.clone()).into_future());
-    let url = format!("ws://{address}/api/v1/environments/{}/exec", f.blog);
-    let mut request = url.into_client_request().unwrap();
-    let bearer = format!("Bearer {operator}").parse().unwrap();
-    request.headers_mut().insert("authorization", bearer);
-    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
-    let (mut socket, _) = tokio_tungstenite::client_async(request, stream)
-        .await
-        .unwrap();
-    let mut connection = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!(
-        "sqlite:{}",
-        database.display()
-    ))
-    .await
-    .unwrap();
-    sqlx::query("DELETE FROM auth_grants WHERE user_id='operator' AND permission='apps:exec'")
-        .execute(&mut connection)
-        .await
-        .unwrap();
+    let operator = seed_account(&database(&f.temp), "operator", &grants).await;
+    let server = f.serve().await;
+    let url = format!(
+        "ws://{}/api/v1/environments/{}/exec",
+        server.address(),
+        f.blog
+    );
+    let (mut socket, _) = connect_exec(server.address(), url, Some(&operator)).await;
+    execute(
+        &database(&f.temp),
+        "DELETE FROM auth_grants WHERE user_id='operator' AND permission='apps:exec'",
+    )
+    .await;
     let start = serde_json::json!({"service": "web", "command": ["true"], "stdin": false});
     socket.send(Message::text(start.to_string())).await.unwrap();
     while let Some(Ok(message)) = socket.next().await {
@@ -4995,7 +4577,27 @@ async fn exec_refusals_after_the_upgrade_are_audited() {
         outcomes.contains(&("allowed".into(), serde_json::Value::Null)),
         "{outcomes:?}"
     );
-    server.abort();
+}
+
+/// Connects an exec WebSocket to `url` at `address`, as `token` when given.
+async fn connect_exec(
+    address: std::net::SocketAddr,
+    url: String,
+    token: Option<&str>,
+) -> (
+    tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    tokio_tungstenite::tungstenite::handshake::client::Response,
+) {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = url.into_client_request().unwrap();
+    if let Some(token) = token {
+        let bearer = format!("Bearer {token}").parse().unwrap();
+        request.headers_mut().insert("authorization", bearer);
+    }
+    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    tokio_tungstenite::client_async(request, stream)
+        .await
+        .unwrap()
 }
 
 /// Opens an exec WebSocket on `environment` at `address` as `token` and
@@ -5007,17 +4609,9 @@ async fn open_exec(
     command: &str,
 ) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
     use futures_util::SinkExt;
-    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+    use tokio_tungstenite::tungstenite::Message;
     let url = format!("ws://{address}/api/v1/environments/{environment}/exec");
-    let mut request = url.into_client_request().unwrap();
-    if let Some(token) = token {
-        let bearer = format!("Bearer {token}").parse().unwrap();
-        request.headers_mut().insert("authorization", bearer);
-    }
-    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
-    let (mut socket, _) = tokio_tungstenite::client_async(request, stream)
-        .await
-        .unwrap();
+    let (mut socket, _) = connect_exec(address, url, token).await;
     let start = serde_json::json!({"service": "web", "command": [command], "stdin": true});
     socket.send(Message::text(start.to_string())).await.unwrap();
     socket
@@ -5033,22 +4627,11 @@ async fn exec_sessions_end_once_access_is_lost() {
     use serde_json::json;
     use tokio_tungstenite::tungstenite::Message;
     let f = GrantFixture::new().await;
-    let database = f.temp.path().join("state.db");
-    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = tcp.local_addr().unwrap();
-    let server = tokio::spawn(serve(tcp, f.router.clone()).into_future());
-    let admin = format!("{:x<43}", "contract-admin");
+    let database = database(&f.temp);
+    let server = f.serve().await;
+    let admin = admin_token();
     // Deleting an account needs another administrator able to sign in.
-    let mut connection = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!(
-        "sqlite:{}",
-        database.display()
-    ))
-    .await
-    .unwrap();
-    sqlx::query("INSERT INTO auth_passkeys(id,user_id,name,credential,created_at) VALUES('key','contract-admin','key','{}',1)")
-        .execute(&mut connection)
-        .await
-        .unwrap();
+    execute(&database, "INSERT INTO auth_passkeys(id,user_id,name,credential,created_at) VALUES('key','contract-admin','key','{}',1)").await;
     let reader = json!([{"permission": "apps:read", "applications": [f.blog]}]);
     let changes = [
         (
@@ -5076,7 +4659,7 @@ async fn exec_sessions_end_once_access_is_lost() {
     ];
     for (name, command, change, status) in changes {
         let token = seed_account(&database, name, &grants).await;
-        let mut socket = open_exec(address, &f.blog, Some(&token), command).await;
+        let mut socket = open_exec(server.address(), &f.blog, Some(&token), command).await;
         let echo = ExecInput::Stdin(b"hi".to_vec()).encode();
         socket.send(Message::binary(echo)).await.unwrap();
         let mut next = async || loop {
@@ -5089,12 +4672,12 @@ async fn exec_sessions_end_once_access_is_lost() {
         assert!(matches!(next().await, Some(ExecOutput::Stdout(data)) if data == b"hi"));
         let manage = "/api/v1/auth/manage";
         assert_eq!(
-            f.call(&admin, "POST", manage, change).await.0,
+            f.router.call(&admin, "POST", manage, change).await.0,
             200,
             "{name}"
         );
         // A runtime that never stops gets five seconds to wind down.
-        let last = tokio::time::timeout(std::time::Duration::from_secs(10), next())
+        let last = tokio::time::timeout(Duration::from_secs(10), next())
             .await
             .expect("the session ends promptly");
         assert!(
@@ -5102,7 +4685,6 @@ async fn exec_sessions_end_once_access_is_lost() {
             "{name}: {last:?}"
         );
     }
-    server.abort();
 }
 
 /// Access lost while a command is being created is noticed before it runs
@@ -5113,21 +4695,18 @@ async fn exec_rechecks_access_once_the_command_is_created() {
     use piqueld_core::exec::{ExecFrame, ExecInput, ExecOutput};
     use tokio_tungstenite::tungstenite::Message;
     let f = GrantFixture::new().await;
-    let database = f.temp.path().join("state.db");
     let grants = [("apps:exec", Some(f.blog.as_str()))];
-    let token = seed_account(&database, "operator", &grants).await;
-    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = tcp.local_addr().unwrap();
-    let server = tokio::spawn(serve(tcp, f.router.clone()).into_future());
-    let mut socket = open_exec(address, &f.blog, Some(&token), "slow").await;
+    let token = seed_account(&database(&f.temp), "operator", &grants).await;
+    let server = f.serve().await;
+    let mut socket = open_exec(server.address(), &f.blog, Some(&token), "slow").await;
     // Input that would let the command finish as soon as it runs.
     for input in [ExecInput::Stdin(b"hi".to_vec()), ExecInput::CloseStdin] {
         socket.send(Message::binary(input.encode())).await.unwrap();
     }
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     let revoke = serde_json::json!({"action": "revoke_credential", "id": "operator"});
     let manage = "/api/v1/auth/manage";
-    assert_eq!(f.call(&token, "POST", manage, revoke).await.0, 200);
+    assert_eq!(f.router.call(&token, "POST", manage, revoke).await.0, 200);
     let mut outputs = Vec::new();
     while let Some(Ok(message)) = socket.next().await {
         if let Message::Binary(data) = message {
@@ -5149,7 +4728,6 @@ async fn exec_rechecks_access_once_the_command_is_created() {
         .await
         .unwrap();
     assert!(started.items.is_empty());
-    server.abort();
 }
 
 /// A client that leaves while the command is not reading its input, so
@@ -5162,20 +4740,9 @@ async fn exec_notices_a_client_that_left_behind_unread_input() {
     use tokio_tungstenite::tungstenite::Message;
     let temp = tempfile::tempdir().unwrap();
     let state = state(&temp).await;
-    let app = {
-        let mutation =
-            piqueld::api::Mutation::save(manifest().validate_template().unwrap(), None, false);
-        let Ok(piqueld::api::MutationResponse::Saved(saved)) =
-            state.accept(Daemon, mutation, Some(0), false, None).await
-        else {
-            panic!("save response");
-        };
-        saved.application_id
-    };
-    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = tcp.local_addr().unwrap();
-    let server = tokio::spawn(serve(tcp, router(state.clone(), FakeAuth)).into_future());
-    let mut socket = open_exec(address, app.as_str(), None, "block").await;
+    let app = save(&state, manifest()).await.application_id;
+    let server = Server::tcp(router(state.clone(), FakeAuth)).await;
+    let mut socket = open_exec(server.address(), app.as_str(), None, "block").await;
     // More input than the relay buffers, so it stops reading the connection.
     for _ in 0..32 {
         let input = ExecInput::Stdin(vec![0; 1024]).encode();
@@ -5186,26 +4753,24 @@ async fn exec_notices_a_client_that_left_behind_unread_input() {
         kind: Some("command_finished".into()),
         ..Default::default()
     };
-    let finished = tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        loop {
+    let finished = eventually(
+        Duration::from_secs(20),
+        Duration::from_millis(100),
+        async || {
             let events = state
                 .filtered_events(&filter, &piqueld::store::Visibility::ALL, None, 10)
                 .await
                 .unwrap()
                 .items;
-            if !events.is_empty() {
-                return events;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
+            (!events.is_empty()).then_some(events)
+        },
+    )
     .await
     .expect("the session ends once the client is gone");
     assert_eq!(
         finished[0].message.as_deref(),
         Some("Command stream in task task-1 failed")
     );
-    server.abort();
 }
 
 /// Reads an event stream until it ends, or until a message contains
@@ -5228,10 +4793,8 @@ async fn read_stream(body: &mut Body, needle: Option<&str>) -> String {
 /// without a message when the daemon shuts down.
 #[tokio::test]
 async fn event_streams_end_once_access_is_lost_or_the_daemon_stops() {
-    use std::time::Duration;
     let f = GrantFixture::new().await;
-    let database = f.temp.path().join("state.db");
-    let reader = seed_account(&database, "reader", &[("events:read", None)]).await;
+    let reader = seed_account(&database(&f.temp), "reader", &[("events:read", None)]).await;
     let shutdown = tokio_util::sync::CancellationToken::new();
     let router = api_router(
         f.state.clone().with_shutdown(shutdown.clone()),
@@ -5243,17 +4806,17 @@ async fn event_streams_end_once_access_is_lost_or_the_daemon_stops() {
             .header("authorization", format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap();
-        let response = router.clone().oneshot(request).await.unwrap();
+        let response = router.open(request).await;
         assert_eq!(response.status(), 200);
         response.into_body()
     };
     let mut revoked = open(&reader).await;
-    let mut stopped = open(&format!("{:x<43}", "contract-admin")).await;
+    let mut stopped = open(&admin_token()).await;
     // The first event leaves the rest of the batch read but not yet sent.
     read_stream(&mut revoked, Some("event: event")).await;
     let revoke = serde_json::json!({"action": "revoke_credential", "id": "reader"});
     let manage = "/api/v1/auth/manage";
-    assert_eq!(f.call(&reader, "POST", manage, revoke).await.0, 200);
+    assert_eq!(f.router.call(&reader, "POST", manage, revoke).await.0, 200);
     let text = tokio::time::timeout(Duration::from_secs(5), read_stream(&mut revoked, None))
         .await
         .expect("the stream ends promptly");
@@ -5281,21 +4844,24 @@ async fn device_sign_ins_are_audited() {
     let poll = "/api/v1/auth/device/poll";
     let mut codes = Vec::new();
     for _ in 0..2 {
-        let (status, body) = f.call(&f.deployer, "POST", start, json!({})).await;
+        let (status, body) = f.router.call(&f.deployer, "POST", start, json!({})).await;
         assert_eq!(status, 200, "{body}");
         codes.push((body["device_code"].clone(), body["user_code"].clone()));
     }
     let [(pending, _), (approved, user_code)] = <[_; 2]>::try_from(codes).unwrap();
     let (_, body) = f
+        .router
         .call(&f.deployer, "POST", poll, json!({"device_code": pending}))
         .await;
     assert_eq!(body["status"], "authorization_pending");
     let approve = json!({"user_code": user_code});
     let (status, _) = f
+        .router
         .call(&f.deployer, "POST", "/api/v1/auth/device/approve", approve)
         .await;
     assert_eq!(status, 200);
     let (_, body) = f
+        .router
         .call(&f.deployer, "POST", poll, json!({"device_code": approved}))
         .await;
     assert_eq!(body["status"], "complete", "{body}");
@@ -5318,6 +4884,7 @@ async fn creators_receive_matching_grants_on_new_applications() {
     let f = GrantFixture::new().await;
     let name = |value: &str| serde_json::json!({"value": value});
     let (status, body) = f
+        .router
         .call(&f.creator, "POST", "/api/v1/applications", name("notes"))
         .await;
     assert_eq!(status, 200, "{body}");
@@ -5325,12 +4892,12 @@ async fn creators_receive_matching_grants_on_new_applications() {
         "/api/v1/applications/{}",
         body["data"]["application_id"].as_str().unwrap()
     );
-    let none = serde_json::Value::Null;
-    assert_eq!(f.call(&f.creator, "GET", &created, none).await.0, 200);
+    assert_eq!(f.router.status(&f.creator, "GET", &created).await, 200);
     let mut input = manifest();
     input.metadata.name = "shop".into();
     let apply = serde_json::json!({"manifest": input});
     let (status, body) = f
+        .router
         .call(
             &f.creator,
             "POST",
@@ -5341,6 +4908,7 @@ async fn creators_receive_matching_grants_on_new_applications() {
     assert_eq!(status, 403, "{body}");
     assert_eq!(body["details"]["permission"], "apps:write");
     let (status, _) = f
+        .router
         .call(&f.deployer, "POST", "/api/v1/applications", name("other"))
         .await;
     assert_eq!(status, 403);
@@ -5352,8 +4920,7 @@ async fn creators_receive_matching_grants_on_new_applications() {
 async fn setup_link_is_served_only_over_the_unix_socket() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp).await;
-    let store = Store::open(temp.path().join("state.db")).await.unwrap();
-    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let auth = auth(&temp).await;
     let path = temp.path().join("setup-link");
     auth.prepare_setup(&path).await.unwrap();
     let link = std::fs::read_to_string(&path).unwrap();
@@ -5364,40 +4931,44 @@ async fn setup_link_is_served_only_over_the_unix_socket() {
         ),
         (api_router(state.clone(), auth.clone()), 200),
     ] {
-        let response = listener
-            .oneshot(
-                Request::builder()
-                    .uri("/api/v1/auth/setup-link")
-                    .header("host", "localhost")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), status);
+        let response = listener.send(request("/api/v1/auth/setup-link")).await;
+        assert_eq!(response.status, status);
         if status == 200 {
-            let body = response.into_body().collect().await.unwrap().to_bytes();
-            let setup: piqueld_core::auth::SetupLink = serde_json::from_slice(&body).unwrap();
+            let setup: piqueld_core::auth::SetupLink =
+                serde_json::from_slice(&response.body).unwrap();
             assert_eq!(setup.url, link.trim());
         }
     }
     // The refused remote request is audited in the background.
+    let event = refusals(&state, |events| match events.as_slice() {
+        [event] => Some(event.clone()),
+        _ => None,
+    })
+    .await
+    .expect("the refused setup link request was not audited");
+    assert_eq!(
+        (event.action.as_str(), event.status),
+        ("GET /api/v1/auth/setup-link", 404)
+    );
+}
+
+/// Waits for the refusals audited in the background until `check` finds
+/// what it expects in them.
+async fn refusals<T>(
+    state: &ApiState,
+    check: impl Fn(Vec<piqueld_core::audit::AuditEvent>) -> Option<T>,
+) -> Option<T> {
     let denied = piqueld_core::audit::AuditFilter {
         outcome: Some(piqueld_core::audit::AuditOutcome::Denied),
         ..Default::default()
     };
-    for _ in 0..100 {
-        let page = state.audit_events(&denied, None, 10).await.unwrap();
-        if let [event] = page.items.as_slice() {
-            assert_eq!(
-                (event.action.as_str(), event.status),
-                ("GET /api/v1/auth/setup-link", 404)
-            );
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    panic!("the refused setup link request was not audited");
+    // Allow for a loaded machine.
+    eventually(
+        Duration::from_secs(10),
+        Duration::from_millis(20),
+        async || check(state.audit_events(&denied, None, 10).await.unwrap().items),
+    )
+    .await
 }
 
 /// Sends `request` to `router` as if from a Unix socket peer running as
@@ -5423,15 +4994,9 @@ async fn as_peer(
         .insert(axum::extract::ConnectInfo(piqueld::api::http::UnixPeer {
             uid,
         }));
-    let response = router.clone().oneshot(request).await.unwrap();
-    let status = response.status().as_u16();
-    let cookie = response
-        .headers()
-        .get(header::SET_COOKIE)
-        .map(|value| value.to_str().unwrap().to_owned());
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let body = serde_json::from_slice(&body).unwrap_or_default();
-    (status, body, cookie)
+    let response = router.send(request).await;
+    let cookie = response.header(header::SET_COOKIE).map(str::to_owned);
+    (response.status.as_u16(), response.json(), cookie)
 }
 
 /// Admin recovery is served only over the Unix socket, only to root or the
@@ -5440,9 +5005,8 @@ async fn as_peer(
 async fn admin_recovery_requires_the_host_operator_over_the_unix_socket() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp).await;
-    let database = temp.path().join("state.db");
-    let store = Store::open(&database).await.unwrap();
-    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let database = database(&temp);
+    let auth = auth(&temp).await;
     let operator = rustix::process::geteuid().as_raw();
     let stranger = if operator == 0 { 1 } else { operator + 1 };
     let unix = api_router(state.clone(), auth.clone());
@@ -5458,16 +5022,7 @@ async fn admin_recovery_requires_the_host_operator_over_the_unix_socket() {
         "setup is still open"
     );
     seed_account(&database, "admin", &[("admin", None)]).await;
-    let mut connection = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!(
-        "sqlite:{}",
-        database.display()
-    ))
-    .await
-    .unwrap();
-    sqlx::query("UPDATE auth_setup SET initialized=1")
-        .execute(&mut connection)
-        .await
-        .unwrap();
+    execute(&database, "UPDATE auth_setup SET initialized=1").await;
     for (router, uid) in [
         (&unix, None),
         (&unix, Some(stranger)),
@@ -5496,8 +5051,7 @@ async fn the_host_operator_acts_without_a_token_over_the_unix_socket() {
     use piqueld_core::{audit::AuditFilter, auth::HostOperator};
     let temp = TempDir::new().unwrap();
     let state = state(&temp).await;
-    let store = Store::open(temp.path().join("state.db")).await.unwrap();
-    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let auth = auth(&temp).await;
     let operator = rustix::process::geteuid().as_raw();
     let stranger = if operator == 0 { 1 } else { operator + 1 };
     let unix = api_router(state.clone(), auth.clone());
@@ -5559,31 +5113,28 @@ async fn the_host_operator_acts_without_a_token_over_the_unix_socket() {
     // Issuing the link and signing in with it are audited, in the background,
     // as the operator.
     let operator = Some(HostOperator { uid: operator });
-    for _ in 0..100 {
-        let page = state
-            .audit_events(&AuditFilter::default(), None, 50)
-            .await
-            .unwrap();
-        let by_operator = |action: &str| {
-            page.items.iter().any(|event| {
-                event.action == action && event.status == 200 && event.operator == operator
-            })
-        };
-        // Refusals before authentication, like a cross-site request, too.
-        let refused = page.items.iter().any(|event| {
-            event.action == "POST /api/v1/auth/sign-in-link"
-                && event.status == 403
-                && event.operator == operator
-        });
-        if by_operator("POST /api/v1/auth/sign-in-link")
-            && by_operator("POST /api/v1/auth/login/operator")
-            && refused
-        {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    panic!("the host operator's requests were not audited as the operator");
+    eventually(
+        Duration::from_secs(10),
+        Duration::from_millis(20),
+        async || {
+            let page = state
+                .audit_events(&AuditFilter::default(), None, 50)
+                .await
+                .unwrap();
+            let audited = |action: &str, status: u16| {
+                page.items.iter().any(|event| {
+                    event.action == action && event.status == status && event.operator == operator
+                })
+            };
+            // Refusals before authentication, like a cross-site request, too.
+            (audited("POST /api/v1/auth/sign-in-link", 200)
+                && audited("POST /api/v1/auth/login/operator", 200)
+                && audited("POST /api/v1/auth/sign-in-link", 403))
+            .then_some(())
+        },
+    )
+    .await
+    .expect("the host operator's requests were not audited as the operator");
 }
 
 /// Over the Unix socket, a credential the host operator presents keeps its
@@ -5595,12 +5146,11 @@ async fn credentials_presented_by_the_host_operator_keep_their_meaning() {
     use axum::http::header;
     let temp = TempDir::new().unwrap();
     let state = state(&temp).await;
-    let store = Store::open(temp.path().join("state.db")).await.unwrap();
-    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let auth = auth(&temp).await;
     let operator = rustix::process::geteuid().as_raw();
     let unix = api_router(state, auth);
     let me = "/api/v1/auth/me";
-    let token = format!("{:x<43}", "contract-admin");
+    let token = admin_token();
     for scheme in ["Bearer", "bearer"] {
         let bearer = format!("{scheme} {token}");
         let request = Request::get(me).header(header::AUTHORIZATION, bearer);
@@ -5670,7 +5220,7 @@ impl piqueld::tailnet::TailnetLookup for FakeTailnet {
 async fn tailnet_bound_token(temp: &TempDir) -> (ApiState, piqueld::auth::Auth, String) {
     use piqueld::auth::{Auth, TokenPolicy};
     let state = state(temp).await;
-    let database = temp.path().join("state.db");
+    let database = database(temp);
     let admin = seed_account(&database, "admin", &[("admin", None)]).await;
     let store = Store::open(&database).await.unwrap();
     let tokens = TokenPolicy {
@@ -5684,15 +5234,15 @@ async fn tailnet_bound_token(temp: &TempDir) -> (ApiState, piqueld::auth::Auth, 
         days: Some(1),
         tailnet: Some(piqueld_core::tailnet::TailnetBinding::parse("tag:ci").unwrap()),
     };
-    let request = Request::post("/api/v1/auth/manage")
-        .header("authorization", format!("Bearer {admin}"))
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&create).unwrap()))
-        .unwrap();
     let unix = api_router(state.clone(), auth.clone());
-    let response = unix.oneshot(request).await.unwrap();
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let managed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let (_, managed) = unix
+        .call(
+            &admin,
+            "POST",
+            "/api/v1/auth/manage",
+            serde_json::to_value(&create).unwrap(),
+        )
+        .await;
     let token = managed["token"].as_str().expect("token").to_owned();
     (state, auth, token)
 }
@@ -5720,13 +5270,7 @@ async fn tailnet_bound_tokens_work_only_from_matching_devices() {
                 .extensions_mut()
                 .insert(axum::extract::ConnectInfo(address));
         }
-        router
-            .clone()
-            .oneshot(request)
-            .await
-            .unwrap()
-            .status()
-            .as_u16()
+        router.send(request).await.status.as_u16()
     };
     assert_eq!(
         me(&tailnet, Some([100, 64, 0, 2])).await,
@@ -5743,27 +5287,22 @@ async fn tailnet_bound_tokens_work_only_from_matching_devices() {
     let vanished = me(&tailnet, Some([100, 64, 0, 4])).await;
     assert_eq!(vanished, 401, "nor stands in for a failed lookup");
     assert_eq!(me(&unix, None).await, 401, "outside the tailnet");
-    let denied = piqueld_core::audit::AuditFilter {
-        outcome: Some(piqueld_core::audit::AuditOutcome::Denied),
-        ..Default::default()
-    };
-    // Records are written in the background; allow for a loaded machine.
-    for _ in 0..500 {
-        let page = state.audit_events(&denied, None, 10).await.unwrap();
-        // The vanished runner's refusal names no peer, not its cached one.
-        if page.items.len() >= 4 {
-            let from: std::collections::BTreeSet<_> =
-                page.items.into_iter().map(|event| event.tailnet).collect();
-            let described = ["alice@example.com on laptop", "tag:old on retired"];
-            let expected = std::iter::once(None)
-                .chain(described.map(|who| Some(who.to_owned())))
-                .collect();
-            assert_eq!(from, expected);
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    panic!("the refused requests were not audited");
+    let from = refusals(&state, |events| {
+        (events.len() >= 4).then(|| {
+            events
+                .into_iter()
+                .map(|event| event.tailnet)
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+    })
+    .await
+    .expect("the refused requests were not audited");
+    // The vanished runner's refusal names no peer, not its cached one.
+    let described = ["alice@example.com on laptop", "tag:old on retired"];
+    let expected = std::iter::once(None)
+        .chain(described.map(|who| Some(who.to_owned())))
+        .collect();
+    assert_eq!(from, expected);
 }
 
 /// Behind the gateway's dashboard hostname, one connection carries many
@@ -5786,13 +5325,7 @@ async fn the_dashboard_socket_names_clients_by_the_gateways_header() {
             request = request.header("x-forwarded-for", client);
         }
         let request = request.body(Body::empty()).unwrap();
-        gateway
-            .clone()
-            .oneshot(request)
-            .await
-            .unwrap()
-            .status()
-            .as_u16()
+        gateway.send(request).await.status.as_u16()
     };
     assert_eq!(
         through_gateway(Some("100.64.0.2")).await,
@@ -5819,7 +5352,7 @@ impl piqueld::tailnet::TailnetLookup for Retagged {
         fresh: bool,
     ) -> Option<piqueld_core::tailnet::TailnetPeer> {
         let lookups = if fresh {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            self.0.fetch_add(1, Ordering::SeqCst)
         } else {
             0
         };
@@ -5837,53 +5370,16 @@ impl piqueld::tailnet::TailnetLookup for Retagged {
 /// refusal is audited with the device as it is now.
 #[tokio::test]
 async fn tailnet_bindings_are_rechecked_when_a_command_starts() {
-    use piqueld::auth::{Auth, TokenPolicy};
     use piqueld_client::exec::{ExecCommand, ExecOutput, ExecRequest};
     let temp = TempDir::new().unwrap();
-    let state = state(&temp).await;
-    let mutation =
-        piqueld::api::Mutation::save(manifest().validate_template().unwrap(), None, false);
-    let Ok(piqueld::api::MutationResponse::Saved(saved)) =
-        state.accept(Daemon, mutation, Some(0), false, None).await
-    else {
-        panic!("save response");
-    };
-    let database = temp.path().join("state.db");
-    let admin = seed_account(&database, "admin", &[("admin", None)]).await;
-    let store = Store::open(&database).await.unwrap();
-    let tokens = TokenPolicy {
-        max_days: None,
-        tailnet: true,
-    };
-    let auth = Auth::configured(&store, "https://piqueld.example", tokens).unwrap();
-    let create = piqueld_core::auth::Manage::CreateToken {
-        grants: piqueld_core::access::Grants::admin(),
-        name: "ci".into(),
-        days: Some(1),
-        tailnet: Some(piqueld_core::tailnet::TailnetBinding::parse("tag:ci").unwrap()),
-    };
-    let request = Request::post("/api/v1/auth/manage")
-        .header("authorization", format!("Bearer {admin}"))
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&create).unwrap()))
-        .unwrap();
-    let unix = api_router(state.clone(), auth.clone());
-    let response = unix.oneshot(request).await.unwrap();
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let managed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let token = managed["token"].as_str().expect("token").to_owned();
+    let (state, auth, token) = tailnet_bound_token(&temp).await;
+    let saved = save(&state, manifest()).await;
     let lookup: Arc<dyn piqueld::tailnet::TailnetLookup> =
         Arc::new(Retagged(std::sync::atomic::AtomicUsize::new(0)));
     let tailnet = web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth)
         .layer(axum::Extension(lookup));
-    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = tcp.local_addr().unwrap();
-    let service = tailnet.into_make_service_with_connect_info::<std::net::SocketAddr>();
-    let server = tokio::spawn(serve(tcp, service).into_future());
-    let client = Client::tcp(&format!("http://{address}/"))
-        .unwrap()
-        .with_bearer(&token)
-        .unwrap();
+    let server = Server::tcp_with_peers(tailnet).await;
+    let client = server.client().with_bearer(&token).unwrap();
     let request = ExecRequest {
         service: "web".parse().unwrap(),
         command: ExecCommand::parse(vec!["true".into()]).unwrap(),
@@ -5898,20 +5394,13 @@ async fn tailnet_bindings_are_rechecked_when_a_command_starts() {
         Ok(Some(ExecOutput::Failed { status: 401, error }))
             if error.code == "tailnet_binding_mismatch"
     ));
-    let denied = piqueld_core::audit::AuditFilter {
-        outcome: Some(piqueld_core::audit::AuditOutcome::Denied),
-        ..Default::default()
-    };
-    for _ in 0..500 {
-        let page = state.audit_events(&denied, None, 10).await.unwrap();
-        if let [event] = page.items.as_slice() {
-            assert_eq!(event.tailnet.as_deref(), Some("tag:old on runner"));
-            server.abort();
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    panic!("the refused command was not audited");
+    let event = refusals(&state, |events| match events.as_slice() {
+        [event] => Some(event.clone()),
+        _ => None,
+    })
+    .await
+    .expect("the refused command was not audited");
+    assert_eq!(event.tailnet.as_deref(), Some("tag:old on runner"));
 }
 
 /// Authentication short circuits still use the common error correlation layers,
@@ -5922,13 +5411,8 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
 
     let temp = TempDir::new().unwrap();
     let state = state(&temp).await;
-    let store = Store::open(temp.path().join("state.db")).await.unwrap();
-    let mut connection = sqlx::SqliteConnection::connect(&format!(
-        "sqlite:{}",
-        temp.path().join("state.db").display()
-    ))
-    .await
-    .unwrap();
+    let store = Store::open(database(&temp)).await.unwrap();
+    let mut connection = sqlite::connect(&database(&temp)).await;
     // Leave the observability tables healthy, but break authentication reads.
     sqlx::query("ALTER TABLE auth_credentials RENAME TO unavailable_credentials")
         .execute(&mut connection)
@@ -5971,8 +5455,8 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
             ),
         ] {
             let response = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                listener.clone().oneshot(
+                Duration::from_secs(2),
+                listener.send(
                     Request::builder()
                         .method(method)
                         .uri(path)
@@ -5984,12 +5468,11 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
                 ),
             )
             .await
-            .expect("authentication errors must not wait for a diagnostic write")
-            .unwrap();
-            assert_eq!(response.status().as_u16(), status);
-            assert_eq!(response.headers()["x-request-id"], "auth-correlation");
-            let body = response.into_body().collect().await.unwrap().to_bytes();
-            let error: piqueld_core::api::ErrorBody = serde_json::from_slice(&body).unwrap();
+            .expect("authentication errors must not wait for a diagnostic write");
+            assert_eq!(response.status.as_u16(), status);
+            assert_eq!(response.header("x-request-id"), Some("auth-correlation"));
+            let error: piqueld_core::api::ErrorBody =
+                serde_json::from_slice(&response.body).unwrap();
             assert_eq!(error.code, code);
             assert_eq!(error.request_id, "auth-correlation");
             if status == 503 {
@@ -6044,11 +5527,9 @@ async fn assert_secret_history(client: &Client, application_id: &str) {
 async fn stored_secret_access_queries_never_widen_environments_implicitly() {
     use piqueld_core::api::{EnvironmentAccess, SecretAccess};
     let temp = tempfile::tempdir().unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
     let api = router(state(&temp).await, FakeAuth);
-    let server = tokio::spawn(serve(listener, api.clone()).into_future());
-    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let server = Server::tcp(api.clone()).await;
+    let client = server.client();
     let app = create_and_inspect(&client, &manifest()).await;
     let none = SecretAccess {
         environments: EnvironmentAccess::Only([].into()),
@@ -6064,32 +5545,17 @@ async fn stored_secret_access_queries_never_widen_environments_implicitly() {
         )
         .await
         .unwrap();
-    let put = |query: &str| {
-        let request = Request::builder()
-            .method("PUT")
-            .uri(format!(
-                "/api/v1/applications/{}/secrets/token?{query}",
-                app.environment_id
-            ))
-            .header("host", "localhost")
-            .header("content-type", "application/octet-stream")
-            .header("x-expected-generation", "1")
-            .body(Body::from("two"))
-            .unwrap();
-        api.clone().oneshot(request)
-    };
-    let response = put("previews=true").await.unwrap();
-    assert_eq!(response.status(), 400);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(body["code"], "query_invalid");
+    let put = |query: &str| api.send(put_stored_token(&app.environment_id, query, 1, "two"));
+    put("previews=true")
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "query_invalid");
     let stored = client.stored_secrets(&app.environment_id).await.unwrap();
     assert_eq!(
         (stored[0].metadata.generation, &stored[0].access),
         (1, &none)
     );
-    let response = put("environments=all&previews=true").await.unwrap();
-    assert_eq!(response.status(), 200);
+    let response = put("environments=all&previews=true").await;
+    assert_eq!(response.status, StatusCode::OK);
     let stored = client.stored_secrets(&app.environment_id).await.unwrap();
     assert_eq!(
         stored[0].access,
@@ -6098,40 +5564,49 @@ async fn stored_secret_access_queries_never_widen_environments_implicitly() {
             previews: true
         }
     );
-    server.abort();
+}
+
+/// A raw write of `value` to the stored secret `token` of `application`,
+/// replacing version `generation`, with the query string `query`, if any.
+fn put_stored_token(
+    application: &str,
+    query: &str,
+    generation: u64,
+    value: &'static str,
+) -> Request<Body> {
+    let mut uri = format!("/api/v1/applications/{application}/secrets/token");
+    if !query.is_empty() {
+        uri = format!("{uri}?{query}");
+    }
+    Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header("host", "localhost")
+        .header("content-type", "application/octet-stream")
+        .header("x-expected-generation", generation.to_string())
+        .body(Body::from(value))
+        .unwrap()
 }
 
 #[tokio::test]
 async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
     use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
     let temp = tempfile::tempdir().unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
     let api = router(state(&temp).await, FakeAuth);
-    let server = tokio::spawn(serve(listener, api.clone()).into_future());
-    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let server = Server::tcp(api.clone()).await;
+    let client = server.client();
     let app = create_and_inspect(&client, &manifest()).await;
     let response = api
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!(
-                    "/api/v1/applications/{}/secrets/token",
-                    app.environment_id
-                ))
-                .header("host", "localhost")
-                .header("content-type", "application/octet-stream")
-                .header("x-expected-generation", "0")
-                .body(Body::from("private-token-value"))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let raw = std::str::from_utf8(&bytes).unwrap();
-    assert!(!raw.contains("private-token-value"));
-    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        .send(put_stored_token(
+            &app.environment_id,
+            "",
+            0,
+            "private-token-value",
+        ))
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert!(!response.text().contains("private-token-value"));
+    let body = response.json();
     assert_eq!(body["data"]["generation"], 1);
     assert_eq!(body["data"]["access"]["environments"], "all");
     assert_eq!(body["data"]["access"]["previews"], false);
@@ -6175,17 +5650,13 @@ async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
             .secrets,
         vec![mount]
     );
-    assert!(matches!(
-        client.delete_stored_secret(&app.environment_id, "token", 1).await,
-        Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 409
-    ));
+    let referenced = client.delete_stored_secret(&app.environment_id, "token", 1);
+    assert_eq!(api_error(referenced.await.unwrap_err()).status, 409);
     reference(Vec::new(), saved.generation).await;
-    assert!(
-        matches!(client.put_stored_secret(&app.environment_id,"token",0,b"stale".to_vec(),None).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==409)
-    );
-    assert!(
-        matches!(client.stored_secrets("app-absent").await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
-    );
+    let stale = client.put_stored_secret(&app.environment_id, "token", 0, b"stale".to_vec(), None);
+    assert_eq!(api_error(stale.await.unwrap_err()).status, 409);
+    let absent = client.stored_secrets("app-absent").await;
+    assert_eq!(api_error(absent.unwrap_err()).status, 404);
     client
         .delete_stored_secret(&app.environment_id, "token", 1)
         .await
@@ -6198,16 +5669,13 @@ async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
             .is_empty()
     );
     assert_secret_history(&client, &app.environment_id).await;
-    server.abort();
 }
 
 #[tokio::test]
 async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
     let temp = tempfile::tempdir().unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
-    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
+    let client = server.client();
     let app = create_and_inspect(&client, &manifest()).await;
     client
         .put_stored_secret(&app.environment_id, "token", 0, b"value".to_vec(), None)
@@ -6224,7 +5692,7 @@ async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
         )
         .await
         .unwrap_err();
-    let piqueld_client::ClientError::Api { status, error, .. } = error else {
+    let ClientError::Api { status, error, .. } = error else {
         panic!("API error");
     };
     assert_eq!(status.as_u16(), 503);
@@ -6242,7 +5710,6 @@ async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
     assert!(!diagnostic.retryable);
     assert_eq!(diagnostic.causes, ["Secret master key: missing"]);
     assert_eq!(event.request_id.as_deref(), Some(error.request_id.as_str()));
-    server.abort();
 }
 
 #[tokio::test]
@@ -6263,9 +5730,9 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
     let gate = Arc::new(CleanupGate::default());
     let runtime = Arc::new(FakeRuntime {
         cleanup_gate: Some(gate.clone()),
-        instance: InstanceId::parse(store.instance_id()).unwrap(),
-        unavailable: std::sync::atomic::AtomicBool::new(true),
+        ..FakeRuntime::new(&store)
     });
+    runtime.set_unavailable(true);
     let service = ApiState::new(store.clone(), runtime.clone());
     store
         .put_secret(Daemon, &environment, "token", 0, b"value".to_vec())
@@ -6276,11 +5743,11 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
         let id = environment.clone();
         tokio::spawn(async move { service.delete_secret(Daemon, &id, "token", 1).await })
     };
-    tokio::time::timeout(std::time::Duration::from_secs(2), gate.started.notified())
+    tokio::time::timeout(Duration::from_secs(2), gate.started.notified())
         .await
         .unwrap();
     tokio::time::timeout(
-        std::time::Duration::from_secs(2),
+        Duration::from_secs(2),
         store.put_secret(Daemon, &environment, "other", 0, b"unrelated".to_vec()),
     )
     .await
@@ -6338,9 +5805,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
             .unwrap()
             .deleting
     );
-    runtime
-        .unavailable
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+    runtime.set_unavailable(false);
     gate.release.notify_one();
     service
         .delete_secret(Daemon, &environment, "token", 1)
@@ -6378,23 +5843,12 @@ async fn secret_key_recovery_api_discards_values_only_for_an_unusable_key() {
         )
         .await
         .unwrap();
-    let api = router(
-        ApiState::new(
-            store.clone(),
-            Arc::new(FakeRuntime {
-                cleanup_gate: None,
-                instance: InstanceId::parse(store.instance_id()).unwrap(),
-                unavailable: std::sync::atomic::AtomicBool::new(false),
-            }),
-        ),
-        FakeAuth,
-    );
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(serve(listener, api).into_future());
-    let client = Client::tcp(&format!("http://{address}")).unwrap();
-    assert!(
-        matches!(client.recover_secret_key().await, Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 409)
+    let runtime = Arc::new(FakeRuntime::new(&store));
+    let server = Server::tcp(router(ApiState::new(store, runtime), FakeAuth)).await;
+    let client = server.client();
+    assert_eq!(
+        api_error(client.recover_secret_key().await.unwrap_err()).status,
+        409
     );
     let unavailable = || async {
         client
@@ -6422,7 +5876,6 @@ async fn secret_key_recovery_api_discards_values_only_for_an_unusable_key() {
         .await
         .unwrap();
     assert!(!unavailable().await);
-    server.abort();
 }
 
 #[tokio::test]
@@ -6453,19 +5906,15 @@ async fn invalid_path_parameters_return_correlated_json_errors() {
             "/api/v1/applications/app-test/services/web/environment/%FF",
         ),
     ] {
-        let mut request = request(path);
-        *request.method_mut() = method;
-        let response = application.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(response.headers()["content-type"], "application/json");
-        let request_id = response.headers()["x-request-id"]
-            .to_str()
-            .unwrap()
-            .to_owned();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let error: piqueld_core::api::ErrorBody = serde_json::from_slice(&body).unwrap();
+        let response = application.send(request_as(method, path)).await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+        assert_eq!(response.header("content-type"), Some("application/json"));
+        let error: piqueld_core::api::ErrorBody = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(error.code, "path_invalid");
-        assert_eq!(error.request_id, request_id);
+        assert_eq!(
+            Some(error.request_id.as_str()),
+            response.header("x-request-id")
+        );
     }
 }
 
@@ -6479,19 +5928,7 @@ async fn two_environments(
 ) {
     use piqueld::api::{ApplicationError, Mutation, MutationResponse};
     use piqueld::store::StoreError;
-    let MutationResponse::Saved(mut saved) = service
-        .accept(
-            Daemon,
-            Mutation::save(manifest().validate_template().unwrap(), None, false),
-            Some(0),
-            false,
-            None,
-        )
-        .await
-        .unwrap()
-    else {
-        panic!("saved")
-    };
+    let mut saved = save(service, manifest()).await;
     let application = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
     let create = |name: &str| Mutation::CreateEnvironment {
         application: application.clone(),
@@ -6761,16 +6198,7 @@ async fn previews_compare_with_the_selected_environment() {
     // An environment of another application is never used as a baseline.
     let mut other = manifest();
     other.metadata.name = "other".into();
-    service
-        .accept(
-            Daemon,
-            Mutation::save(other.validate_template().unwrap(), None, false),
-            Some(0),
-            false,
-            None,
-        )
-        .await
-        .unwrap();
+    save(&service, other).await;
     let foreign = service
         .applications(&piqueld_core::access::Scope::All, None, None)
         .await
@@ -6872,9 +6300,7 @@ async fn previews_render_variables_for_the_selected_environment() {
 async fn device_starts_echo_their_limits_and_refuse_large_bodies() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp).await;
-    let store = Store::open(temp.path().join("state.db")).await.unwrap();
-    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
-    let router = api_router(state, auth);
+    let router = api_router(state, auth(&temp).await);
     let start = |body: String| {
         let request = Request::builder()
             .method("POST")
@@ -6882,17 +6308,15 @@ async fn device_starts_echo_their_limits_and_refuse_large_bodies() {
             .header("content-type", "application/json")
             .body(Body::from(body))
             .unwrap();
-        router.clone().oneshot(request)
+        router.send(request)
     };
     let limited = serde_json::json!({"grants": [{"permission": "apps:read"}]});
-    let response = start(limited.to_string()).await.unwrap();
-    assert_eq!(response.status(), 200);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let started: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(started["grants"], limited["grants"]);
+    let response = start(limited.to_string()).await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()["grants"], limited["grants"]);
     let large = format!(r#"{{"grants":[],"padding":"{}"}}"#, "x".repeat(16 * 1024));
-    let response = start(large).await.unwrap();
-    assert_eq!(response.status(), 413);
+    let response = start(large).await;
+    assert_eq!(response.status, StatusCode::PAYLOAD_TOO_LARGE);
     // The limit applies while reading, also without a `Content-Length`.
     let chunks = (0..64).map(|_| Ok::<_, std::io::Error>(vec![b' '; 1024]));
     let streamed = Request::builder()
@@ -6901,8 +6325,8 @@ async fn device_starts_echo_their_limits_and_refuse_large_bodies() {
         .header("content-type", "application/json")
         .body(Body::from_stream(futures_util::stream::iter(chunks)))
         .unwrap();
-    let response = router.clone().oneshot(streamed).await.unwrap();
-    assert_eq!(response.status(), 413);
+    let response = router.send(streamed).await;
+    assert_eq!(response.status, StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 #[tokio::test]
@@ -6912,10 +6336,8 @@ async fn deploys_and_previews_fail_when_an_environment_may_not_mount_a_stored_se
     let service = state(&temp).await;
     let (saved, staging) = two_environments(&service).await;
     let production = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(serve(listener, router(service, FakeAuth)).into_future());
-    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let server = Server::tcp(router(service, FakeAuth)).await;
+    let client = server.client();
     let production_only = SecretAccess {
         environments: EnvironmentAccess::Only([production.clone()].into()),
         previews: false,
@@ -6948,8 +6370,8 @@ async fn deploys_and_previews_fail_when_an_environment_may_not_mount_a_stored_se
         expected_generation: None,
         ..request
     };
-    let denied = |error: piqueld_client::ClientError| {
-        let piqueld_client::ClientError::Api { status, error, .. } = error else {
+    let denied = |error: ClientError| {
+        let ClientError::Api { status, error, .. } = error else {
             panic!("API error expected")
         };
         assert_eq!(status.as_u16(), 409);
@@ -6979,36 +6401,14 @@ async fn deploys_and_previews_fail_when_an_environment_may_not_mount_a_stored_se
         .deploy_environment(production.as_str(), saved.generation, None)
         .await
         .unwrap();
-    server.abort();
 }
 
-/// Runs `git` in `directory`.
-fn git(directory: &std::path::Path, args: &[&str]) {
-    let output = std::process::Command::new("git")
-        .current_dir(directory)
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-/// A Git repository in `parent` with one empty commit on `main` and on each
-/// of `branches`.
-fn repository_with_branches(parent: &std::path::Path, branches: &[&str]) -> std::path::PathBuf {
-    let repository = parent.join("repository");
-    std::fs::create_dir(&repository).unwrap();
-    git(&repository, &["init", "--initial-branch=main"]);
-    let identity = ["-c", "user.name=Test", "-c", "user.email=test@example.com"];
-    git(
-        &repository,
-        &[&identity[..], &["commit", "--allow-empty", "-m", "fixture"]].concat(),
-    );
+/// A Git repository with one empty commit on `main` and on each of `branches`.
+fn repository_with_branches(branches: &[&str]) -> Repository {
+    let repository = Repository::new();
+    repository.commit(&[]);
     for branch in branches {
-        git(&repository, &["branch", branch]);
+        repository.git(&["branch", branch]);
     }
     repository
 }
@@ -7017,10 +6417,11 @@ fn repository_with_branches(parent: &std::path::Path, branches: &[&str]) -> std:
 /// gone, and nothing at all while the repository cannot be read.
 #[tokio::test]
 async fn pruning_deletes_previews_only_when_their_branch_is_confirmed_gone() {
-    use piqueld_client::{BranchState, ClientError, CreatePreviewRequest, PrunePreviewsRequest};
+    use piqueld_client::{BranchState, CreatePreviewRequest, PrunePreviewsRequest};
     let temp = tempfile::tempdir().unwrap();
-    let repository = repository_with_branches(temp.path(), &["feat/gone", "feat/kept"]);
-    let (client, server, application) = connected_application(&temp, &repository, None).await;
+    let repository = repository_with_branches(&["feat/gone", "feat/kept"]);
+    let (server, application) = connected_application(&temp, &repository, None).await;
+    let client = server.client();
     let application = application.as_str();
     let mut previews = Vec::new();
     for branch in ["feat/gone", "feat/kept"] {
@@ -7054,7 +6455,7 @@ async fn pruning_deletes_previews_only_when_their_branch_is_confirmed_gone() {
         }
         deleting
     };
-    git(&repository, &["branch", "-D", "feat/gone"]);
+    repository.git(&["branch", "-D", "feat/gone"]);
     let states = async || {
         client
             .previews(application)
@@ -7071,7 +6472,7 @@ async fn pruning_deletes_previews_only_when_their_branch_is_confirmed_gone() {
 
     // An unreadable repository leaves every branch unknown and deletes nothing.
     let moved = temp.path().join("moved");
-    std::fs::rename(&repository, &moved).unwrap();
+    std::fs::rename(repository.path(), &moved).unwrap();
     assert!(matches!(
         states().await.as_slice(),
         [BranchState::Unknown { .. }, BranchState::Unknown { .. }]
@@ -7080,87 +6481,47 @@ async fn pruning_deletes_previews_only_when_their_branch_is_confirmed_gone() {
         .prune_previews(application, &prune)
         .await
         .unwrap_err();
-    assert!(
-        matches!(&error, ClientError::Api { status, .. } if status.as_u16() == 502),
-        "{error:?}"
-    );
+    assert_eq!(api_error(error).status, 502);
     assert_eq!(deleting().await, [false, false]);
 
-    std::fs::rename(&moved, &repository).unwrap();
+    std::fs::rename(&moved, repository.path()).unwrap();
     let deleted = client.prune_previews(application, &prune).await.unwrap();
     assert_eq!(deleted.len(), 1);
     assert_eq!(deleted[0].preview.id, previews[0]);
     assert_eq!(deleting().await, [true, false]);
-    server.abort();
 }
 
 /// Serves the contract API over TCP, with `max_upload_bytes` if given, and
 /// saves the contract manifest connected to `repository`. Returns the
-/// client, the server, and the application ID.
+/// server and the application ID.
 async fn connected_application(
     temp: &TempDir,
-    repository: &std::path::Path,
+    repository: &Repository,
     max_upload_bytes: Option<std::num::NonZeroU64>,
-) -> (Client, tokio::task::JoinHandle<std::io::Result<()>>, String) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(
-        serve(
-            listener,
-            router(state_with(temp, max_upload_bytes).await, FakeAuth),
-        )
-        .into_future(),
-    );
-    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+) -> (Server, String) {
+    let server = Server::tcp(router(state_with(temp, max_upload_bytes).await, FakeAuth)).await;
+    let saved = server
+        .client()
+        .apply_application(&ApplyApplicationRequest {
+            manifest: connected_manifest(repository),
+            ..new_application()
+        })
+        .await
+        .unwrap();
+    (server, saved.application_id)
+}
+
+/// The contract manifest, connected to `app.toml` on `repository`'s `main`.
+fn connected_manifest(repository: &Repository) -> ApplicationManifest {
     let mut manifest = manifest();
     manifest.spec.manifest = Some(
         serde_json::from_value(serde_json::json!({
-            "repository": {"url": repository.display().to_string(), "branch": "main"},
+            "repository": {"url": repository.path().display().to_string(), "branch": "main"},
             "path": "app.toml",
         }))
         .unwrap(),
     );
-    let saved = client
-        .apply_application(&ApplyApplicationRequest {
-            expected_generation: Some(0),
-            expected_application_id: None,
-            manifest,
-        })
-        .await
-        .unwrap();
-    (client, server, saved.application_id)
-}
-
-/// Commits `files` in `work` as `message`.
-fn commit_files(work: &std::path::Path, files: &[(&str, &[u8])], message: &str) {
-    for (name, contents) in files {
-        std::fs::write(work.join(name), contents).unwrap();
-    }
-    git(work, &["add", "."]);
-    git(
-        work,
-        &[
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "-qm",
-            message,
-        ],
-    );
-}
-
-/// A bundle of `work`'s `feat/local`, excluding `excluded` and its history.
-fn local_bundle(work: &std::path::Path, excluded: Option<&str>) -> Vec<u8> {
-    let path = work.join("../local.bundle");
-    let mut arguments = vec!["bundle", "create", "-q"];
-    let path_argument = path.display().to_string();
-    arguments.extend([path_argument.as_str(), "refs/heads/feat/local"]);
-    let excluded = excluded.map(|commit| format!("^{commit}"));
-    arguments.extend(excluded.as_deref());
-    git(work, &arguments);
-    std::fs::read(path).unwrap()
+    manifest
 }
 
 /// A snapshot of a never-pushed branch is uploaded thin against the base the
@@ -7168,11 +6529,12 @@ fn local_bundle(work: &std::path::Path, excluded: Option<&str>) -> Vec<u8> {
 /// and is never pruned; oversized and invalid bundles get their own errors.
 #[tokio::test]
 async fn local_snapshots_upload_within_limits_and_are_never_pruned() {
-    use piqueld_client::{BranchState, ClientError, CreatePreviewRequest, PrunePreviewsRequest};
+    use piqueld_client::{BranchState, CreatePreviewRequest, PrunePreviewsRequest};
     let temp = tempfile::tempdir().unwrap();
-    let repository = repository_with_branches(temp.path(), &["feat/gone"]);
+    let repository = repository_with_branches(&["feat/gone"]);
     let limit = std::num::NonZeroU64::new(8192);
-    let (client, server, application) = connected_application(&temp, &repository, limit).await;
+    let (server, application) = connected_application(&temp, &repository, limit).await;
+    let client = server.client();
     let application = application.as_str();
     let request = CreatePreviewRequest {
         branch: "feat/gone".into(),
@@ -7184,30 +6546,22 @@ async fn local_snapshots_upload_within_limits_and_are_never_pruned() {
         .unwrap()
         .preview
         .id;
-    git(&repository, &["branch", "-D", "feat/gone"]);
+    repository.git(&["branch", "-D", "feat/gone"]);
 
-    // A clone with a commit on a branch the repository never had.
-    let work = temp.path().join("work");
-    git(
-        temp.path(),
-        &["clone", "-q", &repository.display().to_string(), "work"],
-    );
-    git(&work, &["switch", "-qc", "feat/local"]);
-    commit_files(&work, &[("app.toml", b"local")], "local");
-    let base = std::process::Command::new("git")
-        .current_dir(&work)
-        .args(["rev-parse", "origin/main"])
-        .output()
-        .unwrap()
-        .stdout;
-    let base = String::from_utf8(base).unwrap().trim().to_owned();
+    // A working copy with a commit on a branch the repository never had.
+    let work = repository.working_copy();
+    work.git(&["switch", "-qc", "feat/local"]);
+    work.commit(&[("app.toml", b"local")]);
+    let base = work.git(&["rev-parse", "origin/main"]);
     let upload = async |bytes: Vec<u8>| {
         let length = bytes.len() as u64;
         client
             .deploy_local_preview(application, ("feat/local", None), (bytes, length))
             .await
     };
-    let created = upload(local_bundle(&work, Some(&base))).await.unwrap();
+    let created = upload(work.bundle("feat/local", Some(&base)))
+        .await
+        .unwrap();
     assert!(created.created);
     let local = created.preview.id;
     let deployments = client.deployments(local.as_str(), None).await.unwrap();
@@ -7252,18 +6606,16 @@ async fn local_snapshots_upload_within_limits_and_are_never_pruned() {
             state.to_le_bytes()[0]
         })
         .collect::<Vec<_>>();
-    commit_files(&work, &[("noise.bin", &noise)], "noise");
-    let code = |error: ClientError| match error {
-        ClientError::Api { status, error } => (status.as_u16(), error.code),
-        other => panic!("{other:?}"),
-    };
-    let large = upload(local_bundle(&work, None)).await.unwrap_err();
-    assert_eq!(code(large), (413, "snapshot_too_large".into()));
+    work.commit(&[("noise.bin", &noise)]);
+    let large = upload(work.bundle("feat/local", None)).await.unwrap_err();
+    assert_eq!(api_error(large), ApiError::new(413, "snapshot_too_large"));
     let invalid = upload(b"# v2 git bundle\nnot a bundle\n\n".to_vec()).await;
-    assert_eq!(code(invalid.unwrap_err()), (422, "snapshot_invalid".into()));
+    assert_eq!(
+        api_error(invalid.unwrap_err()),
+        ApiError::new(422, "snapshot_invalid")
+    );
     let deployments = client.deployments(local.as_str(), None).await.unwrap();
     assert_eq!(deployments.items.len(), 1);
-    server.abort();
 }
 
 /// An application `blog` with a manifest repository and a production
@@ -7272,7 +6624,8 @@ async fn local_snapshots_upload_within_limits_and_are_never_pruned() {
 /// `limited` account that holds only `previews:deploy` on blog.
 struct PreviewFixture {
     _temp: TempDir,
-    database: std::path::PathBuf,
+    _repository: Repository,
+    database: PathBuf,
     router: axum::Router,
     blog: String,
     production: String,
@@ -7296,49 +6649,36 @@ impl PreviewFixture {
 
     async fn new() -> Self {
         let temp = TempDir::new().unwrap();
-        let database = temp.path().join("state.db");
-        let repository = repository_with_branches(temp.path(), &["feat/one", "feat/two"]);
+        let database = database(&temp);
+        let repository = repository_with_branches(&["feat/one", "feat/two"]);
         let state = state(&temp).await;
-        let mut input = manifest();
-        input.spec.manifest = Some(
-            serde_json::from_value(serde_json::json!({
-                "repository": {"url": repository.display().to_string(), "branch": "main"},
-                "path": "app.toml",
-            }))
-            .unwrap(),
-        );
-        let mutation =
-            piqueld::api::Mutation::save(input.validate_template().unwrap(), None, false);
-        let Ok(piqueld::api::MutationResponse::Saved(saved)) =
-            state.accept(Daemon, mutation, Some(0), false, None).await
-        else {
-            panic!("save response");
-        };
-        let blog = saved.application_id;
+        let blog = save(&state, connected_manifest(&repository))
+            .await
+            .application_id;
         let blog_id = piqueld_core::ApplicationId::parse(blog.as_str()).unwrap();
         // The application's only long-lived environment stands for production.
         let production = state.application(&blog_id).await.unwrap().environments[0]
             .id
-            .clone();
+            .to_string();
         let app = Some(blog.as_str());
         let owner = Self::PERMISSIONS.map(|permission| (permission, app));
         let owner = seed_account(&database, "owner", &owner).await;
         let limited = [("previews:deploy", app), ("accounts:manage", None)];
         let limited = seed_account(&database, "limited", &limited).await;
-        let store = Store::open(&database).await.unwrap();
-        let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
         let mut fixture = Self {
+            router: api_router(state, auth(&temp).await),
             _temp: temp,
+            _repository: repository,
             database,
-            router: api_router(state, auth),
-            blog: blog.clone(),
-            production: production.to_string(),
+            blog,
+            production,
             owner,
             limited,
             agent: String::new(),
         };
         let request = fixture.token(&Self::AGENT);
         let (status, created) = fixture
+            .router
             .call(&fixture.owner, "POST", "/api/v1/auth/manage", request)
             .await;
         assert_eq!(status, 200, "{created}");
@@ -7370,14 +6710,9 @@ impl PreviewFixture {
 
     /// Records a finished build of `environment`, returning its ID.
     async fn build(&self, environment: &str) -> i64 {
-        use sqlx::Connection as _;
-        let mut connection =
-            sqlx::SqliteConnection::connect(&format!("sqlite:{}", self.database.display()))
-                .await
-                .unwrap();
         sqlx::query_scalar("INSERT INTO builds(environment_id,operation_id,service,source_json,state,started_at_ms) VALUES(?1,'operation','web','{}','succeeded',1) RETURNING id")
             .bind(environment)
-            .fetch_one(&mut connection)
+            .fetch_one(&mut sqlite::connect(&self.database).await)
             .await
             .unwrap()
     }
@@ -7386,30 +6721,9 @@ impl PreviewFixture {
     async fn preview(&self, branch: &str) -> String {
         let uri = format!("/api/v1/applications/{}/previews", self.blog);
         let request = serde_json::json!({"branch": branch});
-        let (status, body) = self.call(&self.agent, "POST", &uri, request).await;
+        let (status, body) = self.router.call(&self.agent, "POST", &uri, request).await;
         assert!(status < 300, "{status} {body}");
         body["data"]["preview"]["id"].as_str().unwrap().to_owned()
-    }
-
-    /// Sends a JSON request as `token`, returning the status and JSON body.
-    async fn call(
-        &self,
-        token: &str,
-        method: &str,
-        uri: &str,
-        body: serde_json::Value,
-    ) -> (u16, serde_json::Value) {
-        let request = Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("authorization", format!("Bearer {token}"))
-            .header("content-type", "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap();
-        let response = self.router.clone().oneshot(request).await.unwrap();
-        let status = response.status().as_u16();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        (status, serde_json::from_slice(&body).unwrap_or_default())
     }
 }
 
@@ -7428,17 +6742,17 @@ async fn previews_permissions_manage_previews() {
         ("GET", format!("/api/v1/applications/{blog}/previews")),
         ("GET", format!("/api/v1/applications/{blog}")),
     ] {
-        let (status, body) = f.call(&f.agent, method, &uri, none.clone()).await;
+        let (status, body) = f.router.call(&f.agent, method, &uri, none.clone()).await;
         assert!(status < 300, "{method} {uri}: {status} {body}");
     }
     let logs = format!("/api/v1/environments/{preview}/logs?service=web&tail=5&since_seconds=60");
-    let (status, body) = f.call(&f.agent, "GET", &logs, none.clone()).await;
+    let (status, body) = f.router.call(&f.agent, "GET", &logs, none.clone()).await;
     assert_eq!(status, 200, "{body}");
     let build = format!("/api/v1/builds/{}/logs", f.build(&preview).await);
-    let (status, body) = f.call(&f.agent, "GET", &build, none.clone()).await;
+    let (status, body) = f.router.call(&f.agent, "GET", &build, none.clone()).await;
     assert_eq!(status, 200, "{body}");
     let delete = format!("/api/v1/previews/{preview}");
-    assert_eq!(f.call(&f.agent, "DELETE", &delete, none).await.0, 202);
+    assert_eq!(f.router.status(&f.agent, "DELETE", &delete).await, 202);
 }
 
 /// A token with previews permissions changes no long-lived environment, reads
@@ -7490,7 +6804,10 @@ async fn previews_permissions_reach_no_production_or_shared_state() {
             "secrets:write",
         ),
     ] {
-        let (status, body) = f.call(&f.agent, method, &uri, serde_json::json!({})).await;
+        let (status, body) = f
+            .router
+            .call(&f.agent, method, &uri, serde_json::json!({}))
+            .await;
         assert_eq!(status, 403, "{method} {uri}: {body}");
         assert_eq!(body["details"]["permission"], permission, "{method} {uri}");
     }
@@ -7507,34 +6824,35 @@ async fn previews_permissions_never_widen() {
     let invite =
         serde_json::json!({"action": "create_invitation", "grants": f.grants(&["apps:deploy"])});
     for wider in [f.token(&["apps:deploy"]), invite] {
-        let (status, body) = f.call(&f.limited, "POST", manage, wider).await;
+        let (status, body) = f.router.call(&f.limited, "POST", manage, wider).await;
         assert_eq!(
             (status, body["code"].as_str()),
             (403, Some("permission_exceeded"))
         );
     }
     let narrower = f.token(&["previews:deploy"]);
-    assert_eq!(f.call(&f.limited, "POST", manage, narrower).await.0, 200);
+    assert_eq!(
+        f.router.call(&f.limited, "POST", manage, narrower).await.0,
+        200
+    );
 
     let preview = format!("/api/v1/previews/{}", f.preview("feat/two").await);
-    {
-        use sqlx::Connection as _;
-        let mut connection =
-            sqlx::SqliteConnection::connect(&format!("sqlite:{}", f.database.display()))
-                .await
-                .unwrap();
-        sqlx::query("DELETE FROM auth_grants WHERE user_id='owner' AND permission='apps:delete'")
-            .execute(&mut connection)
-            .await
-            .unwrap();
-    }
-    let (status, body) = f.call(&f.agent, "DELETE", &preview, none.clone()).await;
+    execute(
+        &f.database,
+        "DELETE FROM auth_grants WHERE user_id='owner' AND permission='apps:delete'",
+    )
+    .await;
+    let (status, body) = f
+        .router
+        .call(&f.agent, "DELETE", &preview, none.clone())
+        .await;
     assert_eq!(
         (status, body["details"]["permission"].as_str()),
         (403, Some("previews:delete"))
     );
 
     let (_, directory) = f
+        .router
         .call(&f.owner, "GET", "/api/v1/auth/directory", none.clone())
         .await;
     let id = directory["credentials"]
@@ -7545,6 +6863,6 @@ async fn previews_permissions_never_widen() {
         .unwrap()["id"]
         .clone();
     let revoke = serde_json::json!({"action": "revoke_credential", "id": id});
-    assert_eq!(f.call(&f.owner, "POST", manage, revoke).await.0, 200);
-    assert_eq!(f.call(&f.agent, "GET", &preview, none).await.0, 401);
+    assert_eq!(f.router.call(&f.owner, "POST", manage, revoke).await.0, 200);
+    assert_eq!(f.router.status(&f.agent, "GET", &preview).await, 401);
 }

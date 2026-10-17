@@ -1,5 +1,8 @@
 //! Startup must exclude competing processes before touching durable state.
 
+#[path = "support/daemon.rs"]
+mod daemon;
+
 use piqueld::DirectoryLock;
 use std::{
     io::{BufRead, BufReader, Write},
@@ -56,7 +59,11 @@ fn competing_daemon_preserves_database_and_live_socket() {
     let database = path.join("piqueld.db");
     std::fs::write(&database, b"untouched database").unwrap();
     let socket = path.join("piqueld.sock");
-    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    // Bound relative to the working directory, so its path fits a socket
+    // address even in deeply nested checkouts.
+    let cwd = std::env::current_dir().unwrap();
+    let _listener =
+        std::os::unix::net::UnixListener::bind(socket.strip_prefix(cwd).unwrap()).unwrap();
     let inode = std::fs::metadata(&socket).unwrap().ino();
     let config = path.join("config.toml");
     // HTTP is disabled so TCP binding cannot accidentally provide exclusivity.
@@ -65,12 +72,7 @@ fn competing_daemon_preserves_database_and_live_socket() {
         format!("[server]\ndata_dir={:?}\n", path.to_str().unwrap()),
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_piqueld"))
-        .args(["--config", config.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let error = String::from_utf8(output.stderr).unwrap();
+    let error = daemon::refused_start(&config);
     assert!(error.contains("directory already in use"), "{error}");
     assert_eq!(std::fs::read(database).unwrap(), b"untouched database");
     assert_eq!(std::fs::metadata(socket).unwrap().ino(), inode);
