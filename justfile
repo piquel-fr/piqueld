@@ -68,7 +68,7 @@ boundary:
 # itself. Default all-feature Clippy builds the embedded dashboard, and
 # Playwright validation builds it through its Rust fixture too.
 ui-check:
-    @cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui
+    @cargo check --locked --target wasm32-unknown-unknown --package piqueld-client --package piqueld-ui
 
 # Release daemon and CLI; the daemon build script compiles the dashboard.
 # Select only the shipped binaries to avoid optimizing the OpenAPI generator,
@@ -95,6 +95,7 @@ generate:
 
 docker-test:
     @cargo xtask docker-test
+
 # Explicit development-only setup: pinned JS packages and a containerized browser.
 setup-playwright:
     @pnpm --dir tests/playwright install --frozen-lockfile --ignore-scripts
