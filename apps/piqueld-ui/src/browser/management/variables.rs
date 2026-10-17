@@ -1,10 +1,10 @@
 //! Manifest variables: defaults and per-environment values on the application
 //! page, and the values one environment renders with on its page.
-use super::super::ui::{Icon, Tone, badge, empty, icon, remove_button};
-use super::{dirty_group, editor, save_actions};
+use super::super::ui::{Tone, add_button, badge, empty, remove_button};
+use super::{Draft, Rows, editor};
 use leptos::prelude::*;
 use piqueld_client::{
-    EnvironmentSource, Variable,
+    ApplicationManifest, EnvironmentSource, Variable,
     edit::{ApplicationEdit, Variables},
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +20,11 @@ struct VariableDraft {
 }
 
 impl VariableDraft {
+    /// The manifest's variables as rows.
+    fn saved(manifest: &ApplicationManifest) -> Vec<Self> {
+        Self::rows(&Variables::of(manifest))
+    }
+
     /// Saved variables as rows, in name order.
     fn rows(variables: &Variables) -> Vec<Self> {
         let names = variables
@@ -96,17 +101,8 @@ impl VariableDraft {
 #[component]
 pub(super) fn VariableSettings() -> impl IntoView {
     let context = editor();
-    let saved = move || Variables::of(&context.manifest());
-    let draft = RwSignal::new(VariableDraft::rows(&saved()));
-    let baseline = RwSignal::new(draft.get_untracked());
-    dirty_group("variables".into(), draft, baseline);
-    Effect::new(move |_| {
-        let rows = VariableDraft::rows(&saved());
-        if draft.get_untracked() == baseline.get_untracked() {
-            draft.set(rows.clone());
-            baseline.set(rows);
-        }
-    });
+    let draft = Draft::synced("variables", VariableDraft::saved);
+    let rows = draft.value;
     let columns = Memo::new(move |_| {
         let mut names = context.saved.with(|saved| {
             saved
@@ -115,36 +111,12 @@ pub(super) fn VariableSettings() -> impl IntoView {
                 .map(|environment| environment.name.to_string())
                 .collect::<BTreeSet<_>>()
         });
-        names.extend(saved().environments.into_keys());
+        names.extend(Variables::of(&context.manifest()).environments.into_keys());
         names.into_iter().collect::<Vec<_>>()
     });
-    let save = move || {
-        let variables = match VariableDraft::variables(&draft.get_untracked()) {
-            Ok(variables) => variables,
-            Err(message) => {
-                context.error.set(Some(message));
-                return;
-            }
-        };
-        context.save(
-            ApplicationEdit::Variables(variables),
-            Callback::new(move |saved: piqueld_client::ApplicationView| {
-                draft.set(VariableDraft::rows(&Variables::of(
-                    &saved.application.to_manifest(),
-                )));
-                baseline.set(draft.get_untracked());
-            }),
-        );
-    };
-    let cell = move |index: usize, read: fn(&VariableDraft) -> String| {
-        draft.with(|rows| rows.get(index).map(read).unwrap_or_default())
-    };
-    let update = move |index: usize, write: Box<dyn FnOnce(&mut VariableDraft)>| {
-        draft.update(|rows| {
-            if let Some(row) = rows.get_mut(index) {
-                write(row);
-            }
-        });
+    let save = move || match VariableDraft::variables(&rows.get_untracked()) {
+        Ok(variables) => draft.save(ApplicationEdit::Variables(variables), VariableDraft::saved),
+        Err(message) => context.error.set(Some(message)),
     };
     view! {
         <section class="card">
@@ -180,111 +152,105 @@ pub(super) fn VariableSettings() -> impl IntoView {
                         </thead>
                         <tbody>
                             <For
-                                each={move || (0..draft.with(Vec::len)).collect::<Vec<_>>()}
+                                each={move || rows.indices()}
                                 key={|index| *index}
-                                children={move |index| {
-                                    view! {
-                                        <tr>
-                                            <td>
-                                                <input
-                                                    type="text"
-                                                    aria-label="Variable name"
-                                                    placeholder="domain"
-                                                    prop:value={move || cell(index, |row| row.name.clone())}
-                                                    on:input={move |event| {
-                                                        let value = event_target_value(&event);
-                                                        update(index, Box::new(move |row| row.name = value));
-                                                    }}
-                                                />
-                                            </td>
-                                            <td>
-                                                <input
-                                                    type="text"
-                                                    aria-label="Default value"
-                                                    placeholder="No default"
-                                                    prop:value={move || cell(index, |row| row.default.clone())}
-                                                    on:input={move |event| {
-                                                        let value = event_target_value(&event);
-                                                        update(index, Box::new(move |row| row.default = value));
-                                                    }}
-                                                />
-                                            </td>
-                                            {move || {
-                                                columns
-                                                    .get()
-                                                    .into_iter()
-                                                    .map(|environment| {
-                                                        let read = environment.clone();
-                                                        let label = format!("Value in {environment}");
-                                                        view! {
-                                                            <td>
-                                                                <input
-                                                                    type="text"
-                                                                    aria-label={label}
-                                                                    placeholder="Default"
-                                                                    prop:value={move || {
-                                                                        draft
-                                                                            .with(|rows| {
-                                                                                rows.get(index)
-                                                                                    .and_then(|row| row.environments.get(&read).cloned())
-                                                                                    .unwrap_or_default()
-                                                                            })
-                                                                    }}
-                                                                    on:input={move |event| {
-                                                                        let value = event_target_value(&event);
-                                                                        let environment = environment.clone();
-                                                                        update(
-                                                                            index,
-                                                                            Box::new(move |row| {
-                                                                                row.environments.insert(environment, value);
-                                                                            }),
-                                                                        );
-                                                                    }}
-                                                                />
-                                                            </td>
-                                                        }
-                                                    })
-                                                    .collect_view()
-                                            }}
-                                            <td>
-                                                <input
-                                                    type="text"
-                                                    aria-label="Value in previews"
-                                                    placeholder="Default"
-                                                    prop:value={move || cell(index, |row| row.previews.clone())}
-                                                    on:input={move |event| {
-                                                        let value = event_target_value(&event);
-                                                        update(index, Box::new(move |row| row.previews = value));
-                                                    }}
-                                                />
-                                            </td>
-                                            <td class="actions">
-                                                {remove_button(move || {
-                                                    draft
-                                                        .update(|rows| {
-                                                            rows.remove(index);
-                                                        });
-                                                })}
-                                            </td>
-                                        </tr>
-                                    }
-                                }}
+                                children={move |index| variable_row(rows, index, columns)}
                             />
                         </tbody>
                     </table>
                 </div>
-                <button
-                    type="button"
-                    class="btn btn-sm"
-                    on:click={move |_| draft.update(|rows| rows.push(VariableDraft::default()))}
-                >
-                    {icon(Icon::Plus)}
-                    "Add variable"
-                </button>
-                {save_actions(draft, baseline, save, || false)}
+                {add_button(
+                    "Add variable",
+                    || false,
+                    move || rows.update(|rows| rows.push(VariableDraft::default())),
+                )}
+                {draft.actions(save, || false)}
             </fieldset>
         </section>
     }
+}
+
+/// Inputs of variable `index`: its name, default, value in each of the
+/// `columns` environments, and value in previews.
+fn variable_row(
+    rows: RwSignal<Vec<VariableDraft>>,
+    index: usize,
+    columns: Memo<Vec<String>>,
+) -> AnyView {
+    view! {
+        <tr>
+            {cell(
+                rows,
+                index,
+                "Variable name".into(),
+                "domain",
+                |row| row.name.clone(),
+                |row, value| row.name = value,
+            )}
+            {cell(
+                rows,
+                index,
+                "Default value".into(),
+                "No default",
+                |row| row.default.clone(),
+                |row, value| row.default = value,
+            )}
+            {move || {
+                columns
+                    .get()
+                    .into_iter()
+                    .map(|environment| {
+                        let read = environment.clone();
+                        cell(
+                            rows,
+                            index,
+                            format!("Value in {environment}"),
+                            "Default",
+                            move |row| row.environments.get(&read).cloned().unwrap_or_default(),
+                            move |row, value| {
+                                row.environments.insert(environment.clone(), value);
+                            },
+                        )
+                    })
+                    .collect_view()
+            }}
+            {cell(
+                rows,
+                index,
+                "Value in previews".into(),
+                "Default",
+                |row| row.previews.clone(),
+                |row, value| row.previews = value,
+            )} <td class="actions">{remove_button(move || rows.remove(index))}</td>
+        </tr>
+    }
+    .into_any()
+}
+
+/// Text input editing what `read` and `write` select of variable `index`.
+fn cell(
+    rows: RwSignal<Vec<VariableDraft>>,
+    index: usize,
+    label: String,
+    placeholder: &'static str,
+    read: impl Fn(&VariableDraft) -> String + Send + Sync + 'static,
+    write: impl Fn(&mut VariableDraft, String) + 'static,
+) -> AnyView {
+    view! {
+        <td>
+            <input
+                type="text"
+                aria-label={label}
+                placeholder={placeholder}
+                prop:value={move || rows.field(index, &read)}
+                on:input={move |event| {
+                    let value = event_target_value(&event);
+                    rows.edit(index, |row| write(row, value));
+                }}
+            />
+        </td>
+    }
+    .into_any()
 }
 
 /// The value of each variable in the manifest the shown environment deploys:
@@ -292,7 +258,7 @@ pub(super) fn VariableSettings() -> impl IntoView {
 #[component]
 pub(super) fn EnvironmentVariables() -> impl IntoView {
     let context = editor();
-    let signals = context.dashboard.with_value(|d| d.signals);
+    let signals = context.signals();
     let values = move || {
         let environment = context.selected_environment()?;
         Some(

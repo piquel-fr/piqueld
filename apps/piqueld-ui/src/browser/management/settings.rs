@@ -1,46 +1,77 @@
 //! Saved configuration forms and service editors.
-use super::super::client_error_message;
 use super::super::ui::{
-    Icon, Modal, Tone, copy_button, icon, notice, remove_button, text_input, when,
+    Icon, Modal, Tone, add_button, copy_button, icon, notice, remove_button, text_field,
+    text_input, when,
 };
-use super::{dirty_group, editor, save_actions};
+use super::super::{UserError, confirm};
+use super::{Draft, editor};
 use crate::editor::{FileForm, Section, ServiceForm};
 use leptos::prelude::*;
 use piqueld_client::{
-    ApplicationView, Client, FileSource, GitRepository, Mount, RepositoryManifest, Rollout,
-    Service, Source, Typed, Volume,
+    ApplicationManifest, ApplicationView, Client, FileSource, GitRepository, Mount,
+    RepositoryManifest, Rollout, Service, Source, Typed, Volume,
     edit::{ApplicationEdit, ServiceEdit, ServiceGeneral, ServiceProcess},
     sync::RepositorySync,
 };
 use std::collections::BTreeMap;
 
+/// The repository connection form.
+#[derive(Clone, PartialEq)]
+struct RepositoryDraft {
+    /// Whether configuration is loaded from Git.
+    enabled: bool,
+    /// The connection, kept while disabled so re-enabling restores it.
+    manifest: RepositoryManifest,
+    /// The poll interval as typed; `manifest.sync` holds it once valid.
+    interval: String,
+}
+
+impl RepositoryDraft {
+    /// The saved connection, or defaults for a new one.
+    fn new(saved: Option<RepositoryManifest>) -> Self {
+        let enabled = saved.is_some();
+        let manifest = saved.unwrap_or(RepositoryManifest {
+            repository: GitRepository {
+                url: String::new(),
+                branch: "main".into(),
+                commit: None,
+            },
+            path: "infra/piqueld/app.toml".into(),
+            sync: RepositorySync::Off,
+        });
+        let interval = match manifest.sync {
+            RepositorySync::Poll { interval_seconds } => interval_seconds,
+            RepositorySync::Off | RepositorySync::Webhook => RepositorySync::DEFAULT_INTERVAL,
+        };
+        Self {
+            enabled,
+            manifest,
+            interval: interval.to_string(),
+        }
+    }
+
+    /// Whether the typed interval is valid, or unused by the chosen sync.
+    fn interval_valid(&self) -> bool {
+        !matches!(self.manifest.sync, RepositorySync::Poll { .. })
+            || self.interval.trim().parse::<u32>().is_ok_and(|seconds| {
+                (RepositorySync::MIN_INTERVAL..=RepositorySync::MAX_INTERVAL).contains(&seconds)
+            })
+    }
+}
+
 /// Toggle and fields for loading the application's configuration from a Git
-/// manifest on deploy, and for deploying it on push. The draft is `(enabled,
-/// manifest, poll interval as typed)`; saving is refused while other form
-/// groups have unsaved edits.
+/// manifest on deploy, and for deploying it on push. Saving is refused while
+/// other form groups have unsaved edits.
 #[component]
 pub(super) fn RepositorySettings() -> impl IntoView {
     let context = editor();
-    let backing = context.manifest().spec.manifest;
-    let enabled = backing.is_some();
-    let manifest = backing.unwrap_or(RepositoryManifest {
-        repository: GitRepository {
-            url: String::new(),
-            branch: "main".into(),
-            commit: None,
-        },
-        path: "infra/piqueld/app.toml".into(),
-        sync: RepositorySync::Off,
-    });
-    let interval = match manifest.sync {
-        RepositorySync::Poll { interval_seconds } => interval_seconds,
-        RepositorySync::Off | RepositorySync::Webhook => RepositorySync::DEFAULT_INTERVAL,
-    };
-    let draft = RwSignal::new((enabled, manifest, interval.to_string()));
-    let baseline = RwSignal::new(draft.get_untracked());
+    let draft = Draft::new(
+        "repository".into(),
+        RepositoryDraft::new(context.manifest().spec.manifest),
+    );
+    let form = draft.value;
     // Once connected, each environment follows its own branch, changed on its page.
-    let connected = move || baseline.get().0;
-    dirty_group("repository".into(), draft, baseline);
+    let connected = move || draft.baseline.with(|saved| saved.enabled);
     let other_edits = move || {
         context
             .dirty
@@ -57,31 +88,23 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                 .map(|manifest| manifest.sync)
         })
     };
-    let polling = move || matches!(draft.get().1.sync, RepositorySync::Poll { .. });
     let save = move || {
         if other_edits() {
             return;
         }
-        let value = draft.get_untracked();
+        let value = form.get_untracked();
         // A valid typed interval is already in `sync`; a malformed one is not.
-        let range = RepositorySync::MIN_INTERVAL..=RepositorySync::MAX_INTERVAL;
-        if matches!(value.1.sync, RepositorySync::Poll { .. })
-            && !value
-                .2
-                .trim()
-                .parse::<u32>()
-                .is_ok_and(|seconds| range.contains(&seconds))
-        {
+        if !value.interval_valid() {
             context.set_error(Some(format!(
                 "The poll interval must be a whole number of seconds from {} to {}.",
-                range.start(),
-                range.end()
+                RepositorySync::MIN_INTERVAL,
+                RepositorySync::MAX_INTERVAL,
             )));
             return;
         }
         context.save(
-            ApplicationEdit::Repository(value.0.then_some(value.1)),
-            Callback::new(move |_| baseline.set(draft.get_untracked())),
+            ApplicationEdit::Repository(value.enabled.then_some(value.manifest)),
+            Callback::new(move |_| draft.baseline.set(form.get_untracked())),
         );
     };
     view! {
@@ -105,106 +128,48 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                     <label class="checkbox">
                         <input
                             type="checkbox"
-                            prop:checked={move || draft.get().0}
-                            on:change={move |ev| draft.update(|v| v.0 = event_target_checked(&ev))}
+                            prop:checked={move || form.with(|v| v.enabled)}
+                            on:change={move |ev| {
+                                form.update(|v| v.enabled = event_target_checked(&ev));
+                            }}
                         />
                         "Load configuration from Git on deploy"
                     </label>
-                    <div hidden={move || !draft.get().0} class="form-grid">
+                    <div hidden={move || !form.with(|v| v.enabled)} class="form-grid">
                         {text_input(
                             "Repository",
-                            draft,
-                            |v| v.1.repository.url.clone(),
-                            |v, s| v.1.repository.url = s,
+                            form,
+                            |v| v.manifest.repository.url.clone(),
+                            |v, s| v.manifest.repository.url = s,
                         )}
                         <Show when={move || {
                             !connected()
                         }}>
                             {text_input(
                                 "Branch",
-                                draft,
-                                |v| v.1.repository.branch.clone(),
-                                |v, s| v.1.repository.branch = s,
+                                form,
+                                |v| v.manifest.repository.branch.clone(),
+                                |v, s| v.manifest.repository.branch = s,
                             )}
                             {text_input(
                                 "Commit (optional)",
-                                draft,
-                                |v| v.1.repository.commit.clone().unwrap_or_default(),
-                                |v, s| v.1.repository.commit = (!s.is_empty()).then_some(s),
+                                form,
+                                |v| v.manifest.repository.commit.clone().unwrap_or_default(),
+                                |v, s| v.manifest.repository.commit = (!s.is_empty()).then_some(s),
                             )}
                         </Show>
                         {text_input(
                             "Manifest path",
-                            draft,
-                            |v| v.1.path.clone(),
-                            |v, s| v.1.path = s,
+                            form,
+                            |v| v.manifest.path.clone(),
+                            |v, s| v.manifest.path = s,
                         )}
-                        <label class="field">
-                            <span>"Deploy on push"</span>
-                            <select
-                                prop:value={move || match draft.get().1.sync {
-                                    RepositorySync::Off => "off",
-                                    RepositorySync::Poll { .. } => "poll",
-                                    RepositorySync::Webhook => "webhook",
-                                }}
-                                on:change={move |event| {
-                                    let mode = event_target_value(&event);
-                                    draft
-                                        .update(|v| {
-                                            v.1.sync = match mode.as_str() {
-                                                "poll" => {
-                                                    RepositorySync::Poll {
-                                                        interval_seconds: v
-                                                            .2
-                                                            .trim()
-                                                            .parse()
-                                                            .unwrap_or(RepositorySync::DEFAULT_INTERVAL),
-                                                    }
-                                                }
-                                                "webhook" => RepositorySync::Webhook,
-                                                _ => RepositorySync::Off,
-                                            };
-                                        });
-                                }}
-                            >
-                                <option value="off">"Off: deploy only when asked"</option>
-                                <option value="poll">
-                                    "Poll: check the branches on an interval"
-                                </option>
-                                <option value="webhook">
-                                    "Webhook: when GitHub reports a push"
-                                </option>
-                            </select>
-                        </label>
-                        <Show when={polling}>
-                            <label class="field">
-                                <span>"Poll interval (seconds)"</span>
-                                <input
-                                    type="number"
-                                    min={RepositorySync::MIN_INTERVAL}
-                                    max={RepositorySync::MAX_INTERVAL}
-                                    prop:value={move || draft.with(|v| v.2.clone())}
-                                    on:input={move |event| {
-                                        let text = event_target_value(&event);
-                                        draft
-                                            .update(|v| {
-                                                if let (
-                                                    RepositorySync::Poll { interval_seconds },
-                                                    Ok(seconds),
-                                                ) = (&mut v.1.sync, text.trim().parse()) {
-                                                    *interval_seconds = seconds;
-                                                }
-                                                v.2 = text;
-                                            });
-                                    }}
-                                />
-                            </label>
-                        </Show>
+                        {sync_fields(form)}
                     </div>
-                    <p class="hint" hidden={move || !draft.get().0}>
+                    <p class="hint" hidden={move || !form.with(|v| v.enabled)}>
                         "When on, pushes deploy every preview, and every environment that opted in on its page and follows an unpinned branch, once it was deployed."
                     </p>
-                    {save_actions(draft, baseline, save, other_edits)}
+                    {draft.actions(save, other_edits)}
                 </fieldset>
                 <Show when={move || saved_sync().is_some_and(|sync| !sync.is_off())}>
                     <SyncCheck />
@@ -213,6 +178,70 @@ pub(super) fn RepositorySettings() -> impl IntoView {
         </section>
         <Show when={move || saved_sync() == Some(RepositorySync::Webhook)}>
             <WebhookSettings />
+        </Show>
+    }
+}
+
+/// How pushes deploy, and the poll interval when polling.
+fn sync_fields(form: RwSignal<RepositoryDraft>) -> impl IntoView {
+    let polling = move || form.with(|v| matches!(v.manifest.sync, RepositorySync::Poll { .. }));
+    view! {
+        <label class="field">
+            <span>"Deploy on push"</span>
+            <select
+                prop:value={move || {
+                    form.with(|v| match v.manifest.sync {
+                        RepositorySync::Off => "off",
+                        RepositorySync::Poll { .. } => "poll",
+                        RepositorySync::Webhook => "webhook",
+                    })
+                }}
+                on:change={move |event| {
+                    let mode = event_target_value(&event);
+                    form.update(|v| {
+                        v.manifest.sync = match mode.as_str() {
+                            "poll" => {
+                                RepositorySync::Poll {
+                                    interval_seconds: v
+                                        .interval
+                                        .trim()
+                                        .parse()
+                                        .unwrap_or(RepositorySync::DEFAULT_INTERVAL),
+                                }
+                            }
+                            "webhook" => RepositorySync::Webhook,
+                            _ => RepositorySync::Off,
+                        };
+                    });
+                }}
+            >
+                <option value="off">"Off: deploy only when asked"</option>
+                <option value="poll">"Poll: check the branches on an interval"</option>
+                <option value="webhook">"Webhook: when GitHub reports a push"</option>
+            </select>
+        </label>
+        <Show when={polling}>
+            <label class="field">
+                <span>"Poll interval (seconds)"</span>
+                <input
+                    type="number"
+                    min={RepositorySync::MIN_INTERVAL}
+                    max={RepositorySync::MAX_INTERVAL}
+                    prop:value={move || form.with(|v| v.interval.clone())}
+                    on:input={move |event| {
+                        let text = event_target_value(&event);
+                        form.update(|v| {
+                            if let (RepositorySync::Poll { interval_seconds }, Ok(seconds)) = (
+                                &mut v.manifest.sync,
+                                text.trim().parse(),
+                            ) {
+                                *interval_seconds = seconds;
+                            }
+                            v.interval = text;
+                        });
+                    }}
+                />
+            </label>
         </Show>
     }
 }
@@ -279,12 +308,7 @@ fn WebhookSettings() -> impl IntoView {
     let context = editor();
     let data = LocalResource::new(move || {
         let id = context.id();
-        async move {
-            Client::browser()
-                .webhook(&id)
-                .await
-                .map_err(|error| client_error_message(&error))
-        }
+        async move { Client::browser().webhook(&id).await.user_error() }
     });
     // The secret just generated: never retrievable again.
     let generated = RwSignal::new(None::<String>);
@@ -295,11 +319,9 @@ fn WebhookSettings() -> impl IntoView {
     };
     let generate = move |_| {
         if created().is_some()
-            && !window()
-                .confirm_with_message(
-                    "Rotate the webhook secret? The current secret stops verifying deliveries at once, until GitHub is updated with the new one.",
-                )
-                .unwrap_or(false)
+            && !confirm(
+                "Rotate the webhook secret? The current secret stops verifying deliveries at once, until GitHub is updated with the new one.",
+            )
         {
             return;
         }
@@ -421,16 +443,13 @@ fn WebhookSettings() -> impl IntoView {
 pub(super) fn MetadataSettings() -> impl IntoView {
     let context = editor();
     let editing = RwSignal::new(false);
-    let name = RwSignal::new(context.name());
-    let baseline = RwSignal::new(name.get_untracked());
-    dirty_group("name".into(), name, baseline);
-    let save = move |()| {
+    let draft = Draft::new("name".into(), context.name());
+    let name = draft.value;
+    let save = move || {
         context.save(
             ApplicationEdit::Name(name.get_untracked()),
             Callback::new(move |app: ApplicationView| {
-                let saved_name = app.application.metadata().name.to_string();
-                name.set(saved_name.clone());
-                baseline.set(saved_name);
+                draft.reset(app.application.metadata().name.to_string());
                 editing.set(false);
             }),
         );
@@ -453,23 +472,19 @@ pub(super) fn MetadataSettings() -> impl IntoView {
             hidden={move || !editing.get()}
             on:submit={move |event| {
                 event.prevent_default();
-                save(());
+                save();
             }}
         >
             <fieldset class="form-row" disabled={move || context.blocked()}>
-                {text_input("Application name", name, String::clone, |v, s| *v = s)}
-                <button
-                    type="submit"
-                    class="btn btn-primary"
-                    disabled={move || name.get() == baseline.get()}
-                >
+                {text_field("Application name", name)}
+                <button type="submit" class="btn btn-primary" disabled={move || !draft.changed()}>
                     "Save"
                 </button>
                 <button
                     type="button"
                     class="btn btn-ghost"
                     on:click={move |_| {
-                        name.set(baseline.get_untracked());
+                        draft.discard();
                         editing.set(false);
                     }}
                 >
@@ -480,42 +495,29 @@ pub(super) fn MetadataSettings() -> impl IntoView {
     }
 }
 
+/// Names of the manifest's volumes.
+fn volume_names(manifest: &ApplicationManifest) -> Vec<String> {
+    manifest
+        .spec
+        .volumes
+        .iter()
+        .map(|volume| volume.name.clone())
+        .collect()
+}
+
 /// Named volume list editor, saved as one group.
 #[component]
 pub(super) fn VolumeSettings() -> impl IntoView {
     let context = editor();
-    let volumes = RwSignal::new(
-        context
-            .manifest()
-            .spec
-            .volumes
-            .iter()
-            .map(|v| v.name.clone())
-            .collect::<Vec<_>>(),
-    );
-    let baseline = RwSignal::new(volumes.get_untracked());
-    dirty_group("volumes".into(), volumes, baseline);
+    let draft = Draft::new("volumes".into(), volume_names(&context.manifest()));
+    let volumes = draft.value;
     let save = move || {
         let changed = volumes
             .get_untracked()
             .into_iter()
             .map(|name| Volume { name })
             .collect();
-        context.save(
-            ApplicationEdit::Volumes(changed),
-            Callback::new(move |app: ApplicationView| {
-                let names = app
-                    .application
-                    .to_manifest()
-                    .spec
-                    .volumes
-                    .into_iter()
-                    .map(|v| v.name)
-                    .collect();
-                volumes.set(names);
-                baseline.set(volumes.get_untracked());
-            }),
-        );
+        draft.save(ApplicationEdit::Volumes(changed), volume_names);
     };
     view! {
         <section class="card">
@@ -549,28 +551,22 @@ pub(super) fn VolumeSettings() -> impl IntoView {
                                         volumes
                                             .update(|v| {
                                                 v.remove(i);
-                                            })
+                                            });
                                     })}
                                 </div>
                             }
                         }}
                     />
                 </div>
-                {add_button("Add volume", move || volumes.update(|v| v.push(String::new())))}
-                {save_actions(volumes, baseline, save, || false)}
+                {add_button(
+                    "Add volume",
+                    || false,
+                    move || volumes.update(|v| v.push(String::new())),
+                )}
+                {draft.actions(save, || false)}
             </fieldset>
         </section>
     }
-}
-
-fn add_button(label: &'static str, add: impl Fn() + 'static) -> AnyView {
-    view! {
-        <button type="button" class="btn btn-sm" on:click={move |_| add()}>
-            {icon(Icon::Plus)}
-            {label}
-        </button>
-    }
-    .into_any()
 }
 
 /// Form for one `Section` of service `name`. Saving patches only that section
@@ -586,9 +582,11 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
         .into_iter()
         .find(|s| s.name == name)
         .expect("listed service");
-    let draft = RwSignal::new(ServiceForm::from(&service));
-    let baseline = RwSignal::new(draft.get_untracked());
-    dirty_group(format!("{name}:{}", section.title()), draft, baseline);
+    let draft = Draft::new(
+        format!("{name}:{}", section.title()),
+        ServiceForm::from(&service),
+    );
+    let form = draft.value;
     let name = StoredValue::new(name);
     let save = move || {
         let mut manifest = context.manifest();
@@ -597,11 +595,11 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
             context.set_error(Some("Service was removed. Reload configuration.".into()));
             return;
         };
-        if let Err(error) = draft.get_untracked().patch(section, service) {
+        if let Err(error) = form.get_untracked().patch(section, service) {
             context.set_error(Some(error));
             return;
         }
-        let sent = draft.get_untracked();
+        let sent = form.get_untracked();
         let edit = match section {
             Section::General => ServiceEdit::General(ServiceGeneral {
                 source: service.source.clone(),
@@ -621,7 +619,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
         };
         context.save(
             ApplicationEdit::Service { name, edit },
-            Callback::new(move |_| baseline.set(sent.clone())),
+            Callback::new(move |_| draft.baseline.set(sent.clone())),
         );
     };
     view! {
@@ -635,13 +633,13 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
             <fieldset disabled={move || {
                 context.blocked() || context.managed()
             }}>
-                {service_fields(section, name.get_value(), draft)}
-                {save_actions(draft, baseline, save, || false)}
+                {service_fields(section, name.get_value(), form)} {draft.actions(save, || false)}
             </fieldset>
         </section>
     }
 }
 
+/// What a `Section` of a service configures.
 const fn section_hint(section: Section) -> &'static str {
     match section {
         Section::General => "Where the container image comes from and how many replicas run.",
@@ -667,99 +665,9 @@ const fn section_hint(section: Section) -> &'static str {
 }
 
 /// Input fields for one `Section` of `service`, bound to the shared draft form.
-pub(super) fn service_fields(
-    section: Section,
-    service: String,
-    form: RwSignal<ServiceForm>,
-) -> AnyView {
+fn service_fields(section: Section, service: String, form: RwSignal<ServiceForm>) -> AnyView {
     match section {
-        Section::General => {
-            let kind = Memo::new(move |_| form.with(|form| form.source_kind.clone()));
-            view! {
-                <div class="form-grid">
-                    <label class="field">
-                        <span>"Source"</span>
-                        <select
-                            prop:value={move || form.get().source_kind}
-                            on:change={move |ev| {
-                                form.update(|v| v.source_kind = event_target_value(&ev));
-                            }}
-                        >
-                            <option value="image">"Container image"</option>
-                            <option value="git">"Git repository with Dockerfile"</option>
-                            <option value="self">"Manifest repository with Dockerfile"</option>
-                        </select>
-                    </label>
-                    {text_input("Replicas", form, |v| v.replicas.clone(), |v, s| v.replicas = s)}
-                    {move || {
-                        if kind.get() == "image" {
-                            text_input(
-                                "Container image",
-                                form,
-                                |v| v.image.clone(),
-                                |v, s| v.image = s,
-                            )
-                        } else {
-                            view! {
-                                <Show when={move || {
-                                    kind.get() == "git"
-                                }}>
-                                    {text_input(
-                                        "Repository",
-                                        form,
-                                        |v| v.repository.clone(),
-                                        |v, s| v.repository = s,
-                                    )}
-                                    {text_input(
-                                        "Branch",
-                                        form,
-                                        |v| v.branch.clone(),
-                                        |v, s| v.branch = s,
-                                    )}
-                                    {text_input(
-                                        "Commit (optional)",
-                                        form,
-                                        |v| v.commit.clone(),
-                                        |v, s| v.commit = s,
-                                    )}
-                                </Show>
-                                {text_input(
-                                    "Dockerfile path",
-                                    form,
-                                    |v| v.dockerfile.clone(),
-                                    |v, s| v.dockerfile = s,
-                                )}
-                                {text_input(
-                                    "Build context",
-                                    form,
-                                    |v| v.context.clone(),
-                                    |v, s| v.context = s,
-                                )}
-                                {text_input(
-                                    "Build target (optional)",
-                                    form,
-                                    |v| v.target.clone(),
-                                    |v, s| v.target = s,
-                                )}
-                                <div style="grid-column:1/-1">
-                                    <h4 class="hint" style="margin-bottom:8px">
-                                        "Build arguments (not secret)"
-                                    </h4>
-                                    {pair_rows(
-                                        "Add build argument",
-                                        form,
-                                        |v| &v.build_args,
-                                        |v| &mut v.build_args,
-                                    )}
-                                </div>
-                            }
-                                .into_any()
-                        }
-                    }}
-                </div>
-            }
-            .into_any()
-        }
+        Section::General => general_fields(form),
         Section::Environment => pair_rows(
             "Add variable",
             form,
@@ -798,9 +706,88 @@ pub(super) fn service_fields(
     }
 }
 
+/// Source kind, replicas, and the image or the Git build of a service.
+fn general_fields(form: RwSignal<ServiceForm>) -> AnyView {
+    let kind = Memo::new(move |_| form.with(|form| form.source_kind.clone()));
+    view! {
+        <div class="form-grid">
+            <label class="field">
+                <span>"Source"</span>
+                <select
+                    prop:value={move || form.get().source_kind}
+                    on:change={move |ev| {
+                        form.update(|v| v.source_kind = event_target_value(&ev));
+                    }}
+                >
+                    <option value="image">"Container image"</option>
+                    <option value="git">"Git repository with Dockerfile"</option>
+                    <option value="self">"Manifest repository with Dockerfile"</option>
+                </select>
+            </label>
+            {text_input("Replicas", form, |v| v.replicas.clone(), |v, s| v.replicas = s)}
+            {move || {
+                if kind.get() == "image" {
+                    text_input("Container image", form, |v| v.image.clone(), |v, s| v.image = s)
+                } else {
+                    view! {
+                        <Show when={move || {
+                            kind.get() == "git"
+                        }}>
+                            {text_input(
+                                "Repository",
+                                form,
+                                |v| v.repository.clone(),
+                                |v, s| v.repository = s,
+                            )}
+                            {text_input("Branch", form, |v| v.branch.clone(), |v, s| v.branch = s)}
+                            {text_input(
+                                "Commit (optional)",
+                                form,
+                                |v| v.commit.clone(),
+                                |v, s| v.commit = s,
+                            )}
+                        </Show>
+                        {text_input(
+                            "Dockerfile path",
+                            form,
+                            |v| v.dockerfile.clone(),
+                            |v, s| v.dockerfile = s,
+                        )}
+                        {text_input(
+                            "Build context",
+                            form,
+                            |v| v.context.clone(),
+                            |v, s| v.context = s,
+                        )}
+                        {text_input(
+                            "Build target (optional)",
+                            form,
+                            |v| v.target.clone(),
+                            |v, s| v.target = s,
+                        )}
+                        <div style="grid-column:1/-1">
+                            <h4 class="hint" style="margin-bottom:8px">
+                                "Build arguments (not secret)"
+                            </h4>
+                            {pair_rows(
+                                "Add build argument",
+                                form,
+                                |v| &v.build_args,
+                                |v| &mut v.build_args,
+                            )}
+                        </div>
+                    }
+                        .into_any()
+                }
+            }}
+        </div>
+    }
+    .into_any()
+}
+
 /// Editable list of strings (one element per row, no shell parsing) selected
 /// from the form by the `read`/`write` accessors.
-pub(super) fn string_rows(
+fn string_rows(
     label: &'static str,
     form: RwSignal<ServiceForm>,
     read: fn(&ServiceForm) -> &Vec<String>,
@@ -827,20 +814,20 @@ pub(super) fn string_rows(
                             {remove_button(move || {
                                 form.update(|v| {
                                     write(v).remove(i);
-                                })
+                                });
                             })}
                         </div>
                     }
                 }}
             />
         </div>
-        {add_button(label, move || form.update(|v| write(v).push(String::new())))}
+        {add_button(label, || false, move || form.update(|v| write(v).push(String::new())))}
     }
     .into_any()
 }
 
 /// One checkbox per other saved service; selections stay sorted like saved configuration.
-pub(super) fn dependency_fields(service: String, form: RwSignal<ServiceForm>) -> AnyView {
+fn dependency_fields(service: String, form: RwSignal<ServiceForm>) -> AnyView {
     let context = editor();
     let candidates = move || {
         context
@@ -890,7 +877,7 @@ pub(super) fn dependency_fields(service: String, form: RwSignal<ServiceForm>) ->
 
 /// Editable key/value rows, such as environment variables or build arguments,
 /// selected from the form by the `read`/`write` accessors.
-pub(super) fn pair_rows(
+fn pair_rows(
     add_label: &'static str,
     form: RwSignal<ServiceForm>,
     read: fn(&ServiceForm) -> &Vec<(String, String)>,
@@ -927,19 +914,24 @@ pub(super) fn pair_rows(
                             {remove_button(move || {
                                 form.update(|v| {
                                     write(v).remove(i);
-                                })
+                                });
                             })}
                         </div>
                     }
                 }}
             />
         </div>
-        {add_button(add_label, move || form.update(|v| write(v).push(Default::default())))}
+        {add_button(
+            add_label,
+            || false,
+            move || form.update(|v| write(v).push(Default::default())),
+        )}
     }
     .into_any()
 }
+
 /// Volume mount rows: volume name, container path and read-only flag.
-pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> AnyView {
+fn mount_fields(form: RwSignal<ServiceForm>) -> AnyView {
     view! {
         <div class="form-list">
             <For
@@ -990,7 +982,7 @@ pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> AnyView {
                             {remove_button(move || {
                                 form.update(|v| {
                                     v.mounts.remove(i);
-                                })
+                                });
                             })}
                         </div>
                     }
@@ -999,6 +991,7 @@ pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> AnyView {
         </div>
         {add_button(
             "Add mount",
+            || false,
             move || {
                 form.update(|v| {
                     v.mounts
@@ -1013,9 +1006,10 @@ pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> AnyView {
     }
     .into_any()
 }
+
 /// File rows: container path, mode, and the inline content or, for files a
 /// repository-backed manifest declares, their repository path.
-pub(super) fn file_fields(form: RwSignal<ServiceForm>) -> AnyView {
+fn file_fields(form: RwSignal<ServiceForm>) -> AnyView {
     // Reads or writes the `i`th file's fields, if it still exists.
     let read = |i: usize, field: fn(&FileForm) -> String| {
         move |v: &ServiceForm| v.files.get(i).map_or_else(String::new, field)
@@ -1057,7 +1051,7 @@ pub(super) fn file_fields(form: RwSignal<ServiceForm>) -> AnyView {
                                 {remove_button(move || {
                                     form.update(|v| {
                                         v.files.remove(i);
-                                    })
+                                    });
                                 })}
                             </div>
                             {if repository {
@@ -1096,8 +1090,8 @@ pub(super) fn file_fields(form: RwSignal<ServiceForm>) -> AnyView {
                                                     write(
                                                         i,
                                                         |file, s| file.source = FileSource::Content(s),
-                                                    )(v, event_target_value(&event))
-                                                })
+                                                    )(v, event_target_value(&event));
+                                                });
                                             }}
                                         ></textarea>
                                     </label>
@@ -1109,13 +1103,18 @@ pub(super) fn file_fields(form: RwSignal<ServiceForm>) -> AnyView {
                 }}
             />
         </div>
-        {add_button("Add file", move || form.update(|v| v.files.push(FileForm::default())))}
+        {add_button(
+            "Add file",
+            || false,
+            move || form.update(|v| v.files.push(FileForm::default())),
+        )}
     }
     .into_any()
 }
+
 /// Health check type selector with the interval, timeout, and HTTP or command
 /// fields relevant to the chosen type.
-pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
+fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
     view! {
         <div class="form-grid">
             <label class="field">
@@ -1123,7 +1122,7 @@ pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
                 <select
                     prop:value={move || form.with(|v| v.health_kind.clone())}
                     on:change={move |event| {
-                        form.update(|v| v.health_kind = event_target_value(&event))
+                        form.update(|v| v.health_kind = event_target_value(&event));
                     }}
                 >
                     <option value="none" selected={move || form.with(|v| v.health_kind == "none")}>
@@ -1174,7 +1173,7 @@ pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
 
 /// Rollout order and optional monitor window. The order is free text with
 /// suggestions, so it can also hold a `${{ }}` reference.
-pub(super) fn rollout_fields(form: RwSignal<ServiceForm>) -> AnyView {
+fn rollout_fields(form: RwSignal<ServiceForm>) -> AnyView {
     view! {
         <div class="form-grid">
             <label class="field">
@@ -1184,7 +1183,7 @@ pub(super) fn rollout_fields(form: RwSignal<ServiceForm>) -> AnyView {
                     list="rollout-orders"
                     prop:value={move || form.with(|v| v.rollout_order.clone())}
                     on:input={move |event| {
-                        form.update(|v| v.rollout_order = event_target_value(&event))
+                        form.update(|v| v.rollout_order = event_target_value(&event));
                     }}
                 />
                 <datalist id="rollout-orders">
@@ -1209,10 +1208,9 @@ pub(super) fn rollout_fields(form: RwSignal<ServiceForm>) -> AnyView {
 pub(super) fn NewService() -> impl IntoView {
     let context = editor();
     let opened = RwSignal::new(false);
-    let fields = RwSignal::new((String::new(), String::new()));
-    let baseline = RwSignal::new(fields.get_untracked());
-    dirty_group("new-service".into(), fields, baseline);
-    let save = move |()| {
+    let draft = Draft::new("new-service".into(), (String::new(), String::new()));
+    let fields = draft.value;
+    let save = move || {
         let (name, image) = fields.get_untracked();
         let service = Service {
             secrets: Vec::new(),
@@ -1234,7 +1232,7 @@ pub(super) fn NewService() -> impl IntoView {
         context.save(
             ApplicationEdit::AddService(Box::new(service)),
             Callback::new(move |_| {
-                fields.set((String::new(), String::new()));
+                draft.discard();
                 opened.set(false);
             }),
         );
@@ -1254,7 +1252,7 @@ pub(super) fn NewService() -> impl IntoView {
             opened={opened}
             busy={context.busy}
             on_close={Callback::new(move |()| {
-                fields.set(baseline.get_untracked());
+                draft.discard();
                 context.set_error(None);
             })}
         >
@@ -1262,7 +1260,7 @@ pub(super) fn NewService() -> impl IntoView {
                 class="stack-sm"
                 on:submit={move |event| {
                     event.prevent_default();
-                    save(());
+                    save();
                 }}
             >
                 <fieldset class="stack-sm" disabled={move || context.blocked()}>

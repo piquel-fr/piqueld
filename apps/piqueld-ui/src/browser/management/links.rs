@@ -1,9 +1,9 @@
 //! Private links: the services this application lets others reach, and the
 //! services of other applications it reaches.
-use super::super::ui::{Icon, empty, icon, remove_button};
-use super::{dirty_group, editor, save_actions};
+use super::super::ui::{add_button, empty, remove_button};
+use super::{Draft, Rows, editor};
 use leptos::prelude::*;
-use piqueld_client::{Export, Import, edit::ApplicationEdit};
+use piqueld_client::{ApplicationManifest, Export, Import, edit::ApplicationEdit};
 
 /// One editable export. Applications are typed as one comma-separated list.
 #[derive(Clone, Default, PartialEq)]
@@ -14,12 +14,14 @@ struct ExportDraft {
 }
 
 impl ExportDraft {
-    /// Saved exports as editable rows.
-    fn rows(exports: Vec<Export>) -> Vec<Self> {
-        exports
-            .into_iter()
+    /// The manifest's exports as editable rows.
+    fn rows(manifest: &ApplicationManifest) -> Vec<Self> {
+        manifest
+            .spec
+            .exports
+            .iter()
             .map(|export| Self {
-                service: export.service,
+                service: export.service.clone(),
                 applications: export.applications.join(", "),
                 previews: export.previews,
             })
@@ -52,16 +54,19 @@ struct ImportDraft {
 }
 
 impl ImportDraft {
-    /// Saved imports as editable rows.
-    fn rows(imports: Vec<Import>) -> Vec<Self> {
-        imports
-            .into_iter()
+    /// The manifest's imports as editable rows.
+    fn rows(manifest: &ApplicationManifest) -> Vec<Self> {
+        manifest
+            .spec
+            .imports
+            .iter()
             .map(|import| Self {
-                application: import.application,
-                service: import.service,
+                application: import.application.clone(),
+                service: import.service.clone(),
                 environment: import
                     .environment
-                    .map(|environment| environment.to_string())
+                    .as_ref()
+                    .map(ToString::to_string)
                     .unwrap_or_default(),
             })
             .collect()
@@ -79,29 +84,9 @@ impl ImportDraft {
     }
 }
 
-/// Reads one field of row `index`, empty when the row was removed.
-fn field<D, T: Default>(draft: RwSignal<Vec<D>>, index: usize, read: impl Fn(&D) -> T) -> T
-where
-    D: Send + Sync + 'static,
-{
-    draft.with(|rows| rows.get(index).map(read).unwrap_or_default())
-}
-
-/// Updates row `index` in place.
-fn edit<D>(draft: RwSignal<Vec<D>>, index: usize, write: impl FnOnce(&mut D))
-where
-    D: Send + Sync + 'static,
-{
-    draft.update(|rows| {
-        if let Some(row) = rows.get_mut(index) {
-            write(row);
-        }
-    });
-}
-
 /// A text input bound to one field of row `index`.
-fn text_field<D: Send + Sync + 'static>(
-    draft: RwSignal<Vec<D>>,
+fn row_field<D: Send + Sync + 'static>(
+    rows: RwSignal<Vec<D>>,
     index: usize,
     label: &'static str,
     placeholder: &'static str,
@@ -114,8 +99,10 @@ fn text_field<D: Send + Sync + 'static>(
             <input
                 type="text"
                 placeholder={placeholder}
-                prop:value={move || field(draft, index, read)}
-                on:input={move |event| edit(draft, index, |row| write(row, event_target_value(&event)))}
+                prop:value={move || rows.field(index, read)}
+                on:input={move |event| {
+                    rows.edit(index, |row| write(row, event_target_value(&event)));
+                }}
             />
         </label>
     }
@@ -126,33 +113,15 @@ fn text_field<D: Send + Sync + 'static>(
 #[component]
 fn ExportSettings() -> impl IntoView {
     let context = editor();
-    let draft = RwSignal::new(ExportDraft::rows(context.manifest().spec.exports));
-    let baseline = RwSignal::new(draft.get_untracked());
-    dirty_group("exports".into(), draft, baseline);
-    Effect::new(move |_| {
-        let saved = context
-            .saved
-            .with(|saved| ExportDraft::rows(saved.application.to_manifest().spec.exports));
-        if draft.get_untracked() == baseline.get_untracked() {
-            draft.set(saved.clone());
-            baseline.set(saved);
-        }
-    });
+    let draft = Draft::synced("exports", ExportDraft::rows);
+    let exports = draft.value;
     let save = move || {
-        let exports = draft
+        let saved = exports
             .get_untracked()
             .into_iter()
             .map(ExportDraft::export)
             .collect();
-        context.save(
-            ApplicationEdit::Exports(exports),
-            Callback::new(move |saved: piqueld_client::ApplicationView| {
-                draft.set(ExportDraft::rows(
-                    saved.application.to_manifest().spec.exports,
-                ));
-                baseline.set(draft.get_untracked());
-            }),
-        );
+        draft.save(ApplicationEdit::Exports(saved), ExportDraft::rows);
     };
     view! {
         <section class="card">
@@ -165,11 +134,15 @@ fn ExportSettings() -> impl IntoView {
                 </div>
             </header>
             <fieldset class="stack-sm" disabled={move || context.blocked()}>
-                <Show when={move || draft.with(Vec::is_empty)}>
-                    {empty("No exports. Other applications cannot reach this application's services.")}
+                <Show when={move || {
+                    exports.with(Vec::is_empty)
+                }}>
+                    {empty(
+                        "No exports. Other applications cannot reach this application's services.",
+                    )}
                 </Show>
                 <For
-                    each={move || (0..draft.with(Vec::len)).collect::<Vec<_>>()}
+                    each={move || exports.indices()}
                     key={|index| *index}
                     children={move |index| {
                         view! {
@@ -177,31 +150,19 @@ fn ExportSettings() -> impl IntoView {
                                 <label class="field">
                                     <span>"Service"</span>
                                     <select
-                                        prop:value={move || field(draft, index, |e: &ExportDraft| e.service.clone())}
+                                        prop:value={move || {
+                                            exports.field(index, |e| e.service.clone())
+                                        }}
                                         on:change={move |event| {
-                                            edit(draft, index, |e| e.service = event_target_value(&event));
+                                            exports
+                                                .edit(index, |e| e.service = event_target_value(&event));
                                         }}
                                     >
-                                        <option value="">"Select a service"</option>
-                                        {move || {
-                                            context
-                                                .manifest()
-                                                .spec
-                                                .services
-                                                .into_iter()
-                                                .map(|service| {
-                                                    view! {
-                                                        <option value={service
-                                                            .name
-                                                            .clone()}>{service.name.clone()}</option>
-                                                    }
-                                                })
-                                                .collect_view()
-                                        }}
+                                        {context.service_options()}
                                     </select>
                                 </label>
-                                {text_field(
-                                    draft,
+                                {row_field(
+                                    exports,
                                     index,
                                     "Applications",
                                     "notes, billing",
@@ -211,34 +172,27 @@ fn ExportSettings() -> impl IntoView {
                                 <label class="checkbox">
                                     <input
                                         type="checkbox"
-                                        prop:checked={move || field(draft, index, |e: &ExportDraft| e.previews)}
+                                        prop:checked={move || exports.field(index, |e| e.previews)}
                                         on:change={move |event| {
-                                            edit(draft, index, |e| e.previews = event_target_checked(&event));
+                                            exports
+                                                .edit(index, |e| e.previews = event_target_checked(&event));
                                         }}
                                     />
                                     <span>"Previews too"</span>
                                 </label>
-                                {remove_button(move || {
-                                    draft
-                                        .update(|exports| {
-                                            exports.remove(index);
-                                        });
-                                })}
+                                {remove_button(move || exports.remove(index))}
                             </div>
                         }
                     }}
                 />
                 <div>
-                    <button
-                        type="button"
-                        class="btn btn-sm"
-                        on:click={move |_| draft.update(|exports| exports.push(ExportDraft::default()))}
-                    >
-                        {icon(Icon::Plus)}
-                        "Add export"
-                    </button>
+                    {add_button(
+                        "Add export",
+                        || false,
+                        move || exports.update(|exports| exports.push(ExportDraft::default())),
+                    )}
                 </div>
-                {save_actions(draft, baseline, save, || false)}
+                {draft.actions(save, || false)}
             </fieldset>
         </section>
     }
@@ -249,33 +203,15 @@ fn ExportSettings() -> impl IntoView {
 #[component]
 fn ImportSettings() -> impl IntoView {
     let context = editor();
-    let draft = RwSignal::new(ImportDraft::rows(context.manifest().spec.imports));
-    let baseline = RwSignal::new(draft.get_untracked());
-    dirty_group("imports".into(), draft, baseline);
-    Effect::new(move |_| {
-        let saved = context
-            .saved
-            .with(|saved| ImportDraft::rows(saved.application.to_manifest().spec.imports));
-        if draft.get_untracked() == baseline.get_untracked() {
-            draft.set(saved.clone());
-            baseline.set(saved);
-        }
-    });
+    let draft = Draft::synced("imports", ImportDraft::rows);
+    let imports = draft.value;
     let save = move || {
-        let imports = draft
+        let saved = imports
             .get_untracked()
             .into_iter()
             .map(ImportDraft::import)
             .collect();
-        context.save(
-            ApplicationEdit::Imports(imports),
-            Callback::new(move |saved: piqueld_client::ApplicationView| {
-                draft.set(ImportDraft::rows(
-                    saved.application.to_manifest().spec.imports,
-                ));
-                baseline.set(draft.get_untracked());
-            }),
-        );
+        draft.save(ApplicationEdit::Imports(saved), ImportDraft::rows);
     };
     view! {
         <section class="card">
@@ -288,60 +224,50 @@ fn ImportSettings() -> impl IntoView {
                 </div>
             </header>
             <fieldset class="stack-sm" disabled={move || context.blocked()}>
-                <Show when={move || draft.with(Vec::is_empty)}>
-                    {empty("No imports.")}
-                </Show>
+                <Show when={move || imports.with(Vec::is_empty)}>{empty("No imports.")}</Show>
                 <For
-                    each={move || (0..draft.with(Vec::len)).collect::<Vec<_>>()}
+                    each={move || imports.indices()}
                     key={|index| *index}
                     children={move |index| {
                         view! {
                             <div class="form-row" data-import={index}>
-                                {text_field(
-                                    draft,
+                                {row_field(
+                                    imports,
                                     index,
                                     "Application",
                                     "auth",
                                     |i| i.application.clone(),
                                     |i, value| i.application = value,
                                 )}
-                                {text_field(
-                                    draft,
+                                {row_field(
+                                    imports,
                                     index,
                                     "Service",
                                     "api",
                                     |i| i.service.clone(),
                                     |i, value| i.service = value,
                                 )}
-                                {text_field(
-                                    draft,
+                                {row_field(
+                                    imports,
                                     index,
                                     "Environment",
                                     "Same name",
                                     |i| i.environment.clone(),
                                     |i, value| i.environment = value,
                                 )}
-                                {remove_button(move || {
-                                    draft
-                                        .update(|imports| {
-                                            imports.remove(index);
-                                        });
-                                })}
+                                {remove_button(move || imports.remove(index))}
                             </div>
                         }
                     }}
                 />
                 <div>
-                    <button
-                        type="button"
-                        class="btn btn-sm"
-                        on:click={move |_| draft.update(|imports| imports.push(ImportDraft::default()))}
-                    >
-                        {icon(Icon::Plus)}
-                        "Add import"
-                    </button>
+                    {add_button(
+                        "Add import",
+                        || false,
+                        move || imports.update(|imports| imports.push(ImportDraft::default())),
+                    )}
                 </div>
-                {save_actions(draft, baseline, save, || false)}
+                {draft.actions(save, || false)}
             </fieldset>
         </section>
     }

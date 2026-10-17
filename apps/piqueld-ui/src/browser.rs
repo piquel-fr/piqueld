@@ -557,25 +557,7 @@ fn ApplicationDetailPage() -> impl IntoView {
             each={move || {
                 params
                     .with(|params| {
-                        params
-                            .get("id")
-                            .map(|id| {
-                                let page = match (
-                                    params.get("service"),
-                                    params.get("environment"),
-                                    params.get("preview"),
-                                ) {
-                                    (Some(service), _, _) => management::Page::Service(service),
-                                    (None, Some(environment), _) => {
-                                        management::Page::Environment(environment)
-                                    }
-                                    (None, None, Some(preview)) => {
-                                        management::Page::Preview(preview)
-                                    }
-                                    (None, None, None) => management::Page::Application,
-                                };
-                                (id, page)
-                            })
+                        params.get("id").map(|id| (id, management::Page::from_params(params)))
                     })
                     .into_iter()
                     .collect::<Vec<_>>()
@@ -719,6 +701,8 @@ trait ClientErrorExt {
     fn transport(&self) -> bool;
     /// Whether the daemon refused the request for want of a valid session.
     fn unauthorized(&self) -> bool;
+    /// The persisted diagnostic occurrence attached to an API failure.
+    fn diagnostic_id(&self) -> Option<String>;
 }
 
 impl ClientErrorExt for ClientError {
@@ -740,6 +724,17 @@ impl ClientErrorExt for ClientError {
     fn unauthorized(&self) -> bool {
         matches!(self, Self::Api { status, .. } if status.as_u16() == 401)
     }
+
+    fn diagnostic_id(&self) -> Option<String> {
+        match self {
+            Self::Api { error, .. } => error
+                .details
+                .get("diagnostic_id")
+                .and_then(|id| id.as_str())
+                .map(str::to_owned),
+            _ => None,
+        }
+    }
 }
 
 /// Request results whose failures are shown as user-facing messages.
@@ -752,21 +747,6 @@ impl<T> UserError<T> for Result<T, ClientError> {
     fn user_error(self) -> Result<T, String> {
         self.map_err(|error| error.user_message())
     }
-}
-
-/// User-facing message for a client error.
-fn client_error_message(error: &ClientError) -> String {
-    error.user_message()
-}
-
-/// The listed row of an environment, for its health and status.
-fn environment_row(signals: DashboardSignals, environment: &str) -> Option<EnvironmentRow> {
-    signals.environment_row(environment)
-}
-
-/// Health badge for a row: the least healthy of its environments.
-fn row_health(row: &ApplicationRow) -> ApplicationHealth {
-    row.health()
 }
 
 /// Returns whether the browser tab is currently hidden.

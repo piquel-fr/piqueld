@@ -1,6 +1,7 @@
 //! Service directory and individual service configuration pages.
+use super::super::confirm;
 use super::super::ui::{Icon, Tabs, Tone, empty, health_badge, icon, notice};
-use super::{EditorFeedback, editor, settings::ServiceGroup};
+use super::{EditorFeedback, back_link, editor, logs::ApplicationLogs, settings::ServiceGroup};
 use crate::editor::Section;
 use crate::state::ApplicationHealth;
 use leptos::prelude::*;
@@ -26,7 +27,7 @@ const SERVICE_TABS: [&str; 10] = [
 #[component]
 pub(super) fn ServiceList() -> impl IntoView {
     let context = editor();
-    let signals = context.dashboard.with_value(|d| d.signals);
+    let signals = context.signals();
     // Observed runtime health for one saved service, when the detail has loaded.
     let observed = move |name: &str| {
         signals.detail.with(|detail| {
@@ -123,23 +124,21 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
                 {notice(
                     Tone::Bad,
                     format!("Service {name} is not part of the saved configuration."),
-                )} <div class="btn-group">
-                    <A attr:class="btn" href={app_href}>
-                        {icon(Icon::ArrowLeft)}
-                        "Back to services"
-                    </A>
-                </div>
+                )} {back_link(app_href, "Back to services")}
             </div>
         }
         .into_any();
     }
     let navigate = use_navigate();
     let remove_name = name.clone();
-    let return_href = app_href;
     let remove = move |_| {
-        if !window().confirm_with_message("Remove this service and its routes from saved configuration? Its running containers remain until Deploy.").unwrap_or(false) {return;}
+        if !confirm(
+            "Remove this service and its routes from saved configuration? Its running containers remain until Deploy.",
+        ) {
+            return;
+        }
         let navigate = navigate.clone();
-        let href = return_href();
+        let href = app_href();
         context.save(
             ApplicationEdit::RemoveService(remove_name.clone()),
             Callback::new(move |_| navigate(&href, NavigateOptions::default())),
@@ -207,8 +206,7 @@ fn ServiceLogs(name: String) -> impl IntoView {
     let context = editor();
     move || {
         if context.environment.get().is_some() {
-            return view! { <super::logs::ApplicationLogs fixed_service={name.clone()} /> }
-                .into_any();
+            return view! { <ApplicationLogs fixed_service={name.clone()} /> }.into_any();
         }
         view! {
             <div class="stack-sm">
