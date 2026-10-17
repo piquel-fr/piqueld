@@ -45,6 +45,7 @@ fn target(
 /// Saves `notes` with a `staging` environment next to `production`.
 async fn save_with_staging(store: &Store) -> (ApplicationId, EnvironmentId, EnvironmentId) {
     let template = ApplicationTemplate::from(&prebuilt("app-notes-test"));
+    let template = template.to_manifest().validate_template().unwrap();
     let saved = store.save_template(template, false).await;
     let application = ApplicationId::parse(saved.application_id.as_str()).unwrap();
     let create = Mutation::CreateEnvironment {

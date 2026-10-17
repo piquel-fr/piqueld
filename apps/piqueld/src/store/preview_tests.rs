@@ -7,12 +7,12 @@ use piqueld_core::{
     GitBranch, PreviewSlot,
     access::Scope,
     api::{CreatedPreview, EnvironmentAccess, PreviewLimit, SecretAccess},
-    manifest::{PreviewLimits, SecretMount, parse_template_toml},
+    manifest::{PreviewLimits, SecretMount, ValidatedTemplate, parse_template_toml},
 };
 
 /// The `notes` application, repository-backed unless `saved`, whose `web`
 /// service mounts the stored secret `stripe`.
-fn template(saved: bool) -> ApplicationTemplate {
+fn template(saved: bool) -> ValidatedTemplate {
     let connection = if saved {
         ""
     } else {
@@ -28,10 +28,7 @@ fn template(saved: bool) -> ApplicationTemplate {
         name: "stripe".into(),
         target: "/run/secrets/stripe".into(),
     }];
-    manifest
-        .validate_template()
-        .unwrap()
-        .normalize(ApplicationId::parse("app-pending-01").unwrap())
+    manifest.validate_template().unwrap()
 }
 
 /// Saves `template(saved)` and returns its ID.
@@ -279,7 +276,10 @@ async fn previews_mount_shared_secrets_only_when_their_access_allows_previews() 
         .preview;
     let stored = store.get(&preview.id).await.unwrap();
     let rendered = stored
-        .render(&template(false), "operation-1")
+        .render(
+            &template(false).normalize(application.clone()),
+            "operation-1",
+        )
         .unwrap()
         .application;
 

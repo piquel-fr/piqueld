@@ -1288,7 +1288,7 @@ mod tests {
         let service = "[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'\n";
         let save = async |spec: &str, deploy: bool| {
             let template = template("notes", &format!("{service}{spec}"));
-            store.save_template(template, deploy).await
+            store.save_template_forced(template, deploy).await
         };
         let saved = save(
             "[spec.environments.staging]\n[spec.environments.production]\npromote_from='staging'\n",
@@ -1372,11 +1372,11 @@ mod tests {
             promote_from: Some(staging.clone()),
         });
         store.force(promote).await.unwrap();
-        let save = Mutation::Save {
-            application: Box::new(template("notes", spec)),
-            expected_application_id: Some(application.to_string()),
-            deploy: false,
-        };
+        let save = Mutation::save(
+            template("notes", spec),
+            Some(application.to_string()),
+            false,
+        );
         store.force(save).await.unwrap();
         let source = store.get(&production).await.unwrap().environment.source;
         assert_eq!(source.promoted_from(), Some(&staging));
@@ -1413,7 +1413,9 @@ mod tests {
         let service = "[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'\n[spec.environments.staging]\n";
         let save = async |production: &str| {
             let spec = format!("{service}[spec.environments.production]\n{production}");
-            store.save_template(template("notes", &spec), true).await
+            store
+                .save_template_forced(template("notes", &spec), true)
+                .await
         };
         // Both build, and production's deployment is still in progress.
         assert_eq!(save("").await.operation_ids.len(), 2);
