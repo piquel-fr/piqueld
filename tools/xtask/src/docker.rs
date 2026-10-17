@@ -1,26 +1,30 @@
 //! The host's Docker engine, and the Docker-in-Docker engines xtask runs on it
 //! so tests and development instances never touch the host's own containers.
 
+use std::fmt::Display;
 use std::ops::Deref;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use bollard::Docker;
-use bollard::models::{ContainerCreateBody, ExecConfig};
+use bollard::models::{ContainerCreateBody, ExecConfig, HostConfig};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, InspectContainerOptions,
     LogsOptionsBuilder, RemoveContainerOptionsBuilder, StartContainerOptions, WaitContainerOptions,
 };
 use futures_util::{StreamExt, TryStreamExt};
 
+use crate::process::checked_stdout;
+
 /// The pinned Docker-in-Docker image; `PIQUELD_DIND_IMAGE` overrides it.
 const DIND_IMAGE: &str =
     "docker:29.6.2-dind@sha256:bfec1f5159c63a81ca6fdedbd81404d2c0e16378ed0feec3bb3fbf3998847659";
 
-/// Where a Docker-in-Docker engine listens inside its container. Callers
-/// bind-mount a private host directory here to reach the socket.
-pub const DIND_SOCKET_DIR: &str = "/piqueld-socket";
+/// Where a Docker-in-Docker engine listens inside its container, onto which
+/// [`Engine::dind_container`] bind-mounts a private host directory.
+const DIND_SOCKET_DIR: &str = "/piqueld-socket";
 
+/// A Docker engine client, connected to the host's engine by [`Engine::host`].
 pub struct Engine(Docker);
 
 impl Deref for Engine {
@@ -61,14 +65,8 @@ impl Engine {
             ])
             .output();
         match output {
-            Ok(output) => {
-                ensure!(
-                    output.status.success(),
-                    "could not resolve the Docker context: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                );
-                Ok(String::from_utf8(output.stdout)?.trim().to_owned())
-            }
+            Ok(output) => checked_stdout("docker context inspect", output)
+                .context("could not resolve the Docker context"),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok("unix:///var/run/docker.sock".to_owned())
             }
@@ -78,6 +76,34 @@ impl Engine {
 
     pub fn dind_image() -> String {
         std::env::var("PIQUELD_DIND_IMAGE").unwrap_or_else(|_| DIND_IMAGE.to_owned())
+    }
+
+    /// A privileged Docker-in-Docker container from `image`, whose engine
+    /// listens in `socket_dir`, a private host directory, as `docker.sock`.
+    /// `binds` mounts more host paths or volumes.
+    pub fn dind_container(
+        image: String,
+        socket_dir: impl Display,
+        binds: impl IntoIterator<Item = String>,
+    ) -> ContainerCreateBody {
+        ContainerCreateBody {
+            image: Some(image),
+            cmd: Some(vec![
+                "dockerd".to_owned(),
+                format!("--host=unix://{DIND_SOCKET_DIR}/docker.sock"),
+            ]),
+            env: Some(vec!["DOCKER_TLS_CERTDIR=".to_owned()]),
+            host_config: Some(HostConfig {
+                privileged: Some(true),
+                binds: Some(
+                    std::iter::once(format!("{socket_dir}:{DIND_SOCKET_DIR}"))
+                        .chain(binds)
+                        .collect(),
+                ),
+                ..HostConfig::default()
+            }),
+            ..ContainerCreateBody::default()
+        }
     }
 
     /// Pulls `image` unless the engine has it.

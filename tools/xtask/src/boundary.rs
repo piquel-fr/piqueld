@@ -1,11 +1,12 @@
 //! `just boundary`: `piqueld-core` holds the shared contracts, so it must not
 //! depend on the server, Docker, database, or browser frameworks.
 
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 
 use crate::Workspace;
+use crate::process::checked_stdout;
 
 const FORBIDDEN: [&str; 7] = [
     "axum",
@@ -19,18 +20,13 @@ const FORBIDDEN: [&str; 7] = [
 
 pub fn check(workspace: &Workspace) -> Result<ExitCode> {
     // All edges: the boundary covers build and development dependencies too.
-    let output = Command::new("cargo")
+    let output = workspace
+        .cargo()
         .args(["tree", "--locked", "--package", "piqueld-core"])
         .args(["--edges", "all", "--prefix", "none"])
-        .current_dir(workspace.root())
         .output()
         .context("run cargo tree")?;
-    ensure!(
-        output.status.success(),
-        "cargo tree failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let tree = String::from_utf8(output.stdout)?;
+    let tree = checked_stdout("cargo tree", output)?;
     let forbidden: Vec<&str> = tree
         .lines()
         .filter(|line| FORBIDDEN.contains(&line.split(' ').next().unwrap_or_default()))

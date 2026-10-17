@@ -1,6 +1,6 @@
 //! One-off commands streamed over a WebSocket. See [`piqueld_core::exec`].
 
-use crate::{Client, ClientError, TransportFailure, client::invalid_request};
+use crate::{Client, ClientError};
 use futures_util::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
@@ -44,7 +44,7 @@ impl Client {
             self.generated.baseurl,
             progenitor_client::encode_path(id)
         );
-        let request = serde_json::to_string(request).map_err(invalid_request)?;
+        let request = serde_json::to_string(request).map_err(ClientError::invalid_request)?;
         let key = generate_key();
         let response = self
             .execute(
@@ -58,7 +58,7 @@ impl Client {
             )
             .await?;
         if response.status() != reqwest::StatusCode::SWITCHING_PROTOCOLS {
-            return Err(Self::response_error(response).await);
+            return Err(ClientError::from_response(response).await);
         }
         let accept = response
             .headers()
@@ -112,9 +112,7 @@ impl ExecWriter {
     }
 }
 
+/// Reports a failed handshake or exec stream message.
 fn exchange(error: &impl std::fmt::Display) -> ClientError {
-    ClientError::Transport {
-        message: format!("exec stream failed: {error}"),
-        kind: TransportFailure::Exchange,
-    }
+    ClientError::exchange(format!("exec stream failed: {error}"))
 }
