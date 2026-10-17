@@ -1,11 +1,7 @@
-use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
+//! Git source build history and captured build output.
+use super::{ApiError, ApiPath, ApiQuery, ApiState, QueryParams, ok, openapi::ApiErrorResponse};
 use crate::auth::Identity;
-use axum::{
-    Extension,
-    extract::{Query, State, rejection::QueryRejection},
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{Extension, extract::State, response::IntoResponse};
 use piqueld_core::{
     ApplicationId, EnvironmentId,
     access::AppPermission,
@@ -28,6 +24,11 @@ pub(super) struct BuildQuery {
     limit: Option<usize>,
 }
 
+impl QueryParams for BuildQuery {
+    const INVALID_CODE: &'static str = "pagination_invalid";
+    const INVALID_MESSAGE: &'static str = "invalid build query";
+}
+
 /// Lists Git source builds, newest first.
 ///
 /// Optionally filtered to one application or environment. Follow `next_cursor` to load older
@@ -38,15 +39,8 @@ pub(super) struct BuildQuery {
 pub(super) async fn list(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
-    query: Result<Query<BuildQuery>, QueryRejection>,
+    ApiQuery(query): ApiQuery<BuildQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Query(query) = query.map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "pagination_invalid",
-            "invalid build query",
-        )
-    })?;
     let application = query.application_id.map(ApplicationId::parse).transpose()?;
     let environment = query.environment_id.map(EnvironmentId::parse).transpose()?;
     Ok(ok(state
@@ -69,6 +63,12 @@ pub(super) struct OutputQuery {
     /// Only include this output stream.
     stream: Option<piqueld_core::api::LogStream>,
 }
+
+impl QueryParams for OutputQuery {
+    const INVALID_CODE: &'static str = "build_query_invalid";
+    const INVALID_MESSAGE: &'static str = "invalid build log query";
+}
+
 /// Gets captured output for one build.
 ///
 /// Returns the newest bounded page of output in chronological order. Pass the
@@ -77,14 +77,7 @@ pub(super) struct OutputQuery {
 pub(super) async fn logs(
     State(state): State<ApiState>,
     ApiPath(id): ApiPath<i64>,
-    query: Result<Query<OutputQuery>, QueryRejection>,
+    ApiQuery(query): ApiQuery<OutputQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Query(query) = query.map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "build_query_invalid",
-            "invalid build log query",
-        )
-    })?;
     Ok(ok(state.build_logs(id, query.before, query.stream).await?))
 }

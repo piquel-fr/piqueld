@@ -63,7 +63,7 @@ impl ApplicationService {
                 &bootstrap,
                 result.as_ref().err().map(|error| {
                     piqueld_core::observability::Diagnostic::new(
-                        format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
+                        crate::operations::diagnostic_id(),
                         error.diagnostic_code(),
                         error.to_string(),
                     )

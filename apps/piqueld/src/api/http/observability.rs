@@ -1,10 +1,8 @@
-use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
+//! Diagnostics, daemon resources, deployment analytics, notification
+//! deliveries, and the audit trail.
+use super::{ApiError, ApiPath, ApiQuery, ApiState, QueryParams, ok, openapi::ApiErrorResponse};
 use crate::auth::Identity;
-use axum::{
-    Extension,
-    extract::{Query, State, rejection::QueryRejection},
-    response::IntoResponse,
-};
+use axum::{Extension, extract::State, response::IntoResponse};
 use piqueld_core::{
     Event,
     access::{AppPermission, Denied, GlobalPermission, Permission},
@@ -64,9 +62,8 @@ pub(super) struct AnalyticsQuery {
 pub(super) async fn analytics(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
-    query: Result<Query<AnalyticsQuery>, QueryRejection>,
+    ApiQuery(query): ApiQuery<AnalyticsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Query(query) = query.map_err(ApiError::query)?;
     let until = query.until_ms.unwrap_or_else(crate::store::now_ms);
     Ok(ok(state
         .deployment_analytics(
@@ -95,9 +92,8 @@ pub(super) struct DeliveryQuery {
 #[utoipa::path(get,path="/api/v1/notifications/deliveries",operation_id="notificationDeliveries",params(DeliveryQuery),responses((status=200,body=Envelope<Page<NotificationDelivery>>),(status=400,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn deliveries(
     State(state): State<ApiState>,
-    query: Result<Query<DeliveryQuery>, QueryRejection>,
+    ApiQuery(query): ApiQuery<DeliveryQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Query(query) = query.map_err(ApiError::query)?;
     Ok(ok(state
         .notification_deliveries(query.cursor.as_deref(), query.limit.unwrap_or(50))
         .await?))
@@ -147,9 +143,8 @@ pub(super) struct AuditQuery {
 pub(super) async fn audit(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
-    query: Result<Query<AuditQuery>, QueryRejection>,
+    ApiQuery(query): ApiQuery<AuditQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Query(query) = query.map_err(ApiError::query)?;
     let mut filter = AuditFilter {
         user_id: query.user_id,
         username: query.username,
@@ -194,13 +189,15 @@ pub(super) async fn verify_audit(
     Ok(ok(state.verify_audit().await?))
 }
 
-impl ApiError {
-    /// Maps a rejected observability query string to a generic 400.
-    fn query(_: QueryRejection) -> Self {
-        Self::new(
-            axum::http::StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "Invalid observability query",
-        )
-    }
+/// Implements [`QueryParams`] for observability queries, which share one
+/// generic 400.
+macro_rules! observability_queries {
+    ($($query:ty),+) => {$(
+        impl QueryParams for $query {
+            const INVALID_CODE: &'static str = "invalid_request";
+            const INVALID_MESSAGE: &'static str = "Invalid observability query";
+        }
+    )+};
 }
+
+observability_queries!(AnalyticsQuery, DeliveryQuery, AuditQuery);

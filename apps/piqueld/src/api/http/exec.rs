@@ -3,7 +3,7 @@ use super::{
     ApiError, ApiPath, ApiState,
     access::Audit,
     auth::{FreshTailnet, TailnetSource, binding_mismatch},
-    decode_json,
+    extract::decode_json,
     lease::{Ended, Lease},
     openapi::ApiErrorResponse,
 };
