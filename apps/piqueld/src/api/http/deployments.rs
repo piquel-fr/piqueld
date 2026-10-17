@@ -64,17 +64,22 @@ impl DeployQuery {
     }
 }
 
-/// Deploys the application's saved configuration to an environment.
+/// Deploys an environment from its source: the application's saved
+/// configuration, or the repository manifest at the environment's branch (or
+/// the one-time `branch`/`commit`).
 ///
 /// Returns 202 with the accepted durable operation. Requires
 /// `expected_generation` unless `force=true`; a stale generation fails with 409.
+/// A promoted environment fails with 409 `environment_promoted`; it deploys
+/// only by promotion. `branch` or `commit` for an environment without a
+/// repository branch fails with 422.
 /// Repeating a request with the same `Idempotency-Key` returns the original
 /// response.
 #[utoipa::path(post,path="/api/v1/environments/{id}/deploy",operation_id="deployEnvironment",
     params(("id"=String,Path),DeployQuery,("Idempotency-Key"=Option<String>,Header)),
     responses((status=202,description="Deployment accepted",body=Envelope<AcceptedOperation>),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
-    (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+    (status=409,response=inline(ApiErrorResponse)),(status=422,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn deploy(
     State(state): State<ApiState>,
     axum::Extension(identity): axum::Extension<crate::auth::Identity>,

@@ -809,14 +809,16 @@ impl From<&Operation> for AcceptedOperation {
     }
 }
 
-/// Accepted application deletion: one delete operation per environment.
+/// Accepted application deletion: one delete operation per environment,
+/// previews included.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct DeletedApplication {
     /// Stable application identity.
     pub application_id: String,
     /// Revision after requesting deletion.
     pub generation: u64,
-    /// Deletion of each environment; the application disappears with the last one.
+    /// Deletion of each environment and preview; the application disappears
+    /// with the last one.
     pub operations: Vec<AcceptedOperation>,
 }
 
@@ -868,8 +870,8 @@ pub struct DeploymentView {
     /// deployments that recorded none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleaseId>,
-    /// Where it came from: built from its environment's source, or a
-    /// promoted or redeployed release.
+    /// Where it came from: built from its environment's source, a promoted
+    /// or redeployed release, or a local snapshot uploaded to a preview.
     #[serde(default)]
     pub origin: DeploymentOrigin,
     /// First successful convergence, retained during later drift repair.
@@ -1502,9 +1504,10 @@ pub struct SecretKeyRecovery {
     /// Applications whose stored values were discarded.
     #[serde(default)]
     pub affected_applications: i64,
-    /// Logical secrets whose stored values were discarded.
+    /// Logical secrets, stored and generated, whose values were discarded.
     pub affected_secrets: i64,
-    /// Stored versions discarded; already unavailable versions are excluded.
+    /// Stored and generated versions discarded; already unavailable versions
+    /// are excluded.
     pub discarded_versions: i64,
 }
 

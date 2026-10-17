@@ -11,8 +11,9 @@ On Apple Silicon, Nix users can run `nix build .#cli` or
 daemon and dashboard packages are Linux
 only. `nix develop` provides the CLI development tools, and `just validate-cli`
 lints and tests the CLI and its shared client/core crates. `just build-cli`
-builds the release binary. CI runs these checks on `macos-latest`, verifies the
-Nix package, and uploads an Apple Silicon CLI binary.
+builds the release binary. CI runs `just validate-cli` on `macos-latest` when
+the CLI or its shared crates change. nix-darwin users can import
+`darwinModules.piquelctl` to install it with profiles; see [NixOS](nixos.md).
 
 The daemon runs on Linux. With its listen mode set to `tailscale` or `both`,
 connect from a tailnet peer using its IP address or MagicDNS name:
@@ -68,7 +69,7 @@ piquelctl env url <app> [<env>] [--route <name>]
 piquelctl env secret <app> [--env <env>] list|regenerate|delete
 piquelctl preview create <app> --branch <branch> [--slot <slot>]
 piquelctl preview deploy <app> <preview> [--slot <slot>]
-piquelctl preview deploy <app> --local [--branch <branch>] [--slot <slot>]
+piquelctl preview deploy <app> --local [--branch <branch>] [--slot <slot>] [--full-history]
 piquelctl preview list <app>
 piquelctl preview show <app> <preview> [--slot <slot>]
 piquelctl preview logs <app> <preview> [--slot <slot>] [--service <name>]
@@ -126,9 +127,9 @@ the same as `--sync` and `--interval`. Every preview, and every environment
 that opted in with `env sync APP ENV on` and follows an unpinned branch, then
 redeploys when its branch moves past the head of its last deployment; nothing
 follows before its first deployment, and a one-off `--branch`/`--commit`
-deployment stays until the branch moves. `env sync … off` opts it out again.
-Neither needs a revision. Turning sync on, or opting in while it is on, needs
-`apps:deploy` too.
+deployment stays until the branch moves. `env sync … off` opts it out again;
+`env sync` needs no revision and asks no confirmation. Turning sync on, or
+opting in while it is on, needs `apps:deploy` too.
 `app show` reports the setting and the last check of the repository, with its
 error; `env show`, `preview show`, and `preview list` report whether each one
 follows pushes (`following`, `off`, `off (pinned)`, `off (not opted in)`,
@@ -317,7 +318,8 @@ size of those it removed since the daemon started.
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer
-is interpreted as seconds. The timeout bounds the complete command; interactive
+is interpreted as seconds. The timeout bounds the complete command, except
+`login`, which waits for browser approval, and an `app exec` session; interactive
 confirmation prompts do not consume it. Read requests can use the full remaining
 command budget. Idempotent mutations retry one transport failure if time remains;
 a request that exhausts the command budget cannot be retried.
@@ -333,10 +335,21 @@ written to stderr, so stdout remains valid JSON.
 | `profiles` | `{ "profiles": [{ "name": string, "endpoint": string }] }` |
 | `status` | `SystemStatus` |
 | `dns refresh` | `DnsStatus` |
+| `login` | `User` |
+| `whoami` | `Session` |
+| `account list` / `account access` | `{ "accounts": [Account], "operator_sessions": [OperatorSessionView] }` |
+| `account invite` / `account enroll` | `{ "url": string }` |
+| `token create` | `{ "token": string }` |
+| `token list` | `[CredentialView]` |
+| `logout` / `token revoke` | None |
+| `audit` | `{ "items": [AuditEvent], "next_cursor": string or null }` |
+| `audit verify` | `AuditVerification` |
+| `setup-link` | `SetupLink` |
+| `sign-in-link` / `recover-admin` | `OperatorLink` |
 | `app list` | `{ "items": [{ "application": ApplicationSummary, "environments": [EnvironmentRow] }], "next_cursor": null }` |
 | `app show` | `{ "application": ApplicationView, "environments": [EnvironmentRow] }` |
 | `env list` | `[EnvironmentRow]`, where `EnvironmentRow` is `{ "environment": EnvironmentView, "status": EnvironmentStatusView or null }` |
-| `env show` | `EnvironmentDetailView` (including its `urls`), with `"stored": [StoredSecret]` |
+| `env show` | `EnvironmentDetailView` (including its `urls` and `links`), with `"stored": [StoredSecret]` |
 | `env url` / `preview url` | `[RouteUrl]` |
 | `env url --route` / `preview url --route` | `RouteUrl` |
 | `env wait` / `preview wait` | `Deployment` |
@@ -350,6 +363,17 @@ written to stderr, so stdout remains valid JSON.
 | `app validate` | `{ "application": string }` |
 | `app exec` | None; the command's raw output |
 | `app plan` | `PlanView` |
+| `app route list` | `[RouteStatus]`, each with `"environment": string` (its name) |
+| `app file list` | `[ServiceFile]`, each with `"service": string` |
+| `app export list` / `app import list` | `[Export]` / `[Import]`, as saved |
+| `app secret list` | `[StoredSecret]` |
+| `app secret set` / `access` | `StoredSecret` |
+| `env secret list` | `[SecretMetadata]` |
+| `env secret regenerate` | `SecretMetadata` |
+| `app secret delete` / `env secret delete` | `{ "deleted": string }` |
+| `secrets recover-key` | `SecretKeyRecovery` |
+| `builds list` | `{ "items": [BuildRecord], "next_cursor": string or null }` |
+| `builds logs` | `BuildLogPage` |
 | `app create` / `app rename` / field edits | `SavedApplication`; `--deploy` uses the same output as `app apply --deploy` |
 | `app manifest` | Saved TOML as a JSON string |
 | `app releases` | `{ "items": [ReleaseView], "next_cursor": string or null }` |
@@ -413,6 +437,7 @@ no `request_id`:
 | `connection_failed` | 4 | The daemon could not be reached; `details.endpoint` and `endpoint_source` |
 | `request_timeout` | 4 | A request exceeded `--timeout`; also `details.timeout` and `timeout_source` |
 | `timeout` | 4 | The command exceeded `--timeout`; server-side work goes on |
+| `unavailable` | 4 | The daemon stopped answering, e.g. an `app exec` stream ended before the command exited |
 | `invalid_response` | 1 | The endpoint does not serve the piqueld API |
 | `conflict` | 3 | An ambiguous name or a blocked plan |
 | `deployment_superseded` | 3 | `wait`'s deployment was superseded; `details.deployment_id` and `superseded_by` |
@@ -511,10 +536,9 @@ output are unchanged.
 
 ## Field editing
 
-Application commands now live under `piquelctl app`. The old top-level application
-commands have been removed. `status`, `profiles`, `operation`, `events`, and
-`builds` remain top-level. Manifest import (`app apply`) and preview (`app plan`)
-remain available, but ordinary editing sends only the selected setting.
+Application commands live under `piquelctl app`. Manifest import (`app apply`)
+and planning (`app plan`) remain available, but ordinary editing sends only the
+selected setting.
 
 ```console
 piquelctl app create notes --yes
@@ -548,6 +572,7 @@ piquelctl app file remove notes web /etc/app/motd --yes
 piquelctl app volume remove notes data --yes
 piquelctl app route add notes notes.example.com web 3000 --visibility public --yes
 piquelctl app route add notes admin.notes.example.com admin 8080 --yes
+piquelctl app route add notes '*.tenants.notes.example.com' web 3000 --yes
 piquelctl app route redirect notes www.notes.example.com https://notes.example.com --visibility public --yes
 piquelctl app route visibility notes admin.notes.example.com private --yes
 piquelctl app route name notes notes.example.com web --yes
@@ -589,7 +614,9 @@ a local file now and saves its content inline, and `--path` names a file in the
 manifest's repository, read by each deployment. Repository-backed applications
 are edited in Git instead. `app file list` shows each service's saved files.
 Route edits preserve other routes and use the inspected generation to reject
-concurrent changes. `route redirect` defaults to status 308 and appends the
+concurrent changes. `route add` and `route redirect` take an exact hostname or a
+[wildcard](ingress.md#wildcard-routes) such as `*.tenants.notes.example.com`,
+which serves every name one label below it; quote it for the shell. `route redirect` defaults to status 308 and appends the
 request path and query to the destination; use `--status` and
 `--no-preserve-path` to change that. Routes are private (tailnet only) unless
 added with `--visibility public`; `route visibility` changes an existing route,
@@ -620,18 +647,22 @@ the job runs. Configure dependencies with `app service depends-on`. Other
 services wait for all jobs to succeed; after a failed job, repair rolls its
 dependencies back and restarts the services an exclusive job stopped. Jobs of dependency services must come earlier in the saved order.
 `export set` lets the listed applications reach a service through a
-[link](application-manifest.md#links), replacing who may if it was already
-exported; `--previews` lets their previews too. `import add` reaches another
-application's exported service as `<service>.<application>`, in the
-environment named like each importing one unless `--environment` names one (it
-accepts `${{ vars.<name> }}`). Like jobs, link edits preserve the others and
+[link](application-manifest.md#links), replacing who may, and whether previews
+may, if it was already exported; `--previews` lets their previews too.
+`import add` reaches another application's exported service as
+`<service>.<application>`, in the environment named like each importing one
+unless `--environment` names one (it accepts `${{ vars.<name> }}`); adding an
+import again replaces its environment. Like jobs, link edits preserve the others and
 use the inspected generation. `env show` lists each import of the environment
 and whether it connects, and the environments of readable applications
 importing its services.
 
 `app variable set` sets a variable's default, or with `--env NAME` its value in
 the environment named `NAME`, which must exist (an edit never declares a new
-environment, so an unknown name fails with `environment_unknown`), or
+environment, so an unknown name fails with `environment_unknown`; one that adds
+the first `[spec.environments.<name>]` block, like `env visibility … private`,
+[declares](application-manifest.md#declared-environments) every existing
+environment), or
 with `--previews` its value in every preview (`[spec.previews.variables]`). An
 environment's or the previews' value overrides the default, and a variable
 needs no default.
@@ -643,7 +674,7 @@ limits, health check settings, environment values, commands and images, take a
 `${{ vars.<name> }}` reference in place of a literal; quote it for the shell.
 `app show` lists the defaults and per-environment and preview values.
 Previews only exist for repository-backed applications, whose configuration is
-edited in their repository, so `[spec.previews]` is usually set there.
+edited in their repository, so `[spec.previews]` is set there.
 
 `app service rollout` replaces the service's rollout block: an omitted `--order`
 derives the order from the mounts, and an omitted `--monitor-seconds` uses 30
@@ -665,8 +696,10 @@ commits use `--clear`; health checks use `health clear`. Nested Git/health setti
 require the corresponding source/check to be configured first. Use `--help` on
 any command for its values and options.
 
-Git-backed applications keep services, volumes, and the application name under
-repository ownership. The repository URL and manifest path remain editable;
+Git-backed applications keep their whole configuration, including the
+application name, under repository ownership: field edits, `app rename`, and
+`app apply` of a different manifest fail with `repository_managed`. The
+repository URL, manifest path and sync setting remain editable;
 connecting points every environment at `--branch` (default `main`), and each
 environment's branch then changes with `env branch`. Disconnect explicitly to
 retain the saved manifest (the one last fetched from the branch `spec.manifest`
@@ -712,12 +745,14 @@ running in the task.
 
 `app apply` saves configuration only. `app apply --deploy` saves and deploys atomically.
 Both inspect the application identity and saved revision before confirmation;
-neither requires a runtime preview or Docker availability. Use `app plan` separately
-to inspect redacted changes and image resolution requirements. Preview may fail
+neither requires a runtime plan or Docker availability. Use `app plan` separately
+to inspect redacted changes and image resolution requirements. Planning may fail
 when Docker observation is unavailable.
 
-Mutating commands require TTY confirmation unless `--yes` is supplied. Apply,
-delete, rename, and field edits accept `--force` independently of confirmation. Every explicit
+Mutating commands require TTY confirmation unless `--yes` is supplied; `env sync`,
+`app secret access`, `preview create` and `preview deploy` do not ask. Apply,
+delete, rename, field edits, and `env create`, `rename`, `branch` and `source`
+accept `--force` independently of confirmation. Every explicit
 deployment creates a new snapshot, refreshes image references and supersedes pending
 work. Completed deployments retain their terminal state in history.
 Reconciliation retries the deployment snapshot using prepared digests.
@@ -839,9 +874,10 @@ the command ends. Terminal progress uses independently tracked task rows and
 permanent completion lines. Redirected progress prints meaningful transitions,
 without repeated identical updates. JSON remains a single result document, not
 a progress stream; with `--json`, stderr events are JSON lines. Paginated results
-can collect typed records before that document is emitted. If an application's
-status cannot be fetched during `app list`, its status is `null` and a contextual
-warning is emitted immediately; other applications are still returned.
+can collect typed records before that document is emitted. If an environment's
+status cannot be fetched during `app list`, `app show` or `env list`, its status
+is `null` (`unavailable` in human output) and a contextual warning is emitted
+immediately; other environments are still returned.
 
 Dynamic human-readable values escape terminal control characters. Logs preserve
 newlines and tabs, but escape other controls. Build logs additionally use the

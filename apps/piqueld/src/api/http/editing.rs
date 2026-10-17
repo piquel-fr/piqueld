@@ -56,7 +56,8 @@ fn body<T: serde::de::DeserializeOwned>(
 
 // One declaration supplies the handler, route metadata, body type and typed mutation.
 //
-// Arguments: handler name (also the `OpenAPI` operation ID), HTTP method, path,
+// Arguments: optional doc comments (the `OpenAPI` description), handler name
+// (also the `OpenAPI` operation ID), HTTP method, path,
 // the path parameters as `(binding: Type = "label", ...)` with the application
 // ID first, the request body type, its decoder, and a closure mapping
 // `(path parts, body)` to an `ApplicationEdit`. The generated handler submits
@@ -64,7 +65,8 @@ fn body<T: serde::de::DeserializeOwned>(
 // when `deploy=true` also accepted a deployment. The `@id` arm selects the
 // first path parameter as the application ID.
 macro_rules! edit_endpoint {
-    ($name:ident, $method:ident, $path:literal, ($($part:ident : $part_ty:ty = $label:literal),+), $body:ty, $decode:expr, $edit:expr) => {
+    ($(#[$attr:meta])* $name:ident, $method:ident, $path:literal, ($($part:ident : $part_ty:ty = $label:literal),+), $body:ty, $decode:expr, $edit:expr) => {
+        $(#[$attr])*
         #[utoipa::path($method, path = $path, operation_id = stringify!($name),
             params($( ($label = String, Path), )+ EditOptions, ("Idempotency-Key" = Option<String>, Header)),
             request_body = $body,
@@ -90,7 +92,15 @@ edit_endpoint!(set_application_imports, put, "/api/v1/applications/{id}/imports"
 edit_endpoint!(set_application_jobs, put, "/api/v1/applications/{id}/jobs", (id: String = "id"), JobsValue, body::<JobsValue>, |_, body: JobsValue| ApplicationEdit::Jobs(body.value));
 edit_endpoint!(set_application_name, put, "/api/v1/applications/{id}/name", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::Name(body.value));
 edit_endpoint!(set_application_variables, put, "/api/v1/applications/{id}/variables", (id: String = "id"), VariablesValue, body::<VariablesValue>, |_, body: VariablesValue| ApplicationEdit::Variables(body.value));
-edit_endpoint!(set_environment_visibility, put, "/api/v1/applications/{id}/environments/{environment}/visibility", (id: String = "id", environment: String = "environment"), VisibilityValue, body::<VisibilityValue>, |(_, environment), body: VisibilityValue| ApplicationEdit::EnvironmentVisibility { environment, visibility: body.value });
+edit_endpoint!(
+    /// Sets an environment's visibility ceiling.
+    ///
+    /// `{environment}` is the environment's name, as in
+    /// `[spec.environments.<name>]`, not its ID. Every route of the environment
+    /// is at most this visible; `public` restricts nothing. Same query
+    /// options, idempotency, and 200/202 responses as the other editing
+    /// endpoints.
+    set_environment_visibility, put, "/api/v1/applications/{id}/environments/{environment}/visibility", (id: String = "id", environment: String = "environment"), VisibilityValue, body::<VisibilityValue>, |(_, environment), body: VisibilityValue| ApplicationEdit::EnvironmentVisibility { environment, visibility: body.value });
 edit_endpoint!(set_manifest_repository, put, "/api/v1/applications/{id}/repository", (id: String = "id"), RepositoryValue, body::<RepositoryValue>, |_, body: RepositoryValue| ApplicationEdit::Repository(body.value));
 /// Disconnects the manifest repository.
 ///

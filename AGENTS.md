@@ -1,7 +1,8 @@
 # piqueld
 
-A pure Rust infrastructure control plane. The repository currently contains the
-workspace foundation for the first single-node Docker Swarm prototype.
+A pure Rust infrastructure control plane for a single-node Docker Swarm: the
+`piqueld` daemon, the `piquelctl` CLI, and the Leptos dashboard. See
+`README.md` for the documentation index.
 
 ## Testing
 

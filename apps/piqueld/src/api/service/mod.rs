@@ -563,7 +563,8 @@ impl ApplicationService {
         self
     }
 
-    /// Recovers from a lost master key by discarding every environment's stored values.
+    /// Recovers from a lost master key by discarding every stored and generated
+    /// secret value and every webhook secret.
     /// # Errors
     /// Returns an error if the current key still works, or storage errors.
     pub async fn recover_secret_key(

@@ -214,9 +214,11 @@ pub(super) async fn rename(
 ///
 /// Points an environment of a repository-backed application at another branch
 /// of its manifest repository, or pins or unpins a commit. Nothing is fetched
-/// or redeployed: the next deployment fetches the new branch. Environments
-/// deploying the saved manifest fail with `manifest_repository_required`. The
-/// inspected application `expected_generation` goes in the JSON body.
+/// or redeployed: the next deployment fetches the new branch. Environments of
+/// an application without a manifest repository fail with
+/// `manifest_repository_required` (422), and those whose source the saved
+/// manifest declares with `environment_declared` (409). The inspected
+/// application `expected_generation` goes in the JSON body.
 #[utoipa::path(put,path="/api/v1/environments/{id}/branch",operation_id="setEnvironmentBranch",
     params(("id"=String,Path),ForceQuery,("Idempotency-Key"=Option<String>,Header)),
     request_body=EnvironmentBranchRequest,
@@ -391,7 +393,7 @@ pub(super) async fn promote(
 /// anything.
 ///
 /// Shows the release and its provenance and image availability, the
-/// rendered diff against the environment's latest deployment, the runtime
+/// rendered diff against the environment's current deployment, the runtime
 /// plan, new (empty) volumes, and every secret that is missing or that the
 /// environment may not use. The source must be promotable, as for
 /// `promoteEnvironment`; an earlier `release` may be planned for any
@@ -453,8 +455,9 @@ pub(super) async fn delete(
 
 /// Reconciles an environment.
 ///
-/// Returns 202 with a durable operation that repairs the runtime to match the
-/// accepted configuration. Unlike other mutations, `expected_generation` is
+/// Returns 202 with the environment's latest operation, requested again when it
+/// finished or failed, or as is while it is still in progress; 404 when the
+/// environment has none. Unlike other mutations, `expected_generation` is
 /// optional. Repeating a request with the same `Idempotency-Key` returns the
 /// original response.
 #[utoipa::path(post,path="/api/v1/environments/{id}/reconcile",operation_id="reconcileEnvironment",

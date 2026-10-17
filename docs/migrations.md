@@ -2,8 +2,9 @@
 
 SQLx's SQLite driver owns persistence. The database at
 `<server.data_dir>/piqueld.db` contains application manifests, environments
-with their resolved targets and status, operation history, and the control-plane
-instance identity.
+with their resolved targets and status, deployments, releases, operation and
+build history, accounts and their grants, encrypted secrets, the audit trail,
+and the control-plane instance identity.
 The store reads and writes these records; it does not resolve images or plan
 runtime changes.
 
@@ -225,11 +226,20 @@ Docker volume each preview's deployments created; it is removed with its
 preview, after deletion has removed and verified those volumes. Nothing is
 redeployed.
 
+`0024_dns_records.sql` adds `dns_records`, the hostnames whose
+[DNS records](ingress.md#managed-dns-records) piqueld manages. A hostname is
+added before its ownership record is written and removed once its records are
+deleted, so a removed route's records are still found after a restart.
+`unpublished` marks changes a provider stages (OVH) until the zone is
+published, so a failed publish is retried.
+
 `0025_sync.sql` records what [deploying on push](application-manifest.md#deploying-on-push)
 observes; how an application syncs is part of its saved manifest. Environments
 gain `sync`, set once one opts in (previews follow their application), and
 `synced_commit`/`synced_at_ms`, the branch head as of its last deployment,
 cleared when its branch or the application's repository URL changes.
+Deployment inputs gain `tracked_branch`, the branch the deployment followed
+when it was requested, the only one whose head its fetch may record.
 Applications gain the last check of their repository, `sync_checked_at_ms` and
 `sync_error`. `webhook_secrets` holds each application's webhook secret,
 encrypted with the secret master key; lost-key recovery deletes them.
@@ -270,4 +280,21 @@ accepted after the backup; reconciliation observes the current Docker state
 against that restored intent.
 
 The migration tests cover a populated schema-5 upgrade, retained event identity
-and notification activation, and restoration of the pre-upgrade snapshot.
+and notification activation, and restoration of the pre-upgrade snapshot; the
+authorization upgrade; the data moves of `0012`, `0014`, `0021` and `0022`; and reopening
+every committed version after a later migration fails.
+
+## Adding a migration
+
+Add `migrations/NNNN_<name>.sql` with the next number. The daemon build script
+embeds every file in name order and fails unless the numbers are contiguous from
+`0001`; migration `N` upgrades schema `N - 1` to `N`, and the number of embedded
+migrations is the schema version. It also applies them all to a disposable
+database and points `DATABASE_URL` at it, so `sqlx::query!` macros are checked
+against the new schema at compile time. A migration runs as raw SQL inside the
+transaction that records its version, with foreign keys enforced, so it must
+not start or commit a transaction itself, and `PRAGMA foreign_keys` has no
+effect there. Never edit or renumber a released migration: databases that
+already applied it would not run it again. Work that needs the daemon, such as
+re-encrypting secrets or hashing releases, runs in `Store::open` after the
+migrations instead.

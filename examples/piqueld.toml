@@ -19,6 +19,9 @@ allowed_hosts = []
 # to the tailnet node's HTTPS URL when [tailscale] is enabled, and to
 # http://localhost:7845 otherwise. Other HTTPS origins need external TLS.
 # public_url = "https://piqueld.example"
+# Longest lifetime of new API tokens in days; unset allows tokens that never
+# expire.
+# max_token_days = 90
 
 [tailscale]
 # Join the tailnet as piqueld-dev.<tailnet>.ts.net and serve HTTPS on its port
@@ -104,6 +107,7 @@ convergence_timeout_seconds = 120
 finished_operation_days = 10
 event_days = 90
 daemon_event_days = 90
+audit_days = 365
 
 [build_history]
 # Metadata remains until application deletion; these limits apply only to output.
@@ -115,6 +119,23 @@ log_retention_days = 30
 # restores, besides what environments and previews run or are deploying.
 keep_deployments = 3
 cleanup_interval_seconds = 3600
+
+# Bounds on previews: how many may exist, and the limits of preview services
+# that set none.
+[previews]
+max_per_application = 10
+max_total = 30
+default_cpu_millis = 500
+default_memory_bytes = 536870912
+max_replicas = 1
+
+# Largest Git bundle `piquelctl preview deploy --local` may upload.
+[snapshots]
+max_upload_bytes = 268435456
+
+# Most bytes all Git checkouts may take at once.
+[checkouts]
+max_bytes = 4294967296
 
 # Metrics have a separate listener with no administrative API routes.
 [metrics]

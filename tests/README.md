@@ -3,4 +3,7 @@
 Focused integration tests live beside the crate that owns the seam they exercise.
 The daemon tests cover a fresh SQLite lifecycle, the real Docker abstraction with
 an in-memory fake, and an opt-in isolated Docker qualification. The client tests
-cover the loopback TCP and Unix-socket transports.
+cover the loopback TCP and Unix-socket transports. This directory holds only the
+[Playwright browser tests](playwright/README.md), which drive the embedded
+dashboard. See [contract coverage](../docs/contract-coverage.md) for where each
+contract is tested.

@@ -1,4 +1,5 @@
-//! Browser application management and deployment history.
+//! The piqueld browser dashboard: applications, environments, deployments,
+//! logs, accounts, and observability.
 
 pub mod editor;
 pub mod log_output;

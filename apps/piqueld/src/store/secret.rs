@@ -308,7 +308,7 @@ impl Store {
     }
 
     /// Generates a new version of an environment's generated secret from its
-    /// declaration in the saved manifest, to rotate it or to replace a value
+    /// declaration in the manifest the environment deploys, to rotate it or to replace a value
     /// discarded by key recovery. Running deployments keep their pinned
     /// versions; the next deployment uses the new one. `expected` is the
     /// current generation. `actor` needs `secrets:write` (see `put_secret`).

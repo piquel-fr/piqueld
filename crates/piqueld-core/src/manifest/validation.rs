@@ -392,6 +392,17 @@ pub fn safe_decode_path(path: &str) -> String {
         "application",
         "applications",
         "previews",
+        "files",
+        "content",
+        "mode",
+        "redirect",
+        "to",
+        "status",
+        "preserve_path",
+        "visibility",
+        "promote_from",
+        "sync",
+        "volume_access",
     ];
     let mut safe = Vec::new();
     for component in path.split('.') {

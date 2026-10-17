@@ -530,7 +530,7 @@ impl DockerApi for BollardDocker {
                     "initialize Docker Swarm",
                     self.docker
                         .init_swarm(SwarmInitRequest {
-                            // Plan 06 is intentionally single-host. Do not expose the
+                            // piqueld is intentionally single-host. Do not expose the
                             // manager control port while bootstrapping the local Swarm.
                             listen_addr: Some("127.0.0.1:2377".into()),
                             advertise_addr: Some("127.0.0.1".into()),

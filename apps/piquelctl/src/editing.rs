@@ -503,7 +503,7 @@ pub(crate) enum VolumeCommand {
 pub(crate) struct RouteTarget {
     /// Application name or stable ID.
     app: String,
-    /// Public DNS hostname, exact or a wildcard such as `*.example.com`.
+    /// Fully qualified DNS hostname, exact or a wildcard such as `*.example.com`.
     hostname: String,
     #[command(flatten)]
     flags: EditFlags,

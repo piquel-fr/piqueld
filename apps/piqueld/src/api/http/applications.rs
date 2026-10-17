@@ -133,7 +133,9 @@ pub(super) async fn apply(
 pub(super) struct ApplyQuery {
     /// Explicitly bypass revision and identity preconditions.
     pub(super) force: bool,
-    /// Deploy the saved configuration to the application's only environment; omission saves only.
+    /// Deploy the saved configuration to the application's only environment or,
+    /// when its manifest declares environments, every declared one not promoted
+    /// from another; omission saves only.
     deploy: bool,
 }
 
@@ -389,7 +391,7 @@ pub(super) async fn rename(
 #[serde(default, deny_unknown_fields)]
 #[into_params(parameter_in = Query)]
 pub(super) struct ForceQuery {
-    /// Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
+    /// Explicitly bypass the intent revision precondition. Name availability is always enforced.
     pub(super) force: bool,
 }
 impl ForceQuery {

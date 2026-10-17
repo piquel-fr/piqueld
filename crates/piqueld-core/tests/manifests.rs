@@ -306,6 +306,19 @@ image = "nginx:1.27"
 }
 
 #[test]
+fn decode_paths_keep_every_manifest_field() {
+    for path in [
+        "spec.services[0].files[0].mode",
+        "spec.routes[0].redirect.preserve_path",
+        "spec.manifest.sync.mode",
+        "spec.previews.visibility",
+        "spec.jobs[0].volume_access",
+    ] {
+        assert_eq!(piqueld_core::manifest::safe_decode_path(path), path);
+    }
+}
+
+#[test]
 fn malformed_and_invalid_manifests_return_safe_validation_errors() {
     let error = parse_toml(include_str!("fixtures/manifests/invalid.toml")).unwrap_err();
     assert!(

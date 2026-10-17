@@ -22,10 +22,10 @@ impl ApplicationService {
     ///    requested, succeeded, and is observed healthy now.
     /// 2. The release renders for the environment and its build inputs render
     ///    as they did for it (`release_incompatible`).
-    /// 3. Its images are present, pulled again by digest when they can be;
-    ///    cleanup is held off from then until the target is saved.
-    /// 4. Every secret it mounts exists and allows the environment, all
+    /// 3. Every secret it mounts exists and allows the environment, all
     ///    reported at once (`secrets_unavailable`).
+    /// 4. Its images are present, pulled again by digest when they can be;
+    ///    cleanup is held off from then until the target is saved.
     ///
     /// Acceptance checks the source again in its transaction, so a source
     /// that moves on meanwhile fails with `promotion_source_changed` rather

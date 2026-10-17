@@ -51,8 +51,9 @@ health checks, startup dependencies, rollout settings, CPU/memory limits, mounts
 named volumes, read-only [files](#files), and file references to application secrets. Named volumes are retained when an application
 is deleted. Secret values are never manifest fields (manifests may only ask piqueld to
 generate them), and there are no manifest
-fields for directly published ports. Exact-host HTTP routes are declared in
-`spec.routes`; see [managed ingress](ingress.md).
+fields for directly published ports. HTTP routes, by exact or wildcard
+hostname, are declared in `spec.routes`; see [Routes](#routes) and
+[managed ingress](ingress.md).
 
 Rollouts start each replacement task before stopping the old one, except for
 services that mount any volume without `read_only = true`. Those stop the old
@@ -74,8 +75,8 @@ to lowercase (IPv6 literal hosts are not accepted). Mount targets are normalized
 absolute paths below `/`; environment names and runtime strings reject invalid
 control data. `PIQUELD_INGRESS_PROXIES` is reserved; piqueld injects it into
 routed services (see [managed ingress](ingress.md#client-addresses)).
-Health-check paths are absolute, and resource limits must specify CPU, memory,
-or both.
+Health-check paths are absolute, health-check timeouts cannot exceed their
+interval, and resource limits must specify CPU, memory, or both.
 
 Explicit budgets bound every manifest; exceeding one is a distinct validation
 error whose message names the offending environment key where applicable:
@@ -83,8 +84,13 @@ error whose message names the offending environment key where applicable:
 | Budget | Limit |
 | --- | --- |
 | Services per application | 64 |
+| Replicas per service | 1–100 |
 | Named volumes per application | 64 |
+| Routes per application | 64 |
 | Generated secrets per application | 64 |
+| Secret mounts per service | 64 |
+| Variables per `variables` table | 128 |
+| `[spec.environments]` blocks | 64 |
 | Environment entries per service | 256 |
 | Environment key size | 255 bytes |
 | Environment value size | 65,536 bytes |
@@ -102,6 +108,26 @@ error whose message names the offending environment key where applicable:
 | Rollout monitor | 3,600 seconds |
 | CPU limit | 1,048,576 millicores |
 
+Process, health-check and resource settings look like this:
+
+```toml
+[[spec.services]]
+name = "api"
+command = ["api-server"]        # replaces the image's entrypoint
+arguments = ["--port", "8080"]  # replaces its default arguments
+
+[spec.services.healthcheck]
+type = "http"                   # or "command", with command = ["pg_isready"]
+port = 8080
+path = "/health"
+interval_seconds = 10
+timeout_seconds = 3
+
+[spec.services.resources]
+cpu_millis = 500                # millicores
+memory_bytes = 536870912
+```
+
 Defaults are replicas `1`, empty command and arguments, writable mounts, and
 health-check values of path `/health`, interval `10` seconds, timeout `3`
 seconds, and `3` retries. HTTP health checks need nothing in the image: piqueld
@@ -111,7 +137,8 @@ and Docker runs it as the health check, for example
 plain HTTP GET to `127.0.0.1` inside the container, without following
 redirects, and passes on a 2xx or 3xx status within the timeout, so Swarm still
 gates tasks and rollouts on health, even for scratch and distroless images.
-Mounts cannot target `/run/piqueld/probe`. Command health checks run unchanged. Services, mounts,
+Mounts cannot target `/run/piqueld/probe`. Command health checks run their
+`command` unchanged, without a shell. Services, mounts,
 volumes, and environment maps are
 canonicalized before hashing. The specification hash is SHA-256 over a versioned
 canonical JSON envelope (`piqueld-spec-hash/v2`) covering only the canonical
@@ -181,8 +208,10 @@ Syntax:
 - References are lookups only: no functions, operators or conditionals.
   Substituted text is never evaluated again.
 
-Variables are strings, integers or booleans. A string value may reference system
-variables, but not other variables. System variables:
+Variables are strings, integers or booleans. Their names start with a letter or
+`_` and use letters, digits, `_` or `-`, at most 63 bytes; string values are at
+most 65,536 bytes. A string value may reference system variables, but not other
+variables. System variables:
 
 | Reference | Value |
 | --- | --- |
@@ -315,7 +344,8 @@ piqueld shows them in manifests and build history. Use service secrets for
 sensitive values. There is no automatic build backend detection, submodule or LFS
 setup, or registry publishing. Built images are labelled with the installation's
 identity, and [image cleanup](docker-reconciliation.md#image-retention) removes
-the ones no environment runs, deploys, or keeps for restores. Docker's build cache is
+the ones no environment runs, deploys, or keeps so their releases can be
+promoted again. Docker's build cache is
 reused and base images are refreshed with `--pull`. Builds record no provenance
 attestations, which differ on every build, so a rebuild Docker serves from its
 cache keeps the same image ID and shares its release.
@@ -364,12 +394,14 @@ promote_from = "staging"     # only receives releases promoted from staging
 | Field | Meaning |
 | --- | --- |
 | `branch` | Branch of the manifest repository it follows; by default the one `spec.manifest` names. |
-| `commit` | Full commit it deploys instead of its branch's head (by default `spec.manifest`'s branch). |
-| `sync` | Whether pushes to its branch [deploy it](#deploying-on-push) while the repository syncs. |
+| `commit` | Full commit it deploys instead of its branch's head; without `branch`, by default the one `spec.manifest` pins. |
+| `sync` | Whether pushes to its branch [deploy it](#deploying-on-push) while the repository syncs; `false` by default. |
 | `promote_from` | Environment it receives [promoted releases](#promoted-environments) from, instead of building. |
+| `visibility` | The strictest visibility its [routes](#routes) get; `public` by default. |
+| `variables` | Its [variable](#variables) values, overriding the defaults. |
 
-`branch`, `commit` and `sync` need a [manifest repository](#repository-backed-manifests);
-without one, an environment deploys the saved manifest. `promote_from` excludes
+`branch`, `commit` and `sync = true` need a [manifest repository](#repository-backed-manifests)
+(`manifest_repository_required`); without one, an environment deploys the saved manifest. `promote_from` excludes
 the other three (`environment_source_conflict`), `sync` excludes its own
 `commit` (`environment_sync_pinned`; one pinned by `spec.manifest` stays opted
 in but never follows pushes), and `promote_from` must name another
@@ -508,8 +540,9 @@ Git service source with an explicit repository resolves its own revision
 independently; `repository = "self"` builds the fetched manifest commit. Image
 sources are explicitly refreshed, even when the fetched manifest is unchanged.
 
-Git owns runtime configuration while backing is enabled: direct apply cannot
-change services or volumes, and rename is rejected with `repository_managed`.
+Git owns runtime configuration while backing is enabled: direct apply and field
+edits cannot change anything but `spec.manifest`, and rename is rejected with
+`repository_managed`.
 Connection settings alone remain editable through apply so an incorrect path
 can be repaired. Manifest connection settings do not change the runtime spec
 hash. Source builds, deployment, and rollback retain the behavior described above.
@@ -919,7 +952,7 @@ variables, which most such tools expand.
 mount, secret, and file targets. It cannot be a directory holding another of
 them, nor `/run/secrets`, `/run/piqueld`, a path inside them, or a directory
 holding them; files inside a mounted volume's directory are fine. `mode` is an
-octal permission from `"0000"` to `"0777"`; files are owned by root. Contents
+octal permission from `"0000"` to `"0777"`, `"0444"` by default; files are owned by root. Contents
 can't be empty (`file_empty`), and repository files must be UTF-8 text.
 Directories are not supported: list files one by one.
 
@@ -1125,6 +1158,7 @@ network. Export services that only listen where importers should connect.
 
 **Environments.** An import reaches the environment of the exporting application
 named like the importing environment: `notes` staging reaches `auth` staging.
+A preview's name is its slug, so previews usually name one.
 `environment` names another one, and accepts variables, so each environment
 or the previews can choose:
 
@@ -1163,16 +1197,17 @@ link only once the importing deployment is promoted, after its jobs. A job
 that needs a new import therefore can't reach it on the deployment that adds
 it: deploy the import first.
 
-An environment links to at most 64 importing environments. The oldest keep
-their links, and imports of newer ones wait until a slot frees up.
+An exporting environment links to at most 64 importing environments. The
+oldest keep their links, and imports of newer ones wait until a slot frees up.
 
-`env show` and the environment's Overview in the dashboard list each import
-and whether it connects, or why not: no deployed environment of that name
-exports the service to this environment, or it already links to 64. Whether
-that environment exists is not shown, since its application may be hidden from
-you. `app plan` warns about imports that would not connect
-(`import_unconnected`). They also list the environments importing an
-environment's services, from the applications you can read.
+`env show` and the Overview of an environment or preview in the dashboard list
+each import and whether it connects, or why not: no deployed environment of
+that name exports the service to this environment, or it already links to 64.
+Whether that environment exists is not shown, since its application may be
+hidden from you. They also list the environments importing an environment's
+services, from the applications you can read. `app plan` for an existing
+environment and `env promote --plan` warn about imports that would not connect
+(`import_unconnected`).
 
 **Names.** Exports and imports name applications, so manifests stay portable
 across installations. Deploying an environment binds each name its exports and
@@ -1182,20 +1217,23 @@ renaming the application keeps them, and an application later taking a freed
 name connects nothing. Later deployments keep a binding while its application
 exists, and bind a name anew only once it is gone. A name no application held
 at deployment matches whichever application takes it, until the next
-deployment binds it, so an export may name an application created later. An
-application may
-name itself, linking its environments to each other, such as a preview to
+deployment binds it, so an export may name an application created later.
+Whoever first creates an application of that name then gains the grant, so
+prefer naming applications that already exist. An application may name
+itself, linking its environments to each other, such as a preview to
 `staging`.
 
 **Validation.** An export names a service of its application, at most once
-(`export_service_missing`, `export_duplicate`), and at least one application
-(`export_applications_empty`); an import names each service of an application
-once (`import_duplicate`).
+(`export_service_missing`, `export_duplicate`), and at least one application,
+each once (`export_applications_empty`, `export_duplicate`); an import names
+each service of an application once (`import_duplicate`). Exceeding a link
+budget fails with `link_count_excessive`.
 
 Besides applying a manifest, links can be edited with `piquelctl app export`
 and `app import`, the dashboard's Links tab, or
 `PUT /api/v1/applications/{id}/exports` and `/imports`. Renaming a service
-renames its export; removing a service removes it.
+renames its export, so importers must import the new name; removing a service
+removes its export.
 
 ## Routes
 

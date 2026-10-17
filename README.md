@@ -2,32 +2,42 @@
 
 `piqueld` is a small Rust control plane for one Docker Engine running a
 single-node Swarm. Submit an application
-manifest naming prebuilt images; the server resolves those images to digests
-and reconciles a private network, named volumes, and replicated services.
+manifest naming prebuilt images or Git build sources; the server resolves them
+to digests and reconciles a private network, named volumes, and replicated services.
 
 Applications are identified by name or stable ID. Each application owns the
-saved manifest and one or more environments (`production` by default) that deploy
+saved manifest and its environments (`production` unless the manifest
+[declares others](docs/application-manifest.md#declared-environments)) that deploy
 it with their own history, status, volumes, secrets, routes, and network;
-`piquelctl env` manages them. `piquelctl app service`,
-`app volume`, and `app repository` edit individual saved settings. Each edit
+`piquelctl env` manages them. Services reach a service of another application
+only through an explicit, two-sided [link](docs/application-manifest.md#links).
+`piquelctl app service`, `app file`, `app volume`, `app route`, `app job`,
+`app export`, `app import`, `app variable`, and `app repository` edit
+individual saved settings. Each edit
 validates and updates the internal manifest atomically; add `--deploy` to deploy
 with the change. The dashboard uses the same editing endpoints. Apply remains
 available for importing a complete manifest without deploying; `piquelctl app apply --deploy` explicitly saves and deploys. Every deployment
-captures its configuration in SQLite and refreshes image tags. Reconciliation and
+captures its configuration in SQLite and refreshes image tags; each successful
+preparation in a tracking environment records an immutable release that
+[promoted environments](docs/application-manifest.md#promoted-environments)
+receive without rebuilding. [Previews](docs/application-manifest.md#previews)
+deploy branches, or a local worktree, as disposable environments. Reconciliation and
 retries use deployment snapshots, never pending configuration edits. Preconditions
 prevent stale saves and deployments. Idempotency receipts survive restarts for
 24 hours, and deployment history remains until environment deletion.
 
 One async controller overlaps image pulls, observations, and timers while allowing
 one resource mutation request at a time. The active deployment remains maintained
-while a candidate prepares; promotion starts rollout without automatic rollback.
+while a candidate prepares; once prepared, it starts rollout without automatic rollback.
 Retries reuse prepared digests. Rename changes metadata without
 redeployment. Durable
 operations, attempt outcomes, and informational events remain in SQLite. Deletion
-completes only after services and networks are verified absent; volumes remain.
+completes only after services and networks are verified absent; volumes remain,
+except a preview's, which its deletion removes.
 
-The daemon exposes a polling HTTP API over a Unix socket and explicitly enabled
-localhost or Tailscale TCP listeners. It can also join the tailnet as its own
+The daemon exposes a polling HTTP API, with SSE event streams and WebSockets
+for one-off commands, over a Unix socket and explicitly enabled localhost or
+Tailscale TCP listeners. It can also join the tailnet as its own
 node and serve the website over HTTPS with a tailnet-issued certificate. The CLI and optional dashboard share domain
 records and HTTP contracts.
 See [module boundaries](docs/architecture/dependency-flow.md) for the code layout.
@@ -44,12 +54,15 @@ passkeys, invitations, and CLI login.
 The supported manifest and runtime model are documented in:
 
 - [`docs/application-manifest.md`](docs/application-manifest.md)
+- [`docs/authentication.md`](docs/authentication.md)
 - [`docs/authorization.md`](docs/authorization.md)
 - [`docs/ingress.md`](docs/ingress.md)
 - [`docs/api.md`](docs/api.md)
 - [`docs/web-ui.md`](docs/web-ui.md)
 - [`docs/piquelctl.md`](docs/piquelctl.md)
 - [`docs/configuration.md`](docs/configuration.md)
+- [`docs/nixos.md`](docs/nixos.md)
+- [`docs/observability.md`](docs/observability.md)
 - [`docs/quickstart.md`](docs/quickstart.md)
 - [`docs/resource-planning.md`](docs/resource-planning.md)
 - [`docs/docker-reconciliation.md`](docs/docker-reconciliation.md)
@@ -57,14 +70,14 @@ The supported manifest and runtime model are documented in:
 
 | Supported | Deferred until later releases |
 | --- | --- |
-| Prebuilt images, Git/Docker builds, repository-backed manifests, replicas, environment, command/args, health checks, startup dependencies, rollout order, resource limits, named volumes, mounts, and one-shot before-rollout jobs | Automatic deployment, registry management, credentials, and secrets |
-| Single-node Swarm reconciliation, managed Caddy HTTPS routes, drift repair, durable operations, polling, volume retention, application log snapshots, one-off commands in running tasks, and the essential `piquelctl` workflow | Arbitrary TCP/UDP ports, tunnels, state transfer and multi-node operation |
-| Unix-socket, localhost, and Tailscale API transports, plus a Leptos/WASM dashboard for saving configuration, deploying, inspecting history, and reading recent logs | Secrets, streams, and the advanced web UI |
+| Prebuilt images, Git/Docker builds, repository-backed manifests, declared environments, variables, generated and stored secrets, read-only files, replicas, environment, command/args, health checks (including HTTP probes), startup dependencies, rollout order, resource limits, named volumes, mounts, one-shot before-rollout jobs, and private links between applications | Registry management and registry credentials |
+| Single-node Swarm reconciliation, deployment on push, releases and promotion, branch previews, managed Caddy HTTPS routes (public, private on the tailnet, wildcard, redirects, Cloudflare Tunnel, managed DNS records), drift repair, durable operations, volume retention, application log snapshots, one-off commands in running tasks, and the `piquelctl` workflow | Arbitrary TCP/UDP ports, state transfer, and multi-node operation |
+| Unix-socket, localhost, and Tailscale API transports, SSE event streams, scoped accounts and API tokens, a tamper-evident audit trail, and a Leptos/WASM dashboard for editing configuration, deploying, promoting, previews, secrets, history, and recent logs | |
 
 ## Development
 
-Use a Rust 1.96-or-newer toolchain directly, with the `wasm32-unknown-unknown`
-and `x86_64-unknown-linux-musl` targets from `rust-toolchain.toml`: daemon
+Use the Rust toolchain pinned in `rust-toolchain.toml`, with its
+`wasm32-unknown-unknown` and `x86_64-unknown-linux-musl` targets: daemon
 builds with `embedded-ui` embed a dashboard built for the first, and every
 daemon build embeds a
 [health probe](docs/docker-reconciliation.md#http-health-probe) built for the
@@ -80,19 +93,24 @@ connecting to a Linux daemon. The full Linux validation command is:
 just
 ```
 
-`just` checks formatting, lints, compilation, tests, documentation tests,
-dependency licenses, dependency boundaries, and the freshness of the checked-in
-OpenAPI specification, generated client, and manifest JSON Schema. It does not
-modify generated files. Regenerate all three artifacts in dependency order with:
+`just` formats sources, then checks lints, compilation, tests, documentation
+tests, dependency licenses, dependency boundaries, browser compilation, the
+Playwright browser tests (run `just setup-playwright` first), and the freshness
+of the checked-in OpenAPI specification, generated client, and manifest JSON
+Schema. It does not modify generated files. Regenerate all three artifacts in
+dependency order with:
 
 ```console
 just generate
 ```
 
+See [automated validation](docs/validation.md) for the CI jobs and
+[contract coverage](docs/contract-coverage.md) for where tests live.
+
 Client generation is implemented in Rust with Progenitor. Ordinary Cargo builds
 use the checked-in client without compiling the generator. See
 [client generation](tools/client-codegen/README.md) for the shared contract
-mappings and the two handwritten TOML adapters.
+mappings and the handwritten requests.
 
 The optional privileged Docker qualification uses an isolated Docker-in-Docker
 daemon:
@@ -111,15 +129,20 @@ The reproducible Nix package can be built with `nix build`; use `nix develop`
 for the development shell.
 
 The daemon reads `/etc/piqueld/config.toml` by default; `--config PATH` selects
-another host configuration. Configuration only covers local paths, listeners,
-SQLite, Docker, reconciliation timing, and observability (retention, metrics,
-and notifications). The complete non-root development
+another host configuration. Configuration covers local paths, listeners,
+authentication, the tailnet node, Docker, ingress and DNS providers,
+reconciliation timing, retention, images, previews, and observability (metrics
+and notifications); see [configuration](docs/configuration.md) and the
+[NixOS module](docs/nixos.md). The complete non-root development
 example is [`examples/piqueld.toml`](examples/piqueld.toml).
+[Development instances](docs/development.md) (`just dev`) run an isolated
+daemon per worktree.
 See [`docs/web-ui.md`](docs/web-ui.md) for development and release dashboard
 asset commands.
 
 Applications can also build Git sources locally or fetch their manifests from a
-repository on manual Deploy. These are independent features; see
+repository on Deploy or [on push](docs/application-manifest.md#deploying-on-push).
+These are independent features; see
 [the manifest reference](docs/application-manifest.md) for both configurations.
 
 See [observability](docs/observability.md) for diagnostic history, daemon statistics, analytics, metrics

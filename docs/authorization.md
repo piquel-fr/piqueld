@@ -24,7 +24,7 @@ added later: requests about an environment are checked on its application.
 | Permission | Scope | Allows |
 | --- | --- | --- |
 | `admin` | all or listed applications | On every application: everything, including installation-wide permissions. On listed applications: every application permission there |
-| `apps:read` | all or listed applications | Configuration, environments, status, deployments, operations, builds and job runs, and secret names and which environments may mount them |
+| `apps:read` | all or listed applications | Configuration, environments, previews, releases, status, deployments, operations, builds and job runs, promotion plans, and secret names and which environments may mount them |
 | `apps:write` | all or listed applications | Configuration edits, manifest apply, rename, adding, renaming or changing the source of environments, opting them into or out of sync, and generating webhook secrets |
 | `apps:deploy` | all or listed applications | Deploy, promote releases into, and reconcile environments, create and deploy previews, including local snapshots, and, with `apps:write`, turn on [deploying on push](application-manifest.md#deploying-on-push) or opt an environment into it |
 | `apps:delete` | all or listed applications | Delete the application, its environments or its previews |
@@ -63,8 +63,8 @@ application's configuration, environments, or secrets, delete the application,
 or run commands anywhere: commands in a preview still need `apps:exec`, which
 reaches the secrets previews mount. Like every application permission, both
 allow reading the application, including its environments' status and
-deployments; production logs and history keep needing `logs:read` and
-`events:read`.
+deployments; logs of long-lived environments keep needing `logs:read`, and
+history, previews' included, `events:read`.
 
 `apps:deploy` and `apps:delete` include them, so their holders may hand
 previews permissions out, while holders of previews permissions can never hand
@@ -74,7 +74,8 @@ out the whole-application ones.
 
 - Applications a caller cannot read do not exist for it: they and their
   environments answer 404 and are left out of lists, history, builds,
-  analytics, the event stream, and the ingress routes in system readiness.
+  analytics, the event stream, the ingress routes in system readiness, and
+  the preview counts in system status.
 - On an application it can read, a missing permission answers 403
   `permission_denied` with the permission in `details.permission`.
 - Saving a manifest by name for an existing application the caller cannot read
@@ -83,6 +84,24 @@ out the whole-application ones.
   `events:read` on that application.
 - Event IDs and stream checkpoints are installation-wide, so a reader can tell
   that hidden events happened, but not what or where.
+
+## Links between applications
+
+[Links](application-manifest.md#links) are configuration: editing exports
+(`PUT .../exports`) or imports (`PUT .../imports`) needs `apps:write` on that
+application, and deploying them `apps:deploy` (or `previews:deploy` for a
+preview's imports). Importing needs no permission on the exporting application:
+its export, deployed by its own writers, is the consent. An export with
+`previews = true` therefore lets anyone who may deploy previews of a granted
+application reach the service, in whichever environment its imports name.
+An export naming an application that does not exist yet is granted to
+whichever application takes that name, and the exporter's next deployment
+binds the grant to it. A name whose application was deleted passes the same
+way to its next holder, from the exporter's next deployment.
+
+Link reports never reveal hidden applications: an import of a missing
+environment and one not exported to it both read `unavailable`, and an
+environment's importers list only applications the caller can read.
 
 ## Creating applications
 
@@ -139,7 +158,7 @@ the grant selection and are never stored:
 | --- | --- |
 | `read-only` | `apps:read`, `logs:read`, `events:read` (and `system:read` on every application) |
 | `deploy` | `apps:read`, `apps:deploy` |
-| `developer` | every application permission except `apps:delete` (and `system:read` on every application). This includes `apps:exec`: deploying their own configuration already reaches everything a command could |
+| `developer` | every application permission except deleting (`apps:delete`, `previews:delete`) (and `system:read` on every application). This includes `apps:exec`: deploying their own configuration already reaches everything a command could |
 | `admin` | `admin` |
 
 ```console

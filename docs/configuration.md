@@ -63,6 +63,13 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `server.allowed_hosts` | `[]` (additional trusted DNS hostnames) |
 | derived socket path | `<runtime_dir>/piqueld.sock` |
 | derived database path | `<data_dir>/piqueld.db` |
+| `auth.public_url` | derived; see [authentication origin](#authentication-origin) |
+| `auth.max_token_days` | none (any lifetime; at least `1` when set) |
+| `tailscale.enabled` | `false` |
+| `tailscale.hostname` | `"piqueld"` |
+| `tailscale.auth_key_file` | none |
+| `tailscale.socket` | none (piqueld starts its own `tailscaled`) |
+| `tailscale.https_port` | `443` |
 | `docker.socket` | `/var/run/docker.sock` |
 | `docker.auto_initialize_swarm` | `true` |
 | `ingress.enabled` | `false` (restart required) |
@@ -88,7 +95,13 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `notifications.enabled` | `false` |
 | `notifications.security` | `true` ([security notifications](observability.md#security-notifications); like every category, sent only when `notifications.enabled`) |
 | `notifications.daemon_started` | `true` ([daemon start notifications](observability.md#daemon-start-notifications)) |
+| other `notifications` category switches | `true` |
+| `notifications.failure_threshold_seconds` | `120` (`0..=86400`) |
+| `notifications.retry_window_seconds` | `86400` (`1..=604800`) |
+| `notifications.destinations` | `[]` |
 | `retention.finished_operation_days` | `10` (`0` disables pruning; terminal operations older than the cutoff are pruned during each reconciliation cycle) |
+| `build_history.log_max_bytes` | `4194304` (4 MiB; `1..=67108864`) |
+| `build_history.log_retention_days` | `30` (`1..=3650`) |
 | `previews.max_per_application` | `10` |
 | `previews.max_total` | `30` |
 | `previews.default_cpu_millis` | `500` |
@@ -192,8 +205,8 @@ retaining the attempt and an explicit expired indicator.
 
 `[images]` controls cleanup of the images this installation builds. It keeps
 what every environment and preview runs or is deploying, plus each
-environment's last `keep_deployments` successful deployments, so they can be
-restored, and removes the rest one by one, by ID. Images other installations
+environment's last `keep_deployments` successful deployments, so their releases
+can be promoted again, and removes the rest one by one, by ID. Images other installations
 built on the same Docker Engine, images built by hand, and pulled registry
 images are never removed. See
 [image retention](docker-reconciliation.md#image-retention).
@@ -342,8 +355,8 @@ auth_key_file = "ts-auth-key" # $CREDENTIALS_DIRECTORY/ts-auth-key
 - Node state and the `tailscaled` socket live in `<data_dir>/tailscale`, so the
   node identity, its name and the passkeys bound to it follow the data directory
   rather than the host.
-- piqueld owns the node's preferences and its Serve configuration for port 443,
-  and rewrites both at every start.
+- piqueld owns the node's preferences and its Serve configuration for
+  `https_port`, and rewrites both at every start.
 - `auth_key_file` is only needed for the first login. Without it, startup logs a
   login URL and waits until the node is approved.
 - An unset `auth.public_url` becomes `https://<hostname>.<tailnet>.ts.net`,
@@ -485,10 +498,11 @@ startup, port conflicts, and version failures through ingress health without
 stopping application management. Application images' own ports remain private.
 
 Restart after changing the TOML. With ingress enabled, stopping piqueld leaves
-Caddy serving independently. Restarting piqueld with ingress disabled removes the
-managed gateway container and its restart policy, closing public listeners while
-retaining route intent, reservations, and certificates. No DNS or certificate work
-runs while disabled. Re-enabling restores deployed routes, including deployments
+Caddy serving independently and renewing the certificates it obtains itself.
+Restarting piqueld with ingress disabled removes the managed gateway container and its restart policy, closing public listeners while
+retaining route intent, reservations, and Caddy's certificates. While disabled,
+DNS-01 certificates are not renewed and are deleted once expired, and managed DNS
+records are deleted. Re-enabling restores deployed routes, including deployments
 made while disabled, without activating saved-but-undeployed changes.
 
 `public_addresses` lists the server's public IPv4 and IPv6 addresses. Where a

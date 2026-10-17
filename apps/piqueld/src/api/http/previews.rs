@@ -78,7 +78,10 @@ pub(super) struct GitBundle(std::marker::PhantomData<()>);
 /// It is verified and unbundled into a repository of its own. The preview
 /// of `branch` and `slot` is created first if needed, as `createPreview`
 /// does, and deploys the snapshot's manifest, building `"self"` sources from
-/// it. Fails with 413 `snapshot_too_large`, 422 `snapshot_invalid`, or 422
+/// it. Fails with 409 `preview_requires_repository` or
+/// `preview_limit_reached`; 413 `snapshot_too_large` when the bundle exceeds
+/// the upload limit or the snapshot, or the history it needs, exceeds
+/// `[checkouts] max_bytes`; 422 `snapshot_invalid`; or 422
 /// `snapshot_base_unavailable`, whose `details.prerequisites` names the
 /// commits it needs; upload a complete bundle then. A body that stalls for
 /// 30 seconds, or an upload not received within 10 minutes, fails with 408
@@ -137,8 +140,9 @@ pub(super) async fn deploy_local(
 
 /// Lists an application's previews.
 ///
-/// Each preview comes with its status, latest operation, hostnames, and
-/// branch state, read with one `git ls-remote` of the manifest repository.
+/// Each preview comes with its status, latest operation, hostnames, origin,
+/// `[previews]` bounds, sync state, and branch state, read with one
+/// `git ls-remote` of the manifest repository.
 /// Repository failures make every branch state `unknown`.
 #[utoipa::path(get,path="/api/v1/applications/{id}/previews",operation_id="listPreviews",
     params(("id"=String,Path)),

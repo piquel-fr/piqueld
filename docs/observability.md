@@ -83,7 +83,8 @@ application and environment views (whose saved configuration `apps:read`
 already allows) and CLI logins still awaiting approval, appear only in daemon
 logs. Records are written in the background so requests never wait for them;
 at most 1,024 wait at once, of which anonymous requests (made by neither an
-account nor the host operator) may hold only half, and on shutdown the daemon waits up to 10 seconds for pending records and logs any
+account nor the host operator) may hold only half; records beyond that are
+dropped and logged. On shutdown the daemon waits up to 10 seconds for pending records and logs any
 it loses. Each record keeps the action
 (method and route template), outcome (`allowed`, `denied`, or `failed`), status,
 account, credential and its kind, whether the credential was limited, the
@@ -245,8 +246,8 @@ refresh while visible. Configuration is displayed read-only, with destination
 URLs omitted; only the file a URL was read from is shown.
 
 Resource snapshots are cached for five seconds. They include process uptime,
-resident memory and CPU, DB/WAL sizes, available disk, retained event/diagnostic
-and build-output counts, operation queues, and pending/failed deliveries. OS
+resident memory and CPU, DB/WAL sizes, available disk, retained event and
+diagnostic counts, retained build-output bytes, operation queues, and pending/failed deliveries. OS
 measurements that are unavailable are null and omitted from metrics, not zero.
 These are current samples; piqueld does not persist a resource time series.
 
@@ -276,6 +277,8 @@ enabled = true
 
 Webhook URLs are credentials. Use `url_file` instead of `url` to read one from a
 file, such as a systemd credential; see [configuration](configuration.md#credential-files).
+Destination names must be unique and 1–63 bytes long. `failure_threshold_seconds`
+accepts `0..=86400` and `retry_window_seconds` `1..=604800`.
 
 Build/deployment failures notify once until a successful operation clears that
 condition. Service degradation is observed at environment health level. Docker,
@@ -306,7 +309,8 @@ until the same condition opens again.
 
 The outbox is durable and separate from runtime work. JSON payloads contain
 `version: 1`, `instance_id`, `delivery_id`, `category`, and the source `event`.
-Discord messages include diagnostic context and disable mentions. Every request
+Discord messages include diagnostic context, are truncated to 1,900 characters,
+and disable mentions. Payloads are not signed. Every request
 carries `Idempotency-Key: <delivery_id>`; delivery is at least once, so receivers
 should deduplicate. Retries preserve that ID through restart and manual retry.
 
@@ -333,8 +337,17 @@ listen = ["127.0.0.1:9464"] # default [] disables the listener
 
 This separate listener serves only `GET /metrics`, in Prometheus text format. It
 never serves the dashboard or administrative API. Measurements use fixed metric
-names and no application/operation/diagnostic labels. Bind to an address reachable
-by the intended scraper; loopback is only reachable in the host network namespace.
+names and no labels; all but `piqueld_access_denied_total` come from the
+resource snapshots described above: `piqueld_uptime_seconds`,
+`piqueld_access_denied_total`, `piqueld_process_resident_memory_bytes`,
+`piqueld_process_cpu_seconds_total`, `piqueld_process_cpu_percent`,
+`piqueld_database_bytes`, `piqueld_database_wal_bytes`,
+`piqueld_disk_available_bytes`, `piqueld_events`, `piqueld_diagnostics`,
+`piqueld_build_output_bytes`, `piqueld_operations_running`,
+`piqueld_operations_queued`, `piqueld_notification_deliveries_pending` and
+`piqueld_notification_deliveries_failed`. Names ending in `_total` are
+counters; the rest are gauges. Bind to an address reachable by the intended
+scraper; loopback is only reachable in the host network namespace.
 An enabled listener has no built-in authentication or TLS, so choose its exposure
 accordingly. Its lifetime is supervised with the daemon's API listeners.
 

@@ -1,8 +1,9 @@
 # Docker reconciliation
 
 The daemon controls one local Docker Engine running a single-node Swarm. It
-manages private overlay networks, named volumes, and replicated services,
-verifies ownership before mutations, and retains volumes on deletion. Service
+manages private overlay networks, named volumes, Swarm secrets and configs, and
+replicated services and jobs, verifies ownership before mutations, and retains
+environments' volumes on deletion (deleting a preview removes its own). Service
 updates run one task at a time and pause on failure. By default they are
 start-first, except for services that mount any volume read-write: those stop the
 old task before starting its replacement, so two tasks never write the same data
@@ -11,7 +12,7 @@ can set the order and the monitor window explicitly; observed services whose
 order or monitor differs from the effective setting are updated with `rollout`
 drift. Tasks are pinned
 to the local manager's immutable node ID so local images and volumes cannot move
-to a subsequently joined node. Preparation, promotion, and resource creation or
+to a subsequently joined node. Preparation, job starts, and resource creation or
 updates recheck the supported single-node topology; an unsupported topology blocks
 that work and is retried with backoff after the operator restores it. Observation
 and removals only need the local manager, so status, health, and deletion keep
@@ -79,7 +80,7 @@ While the deployment may still roll out, active-target repair cannot revert or
 remove prepared job prerequisites or restart services stopped for an exclusive
 job, but continues maintaining other active services. Job services
 and their containers are labelled with the operation that started them. Every
-deployment, even one without jobs, first removes job services of earlier
+deployment not yet promoted, even one without jobs, first removes job services of earlier
 operations and waits until their containers have stopped, and a new run is only
 created after the replaced run's container has stopped, so runs never overlap. A
 retried operation skips jobs it already ran successfully and resumes a run that
@@ -109,16 +110,21 @@ is rejected while deletion is intended.
 
 One async controller polls pending environment futures and discovery together.
 SQLite calls, Docker observations, image pulls, and convergence timers yield to
-other ready work. Shared limits allow two image resolutions, eight application
-observations, and one resource mutation request globally. Timers consume no I/O
+other ready work. Shared limits allow two image resolutions and eight application
+observations; resource mutations hold one global lock, and image builds run one at
+a time, environments before previews. Timers consume no I/O
 slot. New intent cancels obsolete local preparation; dispatched Docker requests
 may finish, but obsolete results cannot authorize subsequent actions. Git and Docker
 CLI commands run in private process groups; cancellation kills their local helper
-processes too. Preparation timeouts fail with `preparation_timeout` and are retried
-with the same backoff as other transient failures.
+processes too. Git ignores the host-wide `/etc/gitconfig` but reads the daemon
+user's own configuration and credentials. Preparation timeouts fail with
+`preparation_timeout` and are retried with the same backoff as other transient
+failures.
 
-New intent marks pending/running older operations superseded; the CLI stops waiting
-successfully with that explicit outcome rather than following the replacement.
+New intent marks pending/running older operations superseded. CLI commands
+waiting on an operation they started stop waiting successfully with that explicit
+outcome rather than following the replacement; `env wait` and `preview wait` fail
+with `deployment_superseded`.
 
 Every action is followed by observation and fresh planning. No action cursor or
 execution plan is stored. Plans place a service's create or update after the
@@ -130,12 +136,16 @@ Transient failures retry indefinitely with exponential delays from 5 to 60
 seconds. Preparation and convergence retain their configured deadlines. Success
 resets the consecutive-failure backoff. Ownership/configuration conflicts and
 paused rollouts remain observed without forced mutation. A fresh unblocked plan
-can resume corrective work. Registry request rejections require explicit retry
-or changed intent; temporary availability failures retry automatically.
+can resume corrective work. Registry request rejections, Git fetch and build
+failures, and secret storage failures require explicit retry or changed intent;
+Docker, Swarm, ingress, journal, image resolution, convergence and preparation
+timeout failures retry automatically.
 
 Deletion remains running until a fresh observation confirms services and
 networks are absent. Failed deletion attempts record diagnostics and follow the
-same retry policy. Named volumes remain available after deletion.
+same retry policy. Deletion removes the environment's Swarm secrets. Named volumes
+remain available after deletion, except a preview's, which deletion removes and
+waits for.
 
 Operation state describes progress toward intent. Runtime health is recorded
 separately, so a failed replacement can coexist with healthy existing services.
@@ -187,20 +197,23 @@ The daemon publishes the probe as a Swarm config named by its content,
 check. Services mount it at `/run/piqueld/probe`, root-owned with mode `0555`,
 so Swarm itself stores and distributes it, and Docker still runs the check, so
 health still gates tasks and rollouts. A service whose check runs the probe
-without mounting this daemon's config at `/run/piqueld/probe`, or that mounts
-any other config there, registers as drift.
+without mounting this daemon's config at `/run/piqueld/probe`, that mounts any
+other config there, or that mounts the probe without its check running it,
+registers as out-of-policy drift.
 
 The probe's command line is a stable contract that newer probes keep
 accepting. A daemon upgrade that changes the probe publishes a new config, and
 services move to it through a normal health-gated rollout, as do services
 whose HTTP checks earlier daemons pointed at `wget`. Image cleanup removes
-probe configs no service mounts any longer, in its current spec or in the
-previous one a rollback would restore.
+probe configs of other versions that no service mounts any longer, in its
+current spec or in the previous one a rollback would restore; the current
+version's config is always kept.
 
-Daemon builds compile the probe for the matching `*-unknown-linux-musl` target
-with the size-optimised `probe` profile, since Swarm caps config size. The
-target comes from `rust-toolchain.toml`, which rustup, `nix develop`, and the
-Nix packages all use.
+Daemon builds compile the probe for the daemon architecture's
+`*-unknown-linux-musl` target with the size-optimised `probe` profile, since
+Swarm caps config size. `rust-toolchain.toml`, which rustup, `nix develop`, and
+the Nix packages all use, installs only `x86_64-unknown-linux-musl`; building on
+another architecture needs its musl target added.
 
 ## Service files
 
@@ -225,9 +238,10 @@ Once an operation of an environment ends, succeeded or failed, piqueld removes
 the environment's file configs no service mounts any longer, in its current
 spec or in the previous one a rollback would restore. It holds the lock repair
 takes to change services, so no config is removed between being published and
-mounted. A failed removal is logged and retried after the next operation,
-except that deleting an environment fails, and is retried, until its configs
-are gone.
+mounted. A failed removal request is logged and retried after the next
+operation, except that it fails an environment's deletion, which is retried.
+Configs Docker refuses to remove because a container still uses them are left
+for the next pass.
 
 ## Image retention
 
@@ -246,14 +260,14 @@ An image is kept while a retention root uses it:
 - each environment's and preview's latest deployment, in progress or retried
   with its prepared target until a newer one replaces it;
 - each environment's last `images.keep_deployments` successful deployments
-  (default 3), for restores; previews keep none;
+  (default 3), so their releases can be promoted again; previews keep none;
 - what every environment that a
   [promoted environment](application-manifest.md#promoted-environments)
   promotes from currently runs: the release `env promote` takes by default.
 
-Images a container uses, even a stopped one, are kept too. Cleanup runs after
-each operation finishes and every `images.cleanup_interval_seconds` (default
-3600). Each removal is a journaled `remove_image` daemon action whose resource
+Images a container uses, even a stopped one, are kept too. Cleanup runs when the
+daemon starts, after each operation finishes, and every
+`images.cleanup_interval_seconds` (default 3600). Each removal is a journaled `remove_image` daemon action whose resource
 is the image ID; a failed removal keeps the image and cleanup moves on.
 `piquelctl status` and the dashboard report how many built images cleanup kept
 and the total size of those it removed since the daemon started. Removing an
@@ -265,8 +279,8 @@ when they are retention roots. Cleanup takes it exclusively while it reads the
 roots and removes images, and skips its turn while any preparation holds it,
 so it never removes an image a preparation is about to record, including one
 Docker's build cache returned unchanged, and never delays a deployment for
-more than its removals. Deployments that use a retained image again, such as
-restores and release promotion, check that it is still present first: a missing
+more than one cleanup pass. Deployments that use a retained image again, such
+as release promotion, check that it is still present first: a missing
 registry image is pulled again by its digest, and a missing build, or a pull
 that fails, fails with `image_unavailable` naming the service and image. A
 release promotion holds the lock shared from that check until the promotion
@@ -333,5 +347,6 @@ retaining a route is not a blue-green deployment or an automatic application rol
 
 Gateway startup/configuration drift repair runs independently from application jobs.
 Piqueld shutdown leaves Caddy running with its persistent configuration and restart
-policy. Disabling via TOML requires restart and explicitly removes the gateway.
+policy. Disabling via TOML requires restart and explicitly removes the gateway, the
+apps tailnet node, and `cloudflared` with its credentials.
 Public HTTPS probes do not block deployment convergence and are shown separately.

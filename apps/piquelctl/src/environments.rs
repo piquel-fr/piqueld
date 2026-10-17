@@ -107,7 +107,7 @@ pub(crate) enum EnvCommand {
         #[command(flatten)]
         flags: OperationFlags,
     },
-    /// List or delete an environment's generated secrets.
+    /// List, regenerate, or delete an environment's generated secrets.
     Secret {
         /// Application name or stable ID.
         application: String,

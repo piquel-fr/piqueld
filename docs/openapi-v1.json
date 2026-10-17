@@ -550,7 +550,7 @@
               "$ref": "#/components/schemas/EnvironmentConfig"
             },
             "default": {},
-            "description": "Configuration for each environment, selected by environment name.",
+            "description": "Environments declared by this manifest, keyed by environment name.",
             "type": "object"
           },
           "exports": {
@@ -1884,7 +1884,7 @@
         ]
       },
       "DeletedApplication": {
-        "description": "Accepted application deletion: one delete operation per environment.",
+        "description": "Accepted application deletion: one delete operation per environment,\npreviews included.",
         "properties": {
           "application_id": {
             "description": "Stable application identity.",
@@ -1897,7 +1897,7 @@
             "type": "integer"
           },
           "operations": {
-            "description": "Deletion of each environment; the application disappears with the last one.",
+            "description": "Deletion of each environment and preview; the application disappears\nwith the last one.",
             "items": {
               "$ref": "#/components/schemas/AcceptedOperation"
             },
@@ -2193,7 +2193,7 @@
           },
           "origin": {
             "$ref": "#/components/schemas/DeploymentOrigin",
-            "description": "Where it came from: built from its environment's source, or a\npromoted or redeployed release."
+            "description": "Where it came from: built from its environment's source, a promoted\nor redeployed release, or a local snapshot uploaded to a preview."
           },
           "release": {
             "oneOf": [
@@ -3427,7 +3427,7 @@
         "description": "Successful API response envelope.",
         "properties": {
           "data": {
-            "description": "Accepted application deletion: one delete operation per environment.",
+            "description": "Accepted application deletion: one delete operation per environment,\npreviews included.",
             "properties": {
               "application_id": {
                 "description": "Stable application identity.",
@@ -3440,7 +3440,7 @@
                 "type": "integer"
               },
               "operations": {
-                "description": "Deletion of each environment; the application disappears with the last one.",
+                "description": "Deletion of each environment and preview; the application disappears\nwith the last one.",
                 "items": {
                   "$ref": "#/components/schemas/AcceptedOperation"
                 },
@@ -4544,7 +4544,7 @@
                     },
                     "origin": {
                       "$ref": "#/components/schemas/DeploymentOrigin",
-                      "description": "Where it came from: built from its environment's source, or a\npromoted or redeployed release."
+                      "description": "Where it came from: built from its environment's source, a promoted\nor redeployed release, or a local snapshot uploaded to a preview."
                     },
                     "release": {
                       "oneOf": [
@@ -5436,12 +5436,12 @@
                 "type": "integer"
               },
               "affected_secrets": {
-                "description": "Logical secrets whose stored values were discarded.",
+                "description": "Logical secrets, stored and generated, whose values were discarded.",
                 "format": "int64",
                 "type": "integer"
               },
               "discarded_versions": {
-                "description": "Stored versions discarded; already unavailable versions are excluded.",
+                "description": "Stored and generated versions discarded; already unavailable versions\nare excluded.",
                 "format": "int64",
                 "type": "integer"
               }
@@ -9385,7 +9385,7 @@
       },
       "RepositoryManifest": {
         "additionalProperties": false,
-        "description": "Independently selects the manifest used by a manual deployment.",
+        "description": "Independently selects the manifest that deployments, manual or on push, use.",
         "properties": {
           "path": {
             "description": "Exact TOML or JSON file path relative to the repository root.",
@@ -9718,7 +9718,7 @@
         "properties": {
           "hostname": {
             "$ref": "#/components/schemas/Template",
-            "description": "Public DNS hostname, exact or a wildcard such as `*.example.com`\nmatching every name one label below `example.com`."
+            "description": "Fully qualified DNS hostname, exact or a wildcard such as `*.example.com`\nmatching every name one label below `example.com`."
           },
           "name": {
             "description": "Stable name, unique within the application, that selects this route in\nevery environment and preview, e.g. `piquelctl env url --route web`.\nDeclared after `hostname`, so routes stay ordered by hostname.",
@@ -10132,12 +10132,12 @@
             "type": "integer"
           },
           "affected_secrets": {
-            "description": "Logical secrets whose stored values were discarded.",
+            "description": "Logical secrets, stored and generated, whose values were discarded.",
             "format": "int64",
             "type": "integer"
           },
           "discarded_versions": {
-            "description": "Stored versions discarded; already unavailable versions are excluded.",
+            "description": "Stored and generated versions discarded; already unavailable versions\nare excluded.",
             "format": "int64",
             "type": "integer"
           }
@@ -12360,7 +12360,7 @@
             }
           },
           {
-            "description": "Deploy the saved configuration to the application's only environment; omission saves only.",
+            "description": "Deploy the saved configuration to the application's only environment or,\nwhen its manifest declares environments, every declared one not promoted\nfrom another; omission saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -12914,7 +12914,7 @@
             }
           },
           {
-            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
+            "description": "Explicitly bypass the intent revision precondition. Name availability is always enforced.",
             "in": "query",
             "name": "force",
             "required": false,
@@ -13039,6 +13039,7 @@
     },
     "/api/v1/applications/{id}/environments/{environment}/visibility": {
       "put": {
+        "description": "`{environment}` is the environment's name, as in\n`[spec.environments.<name>]`, not its ID. Every route of the environment\nis at most this visible; `public` restricts nothing. Same query\noptions, idempotency, and 200/202 responses as the other editing\nendpoints.",
         "operationId": "set_environment_visibility",
         "parameters": [
           {
@@ -13078,7 +13079,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -13217,6 +13218,7 @@
             "description": "Structured, sanitized error"
           }
         },
+        "summary": "Sets an environment's visibility ceiling.",
         "x-piqueld-access": "apps:write"
       }
     },
@@ -13253,7 +13255,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -13428,7 +13430,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -13603,7 +13605,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -13872,7 +13874,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -14016,7 +14018,7 @@
     },
     "/api/v1/applications/{id}/previews": {
       "get": {
-        "description": "Each preview comes with its status, latest operation, hostnames, and\nbranch state, read with one `git ls-remote` of the manifest repository.\nRepository failures make every branch state `unknown`.",
+        "description": "Each preview comes with its status, latest operation, hostnames, origin,\n`[previews]` bounds, sync state, and branch state, read with one\n`git ls-remote` of the manifest repository.\nRepository failures make every branch state `unknown`.",
         "operationId": "listPreviews",
         "parameters": [
           {
@@ -14222,7 +14224,7 @@
     },
     "/api/v1/applications/{id}/previews/local": {
       "post": {
-        "description": "The body is a Git bundle of one snapshot commit, at most `[snapshots]\nmax_upload_bytes`: either thin, needing commits the application's\nrepository has (its base and, for merges, ancestors of it), which the\ndaemon fetches, or complete.\nIt is verified and unbundled into a repository of its own. The preview\nof `branch` and `slot` is created first if needed, as `createPreview`\ndoes, and deploys the snapshot's manifest, building `\"self\"` sources from\nit. Fails with 413 `snapshot_too_large`, 422 `snapshot_invalid`, or 422\n`snapshot_base_unavailable`, whose `details.prerequisites` names the\ncommits it needs; upload a complete bundle then. A body that stalls for\n30 seconds, or an upload not received within 10 minutes, fails with 408\n`snapshot_timed_out`. Needs no application revision.",
+        "description": "The body is a Git bundle of one snapshot commit, at most `[snapshots]\nmax_upload_bytes`: either thin, needing commits the application's\nrepository has (its base and, for merges, ancestors of it), which the\ndaemon fetches, or complete.\nIt is verified and unbundled into a repository of its own. The preview\nof `branch` and `slot` is created first if needed, as `createPreview`\ndoes, and deploys the snapshot's manifest, building `\"self\"` sources from\nit. Fails with 409 `preview_requires_repository` or\n`preview_limit_reached`; 413 `snapshot_too_large` when the bundle exceeds\nthe upload limit or the snapshot, or the history it needs, exceeds\n`[checkouts] max_bytes`; 422 `snapshot_invalid`; or 422\n`snapshot_base_unavailable`, whose `details.prerequisites` names the\ncommits it needs; upload a complete bundle then. A body that stalls for\n30 seconds, or an upload not received within 10 minutes, fails with 408\n`snapshot_timed_out`. Needs no application revision.",
         "operationId": "deployLocalPreview",
         "parameters": [
           {
@@ -14602,7 +14604,7 @@
             }
           },
           {
-            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
+            "description": "Explicitly bypass the intent revision precondition. Name availability is always enforced.",
             "in": "query",
             "name": "force",
             "required": false,
@@ -14739,7 +14741,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -14883,7 +14885,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -15058,7 +15060,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -15233,7 +15235,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -15408,7 +15410,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -15583,7 +15585,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -15882,7 +15884,7 @@
         "x-piqueld-access": "secrets:write"
       },
       "put": {
-        "description": "The body is the raw value (`application/octet-stream`, 1–512000 bytes).\n`X-Expected-Generation` must be 0 to create a secret, or its current\ngeneration to replace it; a mismatch fails with 409. Running services keep\ntheir value until the next deployment. Supplying `environments` (`all`, or\nenvironment IDs) replaces the access list, with `previews` (default\n`false`); `previews` alone fails with 400. Without them, a new secret\nallows every environment and no previews, and an existing one keeps its\nlist. Names the\nsaved manifest or an environment's last fetched one declares as generated\nsecrets fail with 422 `manifest_validation_failed` and `secret_name_conflict`\nin `details.errors`. The response carries metadata only.",
+        "description": "The body is the raw value (`application/octet-stream`, 1–512000 bytes);\nanother content type fails with 415 and a body over the 2 MiB request\nlimit with 413. `X-Expected-Generation` must be 0 to create a secret, or its current\ngeneration to replace it; a mismatch fails with 409. Running services keep\ntheir value until the next deployment. Supplying `environments` (`all`, or\nenvironment IDs) replaces the access list, with `previews` (default\n`false`); `previews` alone fails with 400. Without them, a new secret\nallows every environment and no previews, and an existing one keeps its\nlist. Names the\nsaved manifest or an environment's last fetched one declares as generated\nsecrets fail with 422 `manifest_validation_failed` and `secret_name_conflict`\nin `details.errors`. The response carries metadata only.",
         "operationId": "putApplicationSecret",
         "parameters": [
           {
@@ -15982,6 +15984,26 @@
             "description": "Structured, sanitized error"
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
             "content": {
               "application/json": {
                 "schema": {
@@ -16147,7 +16169,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -16331,7 +16353,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -16485,7 +16507,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -16668,7 +16690,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -16851,7 +16873,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -17034,7 +17056,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -17226,7 +17248,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -17386,7 +17408,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -17569,7 +17591,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -17750,7 +17772,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -17933,7 +17955,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -18116,7 +18138,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -18299,7 +18321,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -18482,7 +18504,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -18665,7 +18687,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -18848,7 +18870,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -19031,7 +19053,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -19214,7 +19236,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -19397,7 +19419,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -19578,7 +19600,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -19761,7 +19783,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -19944,7 +19966,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -20127,7 +20149,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -20310,7 +20332,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -20493,7 +20515,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -20676,7 +20698,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -20859,7 +20881,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -21042,7 +21064,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -21225,7 +21247,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -21408,7 +21430,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -21591,7 +21613,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -21774,7 +21796,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -21957,7 +21979,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -22140,7 +22162,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -22323,7 +22345,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -22506,7 +22528,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -22681,7 +22703,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -22856,7 +22878,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -23029,7 +23051,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -23213,7 +23235,7 @@
             }
           },
           {
-            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
             "in": "query",
             "name": "deploy",
             "required": false,
@@ -24327,7 +24349,7 @@
     },
     "/api/v1/builds": {
       "get": {
-        "description": "Optionally filtered to one application or environment. Follow `next_cursor` to load older\nbuilds.",
+        "description": "Optionally filtered to one application or environment. Follow `next_cursor` to load older\nrecords.",
         "operationId": "listBuilds",
         "parameters": [
           {
@@ -24363,6 +24385,7 @@
             "name": "limit",
             "required": false,
             "schema": {
+              "default": 50,
               "maximum": 100,
               "minimum": 1,
               "type": "integer"
@@ -24411,7 +24434,7 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Lists Git source builds, newest first.",
+        "summary": "Lists Git source builds and job runs, newest first.",
         "x-piqueld-access": "authenticated"
       }
     },
@@ -24765,7 +24788,7 @@
     },
     "/api/v1/environments/{id}/branch": {
       "put": {
-        "description": "Points an environment of a repository-backed application at another branch\nof its manifest repository, or pins or unpins a commit. Nothing is fetched\nor redeployed: the next deployment fetches the new branch. Environments\ndeploying the saved manifest fail with `manifest_repository_required`. The\ninspected application `expected_generation` goes in the JSON body.",
+        "description": "Points an environment of a repository-backed application at another branch\nof its manifest repository, or pins or unpins a commit. Nothing is fetched\nor redeployed: the next deployment fetches the new branch. Environments of\nan application without a manifest repository fail with\n`manifest_repository_required` (422), and those whose source the saved\nmanifest declares with `environment_declared` (409). The inspected\napplication `expected_generation` goes in the JSON body.",
         "operationId": "setEnvironmentBranch",
         "parameters": [
           {
@@ -24777,7 +24800,7 @@
             }
           },
           {
-            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
+            "description": "Explicitly bypass the intent revision precondition. Name availability is always enforced.",
             "in": "query",
             "name": "force",
             "required": false,
@@ -24902,7 +24925,7 @@
     },
     "/api/v1/environments/{id}/deploy": {
       "post": {
-        "description": "Returns 202 with the accepted durable operation. Requires\n`expected_generation` unless `force=true`; a stale generation fails with 409.\nRepeating a request with the same `Idempotency-Key` returns the original\nresponse.",
+        "description": "Returns 202 with the accepted durable operation. Requires\n`expected_generation` unless `force=true`; a stale generation fails with 409.\nA promoted environment fails with 409 `environment_promoted`; it deploys\nonly by promotion. `branch` or `commit` for an environment without a\nrepository branch fails with 422.\nRepeating a request with the same `Idempotency-Key` returns the original\nresponse.",
         "operationId": "deployEnvironment",
         "parameters": [
           {
@@ -25011,6 +25034,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -25032,7 +25065,7 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Deploys the application's saved configuration to an environment.",
+        "summary": "Deploys an environment from its source: the application's saved\nconfiguration, or the repository manifest at the environment's branch (or\nthe one-time `branch`/`commit`).",
         "x-piqueld-access": "apps:deploy"
       }
     },
@@ -25347,7 +25380,7 @@
     },
     "/api/v1/environments/{id}/logs": {
       "get": {
-        "description": "Output can be narrowed to one service and one stream. Out-of-range `tail` or\n`since_seconds` values fail with 400 `logs_query_invalid`.",
+        "description": "Output can be narrowed to one service and one stream. Unknown or malformed\nparameters, out-of-range `tail` or `since_seconds` values, and `service`\nnames outside 1–63 characters fail with 400 `logs_query_invalid`.",
         "operationId": "environmentLogs",
         "parameters": [
           {
@@ -25483,7 +25516,7 @@
             }
           },
           {
-            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
+            "description": "Explicitly bypass the intent revision precondition. Name availability is always enforced.",
             "in": "query",
             "name": "force",
             "required": false,
@@ -25618,7 +25651,7 @@
     },
     "/api/v1/environments/{id}/promote/plan": {
       "post": {
-        "description": "Shows the release and its provenance and image availability, the\nrendered diff against the environment's latest deployment, the runtime\nplan, new (empty) volumes, and every secret that is missing or that the\nenvironment may not use. The source must be promotable, as for\n`promoteEnvironment`; an earlier `release` may be planned for any\nenvironment. `expected_generation` is ignored.",
+        "description": "Shows the release and its provenance and image availability, the\nrendered diff against the environment's current deployment, the runtime\nplan, new (empty) volumes, and every secret that is missing or that the\nenvironment may not use. The source must be promotable, as for\n`promoteEnvironment`; an earlier `release` may be planned for any\nenvironment. `expected_generation` is ignored.",
         "operationId": "planPromotion",
         "parameters": [
           {
@@ -25748,7 +25781,7 @@
     },
     "/api/v1/environments/{id}/reconcile": {
       "post": {
-        "description": "Returns 202 with a durable operation that repairs the runtime to match the\naccepted configuration. Unlike other mutations, `expected_generation` is\noptional. Repeating a request with the same `Idempotency-Key` returns the\noriginal response.",
+        "description": "Returns 202 with the environment's latest operation, requested again when it\nfinished or failed, or as is while it is still in progress; 404 when the\nenvironment has none. Unlike other mutations, `expected_generation` is\noptional. Repeating a request with the same `Idempotency-Key` returns the\noriginal response.",
         "operationId": "reconcileEnvironment",
         "parameters": [
           {
@@ -25878,7 +25911,7 @@
             }
           },
           {
-            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
+            "description": "Explicitly bypass the intent revision precondition. Name availability is always enforced.",
             "in": "query",
             "name": "force",
             "required": false,
@@ -26259,7 +26292,7 @@
             }
           },
           {
-            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
+            "description": "Explicitly bypass the intent revision precondition. Name availability is always enforced.",
             "in": "query",
             "name": "force",
             "required": false,
@@ -27628,7 +27661,7 @@
     },
     "/api/v1/system/secrets/recover-key": {
       "post": {
-        "description": "Discards stored secret values for all environments; metadata and running\nservices are kept. Fails with 409 while the current key still works. The next\nvalue write generates a new key.",
+        "description": "Discards every application's stored secret values, every environment's\ngenerated secret values, and the repository webhook secrets (applications\ngenerate new ones); metadata and running services are kept. Fails with 409\nwhile the current key still works. The next value write generates a new key.",
         "operationId": "recoverSecretKey",
         "responses": {
           "200": {

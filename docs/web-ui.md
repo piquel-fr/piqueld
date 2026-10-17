@@ -6,7 +6,8 @@ empty application in a modal, add services in a modal and declare named volumes,
 dependencies, rollout order and monitor window, and resource limits. Each settings group has its own **Save changes** button. Saving updates
 the database without changing running containers.
 
-**Preview** opens a dialog with the planned changes and actions, each service's
+**Preview** opens a dialog with the planned changes, the variable values it
+renders, the planned actions, each service's
 effective rollout order (derived or explicit) and monitor window, and plan warnings. **Deploy** captures the saved configuration
 in a persisted deployment and applies it. Both buttons require all local edits
 to be saved or discarded. Every deployment supersedes pending work and
@@ -16,7 +17,8 @@ Retries use the captured deployment, not subsequent configuration edits.
 
 The piqueld logo links to the home page. The sidebar groups Overview,
 Applications, and Builds; the Observe section (Events, Errors, Analytics,
-Notifications); and the System section (Daemon status, Host settings, Accounts).
+Notifications); and the System section (Daemon status, Host settings, Accounts,
+Audit). Notifications, Daemon status and Host settings need `system:read`.
 Its footer shows daemon connectivity and the signed-in account with a sign-out
 button. The home page and Applications show the five most recent deployments
 across applications; each row opens that deployment in its environment's history.
@@ -141,7 +143,7 @@ using its writable volumes until the rollout. The Links tab edits the
 application's [links](application-manifest.md#links): the services it exports
 and the applications that may import them (and whether their previews may),
 and the services of other applications it imports, with an optional
-environment; saving replaces only that list. The Routes tab
+environment; exports and imports each save their own list. The Routes tab
 edits hostnames, each with an optional [name](application-manifest.md#routes)
 and pointing at a service port or a redirect with a public or
 private visibility, and shows each deployed route's name, effective visibility, the DNS
@@ -152,8 +154,9 @@ Each environment's Overview sets its visibility ceiling. System status shows a
 Previews card with the previews against their limits, installation-wide and for
 each readable application, flagged at or over a limit, and the CPU and memory
 limits of their deployed replicas. It also shows which DNS providers manage
-route records, the Cloudflare Tunnel's ID and connection state in tunnel mode, and the private listener
-with the apps tailnet node's name and addresses. Saving routes updates only the route field;
+route records and the state of their certificates, the Cloudflare Tunnel's ID and connection state in tunnel mode, and the private listener
+with the apps tailnet node's name and addresses. With `system:operate`,
+**Check DNS providers** checks their credentials now. Saving routes updates only the route field;
 Deploy activates the change. Services lists saved services, with their observed
 health merged in when the application has one environment. The Secrets tab
 holds the application's secret store and each service's secret file references. The Overview tab shows the application's identity, configuration
@@ -161,10 +164,11 @@ revision, and environments, and the delete action. Builds and Events cover every
 environment, each linking to its environment, and include application-wide
 events such as edits and renames; a deleted environment's events remain until
 the application is deleted. Events has an **Errors only** filter. An environment's Overview shows the runtime status, the latest operation,
-a URLs card, a Links card when it imports or exports services, observed
-services, and reconciliation diagnostics. The Links card lists each import as
-connected or waiting, with why, and the environments of readable applications
-importing its services. The URLs card
+a URLs card, a Links card when it imports services or others import its
+services, observed services, and reconciliation diagnostics. The Links card
+lists each import as connected or waiting, with why, and the environments of
+readable applications importing its services; a preview's Overview shows it
+too. The URLs card
 lists the URL of each route the current deployment renders, with its name,
 visibility, destination and state: **ready**, or **pending** with what it waits
 for (ingress, HTTPS, DNS records, or a healthy service), as the daemon reports
@@ -203,11 +207,15 @@ read-only. There is no raw manifest editor or deployment restoration workflow.
 
 The browser bundle uses HTTP DTOs and shared typed lifecycle records and
 fetches same-origin `/api/v1` resources. The daemon serves it only on the
-configured localhost or Tailscale TCP listeners. The Unix socket is API-only,
-and the daemon does not add CORS, telemetry, or a public binding. Passkey login
+configured localhost or Tailscale TCP listeners and, with a
+[dashboard hostname](ingress.md#dashboard-hostname), through private ingress.
+The API Unix socket is API-only, and the daemon does not add CORS, telemetry,
+or a public binding. Passkey login
 establishes an HTTP-only session cookie; the Accounts page manages accounts and
-their grants, invitations, passkey enrollment links, and tokens. Pages and actions
-the signed-in account cannot use are hidden; see [authorization](authorization.md).
+their grants, invitations, passkey enrollment links, and tokens. Pages the
+signed-in account cannot use are hidden, as are most actions needing an
+installation-wide permission it lacks; other actions remain visible, and the
+daemon refuses them with `permission_denied`. See [authorization](authorization.md).
 A link from `piquelctl sign-in-link` opens a page that signs the browser in as
 the [host operator](authentication.md#the-host-operator) for 12 hours, without
 an account. The dashboard then shows "Host operator" as the signed-in user and
@@ -245,7 +253,7 @@ manifest. Secret values and unsaved references participate in navigation warning
 
 Building the dashboard needs only Cargo and the `wasm32-unknown-unknown` target,
 which `rust-toolchain.toml` installs. `nix develop` provides the same toolchain
-plus Nextest and Cargo Watch. Docker must be accessible to your user and support
+plus `just` and Nextest. Docker must be accessible to your user and support
 a single-node Swarm. Start the development workflow:
 
 ```console
@@ -260,7 +268,7 @@ localhost port. Refresh the browser after a rebuild. See
 Compile the browser client and dashboard without building the bundle with:
 
 ```console
-cargo check --package piqueld-ui --target wasm32-unknown-unknown
+just ui-check
 ```
 
 The browser modules separate dashboard navigation and lists, editor state,
@@ -303,10 +311,10 @@ cargo build --release --package piqueld --bin piqueld --features embedded-ui --l
 
 There is no runtime UI configuration: the dashboard exists exactly when the
 binary was built with the feature, and binaries built without it are API-only.
-The combined Nix package (`.#`) includes `piquelctl` and a daemon with the
-release dashboard embedded, built by the same build script. The `.#daemon`
-output contains only the daemon without the feature, and the `.#cli` output
-contains only `piquelctl`.
+The combined Nix package (`.#combined`, the default `.#` on Linux) includes
+`piquelctl` and a daemon with the release dashboard embedded, built by the same
+build script. The `.#daemon` output contains only the daemon without the
+feature, and the `.#cli` output (the default on macOS) contains only `piquelctl`.
 
 The TCP router serves bundle files below `/dashboard/` and uses `index.html`
 only for extensionless dashboard paths. API, health, and unknown paths never
@@ -332,8 +340,8 @@ Safari, or Edge release with WebAssembly, ES modules, Fetch, and standard CSS
 media-query support. Internet Explorer, JavaScript-disabled browsing, and
 older browsers without those primitives are outside the support target.
 
-Secrets, streaming logs, and state transfer remain outside the
-current dashboard scope. Event history is available through the API and CLI.
+Streaming logs, running commands in containers (`piquelctl app exec`), and
+state transfer remain outside the current dashboard scope.
 Deployment history polls every two seconds while its tab and the page are visible.
 
 Service source settings explicitly select a container image or Git with a
@@ -398,10 +406,10 @@ existed); **Deploy on push** opts it in without a saved revision, and
 preview's page shows the same, without the opt-out. Events caused by sync name
 `sync:poll` or `sync:webhook` as their requester.
 
-**Download saved manifest** exports the current server-saved configuration as TOML. Unsaved form edits and runtime/deployment state are excluded. Repository connection settings are preserved; the download does not fetch Git or require Docker. Original comments and formatting are not retained.
+**Manifest**, beside the deployment actions, downloads the current server-saved configuration as TOML. Unsaved form edits and runtime/deployment state are excluded. Repository connection settings are preserved; the download does not fetch Git or require Docker. Original comments and formatting are not retained.
 
 
-Application and service Logs tabs read recent output directly from Docker.
+Environment and service Logs tabs read recent output directly from Docker.
 Service and stdout/stderr dropdowns filter in the daemon. Snapshots refresh every
 30 seconds while the view and browser tab are visible; Refresh is also available
 on the right. Merged terminal output appears only with Both streams selected.
@@ -410,14 +418,15 @@ Runtime and build output share a monospace terminal with grey messages, separate
 metadata, local HH:mm:ss timestamps (full precision on hover), red backgrounds
 for ERROR/FATAL messages, and subtle warning backgrounds for other stderr output.
 Task IDs and stream labels are omitted. Timestamp, service visibility, and wrap
-preferences persist in this browser. Application logs default to showing timestamps
+preferences persist in this browser. Environment logs default to showing timestamps
 and services. Build timestamps default off and have a separate saved preference;
 build output never shows service labels or a service toggle. Wrapping defaults off,
 and service labels default hidden in a service’s own Logs tab. Terminal escape formatting is stripped. New output follows
 the bottom only when the reader has not scrolled up.
 
-The main overview groups daemon connectivity with deployment readiness for
-SQLite, Docker reachability, and Swarm suitability. A Built images card shows
+The main overview and Daemon status group daemon connectivity with deployment
+readiness for SQLite, Docker reachability, Swarm suitability, and HTTPS ingress,
+plus the tailnet node when enabled. A Built images card shows
 how many images this installation built that image cleanup kept, and the size
 of those it removed since the daemon started. Green and red labels state
 each result in text, and one refresh updates the complete dashboard status.

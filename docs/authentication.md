@@ -63,9 +63,9 @@ is the development default. Use `localhost`, not an IP address, for browser logi
 Tailscale transport encryption alone does not make an HTTP website a secure
 browser context; remote browser access still needs an HTTPS hostname.
 
-Before the first account exists, the API exposes only authentication/setup
-endpoints (plus static website assets, TCP `/health`, and the optional
-metrics-only listener). Run `piquelctl setup-link` on the daemon host to print
+Before the first account exists, only the [host operator](#the-host-operator)
+can use the API beyond its public authentication/setup endpoints (plus static
+website assets, TCP `/health`, and the optional metrics-only listener). Run `piquelctl setup-link` on the daemon host to print
 the setup link, or add `--open` to also open it in the default browser. The daemon
 serves the link only over its Unix socket, whose group-restricted access is the
 trust boundary; TCP listeners return 404, and after setup it reports that setup is
@@ -244,12 +244,14 @@ the request coming from ("the daemon's local Unix socket" over the socket). Sign
 in with a passkey at that URL and enter the code. The dashboard then shows where
 the request came from and when it started; approve only if the address matches
 the one your terminal printed. Anyone who can reach the daemon can start a device
-login, and approval grants that requester your account's access. Behind a reverse
-proxy, every request shows the proxy's address, so the comparison cannot tell
+login, and approval grants that requester your account's access. Behind an external
+reverse proxy, every request shows the proxy's address, so the comparison cannot tell
 callers apart; check that the code came from your own terminal. The pending
 request expires after ten minutes. The CLI polls using a separate secret; the
 displayed code alone cannot retrieve its credential. Approval does not create an
-account; an invitation must be redeemed first.
+account; an invitation must be redeemed first. Grant options (`--preset`,
+`--permission`, `--app`) limit the CLI session to less than your access; see
+[authorization](authorization.md#api-tokens).
 
 Credentials are stored separately from connection profiles, in
 `$XDG_CONFIG_HOME/piqueld/credentials.json` (default
@@ -267,7 +269,9 @@ Create named automation tokens for your own account on the Accounts page or with
 `piquelctl token create`. The raw token, starting with `pqd_`, appears only once;
 the daemon stores only its hash. Supply it using `PIQUELD_TOKEN`, which takes
 precedence over saved credentials. Tokens act with their own grants within their
-account's current access; see [authorization](authorization.md#api-tokens). Logging out with `PIQUELD_TOKEN` revokes that token and leaves saved logins
+account's current access, and can be
+[bound to a tailnet identity](authorization.md#tailnet-bound-tokens); see
+[authorization](authorization.md#api-tokens). Logging out with `PIQUELD_TOKEN` revokes that token and leaves saved logins
 alone. Do not put token values into connection profiles or Nix configuration.
 
 | Credential | Expiry |
@@ -305,7 +309,8 @@ still works when the server has already invalidated the session.
 The generated [OpenAPI contract](openapi-v1.json) documents `/api/v1/auth`:
 status, current account and its grants, registration and login ceremonies, logout,
 the account directory, management commands, device start/poll/inspect/approve
-operations, and the host operator's links: `POST /auth/recovery` and
+operations, the first-account `GET /auth/setup-link` (Unix socket only), and
+the host operator's links: `POST /auth/recovery` and
 `POST /auth/sign-in-link` (Unix socket only), and `POST /auth/login/operator`,
 which redeems a sign-in link. `GET /auth/me` reports either a `user` or, for the
 host operator, an `operator` with its Unix user ID. `POST /auth/manage` accepts a tagged `action`; actions on other
@@ -334,8 +339,10 @@ per TCP peer per minute, across all listeners. IPv6 peers are grouped by /64
 prefix, and Unix socket callers share one peer bucket. Excess requests receive
 HTTP 429 and `Retry-After: 60`; ongoing ceremonies and authenticated API work are
 unaffected. There is no daemon-wide limit, so one caller cannot block sign-in for
-everyone else. Forwarded IP headers are deliberately ignored: callers behind the
-same reverse proxy share its allowance. Limits reset on daemon restart, along
+everyone else. Client-supplied forwarded IP headers are deliberately ignored: callers behind the
+same external reverse proxy share its allowance. The daemon's own tailnet node
+and [dashboard hostname](ingress.md#dashboard-hostname) gateway pass each
+client's tailnet address. Limits reset on daemon restart, along
 with pending ceremonies and device requests.
 
 Never expose piqueld to the internet, including through a reverse proxy. These

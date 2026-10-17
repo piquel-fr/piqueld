@@ -6,11 +6,7 @@ use std::{path::PathBuf, time::Duration};
 
 /// Essential commands for inspecting and operating applications and their environments.
 #[derive(Debug, Parser)]
-#[command(
-    name = "piquelctl",
-    version,
-    about = "Operate a local piqueld control plane"
-)]
+#[command(name = "piquelctl", version, about = "Operate a piqueld control plane")]
 pub(crate) struct Cli {
     // Where the effective endpoint and timeout came from, filled in by
     // `Profiles::resolve` and shown in connection diagnostics.
@@ -116,7 +112,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: crate::secrets::KeyAction,
     },
-    /// Report daemon availability and version.
+    /// Report daemon availability, version, and subsystem health.
     Status,
     /// Inspect the daemon's DNS providers.
     Dns {
@@ -186,7 +182,7 @@ pub(crate) enum AppCommand {
         #[command(subcommand)]
         command: crate::editing::VolumeCommand,
     },
-    /// Add or remove public HTTPS routes.
+    /// Manage HTTPS routes, redirects, and their visibility.
     Route {
         #[command(subcommand)]
         command: crate::editing::RouteCommand,

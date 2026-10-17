@@ -52,10 +52,11 @@ visibility = "public"
 The dashboard's Routes tab supports the same save/deploy lifecycle. Removing a
 service in the UI also removes its routes from saved configuration. A domain can
 point at only one environment's service; multiple domains may point at one service.
-Hostname reservations are held per environment and include the application's saved
-routes, so two environments of one application cannot share hostnames: creating a
-second environment of an application with routes fails with `hostname_conflict`
-until environments can override hostnames.
+Hostname reservations are held per environment: the routes of its manifest rendered
+for that environment, plus those its resolved spec, latest deployment and gateway
+still hold. Environments of one application therefore need distinct hostnames,
+usually through [variables](#public-and-private-routes); creating or editing an
+environment so that two render the same hostname fails with `hostname_conflict`.
 The backend serves plain HTTP on its internal port. WebSockets and streaming are
 supported. Path rewriting/routing, arbitrary TCP/UDP, and HTTPS backends are
 outside this release.
@@ -118,13 +119,14 @@ ceiling in each environment's Overview.
 
 ### Listeners
 
-Caddy runs one server per listener, each with its own routes:
+Caddy runs one HTTPS server per listener, plus an HTTP → HTTPS one, each with its
+own routes:
 
-| Server | Listens on | Serves |
+| Servers | Listen on | Serve |
 | --- | --- | --- |
-| `public` | host `:80` and `:443` (published) | public routes |
-| `tunnel`, instead of `public` | `:8080` HTTP (not published) | public routes, from `cloudflared` |
-| `private` | `:8443` HTTPS and `:8081` HTTP → HTTPS (not published) | private routes, the [dashboard hostname](#dashboard-hostname) |
+| `public`, `public_http` | host `:443` and `:80` (published) | public routes, the [webhook hostname](#push-webhooks) |
+| `tunnel`, instead of both | `:8080` HTTP (not published) | the same, from `cloudflared` |
+| `private`, `private_http` | `:8443` and `:8081` (not published) | private routes, the [dashboard hostname](#dashboard-hostname) |
 
 A hostname appears only on its own listener, and each listener's TLS policy
 completes handshakes only for its own hostnames. A forged Host header for a
@@ -171,8 +173,8 @@ include it in backups to keep the node's identity.
 The auth key is only needed for the first login; later starts reuse the node
 state. Without one, the daemon logs the node's login URL and status reports that
 it needs login. Its lifecycle shares the gateway's: `ingress_start_tailnet`
-journal actions, drift detection by spec hash, and removal when ingress is
-disabled.
+journal actions, drift detection by spec hash, and removal when ingress or
+`[ingress.private]` is disabled.
 
 ### DNS for private routes
 
@@ -220,12 +222,14 @@ It matches `alice.tenants.example.com`, but neither `tenants.example.com` nor
   application may add an exact route below it, such as
   `admin.tenants.example.com`, which then wins. An exact name another
   application routed before the wildcard stays that application's, and wins
-  too. Hostnames reserved by the installation, and their subdomains, cannot be
-  covered by a wildcard route.
+  too. A wildcard cannot lie within a hostname reserved by the installation,
+  such as `*.hooks.example.com`; one above it, such as `*.example.com`, is
+  accepted, and the webhook and dashboard hostnames win by precedence.
 - **Certificates.** A wildcard route served by piqueld uses its own wildcard
   certificate, `*.tenants.example.com`, through [DNS-01](#dns-01-certificates),
-  so a DNS provider must cover its zone, even for a public route. Exact routes
-  below it keep their own certificates. With a
+  so a DNS provider must cover its zone, even for a public route. Exact public
+  routes below it keep their own certificates; exact private ones share the
+  wildcard's. With a
   [Cloudflare Tunnel](#cloudflare-tunnel), Cloudflare terminates a public
   wildcard's TLS instead, so it needs no DNS provider, and Universal SSL covers
   only one label below the zone.
@@ -265,8 +269,8 @@ credentials_file = "cloudflared-tunnel.json"   # $CREDENTIALS_DIRECTORY/cloudfla
 The file is read at startup like other `_file` settings and must hold the tunnel's
 `AccountTag`, `TunnelSecret` and `TunnelID`. piqueld writes it, mode 0600, to
 `<data_dir>/ingress/tunnel/credentials.json` for the container, and deletes that
-copy whenever `cloudflared` is not meant to run: once the tunnel or ingress is
-disabled.
+copy whenever `cloudflared` is not meant to run: once ingress is disabled, or
+once the tunnel is disabled and the gateway runs in direct mode again.
 
 With the tunnel enabled, every public route is served through it, and the gateway
 publishes no host port: ports 80 and 443 are closed. Switching modes changes the
@@ -274,8 +278,9 @@ gateway's container spec, so it is replaced like any other gateway upgrade, with
 brief interruption. Unlike other upgrades, a mode switch is not deferred while an
 application's network is broken: the old gateway cannot serve the other mode's
 listeners, so ingress reports the failure, keeps the old mode, and switches once
-the network is repaired or its routes are withdrawn. Private routes stay on the
-tailnet.
+the network is repaired or its routes are withdrawn. Until then the gateway applies
+no route changes for any application, so deployments that change routes fail and
+retry. Private routes stay on the tailnet.
 
 ### `cloudflared`
 
@@ -296,8 +301,8 @@ from Caddy.
 ### The tunnel listener
 
 Caddy's `tunnel` server listens for plain HTTP on `:8080`, unpublished, and serves
-public routes and their probe endpoint, nothing else; the `public` server does not
-run. It has no certificate and no HTTP → HTTPS redirect, since Cloudflare
+public routes, the [webhook hostname](#push-webhooks) and the probe endpoint,
+nothing else; the `public` servers do not run. It has no certificate and no HTTP → HTTPS redirect, since Cloudflare
 terminates TLS: enable "Always Use HTTPS" for the zone on Cloudflare.
 
 Application networks are attached to the gateway, so the tunnel listener refuses
@@ -362,13 +367,14 @@ webhook_hostname = "hooks.example.com"
   socket in the gateway's control mount, `<data_dir>/ingress/control/webhooks.sock`.
   The daemon serves nothing else on that socket: no API, no dashboard, no
   authentication endpoints. Every other path of the hostname is a 404, and HTTP
-  redirects to HTTPS. Only the daemon's user, which the gateway runs as, can
-  connect to the socket.
+  redirects to HTTPS (at Cloudflare in tunnel mode). Only the daemon's user,
+  which the gateway runs as, can connect to the socket.
 - **DNS and certificates.** The hostname gets a public route's records: an
   A/AAAA record to `public_addresses`, or a proxied CNAME to the tunnel,
   managed like routes' when a DNS provider sets `manage_records` for its zone
   (see [managed DNS records](#managed-dns-records)), and created by hand
-  otherwise. Caddy obtains its certificate. Applications may not route the
+  otherwise. Caddy obtains its certificate, or Cloudflare terminates its TLS in
+  tunnel mode. Applications may not route the
   hostname or its subdomains, like the website's, so pick a dedicated name such
   as `webhooks.example.com`: `example.com` and its other subdomains stay
   available.
@@ -378,14 +384,14 @@ webhook_hostname = "hooks.example.com"
   the secret master key, and lost-key recovery discards it. A delivery must carry
   GitHub's `X-Hub-Signature-256`, the HMAC-SHA256 of its body under that secret,
   compared in constant time; anything else, including an unknown application,
-  gets 401. Bodies are limited to 1 MiB (413 beyond, at the gateway and in the
-  daemon), at most 16 deliveries run at once (503 beyond), and each gets 10
-  seconds.
+  gets 401, and 503 when the secret cannot be read. Bodies are limited to 1 MiB
+  (413 beyond, at the gateway and in the daemon), at most 16 deliveries run at
+  once (503 beyond), and each gets 10 seconds (408 beyond).
 - **What a delivery does.** A verified `push` only hints sync to list the
   repository's branches soon, at most once every 30 seconds per repository;
   other events, such as `ping`, change nothing. The payload is never read: sync
   resolves each branch head with `git ls-remote` itself, so a delivery cannot
-  choose what deploys. Refused deliveries are logged, not audited.
+  choose what deploys. Unverified deliveries are logged, not audited.
 
 The daemon serves the socket whenever `webhook_hostname` is set, even without
 managed ingress (`enabled = false`). The gateway then routes nothing to it, so
@@ -477,7 +483,7 @@ shuts down mid-order. The ACME account key lives in `<data_dir>/ingress/acme/`
 and each certificate with its private key in one file,
 `<data_dir>/ingress/certificates/<name>.pem` (`_wildcard.<parent>.pem` for
 wildcards), all mode 0600; include both in backups. `[ingress.acme] directory` defaults to
-Let's Encrypt production.
+Let's Encrypt production; the optional `email` is the account's contact.
 
 Certificates are checked every minute and renewed when less than a third of their
 lifetime remains. Failures retry with backoff, from 5 minutes up to 6 hours.
@@ -519,7 +525,8 @@ the provider with the longest matching zone, as for certificates.
 | public, [tunnel](#cloudflare-tunnel) | a proxied CNAME to `<tunnel-id>.cfargotunnel.com` (the zone must be on Cloudflare: OVH cannot proxy, so such routes stay `pending`) |
 | public, direct | A and AAAA to `[ingress] public_addresses`; without any, these records stay manual |
 
-The [webhook hostname](#push-webhooks) gets a public route's records.
+The [webhook hostname](#push-webhooks) gets a public route's records, and the
+[dashboard hostname](#dashboard-hostname) a private route's.
 
 Private routes never get public addresses. A [wildcard route](#wildcard-routes)
 gets its records on its wildcard name, `*.<parent>`; exact routes' records are
@@ -551,7 +558,8 @@ in place, unmanaged.
 
 **Reconciliation.** Every 10 seconds piqueld computes the desired records from
 the applied routes, the ingress mode and the apps node's addresses, without
-calling providers. When they change, and every 5 minutes otherwise, it reads each
+reading records (providers' zones are listed again hourly, or on the next pass
+after a failed listing). When they change, and every 5 minutes otherwise, it reads each
 managed hostname's records and repairs any drift. Address changes of the apps
 node are therefore followed within seconds. A failed provider call, including a
 rate limit, leaves that hostname `pending` and is retried after a minute. A route
@@ -563,8 +571,8 @@ addresses (or the reverse) is written after the old records are deleted.
 
 Each change is a daemon-scoped journal action with the `ingress_dns_create`,
 `ingress_dns_update` or `ingress_dns_delete` phase, so it appears in Events;
-failures record a `dns_records_failed` diagnostic. Passes that change nothing
-record no history.
+failed writes record a `dns_records_failed` diagnostic, while failed reads are
+only logged. Passes that change nothing record no history.
 
 Each route reports its `dns_state`: `manual`, `managed`, `pending` or
 `dns_conflict`, in the API, `piquelctl app route list` and the dashboard's Routes
@@ -635,9 +643,11 @@ System status displays ingress alongside Docker health; effective Settings remai
 read-only. Caddy startup/port/configuration failures leave the daemon available.
 Detailed causes and Caddy certificate diagnostics are logged by piqueld. Core
 readiness (`ready`) continues to describe database/Docker/Swarm; ingress has its own
-`enabled`, `healthy`, `message`, `public`, `private`, and `routes` fields under system
-readiness. `healthy` covers the gateway and its public listener, including the
-tunnel's connection in tunnel mode; `public` reports the mode (`direct` or `tunnel`,
+`enabled`, `healthy`, `gateway`, `message`, `public`, `private`, and `routes` fields
+under system readiness. `healthy` covers the gateway and its public listener,
+including the tunnel's connection in tunnel mode; `gateway` only whether the gateway
+accepted its configuration, which another application's broken network does not
+clear; `public` reports the mode (`direct` or `tunnel`,
 with the tunnel ID and whether it is connected); `private` reports
 the private listener separately: the apps node's login state, `MagicDNS` name and
 tailnet addresses. A broken node degrades only private routes. Each route reports
@@ -687,11 +697,14 @@ attachments and continues applying other route changes in the meantime.
 Gateway requests do not hold the controller's global Docker mutation lock, so private
 application deployments can proceed while routing is waiting.
 
-Disabling ingress in TOML and restarting stops public routing, retains certificate
-and route state, and continues accepting route-bearing manifests. Re-enabling exposes
-only deployed route intent. A normal daemon shutdown leaves Caddy serving and renewing
-certificates independently. Back up the private daemon data directory, including
-`ingress/data` and `ingress/config`, together with SQLite.
+Disabling ingress in TOML and restarting stops public routing, retains route state
+and Caddy's certificates, and continues accepting route-bearing manifests. DNS-01
+certificates are no longer renewed and are deleted once expired, and managed DNS
+records are deleted. Re-enabling exposes only deployed route intent. A normal daemon
+shutdown leaves Caddy serving and renewing the certificates it obtains itself;
+DNS-01 certificates are renewed only while the daemon runs. Back up the private
+daemon data directory, including `ingress/data`, `ingress/config`, `ingress/acme`,
+`ingress/certificates` and `ingress/tailscale`, together with SQLite.
 
 ## Validation
 

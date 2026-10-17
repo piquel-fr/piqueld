@@ -13,8 +13,9 @@ use utoipa::ToSchema;
 pub enum OperationKind {
     /// Apply the requested application state.
     Apply,
-    /// Resolve the current manifest again without changing its generation.
-    /// Used by Deploy and Apply with deployment.
+    /// Deploy without changing the generation: resolve the current manifest
+    /// again, or run a promoted or earlier release. Used by deploys, saves
+    /// and edits that deploy, sync, previews, and promotions.
     Refresh,
     /// Delete its resources.
     Delete,

@@ -35,11 +35,14 @@ just run --socket /tmp/piqueld-dev-run/piqueld.sock status
 just run --url http://localhost:7845 login
 just run --url http://localhost:7845 status
 just run --socket /tmp/piqueld-dev-run/piqueld.sock app plan \
-  --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml
+  --file examples/basic-website.toml
 just run --socket /tmp/piqueld-dev-run/piqueld.sock app apply \
-  --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml --deploy --yes
-just run --socket /tmp/piqueld-dev-run/piqueld.sock app show notes
+  --file examples/basic-website.toml --deploy --yes
+just run --socket /tmp/piqueld-dev-run/piqueld.sock app show basic-website
 ```
+
+[`examples/basic-website.toml`](../examples/basic-website.toml) runs one
+`nginx:alpine` replica with an HTTP health check.
 
 `status` reports the daemon version and `--json` produces the same structured
 result as the public API. `app apply` saves configuration; `app apply --deploy` also
@@ -48,14 +51,18 @@ acceptance. Each explicit deployment prepares sources again and supersedes pendi
 work. Use the same development socket for repair, source refresh, and history:
 
 ```console
-just run --socket /tmp/piqueld-dev-run/piqueld.sock app reconcile notes --yes
-just run --socket /tmp/piqueld-dev-run/piqueld.sock app deploy notes --yes
+just run --socket /tmp/piqueld-dev-run/piqueld.sock app reconcile basic-website --yes
+just run --socket /tmp/piqueld-dev-run/piqueld.sock app deploy basic-website --yes
 just run --socket /tmp/piqueld-dev-run/piqueld.sock events --application <application-id>
 ```
 
 The application got one environment, `production`, which shares its ID. Add
-another with `piquelctl env create notes staging`; `app deploy`, `app reconcile`,
-and `app logs` then need an environment, so use `piquelctl env deploy notes staging`.
+another with `piquelctl env create basic-website staging`; `app deploy`,
+`app reconcile`, and `app logs` then need an environment, so use
+`piquelctl env deploy basic-website staging`. A manifest can also
+[declare its environments](application-manifest.md#declared-environments).
+[`piquelctl.md`](piquelctl.md) covers field edits, secrets, previews, and
+promotion.
 
 ## Dashboard and cleanup
 
@@ -71,11 +78,11 @@ refresh after Rust or CSS changes. Any other daemon built with
 described in [`web-ui.md`](web-ui.md).
 
 When finished, delete the application with its environments and note that
-their named volumes are retained (with several environments, add
+their named volumes, if any, are retained (with several environments, add
 `--environments production,staging`):
 
 ```console
-just run --socket /tmp/piqueld-dev-run/piqueld.sock app delete notes --yes
+just run --socket /tmp/piqueld-dev-run/piqueld.sock app delete basic-website --yes
 ```
 
 The retained named volumes are deliberate so deleting an application does not

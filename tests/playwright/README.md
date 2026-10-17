@@ -42,14 +42,21 @@ is supported; `PIQUELD_PLAYWRIGHT_BIN_DIR` can override the directory containing
 
 - Initial setup, anonymous API rejection, discoverable passkey login, and logout.
 - Assertion replay, substituted user handles, and user-verification downgrade.
-- Transferable invitations, concurrent redemption, and cross-account management.
+- Invitation grants, enrollment links, transferable invitations, concurrent
+  redemption, and cross-account management.
 - CLI device approval, private credential files, automation tokens, and revocation.
 - Account deletion confirmation, cancellation, and last-account protection.
 - Sidebar navigation to every page, the not-found page, and the signed-in account
   and daemon connection shown in the shell.
 - Application creation, renaming, the application directory, service creation and
-  editing on the service page, volumes, routes, the deployment preview dialog,
-  deployment history, and unsaved-edit gating of Deploy and navigation.
+  editing on the service page, read-only files, volumes, routes, jobs, the
+  deployment preview dialog, deployment history, and unsaved-edit gating of
+  Deploy and navigation.
+- Environment pages, creation, renaming, and deletion, environments declared by
+  the manifest, and per-environment logs.
+- Per-environment branches, deployment on push, previews created and pruned from
+  the dashboard, promotion plans, and the Secrets tabs of environments and
+  previews.
 - Preservation of unsaved edits while reauthenticating after session revocation.
 
 Passkey tests use Chromium's virtual CTAP2 authenticator through CDP. This exercises
