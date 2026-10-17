@@ -72,34 +72,26 @@ impl Ingress {
         })
     }
 
-    /// Builds the hardened `cloudflared` container spec: the daemon's user, a
-    /// read-only root, no capabilities, only the edge network, no published
-    /// ports, and its directory bind-mounted read-only. Its healthcheck fails
-    /// until a connection to Cloudflare is up; failures in the first 30 s are
-    /// ignored while it connects, checked every 2 s. Like the gateway's, the
-    /// spec's own hash is stored in `CONFIGURATION_LABEL` to detect drift.
+    /// Builds the hardened `cloudflared` container spec (see
+    /// [`Self::managed_spec`]): no published ports, and its directory
+    /// bind-mounted read-only. Its healthcheck fails until a connection to
+    /// Cloudflare is up; failures in the first 30 s are ignored while it
+    /// connects, checked every 2 s. Like the gateway's, the spec's own hash
+    /// is stored in `CONFIGURATION_LABEL` to detect drift.
     pub(super) fn tunnel_spec(&self, credentials: &TunnelCredentials) -> Value {
-        let uid = rustix::process::geteuid().as_raw();
-        let gid = rustix::process::getegid().as_raw();
         let mut labels = self.labels();
         labels[CREDENTIALS_LABEL] = Self::fingerprint(&credentials.file).into();
-        let mut spec = json!({
-            "Image":CLOUDFLARED_IMAGE,"User":format!("{uid}:{gid}"),
-            "Cmd":["tunnel","--config",format!("{MOUNT}/config.json"),"run"],
-            "Env":[],
-            "Labels":labels,
-            "Healthcheck":{
-                "Test":["CMD","cloudflared","tunnel","--metrics",METRICS,"ready"],
-                "Interval":10_000_000_000_u64,"Timeout":5_000_000_000_u64,"Retries":1,
-                "StartPeriod":30_000_000_000_u64,"StartInterval":2_000_000_000_u64
-            },
-            "HostConfig":{
-                "Binds":[format!("{}:{MOUNT}:ro", self.tunnel_directory().display())],
-                "RestartPolicy":{"Name":"unless-stopped"},
-                "ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],
-                "LogConfig":{"Type":"local","Config":{"max-size":"10m","max-file":"3"}},
-                "NetworkMode":self.name
-            }
+        let mut spec = self.managed_spec(
+            CLOUDFLARED_IMAGE,
+            json!(["tunnel", "--config", format!("{MOUNT}/config.json"), "run"]),
+            json!([]),
+            labels,
+            json!([format!("{}:{MOUNT}:ro", self.tunnel_directory().display())]),
+        );
+        spec["Healthcheck"] = json!({
+            "Test":["CMD","cloudflared","tunnel","--metrics",METRICS,"ready"],
+            "Interval":10_000_000_000_u64,"Timeout":5_000_000_000_u64,"Retries":1,
+            "StartPeriod":30_000_000_000_u64,"StartInterval":2_000_000_000_u64
         });
         Self::label_hash(&mut spec);
         spec
@@ -127,24 +119,21 @@ impl Ingress {
     /// Removes the credentials written for `cloudflared`, whenever it is not
     /// meant to run.
     pub(super) async fn remove_tunnel_credentials(&self) -> Result<()> {
-        match tokio::fs::remove_file(self.tunnel_directory().join("credentials.json")).await {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                Err(error).context("remove the tunnel credentials written for cloudflared")
-            }
-            _ => Ok(()),
-        }
+        Self::remove_file(&self.tunnel_directory().join("credentials.json"))
+            .await
+            .context("remove the tunnel credentials written for cloudflared")
     }
 
     /// Writes the tunnel's configuration and credentials, and pulls its image.
     async fn prepare_tunnel(&self, credentials: &TunnelCredentials) -> Result<()> {
         let directory = self.tunnel_directory();
         crate::prepare_data_dir(&directory).await?;
-        super::certificates::write_private(
+        Self::write_private(
             &directory.join("config.json"),
             &serde_json::to_vec(&self.tunnel_configuration(credentials))?,
         )
         .await?;
-        super::certificates::write_private(
+        Self::write_private(
             &directory.join("credentials.json"),
             credentials.file.expose().as_bytes(),
         )
@@ -200,10 +189,7 @@ impl Ingress {
             .named_container(&self.tunnel_name())
             .await?
             .context("cloudflared does not exist")?;
-        anyhow::ensure!(
-            container["State"]["Running"] == true,
-            "cloudflared is not running"
-        );
+        anyhow::ensure!(Self::running(&container), "cloudflared is not running");
         container["State"]["Health"]["Status"]
             .as_str()
             .map(str::to_owned)

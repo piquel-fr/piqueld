@@ -44,7 +44,7 @@ use piqueld_core::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
@@ -441,25 +441,6 @@ impl Certificates {
     }
 }
 
-/// Writes a file readable only by the daemon, replacing it atomically.
-pub(super) async fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
-    let temporary = path.with_extension("tmp");
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temporary)
-        .await
-        .with_context(|| format!("create {}", temporary.display()))?;
-    file.write_all(bytes).await?;
-    file.sync_all().await?;
-    tokio::fs::rename(&temporary, path)
-        .await
-        .with_context(|| format!("replace {}", path.display()))
-}
-
 impl Ingress {
     /// DNS providers and certificates for system status.
     pub async fn dns_status(&self) -> DnsStatus {
@@ -604,12 +585,9 @@ impl Ingress {
                     .await?;
                 let result = async {
                     journal.request().await?;
-                    match tokio::fs::remove_file(self.certificates.path(&name)).await {
-                        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                            Err(error).context("delete expired certificate")
-                        }
-                        _ => Ok(()),
-                    }
+                    Self::remove_file(&self.certificates.path(&name))
+                        .await
+                        .context("delete expired certificate")
                 }
                 .await;
                 journal.finish(result).await
@@ -648,7 +626,7 @@ impl Ingress {
         let result = async {
             let stored = self.order_certificate(&journal, due, cancellation).await?;
             crate::prepare_data_dir(&self.certificates.directory.join("certificates")).await?;
-            write_private(&self.certificates.path(name), stored.bundle().as_bytes()).await?;
+            Self::write_private(&self.certificates.path(name), stored.bundle().as_bytes()).await?;
             Ok(stored)
         }
         .await;
@@ -867,7 +845,7 @@ impl Ingress {
             )
             .await?;
             crate::prepare_data_dir(&certificates.directory.join("acme")).await?;
-            write_private(&path, &serde_json::to_vec(&credentials)?).await?;
+            Self::write_private(&path, &serde_json::to_vec(&credentials)?).await?;
             account
         };
         *cached = Some(account.clone());
