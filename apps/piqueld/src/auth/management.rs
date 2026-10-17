@@ -53,9 +53,7 @@ impl Auth {
             Manage::DeleteUser { user_id } => store.delete_user(by, &user_id).await?,
             Manage::RemovePasskey { id } => store.remove_passkey(by, &id).await?,
             Manage::RenamePasskey { id, name } => {
-                if name.is_empty() || name.len() > 200 {
-                    return Err(AuthError::Invalid("passkey name must contain 1–200 bytes"));
-                }
+                Self::validate_passkey_name(&name)?;
                 store.rename_passkey(by, &id, &name).await?;
             }
             Manage::RevokeCredential { id } => store.revoke_credential(by, &id).await?,
