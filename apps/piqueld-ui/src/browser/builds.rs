@@ -1,9 +1,11 @@
 //! Build metadata and bounded output pages, independent of application runtime logs.
-use super::Alive;
 use super::format::{bytes, duration, timestamp};
 use super::logs::{LogKind, LogViewer, StreamFilter};
-use super::ui::{Icon, PageHeader, Tone, build_badge, empty, icon, notice, when};
-use super::{client_error_message, dashboard_context, environment_link};
+use super::ui::{
+    Icon, PageHeader, Tone, build_badge, code_or, empty, expander_summary, icon, load_older,
+    notice, when,
+};
+use super::{Alive, ClientErrorExt, dashboard_context, live_row};
 use crate::log_output::LogLine;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -81,14 +83,14 @@ pub(super) fn BuildHistory(
                         }
                         error.set(None);
                     }
-                    Err(e) => error.set(Some(client_error_message(&e))),
+                    Err(e) => error.set(Some(e.user_message())),
                 }
                 loading.set(false);
             }
             gloo_timers::future::TimeoutFuture::new(3000).await;
         }
     });
-    let older = move |_| {
+    let older = move || {
         loading.set(true);
         let (application, environment) = scope.get_value();
         let next = cursor.get_untracked();
@@ -107,7 +109,7 @@ pub(super) fn BuildHistory(
                     paginated.set(true);
                     error.set(None);
                 }
-                Err(e) => error.set(Some(client_error_message(&e))),
+                Err(e) => error.set(Some(e.user_message())),
             }
             loading.set(false);
         });
@@ -138,31 +140,11 @@ pub(super) fn BuildHistory(
                 each={move || records.get()}
                 key={|build| build.id}
                 children={move |initial| {
-                    let build = Signal::derive(move || {
-                        records
-                            .with(|items| {
-                                items
-                                    .iter()
-                                    .find(|b| b.id == initial.id)
-                                    .cloned()
-                                    .unwrap_or_else(|| initial.clone())
-                            })
-                    });
+                    let build = live_row(records, initial, |build| &build.id);
                     view! { <BuildCard record={build} scoped={scoped} /> }
                 }}
             />
-            <Show when={move || cursor.get().is_some()}>
-                <div class="btn-group">
-                    <button
-                        type="button"
-                        class="btn"
-                        disabled={move || loading.get()}
-                        on:click={older}
-                    >
-                        "Load older builds"
-                    </button>
-                </div>
-            </Show>
+            {load_older("Load older builds", cursor, loading, older)}
         </section>
     }
 }
@@ -173,35 +155,30 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
     let opened = RwSignal::new(false);
     view! {
         <article class="expander">
-            <button
-                type="button"
-                class="expander-summary"
-                aria-expanded={move || opened.get().to_string()}
-                on:click={move |_| opened.update(|value| *value = !*value)}
-            >
-                <span class="chevron" aria-hidden="true">
-                    {icon(Icon::ChevronRight)}
-                </span>
-                {move || build_badge(record.get().state)}
-                <strong>
-                    {move || {
-                        let b = record.get();
-                        b.job
-                            .map_or_else(
-                                || format!("Build #{}", b.id),
-                                |job| format!("Job {job} #{}", b.id),
-                            )
-                    }}
-                </strong>
-                <span class="tag">{move || record.get().service}</span>
-                <span class="meta">{move || build_summary_time(&record.get())}</span>
-            </button>
-            <div class="expander-body" hidden={move || !opened.get()}>
+            {expander_summary(
+                opened,
+                view! {
+                    {move || build_badge(record.get().state)}
+                    <strong>
+                        {move || {
+                            let b = record.get();
+                            b.job
+                                .map_or_else(
+                                    || format!("Build #{}", b.id),
+                                    |job| format!("Job {job} #{}", b.id),
+                                )
+                        }}
+                    </strong>
+                    <span class="tag">{move || record.get().service}</span>
+                    <span class="meta">{move || build_summary_time(&record.get())}</span>
+                },
+            )} <div class="expander-body" hidden={move || !opened.get()}>
                 {move || {
                     let b = record.get();
                     let duration = build_duration(&b);
-                    let environment = b.environment_id.clone();
-                    let link = environment_link(dashboard_context().signals, &environment);
+                    let environment = dashboard_context()
+                        .signals
+                        .environment_label(&b.environment_id);
                     let operation_id = b.operation_id.clone();
                     view! {
                         <dl class="kv">
@@ -209,15 +186,7 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
                                 .then(|| {
                                     view! {
                                         <dt>"Environment"</dt>
-                                        <dd>
-                                            {link
-                                                .map_or_else(
-                                                    || view! { <code>{environment.clone()}</code> }.into_any(),
-                                                    |(label, href)| {
-                                                        view! { <A href={href}>{label}</A> }.into_any()
-                                                    },
-                                                )}
-                                        </dd>
+                                        <dd>{environment}</dd>
                                     }
                                 })} <dt>"Operation"</dt> <dd>
                                 <A href={format!("/dashboard/events?operation={operation_id}")}>
@@ -242,29 +211,9 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
                             <dd>
                                 {b.finished_at_ms.map_or_else(|| "In progress".into(), timestamp)}
                             </dd> <dt>"Duration"</dt> <dd>{duration}</dd> {source_details(b.source)}
-                            <dt>"Resolved commit"</dt>
-                            <dd>
-                                {b
-                                    .commit
-                                    .map_or_else(
-                                        || {
-                                            view! { <span class="muted">"Not resolved"</span> }
-                                                .into_any()
-                                        },
-                                        |commit| view! { <code>{commit}</code> }.into_any(),
-                                    )}
-                            </dd> <dt>"Image"</dt>
-                            <dd>
-                                {b
-                                    .image_id
-                                    .map_or_else(
-                                        || {
-                                            view! { <span class="muted">"Not produced"</span> }
-                                                .into_any()
-                                        },
-                                        |image| view! { <code>{image}</code> }.into_any(),
-                                    )}
-                            </dd> <dt>"Retained output"</dt>
+                            <dt>"Resolved commit"</dt> <dd>{code_or(b.commit, "Not resolved")}</dd>
+                            <dt>"Image"</dt> <dd>{code_or(b.image_id, "Not produced")}</dd>
+                            <dt>"Retained output"</dt>
                             <dd>{bytes(u64::try_from(b.log_bytes).unwrap_or(0))}</dd>
                         </dl>
                     }
@@ -344,7 +293,7 @@ fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
                         expired.set(page.expired);
                         error.set(None);
                     }
-                    Err(e) => error.set(Some(client_error_message(&e))),
+                    Err(e) => error.set(Some(e.user_message())),
                 }
                 loading.set(false);
                 elapsed = 0;

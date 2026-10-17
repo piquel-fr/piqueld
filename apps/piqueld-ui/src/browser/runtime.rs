@@ -4,12 +4,12 @@ use super::format::timestamp;
 use super::ui::{
     Icon, Tone, badge, empty, health_badge, icon, notice, operation_badge, route_name, when,
 };
-use super::{DashboardSignals, dashboard_context, load_detail};
+use super::{DashboardSignals, dashboard_context, release_link};
 use crate::state::ApplicationHealth;
 use leptos::prelude::*;
 use piqueld_client::{
-    Client, DiagnosticView, EnvironmentDetailView, ObservedServiceView, RouteUrl, UrlState,
-    links::ImportState,
+    Client, DiagnosticView, EnvironmentDetailView, ObservedApplicationView, ObservedServiceView,
+    RouteUrl, UrlState, links::ImportState,
 };
 
 /// Live runtime detail for an environment page's Overview tab.
@@ -56,23 +56,13 @@ pub(super) fn RuntimeOverview() -> impl IntoView {
     }
 }
 
-/// Loaded detail: a stale-data warning if the last detail refresh failed, the
-/// runtime status, URLs, observed services, and diagnostics cards, and a
-/// button that reloads only this application's detail.
+/// Loaded detail: a stale-data warning if the last detail refresh failed, and
+/// the runtime status, URLs, observed services, and diagnostics cards.
 fn detail_view(
     detail: &EnvironmentDetailView,
     signals: DashboardSignals,
     client: Client,
 ) -> AnyView {
-    let refresh_detail = {
-        let id = detail.application.application.id().to_string();
-        move || load_detail(client.clone(), signals, id.clone())
-    };
-    let app = &detail.application;
-    let status = &detail.status;
-    let observed = &detail.observed;
-    let health = ApplicationHealth::from_server_state(status.state);
-    let latest = detail.latest_operation.clone();
     view! {
         <div class="stack">
             {move || {
@@ -87,198 +77,230 @@ fn detail_view(
                             ),
                         )
                     })
-            }} <section class="card" aria-labelledby="runtime-status-heading">
-                <header>
-                    <div>
-                        <h3 id="runtime-status-heading">"Runtime status"</h3>
-                        <p>
-                            {status
-                                .message
-                                .clone()
-                                .unwrap_or_else(|| "Observed from Docker Swarm.".into())}
-                        </p>
-                    </div>
-                    <button
-                        type="button"
-                        class="btn btn-sm"
-                        disabled={move || signals.detail_loading.get()}
-                        on:click={move |_| refresh_detail()}
-                    >
-                        {icon(Icon::Refresh)}
-                        {move || {
-                            if signals.detail_loading.get() { "Refreshing…" } else { "Refresh" }
-                        }}
-                    </button>
-                </header>
-                <dl class="kv">
-                    <dt>"State"</dt>
-                    <dd>{badge(health.tone(), status.state.to_string())}</dd>
-                    <dt>"Runtime health"</dt>
-                    <dd>{status.runtime_health.clone().unwrap_or_else(|| "unknown".into())}</dd>
-                    <dt>"Latest operation"</dt>
-                    <dd>
-                        {latest
-                            .map_or_else(
-                                || "None".into_any(),
-                                |op| {
-                                    view! {
-                                        <span class="btn-group">
-                                            {operation_badge(op.state)}
-                                            <span>
-                                                {format!("{} #{}", op.kind.as_str(), op.generation)}
-                                            </span>
-                                            {op
-                                                .phase
-                                                .map(|phase| view! { <span class="muted">{phase}</span> })}
-                                            <span class="muted">{when(op.updated_at_ms)}</span>
+            }} {status_card(detail, signals, client)} {urls_card(detail.urls.as_deref())}
+            {links_card(detail)} {observed_card(&detail.observed)}
+            {diagnostics_card(&detail.diagnostics)}
+        </div>
+    }
+    .into_any()
+}
+
+/// The environment's lifecycle state, latest operation, release, and
+/// identity, with a button that reloads only this application's detail.
+fn status_card(
+    detail: &EnvironmentDetailView,
+    signals: DashboardSignals,
+    client: Client,
+) -> AnyView {
+    let refresh_detail = {
+        let id = detail.application.application.id().to_string();
+        move || signals.load_detail(client.clone(), id.clone())
+    };
+    let app = &detail.application;
+    let status = &detail.status;
+    let observed = &detail.observed;
+    let health = ApplicationHealth::from_server_state(status.state);
+    let latest = detail.latest_operation.clone();
+    view! {
+        <section class="card" aria-labelledby="runtime-status-heading">
+            <header>
+                <div>
+                    <h3 id="runtime-status-heading">"Runtime status"</h3>
+                    <p>
+                        {status
+                            .message
+                            .clone()
+                            .unwrap_or_else(|| "Observed from Docker Swarm.".into())}
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    class="btn btn-sm"
+                    disabled={move || signals.detail_loading.get()}
+                    on:click={move |_| refresh_detail()}
+                >
+                    {icon(Icon::Refresh)}
+                    {move || {
+                        if signals.detail_loading.get() { "Refreshing…" } else { "Refresh" }
+                    }}
+                </button>
+            </header>
+            <dl class="kv">
+                <dt>"State"</dt>
+                <dd>{badge(health.tone(), status.state.to_string())}</dd>
+                <dt>"Runtime health"</dt>
+                <dd>{status.runtime_health.clone().unwrap_or_else(|| "unknown".into())}</dd>
+                <dt>"Latest operation"</dt>
+                <dd>
+                    {latest
+                        .map_or_else(
+                            || "None".into_any(),
+                            |op| {
+                                view! {
+                                    <span class="btn-group">
+                                        {operation_badge(op.state)}
+                                        <span>
+                                            {format!("{} #{}", op.kind.as_str(), op.generation)}
                                         </span>
-                                    }
-                                        .into_any()
-                                },
-                            )}
-                    </dd>
-                    <dt>"Release"</dt>
-                    <dd>
-                        {detail
-                            .release
-                            .as_ref()
-                            .map_or_else(
-                                || "None".into_any(),
-                                |release| {
-                                    let release = release.to_string();
-                                    let href = format!(
-                                        "/dashboard/applications/{}?release={release}",
-                                        app.application.id(),
-                                    );
-                                    view! {
-                                        <leptos_router::components::A href={href}>
-                                            <code>{release}</code>
-                                        </leptos_router::components::A>
-                                    }
-                                        .into_any()
-                                },
-                            )}
-                    </dd>
-                    <dt>"Generation"</dt>
-                    <dd>
-                        {format!(
-                            "{} saved · {} resolved",
-                            app.generation,
-                            detail
-                                .environment
-                                .resolved_generation
-                                .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+                                        {op
+                                            .phase
+                                            .map(|phase| view! { <span class="muted">{phase}</span> })}
+                                        <span class="muted">{when(op.updated_at_ms)}</span>
+                                    </span>
+                                }
+                                    .into_any()
+                            },
                         )}
-                    </dd>
-                    <dt>"Resources"</dt>
-                    <dd>
-                        {format!(
-                            "{} network{} · {} volume{}",
-                            observed.network_count,
-                            if observed.network_count == 1 { "" } else { "s" },
-                            observed.volume_count,
-                            if observed.volume_count == 1 { "" } else { "s" },
+                </dd>
+                <dt>"Release"</dt>
+                <dd>
+                    {detail
+                        .release
+                        .as_ref()
+                        .map_or_else(
+                            || "None".into_any(),
+                            |release| {
+                                release_link(app.application.id().as_str(), &release.to_string())
+                            },
                         )}
-                    </dd>
-                    <dt>"Environment"</dt>
-                    <dd>
-                        {detail.environment.name.to_string()} " "
-                        <code>{detail.environment.id.to_string()}</code>
-                    </dd>
-                    <dt>"Application ID"</dt>
-                    <dd>
-                        <code>{app.application.id().to_string()}</code>
-                    </dd>
-                    <dt>"Created"</dt>
-                    <dd>{timestamp(app.created_at_ms)}</dd>
-                    <dt>"Updated"</dt>
-                    <dd>{timestamp(app.updated_at_ms)}</dd>
-                </dl>
-            </section> <section class="card card-flush" aria-labelledby="urls-title">
-                <header>
-                    <div>
-                        <h3 id="urls-title">"URLs"</h3>
-                        <p>
-                            "Routes of the current runtime target, and whether each is reachable."
-                        </p>
-                    </div>
-                </header>
-                {match detail.urls.as_deref() {
-                    None => empty("This daemon does not report URLs."),
-                    Some([]) => empty("No routes are deployed in this environment."),
-                    Some(_) => {
-                        view! {
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>"URL"</th>
-                                        <th>"Name"</th>
-                                        <th>"Visibility"</th>
-                                        <th>"Destination"</th>
-                                        <th>"State"</th>
-                                        <th>"Details"</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {detail.urls.iter().flatten().map(url_row).collect_view()}
-                                </tbody>
-                            </table>
-                        }
-                            .into_any()
-                    }
-                }}
-            </section>
-            {links_card(&detail)}
-            <section class="card card-flush" aria-labelledby="observed-title">
-                <header>
-                    <div>
-                        <h3 id="observed-title">"Observed services"</h3>
-                        <p>
-                            "Replicas and health as reported by Docker for the current runtime target."
-                        </p>
-                    </div>
-                </header>
-                {if observed.services.is_empty() {
-                    empty("No services are running in this environment.")
-                } else {
+                </dd>
+                <dt>"Generation"</dt>
+                <dd>
+                    {format!(
+                        "{} saved · {} resolved",
+                        app.generation,
+                        detail
+                            .environment
+                            .resolved_generation
+                            .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+                    )}
+                </dd>
+                <dt>"Resources"</dt>
+                <dd>
+                    {format!(
+                        "{} network{} · {} volume{}",
+                        observed.network_count,
+                        if observed.network_count == 1 { "" } else { "s" },
+                        observed.volume_count,
+                        if observed.volume_count == 1 { "" } else { "s" },
+                    )}
+                </dd>
+                <dt>"Environment"</dt>
+                <dd>
+                    {detail.environment.name.to_string()} " "
+                    <code>{detail.environment.id.to_string()}</code>
+                </dd>
+                <dt>"Application ID"</dt>
+                <dd>
+                    <code>{app.application.id().to_string()}</code>
+                </dd>
+                <dt>"Created"</dt>
+                <dd>{timestamp(app.created_at_ms)}</dd>
+                <dt>"Updated"</dt>
+                <dd>{timestamp(app.updated_at_ms)}</dd>
+            </dl>
+        </section>
+    }
+    .into_any()
+}
+
+/// The routes of the current runtime target, or why there are none.
+fn urls_card(urls: Option<&[RouteUrl]>) -> AnyView {
+    view! {
+        <section class="card card-flush" aria-labelledby="urls-title">
+            <header>
+                <div>
+                    <h3 id="urls-title">"URLs"</h3>
+                    <p>"Routes of the current runtime target, and whether each is reachable."</p>
+                </div>
+            </header>
+            {match urls {
+                None => empty("This daemon does not report URLs."),
+                Some([]) => empty("No routes are deployed in this environment."),
+                Some(urls) => {
                     view! {
                         <table class="table">
                             <thead>
                                 <tr>
-                                    <th>"Service"</th>
-                                    <th>"Image"</th>
-                                    <th class="num">"Healthy"</th>
-                                    <th>"Health"</th>
+                                    <th>"URL"</th>
+                                    <th>"Name"</th>
+                                    <th>"Visibility"</th>
+                                    <th>"Destination"</th>
+                                    <th>"State"</th>
+                                    <th>"Details"</th>
                                 </tr>
                             </thead>
-                            <tbody>
-                                {observed.services.iter().map(observed_service_row).collect_view()}
-                            </tbody>
+                            <tbody>{urls.iter().map(url_row).collect_view()}</tbody>
                         </table>
                     }
                         .into_any()
-                }}
-            </section> <section class="card" aria-labelledby="diagnostics-title">
-                <header>
-                    <div>
-                        <h3 id="diagnostics-title">"Diagnostics"</h3>
-                        <p>
-                            "Reconciliation problems from status, runtime observation, and the latest operation."
-                        </p>
-                    </div>
-                </header>
-                {if detail.diagnostics.is_empty() {
-                    view! { <p class="hint">"No diagnostics reported."</p> }.into_any()
-                } else {
-                    view! {
-                        <ul class="stack-sm">
-                            {detail.diagnostics.iter().map(diagnostic_view).collect_view()}
-                        </ul>
-                    }
-                        .into_any()
-                }}
-            </section>
-        </div>
+                }
+            }}
+        </section>
+    }
+    .into_any()
+}
+
+/// The services Docker reports for the current runtime target.
+fn observed_card(observed: &ObservedApplicationView) -> AnyView {
+    view! {
+        <section class="card card-flush" aria-labelledby="observed-title">
+            <header>
+                <div>
+                    <h3 id="observed-title">"Observed services"</h3>
+                    <p>
+                        "Replicas and health as reported by Docker for the current runtime target."
+                    </p>
+                </div>
+            </header>
+            {if observed.services.is_empty() {
+                empty("No services are running in this environment.")
+            } else {
+                view! {
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>"Service"</th>
+                                <th>"Image"</th>
+                                <th class="num">"Healthy"</th>
+                                <th>"Health"</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {observed.services.iter().map(observed_service_row).collect_view()}
+                        </tbody>
+                    </table>
+                }
+                    .into_any()
+            }}
+        </section>
+    }
+    .into_any()
+}
+
+/// Reconciliation problems of the environment.
+fn diagnostics_card(diagnostics: &[DiagnosticView]) -> AnyView {
+    view! {
+        <section class="card" aria-labelledby="diagnostics-title">
+            <header>
+                <div>
+                    <h3 id="diagnostics-title">"Diagnostics"</h3>
+                    <p>
+                        "Reconciliation problems from status, runtime observation, and the latest operation."
+                    </p>
+                </div>
+            </header>
+            {if diagnostics.is_empty() {
+                view! { <p class="hint">"No diagnostics reported."</p> }.into_any()
+            } else {
+                view! {
+                    <ul class="stack-sm">
+                        {diagnostics.iter().map(diagnostic_view).collect_view()}
+                    </ul>
+                }
+                    .into_any()
+            }}
+        </section>
     }
     .into_any()
 }
@@ -385,6 +407,7 @@ fn waiting_for(url: &RouteUrl) -> Option<String> {
     (!url.pending.is_empty()).then(|| format!("Waiting for: {}", url.waiting_for()))
 }
 
+/// Table row for one observed service, followed by a row of its diagnostics.
 fn observed_service_row(service: &ObservedServiceView) -> AnyView {
     let health = ApplicationHealth::from_convergence(&service.convergence);
     let diagnostics = service

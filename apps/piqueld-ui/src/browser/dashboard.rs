@@ -1,31 +1,53 @@
 //! Sidebar navigation, overview metrics, application directory, and recent deployments.
+use super::format::{bytes, timestamp};
 use super::ui::{
     Icon, PageHeader, Tone, badge, empty, health_badge, icon, metric, notice, operation_badge, when,
 };
-use super::{
-    ApplicationRow, client_error_message, connection_label, dashboard_context, management,
-    row_health,
-};
+use super::{ApplicationRow, ClientErrorExt, access::can, dashboard_context, management};
 use crate::state::{ApplicationHealth, ConnectionState, DataState};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::{
     Client, PreviewUsage,
+    access::{GlobalPermission, Permission},
     system::{
         CertificateStatus, DependencyStatus, DnsProviderStatus, ImageStatus, PublicIngressStatus,
+        ReadinessStatus,
     },
 };
+use std::fmt::Write as _;
 
+impl ConnectionState {
+    /// Label of the connection state.
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Loading => "Checking…",
+            Self::Reachable => "Reachable",
+            Self::Failed => "Request failed",
+            Self::Unreachable => "Unreachable",
+        }
+    }
+
+    /// Tone of the connection dot and card.
+    const fn tone(self) -> Tone {
+        match self {
+            Self::Loading => Tone::Pending,
+            Self::Reachable => Tone::Ok,
+            Self::Failed | Self::Unreachable => Tone::Bad,
+        }
+    }
+}
+
+/// Navigation, the daemon connection, and the signed-in principal with a
+/// sign-out button.
 #[component]
 pub(super) fn Sidebar() -> impl IntoView {
     let signals = dashboard_context().signals;
     let who = super::auth::signed_in();
     // Pages the caller could not load anything on are hidden; the daemon
     // enforces every permission regardless.
-    let system = super::access::can(piqueld_client::access::Permission::Global(
-        piqueld_client::access::GlobalPermission::SystemRead,
-    ));
+    let system = can(Permission::Global(GlobalPermission::SystemRead));
     let display_name = move || who.get().map(|who| who.name().to_owned());
     let initial = move || {
         who.get()
@@ -78,9 +100,9 @@ pub(super) fn Sidebar() -> impl IntoView {
                 <span class="connection">
                     <span
                         class="dot"
-                        data-tone={move || connection_tone(signals.connection.get())}
+                        data-tone={move || signals.connection.get().tone().attr()}
                     ></span>
-                    {move || connection_label(signals.connection.get())}
+                    {move || signals.connection.get().label()}
                 </span>
                 <div class="user-row">
                     <span class="avatar" aria-hidden="true">
@@ -96,6 +118,7 @@ pub(super) fn Sidebar() -> impl IntoView {
     }
 }
 
+/// Sidebar link to `href`; `exact` links are only current on that very page.
 fn nav_link(href: &'static str, glyph: Icon, label: &'static str, exact: bool) -> AnyView {
     view! {
         <A href={href} attr:class="nav-link" exact={exact}>
@@ -104,14 +127,6 @@ fn nav_link(href: &'static str, glyph: Icon, label: &'static str, exact: bool) -
         </A>
     }
     .into_any()
-}
-
-const fn connection_tone(state: ConnectionState) -> &'static str {
-    match state {
-        ConnectionState::Loading => "pending",
-        ConnectionState::Reachable => "ok",
-        ConnectionState::Failed | ConnectionState::Unreachable => "bad",
-    }
 }
 
 /// Overview page: application counts by health, system readiness and the
@@ -124,7 +139,7 @@ pub(super) fn OverviewPage() -> impl IntoView {
             .applications
             .get()
             .iter()
-            .filter(|row| predicate(row_health(row)))
+            .filter(|row| predicate(row.health()))
             .count()
     };
     view! {
@@ -185,9 +200,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
     let context = dashboard_context();
     let signals = context.signals;
     let refresh = context.refresh;
-    let operate = super::access::can(piqueld_client::access::Permission::Global(
-        piqueld_client::access::GlobalPermission::SystemOperate,
-    ));
+    let operate = can(Permission::Global(GlobalPermission::SystemOperate));
     let checking_dns = RwSignal::new(false);
     let dns_error = RwSignal::new(None::<String>);
     let check_dns = move |_| {
@@ -202,7 +215,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                         }
                     });
                 }
-                Err(error) => dns_error.set(Some(client_error_message(&error))),
+                Err(error) => dns_error.set(Some(error.user_message())),
             }
             checking_dns.set(false);
         });
@@ -272,20 +285,18 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                         ))
                 }}
                 <div class="status-grid">
-                    {move || connection_readiness(signals.connection.get())}
+                    {move || connection_card(signals.connection.get())}
                     {move || {
                         signals
                             .system
                             .get()
                             .filter(|system| system.tailscale.enabled)
                             .map(|system| {
-                                let tailnet = system.tailscale;
-                                let (tone, label) = if tailnet.healthy {
-                                    (Tone::Ok, "Ready")
-                                } else {
-                                    (Tone::Bad, "Unhealthy")
-                                };
-                                status_card("Tailnet node", tone, label, &tailnet.message)
+                                health_card(
+                                    "Tailnet node",
+                                    system.tailscale.healthy,
+                                    &system.tailscale.message,
+                                )
                             })
                     }}
                     {move || {
@@ -304,103 +315,81 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                                     .chain(system.dns.certificates.iter().map(certificate_card))
                                     .collect_view()
                             })
-                    }}
-                    {move || {
-                        signals
-                            .readiness
-                            .get()
-                            .map(|status| {
-                                let ingress = &status.ingress;
-                                let (tone, label) = if !ingress.healthy {
-                                    (Tone::Bad, "Unhealthy")
-                                } else if !ingress.enabled {
-                                    (Tone::Neutral, "Disabled")
-                                } else {
-                                    (Tone::Ok, "Ready")
-                                };
-                                let private = &ingress.private;
-                                let private_card = (ingress.enabled && private.enabled)
-                                    .then(|| {
-                                        let (tone, label) = if private.healthy {
-                                            (Tone::Ok, "Ready")
-                                        } else {
-                                            (Tone::Bad, "Unhealthy")
-                                        };
-                                        let node = match (
-                                            &private.dns_name,
-                                            private.addresses.is_empty(),
-                                        ) {
-                                            (Some(name), false) => {
-                                                format!("{name} ({}). ", private.addresses.join(", "))
-                                            }
-                                            _ => String::new(),
-                                        };
-                                        status_card(
-                                            "Private listener",
-                                            tone,
-                                            label,
-                                            &format!("{node}{}", private.message),
-                                        )
-                                    });
-                                let tunnel_card = match &ingress.public {
-                                    PublicIngressStatus::Tunnel {
-                                        id,
-                                        connected,
-                                        message,
-                                    } if ingress.enabled => {
-                                        let (tone, label) = if *connected {
-                                            (Tone::Ok, "Connected")
-                                        } else {
-                                            (Tone::Bad, "Disconnected")
-                                        };
-                                        Some(
-                                            status_card(
-                                                "Cloudflare Tunnel",
-                                                tone,
-                                                label,
-                                                &format!("Tunnel {id}. {message}"),
-                                            ),
-                                        )
-                                    }
-                                    _ => None,
-                                };
-                                // The apps node's name and addresses are what private
-                                // routes' DNS records point at.
-                                // In tunnel mode, public routes' CNAME records point
-                                // at the tunnel ID.
-                                view! {
-                                    {dependency_readiness("Database", status.database)}
-                                    {dependency_readiness("Docker Engine", status.docker)}
-                                    {dependency_readiness("Swarm manager", status.swarm)}
-                                    {status_card("HTTPS ingress", tone, label, &ingress.message)}
-                                    {tunnel_card}
-                                    {private_card}
-                                }
-                            })
-                    }}
+                    }} {move || signals.readiness.get().map(|status| readiness_cards(&status))}
                 </div>
             </div>
         </section>
     }
 }
 
+/// Cards for the daemon's dependencies and its ingress: the HTTPS gateway,
+/// its Cloudflare Tunnel in tunnel mode, and its private listener.
+fn readiness_cards(status: &ReadinessStatus) -> AnyView {
+    let ingress = &status.ingress;
+    let (tone, label) = if !ingress.healthy {
+        (Tone::Bad, "Unhealthy")
+    } else if !ingress.enabled {
+        (Tone::Neutral, "Disabled")
+    } else {
+        (Tone::Ok, "Ready")
+    };
+    // In tunnel mode, public routes' CNAME records point at the tunnel ID.
+    let tunnel_card = match &ingress.public {
+        PublicIngressStatus::Tunnel {
+            id,
+            connected,
+            message,
+        } if ingress.enabled => {
+            let (tone, label) = if *connected {
+                (Tone::Ok, "Connected")
+            } else {
+                (Tone::Bad, "Disconnected")
+            };
+            Some(status_card(
+                "Cloudflare Tunnel",
+                tone,
+                label,
+                &format!("Tunnel {id}. {message}"),
+            ))
+        }
+        _ => None,
+    };
+    // The apps node's name and addresses are what private routes' DNS
+    // records point at.
+    let private = &ingress.private;
+    let private_card = (ingress.enabled && private.enabled).then(|| {
+        let node = match (&private.dns_name, private.addresses.is_empty()) {
+            (Some(name), false) => format!("{name} ({}). ", private.addresses.join(", ")),
+            _ => String::new(),
+        };
+        health_card(
+            "Private listener",
+            private.healthy,
+            &format!("{node}{}", private.message),
+        )
+    });
+    view! {
+        {dependency_card("Database", &status.database)}
+        {dependency_card("Docker Engine", &status.docker)}
+        {dependency_card("Swarm manager", &status.swarm)}
+        {status_card("HTTPS ingress", tone, label, &ingress.message)}
+        {tunnel_card}
+        {private_card}
+    }
+    .into_any()
+}
+
 /// Card for one DNS provider: its kind, discovered zones, health and whether
 /// it manages route records.
 fn dns_provider_card(provider: &DnsProviderStatus) -> AnyView {
-    let (tone, label) = if provider.healthy {
-        (Tone::Ok, "Ready")
-    } else {
-        (Tone::Bad, "Unhealthy")
-    };
     let zones = if provider.zones.is_empty() {
         "no zones".to_owned()
     } else {
         provider.zones.join(", ")
     };
-    status_card(
+    health_card(
         "DNS provider",
-        tone,
-        label,
+        provider.healthy,
         &format!(
             "{}: {zones}. {}. {}",
             provider.kind,
@@ -446,13 +435,14 @@ fn preview_card(usage: Option<&PreviewUsage>) -> AnyView {
     let applications = usage
         .applications
         .iter()
-        .map(|application| {
-            format!(
+        .fold(String::new(), |mut text, application| {
+            let _ = write!(
+                text,
                 " {}: {} of {}.",
                 application.name, application.previews, limits.max_per_application
-            )
-        })
-        .collect::<String>();
+            );
+            text
+        });
     let unlimited = if usage.unlimited_replicas > 0 {
         format!(
             " {} replicas deployed before the limits applied run without them until redeployed.",
@@ -470,9 +460,9 @@ fn preview_card(usage: Option<&PreviewUsage>) -> AnyView {
             usage.total,
             limits.max_total,
             usage.cpu_millis,
-            super::format::bytes(usage.memory_bytes),
+            bytes(usage.memory_bytes),
             limits.default_cpu_millis,
-            super::format::bytes(limits.default_memory_bytes),
+            bytes(limits.default_memory_bytes),
             limits.max_replicas,
         ),
     )
@@ -489,8 +479,8 @@ fn images_card(images: &ImageStatus) -> AnyView {
             &format!(
                 "{} kept. Cleanup removed {} of images since the daemon started, last {}.",
                 images.images,
-                super::format::bytes(images.reclaimed_bytes),
-                super::format::timestamp(at)
+                bytes(images.reclaimed_bytes),
+                timestamp(at)
             ),
         ),
         None => status_card(
@@ -517,7 +507,7 @@ fn certificate_card(certificate: &CertificateStatus) -> AnyView {
     };
     let expiry = certificate.expires_at_ms.map_or_else(
         || "not issued yet".to_owned(),
-        |at| format!("expires {}", super::format::timestamp(at)),
+        |at| format!("expires {}", timestamp(at)),
     );
     let error = certificate
         .error
@@ -533,25 +523,34 @@ fn certificate_card(certificate: &CertificateStatus) -> AnyView {
 }
 
 /// Readiness card for the browser's connection to the daemon itself.
-fn connection_readiness(state: ConnectionState) -> AnyView {
-    let (tone, message) = match state {
-        ConnectionState::Loading => (Tone::Pending, "Waiting for the daemon"),
-        ConnectionState::Reachable => (Tone::Ok, "The API is responding"),
-        ConnectionState::Failed => (Tone::Bad, "The daemon returned an error"),
-        ConnectionState::Unreachable => (Tone::Bad, "The dashboard cannot connect to piqueld"),
+fn connection_card(state: ConnectionState) -> AnyView {
+    let message = match state {
+        ConnectionState::Loading => "Waiting for the daemon",
+        ConnectionState::Reachable => "The API is responding",
+        ConnectionState::Failed => "The daemon returned an error",
+        ConnectionState::Unreachable => "The dashboard cannot connect to piqueld",
     };
-    status_card("piqueld daemon", tone, connection_label(state), message)
+    status_card("piqueld daemon", state.tone(), state.label(), message)
 }
 
 /// Readiness card for one daemon dependency.
-fn dependency_readiness(name: &'static str, status: DependencyStatus) -> AnyView {
-    let (tone, label, message) = match status {
-        DependencyStatus::Ready => (Tone::Ok, "Ready", "Available".to_owned()),
-        DependencyStatus::Failed { message } => (Tone::Bad, "Failed", message),
-    };
-    status_card(name, tone, label, &message)
+fn dependency_card(name: &'static str, status: &DependencyStatus) -> AnyView {
+    match status {
+        DependencyStatus::Ready => status_card(name, Tone::Ok, "Ready", "Available"),
+        DependencyStatus::Failed { message } => status_card(name, Tone::Bad, "Failed", message),
+    }
 }
 
+/// Card for a component that is either ready or unhealthy.
+fn health_card(name: &'static str, healthy: bool, message: &str) -> AnyView {
+    if healthy {
+        status_card(name, Tone::Ok, "Ready", message)
+    } else {
+        status_card(name, Tone::Bad, "Unhealthy", message)
+    }
+}
+
+/// Card with a `tone`d status `label` and a `message` explaining it.
 fn status_card(name: &'static str, tone: Tone, label: &'static str, message: &str) -> AnyView {
     view! {
         <article class="status-card" data-tone={tone.attr()}>
@@ -579,7 +578,14 @@ pub(super) fn ApplicationsPage() -> impl IntoView {
         </PageHeader>
         <div class="stack">
             <section class="list" aria-label="Applications">
-                {move || signals.applications.get().into_iter().map(application_row).collect_view()}
+                {move || {
+                    signals
+                        .applications
+                        .get()
+                        .into_iter()
+                        .map(ApplicationRow::list_row)
+                        .collect_view()
+                }}
                 {move || match signals.data_state.get() {
                     DataState::Loading => empty("Loading applications…"),
                     DataState::Empty => empty("No applications yet. Create one to get started."),
@@ -591,45 +597,52 @@ pub(super) fn ApplicationsPage() -> impl IntoView {
     }
 }
 
-fn application_row(row: ApplicationRow) -> AnyView {
-    let health = row_health(&row);
-    let subtitle = if row.application.delete_intent {
-        "Deletion requested".to_owned()
-    } else {
-        row.message()
-            .unwrap_or_else(|| format!("Generation {}", row.application.generation))
-    };
-    let latest = row
-        .deployments
-        .iter()
-        .max_by_key(|deployment| deployment.operation.created_at_ms)
-        .map(|deployment| deployment.operation.created_at_ms);
-    view! {
-        <A attr:class="list-row" href={format!("/dashboard/applications/{}", row.application.id)}>
-            <span class="app-icon" aria-hidden="true">
-                {icon(Icon::Package)}
-            </span>
-            <span class="title">{row.application.name.clone()} <small>{subtitle}</small></span>
-            <span class="meta">
-                {latest
-                    .map_or_else(
-                        || "Never deployed".into_any(),
-                        |ms| {
-                            view! {
-                                "Deployed "
-                                {when(ms)}
-                            }
-                                .into_any()
-                        },
-                    )}
-            </span>
-            {health_badge(health)}
-            <span class="chevron" aria-hidden="true">
-                {icon(Icon::ChevronRight)}
-            </span>
-        </A>
+impl ApplicationRow {
+    /// Directory row linking to the application's page, with its latest
+    /// deployment and health.
+    fn list_row(self) -> AnyView {
+        let health = self.health();
+        let subtitle = if self.application.delete_intent {
+            "Deletion requested".to_owned()
+        } else {
+            self.message()
+                .unwrap_or_else(|| format!("Generation {}", self.application.generation))
+        };
+        let latest = self
+            .deployments
+            .iter()
+            .max_by_key(|deployment| deployment.operation.created_at_ms)
+            .map(|deployment| deployment.operation.created_at_ms);
+        view! {
+            <A
+                attr:class="list-row"
+                href={format!("/dashboard/applications/{}", self.application.id)}
+            >
+                <span class="app-icon" aria-hidden="true">
+                    {icon(Icon::Package)}
+                </span>
+                <span class="title">{self.application.name.clone()} <small>{subtitle}</small></span>
+                <span class="meta">
+                    {latest
+                        .map_or_else(
+                            || "Never deployed".into_any(),
+                            |ms| {
+                                view! {
+                                    "Deployed "
+                                    {when(ms)}
+                                }
+                                    .into_any()
+                            },
+                        )}
+                </span>
+                {health_badge(health)}
+                <span class="chevron" aria-hidden="true">
+                    {icon(Icon::ChevronRight)}
+                </span>
+            </A>
+        }
+        .into_any()
     }
-    .into_any()
 }
 
 /// The newest deployments across applications; each application contributes its latest page.
