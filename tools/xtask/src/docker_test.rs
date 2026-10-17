@@ -153,7 +153,9 @@ fn limit() -> Result<Duration> {
     let Ok(value) = std::env::var("PIQUELD_DOCKER_TEST_TIMEOUT") else {
         return Ok(Duration::from_mins(15));
     };
-    let (number, unit) = value.split_at(value.len().saturating_sub(1));
+    let (number, unit) = value
+        .split_at_checked(value.len().saturating_sub(1))
+        .unwrap_or_default();
     let scale = match unit {
         "s" => 1,
         "m" => 60,
