@@ -108,7 +108,7 @@ fn usage_error(error: &clap::Error) -> ExitCode {
         .trim_start_matches("error: ");
     let error = CliError::usage(message);
     let mut stderr = std::io::stderr().lock();
-    let _ = output::Event::Error(ErrorReport::body(&error)).write(&mut stderr);
+    let _ = output::Event::Error(error.body()).write(&mut stderr);
     ExitCode::from(error.exit_code())
 }
 

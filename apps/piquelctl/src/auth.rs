@@ -46,17 +46,13 @@ impl Credentials {
         if let Some(path) = std::env::var_os("PIQUELD_CREDENTIALS_FILE") {
             return Ok(path.into());
         }
-        let root = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))
-            .ok_or_else(|| {
-                CliError::new(
-                    ErrorKind::Input,
-                    "set PIQUELD_CREDENTIALS_FILE or HOME to store login credentials",
-                )
-            })?;
-        Ok(root.join("piqueld/credentials.json"))
+        let directory = crate::support::config_dir().ok_or_else(|| {
+            CliError::new(
+                ErrorKind::Input,
+                "set PIQUELD_CREDENTIALS_FILE or HOME to store login credentials",
+            )
+        })?;
+        Ok(directory.join("credentials.json"))
     }
     /// Endpoint key that scopes saved logins to one daemon.
     ///
@@ -66,18 +62,10 @@ impl Credentials {
     /// (neither)                   →  unix:/run/piqueld/piqueld.sock
     /// ```
     fn key(cli: &Cli) -> String {
-        cli.url.as_ref().map_or_else(
-            || {
-                format!(
-                    "unix:{}",
-                    cli.socket.as_ref().map_or_else(
-                        || crate::support::DEFAULT_SOCKET.into(),
-                        |p| p.to_string_lossy().into_owned()
-                    )
-                )
-            },
-            |url| url.trim_end_matches('/').to_owned(),
-        )
+        match &cli.url {
+            Some(url) => url.trim_end_matches('/').to_owned(),
+            None => format!("unix:{}", cli.socket_path().to_string_lossy()),
+        }
     }
     /// Reads the credentials file at its default location.
     fn read() -> Result<Self> {
@@ -216,9 +204,10 @@ impl Credentials {
                 ));
             }
         };
-        token.map_or(Ok(client.clone()), |token| {
-            client.with_bearer(&token).map_err(Into::into)
-        })
+        match token {
+            Some(token) => Ok(client.with_bearer(&token)?),
+            None => Ok(client),
+        }
     }
 }
 /// Authenticated account result, shared by `login` and `whoami`.
@@ -351,7 +340,7 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
         ));
     }
     let limit = match &cli.command {
-        crate::cli::Command::Login { limit } if !limit.is_empty() => Some(limit.grants_by_id()?),
+        Command::Login { limit } if !limit.is_empty() => Some(limit.grants_by_id()?),
         _ => None,
     };
     let start = client.auth_device_start(limit.clone()).await?;
@@ -416,10 +405,17 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
             }
         }
     };
+    let expiry = Duration::from_secs(u64::from(start.expires_in).min(MAX_DEVICE_LOGIN_SECS));
     tokio::select! {
-        result=finish=>result,
-        ()=tokio::time::sleep(Duration::from_secs(u64::from(start.expires_in).min(MAX_DEVICE_LOGIN_SECS)))=>Err(CliError::new(ErrorKind::Input,"login expired; run piquelctl login again")),
-        signal=tokio::signal::ctrl_c()=>{signal?;Err(CliError::new(ErrorKind::Interrupted,"login cancelled"))},
+        result = finish => result,
+        () = tokio::time::sleep(expiry) => Err(CliError::new(
+            ErrorKind::Input,
+            "login expired; run piquelctl login again",
+        )),
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            Err(CliError::new(ErrorKind::Interrupted, "login cancelled"))
+        }
     }
 }
 /// Revokes the current credential on the daemon, then drops its saved copy.
@@ -439,8 +435,11 @@ pub(crate) async fn logout(cli: &Cli, client: &Client, console: &mut Console) ->
         client.clone()
     };
     match client.auth_logout().await {
-        Ok(_) => {}
-        Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 401 => {}
+        Ok(_)
+        | Err(piqueld_client::ClientError::Api {
+            status: http::StatusCode::UNAUTHORIZED,
+            ..
+        }) => {}
         Err(error) => return Err(error.into()),
     }
     if let Some((id, token)) = saved {

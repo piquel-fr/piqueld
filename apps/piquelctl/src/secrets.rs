@@ -1,13 +1,12 @@
 //! Secret values come from a file or stdin, never shell arguments or output.
 use crate::{
-    cli::Cli,
     commands::resolve_application,
     error::{CliError, ErrorKind, Result},
     output::{
         Console,
         reports::{SecretDeletionReport, StoredSecretReport, StoredSecretsReport},
     },
-    support::{confirm, read_input},
+    support::read_input,
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{ApplicationView, Client, EnvironmentAccess, SecretAccess};
@@ -134,7 +133,6 @@ impl SecretAction {
     /// confirmation.
     pub(crate) async fn run(
         &self,
-        cli: &Cli,
         client: &Client,
         console: &mut Console,
         application: &str,
@@ -168,15 +166,14 @@ impl SecretAction {
                     .cloned()
                     .unwrap_or_default()
                     .describe(environments);
-                confirm(
-                    console,
-                    cli.noninteractive,
-                    *yes,
-                    &format!(
-                        "Set secret {name:?} of {name_of_application:?}, mountable by {shown}? Takes effect on a later Deploy. [y/N] "
-                    ),
-                )
-                .await?;
+                console
+                    .confirm(
+                        *yes,
+                        &format!(
+                            "Set secret {name:?} of {name_of_application:?}, mountable by {shown}? Takes effect on a later Deploy."
+                        ),
+                    )
+                    .await?;
                 let file = file.clone();
                 // Stdin can block indefinitely; read off the runtime so Ctrl-C stays responsive.
                 let value = read_input("secret", move || Self::read_value(file.as_deref())).await?;
@@ -219,15 +216,14 @@ impl SecretAction {
                 let generation = expected_generation
                     .or_else(|| current(name).map(|s| s.metadata.generation))
                     .ok_or_else(|| CliError::new(ErrorKind::Input, "secret does not exist"))?;
-                confirm(
-                    console,
-                    cli.noninteractive,
-                    *yes,
-                    &format!(
-                        "Delete secret {name:?} of {name_of_application:?} from every environment? [y/N] "
-                    ),
-                )
-                .await?;
+                console
+                    .confirm(
+                        *yes,
+                        &format!(
+                            "Delete secret {name:?} of {name_of_application:?} from every environment?"
+                        ),
+                    )
+                    .await?;
                 client.delete_stored_secret(id, name, generation).await?;
                 console.emit(&SecretDeletionReport { deleted: name })?;
             }
@@ -283,7 +279,6 @@ impl GeneratedSecretAction {
     /// `application`, or its only environment.
     pub(crate) async fn run(
         &self,
-        cli: &Cli,
         client: &Client,
         console: &mut Console,
         application: &str,
@@ -314,17 +309,16 @@ impl GeneratedSecretAction {
                     .map(|s| s.generation)
             })
             .ok_or_else(|| CliError::new(ErrorKind::Input, "secret does not exist"))?;
-        confirm(
-            console,
-            cli.noninteractive,
-            *yes,
-            &format!(
-                "{verb} generated secret {name:?} of {:?} in environment {:?}? [y/N] ",
-                application.application.metadata().name,
-                environment.name.as_str()
-            ),
-        )
-        .await?;
+        console
+            .confirm(
+                *yes,
+                &format!(
+                    "{verb} generated secret {name:?} of {:?} in environment {:?}?",
+                    application.application.metadata().name,
+                    environment.name.as_str()
+                ),
+            )
+            .await?;
         if let Self::Regenerate { .. } = self {
             console.emit(&client.regenerate_secret(id, name, generation).await?)
         } else {
@@ -347,17 +341,12 @@ pub(crate) enum KeyAction {
 
 impl KeyAction {
     /// Discards every stored secret value after printing the scope and confirming.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let Self::RecoverKey { yes } = self;
-        let message = "Discard stored and generated secret values for ALL applications and environments? Running services keep their Docker secrets; replacement values and a new deploy are required. [y/N] ";
-        // Print scope even with --yes; the confirmation helper skips its prompt then.
-        console.warning(message.trim_end_matches(" [y/N] "))?;
-        confirm(console, cli.noninteractive, *yes, message).await?;
+        let message = "Discard stored and generated secret values for ALL applications and environments? Running services keep their Docker secrets; replacement values and a new deploy are required.";
+        // Print scope even with --yes; the confirmation skips its prompt then.
+        console.warning(message)?;
+        console.confirm(*yes, message).await?;
         console.emit(&client.recover_secret_key().await?)
     }
 }

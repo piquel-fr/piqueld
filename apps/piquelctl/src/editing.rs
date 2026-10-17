@@ -1,13 +1,13 @@
 //! Field editing commands share confirmation, revision protection, and deployment output.
 use crate::{
-    cli::{Cli, CreateArgs, DeploymentArgs},
+    cli::{CreateArgs, DeploymentArgs, expected_generation},
     commands::{resolve_application, wait_for_operation},
     error::{CliError, ErrorKind, Result},
     output::{
         Console,
         reports::{FileRow, RouteRow, SavedDeploymentReport},
     },
-    support::{confirm, read_text, retry_transport},
+    support::{read_text, retry_transport},
 };
 use clap::{Args, Subcommand, builder::TypedValueParser};
 use piqueld_client::{
@@ -85,7 +85,7 @@ pub(crate) struct EditFlags {
 }
 // Positional `<app> <service>` pair addressed by service-level edits.
 #[derive(Debug, Args)]
-pub(crate) struct Target {
+pub(crate) struct ServiceTarget {
     /// Application name or stable ID.
     app: String,
     /// Logical service name.
@@ -93,13 +93,20 @@ pub(crate) struct Target {
     #[command(flatten)]
     flags: EditFlags,
 }
+impl ServiceTarget {
+    /// The service's field-level `edit`, as the application edit saving it.
+    fn field(&self, edit: ServiceEdit) -> (&Self, ApplicationEdit) {
+        let name = self.service.clone();
+        (self, ApplicationEdit::Service { name, edit })
+    }
+}
 // Declares service-edit argument structs taking one required positional value.
 macro_rules! service_value_args {
     ($($name:ident: $ty:ty;)*) => {$ (
         #[derive(Debug, Args)]
         pub(crate) struct $name {
             #[command(flatten)]
-            target: Target,
+            target: ServiceTarget,
             /// New setting value.
             value: $ty,
         }
@@ -115,7 +122,7 @@ service_value_args! {
 #[derive(Debug, Args)]
 pub(crate) struct StringsArgs {
     #[command(flatten)]
-    target: Target,
+    target: ServiceTarget,
     /// Elements after --, preserving spaces. Omit to clear the array.
     #[arg(last = true)]
     value: Vec<String>,
@@ -123,7 +130,7 @@ pub(crate) struct StringsArgs {
 #[derive(Debug, Args)]
 pub(crate) struct TemplatesArgs {
     #[command(flatten)]
-    target: Target,
+    target: ServiceTarget,
     /// Elements after --, preserving spaces. Omit to clear the array.
     #[arg(last = true)]
     value: Vec<Template>,
@@ -134,7 +141,7 @@ macro_rules! optional_args {
         #[derive(Debug, Args)]
         pub(crate) struct $name {
             #[command(flatten)]
-            target: Target,
+            target: ServiceTarget,
             /// New value, or use --clear to remove the setting.
             #[arg(required_unless_present = "clear", conflicts_with = "clear")]
             value: Option<$ty>,
@@ -151,7 +158,7 @@ pub(crate) enum ServiceCommand {
     /// Add a service using an image or --git URL.
     Add(AddServiceArgs),
     /// Remove a service from saved configuration.
-    Remove(Target),
+    Remove(ServiceTarget),
     /// Rename a service declaration; deploy replaces its runtime service.
     Rename(TextArgs),
     /// Set desired replicas.
@@ -210,7 +217,7 @@ pub(crate) enum SourceCommand {
 #[derive(Debug, Args)]
 pub(crate) struct RolloutArgs {
     #[command(flatten)]
-    target: Target,
+    target: ServiceTarget,
     /// stop-first or start-first. Omit to stop first only when a volume is mounted writable.
     #[arg(long)]
     order: Option<Typed<RolloutOrder>>,
@@ -221,7 +228,7 @@ pub(crate) struct RolloutArgs {
 #[derive(Debug, Args)]
 pub(crate) struct AddServiceArgs {
     #[command(flatten)]
-    target: Target,
+    target: ServiceTarget,
     /// Container image reference, or select --git instead.
     #[arg(required_unless_present = "git", conflicts_with = "git")]
     image: Option<Template>,
@@ -235,7 +242,7 @@ pub(crate) struct AddServiceArgs {
 #[derive(Debug, Args)]
 pub(crate) struct GitSourceArgs {
     #[command(flatten)]
-    target: Target,
+    target: ServiceTarget,
     /// Git clone URL or host path.
     #[arg(id = "git")]
     url: String,
@@ -301,7 +308,7 @@ pub(crate) enum EnvironmentCommand {
     /// Set one variable without changing other entries.
     Set {
         #[command(flatten)]
-        target: Target,
+        target: ServiceTarget,
         /// Variable name.
         key: String,
         /// Variable value; may reference manifest variables with `${{ vars.<name> }}`.
@@ -310,7 +317,7 @@ pub(crate) enum EnvironmentCommand {
     /// Remove one variable.
     Remove {
         #[command(flatten)]
-        target: Target,
+        target: ServiceTarget,
         /// Variable name.
         key: String,
     },
@@ -320,7 +327,7 @@ pub(crate) enum MountCommand {
     /// Add or replace the mount at a container target path.
     Set {
         #[command(flatten)]
-        target: Target,
+        target: ServiceTarget,
         /// Declared named volume.
         volume: String,
         /// Container target path.
@@ -349,7 +356,7 @@ pub(crate) enum FileCommand {
 #[derive(Debug, Args)]
 pub(crate) struct AddFileArgs {
     #[command(flatten)]
-    target: Target,
+    target: ServiceTarget,
     /// Absolute container path of the file.
     #[arg(value_name = "TARGET")]
     file: String,
@@ -390,12 +397,7 @@ impl FileSourceArgs {
 impl FileCommand {
     /// Lists saved files, or adds, replaces, or removes one service's file by
     /// target.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let (target, edit) = match self {
             Self::List { app, service } => {
                 let application = resolve_application(client, app).await?;
@@ -414,28 +416,16 @@ impl FileCommand {
                     .collect();
                 return console.emit(&rows);
             }
-            Self::Add(args) => (
-                &args.target,
-                ServiceEdit::File(ServiceFile {
-                    target: args.file.clone(),
-                    source: args.source.source().await?,
-                    mode: args.mode,
-                }),
-            ),
-            Self::Remove(args) => (&args.target, ServiceEdit::RemoveFile(args.value.clone())),
+            Self::Add(args) => args.target.field(ServiceEdit::File(ServiceFile {
+                target: args.file.clone(),
+                source: args.source.source().await?,
+                mode: args.mode,
+            })),
+            Self::Remove(args) => args
+                .target
+                .field(ServiceEdit::RemoveFile(args.value.clone())),
         };
-        save(
-            cli,
-            client,
-            console,
-            &target.app,
-            &target.flags,
-            &ApplicationEdit::Service {
-                name: target.service.clone(),
-                edit,
-            },
-        )
-        .await
+        target.flags.save(client, console, &target.app, &edit).await
     }
 }
 #[derive(Debug, Subcommand)]
@@ -443,7 +433,7 @@ pub(crate) enum HealthCommand {
     /// Configure an HTTP health check.
     Http {
         #[command(flatten)]
-        target: Target,
+        target: ServiceTarget,
         /// Container port to probe.
         port: Typed<u16>,
         /// HTTP request path.
@@ -459,7 +449,7 @@ pub(crate) enum HealthCommand {
     /// Configure a command health check; command elements follow --.
     Command {
         #[command(flatten)]
-        target: Target,
+        target: ServiceTarget,
         /// Seconds between checks.
         #[arg(long, default_value = "10")]
         interval: Typed<u32>,
@@ -471,7 +461,7 @@ pub(crate) enum HealthCommand {
         elements: Vec<Template>,
     },
     /// Remove the configured health check.
-    Clear(Target),
+    Clear(ServiceTarget),
     /// Set the HTTP port.
     Port(ReplicasArgs),
     /// Set the HTTP path.
@@ -817,12 +807,7 @@ pub(crate) enum VariableCommand {
 impl VariableCommand {
     /// Edits variables client-side and saves them together, like routes.
     /// Unsetting an unknown variable is an input error.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let (Self::Set { target, .. } | Self::Unset(target)) = self;
         let current = resolve_application(client, &target.app).await?;
         let mut variables = Variables::of(&current.application.to_manifest());
@@ -852,160 +837,137 @@ impl VariableCommand {
                 }
             }
         }
-        save_loaded(
-            cli,
-            client,
-            console,
-            current,
-            &target.flags,
-            &ApplicationEdit::Variables(variables),
-        )
-        .await
+        let edit = ApplicationEdit::Variables(variables);
+        target
+            .flags
+            .save_loaded(client, console, &current, &edit)
+            .await
+    }
+}
+
+impl AddServiceArgs {
+    /// The new service: its image or Git source, one replica, and no
+    /// optional settings.
+    fn service(&self) -> Service {
+        Service {
+            name: self.target.service.clone(),
+            source: self.git.as_ref().map_or_else(
+                || Source::Image {
+                    image: self.image.clone().expect("Clap requires image or Git"),
+                },
+                |url| self.build.source(url),
+            ),
+            replicas: Typed::Literal(1),
+            environment: std::collections::BTreeMap::new(),
+            command: Vec::new(),
+            arguments: Vec::new(),
+            mounts: Vec::new(),
+            secrets: Vec::new(),
+            files: Vec::new(),
+            healthcheck: None,
+            resources: None,
+            depends_on: Vec::new(),
+            rollout: Rollout::default(),
+        }
     }
 }
 
 impl ServiceCommand {
     /// Saves one service edit. Adding and removing services are whole-application
     /// edits; every other variant becomes a field-level `ServiceEdit` on the target service.
-    /// New services start with one replica and no optional settings.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let (target, edit) = match self {
-            Self::Add(args) => {
-                let service = Service {
-                    name: args.target.service.clone(),
-                    source: args.git.as_ref().map_or_else(
-                        || Source::Image {
-                            image: args.image.clone().expect("Clap requires image or Git"),
-                        },
-                        |url| args.build.source(url),
-                    ),
-                    replicas: Typed::Literal(1),
-                    environment: std::collections::BTreeMap::new(),
-                    command: Vec::new(),
-                    arguments: Vec::new(),
-                    mounts: Vec::new(),
-                    secrets: Vec::new(),
-                    files: Vec::new(),
-                    healthcheck: None,
-                    resources: None,
-                    depends_on: Vec::new(),
-                    rollout: Rollout::default(),
-                };
-                return save(
-                    cli,
-                    client,
-                    console,
-                    &args.target.app,
-                    &args.target.flags,
-                    &ApplicationEdit::AddService(Box::new(service)),
-                )
-                .await;
-            }
-            Self::Remove(target) => {
-                return save(
-                    cli,
-                    client,
-                    console,
-                    &target.app,
-                    &target.flags,
-                    &ApplicationEdit::RemoveService(target.service.clone()),
-                )
-                .await;
-            }
-            Self::Rename(args) => (&args.target, ServiceEdit::Name(args.value.clone())),
-            Self::Replicas(args) => (&args.target, ServiceEdit::Replicas(args.value.clone())),
+            Self::Add(args) => (
+                &args.target,
+                ApplicationEdit::AddService(Box::new(args.service())),
+            ),
+            Self::Remove(target) => (
+                target,
+                ApplicationEdit::RemoveService(target.service.clone()),
+            ),
+            Self::Rename(args) => args.target.field(ServiceEdit::Name(args.value.clone())),
+            Self::Replicas(args) => args.target.field(ServiceEdit::Replicas(args.value.clone())),
             Self::Source { command } => command.edit(),
             Self::Env { command } => command.edit(),
-            Self::Command(args) => (&args.target, ServiceEdit::Command(args.value.clone())),
-            Self::Arguments(args) => (&args.target, ServiceEdit::Arguments(args.value.clone())),
-            Self::DependsOn(args) => (&args.target, ServiceEdit::DependsOn(args.value.clone())),
-            Self::Rollout(args) => (
-                &args.target,
-                ServiceEdit::Rollout(Rollout {
-                    order: args.order.clone(),
-                    monitor_seconds: args.monitor_seconds.clone(),
-                }),
-            ),
+            Self::Command(args) => args.target.field(ServiceEdit::Command(args.value.clone())),
+            Self::Arguments(args) => args
+                .target
+                .field(ServiceEdit::Arguments(args.value.clone())),
+            Self::DependsOn(args) => args
+                .target
+                .field(ServiceEdit::DependsOn(args.value.clone())),
+            Self::Rollout(args) => args.target.field(ServiceEdit::Rollout(Rollout {
+                order: args.order.clone(),
+                monitor_seconds: args.monitor_seconds.clone(),
+            })),
             Self::Mount { command } => command.edit(),
             Self::Health { command } => command.edit(),
-            Self::Cpu(args) => (&args.target, ServiceEdit::Cpu(args.value.clone())),
-            Self::Memory(args) => (&args.target, ServiceEdit::Memory(args.value.clone())),
+            Self::Cpu(args) => args.target.field(ServiceEdit::Cpu(args.value.clone())),
+            Self::Memory(args) => args.target.field(ServiceEdit::Memory(args.value.clone())),
         };
-        save(
-            cli,
-            client,
-            console,
-            &target.app,
-            &target.flags,
-            &ApplicationEdit::Service {
-                name: target.service.clone(),
-                edit,
-            },
-        )
-        .await
+        target.flags.save(client, console, &target.app, &edit).await
     }
 }
 impl SourceCommand {
     /// Maps the subcommand to its target service and source edit.
-    fn edit(&self) -> (&Target, ServiceEdit) {
+    fn edit(&self) -> (&ServiceTarget, ApplicationEdit) {
         match self {
-            Self::Image(args) => (&args.target, ServiceEdit::Image(args.value.clone())),
-            Self::Git(args) => (
-                &args.target,
-                ServiceEdit::Source(args.build.source(&args.url)),
-            ),
-            Self::Url(args) => (&args.target, ServiceEdit::GitUrl(args.value.clone())),
-            Self::Branch(args) => (&args.target, ServiceEdit::GitBranch(args.value.clone())),
-            Self::Commit(args) => (&args.target, ServiceEdit::GitCommit(args.value.clone())),
-            Self::Dockerfile(args) => (&args.target, ServiceEdit::Dockerfile(args.value.clone())),
-            Self::Context(args) => (&args.target, ServiceEdit::Context(args.value.clone())),
+            Self::Image(args) => args.target.field(ServiceEdit::Image(args.value.clone())),
+            Self::Git(args) => args
+                .target
+                .field(ServiceEdit::Source(args.build.source(&args.url))),
+            Self::Url(args) => args.target.field(ServiceEdit::GitUrl(args.value.clone())),
+            Self::Branch(args) => args
+                .target
+                .field(ServiceEdit::GitBranch(args.value.clone())),
+            Self::Commit(args) => args
+                .target
+                .field(ServiceEdit::GitCommit(args.value.clone())),
+            Self::Dockerfile(args) => args
+                .target
+                .field(ServiceEdit::Dockerfile(args.value.clone())),
+            Self::Context(args) => args.target.field(ServiceEdit::Context(args.value.clone())),
         }
     }
 }
 impl EnvironmentCommand {
     /// Maps to a single-entry environment edit; `None` removes the key.
-    fn edit(&self) -> (&Target, ServiceEdit) {
+    fn edit(&self) -> (&ServiceTarget, ApplicationEdit) {
         match self {
-            Self::Set { target, key, value } => (
-                target,
-                ServiceEdit::EnvironmentEntry((key.clone(), Some(value.clone()))),
-            ),
+            Self::Set { target, key, value } => target.field(ServiceEdit::EnvironmentEntry((
+                key.clone(),
+                Some(value.clone()),
+            ))),
             Self::Remove { target, key } => {
-                (target, ServiceEdit::EnvironmentEntry((key.clone(), None)))
+                target.field(ServiceEdit::EnvironmentEntry((key.clone(), None)))
             }
         }
     }
 }
 impl MountCommand {
     /// Maps to a mount edit keyed by container target path.
-    fn edit(&self) -> (&Target, ServiceEdit) {
+    fn edit(&self) -> (&ServiceTarget, ApplicationEdit) {
         match self {
             Self::Set {
                 target,
                 volume,
                 path,
                 read_only,
-            } => (
-                target,
-                ServiceEdit::Mount(Mount {
-                    volume: volume.clone(),
-                    target: path.clone(),
-                    read_only: *read_only,
-                }),
-            ),
-            Self::Remove(args) => (&args.target, ServiceEdit::RemoveMount(args.value.clone())),
+            } => target.field(ServiceEdit::Mount(Mount {
+                volume: volume.clone(),
+                target: path.clone(),
+                read_only: *read_only,
+            })),
+            Self::Remove(args) => args
+                .target
+                .field(ServiceEdit::RemoveMount(args.value.clone())),
         }
     }
 }
 impl HealthCommand {
     /// Maps to a health check edit: `Http`/`Command` replace the whole check, `Clear`
     /// removes it, and the rest adjust one field of the existing check.
-    fn edit(&self) -> (&Target, ServiceEdit) {
+    fn edit(&self) -> (&ServiceTarget, ApplicationEdit) {
         match self {
             Self::Http {
                 target,
@@ -1013,50 +975,44 @@ impl HealthCommand {
                 path,
                 interval,
                 check_timeout,
-            } => (
-                target,
-                ServiceEdit::Healthcheck(Some(HealthCheck::Http {
-                    port: port.clone(),
-                    path: path.clone(),
-                    interval_seconds: interval.clone(),
-                    timeout_seconds: check_timeout.clone(),
-                })),
-            ),
+            } => target.field(ServiceEdit::Healthcheck(Some(HealthCheck::Http {
+                port: port.clone(),
+                path: path.clone(),
+                interval_seconds: interval.clone(),
+                timeout_seconds: check_timeout.clone(),
+            }))),
             Self::Command {
                 target,
                 interval,
                 check_timeout,
                 elements,
-            } => (
-                target,
-                ServiceEdit::Healthcheck(Some(HealthCheck::Command {
-                    command: elements.clone(),
-                    interval_seconds: interval.clone(),
-                    timeout_seconds: check_timeout.clone(),
-                })),
-            ),
-            Self::Clear(target) => (target, ServiceEdit::Healthcheck(None)),
-            Self::Port(args) => (&args.target, ServiceEdit::HealthPort(args.value.clone())),
-            Self::Path(args) => (&args.target, ServiceEdit::HealthPath(args.value.clone())),
-            Self::CommandElements(args) => {
-                (&args.target, ServiceEdit::HealthCommand(args.value.clone()))
-            }
-            Self::Interval(args) => (
-                &args.target,
-                ServiceEdit::HealthInterval(args.value.clone()),
-            ),
-            Self::Timeout(args) => (&args.target, ServiceEdit::HealthTimeout(args.value.clone())),
+            } => target.field(ServiceEdit::Healthcheck(Some(HealthCheck::Command {
+                command: elements.clone(),
+                interval_seconds: interval.clone(),
+                timeout_seconds: check_timeout.clone(),
+            }))),
+            Self::Clear(target) => target.field(ServiceEdit::Healthcheck(None)),
+            Self::Port(args) => args
+                .target
+                .field(ServiceEdit::HealthPort(args.value.clone())),
+            Self::Path(args) => args
+                .target
+                .field(ServiceEdit::HealthPath(args.value.clone())),
+            Self::CommandElements(args) => args
+                .target
+                .field(ServiceEdit::HealthCommand(args.value.clone())),
+            Self::Interval(args) => args
+                .target
+                .field(ServiceEdit::HealthInterval(args.value.clone())),
+            Self::Timeout(args) => args
+                .target
+                .field(ServiceEdit::HealthTimeout(args.value.clone())),
         }
     }
 }
 impl VolumeCommand {
     /// Saves a named volume declaration or removal.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let (args, edit) = match self {
             Self::Add(args) => (
                 args,
@@ -1066,7 +1022,7 @@ impl VolumeCommand {
             ),
             Self::Remove(args) => (args, ApplicationEdit::RemoveVolume(args.volume.clone())),
         };
-        save(cli, client, console, &args.app, &args.flags, &edit).await
+        args.flags.save(client, console, &args.app, &edit).await
     }
 }
 impl RouteCommand {
@@ -1074,12 +1030,7 @@ impl RouteCommand {
     /// list: loads the application, appends a route or changes or removes one
     /// (by normalized hostname), then saves against the same loaded generation.
     /// Changing or removing an unknown hostname is an input error.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let target = match self {
             Self::List { app } => return list_routes(client, console, app).await,
             Self::Add(args) => &args.target,
@@ -1148,27 +1099,18 @@ impl RouteCommand {
                 }
             }
         }
-        save_loaded(
-            cli,
-            client,
-            console,
-            current,
-            &target.flags,
-            &ApplicationEdit::Routes(routes),
-        )
-        .await
+        let edit = ApplicationEdit::Routes(routes);
+        target
+            .flags
+            .save_loaded(client, console, &current, &edit)
+            .await
     }
 }
 impl JobCommand {
     /// Edits jobs client-side and saves the whole list, like routes: a new job
     /// runs after the existing ones, a replaced job keeps its position, and
     /// moving or removing an unknown job is an input error.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let target = match self {
             Self::Set(args) => &args.target,
             Self::Move(args) => &args.target,
@@ -1213,26 +1155,17 @@ impl JobCommand {
                 ));
             }
         }
-        save_loaded(
-            cli,
-            client,
-            console,
-            current,
-            &target.flags,
-            &ApplicationEdit::Jobs(jobs),
-        )
-        .await
+        let edit = ApplicationEdit::Jobs(jobs);
+        target
+            .flags
+            .save_loaded(client, console, &current, &edit)
+            .await
     }
 }
 impl ExportCommand {
     /// Lists saved exports, or edits them client-side and saves the whole
     /// list, like jobs: setting an exported service replaces its grants in place.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let target = match self {
             Self::List { app } => {
                 let application = resolve_application(client, app).await?;
@@ -1269,26 +1202,17 @@ impl ExportCommand {
             }
             (Self::List { .. }, Some(_)) => unreachable!("listing returned above"),
         }
-        save_loaded(
-            cli,
-            client,
-            console,
-            current,
-            &target.flags,
-            &ApplicationEdit::Exports(exports),
-        )
-        .await
+        let edit = ApplicationEdit::Exports(exports);
+        target
+            .flags
+            .save_loaded(client, console, &current, &edit)
+            .await
     }
 }
 impl ImportCommand {
     /// Lists saved imports, or edits them client-side and saves the whole
     /// list: adding an imported service again replaces its environment.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let target = match self {
             Self::List { app } => {
                 let application = resolve_application(client, app).await?;
@@ -1325,25 +1249,16 @@ impl ImportCommand {
             }
             (Self::List { .. }, Some(_)) => unreachable!("listing returned above"),
         }
-        save_loaded(
-            cli,
-            client,
-            console,
-            current,
-            &target.flags,
-            &ApplicationEdit::Imports(imports),
-        )
-        .await
+        let edit = ApplicationEdit::Imports(imports);
+        target
+            .flags
+            .save_loaded(client, console, &current, &edit)
+            .await
     }
 }
 impl RepositoryCommand {
     /// Saves a manifest repository connection, disconnection, or single-field change.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let (target, edit) = match self {
             Self::Connect {
                 target,
@@ -1373,7 +1288,7 @@ impl RepositoryCommand {
                 target,
                 ApplicationEdit::RepositorySync(mode.with_interval(*interval)?),
             ),
-            Self::Webhook { command } => return command.run(cli, client, console).await,
+            Self::Webhook { command } => return command.run(client, console).await,
             Self::Disconnect(target) => (target, ApplicationEdit::Repository(None)),
             Self::Url(args) => (
                 &args.target,
@@ -1384,13 +1299,13 @@ impl RepositoryCommand {
                 ApplicationEdit::RepositoryPath(args.value.clone()),
             ),
         };
-        save(cli, client, console, &target.app, &target.flags, &edit).await
+        target.flags.save(client, console, &target.app, &edit).await
     }
 }
 
 impl WebhookCommand {
     /// Shows the webhook, or confirms and generates a new secret.
-    async fn run(&self, cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         match self {
             Self::Show { app } => {
                 let application = resolve_application(client, app).await?;
@@ -1402,34 +1317,20 @@ impl WebhookCommand {
             }
             Self::Rotate { app, yes } => {
                 let application = resolve_application(client, app).await?;
-                confirm(
-                    console,
-                    cli.noninteractive,
-                    *yes,
-                    &format!(
-                        "Generate a new webhook secret for application {:?}? The current one stops verifying at once. [y/N] ",
-                        application.application.metadata().name
-                    ),
-                )
-                .await?;
+                console
+                    .confirm(
+                        *yes,
+                        &format!(
+                            "Generate a new webhook secret for application {:?}? The current one stops verifying at once.",
+                            application.application.metadata().name
+                        ),
+                    )
+                    .await?;
                 let id = application.application.id().as_str();
                 console.emit(&client.generate_webhook_secret(id).await?)
             }
         }
     }
-}
-
-/// Resolves `app` by name or ID, then saves `edit` against it.
-pub(crate) async fn save(
-    cli: &Cli,
-    client: &Client,
-    console: &mut Console,
-    app: &str,
-    flags: &EditFlags,
-    edit: &ApplicationEdit,
-) -> Result<()> {
-    let current = resolve_application(client, app).await?;
-    save_loaded(cli, client, console, current, flags, edit).await
 }
 
 /// Lists the deployed routes of every environment of `app`, from the
@@ -1452,82 +1353,95 @@ async fn list_routes(client: &Client, console: &mut Console, app: &str) -> Resul
     console.emit(&rows)
 }
 
-/// Confirms and saves `edit` for an already loaded application. Unless `--force`,
-/// the save requires `--expected-generation` or, by default, the loaded generation,
-/// so concurrent edits are rejected instead of overwritten.
-pub(crate) async fn save_loaded(
-    cli: &Cli,
-    client: &Client,
-    console: &mut Console,
-    current: ApplicationView,
-    flags: &EditFlags,
-    edit: &ApplicationEdit,
-) -> Result<()> {
-    let action = if flags.deployment.deploy {
-        "Save and deploy changes to"
-    } else {
-        "Save changes to"
-    };
-    confirm(
-        console,
-        cli.noninteractive,
-        flags.yes,
-        &format!(
-            "{action} application {:?}? [y/N] ",
-            current.application.metadata().name
-        ),
-    )
-    .await?;
-    let options = EditOptions {
-        expected_generation: (!flags.force)
-            .then_some(flags.expected_generation.unwrap_or(current.generation)),
-        force: flags.force,
-        deploy: flags.deployment.deploy,
-    };
-    let saved = retry_transport(|| {
-        client.edit_application(current.application.id().as_str(), edit, &options)
-    })
-    .await?;
-    finish(console, client, &saved, &flags.deployment).await
-}
-/// Confirms and creates an empty application, optionally deploying it.
-pub(crate) async fn create(
-    cli: &Cli,
-    client: &Client,
-    console: &mut Console,
-    args: &CreateArgs,
-) -> Result<()> {
-    confirm(
-        console,
-        cli.noninteractive,
-        args.yes,
-        &format!("Create application {:?}? [y/N] ", args.name),
-    )
-    .await?;
-    let saved =
-        retry_transport(|| client.create_application(&args.name, args.deployment.deploy)).await?;
-    finish(console, client, &saved, &args.deployment).await
-}
-/// Emits the save result, first waiting, in order, for every accepted
-/// deployment (one per environment that builds) unless `--no-wait`.
-pub(crate) async fn finish(
-    console: &mut Console,
-    client: &Client,
-    saved: &SavedApplication,
-    deployment: &DeploymentArgs,
-) -> Result<()> {
-    let deployments = saved.deployments();
-    if deployments.is_empty() || deployment.no_wait {
-        return console.emit(saved);
+impl EditFlags {
+    /// Resolves `app` by name or ID, then saves `edit` against it.
+    pub(crate) async fn save(
+        &self,
+        client: &Client,
+        console: &mut Console,
+        app: &str,
+        edit: &ApplicationEdit,
+    ) -> Result<()> {
+        let current = resolve_application(client, app).await?;
+        self.save_loaded(client, console, &current, edit).await
     }
-    let mut operations = Vec::with_capacity(deployments.len());
-    for id in deployments {
-        operations.push(wait_for_operation(console, client, id).await?);
+
+    /// Confirms and saves `edit` for an already loaded application. Unless `--force`,
+    /// the save requires `--expected-generation` or, by default, the loaded generation,
+    /// so concurrent edits are rejected instead of overwritten.
+    pub(crate) async fn save_loaded(
+        &self,
+        client: &Client,
+        console: &mut Console,
+        current: &ApplicationView,
+        edit: &ApplicationEdit,
+    ) -> Result<()> {
+        let action = if self.deployment.deploy {
+            "Save and deploy changes to"
+        } else {
+            "Save changes to"
+        };
+        console
+            .confirm(
+                self.yes,
+                &format!(
+                    "{action} application {:?}?",
+                    current.application.metadata().name
+                ),
+            )
+            .await?;
+        let options = EditOptions {
+            expected_generation: expected_generation(
+                self.force,
+                self.expected_generation,
+                current.generation,
+            ),
+            force: self.force,
+            deploy: self.deployment.deploy,
+        };
+        let saved = retry_transport(|| {
+            client.edit_application(current.application.id().as_str(), edit, &options)
+        })
+        .await?;
+        self.deployment.finish(client, console, &saved).await
     }
-    console.emit(&SavedDeploymentReport {
-        saved,
-        outcome: operations[0].state,
-        operation: &operations[0],
-        operations: &operations,
-    })
+}
+
+impl CreateArgs {
+    /// Confirms and creates an empty application, optionally deploying it.
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        console
+            .confirm(self.yes, &format!("Create application {:?}?", self.name))
+            .await?;
+        let saved =
+            retry_transport(|| client.create_application(&self.name, self.deployment.deploy))
+                .await?;
+        self.deployment.finish(client, console, &saved).await
+    }
+}
+
+impl DeploymentArgs {
+    /// Emits the save result, first waiting, in order, for every accepted
+    /// deployment (one per environment that builds) unless `--no-wait`.
+    pub(crate) async fn finish(
+        &self,
+        client: &Client,
+        console: &mut Console,
+        saved: &SavedApplication,
+    ) -> Result<()> {
+        let deployments = saved.deployments();
+        if deployments.is_empty() || self.no_wait {
+            return console.emit(saved);
+        }
+        let mut operations = Vec::with_capacity(deployments.len());
+        for id in deployments {
+            operations.push(wait_for_operation(console, client, id).await?);
+        }
+        console.emit(&SavedDeploymentReport {
+            saved,
+            outcome: operations[0].state,
+            operation: &operations[0],
+            operations: &operations,
+        })
+    }
 }

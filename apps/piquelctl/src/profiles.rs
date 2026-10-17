@@ -90,11 +90,8 @@ impl Profiles {
             let context = format!("profiles file {} ({source})", path.display());
             return Self::load_files([(path, true)]).map_err(|error| error.configuration(context));
         }
-        let user_path = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-            .map(|root| root.join("piqueld/profiles.toml"));
+        let user_path =
+            crate::support::config_dir().map(|directory| directory.join("profiles.toml"));
         Self::load_files(
             std::iter::once(PathBuf::from("/etc/piqueld/profiles.toml"))
                 .chain(user_path)
