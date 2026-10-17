@@ -109,17 +109,34 @@ impl<D> Controller<D> {
     }
 
     /// Replaces the retry policy used by this controller.
-    #[must_use]
     ///
     /// # Panics
     /// Panics when the policy has no attempts or its initial delay exceeds its
     /// maximum delay.
+    #[must_use]
     pub fn with_retry_policy(mut self, retry: RetryPolicy) -> Self {
         if let Err(error) = retry.validate() {
             panic!("invalid retry policy: {error}");
         }
         self.retry = retry;
         self
+    }
+
+    /// The installation's identity.
+    ///
+    /// # Panics
+    /// Panics if the store violates its validated instance identity invariant.
+    fn instance_id(&self) -> piqueld_core::InstanceId {
+        piqueld_core::InstanceId::parse(self.store.instance_id())
+            .expect("store instance identity is valid")
+    }
+
+    /// The request removing every resource of environment `id`.
+    fn delete_request(&self, id: &piqueld_core::EnvironmentId) -> PlanRequest {
+        PlanRequest::Delete {
+            environment_id: id.clone(),
+            instance_id: self.instance_id(),
+        }
     }
 }
 
@@ -177,6 +194,7 @@ impl Default for RetryPolicy {
 
 impl<D: DockerApi> Controller<D> {
     /// Shares the controller's I/O limits with API observation and preview.
+    ///
     /// # Panics
     /// Panics if the store violates its validated instance identity invariant.
     #[must_use]
@@ -191,38 +209,60 @@ impl<D: DockerApi> Controller<D> {
     }
 }
 
-/// Whether the plan carries a diagnostic with the given stable code.
-fn has_diagnostic(plan: &piqueld_core::Plan, code: &str) -> bool {
-    plan.diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == code)
+/// Why a plan is blocked: its first recognized blocking diagnostic, in
+/// priority order.
+#[derive(Clone, Copy)]
+enum BlockedPlan {
+    OwnershipConflict,
+    ImmutableConfiguration,
+    ServiceUpdateFailed,
+    Unclassified,
 }
 
-/// Classifies a blocked plan by its first recognized blocking diagnostic, in
-/// priority order: ownership, immutable configuration, then failed service update.
-pub(super) fn blocked_plan_error(plan: &piqueld_core::Plan) -> OperationError {
-    if has_diagnostic(plan, codes::UNOWNED_NAME_COLLISION) {
-        OperationError::OwnershipConflict
-    } else if has_diagnostic(plan, codes::IMMUTABLE_CONFIGURATION_DRIFT) {
-        OperationError::DockerConfigurationConflict
-    } else if has_diagnostic(plan, codes::SERVICE_UPDATE_FAILED) {
-        OperationError::ServiceUpdateFailed
-    } else {
-        OperationError::PlanBlocked("an unclassified blocking diagnostic")
+impl BlockedPlan {
+    /// Classifies a blocked `plan`: ownership first, then immutable
+    /// configuration, then a failed service update.
+    fn of(plan: &Plan) -> Self {
+        let has = |code: &str| {
+            plan.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == code)
+        };
+        if has(codes::UNOWNED_NAME_COLLISION) {
+            Self::OwnershipConflict
+        } else if has(codes::IMMUTABLE_CONFIGURATION_DRIFT) {
+            Self::ImmutableConfiguration
+        } else if has(codes::SERVICE_UPDATE_FAILED) {
+            Self::ServiceUpdateFailed
+        } else {
+            Self::Unclassified
+        }
     }
-}
 
-/// Human-readable application status for a blocked plan, using the same priority
-/// order as `blocked_plan_error`.
-pub(super) fn blocked_plan_message(plan: &piqueld_core::Plan) -> &'static str {
-    if has_diagnostic(plan, codes::UNOWNED_NAME_COLLISION) {
-        "runtime reconciliation is blocked by an ownership conflict"
-    } else if has_diagnostic(plan, codes::IMMUTABLE_CONFIGURATION_DRIFT) {
-        "runtime reconciliation is blocked by immutable Docker configuration"
-    } else if has_diagnostic(plan, codes::SERVICE_UPDATE_FAILED) {
-        "runtime reconciliation is blocked by a failed service update"
-    } else {
-        "runtime reconciliation is blocked"
+    /// The error failing an operation whose plan is blocked.
+    fn error(self) -> OperationError {
+        match self {
+            Self::OwnershipConflict => OperationError::OwnershipConflict,
+            Self::ImmutableConfiguration => OperationError::DockerConfigurationConflict,
+            Self::ServiceUpdateFailed => OperationError::ServiceUpdateFailed,
+            Self::Unclassified => {
+                OperationError::PlanBlocked("an unclassified blocking diagnostic")
+            }
+        }
+    }
+
+    /// The environment's status message.
+    fn message(self) -> &'static str {
+        match self {
+            Self::OwnershipConflict => "runtime reconciliation is blocked by an ownership conflict",
+            Self::ImmutableConfiguration => {
+                "runtime reconciliation is blocked by immutable Docker configuration"
+            }
+            Self::ServiceUpdateFailed => {
+                "runtime reconciliation is blocked by a failed service update"
+            }
+            Self::Unclassified => "runtime reconciliation is blocked",
+        }
     }
 }
 
