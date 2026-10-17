@@ -19,7 +19,7 @@ package. Dashboard tools are cached by version.
 | All-target, all-feature compilation and Clippy | `lint` | `rust` |
 | Native workspace tests, against the real embedded dashboard | `test` | `rust` |
 | Documentation tests | `doc-test` | `rust` |
-| Generated API specification and client freshness | `openapi-check` | `rust` |
+| Generated API specification, client, and manifest JSON Schema freshness | `openapi-check` | `rust` |
 | Core dependency boundaries | `boundary` | `rust` |
 | Browser compilation | `ui-check`, `check-wasm` | `wasm-ui` |
 | Real browser transport tests | `test-wasm` | `wasm-ui` |
@@ -28,10 +28,11 @@ package. Dashboard tools are cached by version.
 | CLI on macOS | `validate-cli` | `cli (macOS)` |
 | Embedded daemon and CLI release builds | `nix build` | `nix packages` |
 
-`just` runs the default validation set, including a single check of the generated
-OpenAPI specification and client. Both local validation and CI compare the
-committed artifacts without rewriting them. `check` and `build` are covered by
-the stronger all-target Clippy and the Nix package build. `fmt` and
-`generate` are editing commands whose results are checked above.
-`run`, `daemon`, `daemon-embedded`, and `dev` launch interactive processes and are
-not finite validation commands.
+`just` runs the default validation set (`validate`), including a single check of
+the generated OpenAPI specification, client, and manifest JSON Schema. Both local
+validation and CI compare the committed artifacts without rewriting them. CI
+skips `check` and `build`: the stronger all-target Clippy and the Nix package
+build cover them. `fmt` and `generate` are editing commands whose results are
+checked above, and `setup-playwright` installs the browser test dependencies.
+`run`, `ctl`, `daemon`, `daemon-embedded`, and `dev` launch interactive processes
+and are not finite validation commands.

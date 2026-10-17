@@ -100,7 +100,7 @@ pub struct ApplicationSpec {
     /// environments that set no value of their own.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub variables: BTreeMap<String, Variable>,
-    /// Configuration for each environment, selected by environment name.
+    /// Environments declared by this manifest, keyed by environment name.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub environments: BTreeMap<String, EnvironmentConfig>,
     /// Configuration shared by every preview.
@@ -340,7 +340,7 @@ impl std::fmt::Display for Variable {
     }
 }
 
-/// Independently selects the manifest used by a manual deployment.
+/// Independently selects the manifest that deployments, manual or on push, use.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RepositoryManifest {
@@ -757,7 +757,7 @@ pub enum SecretEncoding {
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
-    /// Public DNS hostname, exact or a wildcard such as `*.example.com`
+    /// Fully qualified DNS hostname, exact or a wildcard such as `*.example.com`
     /// matching every name one label below `example.com`.
     pub hostname: Template,
     /// Stable name, unique within the application, that selects this route in

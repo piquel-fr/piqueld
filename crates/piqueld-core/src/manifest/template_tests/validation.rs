@@ -398,8 +398,14 @@ fn non_template_wire_types_and_headers_reject_references_during_decode_or_valida
             "/spec/services/0/mounts/0/read_only",
             "spec.services[0].mounts[0].read_only",
         ),
-        ("/spec/routes/1/redirect/status", "spec.routes[1]"),
-        ("/spec/routes/1/redirect/preserve_path", "spec.routes[1]"),
+        (
+            "/spec/routes/1/redirect/status",
+            "spec.routes[1].redirect.status",
+        ),
+        (
+            "/spec/routes/1/redirect/preserve_path",
+            "spec.routes[1].redirect.preserve_path",
+        ),
         (
             "/spec/secrets/0/generate/type",
             "spec.secrets[0].generate.type",

@@ -199,8 +199,8 @@ pub const EXPORT_DUPLICATE: &str = "export_duplicate";
 pub const EXPORT_APPLICATIONS_EMPTY: &str = "export_applications_empty";
 /// A service of another application is imported more than once.
 pub const IMPORT_DUPLICATE: &str = "import_duplicate";
-/// An import does not connect: its environment is missing or does not
-/// export the service to the importer.
+/// An import does not connect: its environment is missing, does not export
+/// the service to the importer, or already links to the most importers.
 pub const IMPORT_UNCONNECTED: &str = "import_unconnected";
 /// A release's manifest renders a build input differently for another
 /// environment than for the release, so its images do not apply there.

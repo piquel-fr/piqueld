@@ -1,6 +1,6 @@
 //! One-off command execution in a running service task.
 //!
-//! A client opens a WebSocket at `GET /api/v1/applications/{id}/exec` and
+//! A client opens a WebSocket at `GET /api/v1/environments/{id}/exec` and
 //! sends an [`ExecRequest`] as its first message, in JSON text. The client then
 //! sends [`ExecInput`] messages and the daemon sends [`ExecOutput`] messages
 //! until a final [`ExecOutput::Exit`] or [`ExecOutput::Failed`]. Clients end

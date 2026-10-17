@@ -118,7 +118,8 @@ services.piqueld.settings.tailscale = {
 `ingress.private.auth_key_file` (passed as a systemd credential, like the other
 `_file` settings), `ingress.private.dashboard_hostname` (which also puts the
 Tailscale CLI on the service's `PATH`), `ingress.tunnel.enabled`, `ingress.tunnel.credentials_file`
-(also a systemd credential, required while the tunnel is enabled), `dns.providers`, all three `reconciliation`
+(also a systemd credential, required while the tunnel is enabled),
+`ingress.webhook_hostname`, `dns.providers`, all three `reconciliation`
 intervals/timeouts, the `retention` periods, both `build_history` limits,
 the five [`previews`](configuration.md#previews) limits,
 [`snapshots.max_upload_bytes`](configuration.md#local-snapshots),
@@ -180,6 +181,7 @@ TLS termination or an external UI directory. Git, SSH, and Docker executables
 are present on the service PATH. Configure SSH credentials and known hosts for
 the service user, not the interactive operator; host home directories are protected.
 
-Nix packages and development shells support x86_64 Linux. Configuration and
+Nix packages and development shells support x86_64 Linux and aarch64 macOS,
+where only the CLI package is available. Configuration and
 package changes require rebuilding NixOS; application state remains under
 `dataDir`.

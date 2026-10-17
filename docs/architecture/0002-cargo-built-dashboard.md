@@ -45,7 +45,8 @@ The daemon build script builds the bundle with Cargo alone (see
 
 The shell has no inline scripts, so the Content-Security-Policy is a constant.
 The only prerequisite is the wasm32 target, which `rust-toolchain.toml`
-installs.
+installs. The Nix packages build the module separately and pass it in through
+`PIQUELD_DASHBOARD_WASM`, which skips step 1.
 
 Measured on the dashboard at the time of the change:
 
@@ -85,8 +86,10 @@ piqueld-ui = { path = "../piqueld-ui", artifact = "bin", target = "wasm32-unknow
 The build script then reads the module path from Cargo's
 `CARGO_BIN_FILE_PIQUELD_UI_piqueld-ui` environment variable. That deletes:
 
-- `Dashboard::compile` and its environment scrubbing;
-- `nested_target_dir` and the `target-ui` directory;
+- the nested build in `Dashboard::compile`, and `NestedCargo`
+  (`apps/piqueld/build/nested.rs`) with its environment scrubbing, once the
+  health probe's musl build, which shares it, moves too;
+- the `target-ui` and `target-probe` directories;
 - the manual `rerun-if-changed` tracking, because Cargo tracks the dependency
   itself.
 

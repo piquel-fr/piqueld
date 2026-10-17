@@ -152,8 +152,9 @@ impl AccessQuery {
 
 /// Creates or replaces a value in an application's secret store.
 ///
-/// The body is the raw value (`application/octet-stream`, 1–512000 bytes).
-/// `X-Expected-Generation` must be 0 to create a secret, or its current
+/// The body is the raw value (`application/octet-stream`, 1–512000 bytes);
+/// another content type fails with 415 and a body over the 2 MiB request
+/// limit with 413. `X-Expected-Generation` must be 0 to create a secret, or its current
 /// generation to replace it; a mismatch fails with 409. Running services keep
 /// their value until the next deployment. Supplying `environments` (`all`, or
 /// environment IDs) replaces the access list, with `previews` (default
@@ -163,7 +164,7 @@ impl AccessQuery {
 /// saved manifest or an environment's last fetched one declares as generated
 /// secrets fail with 422 `manifest_validation_failed` and `secret_name_conflict`
 /// in `details.errors`. The response carries metadata only.
-#[utoipa::path(put,path="/api/v1/applications/{id}/secrets/{name}",operation_id="putApplicationSecret",params(("id"=String,Path),("name"=String,Path),("X-Expected-Generation"=i64,Header),AccessQuery),request_body(content=inline(SecretValue),content_type="application/octet-stream"),responses((status=200,description="Updated metadata; no secret value",body=Envelope<StoredSecret>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=422,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+#[utoipa::path(put,path="/api/v1/applications/{id}/secrets/{name}",operation_id="putApplicationSecret",params(("id"=String,Path),("name"=String,Path),("X-Expected-Generation"=i64,Header),AccessQuery),request_body(content=inline(SecretValue),content_type="application/octet-stream"),responses((status=200,description="Updated metadata; no secret value",body=Envelope<StoredSecret>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=413,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),(status=422,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn put_stored(
     State(state): State<ApiState>,
     axum::Extension(identity): axum::Extension<crate::auth::Identity>,
@@ -271,9 +272,10 @@ pub(super) async fn delete_stored(
 
 /// Recovers from a lost secret master key.
 ///
-/// Discards stored secret values for all environments; metadata and running
-/// services are kept. Fails with 409 while the current key still works. The next
-/// value write generates a new key.
+/// Discards every application's stored secret values, every environment's
+/// generated secret values, and the repository webhook secrets (applications
+/// generate new ones); metadata and running services are kept. Fails with 409
+/// while the current key still works. The next value write generates a new key.
 #[utoipa::path(post,path="/api/v1/system/secrets/recover-key",operation_id="recoverSecretKey",
     responses((status=200,description="Values discarded; the next value write generates a new key",body=Envelope<piqueld_core::api::SecretKeyRecovery>),
     (status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]

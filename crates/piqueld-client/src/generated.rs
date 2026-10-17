@@ -308,7 +308,9 @@ impl Client {
     Sends a `POST` request to `/api/v1/applications/apply`
 
     Arguments:
-    - `deploy`: Deploy the saved configuration to the application's only environment; omission saves only.
+    - `deploy`: Deploy the saved configuration to the application's only environment or,
+    when its manifest declares environments, every declared one not promoted
+    from another; omission saves only.
     - `force`: Explicitly bypass revision and identity preconditions.
     - `idempotency_key`
     - `x_expected_application_id`: TOML only: inspected application identity. JSON uses `expected_application_id` in the request body.
@@ -641,7 +643,7 @@ impl Client {
 
     Arguments:
     - `id`
-    - `force`: Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
+    - `force`: Explicitly bypass the intent revision precondition. Name availability is always enforced.
     - `idempotency_key`
     - `body`
     */
@@ -716,13 +718,22 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `PUT` request to `/api/v1/applications/{id}/environments/{environment}/visibility`
+    /*Sets an environment's visibility ceiling
+
+    `{environment}` is the environment's name, as in
+    `[spec.environments.<name>]`, not its ID. Every route of the environment
+    is at most this visible; `public` restricts nothing. Same query
+    options, idempotency, and 200/202 responses as the other editing
+    endpoints.
+
+    Sends a `PUT` request to `/api/v1/applications/{id}/environments/{environment}/visibility`
 
     Arguments:
     - `id`
     - `environment`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -816,8 +827,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -909,8 +921,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -1002,8 +1015,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -1145,8 +1159,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -1236,8 +1251,9 @@ impl Client {
     }
     /*Lists an application's previews
 
-    Each preview comes with its status, latest operation, hostnames, and
-    branch state, read with one `git ls-remote` of the manifest repository.
+    Each preview comes with its status, latest operation, hostnames, origin,
+    `[previews]` bounds, sync state, and branch state, read with one
+    `git ls-remote` of the manifest repository.
     Repository failures make every branch state `unknown`.
 
     Sends a `GET` request to `/api/v1/applications/{id}/previews`
@@ -1387,7 +1403,10 @@ impl Client {
     It is verified and unbundled into a repository of its own. The preview
     of `branch` and `slot` is created first if needed, as `createPreview`
     does, and deploys the snapshot's manifest, building `"self"` sources from
-    it. Fails with 413 `snapshot_too_large`, 422 `snapshot_invalid`, or 422
+    it. Fails with 409 `preview_requires_repository` or
+    `preview_limit_reached`; 413 `snapshot_too_large` when the bundle exceeds
+    the upload limit or the snapshot, or the history it needs, exceeds
+    `[checkouts] max_bytes`; 422 `snapshot_invalid`; or 422
     `snapshot_base_unavailable`, whose `details.prerequisites` names the
     commits it needs; upload a complete bundle then. A body that stalls for
     30 seconds, or an upload not received within 10 minutes, fails with 408
@@ -1638,7 +1657,7 @@ impl Client {
 
     Arguments:
     - `id`
-    - `force`: Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
+    - `force`: Explicitly bypass the intent revision precondition. Name availability is always enforced.
     - `idempotency_key`
     - `body`
     */
@@ -1711,8 +1730,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -1809,8 +1829,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -1893,8 +1914,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -1986,8 +2008,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2079,8 +2102,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2172,8 +2196,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2318,8 +2343,9 @@ impl Client {
     }
     /*Creates or replaces a value in an application's secret store
 
-    The body is the raw value (`application/octet-stream`, 1–512000 bytes).
-    `X-Expected-Generation` must be 0 to create a secret, or its current
+    The body is the raw value (`application/octet-stream`, 1–512000 bytes);
+    another content type fails with 415 and a body over the 2 MiB request
+    limit with 413. `X-Expected-Generation` must be 0 to create a secret, or its current
     generation to replace it; a mismatch fails with 409. Running services keep
     their value until the next deployment. Supplying `environments` (`all`, or
     environment IDs) replaces the access list, with `previews` (default
@@ -2408,6 +2434,12 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             422u16 => Err(Error::ErrorResponse(
@@ -2557,8 +2589,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2655,8 +2688,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2742,8 +2776,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2838,8 +2873,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -2934,8 +2970,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3030,8 +3067,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3127,8 +3165,9 @@ impl Client {
     - `id`
     - `service`
     - `key`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3230,8 +3269,9 @@ impl Client {
     - `id`
     - `service`
     - `key`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3319,8 +3359,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3415,8 +3456,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3511,8 +3553,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3607,8 +3650,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3703,8 +3747,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3799,8 +3844,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3895,8 +3941,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -3991,8 +4038,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4087,8 +4135,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4183,8 +4232,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4279,8 +4329,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4375,8 +4426,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4471,8 +4523,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4567,8 +4620,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4663,8 +4717,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4759,8 +4814,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4855,8 +4911,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -4951,8 +5008,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5047,8 +5105,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5143,8 +5202,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5239,8 +5299,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5335,8 +5396,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5431,8 +5493,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5527,8 +5590,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5623,8 +5687,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5719,8 +5784,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5815,8 +5881,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -5911,8 +5978,9 @@ impl Client {
     Arguments:
     - `id`
     - `service`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -6006,8 +6074,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -6099,8 +6168,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -6192,8 +6262,9 @@ impl Client {
 
     Arguments:
     - `id`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -6290,8 +6361,9 @@ impl Client {
     Arguments:
     - `id`
     - `volume`
-    - `deploy`: Deploy the changed configuration to the application's only environment;
-    omitted/false saves only.
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
     - `expected_generation`: Required inspected generation unless force is set.
     - `force`: Explicitly bypass the revision check.
     - `idempotency_key`
@@ -7414,10 +7486,10 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Lists Git source builds, newest first
+    /*Lists Git source builds and job runs, newest first
 
     Optionally filtered to one application or environment. Follow `next_cursor` to load older
-    builds.
+    records.
 
     Sends a `GET` request to `/api/v1/builds`
 
@@ -7750,15 +7822,17 @@ impl Client {
 
     Points an environment of a repository-backed application at another branch
     of its manifest repository, or pins or unpins a commit. Nothing is fetched
-    or redeployed: the next deployment fetches the new branch. Environments
-    deploying the saved manifest fail with `manifest_repository_required`. The
-    inspected application `expected_generation` goes in the JSON body.
+    or redeployed: the next deployment fetches the new branch. Environments of
+    an application without a manifest repository fail with
+    `manifest_repository_required` (422), and those whose source the saved
+    manifest declares with `environment_declared` (409). The inspected
+    application `expected_generation` goes in the JSON body.
 
     Sends a `PUT` request to `/api/v1/environments/{id}/branch`
 
     Arguments:
     - `id`
-    - `force`: Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
+    - `force`: Explicitly bypass the intent revision precondition. Name availability is always enforced.
     - `idempotency_key`
     - `body`
     */
@@ -7833,10 +7907,15 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Deploys the application's saved configuration to an environment
+    /*Deploys an environment from its source: the application's saved
+    configuration, or the repository manifest at the environment's branch (or
+    the one-time `branch`/`commit`)
 
     Returns 202 with the accepted durable operation. Requires
     `expected_generation` unless `force=true`; a stale generation fails with 409.
+    A promoted environment fails with 409 `environment_promoted`; it deploys
+    only by promotion. `branch` or `commit` for an environment without a
+    repository branch fails with 422.
     Repeating a request with the same `Idempotency-Key` returns the original
     response.
 
@@ -7911,6 +7990,9 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             500u16 => Err(Error::ErrorResponse(
@@ -8120,8 +8202,9 @@ impl Client {
     }
     /*Gets recent container output for an environment
 
-    Output can be narrowed to one service and one stream. Out-of-range `tail` or
-    `since_seconds` values fail with 400 `logs_query_invalid`.
+    Output can be narrowed to one service and one stream. Unknown or malformed
+    parameters, out-of-range `tail` or `since_seconds` values, and `service`
+    names outside 1–63 characters fail with 400 `logs_query_invalid`.
 
     Sends a `GET` request to `/api/v1/environments/{id}/logs`
 
@@ -8216,7 +8299,7 @@ impl Client {
 
     Arguments:
     - `id`
-    - `force`: Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
+    - `force`: Explicitly bypass the intent revision precondition. Name availability is always enforced.
     - `idempotency_key`
     - `body`
     */
@@ -8298,7 +8381,7 @@ impl Client {
     anything
 
     Shows the release and its provenance and image availability, the
-    rendered diff against the environment's latest deployment, the runtime
+    rendered diff against the environment's current deployment, the runtime
     plan, new (empty) volumes, and every secret that is missing or that the
     environment may not use. The source must be promotable, as for
     `promoteEnvironment`; an earlier `release` may be planned for any
@@ -8377,8 +8460,9 @@ impl Client {
     }
     /*Reconciles an environment
 
-    Returns 202 with a durable operation that repairs the runtime to match the
-    accepted configuration. Unlike other mutations, `expected_generation` is
+    Returns 202 with the environment's latest operation, requested again when it
+    finished or failed, or as is while it is still in progress; 404 when the
+    environment has none. Unlike other mutations, `expected_generation` is
     optional. Repeating a request with the same `Idempotency-Key` returns the
     original response.
 
@@ -8468,7 +8552,7 @@ impl Client {
 
     Arguments:
     - `id`
-    - `force`: Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
+    - `force`: Explicitly bypass the intent revision precondition. Name availability is always enforced.
     - `idempotency_key`
     - `body`
     */
@@ -8748,7 +8832,7 @@ impl Client {
 
     Arguments:
     - `id`
-    - `force`: Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
+    - `force`: Explicitly bypass the intent revision precondition. Name availability is always enforced.
     - `idempotency_key`
     - `body`
     */
@@ -9778,9 +9862,10 @@ impl Client {
     }
     /*Recovers from a lost secret master key
 
-    Discards stored secret values for all environments; metadata and running
-    services are kept. Fails with 409 while the current key still works. The next
-    value write generates a new key.
+    Discards every application's stored secret values, every environment's
+    generated secret values, and the repository webhook secrets (applications
+    generate new ones); metadata and running services are kept. Fails with 409
+    while the current key still works. The next value write generates a new key.
 
     Sends a `POST` request to `/api/v1/system/secrets/recover-key`
 

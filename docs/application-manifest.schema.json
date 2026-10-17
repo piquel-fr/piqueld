@@ -11,7 +11,7 @@
             "$ref": "#/definitions/EnvironmentConfig"
           },
           "default": {},
-          "description": "Configuration for each environment, selected by environment name.",
+          "description": "Environments declared by this manifest, keyed by environment name.",
           "propertyNames": {
             "type": "string"
           },
@@ -561,7 +561,7 @@
     },
     "RepositoryManifest": {
       "additionalProperties": false,
-      "description": "Independently selects the manifest used by a manual deployment.",
+      "description": "Independently selects the manifest that deployments, manual or on push, use.",
       "properties": {
         "path": {
           "description": "Exact TOML or JSON file path relative to the repository root.",
@@ -704,7 +704,7 @@
       "properties": {
         "hostname": {
           "$ref": "#/definitions/Template",
-          "description": "Public DNS hostname, exact or a wildcard such as `*.example.com`\nmatching every name one label below `example.com`."
+          "description": "Fully qualified DNS hostname, exact or a wildcard such as `*.example.com`\nmatching every name one label below `example.com`."
         },
         "name": {
           "description": "Stable name, unique within the application, that selects this route in\nevery environment and preview, e.g. `piquelctl env url --route web`.\nDeclared after `hostname`, so routes stay ordered by hostname.",

@@ -652,8 +652,9 @@ pub struct EditOptions {
     pub expected_generation: Option<u64>,
     /// Explicitly bypass the revision check.
     pub force: bool,
-    /// Deploy the changed configuration to the application's only environment;
-    /// omitted/false saves only.
+    /// Deploy the changed configuration to the application's only environment
+    /// or, when its manifest declares environments, every declared one not
+    /// promoted from another; omitted/false saves only.
     pub deploy: bool,
 }
 

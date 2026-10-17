@@ -23,7 +23,7 @@ does), and `just dev config --force` regenerates it:
 
 | Setting | Value |
 | --- | --- |
-| `server.data_dir` | `~/.local/state/piqueld-dev/<instance>`, outside `/tmp`, which systemd ages out |
+| `server.data_dir` | `~/.local/state/piqueld-dev/<instance>` (under `$XDG_STATE_HOME` when set), outside `/tmp`, which systemd ages out |
 | `server.runtime_dir` | `/tmp/piqueld-dev/<instance>`, holding the sockets and logs |
 | `server.listen_mode`, `server.port` | `localhost` on the lowest free port from 7846 that no other worktree uses |
 | `[tailscale]` | while the [tailnet node](#tailnet) is logged in, `https://piqueld-dev.<tailnet>.ts.net:<port>` |
@@ -109,6 +109,7 @@ Set `docker.socket = "/var/run/docker.sock"` to use the host engine instead;
 | `just dev start [SECS]` | Start in the background and wait until ready |
 | `just dev wait [SECS]` | Wait until the current sources are built and serving, and print the URL (default 900 s) |
 | `just dev status` | Print the state, URL, socket, and log files |
+| `just dev config [--force]` | Write `piqueld.local.toml` unless it exists, or replace it |
 | `just dev stop` | Stop the daemon and watcher; the engine keeps running |
 | `just dev clean` | Stop, then delete the engine, its volume, and the instance's state |
 | `just dev prune` | Stop and clean the instances of worktrees that no longer exist |
