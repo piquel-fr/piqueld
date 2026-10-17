@@ -61,11 +61,10 @@ impl Dashboard {
             .ok_or_else(|| io::Error::other("piqueld manifest has no parent directory"))?
             .join("piqueld-ui")
             .canonicalize()?;
-        let out_dir = PathBuf::from(
-            env::var_os("OUT_DIR")
-                .ok_or("Cargo did not provide OUT_DIR to the piqueld build script")?,
-        );
-        Ok(Self { ui_dir, out_dir })
+        Ok(Self {
+            ui_dir,
+            out_dir: crate::out_dir()?,
+        })
     }
 
     /// Reruns this script when anything the nested build reads changes.
@@ -188,12 +187,7 @@ impl Dashboard {
                 .map(|component| component.as_os_str().to_string_lossy())
                 .collect::<Vec<_>>()
                 .join("/");
-            let path = file.to_str().ok_or_else(|| {
-                io::Error::other(format!(
-                    "dashboard asset path is not valid UTF-8: {}",
-                    file.display()
-                ))
-            })?;
+            let path = crate::utf8(&file)?;
             writeln!(module, "    ({name:?}, include_bytes!({path:?})),")?;
         }
         module.push_str("];\n");

@@ -61,21 +61,16 @@ fn embed_migrations(manifest_dir: &Path) -> Result<(), Box<dyn Error>> {
         .map(|path| {
             println!("cargo:rerun-if-changed={}", path.display());
             let sql = fs::read_to_string(&path)?;
-            Ok((path, sql))
+            Ok((utf8(&path)?.to_owned(), sql))
         })
         .collect::<Result<Vec<_>, std::io::Error>>()?;
 
     let mut expected_version = 0_u64;
     for (path, _) in &migrations {
-        let file_name = path
+        let file_name = Path::new(path)
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or_else(|| {
-                io::Error::other(format!(
-                    "migration path is not valid UTF-8: {}",
-                    path.display()
-                ))
-            })?;
+            .unwrap_or(path);
         let version = file_name
             .split_once('_')
             .and_then(|(prefix, _)| prefix.parse::<u64>().ok())
@@ -93,18 +88,9 @@ fn embed_migrations(manifest_dir: &Path) -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let out_dir = PathBuf::from(
-        env::var_os("OUT_DIR")
-            .ok_or("Cargo did not provide OUT_DIR to the piqueld build script")?,
-    );
+    let out_dir = out_dir()?;
     let mut embedded_migrations = String::from("&[\n");
     for (path, _) in &migrations {
-        let path = path.to_str().ok_or_else(|| {
-            io::Error::other(format!(
-                "migration path is not valid UTF-8: {}",
-                path.display()
-            ))
-        })?;
         writeln!(embedded_migrations, "    include_str!({path:?}),")?;
     }
     embedded_migrations.push_str("]\n");
@@ -130,9 +116,7 @@ fn embed_migrations(manifest_dir: &Path) -> Result<(), Box<dyn Error>> {
             sqlx::raw_sql(migration)
                 .execute(&mut connection)
                 .await
-                .map_err(|error| {
-                    io::Error::other(format!("failed to apply {}: {error}", path.display()))
-                })?;
+                .map_err(|error| io::Error::other(format!("failed to apply {path}: {error}")))?;
         }
         connection.close().await?;
         Ok::<(), Box<dyn Error>>(())
@@ -144,4 +128,17 @@ fn embed_migrations(manifest_dir: &Path) -> Result<(), Box<dyn Error>> {
     );
     println!("cargo:rustc-env=SQLX_OFFLINE=false");
     Ok(())
+}
+
+/// This build script's `OUT_DIR`, where everything it generates goes.
+fn out_dir() -> Result<PathBuf, Box<dyn Error>> {
+    Ok(PathBuf::from(env::var_os("OUT_DIR").ok_or(
+        "Cargo did not provide OUT_DIR to the piqueld build script",
+    )?))
+}
+
+/// `path` as UTF-8, as the generated `include_*!` calls that name it need.
+fn utf8(path: &Path) -> io::Result<&str> {
+    path.to_str()
+        .ok_or_else(|| io::Error::other(format!("path is not valid UTF-8: {}", path.display())))
 }
