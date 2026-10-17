@@ -20,7 +20,7 @@ use std::fmt::Write as _;
 
 impl ConnectionState {
     /// Label of the connection state.
-    pub(super) const fn label(self) -> &'static str {
+    const fn label(self) -> &'static str {
         match self {
             Self::Loading => "Checking…",
             Self::Reachable => "Reachable",

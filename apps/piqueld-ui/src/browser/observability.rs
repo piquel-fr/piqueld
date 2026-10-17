@@ -4,7 +4,7 @@ use super::format::{bytes, duration, duration_f64, duration_secs, now_ms, timest
 use super::ui::{
     Icon, PageHeader, Tone, badge, empty, icon, key_values, loaded, metric, notice, when,
 };
-use super::{ClientErrorExt, UserError, access::can, dashboard_context};
+use super::{ClientErrorExt, UserError, access::can, dashboard_context, operation_events};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
@@ -303,11 +303,6 @@ fn kind_badge(event: &Event) -> AnyView {
         Tone::Neutral
     };
     badge(tone, event.kind.replace('_', " "))
-}
-
-/// Address of the events of operation `id`.
-fn operation_events(id: &str) -> String {
-    format!("/dashboard/events?operation={id}")
 }
 
 /// Summary card for one event, linking to related operation events and, when
@@ -637,12 +632,12 @@ pub(super) fn AnalyticsPage() -> impl IntoView {
         >
             {period.select(false, || {})}
         </PageHeader>
-#[expect(clippy::too_many_lines, reason = "flat view! markup")]
         {loaded(data, "Loading analytics…", analytics)}
     }
 }
 
 /// Metric tiles and tables of deployment analytics.
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 fn analytics(a: DeploymentAnalytics) -> AnyView {
     view! {
         <div class="stack">

@@ -470,7 +470,7 @@ pub(super) fn PreviewSettings() -> impl IntoView {
             async move { Client::browser().preview(&id).await.user_error() }
         }
     });
-    // `show` of the loaded preview, or muted text until then.
+    // `show` of the loaded preview; muted text while it loads or if loading failed.
     let detail = move |show: fn(PreviewView) -> AnyView| {
         move || match data.get() {
             None => view! { <span class="muted">"Loading…"</span> }.into_any(),

@@ -559,11 +559,7 @@ pub(super) fn VolumeSettings() -> impl IntoView {
                         }}
                     />
                 </div>
-                {add_button(
-                    "Add volume",
-                    || false,
-                    move || volumes.update(|v| v.push(String::new())),
-                )}
+                {add_button("Add volume", move || volumes.update(|v| v.push(String::new())))}
                 {draft.actions(save, || false)}
             </fieldset>
         </section>
@@ -824,7 +820,7 @@ fn string_rows(
                 }}
             />
         </div>
-        {add_button(label, || false, move || form.update(|v| write(v).push(String::new())))}
+        {add_button(label, move || form.update(|v| write(v).push(String::new())))}
     }
     .into_any()
 }
@@ -924,11 +920,7 @@ fn pair_rows(
                 }}
             />
         </div>
-        {add_button(
-            add_label,
-            || false,
-            move || form.update(|v| write(v).push(Default::default())),
-        )}
+        {add_button(add_label, move || form.update(|v| write(v).push(Default::default())))}
     }
     .into_any()
 }
@@ -994,7 +986,6 @@ fn mount_fields(form: RwSignal<ServiceForm>) -> AnyView {
         </div>
         {add_button(
             "Add mount",
-            || false,
             move || {
                 form.update(|v| {
                     v.mounts
@@ -1106,11 +1097,7 @@ fn file_fields(form: RwSignal<ServiceForm>) -> AnyView {
                 }}
             />
         </div>
-        {add_button(
-            "Add file",
-            || false,
-            move || form.update(|v| v.files.push(FileForm::default())),
-        )}
+        {add_button("Add file", move || form.update(|v| v.files.push(FileForm::default())))}
     }
     .into_any()
 }

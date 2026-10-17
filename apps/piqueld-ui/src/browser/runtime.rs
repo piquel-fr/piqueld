@@ -57,7 +57,7 @@ pub(super) fn RuntimeOverview() -> impl IntoView {
 }
 
 /// Loaded detail: a stale-data warning if the last detail refresh failed, and
-/// the runtime status, URLs, observed services, and diagnostics cards.
+/// the runtime status, URLs, links, observed services, and diagnostics cards.
 fn detail_view(
     detail: &EnvironmentDetailView,
     signals: DashboardSignals,
@@ -77,7 +77,7 @@ fn detail_view(
                             ),
                         )
                     })
-            }} {status_card(detail, signals, client)} {urls_card(detail.urls.as_deref())}
+            }} {runtime_status_card(detail, signals, client)} {urls_card(detail.urls.as_deref())}
             {links_card(detail)} {observed_card(&detail.observed)}
             {diagnostics_card(&detail.diagnostics)}
         </div>

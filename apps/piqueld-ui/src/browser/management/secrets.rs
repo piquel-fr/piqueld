@@ -966,7 +966,6 @@ fn SecretFiles(service_name: String) -> impl IntoView {
             </div>
             {add_button(
                 "Add secret file",
-                || false,
                 move || {
                     mounts
                         .update(|items| {

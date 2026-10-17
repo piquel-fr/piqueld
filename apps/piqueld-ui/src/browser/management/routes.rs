@@ -1,5 +1,5 @@
 //! Application-owned route editing and independent HTTPS readiness.
-use super::super::ui::{Tone, add_button, badge, empty, notice, remove_button, route_name};
+use super::super::ui::{Tone, badge, empty, limited_add_button, notice, remove_button, route_name};
 use super::{Draft, Rows, editor};
 use leptos::prelude::*;
 use piqueld_client::{
@@ -183,7 +183,7 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                 children={move |index| route_row(routes, index)}
                             />
                         </div>
-                        {add_button(
+                        {limited_add_button(
                             "Add route",
                             move || routes.with(Vec::len) >= 64,
                             move || routes.update(|rows| rows.push(RouteDraft::default())),

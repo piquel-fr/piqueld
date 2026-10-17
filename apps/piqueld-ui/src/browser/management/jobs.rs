@@ -1,5 +1,5 @@
 //! One-shot job editing. Jobs run in list order before each rollout.
-use super::super::ui::{add_button, empty, remove_button};
+use super::super::ui::{add_button, empty, limited_add_button, remove_button};
 use super::{Draft, Rows, editor};
 use leptos::prelude::*;
 use piqueld_client::{ApplicationManifest, Job, JobRun, JobVolumeAccess, edit::ApplicationEdit};
@@ -112,7 +112,6 @@ fn command_rows(jobs: RwSignal<Vec<JobDraft>>, index: usize) -> AnyView {
         <div>
             {add_button(
                 "Add command element",
-                || false,
                 move || jobs.edit(index, |j| j.command.push(String::new())),
             )}
         </div>
@@ -123,8 +122,8 @@ fn command_rows(jobs: RwSignal<Vec<JobDraft>>, index: usize) -> AnyView {
 /// Job editor. Rows are drafted as [`JobDraft`] text and re-synced from saved
 /// configuration only while there are no local edits. Saving validates the
 /// timeouts and replaces all jobs; their order is their execution order.
-#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn JobSettings() -> impl IntoView {
     let context = editor();
     let draft = Draft::synced("jobs", JobDraft::rows);
@@ -254,7 +253,7 @@ pub(super) fn JobSettings() -> impl IntoView {
                     }}
                 />
                 <div>
-                    {add_button(
+                    {limited_add_button(
                         "Add job",
                         move || jobs.with(Vec::len) >= Job::MAX_PER_APPLICATION,
                         move || jobs.update(|jobs| jobs.push(JobDraft::default())),

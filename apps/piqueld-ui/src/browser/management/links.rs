@@ -188,7 +188,6 @@ fn ExportSettings() -> impl IntoView {
                 <div>
                     {add_button(
                         "Add export",
-                        || false,
                         move || exports.update(|exports| exports.push(ExportDraft::default())),
                     )}
                 </div>
@@ -263,7 +262,6 @@ fn ImportSettings() -> impl IntoView {
                 <div>
                     {add_button(
                         "Add import",
-                        || false,
                         move || imports.update(|imports| imports.push(ImportDraft::default())),
                     )}
                 </div>
