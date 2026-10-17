@@ -63,16 +63,14 @@ impl<'a> Actor<'a> {
         match self {
             Self::Daemon => Attribution::default(),
             Self::Operator { operator, session } => Attribution {
-                user_id: None,
                 credential_id: session,
                 operator: Some(operator),
-                system: None,
+                ..Attribution::default()
             },
             Self::Account(caller) => Attribution {
                 user_id: Some(caller.user_id),
                 credential_id: Some(caller.credential_id),
-                operator: None,
-                system: None,
+                ..Attribution::default()
             },
             Self::System(system) => Attribution {
                 system: Some(system),
@@ -80,16 +78,7 @@ impl<'a> Actor<'a> {
             },
         }
     }
-}
 
-impl Attribution<'_> {
-    /// The host operator's Unix user ID, as stored in `actor_operator_uid`.
-    pub(crate) fn operator_uid(self) -> Option<u32> {
-        self.operator.map(|operator| operator.uid)
-    }
-}
-
-impl Actor<'_> {
     /// Re-reads an account caller's ID and grants; `None` for the daemon and
     /// the host operator, which are unrestricted. A host operator session
     /// that ended since authentication is `CredentialRevoked`.
@@ -154,6 +143,13 @@ impl Actor<'_> {
             .grants
             .require_change(&[permission], EnvironmentOwner::target(owner.as_ref()))
             .map_err(StoreError::Denied)
+    }
+}
+
+impl Attribution<'_> {
+    /// The host operator's Unix user ID, as stored in `actor_operator_uid`.
+    pub(crate) fn operator_uid(self) -> Option<u32> {
+        self.operator.map(|operator| operator.uid)
     }
 }
 
@@ -285,6 +281,17 @@ impl Authority {
             Ok(())
         }
     }
+
+    /// Requires an unscoped credential (see [`Self::require_unscoped`])
+    /// holding every grant in `grants`, if any: access it hands out to an
+    /// account or a new credential outlives the credential handing it out.
+    pub(crate) fn may_hand_out(&self, grants: Option<&Grants>) -> Result<(), StoreError> {
+        self.require_unscoped()?;
+        match grants {
+            Some(grants) => self.grants.may_grant(grants).map_err(StoreError::Denied),
+            None => Ok(()),
+        }
+    }
 }
 
 impl Holder<'_> {
@@ -363,9 +370,7 @@ impl Holder<'_> {
         }
         Ok(())
     }
-}
 
-impl Holder<'_> {
     /// Adds `grants` to the holder's existing grants.
     pub(crate) async fn extend(
         self,
@@ -440,11 +445,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         if let Some(caller) = Self::check_account_on(&mut tx, actor, user_id).await? {
-            caller.require_unscoped()?;
-            caller
-                .grants
-                .may_grant(grants)
-                .map_err(StoreError::Denied)?;
+            caller.may_hand_out(Some(grants))?;
         }
         let how = "by an account change";
         Self::replace_user_grants_on(&mut tx, user_id, grants, actor.attribution(), how).await?;

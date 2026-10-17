@@ -14,7 +14,7 @@ use piqueld_core::{
     },
     sync::SyncCheck,
 };
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Sqlite, SqliteConnection, Transaction};
 use zeroize::Zeroizing;
 
 /// The head of the branch an environment or preview tracks, as one of its
@@ -231,11 +231,23 @@ impl Store {
         &self,
         operation: &super::Operation,
     ) -> Result<bool, StoreError> {
+        Self::requested_by_sync_on(
+            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
+            operation,
+        )
+        .await
+    }
+
+    /// [`Self::requested_by_sync`] on an existing connection or transaction.
+    pub(super) async fn requested_by_sync_on(
+        connection: &mut SqliteConnection,
+        operation: &super::Operation,
+    ) -> Result<bool, StoreError> {
         Ok(sqlx::query_scalar!(
             r#"SELECT actor_system IS NOT NULL AS "sync!: bool" FROM operations WHERE id=?1"#,
             operation.id
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(connection)
         .await
         .map_err(StoreError::database)?
         .unwrap_or(false))
@@ -312,16 +324,7 @@ impl Store {
         } else {
             format!("pushes no longer deploy environment {name}")
         };
-        sqlx::query!(
-            "INSERT INTO events(application_id,environment_id,kind,message,created_at_ms) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'environment_sync_changed',?2,?3)",
-            row,
-            message,
-            now
-        )
-        .execute(&mut **tx)
-        .await
-        .map_err(StoreError::database)?;
-        Ok(())
+        Self::environment_event_on(tx, row, "environment_sync_changed", &message, now).await
     }
 
     /// Records that sync listed `application`'s branches now, and why it
@@ -334,15 +337,13 @@ impl Store {
         application: &ApplicationId,
         error: Option<&str>,
     ) -> Result<(), StoreError> {
-        let _writer = self.writers.lock().await;
         let (id, now) = (application.as_str(), now_ms());
-        sqlx::query!(
+        self.write(sqlx::query!(
             "UPDATE applications SET sync_checked_at_ms=?1,sync_error=?2 WHERE id=?3",
             now,
             error,
             id
-        )
-        .execute(&self.pool)
+        ))
         .await
         .map_err(StoreError::database)?;
         Ok(())

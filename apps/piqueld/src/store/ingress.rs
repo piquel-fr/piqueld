@@ -193,12 +193,9 @@ impl Store {
         .collect();
         for hostname in names.difference(&reserved) {
             let parsed = RouteHostname::parse(hostname.as_str()).map_err(StoreError::corrupt)?;
-            if installation.iter().any(|domain| parsed.is_within(domain)) {
-                return Err(StoreError::HostnameConflict {
-                    hostname: hostname.clone(),
-                });
-            }
-            if Self::under_foreign_wildcard(&mut *connection, &parsed, environment_id).await? {
+            if installation.iter().any(|domain| parsed.is_within(domain))
+                || Self::under_foreign_wildcard(&mut *connection, &parsed, environment_id).await?
+            {
                 return Err(StoreError::HostnameConflict {
                     hostname: hostname.clone(),
                 });

@@ -1,9 +1,9 @@
 //! Durable operation records; execution policy belongs to the controller.
 
 use super::{
-    EnvironmentId, Operation, OperationKind, OperationState, Store, StoreError, new_id, now_ms,
+    ApplicationState, EnvironmentId, Operation, OperationKind, OperationState, Store, StoreError,
+    decode_name, new_id, now_ms,
 };
-use serde::Deserialize;
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 /// Raw `operations` columns as stored; `decode` validates them into an `Operation`.
@@ -31,14 +31,8 @@ impl OperationRow {
             id: self.id,
             environment_id: EnvironmentId::parse(self.environment_id)
                 .map_err(StoreError::corrupt)?,
-            kind: OperationKind::deserialize(serde::de::value::StrDeserializer::<
-                serde::de::value::Error,
-            >::new(&self.kind))
-            .map_err(StoreError::corrupt)?,
-            state: OperationState::deserialize(serde::de::value::StrDeserializer::<
-                serde::de::value::Error,
-            >::new(&self.state))
-            .map_err(StoreError::corrupt)?,
+            kind: decode_name(&self.kind)?,
+            state: decode_name(&self.state)?,
             generation: u64::try_from(self.generation).map_err(StoreError::corrupt)?,
             attempt: u64::try_from(self.attempt).map_err(StoreError::corrupt)?,
             consecutive_failures: u64::try_from(self.consecutive_failures)
@@ -113,40 +107,35 @@ impl Store {
             return Err(StoreError::IllegalTransition);
         }
         let now = now_ms();
-        let terminal = to.terminal();
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let finished = terminal.then_some(now);
-        let from = from.as_str();
-        let to = to.as_str();
-        let code = error.map(|e| e.0);
-        let message = error.map(|e| e.1);
+        let finished = to.terminal().then_some(now);
+        let (code, message) = error.unzip();
+        let (from_state, to_state) = (from.as_str(), to.as_str());
         let changed = sqlx::query!(
             "UPDATE operations SET consecutive_failures=CASE WHEN ?1='failed' THEN consecutive_failures+1 WHEN ?1='succeeded' THEN 0 ELSE consecutive_failures END,attempt=attempt+CASE WHEN ?1='running' AND state!='running' THEN 1 ELSE 0 END,state=?1,error_code=?2,error_message=?3,updated_at_ms=?4,started_at_ms=CASE WHEN ?1='requested' THEN NULL WHEN ?1='running' THEN COALESCE(started_at_ms,?4) ELSE started_at_ms END,finished_at_ms=?5 WHERE id=?6 AND state=?7 AND id=(SELECT latest.id FROM operations latest WHERE latest.environment_id=operations.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",
-            to,code,message,now,finished,id,from)
+            to_state,code,message,now,finished,id,from_state)
             .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
-        if changed == 1 {
-            if matches!(code, Some("job_failed" | "job_timeout")) {
-                Self::request_job_cleanup_on(&mut tx, id).await?;
-            }
-            if terminal {
-                Self::record_deployment_attempt(&mut tx, id).await?;
-            }
-            if from != to {
-                let kind = match to {
-                    "running" => "operation_started",
-                    "succeeded" => "operation_succeeded",
-                    "failed" => "operation_failed",
-                    "cancelled" => "operation_cancelled",
-                    "superseded" => "operation_superseded",
-                    _ => "reconciliation_requested",
-                };
-                Self::operation_event(&mut tx, id, kind, message, now).await?;
-            }
-            tx.commit().await.map_err(StoreError::database)?;
-            Ok(())
-        } else {
-            Err(StoreError::IllegalTransition)
+        if changed != 1 {
+            return Err(StoreError::IllegalTransition);
         }
+        if matches!(code, Some("job_failed" | "job_timeout")) {
+            Self::request_job_cleanup_on(&mut tx, id).await?;
+        }
+        if to.terminal() {
+            Self::record_deployment_attempt(&mut tx, id).await?;
+        }
+        if from != to {
+            let kind = match to {
+                OperationState::Requested => "reconciliation_requested",
+                OperationState::Running => "operation_started",
+                OperationState::Succeeded => "operation_succeeded",
+                OperationState::Failed => "operation_failed",
+                OperationState::Cancelled => "operation_cancelled",
+                OperationState::Superseded => "operation_superseded",
+            };
+            Self::operation_event(&mut tx, id, kind, message, now).await?;
+        }
+        tx.commit().await.map_err(StoreError::database)
     }
 
     /// Stores the latest error while a deletion remains running.
@@ -314,12 +303,11 @@ impl Store {
             return Err(StoreError::IllegalTransition);
         }
         let state = if operation.kind == OperationKind::Delete {
-            "deleting"
+            ApplicationState::Deleting
         } else {
-            "pending"
+            ApplicationState::Pending
         };
-        let app_id = operation.environment_id.as_str();
-        Self::write_status(tx, app_id, state, None, now).await?;
+        Self::write_status(tx, operation.environment_id.as_str(), state, now).await?;
         Self::operation_event(tx, &operation.id, "reconciliation_requested", None, now).await?;
         let operation = Self::operation_on(tx, &operation.id).await?;
         Ok(operation)
@@ -334,8 +322,7 @@ impl Store {
         phase: &str,
         resource: Option<&str>,
     ) -> Result<(), StoreError> {
-        let _writer = self.writers.lock().await;
-        let changed=sqlx::query!("UPDATE operations SET phase=?1,resource=?2 WHERE id=?3 AND state='running' AND id=(SELECT latest.id FROM operations latest WHERE latest.environment_id=operations.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",phase,resource,id).execute(&self.pool).await.map_err(StoreError::database)?.rows_affected();
+        let changed = self.write(sqlx::query!("UPDATE operations SET phase=?1,resource=?2 WHERE id=?3 AND state='running' AND id=(SELECT latest.id FROM operations latest WHERE latest.environment_id=operations.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",phase,resource,id)).await.map_err(StoreError::database)?.rows_affected();
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
@@ -396,9 +383,8 @@ impl Store {
     /// # Errors
     /// Returns a storage error.
     pub async fn prune_finished_operations(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
-        let _writer = self.writers.lock().await;
-        Ok(sqlx::query!("DELETE FROM operations WHERE NOT EXISTS(SELECT 1 FROM deployments WHERE deployments.id=operations.id) AND NOT EXISTS(SELECT 1 FROM job_cleanup WHERE job_cleanup.operation_id=operations.id) AND finished_at_ms < ?1 AND id != (SELECT latest.id FROM operations latest WHERE latest.environment_id=operations.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",cutoff_ms)
-            .execute(&self.pool).await.map_err(StoreError::database)?.rows_affected())
+        Ok(self.write(sqlx::query!("DELETE FROM operations WHERE NOT EXISTS(SELECT 1 FROM deployments WHERE deployments.id=operations.id) AND NOT EXISTS(SELECT 1 FROM job_cleanup WHERE job_cleanup.operation_id=operations.id) AND finished_at_ms < ?1 AND id != (SELECT latest.id FROM operations latest WHERE latest.environment_id=operations.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",cutoff_ms))
+            .await.map_err(StoreError::database)?.rows_affected())
     }
 
     /// Starts a new operation for environment `app` within `tx` (see
@@ -438,13 +424,13 @@ impl Store {
             Self::record_deployment_attempt(tx, &previous).await?;
         }
         let id = new_id("operation");
-        let kind = kind.as_str();
-        sqlx::query!("INSERT INTO operations(id,environment_id,generation,kind,state,created_at_ms,updated_at_ms) SELECT ?1,e.id,a.generation,?3,'requested',?4,?4 FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?2",id,app_id,kind,now)
+        let name = kind.as_str();
+        sqlx::query!("INSERT INTO operations(id,environment_id,generation,kind,state,created_at_ms,updated_at_ms) SELECT ?1,e.id,a.generation,?3,'requested',?4,?4 FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?2",id,app_id,name,now)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
         let event = match kind {
-            "apply" => "application_applied",
-            "refresh" => "refresh_requested",
-            _ => "deletion_requested",
+            OperationKind::Apply => "application_applied",
+            OperationKind::Refresh => "refresh_requested",
+            OperationKind::Delete => "deletion_requested",
         };
         Self::operation_event(tx, &id, event, None, now).await?;
         Self::operation_on(tx, &id).await

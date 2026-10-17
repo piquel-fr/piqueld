@@ -3,7 +3,8 @@
 //! rendered for the environment from its own manifest, and compiled with its
 //! own images, so the prepared target is saved in the accepting transaction.
 use super::{
-    EnvironmentId, Operation, OperationKind, Store, StoreError, StoredEnvironment, now_ms,
+    ApplicationState, EnvironmentId, Operation, OperationKind, Store, StoreError,
+    StoredEnvironment, now_ms,
 };
 use piqueld_core::{
     EnvironmentKind, EnvironmentName, EnvironmentSource, InstanceId, NormalizedApplication,
@@ -482,7 +483,7 @@ impl Store {
             Self::release_on(tx, &target.environment.application_id, &promotion.release).await?;
         let now = now_ms();
         let operation = Self::start_operation(tx, target.id(), OperationKind::Refresh, now).await?;
-        Self::write_status(tx, target.id().as_str(), "pending", None, now).await?;
+        Self::write_status(tx, target.id().as_str(), ApplicationState::Pending, now).await?;
         let rendering = target.render_release(&release, operation.id.clone())?;
         let secrets =
             Self::secret_problems_on(tx, &target.environment, &rendering.application).await?;

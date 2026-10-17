@@ -1,8 +1,8 @@
 //! Applications: the saved manifest their environments share, and atomic
 //! revision checks.
 use super::{
-    ApplicationId, ApplicationRow, EnvironmentRow, Operation, OperationKind, ResolvedApplication,
-    Store, StoreError, StoredApplication, now_ms, page_limit,
+    ApplicationId, ApplicationRow, ApplicationState, EnvironmentRow, Operation, OperationKind,
+    Paging, ResolvedApplication, Store, StoreError, StoredApplication, now_ms,
 };
 use piqueld_core::manifest::ApplicationTemplate;
 use piqueld_core::{
@@ -12,22 +12,6 @@ use piqueld_core::{
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 impl Store {
-    /// Parses an opaque application page cursor into the last ID already returned.
-    ///
-    /// ```text
-    /// "v1:app-0192f1c0..." -> Some(ApplicationId("app-0192f1c0..."))
-    /// ```
-    fn application_cursor(cursor: Option<&str>) -> Result<Option<ApplicationId>, StoreError> {
-        cursor
-            .map(|value| {
-                value
-                    .strip_prefix("v1:")
-                    .ok_or(StoreError::InvalidInput)
-                    .and_then(|id| ApplicationId::parse(id).map_err(StoreError::invalid_input))
-            })
-            .transpose()
-    }
-
     /// Checks a caller's optional revision precondition.
     /// # Errors
     /// Returns a generation conflict for stale intent or invalid input for an oversized revision.
@@ -75,8 +59,9 @@ impl Store {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let saved = Self::save_configuration_on(&mut tx, app, expected).await?;
         let environment = Self::sole_environment_on(&mut tx, app.id()).await?;
+        let now = now_ms();
         let operation =
-            Self::insert_operation(&mut tx, &environment, OperationKind::Apply, now_ms()).await?;
+            Self::insert_operation(&mut tx, &environment, OperationKind::Apply, now).await?;
         let mut resolved = resolved.cloned();
         if let Some(resolved) = &mut resolved {
             Self::bind_links_on(&mut tx, resolved).await?;
@@ -107,7 +92,13 @@ impl Store {
         .execute(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        Self::write_status(&mut tx, environment.as_str(), "pending", None, now_ms()).await?;
+        Self::write_status(
+            &mut tx,
+            environment.as_str(),
+            ApplicationState::Pending,
+            now,
+        )
+        .await?;
         Self::commit_environment_changes(tx, [environment.as_str()]).await?;
         Ok(operation)
     }
@@ -196,8 +187,36 @@ impl Store {
         connection: &mut SqliteConnection,
         id: &str,
     ) -> Result<Vec<EnvironmentView>, StoreError> {
+        Self::deployables_of_kind_on(connection, id, Some("environment")).await
+    }
+
+    /// Lists an application's previews on an existing connection or transaction.
+    pub(super) async fn previews_on(
+        connection: &mut SqliteConnection,
+        id: &str,
+    ) -> Result<Vec<EnvironmentView>, StoreError> {
+        Self::deployables_of_kind_on(connection, id, Some("preview")).await
+    }
+
+    /// Lists an application's environments, then its previews: everything
+    /// deployed under it.
+    pub(super) async fn deployables_on(
+        connection: &mut SqliteConnection,
+        id: &str,
+    ) -> Result<Vec<EnvironmentView>, StoreError> {
+        Self::deployables_of_kind_on(connection, id, None).await
+    }
+
+    /// Lists an application's environments of `kind`, the `kind` column
+    /// (`environment` or `preview`), or of both, environments first, in name
+    /// order.
+    async fn deployables_of_kind_on(
+        connection: &mut SqliteConnection,
+        id: &str,
+        kind: Option<&str>,
+    ) -> Result<Vec<EnvironmentView>, StoreError> {
         sqlx::query_as!(EnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.promoted_from,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!" FROM environments e WHERE e.application_id=?1 AND e.kind='environment' ORDER BY e.name"#,id)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.promoted_from,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!" FROM environments e WHERE e.application_id=?1 AND (?2 IS NULL OR e.kind=?2) ORDER BY e.kind,e.name"#,id,kind)
             .fetch_all(connection).await.map_err(StoreError::database)?
             .into_iter().map(EnvironmentRow::decode).collect()
     }
@@ -302,27 +321,24 @@ impl Store {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<ApplicationSummary>, StoreError> {
-        let fetch_limit = page_limit(limit)? + 1;
-        let after = Self::application_cursor(cursor)?;
+        let paging = Paging::new(limit)?;
+        let after = Paging::cursor(cursor)?
+            .map(ApplicationId::parse)
+            .transpose()
+            .map_err(StoreError::invalid_input)?;
         let after = after.as_ref().map_or("", ApplicationId::as_str);
         let visible = super::access::scope_json(visible);
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let mut rows = sqlx::query!(
             r#"SELECT id AS "id!",name,generation,delete_intent,created_at_ms,updated_at_ms FROM applications WHERE id>?1 AND (?3 IS NULL OR id IN (SELECT value FROM json_each(?3))) ORDER BY id LIMIT ?2"#,
             after,
-            fetch_limit,
+            paging.fetch,
             visible
         )
         .fetch_all(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        let has_more = rows.len() > limit;
-        rows.truncate(limit);
-        let next_cursor = if has_more {
-            rows.last().map(|row| format!("v1:{}", row.id))
-        } else {
-            None
-        };
+        let next_cursor = paging.next_cursor(&mut rows, |row| row.id.clone());
         let mut items = Vec::with_capacity(rows.len());
         for row in rows {
             items.push(ApplicationSummary {
