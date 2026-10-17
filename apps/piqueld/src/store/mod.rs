@@ -542,14 +542,14 @@ pub struct Store {
     /// Process-wide writer queue serializing `BEGIN IMMEDIATE` transactions.
     writers: std::sync::Arc<tokio::sync::Mutex<()>>,
     /// Database file path, used to report on-disk size.
-    pub(crate) database_path: std::path::PathBuf,
+    database_path: std::path::PathBuf,
     /// When this store was opened, used to report daemon uptime.
-    pub(crate) started: std::time::Instant,
+    started: std::time::Instant,
     /// Recently sampled daemon statistics, reused for a few seconds.
-    pub(crate) stats_cache:
+    stats_cache:
         std::sync::Arc<tokio::sync::Mutex<Option<piqueld_core::observability::DaemonStats>>>,
     /// Global webhook notification settings.
-    pub(crate) notifications: crate::config::NotificationConfig,
+    notifications: crate::config::NotificationConfig,
     /// Daemon-scoped event retention in days; zero keeps history forever.
     daemon_event_days: u64,
     /// Audit trail retention in days; zero keeps it forever.
