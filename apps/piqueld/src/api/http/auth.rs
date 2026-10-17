@@ -204,10 +204,10 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
     ) || request.headers().contains_key(header::UPGRADE);
     let ceremony = request.uri().path().contains("/auth/register/")
         || request.uri().path().contains("/auth/login/");
-    if mutation
-        && ((origin.is_some() && origin != Some(auth.origin()))
-            || ((uses_cookie || (ceremony && bearer.is_none())) && origin != Some(auth.origin())))
-    {
+    // Any foreign origin is refused; cookie-authenticated and bearer-less
+    // ceremony requests must also name the configured one.
+    let origin_required = origin.is_some() || uses_cookie || (ceremony && bearer.is_none());
+    if mutation && origin_required && origin != Some(auth.origin()) {
         let response = ApiError::new(
             StatusCode::FORBIDDEN,
             "origin_mismatch",
