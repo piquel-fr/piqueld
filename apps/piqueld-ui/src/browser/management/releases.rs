@@ -1,8 +1,11 @@
 //! The application's immutable releases, newest first.
-use super::super::format::timestamp;
-use super::super::ui::{Icon, Tone, badge, empty, icon, notice, when};
+use super::super::ClientErrorExt;
+use super::super::format::{commit, timestamp};
+use super::super::ui::{
+    Icon, Tone, badge, empty, expander_summary, icon, load_older, notice, when,
+};
 use super::deployments::PromoteAction;
-use super::{client_error_message, editor};
+use super::editor;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
@@ -54,7 +57,7 @@ pub(super) fn ReleaseHistory(application: String) -> impl IntoView {
                         }
                     }
                     Err(e) => {
-                        error.set(Some(client_error_message(&e)));
+                        error.set(Some(e.user_message()));
                         break;
                     }
                 }
@@ -90,18 +93,12 @@ pub(super) fn ReleaseHistory(application: String) -> impl IntoView {
                 key={|release| release.id.clone()}
                 children={|release| view! { <ReleaseCard release={release} /> }}
             />
-            <Show when={move || cursor.get().is_some()}>
-                <div class="btn-group">
-                    <button
-                        type="button"
-                        class="btn"
-                        disabled={move || loading.get()}
-                        on:click={move |_| load(cursor.get_untracked())}
-                    >
-                        "Load older releases"
-                    </button>
-                </div>
-            </Show>
+            {load_older(
+                "Load older releases",
+                cursor,
+                loading,
+                move || load(cursor.get_untracked()),
+            )}
         </section>
     }
 }
@@ -129,80 +126,30 @@ pub(super) fn ReleaseCard(release: ReleaseView, #[prop(optional)] planned: bool)
                 .collect::<Vec<_>>()
         })
     };
-    let promotions = StoredValue::new(release.promotions.clone());
-    let commit = release.release.commit().map(str::to_owned);
+    let manifest_commit = release.release.commit().map(str::to_owned);
     let availability = release.availability.as_ref().map(availability);
-    let services = release
-        .release
-        .sources()
-        .iter()
-        .map(|(service, source)| {
-            let inputs = release
-                .fingerprint
-                .services()
-                .get(service)
-                .map(|inputs| inputs.fields().clone())
-                .unwrap_or_default();
-            let provenance = match source {
-                ResolvedSource::Image { requested, .. } => format!("Pulled {requested}"),
-                ResolvedSource::Git {
-                    requested: ValidatedSource::Git { repository, .. },
-                    commit,
-                    ..
-                } => format!("Built from {repository} at {commit}"),
-                ResolvedSource::Git { commit, .. } => format!("Built at {commit}"),
-            };
-            view! {
-                <div class="snapshot-service">
-                    <h4>{service.to_string()}</h4>
-                    <dl class="kv">
-                        <dt>"Image"</dt>
-                        <dd>
-                            <code>{source.digest_reference().to_owned()}</code>
-                        </dd>
-                        <dt>"Provenance"</dt>
-                        <dd>{provenance}</dd>
-                        {inputs
-                            .into_iter()
-                            .map(|(field, value)| {
-                                view! {
-                                    <dt>
-                                        <code>{field}</code>
-                                    </dt>
-                                    <dd>{value}</dd>
-                                }
-                            })
-                            .collect_view()}
-                    </dl>
-                </div>
-            }
-        })
-        .collect_view();
+    let services = release_services(&release);
+    let promotions = StoredValue::new(release.promotions);
     view! {
         <article class="expander" class:selected={selected}>
-            <button
-                type="button"
-                class="expander-summary"
-                aria-expanded={move || opened.get().to_string()}
-                on:click={move |_| opened.update(|v| *v = !*v)}
-            >
-                <span class="chevron" aria-hidden="true">
-                    {icon(Icon::ChevronRight)}
-                </span>
-                <strong>
-                    <code>{release.id.to_string()}</code>
-                </strong>
-                <span class="tag">
-                    {commit
-                        .as_deref()
-                        .map_or_else(
-                            || "Saved manifest".to_owned(),
-                            |commit| format!("Commit {}", &commit[..commit.len().min(12)]),
-                        )}
-                </span>
-                {availability.clone().map(|(tone, label, _)| badge(tone, label))}
-                <span class="meta">{when(release.created_at_ms)}</span>
-            </button>
+            {expander_summary(
+                opened,
+                view! {
+                    <strong>
+                        <code>{release.id.to_string()}</code>
+                    </strong>
+                    <span class="tag">
+                        {manifest_commit
+                            .as_deref()
+                            .map_or_else(
+                                || "Saved manifest".to_owned(),
+                                |hash| format!("Commit {}", commit(hash)),
+                            )}
+                    </span>
+                    {availability.clone().map(|(tone, label, _)| badge(tone, label))}
+                    <span class="meta">{when(release.created_at_ms)}</span>
+                },
+            )}
             <div class="expander-body" hidden={move || !opened.get()}>
                 <dl class="kv">
                     <dt>"Release ID"</dt>
@@ -213,10 +160,10 @@ pub(super) fn ReleaseCard(release: ReleaseView, #[prop(optional)] planned: bool)
                     <dd>{timestamp(release.created_at_ms)}</dd>
                     <dt>"Manifest"</dt>
                     <dd>
-                        {commit
+                        {manifest_commit
                             .map_or_else(
                                 || "The saved manifest".to_owned(),
-                                |commit| format!("Read at commit {commit}"),
+                                |hash| format!("Read at commit {hash}"),
                             )}
                     </dd>
                     <dt>"Content hash"</dt>
@@ -283,6 +230,57 @@ pub(super) fn ReleaseCard(release: ReleaseView, #[prop(optional)] planned: bool)
             </div>
         </article>
     }
+}
+
+/// Each service's image in a release, with its provenance and build inputs.
+fn release_services(release: &ReleaseView) -> AnyView {
+    release
+        .release
+        .sources()
+        .iter()
+        .map(|(service, source)| {
+            let inputs = release
+                .fingerprint
+                .services()
+                .get(service)
+                .map(|inputs| inputs.fields().clone())
+                .unwrap_or_default();
+            let provenance = match source {
+                ResolvedSource::Image { requested, .. } => format!("Pulled {requested}"),
+                ResolvedSource::Git {
+                    requested: ValidatedSource::Git { repository, .. },
+                    commit,
+                    ..
+                } => format!("Built from {repository} at {commit}"),
+                ResolvedSource::Git { commit, .. } => format!("Built at {commit}"),
+            };
+            view! {
+                <div class="snapshot-service">
+                    <h4>{service.to_string()}</h4>
+                    <dl class="kv">
+                        <dt>"Image"</dt>
+                        <dd>
+                            <code>{source.digest_reference().to_owned()}</code>
+                        </dd>
+                        <dt>"Provenance"</dt>
+                        <dd>{provenance}</dd>
+                        {inputs
+                            .into_iter()
+                            .map(|(field, value)| {
+                                view! {
+                                    <dt>
+                                        <code>{field}</code>
+                                    </dt>
+                                    <dd>{value}</dd>
+                                }
+                            })
+                            .collect_view()}
+                    </dl>
+                </div>
+            }
+        })
+        .collect_view()
+        .into_any()
 }
 
 /// Badge tone and label, and a sentence, saying whether a release's images

@@ -15,24 +15,27 @@ mod variables;
 
 use super::format::{commit, timestamp};
 use super::runtime::RuntimeOverview;
-use super::ui::{
-    Icon, Modal, PageHeader, Tabs, Tone, badge, health_badge, icon, notice, text_input,
+use super::ui::{Icon, Modal, Tabs, Tone, badge, health_badge, icon, notice, text_field};
+use super::{
+    ClientErrorExt, DashboardContext, DashboardSignals, access::can, dashboard_context,
+    environment_href, reload,
 };
-use super::{client_error_message, dashboard_context, environment_row, row_health};
 use crate::state::ApplicationHealth;
 
 use deployments::{DeploymentActions, DeploymentHistory};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::NavigateOptions;
-use leptos_router::components::A;
+use leptos_router::components::{A, ToHref};
 use leptos_router::hooks::use_navigate;
+use leptos_router::params::ParamsMap;
 use logs::ApplicationLogs;
 pub(super) use navigation::HistoryGuard;
 use navigation::guard_navigation;
 use piqueld_client::{
     ApplicationManifest, ApplicationSpec, ApplicationTemplate, ApplicationView, Client,
-    ClientError, DeploymentOrigin, EnvironmentSource, Metadata,
+    ClientError, DeploymentOrigin, EnvironmentConfig, EnvironmentSource, EnvironmentView, Metadata,
+    access::{GlobalPermission, Permission},
     edit::{ApplicationEdit, EditOptions},
 };
 use secrets::{EnvironmentSecrets, SecretFileSettings};
@@ -72,6 +75,20 @@ pub(super) enum Page {
 }
 
 impl Page {
+    /// The page an `/applications/:id[/services/:service|/environments/:environment|/previews/:preview]`
+    /// route shows.
+    pub(super) fn from_params(params: &ParamsMap) -> Self {
+        if let Some(service) = params.get("service") {
+            Self::Service(service)
+        } else if let Some(environment) = params.get("environment") {
+            Self::Environment(environment)
+        } else if let Some(preview) = params.get("preview") {
+            Self::Preview(preview)
+        } else {
+            Self::Application
+        }
+    }
+
     /// Tabs of the page; service pages have their own section tabs.
     const fn tabs(&self) -> &'static [&'static str] {
         match self {
@@ -82,7 +99,7 @@ impl Page {
 
     /// The initial tab: `?deployment=` opens deployments, `?release=`
     /// releases, and `?tab=` names a tab.
-    fn initial_tab(&self, query: &leptos_router::params::ParamsMap) -> &'static str {
+    fn initial_tab(&self, query: &ParamsMap) -> &'static str {
         let requested = if query.get("deployment").is_some() {
             Some("deployments".to_owned())
         } else if query.get("release").is_some() {
@@ -100,7 +117,7 @@ impl Page {
 /// State shared by every section of one application editor, provided as context.
 #[derive(Clone, Copy)]
 struct EditorContext {
-    dashboard: StoredValue<super::DashboardContext>,
+    dashboard: StoredValue<DashboardContext>,
     saved: RwSignal<ApplicationView>,
     page: StoredValue<Page>,
     /// Environment that runtime actions target: the environment page's, or on
@@ -114,11 +131,25 @@ struct EditorContext {
     notice: RwSignal<String>,
     tab: RwSignal<&'static str>,
 }
+
 impl EditorContext {
+    /// The dashboard's shared signals.
+    fn signals(self) -> DashboardSignals {
+        self.dashboard.with_value(|dashboard| dashboard.signals)
+    }
+
+    /// Refreshes the dashboard, so lists and the runtime detail catch up with
+    /// a change.
+    fn refresh_dashboard(self) {
+        self.dashboard
+            .with_value(|dashboard| dashboard.refresh.run(()));
+    }
+
     /// The saved manifest, tracked so lists re-render after every save.
     fn manifest(self) -> ApplicationManifest {
         self.saved.with(|saved| saved.application.to_manifest())
     }
+
     /// The manifest the shown environment deploys: the saved one, or the one
     /// last fetched from its branch or promoted into it, read from its loaded
     /// detail. `None` before a branch's first fetch or an environment's first
@@ -128,31 +159,49 @@ impl EditorContext {
         if environment.source == EnvironmentSource::Saved {
             return Some(self.saved.with(|saved| saved.application.clone()));
         }
-        let signals = self.dashboard.with_value(|d| d.signals);
-        signals.detail.with(|detail| {
+        self.signals().detail.with(|detail| {
             let detail = detail
                 .as_ref()
                 .filter(|detail| detail.environment.id == environment.id)?;
             detail.manifest.clone()
         })
     }
+
+    /// The application's ID.
     fn id(self) -> String {
         self.saved
             .with_untracked(|saved| saved.application.id().to_string())
     }
+
     /// The shown environment's ID, read once by components keyed on it.
     fn environment_id(self) -> String {
         self.environment.get_untracked().unwrap_or_default()
     }
-    fn selected_environment(self) -> Option<piqueld_client::EnvironmentView> {
+
+    /// The environment runtime actions target, if it still exists.
+    fn selected_environment(self) -> Option<EnvironmentView> {
         let id = self.environment.get()?;
         self.saved.with(|saved| saved.deployable(&id).cloned())
     }
+
+    /// Name of the environment runtime actions target; empty without one.
+    fn selected_name(self) -> String {
+        self.selected_environment()
+            .map(|environment| environment.name.to_string())
+            .unwrap_or_default()
+    }
+
+    /// Whether the environment runtime actions target is being deleted.
+    fn selected_deleting(self) -> bool {
+        self.selected_environment()
+            .is_some_and(|environment| environment.delete_intent)
+    }
+
     /// Runtime actions require a loaded, live environment, including after
     /// deletion. Background refreshes of an already loaded detail keep them
     /// enabled, so a click during a poll is never swallowed.
     fn environment_action_blocked(self) -> bool {
-        let signals = self.dashboard.with_value(|d| d.signals);
+        let signals = self.signals();
         self.action_blocked()
             || self
                 .selected_environment()
@@ -164,13 +213,12 @@ impl EditorContext {
                 })
             })
     }
+
     /// Dashboard address of one of the application's environments.
     fn environment_href(self, environment: &str) -> String {
-        format!(
-            "/dashboard/applications/{}/environments/{environment}",
-            self.id()
-        )
+        environment_href(&self.id(), environment)
     }
+
     /// Name of one of the application's environments or previews; its ID
     /// once it is gone.
     fn environment_name(self, environment: &str) -> String {
@@ -180,6 +228,7 @@ impl EditorContext {
                 .map_or_else(|| environment.to_owned(), |env| env.name.to_string())
         })
     }
+
     /// Where an environment deploys from, naming a promotion source:
     /// "the saved manifest", "branch main", or "promoted from staging".
     fn describe_source(self, source: &EnvironmentSource) -> String {
@@ -188,6 +237,7 @@ impl EditorContext {
             None => source.to_string(),
         }
     }
+
     /// Where a deployment came from: "Built", "Promoted from staging
     /// (deployment …)", "Release redeployed", or "Local snapshot 0123456 on
     /// 89abcde".
@@ -215,16 +265,20 @@ impl EditorContext {
             },
         }
     }
+
+    /// The application's name.
     fn name(self) -> String {
         self.saved
             .with(|saved| saved.application.metadata().name.to_string())
     }
+
     /// Whether the saved manifest declares the environment `name`, owning
     /// whether it exists and where it deploys from.
     fn declared(self, name: &str) -> bool {
         self.saved
             .with(|saved| saved.application.spec().environments.contains_key(name))
     }
+
     /// Whether the saved manifest's block for the environment `name` sets
     /// where it deploys from, owning its source and deploy on push.
     fn source_declared(self, name: &str) -> bool {
@@ -234,41 +288,73 @@ impl EditorContext {
                 .spec()
                 .environments
                 .get(name)
-                .is_some_and(piqueld_client::EnvironmentConfig::sets_source)
+                .is_some_and(EnvironmentConfig::sets_source)
         })
     }
+
+    /// Options choosing one of the saved manifest's services, after a blank
+    /// "Select a service".
+    fn service_options(self) -> impl IntoView {
+        view! {
+            <option value="">"Select a service"</option>
+            {move || {
+                self.manifest()
+                    .spec
+                    .services
+                    .into_iter()
+                    .map(|service| {
+                        view! {
+                            <option value={service.name.clone()}>{service.name.clone()}</option>
+                        }
+                    })
+                    .collect_view()
+            }}
+        }
+    }
+
     /// Whether runtime configuration is owned by a Git manifest instead of these forms.
     fn managed(self) -> bool {
         self.saved
             .with(|saved| saved.application.spec().manifest.is_some())
     }
+
     /// Whether saves are currently disallowed.
     fn blocked(self) -> bool {
         self.busy.get() || self.uncertain.get()
     }
+
     /// Whether deploy/delete actions are disallowed: also blocked by unsaved edits
     /// or a pending deletion.
     fn action_blocked(self) -> bool {
         self.blocked() || !self.dirty.get().is_empty() || self.saved.get().delete_intent
     }
+
+    /// Whether this is an environment page rather than the application page.
+    fn environment_page(self) -> bool {
+        self.page
+            .with_value(|page| matches!(page, Page::Environment(_)))
+    }
+
     /// Replaces the editor error and clears any diagnostic link.
     fn set_error(self, error: Option<String>) {
         self.diagnostic_id.set(None);
         self.error.set(error);
     }
+
     /// Shows a request failure. Transport failures mark the editor `uncertain`
     /// because the server may or may not have applied the request.
     fn failure(self, error: &ClientError) {
-        self.set_error(Some(client_error_message(error)));
-        self.diagnostic_id.set(diagnostic_id(error));
-        if matches!(error, ClientError::Transport { .. }) {
+        if error.transport() {
             self.uncertain.set(true);
             self.set_error(Some("The request outcome is unknown. Reload saved configuration and deployment history before another action.".into()));
+        } else {
+            self.set_error(Some(error.user_message()));
+            self.diagnostic_id.set(error.diagnostic_id());
         }
     }
+
     /// Applies `edit` to the saved manifest, validates it locally, then sends it
-    /// guarded by the saved generation. A transport failure is retried once with the
-    /// same request ID so the server can deduplicate it. On success the saved view is
+    /// guarded by the saved generation (see `mutate`). On success the saved view is
     /// updated locally, `on_saved` runs, and the dashboard refreshes.
     fn save(self, edit: ApplicationEdit, on_saved: Callback<ApplicationView>) {
         if self.blocked() {
@@ -281,59 +367,37 @@ impl EditorContext {
             return;
         }
         let validated = match manifest.validate_template() {
-            Ok(v) => v,
+            Ok(validated) => validated,
             Err(error) => {
                 self.set_error(Some(error.to_string()));
                 return;
             }
         };
         let saved = self.saved.get_untracked();
+        let id = saved.application.id().to_string();
         let options = EditOptions {
             expected_generation: Some(saved.generation),
             ..EditOptions::default()
         };
-        let client = match mutation_client() {
-            Ok(client) => client,
-            Err(error) => {
-                self.set_error(Some(error));
-                return;
-            }
-        };
-        self.busy.set(true);
-        spawn_local(async move {
-            let mut result = client
-                .edit_application(saved.application.id().as_str(), &edit, &options)
-                .await;
-            if result.as_ref().is_err_and(transport_failure) {
-                result = client
-                    .edit_application(saved.application.id().as_str(), &edit, &options)
-                    .await;
-            }
-            match result {
-                Ok(receipt) => {
-                    let application = validated.normalize(saved.application.id().clone());
-                    let updated = ApplicationView {
-                        spec_hash: application.spec_hash(),
-                        application,
-                        generation: receipt.generation,
-                        ..saved
-                    };
-                    self.saved.set(updated.clone());
-                    on_saved.run(updated);
-                    self.notice.set("Saved.".into());
-                    self.dashboard.with_value(|d| d.refresh.run(()));
-                }
-                Err(error) => self.failure(&error),
-            }
-            self.busy.set(false);
-        });
-    }
-}
-impl EditorContext {
-    /// Whether this is an environment page rather than the application page.
-    fn environment_page(self) -> bool {
-        self.page
-            .with_value(|page| matches!(page, Page::Environment(_)))
+        self.mutate(
+            move |client| {
+                let (id, edit) = (id.clone(), edit.clone());
+                async move { client.edit_application(&id, &edit, &options).await }
+            },
+            move |receipt| {
+                let application = validated.normalize(saved.application.id().clone());
+                let updated = ApplicationView {
+                    spec_hash: application.spec_hash(),
+                    application,
+                    generation: receipt.generation,
+                    ..saved
+                };
+                self.saved.set(updated.clone());
+                on_saved.run(updated);
+                self.notice.set("Saved.".into());
+                self.refresh_dashboard();
+            },
+        );
     }
 
     /// Shows `environment`'s deployments: the Deployments tab on its own
@@ -349,18 +413,17 @@ impl EditorContext {
         }
     }
 
-    /// Sends one mutation with a fresh request identity while the editor is
-    /// busy, retrying once on transport failure with the same identity so the
-    /// server can deduplicate it. Runs `done` with the response, or shows the
-    /// failure.
-    fn mutate<T: 'static, F: Future<Output = Result<T, ClientError>>>(
+    /// Runs one mutation while the editor is busy: `send` gets a client with a
+    /// fresh request identity, then `done` runs with the response, or the
+    /// failure is shown.
+    fn run_mutation<T: 'static>(
         self,
-        request: impl Fn(Client) -> F + 'static,
+        send: impl AsyncFnOnce(&Mutation) -> Result<T, ClientError> + 'static,
         done: impl FnOnce(T) + 'static,
     ) {
         self.set_error(None);
-        let client = match mutation_client() {
-            Ok(client) => client,
+        let mutation = match Mutation::new() {
+            Ok(mutation) => mutation,
             Err(error) => {
                 self.set_error(Some(error));
                 return;
@@ -368,16 +431,22 @@ impl EditorContext {
         };
         self.busy.set(true);
         spawn_local(async move {
-            let mut result = request(client.clone()).await;
-            if result.as_ref().is_err_and(transport_failure) {
-                result = request(client).await;
-            }
-            match result {
+            match send(&mutation).await {
                 Ok(response) => done(response),
                 Err(error) => self.failure(&error),
             }
             self.busy.set(false);
         });
+    }
+
+    /// Sends one mutation (see `run_mutation`), retrying once on transport
+    /// failure with the same identity so the server can deduplicate it.
+    fn mutate<T: 'static, F: Future<Output = Result<T, ClientError>>>(
+        self,
+        request: impl Fn(Client) -> F + 'static,
+        done: impl FnOnce(T) + 'static,
+    ) {
+        self.run_mutation(async move |mutation| mutation.send(request).await, done);
     }
 
     /// Deploys the saved revision to `environment`, then runs `accepted`.
@@ -396,7 +465,7 @@ impl EditorContext {
                 self.notice
                     .set("Deployment accepted. Follow its progress below.".into());
                 accepted();
-                self.dashboard.with_value(|d| d.refresh.run(()));
+                self.refresh_dashboard();
             },
         );
     }
@@ -406,93 +475,190 @@ impl EditorContext {
 fn editor() -> EditorContext {
     use_context().expect("application editor context")
 }
-/// Returns the persisted diagnostic occurrence attached to an API failure.
-fn diagnostic_id(error: &ClientError) -> Option<String> {
-    match error {
-        ClientError::Api { error, .. } => error
-            .details
-            .get("diagnostic_id")
-            .and_then(|v| v.as_str())
-            .map(str::to_owned),
-        _ => None,
+
+/// A client tagged with a fresh random request ID, used for mutations so a
+/// retried request is recognised as a replay rather than applied twice.
+struct Mutation(Client);
+
+impl Mutation {
+    /// Draws the request identity.
+    fn new() -> Result<Self, String> {
+        // Unlike randomUUID, getRandomValues is available on the supported plain
+        // HTTP origins. Keep 128 bits of cryptographic entropy for replay identities.
+        let error = "Browser could not create a request identity.";
+        let mut bytes = [0; 16];
+        window()
+            .crypto()
+            .map_err(|_| error)?
+            .get_random_values_with_u8_array(&mut bytes)
+            .map_err(|_| error)?;
+        let id = bytes.iter().fold(String::new(), |mut hex, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
+        Ok(Self(Client::browser().with_request_id(id)))
+    }
+
+    /// Sends `request`, and once more after a transport failure, whose
+    /// outcome is unknown.
+    async fn send<T, F: Future<Output = Result<T, ClientError>>>(
+        &self,
+        request: impl Fn(Client) -> F,
+    ) -> Result<T, ClientError> {
+        let result = request(self.0.clone()).await;
+        if result.as_ref().is_err_and(ClientErrorExt::transport) {
+            return request(self.0.clone()).await;
+        }
+        result
     }
 }
 
-/// Whether the request failed before a response was received.
-fn transport_failure(error: &ClientError) -> bool {
-    matches!(error, ClientError::Transport { .. })
-}
-/// Client tagged with a fresh random request ID, used for mutations so a retried
-/// request is recognised as a replay rather than applied twice.
-fn mutation_client() -> Result<Client, String> {
-    // Unlike randomUUID, getRandomValues is available on the supported plain
-    // HTTP origins. Keep 128 bits of cryptographic entropy for replay identities.
-    let error = "Browser could not create a request identity.";
-    let mut bytes = [0; 16];
-    window()
-        .crypto()
-        .map_err(|_| error)?
-        .get_random_values_with_u8_array(&mut bytes)
-        .map_err(|_| error)?;
-    let id = bytes.iter().fold(String::new(), |mut hex, byte| {
-        use std::fmt::Write as _;
-        let _ = write!(hex, "{byte:02x}");
-        hex
-    });
-    Ok(Client::browser().with_request_id(id))
-}
-/// Tracks whether `draft` differs from `baseline`, keeping `key` in the editor's
-/// dirty set accordingly and removing it when the owning view unmounts.
-fn dirty_group<T: Clone + PartialEq + Send + Sync + 'static>(
-    key: String,
-    draft: RwSignal<T>,
+/// One settings group's form: its `value` and the saved `baseline` it
+/// started from. While they differ the group is in the editor's dirty set,
+/// which blocks deploys and guards navigation.
+struct Draft<T: Send + Sync + 'static> {
+    value: RwSignal<T>,
     baseline: RwSignal<T>,
-) {
-    let context = editor();
-    let cleanup = key.clone();
-    Effect::new(move |_| {
-        let dirty = draft.get() != baseline.get();
-        context.dirty.update(|groups| {
-            if dirty {
-                groups.insert(key.clone());
-            } else {
-                groups.remove(&key);
-            }
-        });
-    });
-    on_cleanup(move || {
-        context.dirty.update(|groups| {
-            groups.remove(&cleanup);
-        });
-    });
 }
 
-/// Save and discard buttons for one settings group, shown only while it has edits.
-fn save_actions<T: Clone + PartialEq + Send + Sync + 'static>(
-    draft: RwSignal<T>,
-    baseline: RwSignal<T>,
-    save: impl Fn() + Copy + 'static,
-    disabled: impl Fn() -> bool + Copy + Send + Sync + 'static,
-) -> impl IntoView {
-    view! {
-        <div class="form-actions" hidden={move || draft.get() == baseline.get()}>
-            <button
-                type="button"
-                class="btn btn-primary"
-                disabled={move || draft.get() == baseline.get() || disabled()}
-                on:click={move |_| save()}
-            >
-                "Save changes"
-            </button>
-            <button
-                type="button"
-                class="btn btn-ghost"
-                on:click={move |_| draft.set(baseline.get_untracked())}
-            >
-                "Discard"
-            </button>
-            <span class="status">"Unsaved edits"</span>
-        </div>
+impl<T: Send + Sync + 'static> Clone for Draft<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: Send + Sync + 'static> Copy for Draft<T> {}
+
+impl<T: Clone + PartialEq + Send + Sync + 'static> Draft<T> {
+    /// Starts editing `initial` as the dirty group `key`, which it leaves
+    /// when the owning view unmounts.
+    fn new(key: String, initial: T) -> Self {
+        let draft = Self {
+            value: RwSignal::new(initial.clone()),
+            baseline: RwSignal::new(initial),
+        };
+        let context = editor();
+        let cleanup = key.clone();
+        Effect::new(move |_| {
+            let dirty = draft.changed();
+            context.dirty.update(|groups| {
+                if dirty {
+                    groups.insert(key.clone());
+                } else {
+                    groups.remove(&key);
+                }
+            });
+        });
+        on_cleanup(move || {
+            context.dirty.update(|groups| {
+                groups.remove(&cleanup);
+            });
+        });
+        draft
+    }
+
+    /// Starts editing what `read` reads from the saved manifest. Until it is
+    /// edited, the draft follows later saves and fetches.
+    fn synced(key: &str, read: fn(&ApplicationManifest) -> T) -> Self {
+        let context = editor();
+        let draft = Self::new(key.into(), read(&context.manifest()));
+        Effect::new(move |_| {
+            let saved = read(&context.manifest());
+            if draft.value.get_untracked() == draft.baseline.get_untracked() {
+                draft.reset(saved);
+            }
+        });
+        draft
+    }
+
+    /// Whether the form differs from its baseline.
+    fn changed(self) -> bool {
+        self.value
+            .with(|value| self.baseline.with(|baseline| value != baseline))
+    }
+
+    /// Restarts the form at `value`, as saved.
+    fn reset(self, value: T) {
+        self.value.set(value.clone());
+        self.baseline.set(value);
+    }
+
+    /// Drops the edits.
+    fn discard(self) {
+        self.value.set(self.baseline.get_untracked());
+    }
+
+    /// Saves `edit` as the group's change, then restarts the form at what
+    /// `read` reads from the saved manifest.
+    fn save(self, edit: ApplicationEdit, read: fn(&ApplicationManifest) -> T) {
+        editor().save(
+            edit,
+            Callback::new(move |saved: ApplicationView| {
+                self.reset(read(&saved.application.to_manifest()));
+            }),
+        );
+    }
+
+    /// Save and discard buttons, shown only while the form has edits.
+    fn actions(
+        self,
+        save: impl Fn() + Copy + 'static,
+        disabled: impl Fn() -> bool + Copy + Send + Sync + 'static,
+    ) -> impl IntoView {
+        view! {
+            <div class="form-actions" hidden={move || !self.changed()}>
+                <button
+                    type="button"
+                    class="btn btn-primary"
+                    disabled={move || !self.changed() || disabled()}
+                    on:click={move |_| save()}
+                >
+                    "Save changes"
+                </button>
+                <button type="button" class="btn btn-ghost" on:click={move |_| self.discard()}>
+                    "Discard"
+                </button>
+                <span class="status">"Unsaved edits"</span>
+            </div>
+        }
+    }
+}
+
+/// Rows of a list form, edited in place by index. A row removed meanwhile
+/// reads as empty and ignores edits.
+trait Rows<T> {
+    /// Reads one field of row `index`.
+    fn field<R: Default>(self, index: usize, read: impl Fn(&T) -> R) -> R;
+    /// Updates row `index`.
+    fn edit(self, index: usize, write: impl FnOnce(&mut T));
+    /// Removes row `index`.
+    fn remove(self, index: usize);
+    /// Indices of every row, to key a `For` on.
+    fn indices(self) -> Vec<usize>;
+}
+
+impl<T: Send + Sync + 'static> Rows<T> for RwSignal<Vec<T>> {
+    fn field<R: Default>(self, index: usize, read: impl Fn(&T) -> R) -> R {
+        self.with(|rows| rows.get(index).map(read).unwrap_or_default())
+    }
+
+    fn edit(self, index: usize, write: impl FnOnce(&mut T)) {
+        self.update(|rows| {
+            if let Some(row) = rows.get_mut(index) {
+                write(row);
+            }
+        });
+    }
+
+    fn remove(self, index: usize) {
+        self.update(|rows| {
+            rows.remove(index);
+        });
+    }
+
+    fn indices(self) -> Vec<usize> {
+        (0..self.with(Vec::len)).collect()
     }
 }
 
@@ -507,7 +673,7 @@ pub(super) fn CreateApplication() -> impl IntoView {
     let error = RwSignal::new(None::<String>);
     let navigate = use_navigate();
     let refresh = dashboard_context().refresh;
-    let create = move |()| {
+    let create = move || {
         if busy.get_untracked() {
             return;
         }
@@ -523,8 +689,8 @@ pub(super) fn CreateApplication() -> impl IntoView {
             error.set(Some(problem.to_string()));
             return;
         }
-        let client = match mutation_client() {
-            Ok(client) => client,
+        let mutation = match Mutation::new() {
+            Ok(mutation) => mutation,
             Err(problem) => {
                 error.set(Some(problem));
                 return;
@@ -535,10 +701,12 @@ pub(super) fn CreateApplication() -> impl IntoView {
         error.set(None);
         spawn_local(async move {
             let name = manifest.metadata.name;
-            let mut result = client.create_application(&name, false).await;
-            if result.as_ref().is_err_and(transport_failure) {
-                result = client.create_application(&name, false).await;
-            }
+            let result = mutation
+                .send(|client| {
+                    let name = name.clone();
+                    async move { client.create_application(&name, false).await }
+                })
+                .await;
             match result {
                 Ok(saved) => {
                     refresh.run(());
@@ -547,14 +715,12 @@ pub(super) fn CreateApplication() -> impl IntoView {
                         NavigateOptions::default(),
                     );
                 }
-                Err(problem) => error.set(Some(client_error_message(&problem))),
+                Err(problem) => error.set(Some(problem.user_message())),
             }
             busy.set(false);
         });
     };
-    let allowed = super::access::can(piqueld_client::access::Permission::Global(
-        piqueld_client::access::GlobalPermission::AppsCreate,
-    ));
+    let allowed = can(Permission::Global(GlobalPermission::AppsCreate));
     view! {
         <Show when={move || allowed.get()}>
             <button type="button" class="btn btn-primary" on:click={move |_| opened.set(true)}>
@@ -575,14 +741,14 @@ pub(super) fn CreateApplication() -> impl IntoView {
                 class="stack-sm"
                 on:submit={move |event| {
                     event.prevent_default();
-                    create(());
+                    create();
                 }}
             >
                 <fieldset class="stack-sm" disabled={move || busy.get()}>
                     <p class="hint">
                         "The application starts empty. Add services, routes, and volumes afterwards, then deploy."
                     </p>
-                    {text_input("Application name", name, String::clone, |v, s| *v = s)}
+                    {text_field("Application name", name)}
                 </fieldset>
                 {move || error.get().map(|e| notice(Tone::Bad, e))}
                 <div class="form-actions">
@@ -603,7 +769,7 @@ pub(super) fn ApplicationPage(id: String, page: Page) -> impl IntoView {
     spawn_local(async move {
         match Client::browser().application(&id).await {
             Ok(app) => initial.set(Some(app)),
-            Err(e) => error.set(Some(client_error_message(&e))),
+            Err(e) => error.set(Some(e.user_message())),
         }
     });
     view! {
@@ -613,12 +779,8 @@ pub(super) fn ApplicationPage(id: String, page: Page) -> impl IntoView {
                 .map(|e| {
                     view! {
                         <div class="stack-sm">
-                            {notice(Tone::Bad, e)} <div class="btn-group">
-                                <A attr:class="btn" href="/dashboard/applications">
-                                    {icon(Icon::ArrowLeft)}
-                                    "Back to applications"
-                                </A>
-                            </div>
+                            {notice(Tone::Bad, e)}
+                            {back_link("/dashboard/applications", "Back to applications")}
                         </div>
                     }
                 })
@@ -633,6 +795,19 @@ pub(super) fn ApplicationPage(id: String, page: Page) -> impl IntoView {
     }
 }
 
+/// A button-styled link back to a list, for pages whose subject is gone.
+fn back_link(href: impl ToHref + Send + Sync + 'static, label: impl IntoView + 'static) -> AnyView {
+    view! {
+        <div class="btn-group">
+            <A attr:class="btn" href={href}>
+                {icon(Icon::ArrowLeft)}
+                {label}
+            </A>
+        </div>
+    }
+    .into_any()
+}
+
 /// Provides `EditorContext`, guards navigation while edits are unsaved, and renders
 /// the application page, a service editor, or an environment page. The initial
 /// tab comes from the `deployment` or `tab` query parameters.
@@ -640,6 +815,7 @@ pub(super) fn ApplicationPage(id: String, page: Page) -> impl IntoView {
 fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
     let query = leptos_router::hooks::use_query_map();
     let dashboard = dashboard_context();
+    let signals = dashboard.signals;
     let saved = RwSignal::new(initial);
     let shown = match &page {
         Page::Environment(environment) | Page::Preview(environment) => Some(environment.clone()),
@@ -668,7 +844,6 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
         page: StoredValue::new(page.clone()),
     };
     provide_context(context);
-    let signals = context.dashboard.with_value(|d| d.signals);
     // Refresh environment metadata without replacing shared configuration drafts.
     Effect::new(move |_| {
         if let Some(application) = signals.applications.with(|rows| {
@@ -740,14 +915,14 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
 #[component]
 fn ApplicationSections() -> impl IntoView {
     let context = editor();
-    let signals = context.dashboard.with_value(|d| d.signals);
+    let signals = context.signals();
     let id = context.id();
     let health = move || {
         let id = context.id();
         signals.applications.with(|rows| {
             rows.iter()
-                .find(|row| row.application.id.to_string() == id)
-                .map(row_health)
+                .find(|row| row.application.id.as_str() == id)
+                .map(super::ApplicationRow::health)
         })
     };
     view! {
@@ -838,14 +1013,7 @@ fn ApplicationOverview() -> impl IntoView {
                                     )}
                                 </dd>
                                 <dt>"Environments"</dt>
-                                <dd>
-                                    {saved
-                                        .environments
-                                        .iter()
-                                        .map(|environment| environment.name.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(", ")}
-                                </dd>
+                                <dd>{environment_names(saved).join(", ")}</dd>
                                 <dt>"Created"</dt>
                                 <dd>{timestamp(saved.created_at_ms)}</dd>
                                 <dt>"Updated"</dt>
@@ -858,13 +1026,22 @@ fn ApplicationOverview() -> impl IntoView {
     }
 }
 
+/// Names of the application's environments.
+fn environment_names(saved: &ApplicationView) -> Vec<String> {
+    saved
+        .environments
+        .iter()
+        .map(|environment| environment.name.to_string())
+        .collect()
+}
+
 /// One environment or preview: its runtime, deployments, secrets, logs, and
 /// history. An environment's overview renames and deletes it; a preview's
 /// shows its branch and deletes it.
 #[component]
 fn EnvironmentPage() -> impl IntoView {
     let context = editor();
-    let signals = context.dashboard.with_value(|d| d.signals);
+    let signals = context.signals();
     let id = context.environment_id();
     let preview = context
         .page
@@ -879,27 +1056,18 @@ fn EnvironmentPage() -> impl IntoView {
         return view! {
             <div class="stack-sm">
                 {notice(Tone::Bad, format!("This {kind} no longer exists."))}
-                <div class="btn-group">
-                    <A attr:class="btn" href={app_href}>
-                        {icon(Icon::ArrowLeft)}
-                        {format!("Back to {list}")}
-                    </A>
-                </div>
+                {back_link(app_href, format!("Back to {list}"))}
             </div>
         }
         .into_any();
     }
-    let name = move || {
-        context
-            .selected_environment()
-            .map(|environment| environment.name.to_string())
-            .unwrap_or_default()
-    };
+    let name = move || context.selected_name();
     // Previews are not listed, so their health comes from the loaded detail.
     let health = {
         let id = id.clone();
         move || {
-            environment_row(signals, &id)
+            signals
+                .environment_row(&id)
                 .map(|row| row.health())
                 .or_else(|| {
                     signals.detail.with(|detail| {
@@ -910,11 +1078,6 @@ fn EnvironmentPage() -> impl IntoView {
                     })
                 })
         }
-    };
-    let deleting = move || {
-        context
-            .selected_environment()
-            .is_some_and(|environment| environment.delete_intent)
     };
     view! {
         <nav class="breadcrumb" aria-label="Breadcrumb">
@@ -928,7 +1091,7 @@ fn EnvironmentPage() -> impl IntoView {
             <div class="detail-title">
                 <h1>{name}</h1>
                 {move || health().map(health_badge)}
-                {move || deleting().then(|| badge(Tone::Warn, "Deleting"))}
+                {move || context.selected_deleting().then(|| badge(Tone::Warn, "Deleting"))}
             </div>
             <div class="page-actions">
                 {if preview {
@@ -970,52 +1133,36 @@ fn EnvironmentPage() -> impl IntoView {
 fn DeleteApplication() -> impl IntoView {
     let context = editor();
     let navigate = use_navigate();
-    let refresh = dashboard_context().refresh;
     let delete = move |_| {
-        let environments = context.saved.with_untracked(|saved| {
-            saved
-                .environments
-                .iter()
-                .map(|environment| environment.name.to_string())
-                .collect::<Vec<_>>()
-        });
+        let environments = context.saved.with_untracked(environment_names);
         let message = format!(
             "Delete this application, all its environments ({}) and previews, their services, and all deployment history? Environments' Docker volume data will be retained; previews' volumes are removed with their data.",
             environments.join(", ")
         );
-        if !window().confirm_with_message(&message).unwrap_or(false) {
+        if !super::confirm(&message) {
             return;
         }
-        context.set_error(None);
-        let client = match mutation_client() {
-            Ok(client) => client,
-            Err(error) => {
-                context.set_error(Some(error));
-                return;
-            }
-        };
         let saved = context.saved.get_untracked();
         let navigate = navigate.clone();
-        context.busy.set(true);
-        spawn_local(async move {
-            let confirmed = environments.iter().map(String::as_str).collect::<Vec<_>>();
-            match client
-                .delete_application_with_preconditions(
-                    saved.application.id().as_str(),
-                    Some(saved.generation),
-                    false,
-                    &confirmed,
-                )
-                .await
-            {
-                Ok(_) => {
-                    refresh.run(());
-                    navigate("/dashboard/applications", NavigateOptions::default());
-                }
-                Err(error) => context.failure(&error),
-            }
-            context.busy.set(false);
-        });
+        // Unlike other mutations, a deletion is not retried.
+        context.run_mutation(
+            async move |mutation| {
+                let confirmed = environments.iter().map(String::as_str).collect::<Vec<_>>();
+                mutation
+                    .0
+                    .delete_application_with_preconditions(
+                        saved.application.id().as_str(),
+                        Some(saved.generation),
+                        false,
+                        &confirmed,
+                    )
+                    .await
+            },
+            move |_| {
+                context.refresh_dashboard();
+                navigate("/dashboard/applications", NavigateOptions::default());
+            },
+        );
     };
     view! {
         <section class="card card-danger">
@@ -1039,64 +1186,12 @@ fn DeleteApplication() -> impl IntoView {
     }
 }
 
-/// `/settings` page: read-only daemon configuration grouped by section.
-#[component]
-pub(super) fn HostPage() -> impl IntoView {
-    let settings = RwSignal::new(None);
-    let error = RwSignal::new(None::<String>);
-    spawn_local(async move {
-        match Client::browser().system_configuration().await {
-            Ok(config) => settings.set(Some(config)),
-            Err(e) => error.set(Some(client_error_message(&e))),
-        }
-    });
-    view! {
-        <PageHeader
-            title="Host settings"
-            description="Effective daemon configuration. Edit the TOML file and restart the daemon to change these values."
-        />
-        <div class="stack">
-            {move || error.get().map(|e| notice(Tone::Bad, e))}
-            {move || {
-                settings
-                    .get()
-                    .map(|config| {
-                        config
-                            .groups
-                            .into_iter()
-                            .map(|(group, values)| {
-                                view! {
-                                    <section class="card">
-                                        <header>
-                                            <h3>{group}</h3>
-                                        </header>
-                                        <dl class="kv">
-                                            {values
-                                                .into_iter()
-                                                .map(|(key, value)| {
-                                                    view! {
-                                                        <dt>{key}</dt>
-                                                        <dd>{value}</dd>
-                                                    }
-                                                })
-                                                .collect_view()}
-                                        </dl>
-                                    </section>
-                                }
-                            })
-                            .collect_view()
-                    })
-            }}
-        </div>
-    }
-}
-
 /// Save status, error with reload button and diagnostic link, and a conflict
 /// notice when the polled listing shows a newer generation than the editor's.
 #[component]
 fn EditorFeedback() -> impl IntoView {
     let context = editor();
-    let signals = dashboard_context().signals;
+    let signals = context.signals();
     let show_status = move || {
         context.busy.get() || (context.dirty.get().is_empty() && !context.notice.get().is_empty())
     };
@@ -1131,9 +1226,7 @@ fn EditorFeedback() -> impl IntoView {
                                     <button
                                         type="button"
                                         class="btn btn-sm"
-                                        on:click={move |_| {
-                                            let _ = window().location().reload();
-                                        }}
+                                        on:click={move |_| reload()}
                                     >
                                         "Reload saved configuration"
                                     </button>
@@ -1185,12 +1278,49 @@ fn ApplicationSettings() -> impl IntoView {
                 .then(|| saved.spec_hash.clone())
         })
     });
+    // Read, not only tracked: memos are lazy, and one never read never
+    // subscribes to `saved`.
+    let forms = move || {
+        fetched.with(|_| ());
+        view! {
+            <div hidden={move || context.tab.get() != "Services"}>
+                <div class="section-header">
+                    <div>
+                        <h2>"Services"</h2>
+                        <p>
+                            "Each service runs one image as a replicated Swarm service on the application network."
+                        </p>
+                    </div>
+                    <NewService />
+                </div>
+                <services::ServiceList />
+            </div>
+            <div hidden={move || context.tab.get() != "Variables"}>
+                <variables::VariableSettings />
+            </div>
+            <div hidden={move || context.tab.get() != "Routes"}>
+                <routes::RouteSettings />
+            </div>
+            <div hidden={move || context.tab.get() != "Volumes"}>
+                <VolumeSettings />
+            </div>
+            <div hidden={move || context.tab.get() != "Jobs"}>
+                <jobs::JobSettings />
+            </div>
+            <div hidden={move || context.tab.get() != "Links"}>
+                <links::LinkSettings />
+            </div>
+            <div hidden={move || context.tab.get() != "Secrets"}>
+                <SecretFileSettings />
+            </div>
+        }
+    };
     view! {
         <div hidden={move || {
             !matches!(
                 context.tab.get(),
                 "Source" | "Services" | "Variables" | "Routes" | "Volumes" | "Jobs" | "Links"
-                    | "Secrets"
+                | "Secrets"
             )
         }}>
             <div class="stack">
@@ -1205,48 +1335,7 @@ fn ApplicationSettings() -> impl IntoView {
                         })
                 }} <div hidden={move || context.tab.get() != "Source"}>
                     <RepositorySettings />
-                </div>
-                <fieldset disabled={move || {
-                    context.managed()
-                }}>
-                    {move || {
-                        fetched.with(|_| ());
-                        // Read, not only tracked: memos are lazy, and one never
-                        // read never subscribes to `saved`.
-                        view! {
-                            <div hidden={move || context.tab.get() != "Services"}>
-                                <div class="section-header">
-                                    <div>
-                                        <h2>"Services"</h2>
-                                        <p>
-                                            "Each service runs one image as a replicated Swarm service on the application network."
-                                        </p>
-                                    </div>
-                                    <NewService />
-                                </div>
-                                <services::ServiceList />
-                            </div>
-                            <div hidden={move || context.tab.get() != "Variables"}>
-                                <variables::VariableSettings />
-                            </div>
-                            <div hidden={move || context.tab.get() != "Routes"}>
-                                <routes::RouteSettings />
-                            </div>
-                            <div hidden={move || context.tab.get() != "Volumes"}>
-                                <VolumeSettings />
-                            </div>
-                            <div hidden={move || context.tab.get() != "Jobs"}>
-                                <jobs::JobSettings />
-                            </div>
-                            <div hidden={move || context.tab.get() != "Links"}>
-                                <links::LinkSettings />
-                            </div>
-                            <div hidden={move || context.tab.get() != "Secrets"}>
-                                <SecretFileSettings />
-                            </div>
-                        }
-                    }}
-                </fieldset>
+                </div> <fieldset disabled={move || { context.managed() }}>{forms}</fieldset>
             </div>
         </div>
     }

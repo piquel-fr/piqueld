@@ -1,4 +1,5 @@
 //! Unsaved edit guards for browser navigation.
+use super::super::confirm;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::wasm_bindgen::JsCast;
@@ -30,9 +31,7 @@ impl HistoryGuard {
                 return;
             };
             if !location.dirty.get_untracked().is_empty()
-                && !window()
-                    .confirm_with_message("Leave this application and discard unsaved form edits?")
-                    .unwrap_or(false)
+                && !confirm("Leave this application and discard unsaved form edits?")
             {
                 event.stop_immediate_propagation();
                 if let Ok(history) = window().history() {
@@ -83,7 +82,14 @@ pub(super) fn guard_navigation(dirty: RwSignal<BTreeSet<String>>) {
             .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
             .and_then(|element| element.closest("a[href]").ok().flatten())
             .filter(|anchor| !anchor.has_attribute("download"));
-        if anchor.is_some()&&!window().confirm_with_message("Leave this application and discard unsaved form edits? Saved configuration is already stored.").unwrap_or(false){event.prevent_default();event.stop_propagation();}
+        if anchor.is_some()
+            && !confirm(
+                "Leave this application and discard unsaved form edits? Saved configuration is already stored.",
+            )
+        {
+            event.prevent_default();
+            event.stop_propagation();
+        }
     });
     let document = document();
     if document

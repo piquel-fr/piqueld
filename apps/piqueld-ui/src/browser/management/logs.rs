@@ -1,11 +1,9 @@
 //! Recent container output for one application or one of its services.
+use super::super::logs::{LogKind, LogViewer, StreamFilter};
 use super::super::ui::{Icon, Tone, icon, notice};
-use super::{EditorContext, client_error_message};
-use crate::browser::Alive;
-use crate::{
-    browser::logs::{LogKind, LogViewer, StreamFilter},
-    log_output::LogLine,
-};
+use super::super::{Alive, ClientErrorExt, document_hidden};
+use super::editor;
+use crate::log_output::LogLine;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use piqueld_client::Client;
@@ -17,7 +15,7 @@ use piqueld_client::Client;
 /// service and hides the selector. Responses for an outdated filter are discarded and refetched.
 #[component]
 pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -> impl IntoView {
-    let context = use_context::<EditorContext>().expect("application editor");
+    let context = editor();
     let logs = RwSignal::new(None::<piqueld_client::ApplicationLogs>);
     let error = RwSignal::new(None::<String>);
     let loading = RwSignal::new(false);
@@ -34,7 +32,7 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
     spawn_local(async move {
         let mut elapsed = 30;
         while alive.get() {
-            if !super::super::document_hidden() && (refresh.get_untracked() || elapsed >= 30) {
+            if !document_hidden() && (refresh.get_untracked() || elapsed >= 30) {
                 refresh.set(false);
                 loading.set(true);
                 let filter = (service.get_untracked(), stream.get_untracked());
@@ -60,7 +58,7 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
                         logs.set(Some(value));
                         error.set(None);
                     }
-                    Err(e) => error.set(Some(client_error_message(&e))),
+                    Err(e) => error.set(Some(e.user_message())),
                 }
                 loading.set(false);
                 elapsed = 0;

@@ -310,6 +310,21 @@ pub(super) fn member_checkbox<T: Ord + Clone + Send + Sync + 'static>(
     .into_any()
 }
 
+/// Small `label`led button adding a row to an editable list.
+pub(super) fn add_button(
+    label: &'static str,
+    disabled: impl Fn() -> bool + Send + Sync + 'static,
+    add: impl Fn() + 'static,
+) -> AnyView {
+    view! {
+        <button type="button" class="btn btn-sm" disabled={disabled} on:click={move |_| add()}>
+            {icon(Icon::Plus)}
+            {label}
+        </button>
+    }
+    .into_any()
+}
+
 /// "Load older …" button of a paginated list, shown while `cursor` names a
 /// next page and disabled while `loading`.
 pub(super) fn load_older(
