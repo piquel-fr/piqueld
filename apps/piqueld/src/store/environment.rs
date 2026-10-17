@@ -548,12 +548,9 @@ impl Store {
     /// # Errors
     /// Returns a storage error or `NotFound`.
     pub async fn get(&self, id: &EnvironmentId) -> Result<StoredEnvironment, StoreError> {
-        Self::environment_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            id.as_str(),
-        )
-        .await?
-        .ok_or(StoreError::NotFound)
+        Self::environment_on(&mut *self.connection().await?, id.as_str())
+            .await?
+            .ok_or(StoreError::NotFound)
     }
 
     /// The application owning environment `id`, and whether it is a
@@ -565,11 +562,7 @@ impl Store {
         &self,
         id: &EnvironmentId,
     ) -> Result<Option<EnvironmentOwner>, StoreError> {
-        Self::environment_owner_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            id,
-        )
-        .await
+        Self::environment_owner_on(&mut *self.connection().await?, id).await
     }
 
     /// [`Self::environment_owner`] on an existing connection or transaction.
@@ -614,7 +607,7 @@ impl Store {
         &self,
         id: &EnvironmentId,
     ) -> Result<(StoredEnvironment, EnvironmentStatus), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         let environment = Self::environment_on(&mut tx, id.as_str())
             .await?
             .ok_or(StoreError::NotFound)?;

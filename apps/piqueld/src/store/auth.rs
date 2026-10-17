@@ -622,7 +622,7 @@ impl Store {
     ) -> Result<Option<CredentialOwner>, StoreError> {
         let now = now_secs();
         let idle = now - SESSION_IDLE_SECS;
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         let row = sqlx::query!(
             r#"SELECT c.id AS "credential_id!",c.kind,c.last_used_at,c.scoped AS "scoped: bool",c.tailnet,u.id AS "id!",u.username,u.display_name FROM auth_credentials c JOIN auth_users u ON u.id=c.user_id WHERE c.secret_hash=?1 AND (c.expires_at IS NULL OR c.expires_at>?2) AND (c.kind!='browser' OR c.last_used_at>?3)"#,
             hash,
@@ -762,7 +762,7 @@ impl Store {
     pub(crate) async fn auth_directory(&self) -> Result<Directory, StoreError> {
         let now = now_secs();
         let idle = now - SESSION_IDLE_SECS;
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         let users = sqlx::query_as!(
             User,
             r#"SELECT id AS "id!",username,display_name FROM auth_users ORDER BY username"#

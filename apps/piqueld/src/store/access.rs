@@ -396,7 +396,7 @@ impl Store {
         permission: AppPermission,
         environment: &EnvironmentId,
     ) -> Result<(), StoreError> {
-        let mut db = self.pool.acquire().await.map_err(StoreError::database)?;
+        let mut db = self.connection().await?;
         actor
             .require_on_environment(&mut db, permission, environment)
             .await
@@ -408,7 +408,7 @@ impl Store {
     /// # Errors
     /// Returns a revoked credential or storage errors.
     pub async fn grants(&self, actor: Actor<'_>) -> Result<Grants, StoreError> {
-        let mut db = self.pool.acquire().await.map_err(StoreError::database)?;
+        let mut db = self.connection().await?;
         Ok(actor
             .load(&mut db)
             .await?

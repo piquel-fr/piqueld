@@ -276,7 +276,7 @@ impl Store {
     /// Returns storage errors, or [`StoreError::Corrupt`] for a half-stored
     /// anchor.
     pub async fn verify_audit(&self) -> Result<AuditVerification, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         Self::verify_audit_on(&mut tx, i64::MAX).await
     }
 

@@ -30,11 +30,7 @@ impl Store {
         application: &ApplicationId,
     ) -> Result<Vec<StoredSecret>, StoreError> {
         self.application(application).await?;
-        Self::stored_secrets_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            application,
-        )
-        .await
+        Self::stored_secrets_on(&mut *self.connection().await?, application).await
     }
 
     /// Lists an application's stored secrets on an existing connection or transaction.
@@ -351,12 +347,7 @@ impl Store {
         environment: &EnvironmentView,
         app: &NormalizedApplication,
     ) -> Result<(), StoreError> {
-        Self::check_secret_access_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            environment,
-            app,
-        )
-        .await
+        Self::check_secret_access_on(&mut *self.connection().await?, environment, app).await
     }
 
     /// Reserves a stored secret for deletion and returns each environment's

@@ -85,11 +85,7 @@ impl Store {
     /// # Errors
     /// Returns a storage or decoding error. Absent applications have none.
     pub async fn previews(&self, id: &ApplicationId) -> Result<Vec<EnvironmentView>, StoreError> {
-        Self::previews_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            id.as_str(),
-        )
-        .await
+        Self::previews_on(&mut *self.connection().await?, id.as_str()).await
     }
 
     /// Creates the preview of `branch` and `slot`, named by the slug derived
@@ -285,11 +281,7 @@ impl Store {
     /// # Errors
     /// Returns a storage or decoding error.
     pub async fn preview_origins(&self, id: &EnvironmentId) -> Result<PreviewOrigins, StoreError> {
-        Self::preview_origins_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            id,
-        )
-        .await
+        Self::preview_origins_on(&mut *self.connection().await?, id).await
     }
 
     /// [`Self::preview_origins`] on an existing connection or transaction.

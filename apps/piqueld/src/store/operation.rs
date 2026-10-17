@@ -55,11 +55,7 @@ impl Store {
     /// # Errors
     /// Returns a storage error or `NotFound`.
     pub async fn operation(&self, id: &str) -> Result<Operation, StoreError> {
-        Self::operation_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            id,
-        )
-        .await
+        Self::operation_on(&mut *self.connection().await?, id).await
     }
 
     /// Fetches an operation on an existing connection or transaction.

@@ -11,11 +11,7 @@ impl Store {
     /// # Errors
     /// Returns a storage error or `NotFound`.
     pub async fn status(&self, id: &EnvironmentId) -> Result<EnvironmentStatus, StoreError> {
-        Self::status_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            id,
-        )
-        .await
+        Self::status_on(&mut *self.connection().await?, id).await
     }
 
     /// Reads status on an existing connection or transaction.

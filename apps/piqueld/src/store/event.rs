@@ -145,7 +145,7 @@ impl Store {
     ) -> Result<(Vec<Event>, i64), StoreError> {
         let paging = Paging::new(limit)?;
         let mut query = EventRow::query(filter, visible, after, paging.fetch)?;
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         let coverage = sqlx::query!(
             r#"SELECT pruned_through_id AS "pruned!: i64",
             (SELECT COALESCE(MAX(id),0) FROM events) AS "latest!: i64"

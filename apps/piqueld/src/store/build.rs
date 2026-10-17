@@ -341,7 +341,7 @@ impl Store {
         if before.is_some_and(|value| value < 0) {
             return Err(StoreError::InvalidInput);
         }
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         let row = sqlx::query!(
             "SELECT log_truncated,log_expired FROM builds WHERE id=?1",
             id

@@ -174,7 +174,7 @@ impl Store {
         let paging = Paging::new(limit)?;
         let before = Paging::cursor(cursor)?;
         let application = application.as_str();
-        let mut snapshot = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut snapshot = self.snapshot().await?;
         let mut rows = sqlx::query_as!(
             ReleaseRow,
             r#"SELECT id AS "id!",application_id,content_hash,release_json,created_at_ms FROM releases WHERE application_id=?1 AND (?2 IS NULL OR id<?2) ORDER BY id DESC LIMIT ?3"#,
@@ -201,7 +201,7 @@ impl Store {
         application: &ApplicationId,
         id: &ReleaseId,
     ) -> Result<ReleaseView, StoreError> {
-        let mut snapshot = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut snapshot = self.snapshot().await?;
         let (application, id) = (application.as_str(), id.as_str());
         sqlx::query_as!(
             ReleaseRow,

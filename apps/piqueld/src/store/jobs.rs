@@ -6,11 +6,7 @@ impl Store {
     /// Saves cleanup intent before attempting to stop an operation's job runs.
     pub(crate) async fn request_job_cleanup(&self, operation: &str) -> Result<(), StoreError> {
         let _writer = self.writers.lock().await;
-        Self::request_job_cleanup_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            operation,
-        )
-        .await
+        Self::request_job_cleanup_on(&mut *self.connection().await?, operation).await
     }
 
     /// Also used inside the transaction that records a terminal job failure,
