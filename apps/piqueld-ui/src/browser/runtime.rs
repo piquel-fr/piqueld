@@ -87,7 +87,8 @@ fn detail_view(
 
 /// The environment's lifecycle state, latest operation, release, and
 /// identity, with a button that reloads only this application's detail.
-fn status_card(
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
+fn runtime_status_card(
     detail: &EnvironmentDetailView,
     signals: DashboardSignals,
     client: Client,

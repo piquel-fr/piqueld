@@ -632,6 +632,7 @@ impl GeneratedAction {
 /// be regenerated for the next deployment, or deleted so a later deployment
 /// generates new ones.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn EnvironmentSecrets() -> impl IntoView {
     let context = editor();
     let generated = RwSignal::new(Vec::<SecretMetadata>::new());

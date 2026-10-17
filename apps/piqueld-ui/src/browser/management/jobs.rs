@@ -123,6 +123,7 @@ fn command_rows(jobs: RwSignal<Vec<JobDraft>>, index: usize) -> AnyView {
 /// Job editor. Rows are drafted as [`JobDraft`] text and re-synced from saved
 /// configuration only while there are no local edits. Saving validates the
 /// timeouts and replaces all jobs; their order is their execution order.
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 #[component]
 pub(super) fn JobSettings() -> impl IntoView {
     let context = editor();

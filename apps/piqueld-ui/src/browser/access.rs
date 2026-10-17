@@ -93,6 +93,7 @@ fn build(permissions: &BTreeSet<Permission>, scope: &Scope) -> Grants {
 /// clamped to it, e.g. a token to its owner's access, and the effective
 /// selection is shown.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn GrantEditor(
     initial: Grants,
     value: RwSignal<Grants>,

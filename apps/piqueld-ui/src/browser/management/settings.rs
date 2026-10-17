@@ -63,6 +63,7 @@ impl RepositoryDraft {
 /// manifest on deploy, and for deploying it on push. Saving is refused while
 /// other form groups have unsaved edits.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn RepositorySettings() -> impl IntoView {
     let context = editor();
     let draft = Draft::new(

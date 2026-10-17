@@ -118,6 +118,7 @@ pub(super) enum LogKind {
 
 /// A stable scroll container; refreshing rows never remounts the viewer.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn LogViewer(
     #[prop(into)] lines: Signal<Vec<LogLine>>,
     #[prop(into)] label: String,

@@ -33,6 +33,7 @@ use std::fmt::Display;
 #[component]
 pub(super) fn DeploymentActions() -> impl IntoView {
     let context = editor();
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
     let preview = RwSignal::new(None::<PlanView>);
     let navigate = StoredValue::new(use_navigate());
     let promoted = Memo::new(move |_| {
@@ -301,6 +302,7 @@ fn ChooseEnvironment(
 #[component]
 pub(super) fn PromoteAction(
     environment: String,
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
     #[prop(optional)] release: Option<String>,
     #[prop(optional)] compact: bool,
     #[prop(default = None)] done: Option<Callback<()>>,

@@ -32,6 +32,7 @@ pub(super) fn BuildsPage() -> impl IntoView {
 /// is hidden). Once older pages have been loaded, refreshed builds are merged by
 /// ID instead of replacing the list so the extra pages are kept.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn BuildHistory(
     #[prop(optional, into)] application: Option<String>,
     #[prop(optional, into)] environment: Option<String>,

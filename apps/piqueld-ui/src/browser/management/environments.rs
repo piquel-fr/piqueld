@@ -882,6 +882,7 @@ fn EnvironmentVisibility() -> impl IntoView {
 /// environment. Deletion returns to the application's environments once
 /// accepted.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn EnvironmentSettings() -> impl IntoView {
     let context = editor();
     let navigate = use_navigate();
