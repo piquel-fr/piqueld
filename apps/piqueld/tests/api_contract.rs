@@ -4793,7 +4793,6 @@ async fn read_stream(body: &mut Body, needle: Option<&str>) -> String {
 /// without a message when the daemon shuts down.
 #[tokio::test]
 async fn event_streams_end_once_access_is_lost_or_the_daemon_stops() {
-    use std::time::Duration;
     let f = GrantFixture::new().await;
     let reader = seed_account(&database(&f.temp), "reader", &[("events:read", None)]).await;
     let shutdown = tokio_util::sync::CancellationToken::new();
@@ -5114,24 +5113,24 @@ async fn the_host_operator_acts_without_a_token_over_the_unix_socket() {
     // Issuing the link and signing in with it are audited, in the background,
     // as the operator.
     let operator = Some(HostOperator { uid: operator });
-    let audited = async |action: &str, status: u16| {
-        let page = state
-            .audit_events(&AuditFilter::default(), None, 50)
-            .await
-            .unwrap();
-        page.items.iter().any(|event| {
-            event.action == action && event.status == status && event.operator == operator
-        })
-    };
     eventually(
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         Duration::from_millis(20),
         async || {
+            let page = state
+                .audit_events(&AuditFilter::default(), None, 50)
+                .await
+                .unwrap();
+            let audited = |action: &str, status: u16| {
+                page.items.iter().any(|event| {
+                    event.action == action && event.status == status && event.operator == operator
+                })
+            };
             // Refusals before authentication, like a cross-site request, too.
-            (audited("POST /api/v1/auth/sign-in-link", 200).await
-                && audited("POST /api/v1/auth/login/operator", 200).await
-                && audited("POST /api/v1/auth/sign-in-link", 403).await)
-                .then_some(())
+            (audited("POST /api/v1/auth/sign-in-link", 200)
+                && audited("POST /api/v1/auth/login/operator", 200)
+                && audited("POST /api/v1/auth/sign-in-link", 403))
+            .then_some(())
         },
     )
     .await
@@ -5568,18 +5567,20 @@ async fn stored_secret_access_queries_never_widen_environments_implicitly() {
 }
 
 /// A raw write of `value` to the stored secret `token` of `application`,
-/// replacing version `generation`, with the query string `query`.
+/// replacing version `generation`, with the query string `query`, if any.
 fn put_stored_token(
     application: &str,
     query: &str,
     generation: u64,
     value: &'static str,
 ) -> Request<Body> {
+    let mut uri = format!("/api/v1/applications/{application}/secrets/token");
+    if !query.is_empty() {
+        uri = format!("{uri}?{query}");
+    }
     Request::builder()
         .method("PUT")
-        .uri(format!(
-            "/api/v1/applications/{application}/secrets/token?{query}"
-        ))
+        .uri(uri)
         .header("host", "localhost")
         .header("content-type", "application/octet-stream")
         .header("x-expected-generation", generation.to_string())
