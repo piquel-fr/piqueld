@@ -23,25 +23,23 @@ impl ApplicationService {
         let mut tick = tokio::time::interval(Duration::from_secs(15));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            tokio::select! {()=cancellation.cancelled()=>return,_=tick.tick()=>{}}
+            tokio::select! {
+                () = cancellation.cancelled() => return,
+                _ = tick.tick() => {}
+            }
             let result = async {
                 let readiness = self.readiness(&piqueld_core::access::Scope::All).await;
                 let now = now_ms();
-                let docker_ready =
-                    matches!(readiness.docker, piqueld_core::api::DependencyStatus::Ready);
-                for (key, failed) in [
-                    ("docker_unavailable", !docker_ready),
-                    (
-                        "swarm_manager_unavailable",
-                        !matches!(readiness.swarm, piqueld_core::api::DependencyStatus::Ready),
-                    ),
-                ] {
-                    // Swarm cannot be observed while its Engine is unreachable.
-                    if key == "swarm_manager_unavailable" && !docker_ready {
-                        continue;
-                    }
+                let ready = |status| matches!(status, piqueld_core::api::DependencyStatus::Ready);
+                let docker_ready = ready(readiness.docker);
+                self.store
+                    .observe_condition("docker_unavailable", None, !docker_ready, now, 45_000)
+                    .await?;
+                // Swarm cannot be observed while its Engine is unreachable.
+                if docker_ready {
+                    let failed = !ready(readiness.swarm);
                     self.store
-                        .observe_condition(key, None, failed, now, 45_000)
+                        .observe_condition("swarm_manager_unavailable", None, failed, now, 45_000)
                         .await?;
                 }
                 // Service health older than three scan intervals is treated as stale.
@@ -56,7 +54,7 @@ impl ApplicationService {
             }
             .await;
             if let Err(error) = result {
-                tracing::error!(error=?error,"observability sampling failed");
+                tracing::error!(?error, "observability sampling failed");
             }
         }
     }
@@ -189,8 +187,6 @@ mod tests {
     use super::*;
     use crate::{
         config::{DaemonConfig, WebhookDestination, WebhookKind},
-        docker::BollardDocker,
-        reconcile::Controller,
         store::Store,
     };
     use std::{
@@ -260,14 +256,7 @@ mod tests {
             )
             .await
             .unwrap();
-        // The sender never calls this runtime; only the socket existence check is needed.
-        let _socket = tokio::net::UnixListener::bind(temp.path().join("unused.sock")).unwrap();
-        let runtime = Controller::new(
-            Arc::new(BollardDocker::connect(&temp.path().join("unused.sock")).unwrap()),
-            store.clone(),
-        )
-        .runtime(Arc::new(tokio::sync::Notify::new()));
-        let service = ApplicationService::new(store.clone(), runtime);
+        let (service, _docker) = ApplicationService::unconnected(store.clone(), temp.path());
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
         let worker = tokio::spawn(async move {

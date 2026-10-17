@@ -3,7 +3,7 @@
 use super::{ApplicationError, ApplicationService};
 use crate::store::StoreError;
 use piqueld_core::{
-    ApplicationId, EnvironmentId, Event, Operation,
+    ApplicationId, EnvironmentId, Operation,
     api::{
         ApplicationLogs, BuildLogPage, BuildRecord, DeploymentView, LogStream, Page, ReleaseView,
     },
@@ -59,15 +59,24 @@ impl ApplicationService {
         cursor: Option<&str>,
     ) -> Result<Page<ReleaseView>, ApplicationError> {
         let mut page = self.store.releases(id, cursor, 20).await?;
+        self.mark_availability(&mut page.items).await;
+        Ok(page)
+    }
+
+    /// Records whether each of `releases`' images are still present, leaving
+    /// availability out when Docker can't be asked.
+    pub(super) async fn mark_availability(
+        &self,
+        releases: impl IntoIterator<Item = &mut ReleaseView>,
+    ) {
         match self.runtime.local_images().await {
             Ok(present) => {
-                for release in &mut page.items {
+                for release in releases {
                     release.availability = Some(present.availability(release.release.sources()));
                 }
             }
             Err(error) => tracing::warn!(?error, "release availability unknown"),
         }
-        Ok(page)
     }
 
     /// Lists retained attempts for a deployment owned by this environment.
@@ -90,18 +99,6 @@ impl ApplicationService {
             .store
             .deployment_attempts(deployment, cursor, 100)
             .await?)
-    }
-
-    /// Lists informational history, oldest first.
-    /// # Errors
-    /// Returns pagination or storage errors.
-    pub async fn events(
-        &self,
-        id: Option<&EnvironmentId>,
-        cursor: Option<&str>,
-        limit: usize,
-    ) -> Result<Page<Event>, ApplicationError> {
-        Ok(self.store.events(id, cursor, limit).await?)
     }
 
     /// Lists build history of applications within `visible`, newest first.
