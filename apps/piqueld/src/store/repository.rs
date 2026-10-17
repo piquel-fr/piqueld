@@ -345,7 +345,7 @@ mod tests {
 
     /// A repository-backed application `notes` whose saved manifest is only
     /// its connection to `main`.
-    fn connection() -> ApplicationTemplate {
+    fn connection() -> piqueld_core::manifest::ValidatedTemplate {
         template(
             "notes",
             "[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='main'",

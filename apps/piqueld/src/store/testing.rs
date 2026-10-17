@@ -6,7 +6,7 @@ use super::{
 use crate::api::{Mutation, MutationResponse};
 use piqueld_core::{
     NormalizedApplication, access::Grants, api::SavedApplication, auth::User,
-    manifest::ApplicationTemplate,
+    manifest::ValidatedTemplate,
 };
 use sqlx::{
     SqlitePool,
@@ -15,13 +15,12 @@ use sqlx::{
 use std::path::Path;
 
 /// Parses the application manifest named `name`, with `spec`, TOML following
-/// its metadata, under the placeholder ID saving replaces, as the API does.
-pub(super) fn template(name: &str, spec: &str) -> ApplicationTemplate {
+/// its metadata.
+pub(super) fn template(name: &str, spec: &str) -> ValidatedTemplate {
     piqueld_core::manifest::parse_template_toml(&format!(
         "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n{spec}"
     ))
     .unwrap()
-    .normalize(ApplicationId::parse("pending-application").unwrap())
 }
 
 /// The `notes` application of core's `prebuilt.toml` fixture, whose `web`
@@ -70,18 +69,40 @@ impl Store {
         Ok(response)
     }
 
-    /// Saves `template` as the daemon, deploying it when `deploy`.
+    /// Creates the application `template` as the daemon, deploying it when
+    /// `deploy`; it must not exist yet.
     pub(super) async fn save_template(
         &self,
-        template: ApplicationTemplate,
+        template: ValidatedTemplate,
         deploy: bool,
     ) -> SavedApplication {
-        let save = Mutation::Save {
-            application: Box::new(template),
-            expected_application_id: None,
-            deploy,
-        };
-        let MutationResponse::Saved(saved) = self.force(save).await.unwrap() else {
+        self.saved(template, deploy, (Some(0), false)).await
+    }
+
+    /// Saves `template` as the daemon, deploying it when `deploy`, over the
+    /// application of that name if any, forced past revision checks.
+    pub(super) async fn save_template_forced(
+        &self,
+        template: ValidatedTemplate,
+        deploy: bool,
+    ) -> SavedApplication {
+        self.saved(template, deploy, (None, true)).await
+    }
+
+    /// Saves `template` with the `expected` revision and `force` of
+    /// [`Store::accept`].
+    async fn saved(
+        &self,
+        template: ValidatedTemplate,
+        deploy: bool,
+        (expected, force): (Option<u64>, bool),
+    ) -> SavedApplication {
+        let save = Mutation::save(template, None, deploy);
+        let (MutationResponse::Saved(saved), _) = self
+            .accept(Actor::Daemon, save, expected, force, None)
+            .await
+            .unwrap()
+        else {
             panic!("saved response expected")
         };
         saved

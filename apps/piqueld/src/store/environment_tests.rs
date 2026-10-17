@@ -284,9 +284,9 @@ async fn repository_backed_environments_take_their_branch_from_the_connection() 
         "notes",
         &format!("[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='release'\ncommit='{commit}'"),
     )
-    .with_id(ApplicationId::parse("app-backed-01").unwrap());
+    .normalize(ApplicationId::parse("app-backed-01").unwrap());
     let saved =
-        template("journal", "[spec]").with_id(ApplicationId::parse("app-saved-01").unwrap());
+        template("journal", "[spec]").normalize(ApplicationId::parse("app-saved-01").unwrap());
     for (application, environments) in [
         (&backed, ["app-backed-01", "env-backed-staging"]),
         (&saved, ["app-saved-01", "env-saved-staging"]),

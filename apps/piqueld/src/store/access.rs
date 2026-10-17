@@ -570,11 +570,7 @@ mod tests {
             });
             let store = &store;
             async move {
-                let mutation = Mutation::Save {
-                    application: Box::new(manifest),
-                    expected_application_id: None,
-                    deploy: false,
-                };
+                let mutation = Mutation::save(manifest, None, false);
                 let (MutationResponse::Saved(saved), _) = store
                     .accept(actor, mutation, Some(0), false, None)
                     .await
