@@ -114,17 +114,11 @@ impl PreviewSlug {
             key.update(slot.as_str());
         }
         let hash = format!("{:x}", key.finalize());
-        let mut readable = String::new();
         let parts = [application.as_str(), branch.as_str()]
             .into_iter()
-            .chain(slot.map(PreviewSlot::as_str));
-        for character in parts.collect::<Vec<_>>().join("-").chars() {
-            if character.is_ascii_alphanumeric() {
-                readable.push(character.to_ascii_lowercase());
-            } else if !readable.ends_with('-') {
-                readable.push('-');
-            }
-        }
+            .chain(slot.map(PreviewSlot::as_str))
+            .collect::<Vec<_>>();
+        let mut readable = crate::identity::sanitize(&parts.join("-"));
         readable.truncate(Self::MAX_LEN - Self::HASH_LEN - 1);
         let readable = readable.trim_end_matches('-');
         Self::parse(format!("{readable}-{}", &hash[..Self::HASH_LEN]))

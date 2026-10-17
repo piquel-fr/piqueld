@@ -91,10 +91,23 @@ impl ResourceKind {
     }
 }
 
-/// Produces a stable, collision-resistant Docker name no longer than 63 bytes.
+/// Prefix of every generated Docker name.
+const NAME_PREFIX: &str = "piqueld";
+/// Longest generated Docker name.
+const NAME_LIMIT: usize = 63;
+/// Length of the hexadecimal digest suffix of generated Docker names.
+const NAME_SUFFIX_LEN: usize = 12;
+/// Characters left for the readable head between `piqueld-` and `-<digest>`.
+const NAME_HEAD_LEN: usize = NAME_LIMIT - NAME_PREFIX.len() - NAME_SUFFIX_LEN - 2;
+
+/// Produces a stable, collision-resistant Docker name no longer than 63 bytes,
+/// formatted `piqueld-{readable head}-{digest}`.
 ///
-/// The readable part may be truncated; uniqueness comes from the digest suffix
-/// over the full environment ID, kind, and logical name.
+/// The readable head joins the sanitized parts and may be truncated; uniqueness
+/// comes from the digest: the first `NAME_SUFFIX_LEN` hex characters of SHA-256
+/// over the raw environment ID, kind, and logical name joined by NUL, so
+/// distinct inputs stay distinct even when sanitizing or truncating makes them
+/// look alike.
 ///
 /// ```text
 /// (01jz8r7b4w-test, Service, Some("web")) -> piqueld-01jz8r7b4w-test-service-web-<12 hex>
@@ -106,17 +119,20 @@ pub fn docker_resource_name(
     kind: ResourceKind,
     logical_name: Option<&str>,
 ) -> String {
-    bounded_name(
-        "piqueld",
-        &[id.as_str(), kind.token(), logical_name.unwrap_or("")],
-        63,
+    let parts = [id.as_str(), kind.token(), logical_name.unwrap_or("")];
+    let digest = format!("{:x}", Sha256::digest(parts.join("\0")));
+    let readable = parts
+        .iter()
+        .filter(|part| !part.is_empty())
+        .map(|part| sanitize(part))
+        .collect::<Vec<_>>()
+        .join("-");
+    format!(
+        "{NAME_PREFIX}-{}-{}",
+        readable_head(&readable),
+        &digest[..NAME_SUFFIX_LEN]
     )
 }
-
-/// Length of the hexadecimal digest suffix in bounded Docker names.
-const NAME_SUFFIX_LEN: usize = 12;
-/// Number of hyphens bounding the readable head in bounded Docker names.
-const NAME_SEPARATOR_LEN: usize = 2;
 
 /// Returns the readable name prefix shared by all resources of an environment.
 ///
@@ -125,39 +141,14 @@ const NAME_SEPARATOR_LEN: usize = 2;
 /// names instead.
 #[must_use]
 pub fn docker_resource_readable_prefix(id: &EnvironmentId) -> String {
-    let head_len = 63usize.saturating_sub("piqueld".len() + NAME_SUFFIX_LEN + NAME_SEPARATOR_LEN);
-    let mut head = sanitize(id.as_str())
-        .chars()
-        .take(head_len)
-        .collect::<String>();
-    while head.ends_with('-') {
-        head.pop();
-    }
-    format!("piqueld-{head}-")
+    format!("{NAME_PREFIX}-{}-", readable_head(&sanitize(id.as_str())))
 }
 
-/// Formats `{prefix}-{readable head}-{digest}` within `limit` bytes.
-///
-/// The digest is the first `NAME_SUFFIX_LEN` hex characters of SHA-256 over the raw
-/// parts joined by NUL, so distinct inputs stay distinct even when sanitizing or
-/// truncating the readable head makes them look alike. Trailing hyphens left by
-/// truncation are trimmed.
-fn bounded_name(prefix: &str, parts: &[&str], limit: usize) -> String {
-    let identity = parts.join("\0");
-    let suffix = format!("{:x}", Sha256::digest(identity.as_bytes()));
-    let readable = parts
-        .iter()
-        .filter(|p| !p.is_empty())
-        .map(|p| sanitize(p))
-        .collect::<Vec<_>>()
-        .join("-");
-    let suffix = &suffix[..NAME_SUFFIX_LEN];
-    let head_len = limit.saturating_sub(prefix.len() + suffix.len() + NAME_SEPARATOR_LEN);
-    let mut head = readable.chars().take(head_len).collect::<String>();
-    while head.ends_with('-') {
-        head.pop();
-    }
-    format!("{prefix}-{head}-{suffix}")
+/// Truncates a readable name to `NAME_HEAD_LEN` characters, trimming the
+/// hyphens truncation leaves at its end.
+fn readable_head(readable: &str) -> String {
+    let head = readable.chars().take(NAME_HEAD_LEN).collect::<String>();
+    head.trim_end_matches('-').to_owned()
 }
 
 /// Lowercases ASCII alphanumerics and collapses every other run of characters into
@@ -166,7 +157,7 @@ fn bounded_name(prefix: &str, parts: &[&str], limit: usize) -> String {
 /// ```text
 /// "My_App--v2!" -> "my-app-v2"
 /// ```
-fn sanitize(value: &str) -> String {
+pub(crate) fn sanitize(value: &str) -> String {
     let mut output = String::new();
     for c in value.chars() {
         let c = c.to_ascii_lowercase();
