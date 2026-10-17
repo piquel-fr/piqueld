@@ -101,7 +101,7 @@ async fn log_parameters_are_encoded_and_readiness_keeps_its_503_payload() {
 async fn toml_adapter_preserves_headers_and_unsigned_revisions() {
     let mut server = Server::start(
         http::StatusCode::OK,
-        r#"{"data":{"application_id":"app","generation":1,"operation_id":null}}"#,
+        r#"{"data":{"application_id":"app","generation":1,"operation_id":"op-1"}}"#,
     )
     .await;
     let client = server
@@ -140,7 +140,8 @@ async fn toml_adapter_preserves_headers_and_unsigned_revisions() {
     assert_eq!(request.body, manifest.as_bytes());
 
     // Creating from TOML requires the name to be absent.
-    client.apply_application_toml(manifest).await.unwrap();
+    let created = client.apply_application_toml(manifest).await.unwrap();
+    assert_eq!(created.operation_id.as_deref(), Some("op-1"));
     let request = server.requests.recv().await.unwrap();
     assert_eq!(request.headers["x-expected-generation"], "0");
 }

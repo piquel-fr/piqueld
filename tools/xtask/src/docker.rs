@@ -65,7 +65,8 @@ impl Engine {
             ])
             .output();
         match output {
-            Ok(output) => checked_stdout("docker context inspect", output),
+            Ok(output) => checked_stdout("docker context inspect", output)
+                .context("could not resolve the Docker context"),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok("unix:///var/run/docker.sock".to_owned())
             }
