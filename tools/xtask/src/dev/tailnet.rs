@@ -16,7 +16,7 @@ use tokio::process::Command;
 
 use super::supervisor::Supervisor;
 use super::{Instance, RUNTIME_ROOT};
-use crate::process::{Job, Shutdown};
+use crate::process::{Job, Shutdown, checked_stdout};
 
 const HOSTNAME: &str = "piqueld-dev";
 /// tailscaled normally opens its socket well within a second.
@@ -191,14 +191,8 @@ impl Tailnet {
             .output()
             .await
             .context("run tailscale status")?;
-        ensure!(
-            output.status.success(),
-            "tailscale status failed ({}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-        let status: Status =
-            serde_json::from_slice(&output.stdout).context("parse tailscale status")?;
+        let status: Status = serde_json::from_str(&checked_stdout("tailscale status", output)?)
+            .context("parse tailscale status")?;
         Ok(status
             .node
             .filter(|_| status.backend_state == "Running")

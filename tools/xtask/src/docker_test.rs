@@ -7,12 +7,12 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use bollard::models::{ContainerCreateBody, HostConfig, PortBinding};
+use bollard::models::{ContainerCreateBody, PortBinding};
 use bollard::query_parameters::InspectContainerOptions;
 use tokio::process::Command;
 
 use crate::Workspace;
-use crate::docker::{DIND_SOCKET_DIR, Engine};
+use crate::docker::Engine;
 use crate::process::{Job, Shutdown, exit_code};
 
 pub async fn run(workspace: &Workspace) -> Result<ExitCode> {
@@ -28,7 +28,7 @@ pub async fn run(workspace: &Workspace) -> Result<ExitCode> {
         .context("create the engine's directory")?;
     let image = Engine::dind_image();
     engine.pull_missing(&image).await?;
-    let container = engine.launch(None, dind(&image, runtime.path())).await?;
+    let container = engine.launch(None, dind(image, runtime.path())).await?;
     let result = test(
         workspace,
         &engine,
@@ -41,17 +41,17 @@ pub async fn run(workspace: &Workspace) -> Result<ExitCode> {
     result
 }
 
-/// Ports the ingress tests reach on random loopback ports: Caddy's HTTP,
-/// HTTPS and private HTTPS listeners, then Pebble's ACME API and
-/// challtestsrv's DNS (TCP) and management API, run inside the engine by the
-/// DNS-01 certificate test.
-const PUBLISHED: [&str; 6] = [
-    "80/tcp",
-    "443/tcp",
-    "8443/tcp",
-    "14000/tcp",
-    "8053/tcp",
-    "8055/tcp",
+/// Ports the ingress tests reach on random loopback ports, with the variable
+/// telling the tests each one: Caddy's HTTP, HTTPS and private HTTPS
+/// listeners, then Pebble's ACME API and challtestsrv's DNS (TCP) and
+/// management API, run inside the engine by the DNS-01 certificate test.
+const PUBLISHED: [(&str, &str); 6] = [
+    ("80/tcp", "PIQUELD_INGRESS_HTTP_PORT"),
+    ("443/tcp", "PIQUELD_INGRESS_HTTPS_PORT"),
+    ("8443/tcp", "PIQUELD_INGRESS_PRIVATE_PORT"),
+    ("14000/tcp", "PIQUELD_PEBBLE_PORT"),
+    ("8053/tcp", "PIQUELD_CHALLTESTSRV_DNS_PORT"),
+    ("8055/tcp", "PIQUELD_CHALLTESTSRV_API_PORT"),
 ];
 
 /// An engine with its socket, and the daemon's data, in `runtime`, publishing
@@ -60,43 +60,35 @@ const PUBLISHED: [&str; 6] = [
     clippy::zero_sized_map_values,
     reason = "bollard's type for Docker's exposed ports"
 )]
-fn dind(image: &str, runtime: &Path) -> ContainerCreateBody {
+fn dind(image: String, runtime: &Path) -> ContainerCreateBody {
     let runtime = runtime.display();
-    let loopback = || {
-        Some(vec![PortBinding {
-            host_ip: Some("127.0.0.1".to_owned()),
-            host_port: Some(String::new()),
-        }])
-    };
-    ContainerCreateBody {
-        image: Some(image.to_owned()),
-        cmd: Some(vec![
-            "dockerd".to_owned(),
-            format!("--host=unix://{DIND_SOCKET_DIR}/docker.sock"),
-            "--storage-driver=vfs".to_owned(),
-        ]),
-        env: Some(vec!["DOCKER_TLS_CERTDIR=".to_owned()]),
-        exposed_ports: Some(
-            PUBLISHED
-                .map(|port| (port.to_owned(), HashMap::new()))
-                .into(),
-        ),
-        host_config: Some(HostConfig {
-            privileged: Some(true),
-            // Pre-mount /tmp so the entrypoint does not hide the data bind.
-            tmpfs: Some(HashMap::from([(
-                "/tmp".to_owned(),
-                "rw,exec,dev".to_owned(),
-            )])),
-            binds: Some(vec![
-                format!("{runtime}:{DIND_SOCKET_DIR}"),
-                format!("{runtime}:{runtime}"),
-            ]),
-            port_bindings: Some(PUBLISHED.map(|port| (port.to_owned(), loopback())).into()),
-            ..HostConfig::default()
-        }),
-        ..ContainerCreateBody::default()
-    }
+    let mut body = Engine::dind_container(image, &runtime, [format!("{runtime}:{runtime}")]);
+    body.cmd
+        .get_or_insert_default()
+        .push("--storage-driver=vfs".to_owned());
+    body.exposed_ports = Some(
+        PUBLISHED
+            .map(|(port, _)| (port.to_owned(), HashMap::new()))
+            .into(),
+    );
+    let host = body.host_config.get_or_insert_default();
+    // Pre-mount /tmp so the entrypoint does not hide the data bind.
+    host.tmpfs = Some(HashMap::from([(
+        "/tmp".to_owned(),
+        "rw,exec,dev".to_owned(),
+    )]));
+    host.port_bindings = Some(
+        PUBLISHED
+            .map(|(port, _)| {
+                let loopback = PortBinding {
+                    host_ip: Some("127.0.0.1".to_owned()),
+                    host_port: Some(String::new()),
+                };
+                (port.to_owned(), Some(vec![loopback]))
+            })
+            .into(),
+    );
+    body
 }
 
 async fn test(
@@ -139,19 +131,13 @@ async fn test(
         command
     };
     let limit = Some(limit()?);
+    let mut ingress = nextest(&["--lib", "--no-capture", "-E", "test(ingress_caddy)"]);
+    ingress.env("PIQUELD_DOCKER_DATA_DIR", runtime);
+    for (name, variable) in PUBLISHED {
+        ingress.env(variable, port(name)?);
+    }
     // Tests share one engine and mutate its Swarm state, so they run serially.
-    let status = Job::spawn(
-        nextest(&["--lib", "--no-capture", "-E", "test(ingress_caddy)"])
-            .env("PIQUELD_DOCKER_DATA_DIR", runtime)
-            .env("PIQUELD_INGRESS_HTTP_PORT", port("80/tcp")?)
-            .env("PIQUELD_INGRESS_HTTPS_PORT", port("443/tcp")?)
-            .env("PIQUELD_INGRESS_PRIVATE_PORT", port("8443/tcp")?)
-            .env("PIQUELD_PEBBLE_PORT", port("14000/tcp")?)
-            .env("PIQUELD_CHALLTESTSRV_DNS_PORT", port("8053/tcp")?)
-            .env("PIQUELD_CHALLTESTSRV_API_PORT", port("8055/tcp")?),
-    )?
-    .finish(limit, shutdown)
-    .await?;
+    let status = Job::spawn(&mut ingress)?.finish(limit, shutdown).await?;
     if !status.success() {
         return Ok(exit_code(status));
     }
