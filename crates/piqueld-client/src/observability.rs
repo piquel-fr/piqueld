@@ -1,9 +1,10 @@
 //! Diagnostic history, daemon measurements and notification delivery controls.
 use crate::{
     Client, ClientError, Event, Page,
-    client::{generated_result, invalid_request},
+    client::{EnvelopedCall, GeneratedCall, check_page_limit},
 };
 pub use piqueld_core::observability::*;
+
 impl Client {
     /// Reads a filtered page of durable history.
     /// # Errors
@@ -14,31 +15,26 @@ impl Client {
         cursor: Option<&str>,
         limit: u16,
     ) -> Result<Page<Event>, ClientError> {
-        if !(1..=100).contains(&limit) {
-            return Err(invalid_request("event limit must be between 1 and 100"));
-        }
-        generated_result(
-            self.generated
-                .list_events(
-                    filter.action_id.as_deref(),
-                    filter.application_id.as_deref(),
-                    filter.attempt,
-                    cursor,
-                    filter.descending.then_some(true),
-                    filter.environment_id.as_deref(),
-                    filter.error_code.as_deref(),
-                    filter.errors_only.then_some(true),
-                    filter.kind.as_deref(),
-                    Some(i64::from(limit)),
-                    filter.operation_id.as_deref(),
-                    filter.scope.as_ref(),
-                    filter.since_ms,
-                    filter.until_ms,
-                )
-                .await,
-        )
-        .await
-        .map(|r| r.data)
+        check_page_limit("event", limit, 100)?;
+        self.generated
+            .list_events(
+                filter.action_id.as_deref(),
+                filter.application_id.as_deref(),
+                filter.attempt,
+                cursor,
+                filter.descending.then_some(true),
+                filter.environment_id.as_deref(),
+                filter.error_code.as_deref(),
+                filter.errors_only.then_some(true),
+                filter.kind.as_deref(),
+                Some(i64::from(limit)),
+                filter.operation_id.as_deref(),
+                filter.scope.as_ref(),
+                filter.since_ms,
+                filter.until_ms,
+            )
+            .data()
+            .await
     }
     /// Reads a page of audited API requests, newest first. Callers without
     /// `audit:read` see only their own account's requests.
@@ -50,23 +46,18 @@ impl Client {
         cursor: Option<&str>,
         limit: u16,
     ) -> Result<Page<piqueld_core::audit::AuditEvent>, ClientError> {
-        if !(1..=100).contains(&limit) {
-            return Err(invalid_request("audit limit must be between 1 and 100"));
-        }
-        generated_result(
-            self.generated
-                .list_audit(
-                    filter.credential_id.as_deref(),
-                    cursor,
-                    Some(i64::from(limit)),
-                    filter.outcome.as_ref(),
-                    filter.user_id.as_deref(),
-                    filter.username.as_deref(),
-                )
-                .await,
-        )
-        .await
-        .map(|r| r.data)
+        check_page_limit("audit", limit, 100)?;
+        self.generated
+            .list_audit(
+                filter.credential_id.as_deref(),
+                cursor,
+                Some(i64::from(limit)),
+                filter.outcome.as_ref(),
+                filter.user_id.as_deref(),
+                filter.username.as_deref(),
+            )
+            .data()
+            .await
     }
     /// Verifies the audit trail's hash chain; requires `audit:read`.
     /// # Errors
@@ -74,25 +65,19 @@ impl Client {
     pub async fn verify_audit(
         &self,
     ) -> Result<piqueld_core::audit::AuditVerification, ClientError> {
-        generated_result(self.generated.verify_audit().await)
-            .await
-            .map(|r| r.data)
+        self.generated.verify_audit().data().await
     }
     /// Finds the contextual event for a diagnostic occurrence.
     /// # Errors
     /// Returns transport, decoding, absence or API errors.
     pub async fn diagnostic(&self, id: &str) -> Result<Event, ClientError> {
-        generated_result(self.generated.get_diagnostic(id).await)
-            .await
-            .map(|r| r.data)
+        self.generated.get_diagnostic(id).data().await
     }
     /// Gets cached daemon resource usage and queue measurements.
     /// # Errors
     /// Returns transport, decoding or API errors.
     pub async fn daemon_stats(&self) -> Result<DaemonStats, ClientError> {
-        generated_result(self.generated.system_resources().await)
-            .await
-            .map(|r| r.data)
+        self.generated.system_resources().data().await
     }
     /// Gets deployment statistics for a selected time interval.
     /// # Errors
@@ -103,13 +88,10 @@ impl Client {
         since: Option<i64>,
         until: Option<i64>,
     ) -> Result<DeploymentAnalytics, ClientError> {
-        generated_result(
-            self.generated
-                .deployment_analytics(environment, since, until)
-                .await,
-        )
-        .await
-        .map(|r| r.data)
+        self.generated
+            .deployment_analytics(environment, since, until)
+            .data()
+            .await
     }
     /// Gets one page of webhook delivery outcomes.
     /// # Errors
@@ -118,19 +100,18 @@ impl Client {
         &self,
         cursor: Option<&str>,
     ) -> Result<Page<NotificationDelivery>, ClientError> {
-        generated_result(
-            self.generated
-                .notification_deliveries(cursor, Some(50))
-                .await,
-        )
-        .await
-        .map(|r| r.data)
+        self.generated
+            .notification_deliveries(cursor, Some(50))
+            .data()
+            .await
     }
     /// Retries a failed notification under the active destination policy.
     /// # Errors
     /// Returns transport, disabled destination, decoding or API errors.
     pub async fn retry_notification(&self, id: &str) -> Result<(), ClientError> {
-        generated_result(self.generated.retry_notification_delivery(id).await)
+        self.generated
+            .retry_notification_delivery(id)
+            .payload()
             .await
             .map(|_| ())
     }

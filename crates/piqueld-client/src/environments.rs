@@ -8,8 +8,8 @@ pub use piqueld_core::api::{
 pub use piqueld_core::{EnvironmentName, EnvironmentSource, PromotedFrom, TrackedBranch};
 
 use crate::{
-    AcceptedOperation, Client, ClientError, DeploymentView, ManifestRevision, Page, PlanView,
-    client::generated_result,
+    AcceptedOperation, ApplicationLogs, Client, ClientError, DeploymentView, Event, LogStream,
+    ManifestRevision, Operation, Page, PlanView, client::EnvelopedCall, observability::EventFilter,
 };
 
 impl Client {
@@ -18,9 +18,7 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn environment(&self, id: &str) -> Result<EnvironmentView, ClientError> {
-        generated_result(self.generated.get_environment(id).await)
-            .await
-            .map(|response| response.data)
+        self.generated.get_environment(id).data().await
     }
 
     /// Fetches desired, observed, operation, and diagnostic state for an environment.
@@ -28,9 +26,7 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn environment_detail(&self, id: &str) -> Result<EnvironmentDetailView, ClientError> {
-        generated_result(self.generated.get_environment_detail(id).await)
-            .await
-            .map(|response| response.data)
+        self.generated.get_environment_detail(id).data().await
     }
 
     /// Fetches current reconciliation status for an environment.
@@ -38,9 +34,7 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn environment_status(&self, id: &str) -> Result<EnvironmentStatusView, ClientError> {
-        generated_result(self.generated.environment_status(id).await)
-            .await
-            .map(|response| response.data)
+        self.generated.environment_status(id).data().await
     }
 
     /// Adds an environment to an application, conditioned on the inspected
@@ -53,13 +47,10 @@ impl Client {
         request: &CreateEnvironmentRequest,
         force: bool,
     ) -> Result<EnvironmentView, ClientError> {
-        generated_result(
-            self.generated
-                .create_environment(application, force.then_some(true), None, request)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .create_environment(application, force.then_some(true), None, request)
+            .data()
+            .await
     }
 
     /// Renames an environment without touching its runtime resources.
@@ -71,13 +62,10 @@ impl Client {
         request: &EnvironmentRequest,
         force: bool,
     ) -> Result<EnvironmentView, ClientError> {
-        generated_result(
-            self.generated
-                .rename_environment(id, force.then_some(true), None, request)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .rename_environment(id, force.then_some(true), None, request)
+            .data()
+            .await
     }
 
     /// Points an environment of a repository-backed application at another
@@ -90,13 +78,10 @@ impl Client {
         request: &EnvironmentBranchRequest,
         force: bool,
     ) -> Result<EnvironmentView, ClientError> {
-        generated_result(
-            self.generated
-                .set_environment_branch(id, force.then_some(true), None, request)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .set_environment_branch(id, force.then_some(true), None, request)
+            .data()
+            .await
     }
 
     /// Makes an environment promoted from another, or returns it to tracking
@@ -109,13 +94,10 @@ impl Client {
         request: &EnvironmentSourceRequest,
         force: bool,
     ) -> Result<EnvironmentView, ClientError> {
-        generated_result(
-            self.generated
-                .set_environment_source(id, force.then_some(true), None, request)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .set_environment_source(id, force.then_some(true), None, request)
+            .data()
+            .await
     }
 
     /// Promotes a release into a promoted environment, pinning it at acceptance.
@@ -127,13 +109,10 @@ impl Client {
         request: &PromoteRequest,
         force: bool,
     ) -> Result<AcceptedPromotion, ClientError> {
-        generated_result(
-            self.generated
-                .promote_environment(id, force.then_some(true), None, request)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .promote_environment(id, force.then_some(true), None, request)
+            .data()
+            .await
     }
 
     /// Plans promoting a release into an environment without changing anything.
@@ -144,9 +123,7 @@ impl Client {
         id: &str,
         request: &PromoteRequest,
     ) -> Result<PlanView, ClientError> {
-        generated_result(self.generated.plan_promotion(id, request).await)
-            .await
-            .map(|response| response.data)
+        self.generated.plan_promotion(id, request).data().await
     }
 
     /// Deletes an environment's services and networks, retaining its volumes,
@@ -159,13 +136,10 @@ impl Client {
         expected: Option<u64>,
         force: bool,
     ) -> Result<AcceptedOperation, ClientError> {
-        generated_result(
-            self.generated
-                .delete_environment(id, expected, force.then_some(true), None)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .delete_environment(id, expected, force.then_some(true), None)
+            .data()
+            .await
     }
 
     /// Retries the latest operation with its saved inputs once it has ended or failed,
@@ -177,13 +151,10 @@ impl Client {
         id: &str,
         expected: Option<u64>,
     ) -> Result<AcceptedOperation, ClientError> {
-        generated_result(
-            self.generated
-                .reconcile_environment(id, expected, None, None)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .reconcile_environment(id, expected, None, None)
+            .data()
+            .await
     }
 
     /// Deploys an environment from its source, conditioned on the inspected
@@ -202,13 +173,10 @@ impl Client {
             Some(ManifestRevision::Branch(branch)) => (Some(branch.as_str()), None),
             Some(ManifestRevision::Commit(commit)) => (None, Some(commit.as_str())),
         };
-        generated_result(
-            self.generated
-                .deploy_environment(id, branch, commit, Some(expected), None, None)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .deploy_environment(id, branch, commit, Some(expected), None, None)
+            .data()
+            .await
     }
 
     /// Lists an environment's deployment snapshots newest first, three per page.
@@ -219,9 +187,7 @@ impl Client {
         id: &str,
         cursor: Option<&str>,
     ) -> Result<Page<DeploymentView>, ClientError> {
-        generated_result(self.generated.list_deployments(id, cursor).await)
-            .await
-            .map(|response| response.data)
+        self.generated.list_deployments(id, cursor).data().await
     }
 
     /// Lists retained attempt outcomes, 100 per page.
@@ -232,14 +198,11 @@ impl Client {
         id: &str,
         deployment: &str,
         cursor: Option<&str>,
-    ) -> Result<Page<piqueld_core::Operation>, ClientError> {
-        generated_result(
-            self.generated
-                .list_deployment_attempts(id, deployment, cursor)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+    ) -> Result<Page<Operation>, ClientError> {
+        self.generated
+            .list_deployment_attempts(id, deployment, cursor)
+            .data()
+            .await
     }
 
     /// Reads one page of informational events, oldest first, optionally of one
@@ -253,9 +216,9 @@ impl Client {
         environment_id: Option<&str>,
         cursor: Option<&str>,
         limit: u16,
-    ) -> Result<Page<piqueld_core::Event>, ClientError> {
+    ) -> Result<Page<Event>, ClientError> {
         self.filtered_events(
-            &piqueld_core::observability::EventFilter {
+            &EventFilter {
                 application_id: application_id.map(str::to_owned),
                 environment_id: environment_id.map(str::to_owned),
                 ..Default::default()
@@ -275,7 +238,7 @@ impl Client {
         service: Option<&str>,
         tail: u16,
         since_seconds: u32,
-    ) -> Result<piqueld_core::api::ApplicationLogs, ClientError> {
+    ) -> Result<ApplicationLogs, ClientError> {
         self.filtered_environment_logs(id, service, tail, since_seconds, None)
             .await
     }
@@ -289,20 +252,17 @@ impl Client {
         service: Option<&str>,
         tail: u16,
         since_seconds: u32,
-        stream: Option<piqueld_core::api::LogStream>,
-    ) -> Result<piqueld_core::api::ApplicationLogs, ClientError> {
-        generated_result(
-            self.generated
-                .environment_logs(
-                    id,
-                    service,
-                    Some(since_seconds),
-                    stream.as_ref(),
-                    Some(u32::from(tail)),
-                )
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        stream: Option<LogStream>,
+    ) -> Result<ApplicationLogs, ClientError> {
+        self.generated
+            .environment_logs(
+                id,
+                service,
+                Some(since_seconds),
+                stream.as_ref(),
+                Some(u32::from(tail)),
+            )
+            .data()
+            .await
     }
 }
