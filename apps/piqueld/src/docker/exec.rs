@@ -1,5 +1,5 @@
 //! Commands executed inside one running task of an owned service.
-use super::{BollardDocker, DockerError};
+use super::{BollardDocker, BollardResult, DockerError};
 use bollard::{
     container::LogOutput,
     exec::{StartExecOptions, StartExecResults},
@@ -63,7 +63,7 @@ impl BollardDocker {
                     .build(),
             ))
             .await
-            .map_err(|e| DockerError::request("list exec tasks", e))?;
+            .or_request("list exec tasks")?;
         // Swarm reports a task as starting until its health check passes, but
         // its container already runs; prefer healthy tasks.
         let Some((_, task, container)) = tasks
@@ -99,7 +99,7 @@ impl BollardDocker {
                 },
             )
             .await
-            .map_err(|e| DockerError::request("create exec", e))?;
+            .or_request("create exec")?;
         Ok(Some(Exec {
             id: created.id,
             task,
@@ -127,7 +127,7 @@ impl BollardDocker {
                 }),
             )
             .await
-            .map_err(|e| DockerError::request("start exec", e))?
+            .or_request("start exec")?
         else {
             return Err(DockerError::Request("attach exec"));
         };
@@ -140,7 +140,7 @@ impl BollardDocker {
         // input never stops its output from draining.
         let forward_output = async {
             while let Some(item) = output.next().await {
-                let frame = match item.map_err(|e| DockerError::request("read exec output", e))? {
+                let frame = match item.or_request("read exec output")? {
                     LogOutput::StdErr { message } => ExecOutput::Stderr(message.into()),
                     LogOutput::StdOut { message } | LogOutput::Console { message } => {
                         ExecOutput::Stdout(message.into())
@@ -199,7 +199,7 @@ impl BollardDocker {
         self.docker
             .inspect_exec(&exec.id)
             .await
-            .map_err(|e| DockerError::request("inspect exec", e))?
+            .or_request("inspect exec")?
             .exit_code
             .ok_or(DockerError::Request("read exec exit code"))
     }

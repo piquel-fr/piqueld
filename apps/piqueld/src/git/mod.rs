@@ -598,7 +598,7 @@ impl Checkouts {
             priority,
         };
         let image = docker
-            .build_image_recorded(&build, log)
+            .build_image(&build, log)
             .await
             .context("build Git source image")?;
         Ok((checkout.commit, image))

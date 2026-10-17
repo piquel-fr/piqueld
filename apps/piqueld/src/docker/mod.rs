@@ -93,6 +93,7 @@ use probe::HealthProbe;
 mod resources;
 mod secrets;
 mod spec;
+use errors::BollardResult;
 pub use errors::DockerError;
 
 /// Progress of one operation's run of a one-shot job.
@@ -280,7 +281,7 @@ pub trait DockerApi: Send + Sync + 'static {
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError>;
     /// Builds local Docker inputs into an immutable image, streaming output
     /// into `log` when given.
-    async fn build_image_recorded(
+    async fn build_image(
         &self,
         build: &ImageBuild<'_>,
         log: Option<&crate::build::BuildLog>,
@@ -308,11 +309,6 @@ pub trait DockerApi: Send + Sync + 'static {
     ) -> Result<Option<Exec>, DockerError>;
     /// Streams a created command until it exits and returns its exit code.
     async fn run_exec(&self, exec: &Exec, io: ExecIo) -> Result<i64, DockerError>;
-    /// Builds a local image without persisting output.
-    async fn build_image(
-        &self,
-        build: &ImageBuild<'_>,
-    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError>;
     /// Reads the resources managed for one application.
     async fn observe(
         &self,
