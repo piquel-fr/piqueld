@@ -9,7 +9,7 @@
 use axum::serve::Listener;
 use std::{
     io::{Error, ErrorKind},
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, SocketAddr, SocketAddrV4},
     time::Duration,
 };
 use tokio::{
@@ -67,7 +67,7 @@ impl ProxyListener {
             let connections = connections.clone();
             // Headers are read concurrently so one stalled connection cannot block others.
             tokio::spawn(async move {
-                let owner = owner(local, address).await;
+                let owner = Self::owner(local, address).await;
                 if owner != Some(daemon) {
                     tracing::warn!(%local, ?owner, "refusing a forwarded tailnet connection from another user");
                     return;
@@ -86,6 +86,23 @@ impl ProxyListener {
                 }
             });
         }
+    }
+
+    /// The PROXY v2 header announcing a TCP over IPv4 connection from
+    /// `client` to `destination`, as tailscaled writes it.
+    ///
+    /// ```text
+    /// [signature: 12][0x21 PROXY][0x11 TCP over IPv4][length: 12]
+    /// [client ip: 4][destination ip: 4][client port: 2][destination port: 2]
+    /// ```
+    pub(crate) fn header(client: SocketAddrV4, destination: SocketAddrV4) -> Vec<u8> {
+        let mut header = SIGNATURE.to_vec();
+        header.extend([PROXY_COMMAND, TCP_V4, 0, 12]);
+        header.extend(client.ip().octets());
+        header.extend(destination.ip().octets());
+        header.extend(client.port().to_be_bytes());
+        header.extend(destination.port().to_be_bytes());
+        header
     }
 
     /// Reads a PROXY v2 header and returns the client address it carries.
@@ -119,54 +136,56 @@ impl ProxyListener {
             u16::from_be_bytes(*port),
         ))
     }
-}
 
-/// The user owning the local end of the loopback TCP connection from `peer`
-/// to `listener`, read from `/proc/net/tcp` or `/proc/net/tcp6`.
-async fn owner(peer: SocketAddr, listener: SocketAddr) -> Option<u32> {
-    let table = if peer.is_ipv4() {
-        "/proc/net/tcp"
-    } else {
-        "/proc/net/tcp6"
-    };
-    let table = tokio::fs::read_to_string(table).await.ok()?;
-    owner_in(&table, peer, listener)
-}
-
-/// Finds the open socket bound to `local` and connected to `remote` in a
-/// `/proc/net/tcp`-style table and returns its owner's user ID.
-///
-/// Only established sockets still held by a process (nonzero inode) count:
-/// once a client closes, the kernel keeps its row with owner 0, which would
-/// otherwise vouch for whatever the client queued before closing.
-fn owner_in(table: &str, local: SocketAddr, remote: SocketAddr) -> Option<u32> {
-    const ESTABLISHED: &str = "01";
-    let (local, remote) = (proc_address(local), proc_address(remote));
-    table.lines().skip(1).find_map(|line| {
-        let columns: Vec<&str> = line.split_whitespace().collect();
-        let open = columns.get(1) == Some(&local.as_str())
-            && columns.get(2) == Some(&remote.as_str())
-            && columns.get(3) == Some(&ESTABLISHED)
-            && columns.get(9).is_some_and(|inode| *inode != "0");
-        open.then(|| columns.get(7)?.parse().ok()).flatten()
-    })
-}
-
-/// An address as the kernel prints it in `/proc/net/tcp`: each 32-bit word of
-/// the address in native byte order, then the port, all in uppercase hex.
-fn proc_address(address: SocketAddr) -> String {
-    use std::fmt::Write as _;
-    let octets = match address.ip() {
-        IpAddr::V4(ip) => ip.octets().to_vec(),
-        IpAddr::V6(ip) => ip.octets().to_vec(),
-    };
-    let mut text = String::new();
-    // Writing to a `String` cannot fail.
-    for word in octets.as_chunks::<4>().0 {
-        let _ = write!(text, "{:08X}", u32::from_ne_bytes(*word));
+    /// The user owning the local end of the loopback TCP connection from
+    /// `peer` to `listener`, read from `/proc/net/tcp` or `/proc/net/tcp6`.
+    async fn owner(peer: SocketAddr, listener: SocketAddr) -> Option<u32> {
+        let table = if peer.is_ipv4() {
+            "/proc/net/tcp"
+        } else {
+            "/proc/net/tcp6"
+        };
+        let table = tokio::fs::read_to_string(table).await.ok()?;
+        Self::owner_in(&table, peer, listener)
     }
-    let _ = write!(text, ":{:04X}", address.port());
-    text
+
+    /// Finds the open socket bound to `local` and connected to `remote` in a
+    /// `/proc/net/tcp`-style table and returns its owner's user ID.
+    ///
+    /// Only established sockets still held by a process (nonzero inode)
+    /// count: once a client closes, the kernel keeps its row with owner 0,
+    /// which would otherwise vouch for whatever the client queued before
+    /// closing.
+    fn owner_in(table: &str, local: SocketAddr, remote: SocketAddr) -> Option<u32> {
+        const ESTABLISHED: &str = "01";
+        let (local, remote) = (Self::proc_address(local), Self::proc_address(remote));
+        table.lines().skip(1).find_map(|line| {
+            let columns: Vec<&str> = line.split_whitespace().collect();
+            let open = columns.get(1) == Some(&local.as_str())
+                && columns.get(2) == Some(&remote.as_str())
+                && columns.get(3) == Some(&ESTABLISHED)
+                && columns.get(9).is_some_and(|inode| *inode != "0");
+            open.then(|| columns.get(7)?.parse().ok()).flatten()
+        })
+    }
+
+    /// An address as the kernel prints it in `/proc/net/tcp`: each 32-bit
+    /// word of the address in native byte order, then the port, all in
+    /// uppercase hex.
+    fn proc_address(address: SocketAddr) -> String {
+        use std::fmt::Write as _;
+        let octets = match address.ip() {
+            IpAddr::V4(ip) => ip.octets().to_vec(),
+            IpAddr::V6(ip) => ip.octets().to_vec(),
+        };
+        let mut text = String::new();
+        // Writing to a `String` cannot fail.
+        for word in octets.as_chunks::<4>().0 {
+            let _ = write!(text, "{:08X}", u32::from_ne_bytes(*word));
+        }
+        let _ = write!(text, ":{:04X}", address.port());
+        text
+    }
 }
 
 impl Listener for ProxyListener {
@@ -199,10 +218,18 @@ mod tests {
         header
     }
 
+    /// The header the relays write for `100.64.0.1:40000` connecting to
+    /// `100.64.0.2:443`.
+    fn v4_header() -> Vec<u8> {
+        ProxyListener::header(
+            "100.64.0.1:40000".parse().unwrap(),
+            "100.64.0.2:443".parse().unwrap(),
+        )
+    }
+
     #[tokio::test]
     async fn reads_ipv4_and_ipv6_clients_and_leaves_the_payload() {
-        let v4 = [[100, 64, 0, 1], [100, 64, 0, 2]].concat();
-        let mut v4 = header(TCP_V4, &[v4, vec![0x9c, 0x40, 0x01, 0xbb]].concat());
+        let mut v4 = v4_header();
         v4.extend(b"GET /");
         let mut stream = v4.as_slice();
         assert_eq!(
@@ -237,7 +264,10 @@ mod tests {
         let listener: SocketAddr = "127.0.0.1:8080".parse().unwrap();
         // Columns: local, remote, state, queues, timer, retransmits, uid, timeout, inode.
         let line = |local: SocketAddr, remote: SocketAddr, state: &str, uid: u32, inode: u32| {
-            let (local, remote) = (proc_address(local), proc_address(remote));
+            let (local, remote) = (
+                ProxyListener::proc_address(local),
+                ProxyListener::proc_address(remote),
+            );
             format!("   0: {local} {remote} {state} 0:0 0:0 0 {uid} 0 {inode} 1")
         };
         let table = |rows: [String; 2]| format!("  sl  header\n{}\n{}", rows[0], rows[1]);
@@ -245,21 +275,24 @@ mod tests {
             line(listener, peer, "01", 1000, 7),
             line(peer, listener, "01", 1001, 8),
         ]);
-        assert_eq!(owner_in(&open, peer, listener), Some(1001));
+        assert_eq!(ProxyListener::owner_in(&open, peer, listener), Some(1001));
         let elsewhere = "127.0.0.1:1".parse().unwrap();
-        assert_eq!(owner_in(&open, listener, elsewhere), None);
+        assert_eq!(ProxyListener::owner_in(&open, listener, elsewhere), None);
         // A client that already closed is not vouched for, even with owner 0.
         let closed = table([
             line(listener, peer, "01", 1000, 7),
             line(peer, listener, "05", 0, 0),
         ]);
-        assert_eq!(owner_in(&closed, peer, listener), None);
+        assert_eq!(ProxyListener::owner_in(&closed, peer, listener), None);
         let loopback = if cfg!(target_endian = "little") {
             "0100007F"
         } else {
             "7F000001"
         };
-        assert_eq!(proc_address(peer), format!("{loopback}:9C40"));
+        assert_eq!(
+            ProxyListener::proc_address(peer),
+            format!("{loopback}:9C40")
+        );
     }
 
     #[tokio::test]
@@ -285,14 +318,7 @@ mod tests {
         );
 
         let mut stream = TcpStream::connect(address).await.unwrap();
-        let addresses = [[100, 64, 0, 1], [100, 64, 0, 2]].concat();
-        stream
-            .write_all(&header(
-                TCP_V4,
-                &[addresses, vec![0x9c, 0x40, 0x01, 0xbb]].concat(),
-            ))
-            .await
-            .unwrap();
+        stream.write_all(&v4_header()).await.unwrap();
         stream
             .write_all(b"GET / HTTP/1.1\r\nHost: piqueld\r\nConnection: close\r\n\r\n")
             .await
