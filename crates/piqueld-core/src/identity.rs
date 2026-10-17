@@ -2,11 +2,12 @@
 
 use crate::names::validated_string;
 use sha2::{Digest, Sha256};
+use std::ops::RangeInclusive;
 
-/// Shared persistence ID format: 8-64 lowercase ASCII letters, digits, or
-/// internal hyphens.
-fn valid_id(value: &str) -> bool {
-    (8..=64).contains(&value.len())
+/// Shared ID format: `lengths` lowercase ASCII letters, digits, or internal
+/// hyphens. Persistence assigns IDs of 8-64.
+pub(crate) fn valid_id(value: &str, lengths: RangeInclusive<usize>) -> bool {
+    lengths.contains(&value.len())
         && value
             .bytes()
             .next()
@@ -31,7 +32,7 @@ validated_string!(
     /// ```
     ApplicationId, ApplicationIdError,
     "application IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens",
-    valid_id
+    |value: &str| valid_id(value, 8..=64)
 );
 
 validated_string!(
@@ -41,7 +42,7 @@ validated_string!(
     /// application ID they had before environments existed.
     EnvironmentId, EnvironmentIdError,
     "environment IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens",
-    valid_id
+    |value: &str| valid_id(value, 8..=64)
 );
 
 validated_string!(
@@ -49,7 +50,7 @@ validated_string!(
     /// records content its application has no release for yet.
     ReleaseId, ReleaseIdError,
     "release IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens",
-    valid_id
+    |value: &str| valid_id(value, 8..=64)
 );
 
 impl EnvironmentId {

@@ -1,5 +1,6 @@
 //! Backend-neutral desired, resolved, and observed Docker resource contracts.
 
+use crate::manifest::dependencies::StartupOrder;
 use crate::manifest::domain::{
     ValidatedJob as Job, ValidatedMount as Mount, ValidatedService as Service,
 };
@@ -46,18 +47,7 @@ validated_string!(
     /// Stable control-plane instance identity.
     InstanceId, InstanceIdError,
     "instance IDs must be 1-64 lowercase ASCII letters, digits, or internal hyphens",
-    |value: &str| (1..=64).contains(&value.len())
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-            && value
-                .bytes()
-                .next()
-                .is_some_and(|byte| byte.is_ascii_alphanumeric())
-            && value
-                .bytes()
-                .last()
-                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+    |value: &str| crate::identity::valid_id(value, 1..=64)
 );
 
 validated_string!(
@@ -152,6 +142,46 @@ impl ResolvedSource {
         BuildInputs::new(&self.requested(), self.commit())
     }
 
+    /// Whether this is a valid immutable resolution of `source`.
+    ///
+    /// Images must match the requested reference exactly and resolve within the
+    /// same repository. Git sources must be identical, resolve to a full commit
+    /// hash, and honour a pinned commit when one is set.
+    fn resolves(&self, source: &ValidatedSource) -> bool {
+        match (source, self) {
+            (
+                ValidatedSource::Image { image },
+                Self::Image {
+                    requested,
+                    digest_reference,
+                },
+            ) => {
+                image == requested.as_str()
+                    && image_repository(image).is_some_and(|repository| {
+                        image_repository(digest_reference.as_str()) == Some(repository)
+                    })
+            }
+            // Unpinned "self" sources never match; deployments pin them first.
+            (
+                ValidatedSource::Git {
+                    repository: SourceRepository::Git(repository),
+                    ..
+                },
+                Self::Git {
+                    requested, commit, ..
+                },
+            ) => {
+                source == requested
+                    && crate::manifest::valid_git_commit(commit)
+                    && repository
+                        .commit
+                        .as_ref()
+                        .is_none_or(|pinned| pinned == commit)
+            }
+            _ => false,
+        }
+    }
+
     /// Returns the immutable image reference used by Docker.
     #[must_use]
     pub fn digest_reference(&self) -> &str {
@@ -183,6 +213,76 @@ pub struct ResolutionSet {
     /// Logical secrets pinned to immutable Docker names.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secret_names: BTreeMap<String, String>,
+}
+
+impl ResolutionSet {
+    /// Collects every reason [`compile_application`] cannot proceed with these
+    /// resolutions: unresolved sources, unpinned secrets, uncaptured
+    /// repository files, and resolutions that do not match their source. A
+    /// release's sources are first checked field by field against the build
+    /// inputs they were prepared from, so a mismatch names what differs.
+    fn errors(&self, app: &NormalizedApplication, origin: SourceOrigin) -> Vec<CompileError> {
+        let mut errors = preview_resolution(app, self)
+            .into_iter()
+            .map(|requirement| match requirement {
+                ResolutionRequirement::ResolveImage { service, .. }
+                | ResolutionRequirement::BuildGit { service, .. } => CompileError::new(
+                    codes::SOURCE_UNRESOLVED,
+                    service.as_str(),
+                    "service source has not been resolved to an immutable image",
+                ),
+            })
+            .collect::<Vec<_>>();
+        for service in &app.spec().services {
+            for file in &service.files {
+                if let FileSource::Path(path) = &file.source
+                    && app.files().get(path).is_none()
+                {
+                    errors.push(CompileError::new(
+                        codes::FILE_UNRESOLVED,
+                        service.name.as_str(),
+                        format!("repository file {path} was not captured with the manifest"),
+                    ));
+                }
+            }
+            for secret in &service.secrets {
+                if !self.secret_names.contains_key(&secret.name) {
+                    errors.push(CompileError::new(
+                        codes::SECRET_UNRESOLVED,
+                        service.name.as_str(),
+                        format!("secret {} has not been pinned", secret.name),
+                    ));
+                }
+            }
+        }
+        for service in &app.spec().services {
+            let Some(resolved) = self.sources.get(&service.name) else {
+                continue;
+            };
+            let incompatible = match origin {
+                SourceOrigin::Prepared => Vec::new(),
+                SourceOrigin::Release => resolved
+                    .build_inputs()
+                    .differences(&BuildInputs::new(&service.source, resolved.commit())),
+            };
+            if !incompatible.is_empty() {
+                errors.extend(incompatible.into_iter().map(|field| {
+                    CompileError::new(
+                        codes::RELEASE_INCOMPATIBLE,
+                        format!("{}.{field}", service.name),
+                        "renders differently in this environment than in the release, whose images were built from it",
+                    )
+                }));
+            } else if !resolved.resolves(&service.source) {
+                errors.push(CompileError::new(
+                    codes::SOURCE_RESOLUTION_MISMATCH,
+                    service.name.as_str(),
+                    "resolved source does not immutably resolve the normalized service source",
+                ));
+            }
+        }
+        errors
+    }
 }
 
 /// Resolution work still required before compilation.
@@ -219,21 +319,16 @@ pub fn preview_resolution(
     app.spec()
         .services
         .iter()
-        .filter_map(|service| {
-            if resolutions.sources.contains_key(&service.name) {
-                None
-            } else {
-                Some(match &service.source {
-                    ValidatedSource::Image { image } => ResolutionRequirement::ResolveImage {
-                        service: service.name.clone(),
-                        reference: image.clone(),
-                    },
-                    ValidatedSource::Git { .. } => ResolutionRequirement::BuildGit {
-                        service: service.name.clone(),
-                        source: service.source.clone(),
-                    },
-                })
-            }
+        .filter(|service| !resolutions.sources.contains_key(&service.name))
+        .map(|service| match &service.source {
+            ValidatedSource::Image { image } => ResolutionRequirement::ResolveImage {
+                service: service.name.clone(),
+                reference: image.clone(),
+            },
+            ValidatedSource::Git { .. } => ResolutionRequirement::BuildGit {
+                service: service.name.clone(),
+                source: service.source.clone(),
+            },
         })
         .collect()
 }
@@ -277,6 +372,21 @@ impl Ownership {
         }
         labels
     }
+
+    /// The environment desired ownership `labels` name. `None` unless the
+    /// managed marker is `"true"`, the spec hash is a valid `sha256:` digest,
+    /// and both the environment and instance identities parse.
+    fn labelled_environment(labels: &BTreeMap<String, String>) -> Option<EnvironmentId> {
+        if labels.get(MANAGED_LABEL).map(String::as_str) != Some("true")
+            || labels
+                .get(SPEC_HASH_LABEL)
+                .is_none_or(|hash| !valid_sha256(hash))
+        {
+            return None;
+        }
+        InstanceId::parse(labels.get(INSTANCE_LABEL)?.as_str()).ok()?;
+        EnvironmentId::parse(labels.get(APPLICATION_LABEL)?.as_str()).ok()
+    }
 }
 
 /// Desired private overlay network state.
@@ -296,7 +406,7 @@ impl DesiredNetwork {
     /// name must be the application's canonical private or ingress network.
     #[must_use]
     pub fn has_valid_identity(&self) -> bool {
-        let Some((application, _)) = desired_application_from_labels(&self.labels) else {
+        let Some(application) = Ownership::labelled_environment(&self.labels) else {
             return false;
         };
         !self.labels.contains_key(SERVICE_LABEL)
@@ -323,7 +433,7 @@ impl DesiredVolume {
     /// name, and a Docker name derived from the labelled application.
     #[must_use]
     pub fn has_valid_identity(&self) -> bool {
-        let Some((application, _)) = desired_application_from_labels(&self.labels) else {
+        let Some(application) = Ownership::labelled_environment(&self.labels) else {
             return false;
         };
         valid_logical_name(self.logical_name.as_str())
@@ -469,6 +579,78 @@ pub struct DesiredService {
 }
 
 impl DesiredService {
+    /// Builds the desired Docker service for one validated service.
+    ///
+    /// Must only run after [`ResolutionSet::errors`] finds none: it indexes the
+    /// resolved source, pinned secret names, and captured repository `files`
+    /// directly and panics if missing. Services start attached to the private
+    /// network only; ingress is projected later by
+    /// `ResolvedApplication::with_ingress_routes`.
+    fn compile(
+        service: &Service,
+        resolutions: &ResolutionSet,
+        files: &RepositoryFiles,
+        environment_ownership: &Ownership,
+        private_network: &DockerNetworkName,
+    ) -> Self {
+        let source = resolutions.sources[&service.name].clone();
+        let environment = &environment_ownership.environment_id;
+        let mut ownership = environment_ownership.clone();
+        ownership.service = Some(service.name.clone());
+        Self {
+            logical_name: service.name.clone(),
+            name: DockerServiceName::for_service(environment, &service.name),
+            image: source.image(),
+            source,
+            replicas: service.replicas,
+            environment: service.environment.clone(),
+            command: service.command.clone(),
+            arguments: service.arguments.clone(),
+            mounts: service
+                .mounts
+                .iter()
+                .map(|mount: &Mount| DesiredMount {
+                    volume_name: DockerVolumeName::for_volume(environment, &mount.volume),
+                    target: mount.target.clone(),
+                    read_only: mount.read_only,
+                })
+                .collect(),
+            secrets: service
+                .secrets
+                .iter()
+                .map(|secret| SecretFile {
+                    secret_name: resolutions.secret_names[&secret.name].clone(),
+                    target: secret.target.clone(),
+                })
+                .collect(),
+            files: service
+                .files
+                .iter()
+                .map(|file| {
+                    let content = match &file.source {
+                        FileSource::Content(content) => content.as_str(),
+                        FileSource::Path(path) => files
+                            .get(path)
+                            .expect("validated applications captured their repository files"),
+                    };
+                    DesiredFile {
+                        config_name: DockerConfigName::for_file(environment, content, file.mode),
+                        target: file.target.clone(),
+                        mode: file.mode,
+                        content: content.to_owned(),
+                    }
+                })
+                .collect(),
+            healthcheck: service.healthcheck.clone(),
+            resources: service.resources.clone(),
+            networks: vec![private_network.clone()],
+            link_aliases: BTreeMap::new(),
+            labels: ownership.labels(),
+            depends_on: service.depends_on.clone(),
+            rollout: service.rollout,
+        }
+    }
+
     /// The update policy Docker applies to this service; see [`ValidatedRollout::policy`].
     #[must_use]
     pub fn rollout_policy(&self) -> RolloutPolicy {
@@ -482,7 +664,7 @@ impl DesiredService {
     /// name, and a Docker name derived from the labelled application.
     #[must_use]
     pub fn has_valid_identity(&self) -> bool {
-        let Some((application, _)) = desired_application_from_labels(&self.labels) else {
+        let Some(application) = Ownership::labelled_environment(&self.labels) else {
             return false;
         };
         valid_logical_name(self.logical_name.as_str())
@@ -499,8 +681,8 @@ impl DesiredService {
     /// naming the application, the private network gets no alias.
     #[must_use]
     pub fn network_attachments(&self) -> Vec<NetworkAttachment> {
-        let private = desired_application_from_labels(&self.labels)
-            .map(|(application, _)| DockerNetworkName::for_application(&application));
+        let private = Ownership::labelled_environment(&self.labels)
+            .map(|application| DockerNetworkName::for_application(&application));
         self.networks
             .iter()
             .map(|network| NetworkAttachment {
@@ -521,7 +703,7 @@ impl DesiredService {
     /// Returns the application's ingress network when public routes target this service.
     #[must_use]
     pub fn ingress_network(&self) -> Option<&DockerNetworkName> {
-        let (application, _) = desired_application_from_labels(&self.labels)?;
+        let application = Ownership::labelled_environment(&self.labels)?;
         let ingress = DockerNetworkName::for_ingress(&application);
         self.networks.iter().find(|network| **network == ingress)
     }
@@ -547,11 +729,42 @@ pub struct DesiredJob {
 }
 
 impl DesiredJob {
+    /// Builds a job's run as a copy of its service's container: its command,
+    /// one replica, no health check, dependencies, or rollout settings, and its
+    /// own Docker name and labels. Validation guarantees that every job
+    /// references a declared service.
+    fn compile(job: &Job, services: &[DesiredService], environment_ownership: &Ownership) -> Self {
+        let mut container = services
+            .iter()
+            .find(|service| service.logical_name == job.service)
+            .expect("validated jobs reference declared services")
+            .clone();
+        container.name =
+            DockerServiceName::for_job(&environment_ownership.environment_id, &job.name);
+        container.replicas = 1;
+        container.command.clone_from(&job.command);
+        container.arguments.clear();
+        container.healthcheck = None;
+        container.depends_on.clear();
+        container.rollout = ValidatedRollout::default();
+        container.labels = environment_ownership.labels();
+        container
+            .labels
+            .insert(JOB_LABEL.into(), job.name.to_string());
+        Self {
+            logical_name: job.name.clone(),
+            run: job.run,
+            timeout_seconds: job.timeout_seconds,
+            volume_access: job.volume_access,
+            container,
+        }
+    }
+
     /// Returns whether the job has a canonical name and identity.
     #[must_use]
     pub fn has_valid_identity(&self) -> bool {
         let labels = &self.container.labels;
-        let Some((application, _)) = desired_application_from_labels(labels) else {
+        let Some(application) = Ownership::labelled_environment(labels) else {
             return false;
         };
         !labels.contains_key(SERVICE_LABEL)
@@ -660,6 +873,81 @@ pub struct ResolvedApplication {
 }
 
 impl ResolvedApplication {
+    /// Validates resolutions as `origin` requires, then compiles; see [`compile_application`].
+    fn compile(
+        app: &NormalizedApplication,
+        environment: &EnvironmentId,
+        instance_id: InstanceId,
+        resolutions: &ResolutionSet,
+        origin: SourceOrigin,
+    ) -> Result<Self, Vec<CompileError>> {
+        let errors = resolutions.errors(app, origin);
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
+        let spec_hash = app.spec_hash();
+        let digest = Sha256Digest::parse(spec_hash.clone())
+            .expect("spec_hash is produced by the domain hasher");
+        let ownership = Ownership {
+            instance_id: instance_id.clone(),
+            environment_id: environment.clone(),
+            service: None,
+            spec_hash: digest.as_str().to_owned(),
+        };
+        let private_network = DockerNetworkName::for_application(environment);
+        let services = app
+            .spec()
+            .services
+            .iter()
+            .map(|service| {
+                DesiredService::compile(
+                    service,
+                    resolutions,
+                    app.files(),
+                    &ownership,
+                    &private_network,
+                )
+            })
+            .collect::<Vec<_>>();
+        Ok(Self {
+            jobs: app
+                .spec()
+                .jobs
+                .iter()
+                .map(|job| DesiredJob::compile(job, &services, &ownership))
+                .collect(),
+            secret_names: resolutions.secret_names.clone(),
+            routes: app.spec().routes.clone(),
+            exports: app.spec().exports.clone(),
+            imports: app.spec().imports.clone(),
+            bindings: BTreeMap::new(),
+            id: environment.clone(),
+            name: app.metadata().name.clone(),
+            instance_id,
+            spec_hash,
+            networks: if app.spec().services.is_empty() {
+                Vec::new()
+            } else {
+                vec![DesiredNetwork {
+                    name: private_network.clone(),
+                    labels: ownership.labels(),
+                }]
+            },
+            volumes: app
+                .spec()
+                .volumes
+                .iter()
+                .map(|volume| DesiredVolume {
+                    logical_name: volume.name.clone(),
+                    name: DockerVolumeName::for_volume(environment, &volume.name),
+                    labels: ownership.labels(),
+                })
+                .collect(),
+            services,
+        })
+    }
+
     /// Whether `observed` runs every one of its services exactly as
     /// desired (no field the planner compares drifts), converged: what
     /// promoting a release requires of its source environment right now.
@@ -681,7 +969,6 @@ impl ResolvedApplication {
     /// versions, which cleared job container dependencies, work too.
     #[must_use]
     pub fn job_dependencies(&self, job: &DesiredJob) -> BTreeSet<&str> {
-        use crate::manifest::dependencies::StartupOrder;
         self.services
             .dependencies_of(job.container.logical_name.as_str())
     }
@@ -839,33 +1126,14 @@ impl ResolvedApplication {
                         .services
                         .iter()
                         .find(|prior| prior.logical_name == service.name)?;
-                    resolved_source_matches(&service.source, &prior.source)
+                    prior
+                        .source
+                        .resolves(&service.source)
                         .then(|| (service.name.clone(), prior.source.clone()))
                 })
                 .collect(),
         }
     }
-}
-
-/// Extracts the owning application and instance from desired ownership labels.
-///
-/// Returns `None` unless the managed marker is `"true"`, the spec hash is a
-/// valid `sha256:` digest, and both identities parse.
-fn desired_application_from_labels(
-    labels: &BTreeMap<String, String>,
-) -> Option<(EnvironmentId, InstanceId)> {
-    if labels.get(MANAGED_LABEL).map(String::as_str) != Some("true")
-        || labels.get(INSTANCE_LABEL).is_none_or(String::is_empty)
-        || labels
-            .get(SPEC_HASH_LABEL)
-            .is_none_or(|hash| !valid_sha256(hash))
-    {
-        return None;
-    }
-    Some((
-        EnvironmentId::parse(labels.get(APPLICATION_LABEL)?.clone()).ok()?,
-        InstanceId::parse(labels.get(INSTANCE_LABEL)?.clone()).ok()?,
-    ))
 }
 
 /// Returns whether a logical resource name is safe for Docker naming.
@@ -900,6 +1168,17 @@ pub struct CompileError {
     pub resource: String,
     /// Safe human-readable explanation.
     pub message: String,
+}
+
+impl CompileError {
+    /// An error with the stable `code` at `resource`.
+    fn new(code: &str, resource: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            resource: resource.into(),
+            message: message.into(),
+        }
+    }
 }
 
 /// Reports compilation errors at their resource, e.g. a release's
@@ -939,7 +1218,7 @@ pub fn compile_application(
     instance_id: InstanceId,
     resolutions: &ResolutionSet,
 ) -> Result<ResolvedApplication, Vec<CompileError>> {
-    compile(
+    ResolvedApplication::compile(
         app,
         environment,
         instance_id,
@@ -973,7 +1252,7 @@ pub fn compile_release(
         sources: release.sources().clone(),
         secret_names,
     };
-    compile(
+    ResolvedApplication::compile(
         app,
         environment,
         instance_id,
@@ -992,298 +1271,6 @@ enum SourceOrigin {
     Release,
 }
 
-/// Validates resolutions as `origin` requires, then compiles; see [`compile_application`].
-fn compile(
-    app: &NormalizedApplication,
-    environment: &EnvironmentId,
-    instance_id: InstanceId,
-    resolutions: &ResolutionSet,
-    origin: SourceOrigin,
-) -> Result<ResolvedApplication, Vec<CompileError>> {
-    let errors = validate_application(app, resolutions, origin);
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-
-    let spec_hash = app.spec_hash();
-    let digest =
-        Sha256Digest::parse(spec_hash.clone()).expect("spec_hash is produced by the domain hasher");
-    let ownership = Ownership {
-        instance_id: instance_id.clone(),
-        environment_id: environment.clone(),
-        service: None,
-        spec_hash: digest.as_str().to_owned(),
-    };
-    let private_network = DockerNetworkName::for_application(environment);
-    let services = app
-        .spec()
-        .services
-        .iter()
-        .map(|service| {
-            compile_service(
-                service,
-                resolutions,
-                app.files(),
-                &ownership,
-                &private_network,
-            )
-        })
-        .collect::<Vec<_>>();
-    Ok(ResolvedApplication {
-        jobs: app
-            .spec()
-            .jobs
-            .iter()
-            .map(|job| compile_job(job, &services, &ownership))
-            .collect(),
-        secret_names: resolutions.secret_names.clone(),
-        routes: app.spec().routes.clone(),
-        exports: app.spec().exports.clone(),
-        imports: app.spec().imports.clone(),
-        bindings: BTreeMap::new(),
-        id: environment.clone(),
-        name: app.metadata().name.clone(),
-        instance_id,
-        spec_hash,
-        networks: if app.spec().services.is_empty() {
-            Vec::new()
-        } else {
-            vec![DesiredNetwork {
-                name: private_network.clone(),
-                labels: ownership.labels(),
-            }]
-        },
-        volumes: app
-            .spec()
-            .volumes
-            .iter()
-            .map(|volume| DesiredVolume {
-                logical_name: volume.name.clone(),
-                name: DockerVolumeName::for_volume(environment, &volume.name),
-                labels: ownership.labels(),
-            })
-            .collect(),
-        services,
-    })
-}
-
-/// Collects every reason `compile_application` cannot proceed: unresolved
-/// sources, unpinned secrets, and resolutions that do not match their source.
-/// A release's sources are first checked field by field against the build
-/// inputs they were prepared from, so a mismatch names what differs.
-fn validate_application(
-    app: &NormalizedApplication,
-    resolutions: &ResolutionSet,
-    origin: SourceOrigin,
-) -> Vec<CompileError> {
-    let mut errors = unresolved_errors(app, resolutions);
-    for service in &app.spec().services {
-        for file in &service.files {
-            if let FileSource::Path(path) = &file.source
-                && app.files().get(path).is_none()
-            {
-                errors.push(CompileError {
-                    code: codes::FILE_UNRESOLVED.into(),
-                    resource: service.name.to_string(),
-                    message: format!("repository file {path} was not captured with the manifest"),
-                });
-            }
-        }
-        for secret in &service.secrets {
-            if !resolutions.secret_names.contains_key(&secret.name) {
-                errors.push(CompileError {
-                    code: codes::SECRET_UNRESOLVED.into(),
-                    resource: service.name.to_string(),
-                    message: format!("secret {} has not been pinned", secret.name),
-                });
-            }
-        }
-    }
-    for service in &app.spec().services {
-        let Some(resolved) = resolutions.sources.get(&service.name) else {
-            continue;
-        };
-        let incompatible = match origin {
-            SourceOrigin::Prepared => Vec::new(),
-            SourceOrigin::Release => resolved
-                .build_inputs()
-                .differences(&BuildInputs::new(&service.source, resolved.commit())),
-        };
-        if !incompatible.is_empty() {
-            errors.extend(incompatible.into_iter().map(|field| CompileError {
-                code: codes::RELEASE_INCOMPATIBLE.into(),
-                resource: format!("{}.{field}", service.name),
-                message: "renders differently in this environment than in the release, whose images were built from it".into(),
-            }));
-        } else if !resolved_source_matches(&service.source, resolved) {
-            errors.push(CompileError {
-                code: codes::SOURCE_RESOLUTION_MISMATCH.into(),
-                resource: service.name.to_string(),
-                message: "resolved source does not immutably resolve the normalized service source"
-                    .into(),
-            });
-        }
-    }
-    errors
-}
-
-/// Converts each outstanding `preview_resolution` requirement into a
-/// `SOURCE_UNRESOLVED` compile error.
-fn unresolved_errors(
-    app: &NormalizedApplication,
-    resolutions: &ResolutionSet,
-) -> Vec<CompileError> {
-    preview_resolution(app, resolutions)
-        .into_iter()
-        .map(|requirement| match requirement {
-            ResolutionRequirement::ResolveImage { service, .. }
-            | ResolutionRequirement::BuildGit { service, .. } => CompileError {
-                code: codes::SOURCE_UNRESOLVED.into(),
-                resource: service.to_string(),
-                message: "service source has not been resolved to an immutable image".into(),
-            },
-        })
-        .collect()
-}
-
-/// Whether `resolved` is a valid immutable resolution of `source`.
-///
-/// Images must match the requested reference exactly and resolve within the
-/// same repository. Git sources must be identical, resolve to a full commit
-/// hash, and honour a pinned commit when one is set.
-fn resolved_source_matches(source: &ValidatedSource, resolved: &ResolvedSource) -> bool {
-    match (source, resolved) {
-        (
-            ValidatedSource::Image { image },
-            ResolvedSource::Image {
-                requested,
-                digest_reference,
-            },
-        ) => image == requested.as_str() && same_image_repository(image, digest_reference.as_str()),
-        // Unpinned "self" sources never match; deployments pin them first.
-        (
-            ValidatedSource::Git {
-                repository: SourceRepository::Git(repository),
-                ..
-            },
-            ResolvedSource::Git {
-                requested, commit, ..
-            },
-        ) => {
-            source == requested
-                && crate::manifest::valid_git_commit(commit)
-                && repository
-                    .commit
-                    .as_ref()
-                    .is_none_or(|pinned| pinned == commit)
-        }
-        _ => false,
-    }
-}
-
-/// Builds the desired Docker service for one validated service.
-///
-/// Must only run after `validate_application` succeeds: it indexes the
-/// resolved source, pinned secret names, and captured repository `files`
-/// directly and panics if missing. Services start attached to the private
-/// network only; ingress is projected later by
-/// `ResolvedApplication::with_ingress_routes`.
-fn compile_service(
-    service: &Service,
-    resolutions: &ResolutionSet,
-    files: &RepositoryFiles,
-    environment_ownership: &Ownership,
-    private_network: &DockerNetworkName,
-) -> DesiredService {
-    let source = resolutions.sources[&service.name].clone();
-    let environment = &environment_ownership.environment_id;
-    let mut ownership = environment_ownership.clone();
-    ownership.service = Some(service.name.clone());
-    DesiredService {
-        logical_name: service.name.clone(),
-        name: DockerServiceName::for_service(environment, &service.name),
-        image: source.image(),
-        source,
-        replicas: service.replicas,
-        environment: service.environment.clone(),
-        command: service.command.clone(),
-        arguments: service.arguments.clone(),
-        mounts: service
-            .mounts
-            .iter()
-            .map(|mount: &Mount| DesiredMount {
-                volume_name: DockerVolumeName::for_volume(environment, &mount.volume),
-                target: mount.target.clone(),
-                read_only: mount.read_only,
-            })
-            .collect(),
-        secrets: service
-            .secrets
-            .iter()
-            .map(|secret| SecretFile {
-                secret_name: resolutions.secret_names[&secret.name].clone(),
-                target: secret.target.clone(),
-            })
-            .collect(),
-        files: service
-            .files
-            .iter()
-            .map(|file| {
-                let content = match &file.source {
-                    FileSource::Content(content) => content.as_str(),
-                    FileSource::Path(path) => files
-                        .get(path)
-                        .expect("validated applications captured their repository files"),
-                };
-                DesiredFile {
-                    config_name: DockerConfigName::for_file(environment, content, file.mode),
-                    target: file.target.clone(),
-                    mode: file.mode,
-                    content: content.to_owned(),
-                }
-            })
-            .collect(),
-        healthcheck: service.healthcheck.clone(),
-        resources: service.resources.clone(),
-        networks: vec![private_network.clone()],
-        link_aliases: BTreeMap::new(),
-        labels: ownership.labels(),
-        depends_on: service.depends_on.clone(),
-        rollout: service.rollout,
-    }
-}
-
-/// Validation guarantees that every job references a declared service.
-fn compile_job(
-    job: &Job,
-    services: &[DesiredService],
-    environment_ownership: &Ownership,
-) -> DesiredJob {
-    let mut container = services
-        .iter()
-        .find(|service| service.logical_name == job.service)
-        .expect("validated jobs reference declared services")
-        .clone();
-    container.name = DockerServiceName::for_job(&environment_ownership.environment_id, &job.name);
-    container.replicas = 1;
-    container.command.clone_from(&job.command);
-    container.arguments.clear();
-    container.healthcheck = None;
-    container.depends_on.clear();
-    container.rollout = ValidatedRollout::default();
-    container.labels = environment_ownership.labels();
-    container
-        .labels
-        .insert(JOB_LABEL.into(), job.name.to_string());
-    DesiredJob {
-        logical_name: job.name.clone(),
-        run: job.run,
-        timeout_seconds: job.timeout_seconds,
-        volume_access: job.volume_access,
-        container,
-    }
-}
-
 /// Whether a valid image reference is pinned by exactly one SHA-256 digest.
 ///
 /// ```text
@@ -1294,21 +1281,8 @@ fn compile_job(
 pub(crate) fn immutable_digest_reference(reference: &str) -> bool {
     valid_image_reference(reference)
         && reference
-            .split_once("@sha256:")
-            .is_some_and(|(name, digest)| {
-                !name.contains('@')
-                    && digest.len() == 64
-                    && digest
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            })
-}
-
-/// Whether both references are valid and name the same canonical repository.
-fn same_image_repository(requested: &str, resolved: &str) -> bool {
-    image_repository(requested)
-        .zip(image_repository(resolved))
-        .is_some_and(|(left, right)| left == right)
+            .split_once('@')
+            .is_some_and(|(_, digest)| valid_sha256(digest))
 }
 
 /// Returns the canonical repository portion of a valid image reference.
@@ -1558,22 +1532,11 @@ impl ObservedService {
     /// Whether observed mounts equal the desired ones, ignoring order.
     pub(crate) fn mounts_match(&self, desired: &DesiredService) -> bool {
         unordered_eq(
-            self.mounts.iter().map(|mount| {
-                (
-                    mount.volume_name.as_str(),
-                    mount.target.as_str(),
-                    mount.read_only,
-                )
-            }),
-            desired.mounts.iter().map(|mount| {
-                (
-                    mount.volume_name.as_str(),
-                    mount.target.as_str(),
-                    mount.read_only,
-                )
-            }),
+            self.mounts.iter().cloned(),
+            desired.mounts.iter().map(ObservedMount::from),
         )
     }
+
     /// Whether network attachments, including their aliases, equal the desired
     /// ones, ignoring order but not multiplicity.
     pub(crate) fn networks_match(&self, desired: &DesiredService) -> bool {
