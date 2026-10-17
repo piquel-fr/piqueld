@@ -1,3 +1,7 @@
+//! A local Git repository that services build from.
+
+/// A repository whose `Dockerfile` builds a long-running Alpine image and
+/// whose `Failfile` fails to build, with the Git source building the former.
 pub struct GitBuildFixture {
     _directory: tempfile::TempDir,
     pub source: piqueld_core::Source,
@@ -42,16 +46,21 @@ impl GitBuildFixture {
                     commit: None,
                 },
             ),
-            build: piqueld_core::manifest::Build::Docker {
-                dockerfile: "Dockerfile".into(),
-                context: ".".into(),
-                args: std::collections::BTreeMap::new(),
-                target: None,
-            },
+            build: dockerfile_build(),
         };
         Self {
             _directory: repo,
             source,
         }
+    }
+}
+
+/// Builds the repository root's `Dockerfile`, without arguments or a target.
+pub fn dockerfile_build() -> piqueld_core::manifest::Build {
+    piqueld_core::manifest::Build::Docker {
+        dockerfile: "Dockerfile".into(),
+        context: ".".into(),
+        args: std::collections::BTreeMap::new(),
+        target: None,
     }
 }
