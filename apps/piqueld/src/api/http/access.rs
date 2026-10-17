@@ -42,7 +42,7 @@ use utoipa_axum::router::UtoipaMethodRouter;
 const EXTENSION: &str = "x-piqueld-access";
 /// What the `{id}` path parameter of a route names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PathOwner {
+pub(super) enum PathOwner {
     /// An application.
     Application,
     /// An environment or preview, checked on its application.
@@ -61,7 +61,7 @@ impl PathOwner {
     ];
 
     /// The owner a matched route names, with its `{id}`, if any.
-    fn find(
+    pub(super) fn find(
         matched: Option<&MatchedPath>,
         params: Result<RawPathParams, RawPathParamsRejection>,
     ) -> Option<(Self, String)> {

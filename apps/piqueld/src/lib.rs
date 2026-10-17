@@ -37,19 +37,14 @@ pub enum RuntimeError {
     Signal(#[source] std::io::Error),
 }
 
-/// Waits until the supplied cancellation token is cancelled.
+/// Waits until the supplied cancellation token is cancelled, logging when
+/// the daemon starts and when shutdown is requested.
 ///
 /// Long-running controller tasks receive child tokens rooted at this token.
-///
-/// # Errors
-///
-/// The wait itself is infallible; the result keeps process shutdown consistent
-/// with the signal-handler boundary.
-pub async fn run_until_cancelled(cancellation: CancellationToken) -> Result<(), RuntimeError> {
+pub async fn run_until_cancelled(cancellation: CancellationToken) {
     info!("daemon started");
     cancellation.cancelled().await;
     info!("shutdown requested");
-    Ok(())
 }
 
 /// Converts SIGINT or SIGTERM into cooperative daemon cancellation.
@@ -93,10 +88,9 @@ mod tests {
         let runtime = tokio::spawn(run_until_cancelled(cancellation.clone()));
         cancellation.cancel();
 
-        let result = tokio::time::timeout(Duration::from_secs(1), runtime)
+        tokio::time::timeout(Duration::from_secs(1), runtime)
             .await
             .expect("runtime did not stop after cancellation")
             .expect("runtime task panicked");
-        assert!(result.is_ok());
     }
 }

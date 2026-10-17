@@ -158,7 +158,7 @@ async fn serve(mut config: DaemonConfig) -> Result<()> {
     let audit = state.clone();
     let (apis, tailnet_supervisor) = listeners.serve(&config, state, auth, tailnet, &cancellation);
 
-    piqueld::run_until_cancelled(cancellation).await?;
+    piqueld::run_until_cancelled(cancellation).await;
 
     signal_task.await.context("shutdown task failed")??;
     for api in apis {
