@@ -20,12 +20,18 @@ use serde::Serialize;
 use std::{
     fmt,
     io::{self, IsTerminal, Write},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 type Writer = Box<dyn Write + Send>;
 /// Stderr shared between the console and progress tasks.
 type SharedWriter = Arc<Mutex<Writer>>;
+
+/// Locks `mutex`, recovering it from a thread that panicked while holding it:
+/// output state stays usable for the error report.
+fn lock<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// One result event, with independently typed machine data and human rendering.
 pub(crate) trait Report {
@@ -221,10 +227,7 @@ impl Console {
     /// then flushes so the event is visible before returning.
     fn write_stderr(&mut self, write: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> Result<()> {
         self.progress.suspend(|| {
-            let mut writer = self
-                .stderr
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut writer = lock(&self.stderr);
             write(writer.as_mut())?;
             writer.flush()?;
             Ok(())

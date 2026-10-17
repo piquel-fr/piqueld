@@ -18,6 +18,10 @@ impl Capture {
     fn writer(&self) -> Writer {
         Box::new(anstream::StripStream::new(Box::new(self.clone()) as Writer))
     }
+    /// A plain human console whose results this captures.
+    fn human_console(&self) -> Console {
+        Console::with_writers(false, false, false, self.writer(), Box::new(io::sink()))
+    }
 }
 impl Write for Capture {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -406,8 +410,7 @@ fn status_and_dns_refresh_list_images_dns_providers_certificate_failures_and_pre
         snapshots: None,
     };
     let stdout = Capture::default();
-    let mut console =
-        Console::with_writers(false, false, false, stdout.writer(), Box::new(io::sink()));
+    let mut console = stdout.human_console();
     let ingress = piqueld_client::system::IngressStatus {
         enabled: true,
         healthy: true,
@@ -516,13 +519,7 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
     ];
     rows[1].route.name = Some(piqueld_client::RouteName::parse("web").unwrap());
     let stdout = Capture::default();
-    let mut console = Console::with_writers(
-        false,
-        false,
-        false,
-        stdout.writer(),
-        Capture::default().writer(),
-    );
+    let mut console = stdout.human_console();
     console.emit(&rows).unwrap();
     let text = stdout.text();
     for expected in [
@@ -549,13 +546,7 @@ fn urls_print_one_line_each_with_name_state_and_what_they_wait_for() {
     ]))
     .unwrap();
     let stdout = Capture::default();
-    let mut console = Console::with_writers(
-        false,
-        false,
-        false,
-        stdout.writer(),
-        Capture::default().writer(),
-    );
+    let mut console = stdout.human_console();
     console.emit(&urls).unwrap();
     assert_eq!(
         stdout.text(),

@@ -9,6 +9,7 @@ use crate::{
         Console,
         reports::{AcceptedDeploymentReport, OperationOutcomeReport},
     },
+    support::join_or,
 };
 use clap::{Args, ValueEnum};
 use piqueld_client::{
@@ -357,20 +358,13 @@ impl<T: Args + Target> UrlArgs<T> {
                     .is_some_and(|route| route.as_str() == name)
             })
             .ok_or_else(|| {
-                let names: Vec<_> = urls
-                    .iter()
-                    .filter_map(|url| url.name.as_ref().map(ToString::to_string))
-                    .collect();
+                let names = urls.iter().filter_map(|url| url.name.as_ref());
                 CliError::new(
                     ErrorKind::Input,
                     format!(
                         "{} renders no route named {name:?}; its named routes: {}",
                         environment.name,
-                        if names.is_empty() {
-                            "none".into()
-                        } else {
-                            names.join(", ")
-                        }
+                        join_or(names, "none")
                     ),
                 )
             })?;
