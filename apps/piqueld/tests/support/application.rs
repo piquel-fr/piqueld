@@ -3,10 +3,12 @@
 use piqueld::api::{ApplicationError, ApplicationService, Mutation, MutationResponse};
 use piqueld::application::RuntimeBoundary;
 use piqueld::store::{Store, StoreError};
+use piqueld_core::api::SavedApplication;
 use piqueld_core::manifest::ValidatedTemplate;
 use piqueld_core::{EnvironmentId, Operation};
 use std::sync::Arc;
 
+/// An [`ApplicationService`] with shorthands for the daemon's own mutations.
 pub struct TestApplications {
     service: ApplicationService,
     store: Arc<Store>,
@@ -45,32 +47,25 @@ impl TestApplications {
         &self,
         manifest: ValidatedTemplate,
         expected_generation: Option<u64>,
-    ) -> Result<piqueld_core::api::SavedApplication, ApplicationError> {
+    ) -> Result<SavedApplication, ApplicationError> {
         self.save_configuration(manifest, expected_generation, false)
             .await
     }
 
+    /// Saves `manifest` over the application of the same name, if any.
     async fn save_configuration(
         &self,
         manifest: ValidatedTemplate,
         expected_generation: Option<u64>,
         deploy: bool,
-    ) -> Result<piqueld_core::api::SavedApplication, ApplicationError> {
+    ) -> Result<SavedApplication, ApplicationError> {
         let identity = self
             .store
             .find_by_name(manifest.name().as_str())
             .await?
             .map(|stored| stored.application.id().to_string());
-        let MutationResponse::Saved(saved) = self
-            .service
-            .accept(
-                piqueld::api::Actor::Daemon,
-                Mutation::save(manifest, identity, deploy),
-                expected_generation,
-                expected_generation.is_none(),
-                None,
-            )
-            .await?
+        let mutation = Mutation::save(manifest, identity, deploy);
+        let MutationResponse::Saved(saved) = self.accept(mutation, expected_generation).await?
         else {
             return Err(StoreError::Corrupt.into());
         };
@@ -93,19 +88,11 @@ impl TestApplications {
         expected_generation: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
         let application = self.store.get(id).await?.environment.application_id;
-        let MutationResponse::Deleted(deleted) = self
-            .service
-            .accept(
-                piqueld::api::Actor::Daemon,
-                Mutation::DeleteApplication {
-                    id: application,
-                    environments: Vec::new(),
-                },
-                expected_generation,
-                expected_generation.is_none(),
-                None,
-            )
-            .await?
+        let mutation = Mutation::DeleteApplication {
+            id: application,
+            environments: Vec::new(),
+        };
+        let MutationResponse::Deleted(deleted) = self.accept(mutation, expected_generation).await?
         else {
             return Err(StoreError::Corrupt.into());
         };
@@ -122,14 +109,28 @@ impl TestApplications {
             .await
     }
 
-    // Controller scenarios that omit a revision deliberately replace current intent.
+    /// Accepts `mutation` and returns the operation it requested.
     async fn submit(
         &self,
         mutation: Mutation,
         expected_generation: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        let MutationResponse::Operation(accepted) = self
-            .service
+        let MutationResponse::Operation(accepted) =
+            self.accept(mutation, expected_generation).await?
+        else {
+            return Err(StoreError::Corrupt.into());
+        };
+        self.service.operation(&accepted.operation_id).await
+    }
+
+    /// Accepts `mutation` as the daemon. Controller scenarios that omit a
+    /// revision deliberately replace current intent.
+    async fn accept(
+        &self,
+        mutation: Mutation,
+        expected_generation: Option<u64>,
+    ) -> Result<MutationResponse, ApplicationError> {
+        self.service
             .accept(
                 piqueld::api::Actor::Daemon,
                 mutation,
@@ -137,10 +138,6 @@ impl TestApplications {
                 expected_generation.is_none(),
                 None,
             )
-            .await?
-        else {
-            return Err(StoreError::Corrupt.into());
-        };
-        self.service.operation(&accepted.operation_id).await
+            .await
     }
 }
