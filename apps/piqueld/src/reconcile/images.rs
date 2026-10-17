@@ -205,8 +205,9 @@ impl<D: DockerApi> Controller<D> {
                 Ok(self.docker.remove_image(instance, &image.id).await?)
             })
             .await;
-        // Unlike `close_action`, a failed removal is kept apart from a
-        // failure to journal it: only the latter fails cleanup.
+        // Unlike `close_action`, only failing to open or close the journal
+        // action fails cleanup; a removal that fails, or whose intent can't
+        // be recorded, keeps the image.
         self.store
             .finish_action(
                 &journal,
