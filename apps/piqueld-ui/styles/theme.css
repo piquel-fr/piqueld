@@ -92,6 +92,7 @@
     }
 
     fieldset {
+        border: 0;
         min-width: 0;
     }
 }
