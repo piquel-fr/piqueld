@@ -509,33 +509,23 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{CredentialKind, NewCredential, OperationState};
+    use super::super::testing::template;
+    use super::super::{CredentialKind, NewCredential};
     use super::*;
     use crate::api::{Actor, Mutation, MutationResponse};
     use piqueld_core::access::{AppPermission, Preset};
 
-    /// The actor `alice`'s `session` credential records as.
+    /// The actor `alice`'s session (see `Store::seed_caller`) records as.
     fn alice() -> piqueld_core::EventActor {
         piqueld_core::EventActor::Account {
             user_id: "alice".into(),
-            credential_id: Some("session".into()),
+            credential_id: Some("alice".into()),
         }
     }
 
     /// Saves an empty application named `name`, returning its ID.
     async fn application(store: &Store, name: &str) -> ApplicationId {
-        let manifest = piqueld_core::manifest::parse_template_toml(&format!(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[spec]"
-        ))
-        .unwrap();
-        let mutation = Mutation::save(manifest, None, false);
-        let (MutationResponse::Saved(saved), _) = store
-            .accept(Actor::Daemon, mutation, Some(0), false, None)
-            .await
-            .unwrap()
-        else {
-            panic!("saved application");
-        };
+        let saved = store.save_template(template(name, "[spec]"), false).await;
         ApplicationId::parse(saved.application_id).unwrap()
     }
 
@@ -543,8 +533,7 @@ mod tests {
     /// there, unless it was created through a scoped credential.
     #[tokio::test]
     async fn only_unscoped_creators_receive_creator_grants() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let blog = application(&store, "blog").await;
         let user = piqueld_core::auth::User {
             id: "alice".into(),
@@ -574,17 +563,18 @@ mod tests {
                 .unwrap();
         }
         let create = |credential_id, name: &str| {
-            let manifest = piqueld_core::manifest::parse_template_toml(&format!(
-                "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[spec]"
-            ))
-            .unwrap();
+            let manifest = template(name, "[spec]");
             let actor = Actor::Account(Caller {
                 credential_id,
                 user_id: "alice",
             });
             let store = &store;
             async move {
-                let mutation = Mutation::save(manifest, None, false);
+                let mutation = Mutation::Save {
+                    application: Box::new(manifest),
+                    expected_application_id: None,
+                    deploy: false,
+                };
                 let (MutationResponse::Saved(saved), _) = store
                     .accept(actor, mutation, Some(0), false, None)
                     .await
@@ -620,31 +610,9 @@ mod tests {
     async fn operations_and_their_events_record_the_caller() {
         use crate::store::Visibility;
         use piqueld_core::observability::EventFilter;
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let blog = application(&store, "blog").await;
-        let user = piqueld_core::auth::User {
-            id: "alice".into(),
-            username: "alice".into(),
-            display_name: String::new(),
-        };
-        store.seed_auth_user(&user, &Grants::admin()).await;
-        let credential = NewCredential {
-            id: "session".into(),
-            secret_hash: "session".into(),
-            kind: CredentialKind::Cli,
-            name: "session",
-            expires_at: None,
-            grants: None,
-        };
-        store
-            .insert_credential(&user.id, &credential)
-            .await
-            .unwrap();
-        let actor = Actor::Account(Caller {
-            credential_id: "session",
-            user_id: "alice",
-        });
+        let actor = store.seed_caller("alice", &Grants::admin()).await;
         let deploy = Mutation::deploy(EnvironmentId::default_for(&blog));
         let (MutationResponse::Operation(operation), _) =
             store.accept(actor, deploy, None, true, None).await.unwrap()
@@ -661,15 +629,7 @@ mod tests {
             .unwrap()
             .items
             .len();
-        store
-            .transition_operation(
-                &operation.operation_id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&operation.operation_id).await;
         let id = &operation.operation_id;
         let action = store.begin_action(Some(id), "deploy", None).await;
         let action = action.unwrap();
@@ -718,31 +678,9 @@ mod tests {
     async fn environment_mutations_record_the_caller() {
         use crate::store::Visibility;
         use piqueld_core::{EnvironmentName, observability::EventFilter};
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let blog = application(&store, "blog").await;
-        let user = piqueld_core::auth::User {
-            id: "alice".into(),
-            username: "alice".into(),
-            display_name: String::new(),
-        };
-        store.seed_auth_user(&user, &Grants::admin()).await;
-        let credential = NewCredential {
-            id: "session".into(),
-            secret_hash: "session".into(),
-            kind: CredentialKind::Cli,
-            name: "session",
-            expires_at: None,
-            grants: None,
-        };
-        store
-            .insert_credential(&user.id, &credential)
-            .await
-            .unwrap();
-        let actor = Actor::Account(Caller {
-            credential_id: "session",
-            user_id: "alice",
-        });
+        let actor = store.seed_caller("alice", &Grants::admin()).await;
         let filter = EventFilter {
             application_id: Some(blog.to_string()),
             ..EventFilter::default()
@@ -796,30 +734,11 @@ mod tests {
     /// on its own operation only; the superseded one keeps its requester.
     #[tokio::test]
     async fn superseded_operations_keep_their_caller() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let blog = application(&store, "blog").await;
         let mut operations = Vec::new();
         for name in ["alice", "bob"] {
-            let user = piqueld_core::auth::User {
-                id: name.into(),
-                username: name.into(),
-                display_name: String::new(),
-            };
-            store.seed_auth_user(&user, &Grants::admin()).await;
-            let credential = NewCredential {
-                id: name.into(),
-                secret_hash: name.into(),
-                kind: CredentialKind::Cli,
-                name,
-                expires_at: None,
-                grants: None,
-            };
-            store.insert_credential(name, &credential).await.unwrap();
-            let actor = Actor::Account(Caller {
-                credential_id: name,
-                user_id: name,
-            });
+            let actor = store.seed_caller(name, &Grants::admin()).await;
             let deploy = Mutation::deploy(EnvironmentId::default_for(&blog));
             let (MutationResponse::Operation(operation), _) =
                 store.accept(actor, deploy, None, true, None).await.unwrap()
@@ -844,8 +763,7 @@ mod tests {
     /// no access.
     #[tokio::test]
     async fn deleting_an_application_revokes_tokens_left_without_grants() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let blog = application(&store, "blog").await;
         let shop = application(&store, "shop").await;
         let user = piqueld_core::auth::User {
@@ -887,15 +805,7 @@ mod tests {
             panic!("deletion");
         };
         let operation = &deleted.operations[0];
-        store
-            .transition_operation(
-                &operation.operation_id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&operation.operation_id).await;
         let operation = store.operation(&operation.operation_id).await.unwrap();
         store.finish_delete_operation(&operation).await.unwrap();
         assert!(store.credential_owner("blog-only").await.unwrap().is_none());

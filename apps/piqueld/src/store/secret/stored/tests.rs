@@ -10,12 +10,7 @@ use piqueld_core::{
 /// environment's `stripe_key` names (`stripe-dev` unless overridden), and the
 /// generated secret `session`.
 fn template() -> ApplicationTemplate {
-    let mut manifest = piqueld_core::parse_toml(include_str!(
-        "../../../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
-    ))
-    .unwrap()
-    .normalize(ApplicationId::parse("app-stored-test").unwrap())
-    .to_manifest();
+    let mut manifest = crate::store::testing::prebuilt("app-stored-test").to_manifest();
     manifest
         .spec
         .variables
@@ -165,17 +160,11 @@ async fn environments_mount_the_stored_secret_their_variables_name_where_access_
         .unwrap()
         .normalize(application.clone());
     store
-        .accept(
-            Daemon,
-            Mutation::Save {
-                application: Box::new(shared),
-                expected_application_id: Some(application.to_string()),
-                deploy: false,
-            },
-            None,
-            true,
-            None,
-        )
+        .force(Mutation::Save {
+            application: Box::new(shared),
+            expected_application_id: Some(application.to_string()),
+            deploy: false,
+        })
         .await
         .unwrap();
     let production_copy = deploy(&store, &production).await.unwrap()["stripe-dev"].clone();
@@ -309,16 +298,10 @@ async fn access_lists_keep_renamed_environments_and_drop_deleted_ones() {
 
     // A renamed environment keeps its access and is shown by its new name.
     store
-        .accept(
-            Daemon,
-            Mutation::RenameEnvironment {
-                id: staging.clone(),
-                name: EnvironmentName::parse("qa").unwrap(),
-            },
-            None,
-            true,
-            None,
-        )
+        .force(Mutation::RenameEnvironment {
+            id: staging.clone(),
+            name: EnvironmentName::parse("qa").unwrap(),
+        })
         .await
         .unwrap();
     let access = store.stored_secrets(&application).await.unwrap()[0]
@@ -359,25 +342,6 @@ async fn access_lists_keep_renamed_environments_and_drop_deleted_ones() {
     ));
 }
 
-/// A new database `db` in `dir` at schema 20, which predates application stores.
-async fn schema_20(dir: &std::path::Path) -> sqlx::SqlitePool {
-    let options = sqlx::sqlite::SqliteConnectOptions::new()
-        .filename(dir.join("db"))
-        .create_if_missing(true)
-        .foreign_keys(true);
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .unwrap();
-    for (index, migration) in crate::store::MIGRATIONS.iter().take(20).enumerate() {
-        Store::apply_migration(&pool, index + 1, migration)
-            .await
-            .unwrap();
-    }
-    pool
-}
-
 /// A schema-20 database `db` in `dir` with application `app-migrated-01`: its
 /// production environment has the manually set `stripe` (versions 1 and 2,
 /// with the last deployment pinning version 1), the generated `session`,
@@ -395,7 +359,8 @@ async fn schema_20_with_manual_secrets(
     dir: &std::path::Path,
 ) -> (NormalizedApplication, EnvironmentId, EnvironmentId) {
     use crate::secrets::{SecretCipher, SecretOwner};
-    let pool = schema_20(dir).await;
+    // Schema 20 predates application stores.
+    let pool = Store::migrated(&dir.join("db"), 20).await;
     // `stripe` is set manually; `session` is declared, so it was generated.
     let mut manifest = template().to_manifest();
     manifest.spec.variables.clear();

@@ -555,7 +555,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::api::{Mutation, MutationResponse};
-    use piqueld_core::manifest::parse_template_toml;
+    use crate::store::testing::template;
     use piqueld_core::sync::{RepositorySync, SyncedHead};
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -565,23 +565,11 @@ mod tests {
     /// Saves the repository-backed `notes`, polling `main`, and returns its
     /// only environment, opted in and never deployed.
     async fn notes(store: &Store) -> EnvironmentId {
-        let template = parse_template_toml(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec.manifest]\npath='app.toml'\nsync={mode='poll'}\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='main'\n",
-        )
-        .unwrap()
-        .normalize(ApplicationId::parse("app-pending-01").unwrap());
-        let mutation = Mutation::Save {
-            application: Box::new(template),
-            expected_application_id: None,
-            deploy: false,
-        };
-        let (MutationResponse::Saved(saved), _) = store
-            .accept(Actor::Daemon, mutation, Some(0), false, None)
-            .await
-            .unwrap()
-        else {
-            panic!("saved")
-        };
+        let template = template(
+            "notes",
+            "[spec.manifest]\npath='app.toml'\nsync={mode='poll'}\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='main'\n",
+        );
+        let saved = store.save_template(template, false).await;
         let application = ApplicationId::parse(saved.application_id).unwrap();
         let id = store.environments(&application).await.unwrap()[0]
             .id
@@ -651,8 +639,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_moved_head_deploys_once_by_its_actor_and_pushes_coalesce_while_deploying() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let id = notes(&store).await;
         store.deployed_at(&id, A).await;
 
@@ -740,8 +727,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_rollback_after_a_manual_deployment_deploys_the_branch_head_again() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let id = notes(&store).await;
         store.deployed_at(&id, A).await;
         assert!(matches!(sync(&store, &id, A).await, SyncOutcome::Current));
@@ -770,17 +756,13 @@ mod tests {
         // A rollback while a deployment by hand runs waits for it: that
         // deployment may still record another head.
         let deploy = Mutation::deploy(id.clone());
-        store
-            .accept(Actor::Daemon, deploy, None, true, None)
-            .await
-            .unwrap();
+        store.force(deploy).await.unwrap();
         assert!(matches!(sync(&store, &id, A).await, SyncOutcome::Busy));
     }
 
     #[tokio::test]
     async fn nothing_follows_before_its_first_deployment_nor_while_pinned_or_opted_out() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let id = notes(&store).await;
 
         // Never deployed: pushes do nothing, not even record a head.
@@ -789,10 +771,7 @@ mod tests {
         // While its first deployment runs, a push waits for it, since that
         // records the head it fetched; one that failed records nothing.
         let deploy = Mutation::deploy(id.clone());
-        store
-            .accept(Actor::Daemon, deploy, None, true, None)
-            .await
-            .unwrap();
+        store.force(deploy).await.unwrap();
         assert!(matches!(sync(&store, &id, A).await, SyncOutcome::Busy));
         sqlx::query("UPDATE operations SET state='failed',finished_at_ms=1,error_code='manifest_invalid',error_message='invalid' WHERE environment_id=?1")
             .bind(id.as_str())
@@ -829,20 +808,14 @@ mod tests {
             id: id.clone(),
             branch: piqueld_core::TrackedBranch::new("main".into(), Some(B.into())).unwrap(),
         };
-        store
-            .accept(Actor::Daemon, pin, None, true, None)
-            .await
-            .unwrap();
+        store.force(pin).await.unwrap();
         assert!(matches!(sync(&store, &id, C).await, SyncOutcome::Current));
         // Unpinned again, it follows only from its next deployment.
         let unpin = Mutation::SetBranch {
             id: id.clone(),
             branch: piqueld_core::TrackedBranch::new("main".into(), None).unwrap(),
         };
-        store
-            .accept(Actor::Daemon, unpin, None, true, None)
-            .await
-            .unwrap();
+        store.force(unpin).await.unwrap();
         assert!(matches!(sync(&store, &id, C).await, SyncOutcome::Current));
         assert_eq!(operations(&store, &id).await, 2);
     }
@@ -851,15 +824,9 @@ mod tests {
     async fn only_turning_sync_on_or_opting_in_needs_the_permission_to_deploy() {
         use piqueld_core::access::Scope;
         use piqueld_core::edit::ApplicationEdit;
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let id = notes(&store).await;
         let application = store.get(&id).await.unwrap().environment.application_id;
-        let user = piqueld_core::auth::User {
-            id: "alice".into(),
-            username: "alice".into(),
-            display_name: String::new(),
-        };
         let mut grants = piqueld_core::access::Grants::default();
         grants
             .grant(
@@ -867,23 +834,7 @@ mod tests {
                 &Scope::one(application.clone()),
             )
             .unwrap();
-        store.seed_auth_user(&user, &grants).await;
-        let credential = super::super::NewCredential {
-            id: "session".into(),
-            secret_hash: "session".into(),
-            kind: super::super::CredentialKind::Cli,
-            name: "session",
-            expires_at: None,
-            grants: None,
-        };
-        store
-            .insert_credential(&user.id, &credential)
-            .await
-            .unwrap();
-        let alice = Actor::Account(super::super::Caller {
-            credential_id: "session",
-            user_id: "alice",
-        });
+        let alice = store.seed_caller("alice", &grants).await;
         let edit = |edit| Mutation::Edit {
             id: application.clone(),
             edit: Box::new(edit),
@@ -953,8 +904,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_deployment_records_its_head_only_while_it_follows_that_branch_and_repository() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let id = notes(&store).await;
         store.deployed_at(&id, A).await;
         let record = |url: &str, branch: &str| {
@@ -1013,10 +963,7 @@ mod tests {
             id: id.clone(),
             branch: piqueld_core::TrackedBranch::new("release".into(), None).unwrap(),
         };
-        store
-            .accept(Actor::Daemon, release, None, true, None)
-            .await
-            .unwrap();
+        store.force(release).await.unwrap();
         let queued = store.operation(&queued.operation_id).await.unwrap();
         let input = store.deployment_input(&queued).await.unwrap().unwrap();
         assert_eq!(input.tracked_branch.as_deref(), Some("main"));
@@ -1079,8 +1026,7 @@ mod tests {
     /// branch never pushed, until it is pushed.
     #[tokio::test]
     async fn local_snapshots_stay_until_their_branch_moves_or_is_first_pushed() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let environment = notes(&store).await;
         let application = store
             .get(&environment)

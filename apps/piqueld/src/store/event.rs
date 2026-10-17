@@ -652,13 +652,8 @@ mod tests {
 
     #[tokio::test]
     async fn environment_events_keep_their_application_until_it_is_deleted() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
-        let app = piqueld_core::parse_toml(include_str!(
-            "../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
-        ))
-        .unwrap()
-        .normalize(ApplicationId::parse("app-event-test").unwrap());
+        let (_temp, store) = Store::temporary().await;
+        let app = crate::store::testing::prebuilt("app-event-test");
         store
             .save_application(&ApplicationTemplate::from(&app), None, None)
             .await
@@ -703,8 +698,7 @@ mod tests {
 
     #[tokio::test]
     async fn history_pages_use_indexes_without_sorting_retained_events() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         for descending in [false, true] {
             for (filter, index) in [
                 (EventFilter::default(), "INTEGER PRIMARY KEY"),

@@ -1,22 +1,15 @@
 use super::*;
 use crate::api::Actor::Daemon;
 use crate::api::{Mutation, MutationResponse};
+use crate::store::testing::prebuilt;
 use piqueld_core::{
-    EnvironmentName, InstanceId, NormalizedApplication, OperationState, ResolutionSet,
-    ResolvedSource, ServiceName, compile_application, manifest::ApplicationTemplate,
+    EnvironmentName, InstanceId, NormalizedApplication, ResolutionSet, ResolvedSource, ServiceName,
+    compile_application, manifest::ApplicationTemplate,
 };
 use std::collections::BTreeMap;
 
+/// The image `web` of the [`prebuilt`] application pulls.
 const IMAGE: &str = "ghcr.io/example/notes:1.4.0";
-
-/// The `notes` application pulling `web` from [`IMAGE`].
-fn notes(id: &str) -> NormalizedApplication {
-    piqueld_core::parse_toml(include_str!(
-        "../../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
-    ))
-    .unwrap()
-    .normalize(ApplicationId::parse(id).unwrap())
-}
 
 /// `IMAGE` resolved to a digest of 64 `byte`s.
 fn pulled(byte: char) -> ResolvedSource {
@@ -51,24 +44,8 @@ fn target(
 
 /// Saves `notes` with a `staging` environment next to `production`.
 async fn save_with_staging(store: &Store) -> (ApplicationId, EnvironmentId, EnvironmentId) {
-    let template = ApplicationTemplate::from(&notes("app-notes-test"));
-    let (MutationResponse::Saved(saved), _) = store
-        .accept(
-            Daemon,
-            Mutation::save(
-                template.to_manifest().validate_template().unwrap(),
-                None,
-                false,
-            ),
-            Some(0),
-            false,
-            None,
-        )
-        .await
-        .unwrap()
-    else {
-        panic!("saved")
-    };
+    let template = ApplicationTemplate::from(&prebuilt("app-notes-test"));
+    let saved = store.save_template(template, false).await;
     let application = ApplicationId::parse(saved.application_id.as_str()).unwrap();
     let create = Mutation::CreateEnvironment {
         application: application.clone(),
@@ -90,15 +67,7 @@ async fn save_with_staging(store: &Store) -> (ApplicationId, EnvironmentId, Envi
 /// returning the deployment's ID.
 async fn prepare(store: &Store, environment: &EnvironmentId, web: ResolvedSource) -> String {
     let operation = store.request_deploy(environment, None).await.unwrap();
-    store
-        .transition_operation(
-            &operation.id,
-            OperationState::Requested,
-            OperationState::Running,
-            None,
-        )
-        .await
-        .unwrap();
+    store.mark_running(&operation.id).await;
     let rendering = store
         .deployment_snapshot(&operation.id)
         .await
@@ -132,8 +101,7 @@ async fn deployment_releases(
 
 #[tokio::test]
 async fn identical_preparations_share_a_release_that_outlives_its_environment() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let (application, production, staging) = save_with_staging(&store).await;
     let first = prepare(&store, &production, pulled('a')).await;
     let shared = prepare(&store, &staging, pulled('a')).await;
@@ -161,15 +129,7 @@ async fn identical_preparations_share_a_release_that_outlives_its_environment() 
     );
 
     let deletion = store.request_delete(&staging).await.unwrap();
-    store
-        .transition_operation(
-            &deletion.id,
-            OperationState::Requested,
-            OperationState::Running,
-            None,
-        )
-        .await
-        .unwrap();
+    store.mark_running(&deletion.id).await;
     store.finish_delete_operation(&deletion).await.unwrap();
     assert!(matches!(
         store.get(&staging).await,
@@ -190,26 +150,13 @@ async fn identical_preparations_share_a_release_that_outlives_its_environment() 
 /// at the same digest, and production's newer deployment, never prepared.
 /// Production's prepared deployment is its current target.
 async fn schema_21_with_prepared_deployments(dir: &std::path::Path) -> ApplicationId {
-    let options = sqlx::sqlite::SqliteConnectOptions::new()
-        .filename(dir.join("db"))
-        .create_if_missing(true)
-        .foreign_keys(true);
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .unwrap();
-    for (index, migration) in crate::store::MIGRATIONS.iter().take(21).enumerate() {
-        Store::apply_migration(&pool, index + 1, migration)
-            .await
-            .unwrap();
-    }
+    let pool = Store::migrated(&dir.join("db"), 21).await;
     let instance: String =
         sqlx::query_scalar("SELECT instance_id FROM instance_metadata WHERE singleton=1")
             .fetch_one(&pool)
             .await
             .unwrap();
-    let application = notes("app-migrated-01");
+    let application = prebuilt("app-migrated-01");
     let (id, production, staging) = (
         application.id().as_str(),
         EnvironmentId::default_for(application.id()),

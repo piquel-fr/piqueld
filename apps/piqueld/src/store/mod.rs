@@ -1089,6 +1089,9 @@ impl StoredEnvironmentRow {
 }
 
 #[cfg(test)]
+mod testing;
+
+#[cfg(test)]
 mod observability_tests;
 
 #[cfg(test)]
@@ -1106,20 +1109,7 @@ mod tests {
         for committed in 0..=MIGRATIONS.len() {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("migration.db");
-            let options = SqliteConnectOptions::new()
-                .filename(&path)
-                .create_if_missing(true)
-                .foreign_keys(true);
-            let pool = SqlitePoolOptions::new()
-                .max_connections(1)
-                .connect_with(options)
-                .await
-                .unwrap();
-            for (index, migration) in MIGRATIONS.iter().take(committed).enumerate() {
-                Store::apply_migration(&pool, index + 1, migration)
-                    .await
-                    .unwrap();
-            }
+            let pool = Store::migrated(&path, committed).await;
             assert!(
                 Store::apply_migration(
                     &pool,
