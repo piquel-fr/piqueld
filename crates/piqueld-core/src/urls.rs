@@ -171,9 +171,7 @@ impl RouteUrl {
             pending,
         }
     }
-}
 
-impl RouteUrl {
     /// What keeps it pending, e.g. `ingress, DNS pending`; empty once ready.
     #[must_use]
     pub fn waiting_for(&self) -> String {

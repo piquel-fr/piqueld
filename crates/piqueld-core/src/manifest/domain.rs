@@ -262,6 +262,18 @@ pub enum SecretSource {
     Stored,
 }
 
+impl SecretSource {
+    /// Where the value of the secret `name` comes from, given the secrets
+    /// `spec.secrets` declares.
+    pub(super) fn of(name: &str, declared: &[input::SecretDeclaration]) -> Self {
+        if declared.iter().any(|secret| secret.name == name) {
+            Self::Generated
+        } else {
+            Self::Stored
+        }
+    }
+}
+
 /// Validated named volume.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 pub struct ValidatedVolume {
@@ -589,11 +601,7 @@ impl ValidatedSpec {
     /// Where the value of the secret `name` comes from.
     #[must_use]
     pub fn secret_source(&self, name: &str) -> SecretSource {
-        if self.secrets.iter().any(|secret| secret.name == name) {
-            SecretSource::Generated
-        } else {
-            SecretSource::Stored
-        }
+        SecretSource::of(name, &self.secrets)
     }
 
     /// Converts back to the editable input shape used for export and plans.

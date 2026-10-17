@@ -298,9 +298,7 @@ impl ApplicationSpec {
             manages_source: config.sets_source(),
         })
     }
-}
 
-impl ApplicationSpec {
     /// What saving this manifest, which declares `declarations`, changes in
     /// an application's `environments`, or creates for a new application
     /// (`None`): one that declares none gets `production`.
@@ -374,9 +372,9 @@ impl EnvironmentChange {
     /// What converging `environments` (never previews) to `declarations`
     /// changes, in the order of `declarations`, then the environments it
     /// leaves undeclared. Existing environments change only where their
-    /// declaration manages their source (see [`Declaration::manages_source`]). Without declarations there is nothing to converge.
-    /// Environments being deleted are gone: a declaration of one's name is
-    /// created once it is.
+    /// declaration manages their source (see [`Declaration::manages_source`]).
+    /// Without declarations there is nothing to converge. Environments being
+    /// deleted are gone: a declaration of one's name is created once it is.
     #[must_use]
     pub fn between(declarations: &[Declaration], environments: &[EnvironmentView]) -> Vec<Self> {
         if declarations.is_empty() {
@@ -461,9 +459,7 @@ impl EnvironmentChange {
             | Self::Undeclared { environment } => environment,
         }
     }
-}
 
-impl EnvironmentChange {
     /// Describes the change, without the environment's name.
     ///
     /// ```text

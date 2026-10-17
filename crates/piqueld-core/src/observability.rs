@@ -173,6 +173,7 @@ pub struct ActionDuration {
     /// Mean duration in milliseconds.
     pub mean_ms: f64,
 }
+
 /// Frequency of a diagnostic classification.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct FailureCount {
@@ -181,6 +182,7 @@ pub struct FailureCount {
     /// Recorded occurrences.
     pub count: i64,
 }
+
 /// Analytics derived from durable records within a selected time interval.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
 pub struct DeploymentAnalytics {
