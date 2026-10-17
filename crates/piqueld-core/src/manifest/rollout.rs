@@ -1,6 +1,7 @@
 //! Per-service rollout settings and the update policy they resolve to.
 
 use super::variables::Typed;
+use crate::names::string_enum;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -47,24 +48,26 @@ impl From<ValidatedRollout> for Rollout {
     }
 }
 
-/// Whether Docker stops a task before or after starting its replacement.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(rename_all = "kebab-case")]
-pub enum RolloutOrder {
-    /// Stop the old task first: tasks never overlap, at the cost of a short downtime.
-    StopFirst,
-    /// Start the replacement first: no downtime, but old and new tasks briefly overlap.
-    StartFirst,
+string_enum! {
+    #[serde]
+    /// Whether Docker stops a task before or after starting its replacement.
+    pub enum RolloutOrder {
+        /// Stop the old task first: tasks never overlap, at the cost of a short downtime.
+        StopFirst => "stop-first",
+        /// Start the replacement first: no downtime, but old and new tasks briefly overlap.
+        StartFirst => "start-first",
+    }
 }
 
-/// Where a service's effective update order comes from.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RolloutOrderSource {
-    /// Derived from the service's mounts.
-    Derived,
-    /// Set in the service's `rollout` block.
-    Explicit,
+string_enum! {
+    #[serde]
+    /// Where a service's effective update order comes from.
+    pub enum RolloutOrderSource {
+        /// Derived from the service's mounts.
+        Derived => "derived",
+        /// Set in the service's `rollout` block.
+        Explicit => "explicit",
+    }
 }
 
 /// The update policy Docker applies when it replaces a service's tasks.
@@ -128,43 +131,12 @@ impl ValidatedRollout {
     }
 }
 
-impl RolloutOrder {
-    /// The manifest spelling of this order.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::StopFirst => "stop-first",
-            Self::StartFirst => "start-first",
-        }
-    }
-}
-
-impl RolloutOrderSource {
-    /// Lowercase label shown next to an effective order.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Derived => "derived",
-            Self::Explicit => "explicit",
-        }
-    }
-}
-
-impl std::fmt::Display for RolloutOrder {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
 /// Parses the manifest spelling, e.g. a CLI flag value.
 impl std::str::FromStr for RolloutOrder {
     type Err = &'static str;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        [Self::StopFirst, Self::StartFirst]
-            .into_iter()
-            .find(|order| order.as_str() == value)
-            .ok_or("rollout order must be \"stop-first\" or \"start-first\"")
+        Self::parse(value).ok_or("rollout order must be \"stop-first\" or \"start-first\"")
     }
 }
 

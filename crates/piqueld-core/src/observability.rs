@@ -1,25 +1,18 @@
 //! Stable, sanitized observability contracts shared by daemon and clients.
+use crate::names::string_enum;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Ownership of historical data, independent of its contextual application and environment.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum EventScope {
-    /// Removed when the application is deleted.
-    #[default]
-    Application,
-    /// Retained under the daemon history policy.
-    Daemon,
-}
-impl EventScope {
-    /// Storage representation.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Application => "application",
-            Self::Daemon => "daemon",
-        }
+string_enum! {
+    #[serde]
+    /// Ownership of historical data, independent of its contextual application and environment.
+    #[derive(Default)]
+    pub enum EventScope {
+        /// Removed when the application is deleted.
+        #[default]
+        Application => "application",
+        /// Retained under the daemon history policy.
+        Daemon => "daemon",
     }
 }
 
@@ -107,40 +100,10 @@ pub struct DaemonStats {
     pub failed_deliveries: i64,
 }
 
-// Declares a string-backed enum whose serde names, `as_str`, `parse`, and `Display`
-// all come from one `Variant => "wire"` list, keeping storage and API values in sync.
-macro_rules! notification_values {
-    ($(#[$meta:meta])* $name:ident { $($(#[$variant_meta:meta])* $variant:ident => $value:literal),+ $(,)? }) => {
-        $(#[$meta])*
-        #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, ToSchema)]
-        #[serde(rename_all = "snake_case")]
-        pub enum $name {
-            $($(#[$variant_meta])* #[serde(rename = $value)] $variant),+
-        }
-        impl $name {
-            /// Every value, in declaration order.
-            pub const ALL: &[Self] = &[$(Self::$variant),+];
-            /// Stable storage and wire representation.
-            #[must_use]
-            pub const fn as_str(self) -> &'static str {
-                match self { $(Self::$variant => $value),+ }
-            }
-            /// Parses a stored value, rejecting unknown categories or states.
-            #[must_use]
-            pub fn parse(value: &str) -> Option<Self> {
-                match value { $($value => Some(Self::$variant)),+, _ => None }
-            }
-        }
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(self.as_str())
-            }
-        }
-    };
-}
-notification_values! {
+string_enum! {
+    #[serde]
     /// Global notification categories supported by daemon configuration.
-    NotificationCategory {
+    pub enum NotificationCategory {
         /// Source checkout or image build failures.
         BuildFailures => "build_failures",
         /// Failed deployment attempts.
@@ -160,9 +123,10 @@ notification_values! {
         DaemonStarted => "daemon_started",
     }
 }
-notification_values! {
+string_enum! {
+    #[serde]
     /// Lifecycle of a durable webhook delivery.
-    DeliveryState {
+    pub enum DeliveryState {
         /// Waiting for delivery, retry, or its failure notification.
         Pending => "pending",
         /// The receiver acknowledged the delivery.
@@ -209,6 +173,7 @@ pub struct ActionDuration {
     /// Mean duration in milliseconds.
     pub mean_ms: f64,
 }
+
 /// Frequency of a diagnostic classification.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct FailureCount {
@@ -217,6 +182,7 @@ pub struct FailureCount {
     /// Recorded occurrences.
     pub count: i64,
 }
+
 /// Analytics derived from durable records within a selected time interval.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
 pub struct DeploymentAnalytics {

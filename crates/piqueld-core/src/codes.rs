@@ -31,6 +31,18 @@ pub const ROLLOUT_START_FIRST_WRITABLE_VOLUME: &str = "rollout_start_first_writa
 pub const REPLICAS_OUT_OF_RANGE: &str = "replicas_out_of_range";
 /// Image reference is not a safe registry reference.
 pub const IMAGE_INVALID: &str = "image_invalid";
+/// Git repository URL embeds credentials.
+pub const GIT_CREDENTIALS_INLINE: &str = "git_credentials_inline";
+/// Git repository URL is empty, oversized, or option-like.
+pub const GIT_REPOSITORY_INVALID: &str = "git_repository_invalid";
+/// Git branch is not a valid branch name.
+pub const GIT_BRANCH_INVALID: &str = "git_branch_invalid";
+/// Git commit is not a full lowercase hexadecimal hash.
+pub const GIT_COMMIT_INVALID: &str = "git_commit_invalid";
+/// Repository path is not relative or leaves the repository.
+pub const REPOSITORY_PATH_INVALID: &str = "repository_path_invalid";
+/// Repository poll interval is outside its supported range.
+pub const SYNC_INTERVAL_INVALID: &str = "sync_interval_invalid";
 /// Environment name violates its alphabet rule.
 pub const ENVIRONMENT_NAME_INVALID: &str = "environment_name_invalid";
 /// Environment value contains forbidden bytes.
@@ -95,8 +107,35 @@ pub const VOLUME_COUNT_EXCESSIVE: &str = "volume_count_excessive";
 pub const JOB_COUNT_EXCESSIVE: &str = "job_count_excessive";
 /// The daemon could not observe an environment's runtime.
 pub const RUNTIME_UNAVAILABLE: &str = "runtime_unavailable";
+/// Application declares more routes than allowed.
+pub const ROUTES_LIMIT: &str = "routes_limit";
 /// Route name is used by another route of the application.
 pub const ROUTE_NAME_DUPLICATE: &str = "route_name_duplicate";
+/// Route hostname is not an exact public hostname or a wildcard of one.
+pub const ROUTE_HOSTNAME_INVALID: &str = "route_hostname_invalid";
+/// Route hostname is used by another route of the application.
+pub const ROUTE_HOSTNAME_DUPLICATE: &str = "route_hostname_duplicate";
+/// Route sets neither, or both, a service and port and a redirect.
+pub const ROUTE_TARGET_INVALID: &str = "route_target_invalid";
+/// Route references an undeclared service.
+pub const ROUTE_SERVICE_MISSING: &str = "route_service_missing";
+/// Route backend port is zero.
+pub const ROUTE_PORT_INVALID: &str = "route_port_invalid";
+/// Redirect destination is not an absolute public `http(s)` URL.
+pub const ROUTE_REDIRECT_INVALID: &str = "route_redirect_invalid";
+/// Redirect status is not a supported redirect code.
+pub const ROUTE_REDIRECT_STATUS_INVALID: &str = "route_redirect_status_invalid";
+/// Redirect destination is a hostname the route serves itself.
+pub const ROUTE_REDIRECT_LOOP: &str = "route_redirect_loop";
+/// Application declares more generated secrets, or a service more secret
+/// mounts, than allowed.
+pub const SECRETS_EXCESSIVE: &str = "secrets_excessive";
+/// Secret target is not a unique file path under `/run/secrets`.
+pub const SECRET_TARGET_INVALID: &str = "secret_target_invalid";
+/// Generated secret name is duplicated.
+pub const SECRET_NAME_DUPLICATE: &str = "secret_name_duplicate";
+/// Generated secret uses an unsupported byte count or key size.
+pub const SECRET_GENERATOR_INVALID: &str = "secret_generator_invalid";
 /// Job logical name is duplicated.
 pub const JOB_NAME_DUPLICATE: &str = "job_name_duplicate";
 /// Job references an undeclared service.
@@ -184,6 +223,8 @@ pub const FILE_TOTAL_EXCESSIVE: &str = "file_total_excessive";
 
 /// Service source has no immutable resolution yet.
 pub const SOURCE_UNRESOLVED: &str = "source_unresolved";
+/// A mounted secret has no pinned Docker secret version yet.
+pub const SECRET_UNRESOLVED: &str = "secret_unresolved";
 /// Resolved source does not immutably match the requested service source.
 pub const SOURCE_RESOLUTION_MISMATCH: &str = "source_resolution_mismatch";
 /// A repository file a service mounts was not captured with its manifest.

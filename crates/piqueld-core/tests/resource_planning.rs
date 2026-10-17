@@ -27,7 +27,7 @@ fn instance() -> InstanceId {
 
 fn resolutions() -> ResolutionSet {
     ResolutionSet {
-        secret_names: std::collections::BTreeMap::default(),
+        secret_names: BTreeMap::new(),
         sources: [(
             piqueld_core::ServiceName::parse("web").unwrap(),
             ResolvedSource::Image {

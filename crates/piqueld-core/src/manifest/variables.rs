@@ -8,9 +8,13 @@
 //! [`super::NormalizedApplication`].
 
 use super::{ApplicationSpec, RepositoryManifest, ValidationError, input::Variable};
-use crate::{EnvironmentName, PreviewSlug, codes};
+use crate::{EnvironmentName, PreviewSlug, codes, names::string_enum};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
-use std::{collections::BTreeMap, fmt, str::FromStr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    str::FromStr,
+};
 use utoipa::ToSchema;
 
 const OPEN: &str = "${{";
@@ -117,6 +121,30 @@ impl Template {
     pub fn mentions_reference(text: &str) -> bool {
         text.contains(OPEN)
     }
+
+    /// Reports at `path` the template's first problem: a malformed
+    /// reference, or the first reference `problem` rejects with a code and
+    /// message. One problem per value bounds the errors a manifest reports.
+    fn check(
+        &self,
+        path: &str,
+        errors: &mut Vec<ValidationError>,
+        problem: impl Fn(Reference) -> Option<(&'static str, String)>,
+    ) {
+        match self.segments() {
+            Err(source) => errors.push(source.at(path)),
+            Ok(segments) => {
+                if let Some((code, message)) =
+                    segments.into_iter().find_map(|segment| match segment {
+                        Segment::Reference(reference) => problem(reference),
+                        Segment::Text(_) => None,
+                    })
+                {
+                    errors.push(ValidationError::new(code, path, message));
+                }
+            }
+        }
+    }
 }
 
 impl From<&str> for Template {
@@ -151,47 +179,27 @@ impl fmt::Display for Template {
     }
 }
 
-/// A system variable, set by piqueld for every rendering.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum SystemVariable {
-    /// `app.name`: the application name.
-    AppName,
-    /// `env.name`: the environment name.
-    EnvName,
-    /// `env.slug`: a DNS-safe identifier of the environment.
-    EnvSlug,
-    /// `git.branch`: the branch the manifest was read from.
-    GitBranch,
-    /// `git.sha`: the commit the manifest was read from.
-    GitSha,
-    /// `deployment.id`: the deployment being captured.
-    DeploymentId,
+string_enum! {
+    /// A system variable, set by piqueld for every rendering, by its
+    /// reference spelling.
+    #[derive(Hash, Ord, PartialOrd)]
+    pub enum SystemVariable {
+        /// `app.name`: the application name.
+        AppName => "app.name",
+        /// `env.name`: the environment name.
+        EnvName => "env.name",
+        /// `env.slug`: a DNS-safe identifier of the environment.
+        EnvSlug => "env.slug",
+        /// `git.branch`: the branch the manifest was read from.
+        GitBranch => "git.branch",
+        /// `git.sha`: the commit the manifest was read from.
+        GitSha => "git.sha",
+        /// `deployment.id`: the deployment being captured.
+        DeploymentId => "deployment.id",
+    }
 }
 
 impl SystemVariable {
-    /// Every system variable.
-    pub const ALL: [Self; 6] = [
-        Self::AppName,
-        Self::EnvName,
-        Self::EnvSlug,
-        Self::GitBranch,
-        Self::GitSha,
-        Self::DeploymentId,
-    ];
-
-    /// The reference spelling, e.g. `env.name`.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::AppName => "app.name",
-            Self::EnvName => "env.name",
-            Self::EnvSlug => "env.slug",
-            Self::GitBranch => "git.branch",
-            Self::GitSha => "git.sha",
-            Self::DeploymentId => "deployment.id",
-        }
-    }
-
     /// Whether only repository-backed manifests have this variable.
     const fn needs_repository(self) -> bool {
         matches!(self, Self::GitBranch | Self::GitSha)
@@ -219,17 +227,13 @@ impl Reference {
         match namespace {
             "vars" => Ok(Self::Variable(name.into())),
             "secrets" => Err(TemplateError::Reserved(echo(inner))),
-            "app" | "env" | "git" | "deployment" => SystemVariable::ALL
-                .into_iter()
-                .find(|variable| variable.as_str() == inner)
+            "app" | "env" | "git" | "deployment" => SystemVariable::parse(inner)
                 .map(Self::System)
                 .ok_or_else(|| TemplateError::UnknownSystemVariable(echo(inner))),
             _ => Err(TemplateError::UnknownNamespace(echo(namespace))),
         }
     }
-}
 
-impl Reference {
     /// The error for `git.*` unless the manifest is repository-backed.
     fn unavailable(&self, repository: bool) -> Option<(&'static str, String)> {
         matches!(self, Self::System(variable) if variable.needs_repository() && !repository).then(
@@ -311,6 +315,11 @@ impl TemplateError {
             Self::UnknownNamespace(_) => codes::VARIABLE_NAMESPACE_UNKNOWN,
             Self::UnknownSystemVariable(_) => codes::VARIABLE_UNKNOWN,
         }
+    }
+
+    /// This error, reported at the field `path`.
+    fn at(&self, path: &str) -> ValidationError {
+        ValidationError::new(self.code(), path, self.to_string())
     }
 }
 
@@ -823,60 +832,44 @@ impl ApplicationSpec {
                 .values()
                 .any(|config| config.variables.len() > MAX_VARIABLES)
         {
-            error(
-                errors,
+            errors.push(ValidationError::new(
                 codes::VARIABLE_COUNT_EXCESSIVE,
                 "spec.variables",
-                &format!("each variables table may declare at most {MAX_VARIABLES} variables"),
-            );
+                format!("each variables table may declare at most {MAX_VARIABLES} variables"),
+            ));
         }
         if self.environments.len() > MAX_ENVIRONMENTS {
-            error(
-                errors,
+            errors.push(ValidationError::new(
                 codes::VARIABLE_COUNT_EXCESSIVE,
                 "spec.environments",
-                &format!("at most {MAX_ENVIRONMENTS} environments may be configured"),
-            );
+                format!("at most {MAX_ENVIRONMENTS} environments may be configured"),
+            ));
         }
         for (path, name, value) in self.declarations() {
             if !valid_identifier(name) {
-                error(
-                    errors,
+                errors.push(ValidationError::new(
                     codes::VARIABLE_NAME_INVALID,
                     &path,
                     "variable names start with a letter or `_` and use letters, digits, `_`, or `-`, at most 63 bytes",
-                );
+                ));
             }
             let Variable::String(template) = value else {
                 continue;
             };
             if template.as_str().len() > MAX_VALUE_BYTES {
-                error(
-                    errors,
+                errors.push(ValidationError::new(
                     codes::VARIABLE_VALUE_EXCESSIVE,
                     &path,
-                    &format!("variable values must be at most {MAX_VALUE_BYTES} bytes"),
-                );
+                    format!("variable values must be at most {MAX_VALUE_BYTES} bytes"),
+                ));
             }
-            match template.segments() {
-                Err(source) => error(errors, source.code(), &path, &source.to_string()),
-                // The first problem of each value is reported, bounding errors.
-                Ok(segments) => {
-                    let problem = segments.into_iter().find_map(|segment| match segment {
-                        Segment::Reference(reference @ Reference::Variable(_)) => Some((
-                            codes::VARIABLE_NOT_ALLOWED,
-                            format!(
-                                "variables may reference system variables, but not {reference}"
-                            ),
-                        )),
-                        Segment::Reference(reference) => reference.unavailable(repository),
-                        Segment::Text(_) => None,
-                    });
-                    if let Some((code, message)) = problem {
-                        error(errors, code, &path, &message);
-                    }
-                }
-            }
+            template.check(&path, errors, |reference| match reference {
+                Reference::Variable(_) => Some((
+                    codes::VARIABLE_NOT_ALLOWED,
+                    format!("variables may reference system variables, but not {reference}"),
+                )),
+                Reference::System(_) => reference.unavailable(repository),
+            });
         }
         self.check_references(errors);
     }
@@ -888,34 +881,20 @@ impl ApplicationSpec {
         let declared = self
             .declarations()
             .map(|(_, name, _)| name.to_owned())
-            .collect::<std::collections::BTreeSet<_>>();
+            .collect::<BTreeSet<_>>();
         self.visit_values(&mut |path, slot| {
             let Some(template) = slot.template() else {
                 return;
             };
-            match template.segments() {
-                Err(source) => error(errors, source.code(), path, &source.to_string()),
-                // The first problem of each value is reported, bounding errors.
-                Ok(segments) => {
-                    let problem = segments.into_iter().find_map(|segment| match segment {
-                        Segment::Reference(Reference::Variable(name))
-                            if !declared.contains(&name) =>
-                        {
-                            Some((
-                                codes::VARIABLE_UNDECLARED,
-                                format!(
-                                    "vars.{name} is not declared in [spec.variables], any [spec.environments.<name>.variables], or [spec.previews.variables]"
-                                ),
-                            ))
-                        }
-                        Segment::Reference(reference) => reference.unavailable(repository),
-                        Segment::Text(_) => None,
-                    });
-                    if let Some((code, message)) = problem {
-                        error(errors, code, path, &message);
-                    }
-                }
-            }
+            template.check(path, errors, |reference| match reference {
+                Reference::Variable(name) if !declared.contains(&name) => Some((
+                    codes::VARIABLE_UNDECLARED,
+                    format!(
+                        "vars.{name} is not declared in [spec.variables], any [spec.environments.<name>.variables], or [spec.previews.variables]"
+                    ),
+                )),
+                reference => reference.unavailable(repository),
+            });
         });
     }
 
@@ -1065,7 +1044,7 @@ impl<'a> Scope<'a> {
                     ),
                 ),
             };
-            error(errors, code, path, &message);
+            errors.push(ValidationError::new(code, path, &message));
         }
         value
     }
@@ -1080,7 +1059,7 @@ impl<'a> Scope<'a> {
     ) -> Option<String> {
         let segments = template
             .segments()
-            .map_err(|source| error(errors, source.code(), path, &source.to_string()))
+            .map_err(|source| errors.push(source.at(path)))
             .ok()?;
         let mut text = String::new();
         for segment in segments {
@@ -1095,14 +1074,11 @@ impl<'a> Scope<'a> {
             }
             self.rendered.set(rendered + part.len());
             if rendered + part.len() > MAX_RENDERED_BYTES {
-                error(
-                    errors,
+                errors.push(ValidationError::new(
                     codes::VARIABLE_VALUE_EXCESSIVE,
                     path,
-                    &format!(
-                        "the manifest renders to more than {MAX_RENDERED_BYTES} bytes of text"
-                    ),
-                );
+                    format!("the manifest renders to more than {MAX_RENDERED_BYTES} bytes of text"),
+                ));
                 return None;
             }
             text.push_str(&part);
@@ -1131,24 +1107,14 @@ impl<'a> Scope<'a> {
                 if let Some(value) = value {
                     let shown = value.to_string();
                     if let Err(expected) = typed.set(value) {
-                        error(
-                            errors,
+                        errors.push(ValidationError::new(
                             codes::VARIABLE_TYPE_INVALID,
                             path,
-                            &format!("renders to {}, expected {expected}", echo(&shown)),
-                        );
+                            format!("renders to {}, expected {expected}", echo(&shown)),
+                        ));
                     }
                 }
             }
         }
     }
-}
-
-/// Appends one validation error.
-fn error(errors: &mut Vec<ValidationError>, code: &str, path: &str, message: &str) {
-    errors.push(ValidationError {
-        code: code.into(),
-        path: path.into(),
-        message: message.into(),
-    });
 }

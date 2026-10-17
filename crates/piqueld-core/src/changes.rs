@@ -1,11 +1,12 @@
-//! Manifest differences describe user intent without requiring Docker observation.
-use crate::manifest::dependencies::StartupOrder;
+//! What a plan shows before execution: manifest field changes, which
+//! describe user intent without requiring Docker observation, and each
+//! service's effective rollout.
+
 use crate::{
-    ActionKind, ActionReason, DiagnosticSeverity, DockerServiceName, EnvironmentId,
-    NormalizedApplication, PlanAction, PlanDiagnostic,
+    NormalizedApplication,
     api::{ManifestChange, ServiceRolloutView},
-    codes,
-    manifest::{ApplicationSpec, FileSource, JobVolumeAccess, files::content_digest},
+    manifest::{ApplicationSpec, FileSource, files::content_digest},
+    planner::REDACTED,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -39,11 +40,7 @@ impl ManifestChange {
             fields.extend(application.files().iter().map(|(path, content)| {
                 (
                     format!("repository_files.{path}"),
-                    Value::String(format!(
-                        "{} bytes, sha256:{}",
-                        content.len(),
-                        &content_digest(content)[..12]
-                    )),
+                    Value::String(Self::summarize(content)),
                 )
             }));
             fields
@@ -57,18 +54,11 @@ impl ManifestChange {
     /// Every field whose value differs between `old` and `new`, including
     /// fields only one has.
     fn differences(old: &BTreeMap<String, Value>, new: &BTreeMap<String, Value>) -> Vec<Self> {
-        old.keys()
-            .chain(new.keys())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .filter_map(|field| {
-                let before = old.get(field);
-                let after = new.get(field);
-                (before != after).then(|| Self {
-                    field: field.clone(),
-                    before: before.map(|value| Self::display(field, value)),
-                    after: after.map(|value| Self::display(field, value)),
-                })
+        changed_keys(old, new)
+            .map(|field| Self {
+                field: field.clone(),
+                before: old.get(field).map(|value| Self::display(field, value)),
+                after: new.get(field).map(|value| Self::display(field, value)),
             })
             .collect()
     }
@@ -93,6 +83,15 @@ impl ManifestChange {
             )
         });
         exports.chain(imports).collect()
+    }
+
+    /// Summarizes file content by size and digest, e.g. `5 bytes, sha256:2cf24dba5fb0`.
+    fn summarize(content: &str) -> String {
+        format!(
+            "{} bytes, sha256:{}",
+            content.len(),
+            &content_digest(content)[..12]
+        )
     }
 
     /// Flattens a specification into comparable field paths. Services and jobs
@@ -122,11 +121,9 @@ impl ManifestChange {
             for file in &service.files {
                 let source = match &file.source {
                     FileSource::Path(path) => format!("path: {path}"),
-                    FileSource::Content(content) => format!(
-                        "content: {} bytes, sha256:{}",
-                        content.len(),
-                        &content_digest(content)[..12]
-                    ),
+                    FileSource::Content(content) => {
+                        format!("content: {}", Self::summarize(content))
+                    }
                 };
                 fields.insert(
                     format!("services.{}.files.{}", service.name, file.target),
@@ -226,13 +223,26 @@ impl ManifestChange {
             .any(|suffix| field.ends_with(suffix))
             && !value.is_null()
         {
-            "<redacted>".into()
+            REDACTED.into()
         } else if let Some(value) = value.as_str() {
             value.into()
         } else {
             value.to_string()
         }
     }
+}
+
+/// Keys whose values differ between `old` and `new`, including keys only one
+/// has, in key order.
+pub(crate) fn changed_keys<'a, K: Ord, V: PartialEq>(
+    old: &'a BTreeMap<K, V>,
+    new: &'a BTreeMap<K, V>,
+) -> impl Iterator<Item = &'a K> {
+    old.keys()
+        .chain(new.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|key| old.get(*key) != new.get(*key))
 }
 
 impl ServiceRolloutView {
@@ -253,156 +263,6 @@ impl ServiceRolloutView {
                 }
             })
             .collect()
-    }
-}
-
-impl crate::Plan {
-    /// Adds `diagnostics`, keeping every diagnostic in resource order.
-    pub fn warn(&mut self, diagnostics: impl IntoIterator<Item = PlanDiagnostic>) {
-        self.diagnostics.extend(diagnostics);
-        self.sort_diagnostics();
-    }
-
-    /// Warns about each service of `application` whose explicit start-first
-    /// order lets the old and new task write the same volume at once.
-    pub fn warn_rollouts(&mut self, application: &NormalizedApplication) {
-        self.warn(
-            application
-                .spec()
-                .services
-                .iter()
-                .filter(|service| service.rollout_overlaps_writable_volume())
-                .map(|service| PlanDiagnostic {
-                    code: codes::ROLLOUT_START_FIRST_WRITABLE_VOLUME.into(),
-                    severity: DiagnosticSeverity::Warning,
-                    resource: service.name.to_string(),
-                    message: "start-first rollouts briefly run two tasks on the same writable volume; single-writer stores such as PostgreSQL or SQLite can corrupt their data".into(),
-                    blocking: false,
-                }),
-        );
-    }
-
-    /// Warns about each import of `links` that would not connect.
-    pub fn warn_links(&mut self, links: &crate::links::LinkReport) {
-        use crate::links::ImportState;
-        self.warn(links.imports.iter().filter_map(|import| {
-            let reason = match import.state {
-                ImportState::Connected => return None,
-                ImportState::Unavailable => format!(
-                    "no deployed environment {} of {} exports {} to this environment; {} stays unreachable until one does",
-                    import.environment, import.application, import.service, import.alias
-                ),
-                ImportState::Full => format!(
-                    "{} {} already links to {} environments; {} stays unreachable until one of them stops importing from it",
-                    import.application,
-                    import.environment,
-                    crate::links::MAX_IMPORTERS,
-                    import.alias
-                ),
-            };
-            Some(PlanDiagnostic {
-                code: codes::IMPORT_UNCONNECTED.into(),
-                severity: DiagnosticSeverity::Warning,
-                resource: import.alias.clone(),
-                message: reason,
-                blocking: false,
-            })
-        }));
-    }
-
-    /// Lists each job where a deployment runs it: after source resolution,
-    /// networks, volumes, and the job's startup dependencies, before any other
-    /// service change. Warns about the services each exclusive job stops.
-    /// Deployments run jobs before planning their rollout, so only previews
-    /// list them.
-    pub fn add_jobs(&mut self, application: &NormalizedApplication, environment: &EnvironmentId) {
-        let spec = application.spec();
-        let mut remaining = std::mem::take(&mut self.actions);
-        for job in &spec.jobs {
-            let dependencies = spec.services.dependencies_of(job.service.as_str());
-            let dependencies = spec
-                .services
-                .iter()
-                .filter(|service| dependencies.contains(service.name.as_str()))
-                .map(|service| DockerServiceName::for_service(environment, &service.name))
-                .collect::<BTreeSet<_>>();
-            let prepares = |action: &PlanAction| match &action.kind {
-                ActionKind::EnsureService { service } => dependencies.contains(&service.name),
-                ActionKind::WaitForService { service } => dependencies
-                    .iter()
-                    .any(|dependency| dependency.as_str() == service),
-                ActionKind::RemoveService { .. }
-                | ActionKind::RemoveNetwork { .. }
-                | ActionKind::WaitForServiceRemoval { .. } => false,
-                _ => true,
-            };
-            let (prerequisites, rest): (Vec<_>, Vec<_>) = remaining.into_iter().partition(prepares);
-            self.actions.extend(prerequisites);
-            self.actions.push(PlanAction::new(
-                ActionKind::RunJob {
-                    job: job.name.to_string(),
-                },
-                ActionReason::DeploymentJob,
-            ));
-            remaining = rest;
-        }
-        self.actions.extend(remaining);
-        self.warn(spec.jobs.iter().filter_map(|job| {
-            let volumes = spec
-                .services
-                .iter()
-                .find(|service| service.name == job.service)?
-                .mounts
-                .iter()
-                .filter(|mount| job.volume_access == JobVolumeAccess::Exclusive && !mount.read_only)
-                .map(|mount| &mount.volume)
-                .collect::<BTreeSet<_>>();
-            let services = spec
-                .services
-                .iter()
-                .filter(|service| service.mounts.iter().any(|mount| volumes.contains(&mount.volume)))
-                .map(|service| service.name.as_str())
-                .collect::<Vec<_>>();
-            (!services.is_empty()).then(|| PlanDiagnostic {
-                code: codes::JOB_STOPS_SERVICES.into(),
-                severity: DiagnosticSeverity::Warning,
-                resource: job.name.to_string(),
-                message: format!(
-                    "job {} uses its volumes exclusively: {} and any other running service mounting them stop before it runs and stay stopped until the rollout",
-                    job.name,
-                    services.join(", ")
-                ),
-                blocking: false,
-            })
-        }));
-    }
-
-    /// Removes sensitive configuration from an informational preview's runtime actions.
-    /// Execution always recomputes its own plan from the unredacted desired target.
-    pub fn redact_configuration(&mut self) {
-        for action in &mut self.actions {
-            if let crate::ActionKind::EnsureService { service } = &mut action.kind {
-                for value in service
-                    .environment
-                    .values_mut()
-                    .chain(service.command.iter_mut())
-                    .chain(service.arguments.iter_mut())
-                {
-                    "<redacted>".clone_into(value);
-                }
-                match &mut service.healthcheck {
-                    Some(crate::manifest::ValidatedHealthCheck::Command { command, .. }) => {
-                        for value in command {
-                            "<redacted>".clone_into(value);
-                        }
-                    }
-                    Some(crate::manifest::ValidatedHealthCheck::Http { path, .. }) => {
-                        "<redacted>".clone_into(path);
-                    }
-                    None => {}
-                }
-            }
-        }
     }
 }
 
@@ -474,7 +334,7 @@ image="example:1"
                     command: vec![(*command).into()],
                     run: crate::manifest::JobRun::BeforeRollout,
                     timeout_seconds: 300,
-                    volume_access: JobVolumeAccess::ReadOnly,
+                    volume_access: crate::manifest::JobVolumeAccess::ReadOnly,
                 })
                 .collect();
             manifest

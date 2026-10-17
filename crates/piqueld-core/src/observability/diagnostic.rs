@@ -1,31 +1,10 @@
 //! Typed diagnostic policy; wire strings are decoded only at storage/API boundaries.
 use super::{Diagnostic, EventScope};
+use crate::names::string_enum;
 
-// Declares `DiagnosticCode` with a wire string per variant, generating matching
-// `as_str` and `parse` so the two mappings cannot drift apart.
-macro_rules! diagnostic_codes {
-    ($($(#[$meta:meta])* $variant:ident => $wire:literal),+ $(,)?) => {
-        /// Failure classifications produced by this daemon.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum DiagnosticCode {
-            $($(#[$meta])* $variant),+
-        }
-        impl DiagnosticCode {
-            /// Stable storage and API representation.
-            #[must_use]
-            pub const fn as_str(self) -> &'static str {
-                match self { $(Self::$variant => $wire),+ }
-            }
-            /// Decodes a classification read from storage or an API response.
-            #[must_use]
-            pub fn parse(code: &str) -> Option<Self> {
-                match code { $($wire => Some(Self::$variant)),+, _ => None }
-            }
-        }
-    };
-}
-
-diagnostic_codes! {
+string_enum! {
+    /// Failure classifications produced by this daemon.
+    pub enum DiagnosticCode {
     /// Docker Engine cannot be reached.
     DockerUnavailable => "docker_unavailable",
     /// Docker is not an active Swarm manager.
@@ -104,6 +83,7 @@ diagnostic_codes! {
     CertificateRenewalFailed => "certificate_renewal_failed",
     /// A route's DNS records could not be written or deleted.
     DnsRecordsFailed => "dns_records_failed",
+    }
 }
 
 /// Default guidance for failures that need operator investigation.

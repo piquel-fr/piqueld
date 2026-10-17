@@ -125,14 +125,14 @@ impl ApplicationSpec {
                     }
                     Err(invalid) => errors.extend(invalid),
                 },
-                Err(source) => errors.push(ValidationError {
-                    code: codes::NAME_INVALID.into(),
-                    path: "spec.environments".into(),
-                    message: format!(
+                Err(source) => errors.push(ValidationError::new(
+                    codes::NAME_INVALID,
+                    "spec.environments",
+                    format!(
                         "[spec.environments.{}]: {source}",
                         super::variables::echo(name)
                     ),
-                }),
+                )),
             }
         }
         let mut ordered = Vec::with_capacity(declared.len());
@@ -156,26 +156,26 @@ impl ApplicationSpec {
                     if self.environments.contains_key(from) {
                         break;
                     }
-                    errors.push(ValidationError {
-                        code: codes::PROMOTION_SOURCE_INVALID.into(),
-                        path: format!("spec.environments.{}.promote_from", chain[chain.len() - 1]),
-                        message: format!(
+                    errors.push(ValidationError::new(
+                        codes::PROMOTION_SOURCE_INVALID,
+                        format!("spec.environments.{}.promote_from", chain[chain.len() - 1]),
+                        format!(
                             "{from} is not declared: promotion sources are environments of spec.environments"
                         ),
-                    });
+                    ));
                     break;
                 }
                 if let Some(start) = chain.iter().position(|name| *name == from) {
                     let mut cycle = chain[start..].to_vec();
                     cycle.push(from);
-                    errors.push(ValidationError {
-                        code: codes::PROMOTION_CYCLE.into(),
-                        path: format!("spec.environments.{}.promote_from", chain[chain.len() - 1]),
-                        message: format!(
+                    errors.push(ValidationError::new(
+                        codes::PROMOTION_CYCLE,
+                        format!("spec.environments.{}.promote_from", chain[chain.len() - 1]),
+                        format!(
                             "an environment cannot promote from itself: {}",
                             cycle.join(" ← ")
                         ),
-                    });
+                    ));
                     break;
                 }
                 chain.push(from);
@@ -201,10 +201,8 @@ impl ApplicationSpec {
         config: &EnvironmentConfig,
         path: &str,
     ) -> Result<Declaration, Vec<ValidationError>> {
-        let fail = |field: &str, code: &str, message: String| ValidationError {
-            code: code.into(),
-            path: format!("{path}.{field}"),
-            message,
+        let fail = |field: &str, code: &str, message: String| {
+            ValidationError::new(code, format!("{path}.{field}"), message)
         };
         if let Some(from) = &config.promote_from {
             if config.branch.is_some() || config.commit.is_some() || config.sync.is_some() {
@@ -300,9 +298,7 @@ impl ApplicationSpec {
             manages_source: config.sets_source(),
         })
     }
-}
 
-impl ApplicationSpec {
     /// What saving this manifest, which declares `declarations`, changes in
     /// an application's `environments`, or creates for a new application
     /// (`None`): one that declares none gets `production`.
@@ -376,9 +372,9 @@ impl EnvironmentChange {
     /// What converging `environments` (never previews) to `declarations`
     /// changes, in the order of `declarations`, then the environments it
     /// leaves undeclared. Existing environments change only where their
-    /// declaration manages their source (see [`Declaration::manages_source`]). Without declarations there is nothing to converge.
-    /// Environments being deleted are gone: a declaration of one's name is
-    /// created once it is.
+    /// declaration manages their source (see [`Declaration::manages_source`]).
+    /// Without declarations there is nothing to converge. Environments being
+    /// deleted are gone: a declaration of one's name is created once it is.
     #[must_use]
     pub fn between(declarations: &[Declaration], environments: &[EnvironmentView]) -> Vec<Self> {
         if declarations.is_empty() {
@@ -463,9 +459,7 @@ impl EnvironmentChange {
             | Self::Undeclared { environment } => environment,
         }
     }
-}
 
-impl EnvironmentChange {
     /// Describes the change, without the environment's name.
     ///
     /// ```text

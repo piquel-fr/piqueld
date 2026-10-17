@@ -87,12 +87,13 @@ impl PreviewLimits {
     pub(crate) fn bound(&self, application: &mut NormalizedApplication) -> Vec<PlanDiagnostic> {
         let mut warnings = Vec::new();
         for service in &mut application.spec.services {
-            let warning = |code: &str, message: String| PlanDiagnostic {
-                code: code.into(),
-                severity: DiagnosticSeverity::Warning,
-                resource: service.name.to_string(),
-                message,
-                blocking: false,
+            let warning = |code: &str, message: String| {
+                PlanDiagnostic::new(
+                    code,
+                    DiagnosticSeverity::Warning,
+                    service.name.as_str(),
+                    message,
+                )
             };
             let resources = service.resources.get_or_insert(ValidatedResourceLimits {
                 cpu_millis: None,

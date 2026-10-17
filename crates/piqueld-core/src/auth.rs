@@ -13,6 +13,7 @@ pub struct User {
     /// Optional human-readable name (empty when unset).
     pub display_name: String,
 }
+
 /// The host operator: root or the daemon's own Unix user, identified by the
 /// kernel over the daemon's Unix socket. It already controls the daemon's
 /// database and keys, so piqueld lets it act as an administrator without an
@@ -22,12 +23,14 @@ pub struct HostOperator {
     /// Unix user ID: 0 for root, otherwise the daemon's own user.
     pub uid: u32,
 }
+
 impl std::fmt::Display for HostOperator {
     /// `host operator (uid 1000)`
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "host operator (uid {})", self.uid)
     }
 }
+
 /// Who a request acts as, serialized as a `user` or an `operator` field.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -37,6 +40,7 @@ pub enum Principal {
     /// The host operator, which is not an account.
     Operator(HostOperator),
 }
+
 impl Principal {
     /// The account, unless this is the host operator.
     #[must_use]
@@ -57,6 +61,7 @@ impl Principal {
         }
     }
 }
+
 /// Who is signed in and what the current credential may do.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Session {
@@ -69,6 +74,7 @@ pub struct Session {
     /// token; such credentials cannot create credentials.
     pub scoped: bool,
 }
+
 /// An account and its grants.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Account {
@@ -77,6 +83,7 @@ pub struct Account {
     /// What the account may do.
     pub grants: Grants,
 }
+
 /// Public initialization state and canonical browser origin.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct AuthStatus {
@@ -85,12 +92,14 @@ pub struct AuthStatus {
     /// Canonical website origin.
     pub public_url: String,
 }
+
 /// First-account setup link, served only over the daemon's Unix socket.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct SetupLink {
     /// Dashboard URL carrying the single-use setup secret.
     pub url: String,
 }
+
 /// One-time link issued only over the daemon's Unix socket to the host
 /// operator: an admin recovery link or a host operator sign-in link.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -100,12 +109,14 @@ pub struct OperatorLink {
     /// Unix seconds after which the link no longer works.
     pub expires_at: i64,
 }
+
 /// Redeems a host operator sign-in link.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct OperatorSignIn {
     /// Secret from the link's `#operator=` fragment.
     pub secret: String,
 }
+
 /// Passkey registration: a new account redeeming an invitation or setup
 /// secret, an existing account redeeming an enrollment link, or a signed-in
 /// account adding a passkey to itself.
@@ -123,6 +134,7 @@ pub struct RegistrationStart {
     /// Human-readable passkey label.
     pub passkey_name: String,
 }
+
 /// Server-generated, browser-bound `WebAuthn` challenge.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Ceremony {
@@ -131,6 +143,7 @@ pub struct Ceremony {
     /// `WebAuthn` creation/request options, including `publicKey`.
     pub options: serde_json::Value,
 }
+
 /// Browser's signed response to a pending ceremony.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct CeremonyFinish {
@@ -139,6 +152,7 @@ pub struct CeremonyFinish {
     /// Serialized `WebAuthn` credential response.
     pub credential: serde_json::Value,
 }
+
 /// Named enrolled authenticator, excluding its internal credential data.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct PasskeyView {
@@ -149,6 +163,7 @@ pub struct PasskeyView {
     /// Editable label.
     pub name: String,
 }
+
 /// Revocable browser session, CLI session, or automation token metadata.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct CredentialView {
@@ -170,6 +185,7 @@ pub struct CredentialView {
     /// Tailnet user or tag this token is bound to, if any.
     pub tailnet: Option<crate::tailnet::TailnetBinding>,
 }
+
 /// A live host operator browser session, opened with a sign-in link.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct OperatorSessionView {
@@ -180,6 +196,7 @@ pub struct OperatorSessionView {
     /// Absolute expiry, as Unix seconds.
     pub expires_at: i64,
 }
+
 /// Pending invitation metadata. Its secret is returned only at creation.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct InvitationView {
@@ -195,6 +212,7 @@ pub struct InvitationView {
     /// Grants the created account receives; empty for enrollment links.
     pub grants: Grants,
 }
+
 /// Account management directory. Callers with `accounts:manage` see every
 /// account and invitation; everyone else sees only their own account.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -211,6 +229,7 @@ pub struct Directory {
     #[serde(default)]
     pub operator_sessions: Vec<OperatorSessionView>,
 }
+
 /// Account management commands.
 ///
 /// Every account may manage itself: its profile, passkeys, sessions, and tokens.
@@ -297,6 +316,7 @@ pub enum Manage {
         tailnet: Option<crate::tailnet::TailnetBinding>,
     },
 }
+
 /// Management result. Secrets are disclosed only once.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
 pub struct Managed {
@@ -305,6 +325,7 @@ pub struct Managed {
     /// Newly created invitation or enrollment link.
     pub invitation_url: Option<String>,
 }
+
 /// Optional limits for a CLI device login.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
 pub struct DeviceStartRequest {
@@ -313,6 +334,7 @@ pub struct DeviceStartRequest {
     #[serde(default)]
     pub grants: Option<Grants>,
 }
+
 /// Device login challenge for an interactive CLI.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct DeviceStart {
@@ -334,18 +356,21 @@ pub struct DeviceStart {
     #[serde(default)]
     pub grants: Option<Grants>,
 }
+
 /// CLI polling request.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct DevicePoll {
     /// Secret from device initiation.
     pub device_code: String,
 }
+
 /// Browser confirmation of the code shown by the initiating CLI.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct DeviceApprove {
     /// Code entered by the user.
     pub user_code: String,
 }
+
 /// Pending device login shown to the approver before they confirm it.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct DeviceRequest {
@@ -361,6 +386,7 @@ pub struct DeviceRequest {
     /// Grants the session is limited to; absent for the approver's full access.
     pub grants: Option<Grants>,
 }
+
 /// Poll result; the token is returned exactly once after explicit approval.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct DeviceToken {
