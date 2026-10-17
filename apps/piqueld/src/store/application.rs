@@ -11,6 +11,25 @@ use piqueld_core::{
 };
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
+/// The `kind` column of `environments`.
+#[derive(Clone, Copy)]
+enum Kind {
+    /// An environment.
+    Environment,
+    /// A preview of a branch.
+    Preview,
+}
+
+impl Kind {
+    /// The stored value.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Environment => "environment",
+            Self::Preview => "preview",
+        }
+    }
+}
+
 impl Store {
     /// Checks a caller's optional revision precondition.
     /// # Errors
@@ -176,7 +195,7 @@ impl Store {
         connection: &mut SqliteConnection,
         id: &str,
     ) -> Result<Vec<EnvironmentView>, StoreError> {
-        Self::deployables_of_kind_on(connection, id, Some("environment")).await
+        Self::deployables_of_kind_on(connection, id, Kind::Environment).await
     }
 
     /// Lists an application's previews on an existing connection or transaction.
@@ -184,7 +203,7 @@ impl Store {
         connection: &mut SqliteConnection,
         id: &str,
     ) -> Result<Vec<EnvironmentView>, StoreError> {
-        Self::deployables_of_kind_on(connection, id, Some("preview")).await
+        Self::deployables_of_kind_on(connection, id, Kind::Preview).await
     }
 
     /// Lists an application's environments, then its previews: everything
@@ -193,19 +212,20 @@ impl Store {
         connection: &mut SqliteConnection,
         id: &str,
     ) -> Result<Vec<EnvironmentView>, StoreError> {
-        Self::deployables_of_kind_on(connection, id, None).await
+        let mut all = Self::environments_on(connection, id).await?;
+        all.extend(Self::previews_on(connection, id).await?);
+        Ok(all)
     }
 
-    /// Lists an application's environments of `kind`, the `kind` column
-    /// (`environment` or `preview`), or of both, environments first, in name
-    /// order.
+    /// Lists an application's environments of `kind`, in name order.
     async fn deployables_of_kind_on(
         connection: &mut SqliteConnection,
         id: &str,
-        kind: Option<&str>,
+        kind: Kind,
     ) -> Result<Vec<EnvironmentView>, StoreError> {
+        let kind = kind.as_str();
         sqlx::query_as!(EnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.promoted_from,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!" FROM environments e WHERE e.application_id=?1 AND (?2 IS NULL OR e.kind=?2) ORDER BY e.kind,e.name"#,id,kind)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.promoted_from,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!" FROM environments e WHERE e.application_id=?1 AND e.kind=?2 ORDER BY e.name"#,id,kind)
             .fetch_all(connection).await.map_err(StoreError::database)?
             .into_iter().map(EnvironmentRow::decode).collect()
     }
