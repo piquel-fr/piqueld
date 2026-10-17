@@ -1380,14 +1380,14 @@ impl ResourceLimits {
         if cpu_millis == Some(&0) {
             errors.push(ValidationError::new(
                 codes::CPU_LIMIT_INVALID,
-                format!("{base}.self.cpu_millis"),
+                format!("{base}.resources.cpu_millis"),
                 "CPU limit must be greater than zero",
             ));
         }
         if cpu_millis.is_some_and(|value| *value > MAX_CPU_MILLIS) {
             errors.push(ValidationError::new(
                 codes::CPU_LIMIT_EXCESSIVE,
-                format!("{base}.self.cpu_millis"),
+                format!("{base}.resources.cpu_millis"),
                 format!("CPU limit must be at most {MAX_CPU_MILLIS} millicores"),
             ));
         }
@@ -1396,7 +1396,7 @@ impl ResourceLimits {
         {
             errors.push(ValidationError::new(
                 codes::MEMORY_LIMIT_INVALID,
-                format!("{base}.self.memory_bytes"),
+                format!("{base}.resources.memory_bytes"),
                 "memory limit must be greater than zero and fit the runtime value",
             ));
         }

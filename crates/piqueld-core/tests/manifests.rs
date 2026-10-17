@@ -19,6 +19,18 @@ fn normalized() -> NormalizedApplication {
         .normalize(ApplicationId::parse("app-notes-01").unwrap())
 }
 
+/// Asserts that validating `manifest` reports exactly `expected` codes and
+/// paths, in order.
+fn assert_errors(manifest: &str, expected: &[(&str, &str)]) {
+    let errors = parse_toml(manifest).unwrap_err();
+    let found = errors
+        .0
+        .iter()
+        .map(|error| (error.code.as_str(), error.path.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(found, expected);
+}
+
 /// Whether validation reported `code`.
 fn has_code(errors: &ValidationErrors, code: &str) -> bool {
     errors.0.iter().any(|error| error.code == code)
@@ -660,20 +672,129 @@ fn healthcheck_rules_include_the_interval_cap_and_single_zero_error() {
 }
 
 #[test]
-fn resource_limits_validate_cpu_bounds() {
-    let zero_cpu = valid_manifest("notes").replace(
-        "image = \"ghcr.io/example/notes:1\"",
-        "image = \"ghcr.io/example/notes:1\"\n\n[spec.services.resources]\ncpu_millis = 0",
+fn resource_limits_validate_cpu_and_memory_bounds_at_their_fields() {
+    let manifest = |resources: &str| {
+        format!(
+            "{}\n[spec.services.resources]\n{resources}\n[spec.services.rollout]\nmonitor_seconds = 0",
+            valid_manifest("notes")
+        )
+    };
+    assert_errors(
+        &manifest("cpu_millis = 0\nmemory_bytes = 0"),
+        &[
+            (
+                codes::CPU_LIMIT_INVALID,
+                "spec.services[0].resources.cpu_millis",
+            ),
+            (
+                codes::MEMORY_LIMIT_INVALID,
+                "spec.services[0].resources.memory_bytes",
+            ),
+            (
+                codes::ROLLOUT_MONITOR_INVALID,
+                "spec.services[0].rollout.monitor_seconds",
+            ),
+        ],
     );
-    let errors = parse_toml(&zero_cpu).unwrap_err();
-    assert!(has_code(&errors, codes::CPU_LIMIT_INVALID));
+    assert_errors(
+        &manifest("cpu_millis = 1048577"),
+        &[
+            (
+                codes::CPU_LIMIT_EXCESSIVE,
+                "spec.services[0].resources.cpu_millis",
+            ),
+            (
+                codes::ROLLOUT_MONITOR_INVALID,
+                "spec.services[0].rollout.monitor_seconds",
+            ),
+        ],
+    );
+}
 
-    let excessive_cpu = valid_manifest("notes").replace(
-        "image = \"ghcr.io/example/notes:1\"",
-        "image = \"ghcr.io/example/notes:1\"\n\n[spec.services.resources]\ncpu_millis = 1048577",
+/// Every per-item validator reports at its own field, in path order.
+#[test]
+fn validators_report_each_error_at_its_field_in_path_order() {
+    let manifest = r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "notes"
+[[spec.volumes]]
+name = "Bad"
+[[spec.routes]]
+hostname = "old.example.com"
+redirect = { to = "ftp://example.com", status = 200 }
+[[spec.secrets]]
+name = "key"
+generate = { type = "random", bytes = 8 }
+[[spec.jobs]]
+name = "migrate"
+service = "api"
+command = ["notes"]
+run = "before-rollout"
+[[spec.services]]
+name = "web"
+replicas = 0
+command = [""]
+depends_on = ["missing"]
+secrets = [{ name = "key", target = "/etc/key" }]
+files = [{ target = "/run/secrets/x", content = "" }]
+mounts = [{ volume = "missing", target = "/data" }]
+[spec.services.source]
+type = "image"
+image = "Nginx"
+[spec.services.environment]
+"9x" = "1"
+[spec.services.healthcheck]
+type = "http"
+port = 0
+interval_seconds = 0
+"#;
+    assert_errors(
+        manifest,
+        &[
+            (codes::JOB_SERVICE_MISSING, "spec.jobs[0].service"),
+            (
+                codes::ROUTE_REDIRECT_STATUS_INVALID,
+                "spec.routes[0].redirect.status",
+            ),
+            (codes::ROUTE_REDIRECT_INVALID, "spec.routes[0].redirect.to"),
+            (
+                codes::SECRET_GENERATOR_INVALID,
+                "spec.secrets[0].generate.bytes",
+            ),
+            (
+                codes::PROCESS_COMMAND_INVALID,
+                "spec.services[0].command[0]",
+            ),
+            (
+                codes::SERVICE_DEPENDENCY_MISSING,
+                "spec.services[0].depends_on[0]",
+            ),
+            (
+                codes::ENVIRONMENT_NAME_INVALID,
+                "spec.services[0].environment.name",
+            ),
+            (codes::FILE_EMPTY, "spec.services[0].files[0].content"),
+            (
+                codes::FILE_TARGET_INVALID,
+                "spec.services[0].files[0].target",
+            ),
+            (
+                codes::HEALTHCHECK_INTERVAL_INVALID,
+                "spec.services[0].healthcheck.interval_seconds",
+            ),
+            (codes::PORT_INVALID, "spec.services[0].healthcheck.port"),
+            (
+                codes::MOUNT_VOLUME_MISSING,
+                "spec.services[0].mounts[0].volume",
+            ),
+            (codes::REPLICAS_OUT_OF_RANGE, "spec.services[0].replicas"),
+            (codes::SECRET_TARGET_INVALID, "spec.services[0].secrets[0]"),
+            (codes::IMAGE_INVALID, "spec.services[0].source.image"),
+            (codes::NAME_INVALID, "spec.volumes[0].name"),
+        ],
     );
-    let errors = parse_toml(&excessive_cpu).unwrap_err();
-    assert!(has_code(&errors, codes::CPU_LIMIT_EXCESSIVE));
 }
 
 /// The fixture with `settings` in its service's rollout block.
