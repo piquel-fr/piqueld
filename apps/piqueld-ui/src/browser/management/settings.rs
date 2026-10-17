@@ -5,7 +5,7 @@ use super::super::ui::{
 };
 use super::super::{UserError, confirm};
 use super::{Draft, editor};
-use crate::editor::{FileForm, Section, ServiceForm};
+use crate::editor::{Choice, FileForm, HealthKind, Section, ServiceForm, SourceKind};
 use leptos::prelude::*;
 use piqueld_client::{
     ApplicationManifest, ApplicationView, Client, FileSource, GitRepository, Mount,
@@ -708,15 +708,17 @@ fn service_fields(section: Section, service: String, form: RwSignal<ServiceForm>
 
 /// Source kind, replicas, and the image or the Git build of a service.
 fn general_fields(form: RwSignal<ServiceForm>) -> AnyView {
-    let kind = Memo::new(move |_| form.with(|form| form.source_kind.clone()));
+    let kind = Memo::new(move |_| form.with(|form| form.source_kind));
     view! {
         <div class="form-grid">
             <label class="field">
                 <span>"Source"</span>
                 <select
-                    prop:value={move || form.get().source_kind}
+                    prop:value={move || kind.get().value()}
                     on:change={move |ev| {
-                        form.update(|v| v.source_kind = event_target_value(&ev));
+                        if let Some(kind) = SourceKind::parse(&event_target_value(&ev)) {
+                            form.update(|v| v.source_kind = kind);
+                        }
                     }}
                 >
                     <option value="image">"Container image"</option>
@@ -726,12 +728,12 @@ fn general_fields(form: RwSignal<ServiceForm>) -> AnyView {
             </label>
             {text_input("Replicas", form, |v| v.replicas.clone(), |v, s| v.replicas = s)}
             {move || {
-                if kind.get() == "image" {
+                if kind.get() == SourceKind::Image {
                     text_input("Container image", form, |v| v.image.clone(), |v, s| v.image = s)
                 } else {
                     view! {
                         <Show when={move || {
-                            kind.get() == "git"
+                            kind.get() == SourceKind::Git
                         }}>
                             {text_input(
                                 "Repository",
@@ -1115,32 +1117,32 @@ fn file_fields(form: RwSignal<ServiceForm>) -> AnyView {
 /// Health check type selector with the interval, timeout, and HTTP or command
 /// fields relevant to the chosen type.
 fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
+    let kind = Memo::new(move |_| form.with(|form| form.health_kind));
     view! {
         <div class="form-grid">
             <label class="field">
                 <span>"Check type"</span>
                 <select
-                    prop:value={move || form.with(|v| v.health_kind.clone())}
+                    prop:value={move || kind.get().value()}
                     on:change={move |event| {
-                        form.update(|v| v.health_kind = event_target_value(&event));
+                        if let Some(kind) = HealthKind::parse(&event_target_value(&event)) {
+                            form.update(|v| v.health_kind = kind);
+                        }
                     }}
                 >
-                    <option value="none" selected={move || form.with(|v| v.health_kind == "none")}>
+                    <option value="none" selected={move || kind.get() == HealthKind::Disabled}>
                         "None"
                     </option>
-                    <option value="http" selected={move || form.with(|v| v.health_kind == "http")}>
+                    <option value="http" selected={move || kind.get() == HealthKind::Http}>
                         "HTTP"
                     </option>
-                    <option
-                        value="command"
-                        selected={move || form.with(|v| v.health_kind == "command")}
-                    >
+                    <option value="command" selected={move || kind.get() == HealthKind::Command}>
                         "Command"
                     </option>
                 </select>
             </label>
             <Show when={move || {
-                form.with(|v| v.health_kind != "none")
+                kind.get() != HealthKind::Disabled
             }}>
                 {text_input(
                     "Interval (seconds)",
@@ -1151,13 +1153,13 @@ fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
                 {text_input("Timeout (seconds)", form, |v| v.timeout.clone(), |v, s| v.timeout = s)}
             </Show>
             <Show when={move || {
-                form.with(|v| v.health_kind == "http")
+                kind.get() == HealthKind::Http
             }}>
                 {text_input("Port", form, |v| v.port.clone(), |v, s| v.port = s)}
                 {text_input("Path", form, |v| v.path.clone(), |v, s| v.path = s)}
             </Show>
         </div>
-        <Show when={move || form.with(|v| v.health_kind == "command")}>
+        <Show when={move || kind.get() == HealthKind::Command}>
             <div style="margin-top:14px">
                 {string_rows(
                     "Health command element",

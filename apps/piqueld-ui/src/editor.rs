@@ -59,11 +59,75 @@ impl Section {
     }
 }
 
+/// Where a service's image comes from, as chosen in its form.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceKind {
+    /// A container image to pull.
+    Image,
+    /// A Dockerfile build from a Git repository.
+    Git,
+    /// A Dockerfile build from the application's manifest repository.
+    Manifest,
+}
+
+/// Which health check a service's form configures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HealthKind {
+    /// No health check.
+    Disabled,
+    /// An HTTP request.
+    Http,
+    /// A command run in the container.
+    Command,
+}
+
+/// Form choices bound to a `<select>` by their option values.
+pub trait Choice: Copy + Sized + 'static {
+    /// Every choice, in display order.
+    const ALL: &'static [Self];
+
+    /// The `<option>` value of the choice.
+    fn value(self) -> &'static str;
+
+    /// The choice with option `value`.
+    #[must_use]
+    fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|choice| choice.value() == value)
+    }
+}
+
+impl Choice for SourceKind {
+    const ALL: &'static [Self] = &[Self::Image, Self::Git, Self::Manifest];
+
+    fn value(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Git => "git",
+            Self::Manifest => "self",
+        }
+    }
+}
+
+impl Choice for HealthKind {
+    const ALL: &'static [Self] = &[Self::Disabled, Self::Http, Self::Command];
+
+    fn value(self) -> &'static str {
+        match self {
+            Self::Disabled => "none",
+            Self::Http => "http",
+            Self::Command => "command",
+        }
+    }
+}
+
 /// Form state retains incomplete text until explicit validation and saving.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ServiceForm {
-    /// Explicit source kind, image or git.
-    pub source_kind: String,
+    /// Where the image comes from.
+    pub source_kind: SourceKind,
     /// Container image.
     pub image: String,
     /// Git repository URL or host path.
@@ -92,8 +156,8 @@ pub struct ServiceForm {
     pub mounts: Vec<Mount>,
     /// Read-only files.
     pub files: Vec<FileForm>,
-    /// None, HTTP, or command.
-    pub health_kind: String,
+    /// The health check, if any.
+    pub health_kind: HealthKind,
     /// HTTP port.
     pub port: String,
     /// HTTP path.
@@ -167,7 +231,7 @@ impl From<&Service> for ServiceForm {
     /// health check kind get editable defaults (branch `main`, port `8080`, …).
     fn from(service: &Service) -> Self {
         let mut form = Self {
-            source_kind: "image".into(),
+            source_kind: SourceKind::Image,
             image: String::new(),
             repository: String::new(),
             branch: "main".into(),
@@ -186,7 +250,7 @@ impl From<&Service> for ServiceForm {
             arguments: texts(&service.arguments),
             mounts: service.mounts.clone(),
             files: service.files.iter().map(FileForm::from).collect(),
-            health_kind: "none".into(),
+            health_kind: HealthKind::Disabled,
             port: "8080".into(),
             path: "/health".into(),
             interval: "10".into(),
@@ -224,9 +288,9 @@ impl From<&Service> for ServiceForm {
                         target,
                     },
             } => {
-                form.source_kind = "self".into();
+                form.source_kind = SourceKind::Manifest;
                 if let SourceRepository::Git(repository) = repository {
-                    form.source_kind = "git".into();
+                    form.source_kind = SourceKind::Git;
                     form.repository.clone_from(&repository.url);
                     form.branch.clone_from(&repository.branch);
                     form.commit = repository.commit.clone().unwrap_or_default();
@@ -248,7 +312,7 @@ impl From<&Service> for ServiceForm {
                 interval_seconds,
                 timeout_seconds,
             }) => {
-                form.health_kind = "http".into();
+                form.health_kind = HealthKind::Http;
                 form.port = port.to_string();
                 form.path = path.to_string();
                 form.interval = interval_seconds.to_string();
@@ -259,7 +323,7 @@ impl From<&Service> for ServiceForm {
                 interval_seconds,
                 timeout_seconds,
             }) => {
-                form.health_kind = "command".into();
+                form.health_kind = HealthKind::Command;
                 form.health_command = texts(command);
                 form.interval = interval_seconds.to_string();
                 form.timeout = timeout_seconds.to_string();
@@ -296,19 +360,18 @@ fn optional<T: std::str::FromStr>(value: &str, error: &str) -> Result<Option<Typ
 impl ServiceForm {
     /// Builds the edited source.
     fn source(&self) -> Result<Source, String> {
-        let repository = match self.source_kind.as_str() {
-            "image" => {
+        let repository = match self.source_kind {
+            SourceKind::Image => {
                 return Ok(Source::Image {
                     image: self.image.as_str().into(),
                 });
             }
-            "git" => SourceRepository::Git(GitRepository {
+            SourceKind::Git => SourceRepository::Git(GitRepository {
                 url: self.repository.clone(),
                 branch: self.branch.clone(),
                 commit: (!self.commit.is_empty()).then(|| self.commit.clone()),
             }),
-            "self" => SourceRepository::Manifest(ManifestRepository::Manifest),
-            _ => return Err("Choose image or Git as the source.".into()),
+            SourceKind::Manifest => SourceRepository::Manifest(ManifestRepository::Manifest),
         };
         Ok(Source::Git {
             repository,
@@ -351,9 +414,9 @@ impl ServiceForm {
                 .parse()
                 .map_err(|_| "Health timeout must be a positive integer or a ${{ }} reference.")
         };
-        Ok(match self.health_kind.as_str() {
-            "none" => None,
-            "http" => Some(HealthCheck::Http {
+        Ok(match self.health_kind {
+            HealthKind::Disabled => None,
+            HealthKind::Http => Some(HealthCheck::Http {
                 port: self.port.parse().map_err(
                     |_| "Health port must be an integer between 1 and 65535 or a ${{ }} reference.",
                 )?,
@@ -361,12 +424,11 @@ impl ServiceForm {
                 interval_seconds: interval_seconds()?,
                 timeout_seconds: timeout_seconds()?,
             }),
-            "command" => Some(HealthCheck::Command {
+            HealthKind::Command => Some(HealthCheck::Command {
                 command: templates(&self.health_command),
                 interval_seconds: interval_seconds()?,
                 timeout_seconds: timeout_seconds()?,
             }),
-            _ => return Err("Choose a supported health check type.".into()),
         })
     }
 
