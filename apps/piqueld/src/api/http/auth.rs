@@ -617,12 +617,12 @@ pub(super) async fn device_start(
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Json<DeviceStart>, ApiError> {
-    let body = super::applications::request_body(body)?;
+    let body = super::extract::request_body(body)?;
     let requester = peer.map(|Extension(ConnectInfo(peer))| peer.ip());
     let request = if body.is_empty() {
         DeviceStartRequest::default()
     } else {
-        super::decode_json::<DeviceStartRequest>(&body)?
+        super::extract::decode_json::<DeviceStartRequest>(&body)?
     };
     Ok(Json(auth.device_start(requester, request.grants).await?))
 }

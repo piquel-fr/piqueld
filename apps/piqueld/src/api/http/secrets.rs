@@ -1,13 +1,12 @@
 //! Write-only values and metadata-only secret lifecycle endpoints: generated
 //! secrets per environment, and each application's store of manually set secrets.
-use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
+use super::{
+    ApiError, ApiJson, ApiPath, ApiQuery, ApiState, QueryParams, ok, openapi::ApiErrorResponse,
+};
 use axum::{
     body::Bytes,
-    extract::{
-        Query, State,
-        rejection::{BytesRejection, QueryRejection},
-    },
-    http::{HeaderMap, StatusCode},
+    extract::{State, rejection::BytesRejection},
+    http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
 };
 use piqueld_core::{
@@ -129,6 +128,12 @@ pub(super) struct AccessQuery {
     previews: Option<bool>,
 }
 
+impl QueryParams for AccessQuery {
+    const INVALID_CODE: &'static str = "query_invalid";
+    const INVALID_MESSAGE: &'static str =
+        "environments must be all or environment IDs; previews must be true or false";
+}
+
 impl AccessQuery {
     /// The access list, when the query sets one. `previews` alone is refused,
     /// so it cannot silently reset the environments to every environment.
@@ -169,21 +174,12 @@ pub(super) async fn put_stored(
     State(state): State<ApiState>,
     axum::Extension(identity): axum::Extension<crate::auth::Identity>,
     ApiPath((id, name)): ApiPath<(String, String)>,
-    query: Result<Query<AccessQuery>, QueryRejection>,
+    ApiQuery(query): ApiQuery<AccessQuery>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let generation = expected(&headers)?;
-    let access = query
-        .map_err(|_| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "query_invalid",
-                "environments must be all or environment IDs; previews must be true or false",
-            )
-        })?
-        .0
-        .access()?;
+    let access = query.access()?;
     let body = body.map_err(|e| {
         ApiError::new(
             e.status(),
@@ -199,7 +195,7 @@ pub(super) async fn put_stored(
         ));
     }
     if headers
-        .get("content-type")
+        .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_none_or(|v| v != "application/octet-stream")
     {
@@ -231,17 +227,8 @@ pub(super) async fn set_access(
     State(state): State<ApiState>,
     axum::Extension(identity): axum::Extension<crate::auth::Identity>,
     ApiPath((id, name)): ApiPath<(String, String)>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    ApiJson(access): ApiJson<SecretAccess>,
 ) -> Result<impl IntoResponse, ApiError> {
-    if super::content_type(&headers) != Some("application/json") {
-        return Err(ApiError::new(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "content_type_unsupported",
-            "Content-Type must be application/json",
-        ));
-    }
-    let access: SecretAccess = super::decode_json(&super::applications::request_body(body)?)?;
     Ok(ok(state
         .set_secret_access(identity.actor(), &ApplicationId::parse(id)?, &name, &access)
         .await?))

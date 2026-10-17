@@ -1,5 +1,6 @@
+//! Structured event history, paged or streamed as server-sent events.
 use super::{
-    ApiError, ApiState,
+    ApiError, ApiQuery, ApiState, QueryParams,
     auth::TailnetSource,
     lease::{Ended, Lease},
     ok,
@@ -8,7 +9,7 @@ use super::{
 use crate::{auth::Identity, store::Visibility};
 use axum::{
     Extension,
-    extract::{Query, State, rejection::QueryRejection},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::{
         IntoResponse, Sse,
@@ -77,16 +78,11 @@ impl EventQuery {
             descending: self.descending.unwrap_or(false),
         }
     }
-    /// Maps a rejected query string to a generic 400.
-    fn parse(query: Result<Query<Self>, QueryRejection>) -> Result<Self, ApiError> {
-        query.map(|Query(q)| q).map_err(|_| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "pagination_invalid",
-                "invalid event query",
-            )
-        })
-    }
+}
+
+impl QueryParams for EventQuery {
+    const INVALID_CODE: &'static str = "pagination_invalid";
+    const INVALID_MESSAGE: &'static str = "invalid event query";
 }
 /// Lists structured events.
 ///
@@ -95,9 +91,8 @@ impl EventQuery {
 pub(super) async fn list(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
-    query: Result<Query<EventQuery>, QueryRejection>,
+    ApiQuery(query): ApiQuery<EventQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let query = EventQuery::parse(query)?;
     let visible = super::access::history(&identity.grants)?;
     Ok(ok(state
         .filtered_events(
@@ -130,9 +125,8 @@ pub(super) async fn stream(
     Extension(identity): Extension<Identity>,
     source: Option<TailnetSource>,
     headers: HeaderMap,
-    query: Result<Query<EventQuery>, QueryRejection>,
+    ApiQuery(query): ApiQuery<EventQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let query = EventQuery::parse(query)?;
     let visible = super::access::history(&identity.grants)?;
     if query.descending.unwrap_or(false) {
         return Err(ApiError::new(

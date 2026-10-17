@@ -1,14 +1,17 @@
-use super::{ApiError, ApiPath, ApiState, accepted, ok, openapi::ApiErrorResponse, parse_manifest};
+//! Applications: listing, reading, applying and planning whole manifests,
+//! renaming, deletion, and manifest download. Mutations of applications and
+//! their environments are submitted through [`accept_mutation`].
+use super::extract::{IDEMPOTENCY_KEY, ManifestUpload, optional_header};
+use super::{
+    ApiError, ApiJson, ApiPath, ApiQuery, ApiState, QueryParams, accepted, ok,
+    openapi::ApiErrorResponse,
+};
 use crate::api::{Mutation, MutationResponse};
 use crate::auth::Identity;
 use axum::{
     Extension,
-    body::Bytes,
-    extract::{
-        Query, State,
-        rejection::{BytesRejection, QueryRejection},
-    },
-    http::{HeaderMap, StatusCode, header},
+    extract::State,
+    http::{HeaderMap, header},
     response::{IntoResponse, Response},
 };
 use piqueld_core::api::{
@@ -29,6 +32,12 @@ pub(super) struct ListQuery {
     limit: Option<u16>,
 }
 
+impl QueryParams for ListQuery {
+    // The same error as an out-of-range `limit`.
+    const INVALID_CODE: &'static str = "pagination_invalid";
+    const INVALID_MESSAGE: &'static str = "pagination parameters are invalid";
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/applications",
@@ -45,10 +54,8 @@ pub(super) struct ListQuery {
 pub(super) async fn list(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
-    query: Result<Query<ListQuery>, QueryRejection>,
+    ApiQuery(query): ApiQuery<ListQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Query(query) =
-        query.map_err(|_| ApiError::from(crate::api::ApplicationError::InvalidPagination))?;
     Ok(ok(state
         .applications(
             &identity
@@ -81,7 +88,7 @@ pub(super) async fn get(
     Ok(ok(state.application(&ApplicationId::parse(id)?).await?))
 }
 
-// Saves a whole manifest (JSON or TOML, see `parse_manifest`) by name,
+// Saves a whole manifest (JSON or TOML, see `ManifestUpload`) by name,
 // optionally accepting a deployment of it in the same transaction.
 #[utoipa::path(
     post, path = "/api/v1/applications/apply", operation_id = "applyApplication",
@@ -104,23 +111,19 @@ pub(super) async fn get(
 pub(super) async fn apply(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
-    query: Result<Query<ApplyQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(query): ApiQuery<ApplyQuery>,
     headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    upload: ManifestUpload,
 ) -> Result<Response, ApiError> {
-    let Query(query) = query.map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "query_invalid",
-            "force and deploy must be true or false",
-        )
-    })?;
-    let (manifest, expected, expected_id) = parse_manifest(&headers, &request_body(body)?)?;
     accept_mutation(
         &state,
         &identity,
-        Mutation::save(manifest, expected_id, query.deploy),
-        expected,
+        Mutation::save(
+            upload.manifest,
+            upload.expected_application_id,
+            query.deploy,
+        ),
+        upload.expected_generation,
         query.force,
         &headers,
     )
@@ -139,6 +142,11 @@ pub(super) struct ApplyQuery {
     deploy: bool,
 }
 
+impl QueryParams for ApplyQuery {
+    const INVALID_CODE: &'static str = "query_invalid";
+    const INVALID_MESSAGE: &'static str = "force and deploy must be true or false";
+}
+
 /// Application deletion preconditions and confirmation.
 #[derive(Default, Deserialize, utoipa::IntoParams)]
 #[serde(deny_unknown_fields)]
@@ -151,6 +159,12 @@ pub(super) struct DeleteApplicationQuery {
     force: bool,
     /// Comma-separated names of every environment; required when there are several.
     environments: Option<String>,
+}
+
+impl QueryParams for DeleteApplicationQuery {
+    const INVALID_CODE: &'static str = "query_invalid";
+    const INVALID_MESSAGE: &'static str =
+        "expected_generation must be an integer and force must be true or false";
 }
 
 // Accepts a deletion operation for every environment, whose named volumes are
@@ -173,15 +187,8 @@ pub(super) async fn delete(
     Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    query: Result<Query<DeleteApplicationQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(query): ApiQuery<DeleteApplicationQuery>,
 ) -> Result<Response, ApiError> {
-    let Query(query) = query.map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "query_invalid",
-            "expected_generation must be an integer and force must be true or false",
-        )
-    })?;
     let environments = query
         .environments
         .iter()
@@ -225,25 +232,16 @@ pub(super) async fn delete(
 pub(super) async fn plan(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
-    query: Result<Query<PlanQuery>, QueryRejection>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    ApiQuery(query): ApiQuery<PlanQuery>,
+    upload: ManifestUpload,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Query(query) = query.map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "query_invalid",
-            "environment must appear at most once",
-        )
-    })?;
     let environment = query.environment.map(EnvironmentId::parse).transpose()?;
-    let (manifest, expected, expected_id) = parse_manifest(&headers, &request_body(body)?)?;
     Ok(ok(state
         .plan(
             &identity.grants,
-            manifest,
-            expected,
-            expected_id,
+            upload.manifest,
+            upload.expected_generation,
+            upload.expected_application_id,
             environment.as_ref(),
         )
         .await?))
@@ -259,24 +257,9 @@ pub(super) struct PlanQuery {
     environment: Option<String>,
 }
 
-/// Unwraps a buffered body, reporting the size limit as 413
-/// `request_body_too_large` and other read failures as 400.
-pub(super) fn request_body(body: Result<Bytes, BytesRejection>) -> Result<Bytes, ApiError> {
-    body.map_err(|rejection| {
-        if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
-            ApiError::new(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "request_body_too_large",
-                "request body exceeds the maximum allowed size",
-            )
-        } else {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "request_body_unreadable",
-                "request body could not be read",
-            )
-        }
-    })
+impl QueryParams for PlanQuery {
+    const INVALID_CODE: &'static str = "query_invalid";
+    const INVALID_MESSAGE: &'static str = "environment must appear at most once";
 }
 
 #[derive(Default, Deserialize, utoipa::IntoParams)]
@@ -289,19 +272,10 @@ pub(super) struct GenerationQuery {
     #[serde(default)]
     pub(super) force: bool,
 }
-impl GenerationQuery {
-    /// Unwraps the query, mapping rejections to 400 `generation_invalid`.
-    pub(super) fn decode(
-        query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
-    ) -> Result<Self, ApiError> {
-        query.map(|Query(value)| value).map_err(|_| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "generation_invalid",
-                "invalid expected generation",
-            )
-        })
-    }
+
+impl QueryParams for GenerationQuery {
+    const INVALID_CODE: &'static str = "generation_invalid";
+    const INVALID_MESSAGE: &'static str = "invalid expected generation";
 }
 
 /// Submits a mutation with the request's `Idempotency-Key` and renders the
@@ -316,8 +290,8 @@ pub(super) async fn accept_mutation(
     force: bool,
     headers: &HeaderMap,
 ) -> Result<Response, ApiError> {
-    let request_id = super::optional_header(headers, "idempotency-key")?;
-    match state
+    let request_id = optional_header(headers, IDEMPOTENCY_KEY)?;
+    let response = state
         .accept(
             identity.actor(),
             mutation,
@@ -325,25 +299,20 @@ pub(super) async fn accept_mutation(
             force,
             request_id.as_deref(),
         )
-        .await?
-    {
-        MutationResponse::Operation(operation) => Ok(accepted(operation)),
-        MutationResponse::Saved(saved) => {
-            if saved.operation_id.is_some() {
-                Ok(accepted(saved))
-            } else {
-                Ok(ok(saved).into_response())
-            }
-        }
-        MutationResponse::Rename(renamed) => Ok(ok(renamed).into_response()),
-        MutationResponse::Environment(environment) => Ok(ok(environment).into_response()),
-        MutationResponse::Promotion(promotion) => Ok(accepted(promotion)),
-        MutationResponse::Preview(preview) if preview.created => Ok(accepted(preview)),
-        MutationResponse::Preview(preview) => Ok(ok(preview).into_response()),
-        MutationResponse::Deleted(deleted) => Ok(accepted(deleted)),
+        .await?;
+    Ok(match response {
+        MutationResponse::Saved(saved) if saved.operation_id.is_some() => accepted(saved),
+        MutationResponse::Saved(saved) => ok(saved),
+        MutationResponse::Preview(preview) if preview.created => accepted(preview),
+        MutationResponse::Preview(preview) => ok(preview),
+        MutationResponse::Rename(renamed) => ok(renamed),
+        MutationResponse::Environment(environment) => ok(environment),
+        MutationResponse::Operation(operation) => accepted(operation),
+        MutationResponse::Promotion(promotion) => accepted(promotion),
+        MutationResponse::Deleted(deleted) => accepted(deleted),
         // Only sync submits the mutations answered with this.
-        MutationResponse::Synced(_) => Err(crate::store::StoreError::Corrupt.into()),
-    }
+        MutationResponse::Synced(_) => return Err(crate::store::StoreError::Corrupt.into()),
+    })
 }
 
 /// Renames an application.
@@ -360,19 +329,11 @@ pub(super) async fn accept_mutation(
 pub(super) async fn rename(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
-    query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(query): ApiQuery<ForceQuery>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    ApiJson(request): ApiJson<RenameApplicationRequest>,
 ) -> Result<Response, ApiError> {
-    if super::content_type(&headers) != Some("application/json") {
-        return Err(ApiError::new(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "content_type_unsupported",
-            "Content-Type must be application/json",
-        ));
-    }
-    let request: RenameApplicationRequest = super::decode_json(&request_body(body)?)?;
     accept_mutation(
         &state,
         &identity,
@@ -381,7 +342,7 @@ pub(super) async fn rename(
             name: request.name,
         },
         request.expected_generation,
-        ForceQuery::decode(query)?.force,
+        query.force,
         &headers,
     )
     .await
@@ -394,19 +355,10 @@ pub(super) struct ForceQuery {
     /// Explicitly bypass the intent revision precondition. Name availability is always enforced.
     pub(super) force: bool,
 }
-impl ForceQuery {
-    /// Unwraps the query, mapping rejections to 400 `force_invalid`.
-    pub(super) fn decode(
-        query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
-    ) -> Result<Self, ApiError> {
-        query.map(|Query(value)| value).map_err(|_| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "force_invalid",
-                "force must be true or false",
-            )
-        })
-    }
+
+impl QueryParams for ForceQuery {
+    const INVALID_CODE: &'static str = "force_invalid";
+    const INVALID_MESSAGE: &'static str = "force must be true or false";
 }
 
 /// Downloads the saved configuration as a TOML manifest.
@@ -425,13 +377,12 @@ pub(super) async fn manifest_download(
 ) -> Result<impl IntoResponse, ApiError> {
     let manifest = state.manifest(&ApplicationId::parse(id)?).await?;
     let filename = format!("attachment; filename=\"{}\"", manifest.filename);
-    let body = manifest.contents;
     Ok((
         [
             (header::CONTENT_TYPE, "application/toml".to_owned()),
             (header::CONTENT_DISPOSITION, filename),
             (header::CACHE_CONTROL, "no-store".to_owned()),
         ],
-        body,
+        manifest.contents,
     ))
 }

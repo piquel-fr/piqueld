@@ -1,5 +1,12 @@
-//! Errors encountered while reconciling application operations.
+//! Errors encountered while reconciling application operations, and the
+//! diagnostics recorded for them.
 use piqueld_core::observability::DiagnosticCode;
+
+/// A fresh, time-ordered ID for a recorded diagnostic, e.g.
+/// `diagnostic-0190c4f6a3e27b8a9d1e4f6a3e27b8a9`.
+pub(crate) fn diagnostic_id() -> String {
+    format!("diagnostic-{}", uuid::Uuid::now_v7().simple())
+}
 
 /// Sanitized failure returned while executing a durable operation.
 #[derive(Debug, thiserror::Error)]
@@ -311,11 +318,8 @@ impl OperationError {
         summary: String,
         source: &(dyn std::error::Error + 'static),
     ) -> piqueld_core::observability::Diagnostic {
-        let mut diagnostic = piqueld_core::observability::Diagnostic::new(
-            format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
-            code,
-            summary,
-        );
+        let mut diagnostic =
+            piqueld_core::observability::Diagnostic::new(diagnostic_id(), code, summary);
         let mut source = Some(source);
         for _ in 0..8 {
             let Some(error) = source else {
