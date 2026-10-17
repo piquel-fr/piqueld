@@ -2171,26 +2171,7 @@ fn link_commands_edit_the_loaded_links_and_save_the_whole_list() {
         let mut view = app_view("app-notes-01", "notes");
         view["application"]["spec"]["exports"] = json!([saved_export.clone()]);
         view["application"]["spec"]["imports"] = json!([saved_import.clone()]);
-        let server = start_server(false, 2, move |request| {
-            if request.method == "GET" {
-                return Reply::json(view.clone());
-            }
-            assert_eq!(request.method, "PUT");
-            assert_eq!(
-                request.path,
-                format!(
-                    "/api/v1/applications/app-notes-01/{field}?deploy=false&expected_generation=1&force=false"
-                )
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&request.body).unwrap(),
-                json!({"value": expected})
-            );
-            Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
-        });
-        let output = run(&server, &arguments);
-        assert_eq!(assert_json_success(&output)["generation"], 2);
-        assert_eq!(server.finish().len(), 2);
+        assert_saves(view, &arguments, "PUT", field, &json!({"value": expected}));
     }
 
     let server = start_server(false, 1, |_| Reply::json(app_view("app-notes-01", "notes")));
