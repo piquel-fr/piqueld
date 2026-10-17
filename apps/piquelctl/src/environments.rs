@@ -2,18 +2,16 @@
 //! selection and runtime commands shared with `app deploy`, `app reconcile`,
 //! and `app logs`.
 use crate::{
-    cli::{Cli, DeletionFlags, LogArgs, OperationFlags, RevisionArgs},
+    cli::{Cli, DeletionFlags, LogArgs, OperationFlags, RevisionArgs, expected_generation},
     commands::{resolve_application, wait_for_deletion, wait_for_operation},
     deployments::{Target, UrlArgs, WaitArgs, wait_for_accepted},
-    editing::{EditFlags, save_loaded, visibility},
+    editing::{EditFlags, visibility},
     error::{CliError, ErrorKind, ErrorReport, Result},
     output::{
         Console,
-        reports::{
-            DeletionReport, EnvironmentRow, EnvironmentShowReport, Named, Names, PromotionReport,
-        },
+        reports::{DeletionReport, EnvironmentRow, EnvironmentShowReport, Named, PromotionReport},
     },
-    support::{confirm, retry_transport},
+    support::{join_or, retry_transport},
 };
 use clap::{Args, Subcommand, builder::TypedValueParser};
 use piqueld_client::{
@@ -45,19 +43,7 @@ pub(crate) enum EnvCommand {
     /// Point an environment of a repository-backed application at another
     /// branch, or pin or unpin its commit. Its next deployment fetches it.
     /// Declared environments take `branch` and `commit` from the manifest.
-    Branch {
-        /// Application name or stable ID.
-        application: String,
-        /// Environment name or stable ID.
-        environment: String,
-        /// Branch of the manifest repository to follow.
-        branch: String,
-        /// Pin this full commit instead of following the branch head; omit to unpin.
-        #[arg(long)]
-        commit: Option<String>,
-        #[command(flatten)]
-        change: ChangeFlags,
-    },
+    Branch(BranchArgs),
     /// Opt an environment into or out of its application's sync: while it is
     /// in, pushes to its branch deploy it, from its next deployment if it was
     /// never deployed. Pinned environments never sync. Declared environments
@@ -69,26 +55,10 @@ pub(crate) enum EnvCommand {
     /// `private` keeps every route on the tailnet, `public` restricts nothing.
     Visibility(VisibilityArgs),
     /// Rename an environment without redeploying it.
-    Rename {
-        /// Application name or stable ID.
-        application: String,
-        /// Environment name or stable ID.
-        environment: String,
-        /// New environment name, unique within the application.
-        new_name: String,
-        #[command(flatten)]
-        change: ChangeFlags,
-    },
+    Rename(RenameArgs),
     /// Confirm and delete an environment; named volumes are retained. Remove
     /// a declared environment's block from the manifest first.
-    Delete {
-        /// Application name or stable ID.
-        application: String,
-        /// Environment name or stable ID.
-        environment: String,
-        #[command(flatten)]
-        deletion: DeletionFlags,
-    },
+    Delete(DeleteArgs),
     /// Deploy the application's saved configuration to an environment, fetching
     /// the manifest and resolving sources again.
     Deploy {
@@ -131,13 +101,22 @@ pub(crate) enum EnvCommand {
     Url(UrlArgs<EnvironmentArgs>),
 }
 
-/// An application and, when it has several, one of its environments.
+// An application and, when it has several, one of its environments.
 #[derive(Debug, Args)]
 pub(crate) struct EnvironmentArgs {
     /// Application name or stable ID.
     pub(crate) application: String,
     /// Environment name or stable ID; optional when the application has exactly one.
     pub(crate) environment: Option<String>,
+}
+
+// An application and one of its environments, named.
+#[derive(Debug, Args)]
+pub(crate) struct NamedEnvironment {
+    /// Application name or stable ID.
+    application: String,
+    /// Environment name or stable ID.
+    environment: String,
 }
 
 // Precondition and confirmation flags for environment lifecycle changes.
@@ -157,7 +136,7 @@ pub(crate) struct ChangeFlags {
 impl ChangeFlags {
     /// The inspected revision a change is conditioned on, unless forced.
     fn expected(&self, application: &ApplicationView) -> Option<u64> {
-        (!self.force).then_some(self.expected_generation.unwrap_or(application.generation))
+        expected_generation(self.force, self.expected_generation, application.generation)
     }
 }
 
@@ -171,83 +150,35 @@ impl EnvCommand {
     ) -> Result<()> {
         match self {
             Self::List { application } => list(cli, client, console, application).await,
-            Self::Create(args) => args.run(cli, client, console).await,
-            Self::Source(args) => args.run(cli, client, console).await,
-            Self::Promote(args) => args.run(cli, client, console).await,
-            Self::Branch {
-                application,
-                environment,
-                branch,
-                commit,
-                change,
-            } => {
-                let request = EnvironmentBranchRequest {
-                    branch: branch.clone(),
-                    commit: commit.clone(),
-                    expected_generation: None,
-                };
-                set_branch(
-                    cli,
-                    client,
-                    console,
-                    (application, environment),
-                    request,
-                    change,
-                )
-                .await
-            }
+            Self::Create(args) => args.run(client, console).await,
+            Self::Source(args) => args.run(client, console).await,
+            Self::Promote(args) => args.run(client, console).await,
+            Self::Branch(args) => args.run(client, console).await,
             Self::Sync(args) => args.run(client, console).await,
             Self::Show(target) => show(client, console, target).await,
-            Self::Visibility(args) => args.run(cli, client, console).await,
+            Self::Visibility(args) => args.run(client, console).await,
             Self::Secret {
                 application,
                 environment,
                 action,
             } => {
                 action
-                    .run(cli, client, console, application, environment.as_deref())
+                    .run(client, console, application, environment.as_deref())
                     .await
             }
-            Self::Rename {
-                application,
-                environment,
-                new_name,
-                change,
-            } => {
-                rename(
-                    cli,
-                    client,
-                    console,
-                    (application, environment),
-                    new_name,
-                    change,
-                )
-                .await
-            }
-            Self::Delete {
-                application,
-                environment,
-                deletion,
-            } => delete(cli, client, console, application, environment, deletion).await,
+            Self::Rename(args) => args.run(client, console).await,
+            Self::Delete(args) => args.run(client, console).await,
             Self::Deploy {
                 target,
                 flags,
                 revision,
             } => {
                 let (application, environment) = target.resolve(client).await?;
-                deploy(
-                    cli,
-                    client,
-                    console,
-                    (&application, &environment),
-                    flags,
-                    revision,
-                )
-                .await
+                deploy(client, console, &application, &environment, flags, revision).await
             }
             Self::Reconcile { target, flags } => {
                 let (application, environment) = target.resolve(client).await?;
-                reconcile(cli, client, console, (&application, &environment), flags).await
+                reconcile(client, console, &application, &environment, flags).await
             }
             Self::Logs { target, window } => {
                 logs(console, client, &target.resolve(client).await?.1, window).await
@@ -261,10 +192,8 @@ impl EnvCommand {
 /// `env sync` arguments.
 #[derive(Debug, Args)]
 pub(crate) struct SyncArgs {
-    /// Application name or stable ID.
-    application: String,
-    /// Environment name or stable ID.
-    environment: String,
+    #[command(flatten)]
+    target: NamedEnvironment,
     /// `on` deploys pushes; `off` deploys only when asked.
     #[arg(
         value_name = "on|off",
@@ -277,24 +206,18 @@ pub(crate) struct SyncArgs {
 impl SyncArgs {
     /// Opts the environment in or out of its application's sync.
     async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
-        let (application, environment) =
-            select(client, &self.application, Some(&self.environment)).await?;
+        let (application, environment) = self.target.resolve(client).await?;
         let id = environment.id.as_str();
         let environment = retry_transport(|| client.set_environment_sync(id, self.enabled)).await?;
-        console.emit(&Named {
-            value: &environment,
-            names: Names(&application.environments),
-        })
+        console.emit(&Named::new(&environment, &application))
     }
 }
 
 /// `env visibility` arguments.
 #[derive(Debug, Args)]
 pub(crate) struct VisibilityArgs {
-    /// Application name or stable ID.
-    application: String,
-    /// Environment name or stable ID.
-    environment: String,
+    #[command(flatten)]
+    target: NamedEnvironment,
     /// The strictest visibility its routes get.
     #[arg(value_parser = visibility())]
     visibility: Visibility,
@@ -305,14 +228,15 @@ pub(crate) struct VisibilityArgs {
 impl VisibilityArgs {
     /// Saves the environment's visibility ceiling in
     /// `[spec.environments.<name>]`, addressing it by name or ID.
-    async fn run(&self, cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
-        let (application, environment) =
-            select(client, &self.application, Some(&self.environment)).await?;
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let (application, environment) = self.target.resolve(client).await?;
         let edit = ApplicationEdit::EnvironmentVisibility {
             environment: environment.name.to_string(),
             visibility: self.visibility,
         };
-        save_loaded(cli, client, console, application, &self.flags, &edit).await
+        self.flags
+            .save_loaded(client, console, &application, &edit)
+            .await
     }
 }
 
@@ -355,7 +279,7 @@ pub(crate) struct CreateArgs {
 impl CreateArgs {
     /// Confirms and adds the environment, conditioned on the inspected
     /// application revision.
-    async fn run(&self, cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let application = resolve_application(client, &self.application).await?;
         let request = CreateEnvironmentRequest {
             name: self.name.clone(),
@@ -368,17 +292,16 @@ impl CreateArgs {
                 .transpose()?,
             expected_generation: self.change.expected(&application),
         };
-        confirm(
-            console,
-            cli.noninteractive,
-            self.change.yes,
-            &format!(
-                "Create environment {:?} of application {:?}? [y/N] ",
-                request.name,
-                application.application.metadata().name
-            ),
-        )
-        .await?;
+        console
+            .confirm(
+                self.change.yes,
+                &format!(
+                    "Create environment {:?} of application {:?}?",
+                    request.name,
+                    application.application.metadata().name
+                ),
+            )
+            .await?;
         let environment = retry_transport(|| {
             client.create_environment(
                 application.application.id().as_str(),
@@ -387,45 +310,51 @@ impl CreateArgs {
             )
         })
         .await?;
-        console.emit(&Named {
-            value: &environment,
-            names: Names(&application.environments),
-        })
+        console.emit(&Named::new(&environment, &application))
     }
 }
 
-/// Confirms and points an environment at another branch, conditioned on the
-/// inspected application revision. Nothing is redeployed.
-async fn set_branch(
-    cli: &Cli,
-    client: &Client,
-    console: &mut Console,
-    (application, environment): (&str, &str),
-    mut request: EnvironmentBranchRequest,
-    change: &ChangeFlags,
-) -> Result<()> {
-    let (application, environment) = select(client, application, Some(environment)).await?;
-    confirm(
-        console,
-        cli.noninteractive,
-        change.yes,
-        &format!(
-            "Point environment {:?} of application {:?} at branch {:?}? [y/N] ",
-            environment.name.as_str(),
-            application.application.metadata().name,
-            request.branch
-        ),
-    )
-    .await?;
-    request.expected_generation = change.expected(&application);
-    let environment = retry_transport(|| {
-        client.set_environment_branch(environment.id.as_str(), &request, change.force)
-    })
-    .await?;
-    console.emit(&Named {
-        value: &environment,
-        names: Names(&application.environments),
-    })
+/// `env branch` arguments.
+#[derive(Debug, Args)]
+pub(crate) struct BranchArgs {
+    #[command(flatten)]
+    target: NamedEnvironment,
+    /// Branch of the manifest repository to follow.
+    branch: String,
+    /// Pin this full commit instead of following the branch head; omit to unpin.
+    #[arg(long)]
+    commit: Option<String>,
+    #[command(flatten)]
+    change: ChangeFlags,
+}
+
+impl BranchArgs {
+    /// Confirms and points an environment at another branch, conditioned on the
+    /// inspected application revision. Nothing is redeployed.
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let (application, environment) = self.target.resolve(client).await?;
+        console
+            .confirm(
+                self.change.yes,
+                &format!(
+                    "Point environment {:?} of application {:?} at branch {:?}?",
+                    environment.name.as_str(),
+                    application.application.metadata().name,
+                    self.branch
+                ),
+            )
+            .await?;
+        let request = EnvironmentBranchRequest {
+            branch: self.branch.clone(),
+            commit: self.commit.clone(),
+            expected_generation: self.change.expected(&application),
+        };
+        let environment = retry_transport(|| {
+            client.set_environment_branch(environment.id.as_str(), &request, self.change.force)
+        })
+        .await?;
+        console.emit(&Named::new(&environment, &application))
+    }
 }
 
 /// The ID of `source`, an environment of `application` named or identified
@@ -448,10 +377,8 @@ fn promotion_source(application: &ApplicationView, source: &str) -> Result<Strin
 /// `env source` arguments.
 #[derive(Debug, Args)]
 pub(crate) struct SourceArgs {
-    /// Application name or stable ID.
-    application: String,
-    /// Environment name or stable ID.
-    environment: String,
+    #[command(flatten)]
+    target: NamedEnvironment,
     /// Receive releases promoted from this environment (name or stable ID).
     #[arg(long, value_name = "ENV", required_unless_present = "tracking")]
     promote_from: Option<String>,
@@ -466,9 +393,8 @@ pub(crate) struct SourceArgs {
 impl SourceArgs {
     /// Confirms and changes where the environment's releases come from,
     /// conditioned on the inspected application revision.
-    async fn run(&self, cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
-        let (application, environment) =
-            select(client, &self.application, Some(&self.environment)).await?;
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let (application, environment) = self.target.resolve(client).await?;
         let promote_from = self
             .promote_from
             .as_deref()
@@ -478,17 +404,16 @@ impl SourceArgs {
             Some(source) => format!("receive releases promoted from {source:?}"),
             None => "build from its own source again".into(),
         };
-        confirm(
-            console,
-            cli.noninteractive,
-            self.change.yes,
-            &format!(
-                "Make environment {:?} of application {:?} {change}? [y/N] ",
-                environment.name.as_str(),
-                application.application.metadata().name,
-            ),
-        )
-        .await?;
+        console
+            .confirm(
+                self.change.yes,
+                &format!(
+                    "Make environment {:?} of application {:?} {change}?",
+                    environment.name.as_str(),
+                    application.application.metadata().name,
+                ),
+            )
+            .await?;
         let request = EnvironmentSourceRequest {
             promote_from,
             expected_generation: self.change.expected(&application),
@@ -497,10 +422,7 @@ impl SourceArgs {
             client.set_environment_source(environment.id.as_str(), &request, self.change.force)
         })
         .await?;
-        console.emit(&Named {
-            value: &environment,
-            names: Names(&application.environments),
-        })
+        console.emit(&Named::new(&environment, &application))
     }
 }
 
@@ -530,7 +452,7 @@ impl PromoteArgs {
     /// expected generation, defaulting to the current one. Waits unless
     /// `--no-wait`. A plan listing unusable secrets fails as a conflict,
     /// since promoting would.
-    async fn run(&self, cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let (application, environment) =
             select(client, &self.application, Some(&self.environment)).await?;
         let mut request = PromoteRequest {
@@ -541,10 +463,7 @@ impl PromoteArgs {
         let id = environment.id.as_str();
         if self.plan {
             let plan = client.plan_promotion(id, &request).await?;
-            console.emit(&Named {
-                value: &plan,
-                names: Names(&application.environments),
-            })?;
+            console.emit(&Named::new(&plan, &application))?;
             if plan.plan.is_blocked() {
                 return Err(CliError::blocked_plan(&plan));
             }
@@ -566,17 +485,16 @@ impl PromoteArgs {
             (None, Some(deployment)) => format!("deployment {deployment}'s release"),
             (None, None) => "the source's current release".into(),
         };
-        confirm(
-            console,
-            cli.noninteractive,
-            self.flags.yes,
-            &format!(
-                "Promote {what} into environment {:?} of application {:?}? [y/N] ",
-                environment.name.as_str(),
-                application.application.metadata().name
-            ),
-        )
-        .await?;
+        console
+            .confirm(
+                self.flags.yes,
+                &format!(
+                    "Promote {what} into environment {:?} of application {:?}?",
+                    environment.name.as_str(),
+                    application.application.metadata().name
+                ),
+            )
+            .await?;
         request.expected_generation = Some(
             self.flags
                 .expected_generation
@@ -611,39 +529,99 @@ async fn show(client: &Client, console: &mut Console, target: &EnvironmentArgs) 
     Ok(())
 }
 
-/// Confirms and renames an environment without redeploying it.
-async fn rename(
-    cli: &Cli,
-    client: &Client,
-    console: &mut Console,
-    (application, environment): (&str, &str),
-    new_name: &str,
-    change: &ChangeFlags,
-) -> Result<()> {
-    let (application, environment) = select(client, application, Some(environment)).await?;
-    confirm(
-        console,
-        cli.noninteractive,
-        change.yes,
-        &format!(
-            "Rename environment {:?} of application {:?} to {new_name:?}? [y/N] ",
+/// `env rename` arguments.
+#[derive(Debug, Args)]
+pub(crate) struct RenameArgs {
+    #[command(flatten)]
+    target: NamedEnvironment,
+    /// New environment name, unique within the application.
+    new_name: String,
+    #[command(flatten)]
+    change: ChangeFlags,
+}
+
+impl RenameArgs {
+    /// Confirms and renames an environment without redeploying it.
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let (application, environment) = self.target.resolve(client).await?;
+        let new_name = &self.new_name;
+        console
+            .confirm(
+                self.change.yes,
+                &format!(
+                    "Rename environment {:?} of application {:?} to {new_name:?}?",
+                    environment.name.as_str(),
+                    application.application.metadata().name
+                ),
+            )
+            .await?;
+        let request = EnvironmentRequest {
+            name: new_name.clone(),
+            expected_generation: self.change.expected(&application),
+        };
+        let environment = retry_transport(|| {
+            client.rename_environment(environment.id.as_str(), &request, self.change.force)
+        })
+        .await?;
+        console.emit(&Named::new(&environment, &application))
+    }
+}
+
+/// `env delete` arguments.
+#[derive(Debug, Args)]
+pub(crate) struct DeleteArgs {
+    #[command(flatten)]
+    target: NamedEnvironment,
+    #[command(flatten)]
+    deletion: DeletionFlags,
+}
+
+impl DeleteArgs {
+    /// Confirms and deletes an environment (named volumes are retained), guarded by
+    /// the expected generation unless `--force`. Waits until the environment is gone
+    /// unless `--no-wait`.
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let (application, environment) = self.target.resolve(client).await?;
+        let flags = &self.deletion;
+        let name = application.application.metadata().name.clone();
+        console.info(format_args!(
+            "deleting environment {} ({}) of {name}: managed services and network are removed; named volumes are retained",
             environment.name.as_str(),
-            application.application.metadata().name
-        ),
-    )
-    .await?;
-    let request = EnvironmentRequest {
-        name: new_name.to_owned(),
-        expected_generation: change.expected(&application),
-    };
-    let environment = retry_transport(|| {
-        client.rename_environment(environment.id.as_str(), &request, change.force)
-    })
-    .await?;
-    console.emit(&Named {
-        value: &environment,
-        names: Names(&application.environments),
-    })
+            environment.id
+        ))?;
+        console
+            .confirm(
+                flags.yes,
+                &format!(
+                    "Delete environment {:?} of application {name:?}? Named volumes will be retained.",
+                    environment.name.as_str()
+                ),
+            )
+            .await?;
+        let accepted = retry_transport(|| {
+            client.delete_environment(
+                environment.id.as_str(),
+                expected_generation(
+                    flags.force,
+                    flags.expected_generation,
+                    application.generation,
+                ),
+                flags.force,
+            )
+        })
+        .await?;
+        if flags.no_wait {
+            return console.emit(&DeletionReport::accepted(&accepted));
+        }
+        wait_for_deletion(
+            console,
+            client,
+            || client.environment(environment.id.as_str()),
+            std::slice::from_ref(&accepted.operation_id),
+        )
+        .await?;
+        console.emit(&DeletionReport::completed(&accepted))
+    }
 }
 
 impl EnvironmentArgs {
@@ -656,6 +634,13 @@ impl EnvironmentArgs {
 impl Target for EnvironmentArgs {
     async fn environment(&self, client: &Client) -> Result<EnvironmentView> {
         Ok(self.resolve(client).await?.1)
+    }
+}
+
+impl NamedEnvironment {
+    /// Loads the application and selects the named environment.
+    async fn resolve(&self, client: &Client) -> Result<(ApplicationView, EnvironmentView)> {
+        select(client, &self.application, Some(&self.environment)).await
     }
 }
 
@@ -684,13 +669,9 @@ pub(crate) async fn select(
                         "application {name:?} has no environments; create one with `piquelctl env create {name} <NAME>`"
                     )
                 } else {
-                    let names = environments
-                        .iter()
-                        .map(piqueld_client::EnvironmentName::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", ");
                     format!(
-                        "environment required: application {name:?} has environments {names}; use `piquelctl env <COMMAND> {name} <ENV>`"
+                        "environment required: application {name:?} has environments {}; use `piquelctl env <COMMAND> {name} <ENV>`",
+                        join_or(environments, "")
                     )
                 };
                 CliError::new(ErrorKind::Input, message)
@@ -755,24 +736,23 @@ pub(crate) fn rows(
 /// the current one. Waits unless `--no-wait`, then warns about anything the
 /// deployment reported, such as an ignored `spec.manifest`.
 pub(crate) async fn deploy(
-    cli: &Cli,
     client: &Client,
     console: &mut Console,
-    (application, environment): (&ApplicationView, &EnvironmentView),
+    application: &ApplicationView,
+    environment: &EnvironmentView,
     flags: &OperationFlags,
     revision: &RevisionArgs,
 ) -> Result<()> {
-    confirm(
-        console,
-        cli.noninteractive,
-        flags.yes,
-        &format!(
-            "Deploy application {:?} to environment {:?}? [y/N] ",
-            application.application.metadata().name,
-            environment.name.as_str()
-        ),
-    )
-    .await?;
+    console
+        .confirm(
+            flags.yes,
+            &format!(
+                "Deploy application {:?} to environment {:?}?",
+                application.application.metadata().name,
+                environment.name.as_str()
+            ),
+        )
+        .await?;
     let revision = revision.revision();
     let accepted = retry_transport(|| {
         client.deploy_environment(
@@ -803,23 +783,22 @@ pub(crate) async fn deploy(
 /// guarded by the expected generation only when one is given. Waits for it
 /// unless `--no-wait`.
 pub(crate) async fn reconcile(
-    cli: &Cli,
     client: &Client,
     console: &mut Console,
-    (application, environment): (&ApplicationView, &EnvironmentView),
+    application: &ApplicationView,
+    environment: &EnvironmentView,
     flags: &OperationFlags,
 ) -> Result<()> {
-    confirm(
-        console,
-        cli.noninteractive,
-        flags.yes,
-        &format!(
-            "Retry the latest operation of application {:?} in environment {:?}? [y/N] ",
-            application.application.metadata().name,
-            environment.name.as_str()
-        ),
-    )
-    .await?;
+    console
+        .confirm(
+            flags.yes,
+            &format!(
+                "Retry the latest operation of application {:?} in environment {:?}?",
+                application.application.metadata().name,
+                environment.name.as_str()
+            ),
+        )
+        .await?;
     let accepted = retry_transport(|| {
         client.reconcile_environment(environment.id.as_str(), flags.expected_generation)
     })
@@ -847,53 +826,4 @@ pub(crate) async fn logs(
         console.warning("Log snapshot was truncated; narrow the service or time window.")?;
     }
     Ok(())
-}
-
-/// Confirms and deletes an environment (named volumes are retained), guarded by
-/// the expected generation unless `--force`. Waits until the environment is gone
-/// unless `--no-wait`.
-async fn delete(
-    cli: &Cli,
-    client: &Client,
-    console: &mut Console,
-    application: &str,
-    environment: &str,
-    flags: &DeletionFlags,
-) -> Result<()> {
-    let (application, environment) = select(client, application, Some(environment)).await?;
-    let name = application.application.metadata().name.clone();
-    console.info(format_args!(
-        "deleting environment {} ({}) of {name}: managed services and network are removed; named volumes are retained",
-        environment.name.as_str(),
-        environment.id
-    ))?;
-    confirm(
-        console,
-        cli.noninteractive,
-        flags.yes,
-        &format!(
-            "Delete environment {:?} of application {name:?}? Named volumes will be retained. [y/N] ",
-            environment.name.as_str()
-        ),
-    )
-    .await?;
-    let accepted = retry_transport(|| {
-        client.delete_environment(
-            environment.id.as_str(),
-            (!flags.force).then_some(flags.expected_generation.unwrap_or(application.generation)),
-            flags.force,
-        )
-    })
-    .await?;
-    if flags.no_wait {
-        return console.emit(&DeletionReport::accepted(&accepted));
-    }
-    wait_for_deletion(
-        console,
-        client,
-        || client.environment(environment.id.as_str()),
-        std::slice::from_ref(&accepted.operation_id),
-    )
-    .await?;
-    console.emit(&DeletionReport::completed(&accepted))
 }

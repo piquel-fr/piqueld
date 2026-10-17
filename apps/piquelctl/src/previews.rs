@@ -3,7 +3,7 @@
 //! order. Creating, deploying, and deleting one need no application revision.
 use crate::snapshot::{History, Worktree};
 use crate::{
-    cli::{Cli, LogArgs},
+    cli::LogArgs,
     commands::{resolve_application, wait_for_deletion, wait_for_operation},
     deployments::{Deployed, Target, UrlArgs, WaitArgs, wait_for_accepted},
     environments::logs,
@@ -12,7 +12,7 @@ use crate::{
         Console,
         reports::{CreatedPreviewReport, DeletionReport},
     },
-    support::{confirm, retry_transport},
+    support::retry_transport,
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
@@ -165,12 +165,7 @@ impl Target for PreviewArgs {
 
 impl PreviewCommand {
     /// Runs a `preview` subcommand.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         match self {
             Self::Create {
                 application,
@@ -202,10 +197,10 @@ impl PreviewCommand {
             }
             Self::Wait(args) => args.run(console, client).await,
             Self::Url(args) => args.run(console, client).await,
-            Self::Delete { target, flags } => delete(cli, client, console, target, flags).await,
+            Self::Delete { target, flags } => delete(client, console, target, flags).await,
             Self::Prune {
                 application, flags, ..
-            } => prune(cli, client, console, application, flags).await,
+            } => prune(client, console, application, flags).await,
         }
     }
 }
@@ -344,24 +339,22 @@ async fn create(
 /// unless `--no-wait`, polling the environment endpoint, which unlike the
 /// preview one never reads the repository.
 async fn delete(
-    cli: &Cli,
     client: &Client,
     console: &mut Console,
     target: &PreviewArgs,
     flags: &PreviewDeletionFlags,
 ) -> Result<()> {
     let (application, preview) = target.resolve(client).await?;
-    confirm(
-        console,
-        cli.noninteractive,
-        flags.yes,
-        &format!(
-            "Delete preview {:?} of application {:?}? Its volumes and their data will be removed. [y/N] ",
-            preview.name.as_str(),
-            application.application.metadata().name
-        ),
-    )
-    .await?;
+    console
+        .confirm(
+            flags.yes,
+            &format!(
+                "Delete preview {:?} of application {:?}? Its volumes and their data will be removed.",
+                preview.name.as_str(),
+                application.application.metadata().name
+            ),
+        )
+        .await?;
     let accepted = retry_transport(|| client.delete_preview(preview.id.as_str())).await?;
     if flags.no_wait {
         return console.emit(&DeletionReport::accepted(&accepted).removing_volumes());
@@ -380,7 +373,6 @@ async fn delete(
 /// delete them. The daemon checks each branch again and keeps any it can no
 /// longer confirm gone. Waits for every deletion unless `--no-wait`.
 async fn prune(
-    cli: &Cli,
     client: &Client,
     console: &mut Console,
     application: &str,
@@ -410,16 +402,15 @@ async fn prune(
         .map(|preview| preview.name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    confirm(
-        console,
-        cli.noninteractive,
-        flags.yes,
-        &format!(
-            "Delete previews {names} of application {:?}, whose branches are gone? Their volumes and their data will be removed. [y/N] ",
-            application.application.metadata().name
-        ),
-    )
-    .await?;
+    console
+        .confirm(
+            flags.yes,
+            &format!(
+                "Delete previews {names} of application {:?}, whose branches are gone? Their volumes and their data will be removed.",
+                application.application.metadata().name
+            ),
+        )
+        .await?;
     let request = PrunePreviewsRequest {
         previews: gone.iter().map(|preview| preview.id.clone()).collect(),
     };

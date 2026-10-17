@@ -5,10 +5,8 @@
 //! applications named with `--app` (every application when omitted). Grants
 //! are displayed with application names where the caller can read them.
 use crate::{
-    cli::Cli,
     error::{CliError, ErrorKind, Result},
     output::{Console, HumanWriter, Report},
-    support::confirm,
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
@@ -224,12 +222,7 @@ impl TokenCommand {
 
 impl AccountCommand {
     /// Runs one `account` subcommand.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         match self {
             Self::List => {
                 let directory = client.auth_directory().await?;
@@ -249,13 +242,12 @@ impl AccountCommand {
             } => {
                 let target = find(&client.auth_directory().await?, target)?;
                 let grants = grants.grants(client).await?;
-                confirm(
-                    console,
-                    cli.noninteractive,
-                    *yes,
-                    &format!("Replace every grant of {:?}? [y/N] ", target.user.username),
-                )
-                .await?;
+                console
+                    .confirm(
+                        *yes,
+                        &format!("Replace every grant of {:?}?", target.user.username),
+                    )
+                    .await?;
                 client
                     .auth_manage(&Manage::SetGrants {
                         user_id: target.user.id.clone(),
