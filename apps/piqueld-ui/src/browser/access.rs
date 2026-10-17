@@ -3,7 +3,7 @@
 //! The editor selects permissions and one scope (every application, or chosen
 //! ones) shared by all application permissions; installation-wide permissions
 //! always apply everywhere. Presets only fill in the selection.
-use super::ui::{Tone, notice};
+use super::ui::{Tone, checkbox, member_checkbox, notice};
 use leptos::prelude::*;
 use piqueld_client::{
     ApplicationId,
@@ -36,7 +36,7 @@ fn application_name(id: &ApplicationId) -> String {
             context.signals.applications.with_untracked(|rows| {
                 rows.iter()
                     .find(|row| row.application.id == *id)
-                    .map(|row| row.application.name.to_string())
+                    .map(|row| row.application.name.clone())
             })
         })
         .unwrap_or_else(|| id.to_string())
@@ -93,6 +93,7 @@ fn build(permissions: &BTreeSet<Permission>, scope: &Scope) -> Grants {
 /// clamped to it, e.g. a token to its owner's access, and the effective
 /// selection is shown.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn GrantEditor(
     initial: Grants,
     value: RwSignal<Grants>,
@@ -157,8 +158,7 @@ pub(super) fn GrantEditor(
                         Tone::Warn,
                         "These grants cover different applications per permission. Changing the selection below applies it to every application permission.",
                     )
-                })}
-            <label class="field">
+                })} <label class="field">
                 <span>"Preset"</span>
                 <select on:change={move |event| apply_preset(event_target_value(&event))}>
                     <option value="">"Choose a preset…"</option>
@@ -175,21 +175,7 @@ pub(super) fn GrantEditor(
                     .map(|permission| {
                         view! {
                             <label class="checkbox" title={permission.description()}>
-                                <input
-                                    type="checkbox"
-                                    prop:checked={move || permissions.with(|set| set.contains(&permission))}
-                                    on:change={move |event| {
-                                        let checked = event_target_checked(&event);
-                                        permissions
-                                            .update(|set| {
-                                                if checked {
-                                                    set.insert(permission);
-                                                } else {
-                                                    set.remove(&permission);
-                                                }
-                                            });
-                                    }}
-                                />
+                                {member_checkbox(permissions, permission)}
                                 <code>{permission.as_str()}</code>
                                 <span class="muted">{permission.description()}</span>
                             </label>
@@ -197,43 +183,19 @@ pub(super) fn GrantEditor(
                     })
                     .collect_view()}
             </div>
-            <label class="checkbox">
-                <input
-                    type="checkbox"
-                    prop:checked={move || everywhere.get()}
-                    on:change={move |event| everywhere.set(event_target_checked(&event))}
-                />
-                "Application permissions apply to every application, including future ones"
-            </label>
-            <Show when={move || !everywhere.get()}>
+            {checkbox(
+                "Application permissions apply to every application, including future ones",
+                everywhere,
+            )} <Show when={move || !everywhere.get()}>
                 <div class="grant-applications">
                     {move || {
                         rows.get()
                             .into_iter()
                             .map(|row| {
-                                let id = row.application.id.clone();
-                                let checked_id = id.clone();
                                 view! {
                                     <label class="checkbox">
-                                        <input
-                                            type="checkbox"
-                                            prop:checked={move || {
-                                                applications.with(|set| set.contains(&checked_id))
-                                            }}
-                                            on:change={move |event| {
-                                                let checked = event_target_checked(&event);
-                                                let id = id.clone();
-                                                applications
-                                                    .update(|set| {
-                                                        if checked {
-                                                            set.insert(id);
-                                                        } else {
-                                                            set.remove(&id);
-                                                        }
-                                                    });
-                                            }}
-                                        />
-                                        {row.application.name.to_string()}
+                                        {member_checkbox(applications, row.application.id)}
+                                        {row.application.name}
                                     </label>
                                 }
                             })

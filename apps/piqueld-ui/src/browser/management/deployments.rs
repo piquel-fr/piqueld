@@ -1,19 +1,26 @@
 //! Deployment and promotion actions, plan dialogs, history, and snapshot
 //! inspection.
+use super::super::builds::build_arguments;
 use super::super::format::timestamp;
 use super::super::ui::{
-    Icon, Modal, Tabs, Tone, badge, empty, icon, notice, operation_badge, when,
+    Icon, Modal, Tabs, Tone, badge, empty, expander_summary, icon, key_values, load_older, notice,
+    operation_badge, when,
+};
+use super::super::{
+    Alive, ClientErrorExt, document_hidden, live_row, operation_events, release_link,
 };
 use super::releases::ReleaseCard;
-use super::{client_error_message, editor};
-use crate::browser::Alive;
+use super::{EditorContext, editor};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{
-    ApplyApplicationRequest, Client, DeploymentOrigin, DeploymentView, EnvironmentView, Page,
-    PlanView, PromoteRequest, SecretProblem, Source, ValidatedRollout,
+    ApplyApplicationRequest, Build, Client, DeploymentOrigin, DeploymentView, EnvironmentId,
+    EnvironmentView, HealthCheck, Operation, Page, PlanView, PromoteRequest, SecretProblem,
+    Service, Source, Template, ValidatedRollout,
 };
+use std::fmt::Display;
 
 /// "Preview" and "Deploy" buttons for the editor's target environment. Preview
 /// asks the daemon to plan the manifest that environment deploys (its last
@@ -26,6 +33,7 @@ use piqueld_client::{
 /// before its own action, into the environments promoted from it. On its own page, Deploy
 /// doesn't name the environment.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn DeploymentActions() -> impl IntoView {
     let context = editor();
     let preview = RwSignal::new(None::<PlanView>);
@@ -44,7 +52,10 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                 .iter()
                 .filter(|environment| {
                     !environment.delete_intent
-                        && environment.source.promoted_from().map(|id| id.as_str())
+                        && environment
+                            .source
+                            .promoted_from()
+                            .map(EnvironmentId::as_str)
                             == current.as_deref()
                 })
                 .cloned()
@@ -88,7 +99,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                 .await
             {
                 Ok(plan) => preview.set(Some(plan)),
-                Err(error) => context.set_error(Some(client_error_message(&error))),
+                Err(error) => context.set_error(Some(error.user_message())),
             }
             context.busy.set(false);
         });
@@ -145,7 +156,8 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                     type="button"
                     class="btn"
                     disabled={move || {
-                        context.environment_action_blocked() || context.environment_manifest().is_none()
+                        context.environment_action_blocked()
+                            || context.environment_manifest().is_none()
                     }}
                     on:click={inspect}
                     title={move || {
@@ -191,14 +203,20 @@ pub(super) fn EnvironmentAction(
     #[prop(default = None)] done: Option<Callback<()>>,
 ) -> impl IntoView {
     let context = editor();
-    let id = environment.id.to_string();
-    if environment.source.promoted_from().is_some() {
+    let EnvironmentView {
+        id,
+        name,
+        source,
+        delete_intent: deleting,
+        ..
+    } = environment;
+    let id = id.to_string();
+    if source.promoted_from().is_some() {
         return view! { <PromoteAction environment={id} compact={compact} done={done} /> }
             .into_any();
     }
     let navigate = StoredValue::new(use_navigate());
-    let deleting = environment.delete_intent;
-    let label = format!("Deploy to {}", environment.name);
+    let label = format!("Deploy to {name}");
     let id = StoredValue::new(id);
     view! {
         <button
@@ -232,7 +250,7 @@ pub(super) fn EnvironmentAction(
 /// environments promoted from the shown one. Closes once an action was
 /// accepted.
 #[component]
-pub(super) fn ChooseEnvironment(
+fn ChooseEnvironment(
     label: &'static str,
     title: &'static str,
     environments: Signal<Vec<EnvironmentView>>,
@@ -284,6 +302,7 @@ pub(super) fn ChooseEnvironment(
 /// may not use. `compact` is the smaller list-row button; `done` runs once the
 /// promotion was accepted.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn PromoteAction(
     environment: String,
     #[prop(optional)] release: Option<String>,
@@ -336,7 +355,7 @@ pub(super) fn PromoteAction(
                     plan.set(Some(view));
                     opened.set(true);
                 }
-                Err(error) => context.set_error(Some(client_error_message(&error))),
+                Err(error) => context.set_error(Some(error.user_message())),
             }
             context.busy.set(false);
         });
@@ -379,7 +398,7 @@ pub(super) fn PromoteAction(
                     .notice
                     .set("Promotion accepted. Follow its progress below.".into());
                 context.show_deployments(&environment.get_value(), navigate);
-                context.dashboard.with_value(|d| d.refresh.run(()));
+                context.refresh_dashboard();
                 if let Some(done) = done {
                     done.run(());
                 }
@@ -412,8 +431,7 @@ pub(super) fn PromoteAction(
                     class="btn btn-primary"
                     // A failed promotion stays blocked until inspected again.
                     disabled={move || {
-                        context.action_blocked()
-                            || context.error.with(Option::is_some)
+                        context.action_blocked() || context.error.with(Option::is_some)
                             || promotable().is_none()
                     }}
                     on:click={confirm}
@@ -449,16 +467,22 @@ fn PromotionPlan(plan: PlanView) -> impl IntoView {
                                 Tone::Bad,
                                 match problem {
                                     SecretProblem::Missing { secret } => {
-                                        format!("Secret {secret} is missing from the application's store.")
+                                        format!(
+                                            "Secret {secret} is missing from the application's store.",
+                                        )
                                     }
                                     SecretProblem::AccessDenied { secret } => {
                                         format!("Secret {secret} does not allow this environment.")
                                     }
                                     SecretProblem::Unavailable { secret } => {
-                                        format!("Secret {secret} lost its value in key recovery; store a new version.")
+                                        format!(
+                                            "Secret {secret} lost its value in key recovery; store a new version.",
+                                        )
                                     }
                                     SecretProblem::Deleting { secret } => {
-                                        format!("Secret {secret} is being deleted; finish or abandon the deletion.")
+                                        format!(
+                                            "Secret {secret} is being deleted; finish or abandon the deletion.",
+                                        )
                                     }
                                 },
                             )
@@ -539,11 +563,7 @@ fn PlanDetails(plan: PlanView) -> impl IntoView {
                 <h3>"Configuration changes"</h3>
             </div>
             {if plan.changes.is_empty() {
-                view! {
-                    <p class="hint">
-                        "No configuration changes since the last deployment."
-                    </p>
-                }
+                view! { <p class="hint">"No configuration changes since the last deployment."</p> }
                     .into_any()
             } else {
                 plan.changes
@@ -575,20 +595,7 @@ fn PlanDetails(plan: PlanView) -> impl IntoView {
                         <div class="section-header">
                             <h3>"Variables"</h3>
                         </div>
-                        <dl class="kv">
-                            {plan
-                                .variables
-                                .iter()
-                                .map(|(reference, value)| {
-                                    view! {
-                                        <dt>
-                                            <code>{reference.clone()}</code>
-                                        </dt>
-                                        <dd>{value.to_string()}</dd>
-                                    }
-                                })
-                                .collect_view()}
-                        </dl>
+                        {variable_values(&plan.variables)}
                     </section>
                 }
             })}
@@ -597,8 +604,7 @@ fn PlanDetails(plan: PlanView) -> impl IntoView {
                 <h3>"Planned actions"</h3>
             </div>
             {if plan.plan.actions.is_empty() {
-                view! { <p class="hint">"No runtime actions are required."</p> }
-                    .into_any()
+                view! { <p class="hint">"No runtime actions are required."</p> }.into_any()
             } else {
                 view! {
                     <ul class="stack-sm">
@@ -654,10 +660,7 @@ fn PlanDetails(plan: PlanView) -> impl IntoView {
                             .plan
                             .diagnostics
                             .into_iter()
-                            .map(|d| notice(
-                                Tone::Warn,
-                                format!("{}: {}", d.resource, d.message),
-                            ))
+                            .map(|d| notice(Tone::Warn, format!("{}: {}", d.resource, d.message)))
                             .collect_view()}
                     </div>
                 }
@@ -665,30 +668,109 @@ fn PlanDetails(plan: PlanView) -> impl IntoView {
     }
 }
 
-/// Deployment list for the editor's application. The first page is polled while
-/// the deployments tab is visible; older pages are appended on request without
-/// duplicating deployments already shown.
-#[component]
-pub(super) fn DeploymentHistory() -> impl IntoView {
-    let context = editor();
-    let history = RwSignal::new(Vec::<DeploymentView>::new());
-    let paginated = RwSignal::new(false);
-    let cursor = RwSignal::new(None::<String>);
-    let error = RwSignal::new(None::<String>);
-    let loading = RwSignal::new(false);
-    let id = context.environment_id();
-    context.poll_deployments(id.clone(), history, cursor, paginated, error, loading);
-    let more = move |_| {
-        let id = id.clone();
-        let next = cursor.get_untracked();
-        loading.set(true);
+/// The deployments shown for one environment: its first page, polled, and
+/// older pages appended on request.
+#[derive(Clone, Copy)]
+struct History {
+    items: RwSignal<Vec<DeploymentView>>,
+    /// Cursor of the next older page.
+    cursor: RwSignal<Option<String>>,
+    /// Whether an older page was appended, so polls merge instead of replacing.
+    paginated: RwSignal<bool>,
+    error: RwSignal<Option<String>>,
+    loading: RwSignal<bool>,
+}
+
+impl History {
+    fn new() -> Self {
+        Self {
+            items: RwSignal::new(Vec::new()),
+            cursor: RwSignal::new(None),
+            paginated: RwSignal::new(false),
+            error: RwSignal::new(None),
+            loading: RwSignal::new(false),
+        }
+    }
+
+    /// Applies a freshly polled first page. Before any older page is loaded,
+    /// the page simply replaces the list and cursor. Afterwards it is merged
+    /// by operation ID (keeping the older pages), and the `current_target` and
+    /// `last_successful` flags are cleared on existing entries when the new page
+    /// carries them, so only one deployment holds each flag.
+    fn merge(self, page: Page<DeploymentView>) {
+        self.items.update(|items| {
+            if self.paginated.get_untracked() {
+                let has_current = page.items.iter().any(|item| item.current_target);
+                let has_successful = page.items.iter().any(|item| item.last_successful);
+                for item in items.iter_mut() {
+                    if has_current {
+                        item.current_target = false;
+                    }
+                    if has_successful {
+                        item.last_successful = false;
+                    }
+                }
+                for item in page.items {
+                    if let Some(old) = items
+                        .iter_mut()
+                        .find(|v| v.operation.id == item.operation.id)
+                    {
+                        *old = item;
+                    } else {
+                        items.insert(0, item);
+                    }
+                }
+                items.sort_by(|a, b| b.operation.id.cmp(&a.operation.id));
+            } else {
+                *items = page.items;
+                self.cursor.set(page.next_cursor);
+            }
+        });
+    }
+
+    /// Polls the first page of `environment` every 2 seconds while the
+    /// editor's Deployments tab is selected and the page is visible. Stops
+    /// when the owning view unmounts.
+    fn poll(self, context: EditorContext, environment: String) {
+        let active = Alive::new();
         spawn_local(async move {
-            match Client::browser().deployments(&id, next.as_deref()).await {
+            while active.get() {
+                if context.tab.get_untracked() == "Deployments"
+                    && !self.loading.get_untracked()
+                    && !document_hidden()
+                {
+                    let result = Client::browser().deployments(&environment, None).await;
+                    if !active.get() {
+                        break;
+                    }
+                    match result {
+                        Ok(page) => {
+                            self.merge(page);
+                            self.error.set(None);
+                        }
+                        Err(e) => self.error.set(Some(e.user_message())),
+                    }
+                }
+                gloo_timers::future::TimeoutFuture::new(2000).await;
+            }
+        });
+    }
+
+    /// Appends the next older page of `environment`, skipping deployments
+    /// already shown.
+    fn load_older(self, environment: String) {
+        let next = self.cursor.get_untracked();
+        self.loading.set(true);
+        spawn_local(async move {
+            match Client::browser()
+                .deployments(&environment, next.as_deref())
+                .await
+            {
                 Ok(page) => {
-                    error.set(None);
-                    paginated.set(true);
-                    cursor.set(page.next_cursor);
-                    history.update(|items| {
+                    self.error.set(None);
+                    self.paginated.set(true);
+                    self.cursor.set(page.next_cursor);
+                    self.items.update(|items| {
                         for item in page.items {
                             if !items
                                 .iter()
@@ -699,94 +781,51 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
                         }
                     });
                 }
-                Err(e) => error.set(Some(client_error_message(&e))),
+                Err(e) => self.error.set(Some(e.user_message())),
             }
-            loading.set(false);
+            self.loading.set(false);
         });
-    };
+    }
+}
+
+/// Deployment list for the editor's environment. The first page is polled while
+/// the deployments tab is visible; older pages are appended on request without
+/// duplicating deployments already shown.
+#[component]
+pub(super) fn DeploymentHistory() -> impl IntoView {
+    let context = editor();
+    let history = History::new();
+    let id = context.environment_id();
+    history.poll(context, id.clone());
     view! {
         <section class="stack-sm" aria-label="Deployment history">
-            {move || error.get().map(|e| notice(Tone::Bad, e))}
+            {move || history.error.get().map(|e| notice(Tone::Bad, e))}
             <Show when={move || {
-                history.with(Vec::is_empty)
+                history.items.with(Vec::is_empty)
             }}>{empty("No deployments yet. Deploy the saved configuration to create one.")}</Show>
             <For
-                each={move || history.get()}
+                each={move || history.items.get()}
                 key={|d| d.operation.id.clone()}
                 children={move |initial| {
-                    let deployment = Signal::derive(move || {
-                        history
-                            .with(|items| {
-                                items
-                                    .iter()
-                                    .find(|d| d.operation.id == initial.operation.id)
-                                    .cloned()
-                                    .unwrap_or_else(|| initial.clone())
-                            })
-                    });
+                    let deployment = live_row(history.items, initial, |d| &d.operation.id);
                     view! { <DeploymentCard deployment={deployment} /> }
                 }}
             />
-            <Show when={move || cursor.get().is_some()}>
-                <div class="btn-group">
-                    <button
-                        type="button"
-                        class="btn"
-                        disabled={move || loading.get()}
-                        on:click={more.clone()}
-                    >
-                        "Load older deployments"
-                    </button>
-                </div>
-            </Show>
+            {load_older(
+                "Load older deployments",
+                history.cursor,
+                history.loading,
+                move || history.load_older(id.clone()),
+            )}
         </section>
     }
 }
-/// Applies a freshly polled first page to the history. Before any older page is
-/// loaded, the page simply replaces the list and cursor. Afterwards it is merged
-/// by operation ID (keeping the older pages), and the `current_target` and
-/// `last_successful` flags are cleared on existing entries when the new page
-/// carries them, so only one deployment holds each flag.
-pub(super) fn merge_history(
-    history: RwSignal<Vec<DeploymentView>>,
-    cursor: RwSignal<Option<String>>,
-    paginated: RwSignal<bool>,
-    page: Page<DeploymentView>,
-) {
-    history.update(|items| {
-        if paginated.get_untracked() {
-            let has_current = page.items.iter().any(|item| item.current_target);
-            let has_successful = page.items.iter().any(|item| item.last_successful);
-            for item in items.iter_mut() {
-                if has_current {
-                    item.current_target = false;
-                }
-                if has_successful {
-                    item.last_successful = false;
-                }
-            }
-            for item in page.items {
-                if let Some(old) = items
-                    .iter_mut()
-                    .find(|v| v.operation.id == item.operation.id)
-                {
-                    *old = item;
-                } else {
-                    items.insert(0, item);
-                }
-            }
-            items.sort_by(|a, b| b.operation.id.cmp(&a.operation.id));
-        } else {
-            *items = page.items;
-            cursor.set(page.next_cursor);
-        }
-    });
-}
+
 /// Expandable deployment summary with details, snapshot and attempts tabs.
 /// Starts expanded when it matches the `?deployment=` query; attempts load
 /// lazily the first time their tab is opened.
 #[component]
-pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
+fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
     let context = editor();
     let application = context.id();
     let initial = deployment.get_untracked();
@@ -803,41 +842,36 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
     });
     view! {
         <article class="expander" class:selected={selected}>
-            <button
-                type="button"
-                class="expander-summary"
-                aria-expanded={move || opened.get().to_string()}
-                on:click={move |_| opened.update(|v| *v = !*v)}
-            >
-                <span class="chevron" aria-hidden="true">
-                    {icon(Icon::ChevronRight)}
-                </span>
-                {move || operation_badge(deployment.get().operation.state)}
-                <strong>
-                    {move || format!("Deployment #{}", deployment.get().operation.generation)}
-                </strong>
-                {move || {
-                    deployment
-                        .get()
-                        .current_target
-                        .then(|| view! { <span class="tag">"Current target"</span> })
-                }}
-                {move || {
-                    deployment
-                        .get()
-                        .last_successful
-                        .then(|| view! { <span class="tag">"Last successful"</span> })
-                }}
-                <span class="meta">
+            {expander_summary(
+                opened,
+                view! {
+                    {move || operation_badge(deployment.get().operation.state)}
+                    <strong>
+                        {move || format!("Deployment #{}", deployment.get().operation.generation)}
+                    </strong>
                     {move || {
-                        let op = deployment.get().operation;
-                        view! {
-                            {op.phase.map(|phase| format!("{phase} · "))}
-                            {when(op.created_at_ms)}
-                        }
+                        deployment
+                            .get()
+                            .current_target
+                            .then(|| view! { <span class="tag">"Current target"</span> })
                     }}
-                </span>
-            </button>
+                    {move || {
+                        deployment
+                            .get()
+                            .last_successful
+                            .then(|| view! { <span class="tag">"Last successful"</span> })
+                    }}
+                    <span class="meta">
+                        {move || {
+                            let op = deployment.get().operation;
+                            view! {
+                                {op.phase.map(|phase| format!("{phase} · "))}
+                                {when(op.created_at_ms)}
+                            }
+                        }}
+                    </span>
+                },
+            )}
             <div class="expander-body" hidden={move || !opened.get()}>
                 <Tabs
                     label="Deployment sections"
@@ -848,20 +882,13 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
                     tab.get() != "Details"
                 }}>
                     {move || {
-                        let DeploymentView { operation: op, release, origin, .. } = deployment.get();
+                        let DeploymentView { operation: op, release, origin, .. } = deployment
+                            .get();
                         let release = release
-                            .map(|release| {
-                                let href = format!(
-                                    "/dashboard/applications/{application}?release={release}",
-                                );
-                                view! {
-                                    <leptos_router::components::A href={href}>
-                                        <code>{release.to_string()}</code>
-                                    </leptos_router::components::A>
-                                }
-                                    .into_any()
-                            })
-                            .unwrap_or_else(|| "Not recorded".into_any());
+                            .map_or_else(
+                                || "Not recorded".into_any(),
+                                |release| release_link(&application, &release.to_string()),
+                            );
                         view! {
                             <div class="stack-sm">
                                 <dl class="kv">
@@ -943,50 +970,49 @@ fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
         {move || {
             let deployment = deployment.get();
             let (hint, spec) = match &deployment.application {
-                Some(application) => (
-                    "Configuration captured when this deployment was accepted, rendered for its environment.",
-                    application.to_manifest().spec,
-                ),
-                None => (
-                    "The repository manifest has not been fetched yet; showing the captured configuration with references unresolved.",
-                    deployment.template.to_manifest().spec,
-                ),
+                Some(application) => {
+                    (
+                        "Configuration captured when this deployment was accepted, rendered for its environment.",
+                        application.to_manifest().spec,
+                    )
+                }
+                None => {
+                    (
+                        "The repository manifest has not been fetched yet; showing the captured configuration with references unresolved.",
+                        deployment.template.to_manifest().spec,
+                    )
+                }
             };
-            let fetched = deployment.template.spec().manifest.as_ref().map(|manifest| {
-                let revision = manifest
-                    .repository
-                    .commit
-                    .as_ref()
-                    .unwrap_or(&manifest.repository.branch);
-                format!("Manifest {} from {revision}.", manifest.path)
-            });
+            let fetched = deployment
+                .template
+                .spec()
+                .manifest
+                .as_ref()
+                .map(|manifest| {
+                    let revision = manifest
+                        .repository
+                        .commit
+                        .as_ref()
+                        .unwrap_or(&manifest.repository.branch);
+                    format!("Manifest {} from {revision}.", manifest.path)
+                });
             view! {
                 <p class="hint">{hint}</p>
                 {fetched.map(|fetched| view! { <p class="hint">{fetched}</p> })}
                 {deployment
                     .warnings
                     .iter()
-                    .map(|warning| notice(Tone::Warn, format!("{}: {}", warning.code, warning.message)))
+                    .map(|warning| notice(
+                        Tone::Warn,
+                        format!("{}: {}", warning.code, warning.message),
+                    ))
                     .collect_view()}
                 {(!deployment.variables.is_empty())
                     .then(|| {
                         view! {
                             <div class="snapshot-service">
                                 <h4>"Variables"</h4>
-                                <dl class="kv">
-                                    {deployment
-                                        .variables
-                                        .iter()
-                                        .map(|(reference, value)| {
-                                            view! {
-                                                <dt>
-                                                    <code>{reference.clone()}</code>
-                                                </dt>
-                                                <dd>{value.to_string()}</dd>
-                                            }
-                                        })
-                                        .collect_view()}
-                                </dl>
+                                {variable_values(&deployment.variables)}
                             </div>
                         }
                     })}
@@ -1019,7 +1045,11 @@ fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
                                         view! {
                                             <li>
                                                 <strong>{job.name}</strong>
-                                                {format!(" on {}, up to {}s: ", job.service, job.timeout_seconds)}
+                                                {format!(
+                                                    " on {}, up to {}s: ",
+                                                    job.service,
+                                                    job.timeout_seconds,
+                                                )}
                                                 <code>{join(&job.command, " ")}</code>
                                             </li>
                                         }
@@ -1069,7 +1099,7 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
                     }
                     cursor.set(page.next_cursor);
                 }
-                Err(error) => failure.set(Some(client_error_message(&error))),
+                Err(error) => failure.set(Some(error.user_message())),
             }
             loading.set(false);
         });
@@ -1146,8 +1176,8 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
 
 /// One attempt outcome with a link to its events and diagnostics.
 #[component]
-fn AttemptRow(attempt: piqueld_client::Operation) -> impl IntoView {
-    let history = format!("/dashboard/events?operation={}", attempt.id);
+fn AttemptRow(attempt: Operation) -> impl IntoView {
+    let history = operation_events(&attempt.id);
     let outcome = match (attempt.error_code, attempt.error_message) {
         (Some(code), Some(message)) => format!("{code}: {message}"),
         (Some(code), None) => code,
@@ -1161,7 +1191,7 @@ fn AttemptRow(attempt: piqueld_client::Operation) -> impl IntoView {
             <td class="muted">{outcome}</td>
             <td class="muted">{when(attempt.updated_at_ms)}</td>
             <td class="actions">
-                <leptos_router::components::A href={history}>"Events"</leptos_router::components::A>
+                <A href={history}>"Events"</A>
             </td>
         </tr>
     }
@@ -1169,34 +1199,29 @@ fn AttemptRow(attempt: piqueld_client::Operation) -> impl IntoView {
 
 /// Definition list describing one snapshotted service's configuration.
 #[component]
-fn SnapshotService(service: piqueld_client::Service) -> impl IntoView {
+fn SnapshotService(service: Service) -> impl IntoView {
     let source = match service.source.clone() {
         Source::Image { image } => image.to_string(),
         Source::Git {
             repository,
             build:
-                piqueld_client::Build::Docker {
+                Build::Docker {
                     dockerfile,
                     context,
                     args,
                     target,
                 },
-        } => {
-            let mut source = format!(
-                "Git: {} · Dockerfile: {} · context: {}",
-                repository, dockerfile, context,
-            );
-            if let Some(target) = target {
-                source.push_str(&format!(" · target: {target}"));
-            }
-            if !args.is_empty() {
-                source.push_str(&format!(
-                    " · args: {}",
-                    crate::browser::builds::build_arguments(&args)
-                ));
-            }
-            source
-        }
+        } => [
+            Some(format!("Git: {repository}")),
+            Some(format!("Dockerfile: {dockerfile}")),
+            Some(format!("context: {context}")),
+            target.map(|target| format!("target: {target}")),
+            (!args.is_empty()).then(|| format!("args: {}", build_arguments(&args))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · "),
     };
     let list = |items: Vec<String>| {
         if items.is_empty() {
@@ -1279,7 +1304,7 @@ fn SnapshotService(service: piqueld_client::Service) -> impl IntoView {
 
 /// Health check and resource limit rows for `SnapshotService`.
 #[component]
-fn SnapshotRuntime(service: piqueld_client::Service) -> impl IntoView {
+fn SnapshotRuntime(service: Service) -> impl IntoView {
     view! {
         <dt>"Health check"</dt>
         <dd>
@@ -1288,21 +1313,12 @@ fn SnapshotRuntime(service: piqueld_client::Service) -> impl IntoView {
                 .map_or_else(
                     || "None".into(),
                     |check| match check {
-                        piqueld_client::HealthCheck::Http {
-                            port,
-                            path,
-                            interval_seconds,
-                            timeout_seconds,
-                        } => {
+                        HealthCheck::Http { port, path, interval_seconds, timeout_seconds } => {
                             format!(
                                 "HTTP :{port}{path} · every {interval_seconds}s · timeout {timeout_seconds}s",
                             )
                         }
-                        piqueld_client::HealthCheck::Command {
-                            command,
-                            interval_seconds,
-                            timeout_seconds,
-                        } => {
+                        HealthCheck::Command { command, interval_seconds, timeout_seconds } => {
                             format!(
                                 "{} · every {interval_seconds}s · timeout {timeout_seconds}s",
                                 join(&command, " "),
@@ -1333,53 +1349,23 @@ fn SnapshotRuntime(service: piqueld_client::Service) -> impl IntoView {
     }
 }
 
+/// Definition list of the values of `${{ vars.<name> }}` references.
+fn variable_values<'a, V: Display + 'a>(
+    variables: impl IntoIterator<Item = (&'a String, &'a V)>,
+) -> AnyView {
+    key_values(variables.into_iter().map(|(reference, value)| {
+        (
+            view! { <code>{reference.clone()}</code> },
+            value.to_string(),
+        )
+    }))
+}
+
 /// Joins template elements as written.
-fn join(values: &[piqueld_client::Template], separator: &str) -> String {
+fn join(values: &[Template], separator: &str) -> String {
     values
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(separator)
-}
-
-impl super::EditorContext {
-    /// Polls the first deployment page every 2 seconds while the deployments tab is
-    /// selected and the page is visible, merging results with `merge_history`.
-    /// Stops when the owning view unmounts.
-    fn poll_deployments(
-        self,
-        id: String,
-        history: RwSignal<Vec<DeploymentView>>,
-        cursor: RwSignal<Option<String>>,
-        paginated: RwSignal<bool>,
-        error: RwSignal<Option<String>>,
-        loading: RwSignal<bool>,
-    ) {
-        let active = Alive::new();
-        let poll_id = id;
-        spawn_local(async move {
-            while active.get() {
-                if self.tab.get_untracked() == "Deployments"
-                    && !loading.get_untracked()
-                    && !crate::browser::document_hidden()
-                {
-                    match Client::browser().deployments(&poll_id, None).await {
-                        Ok(page) => {
-                            if !active.get() {
-                                break;
-                            }
-                            merge_history(history, cursor, paginated, page);
-                            error.set(None);
-                        }
-                        Err(e) => {
-                            if active.get() {
-                                error.set(Some(client_error_message(&e)));
-                            }
-                        }
-                    }
-                }
-                gloo_timers::future::TimeoutFuture::new(2000).await;
-            }
-        });
-    }
 }

@@ -28,9 +28,9 @@ impl LogLine {
             .collect()
     }
 
-    // Reassemble partial lines independently for each stream: concurrent process
-    // reads may split a line or interleave stderr before stdout's next chunk.
-    /// Reassembles captured build chunks into display lines.
+    /// Reassembles captured build chunks into display lines. Each stream is
+    /// reassembled on its own: concurrent process reads may split a line or
+    /// interleave stderr before stdout's next chunk.
     #[must_use]
     pub fn build(chunks: &[BuildLogChunk], service: &str) -> Vec<Self> {
         let mut lines = Vec::new();

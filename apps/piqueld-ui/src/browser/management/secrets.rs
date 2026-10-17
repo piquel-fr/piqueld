@@ -1,12 +1,16 @@
 //! Write-only secret values, their access lists, and saved file references.
-use super::super::ui::{Icon, Tone, badge, empty, icon, notice, remove_button, text_input, when};
-use super::{client_error_message, diagnostic_id, dirty_group, editor, save_actions};
+use super::super::ui::{
+    Icon, Tone, add_button, badge, checkbox, empty, icon, member_checkbox, notice, remove_button,
+    text_field, when,
+};
+use super::super::{ClientErrorExt, confirm};
+use super::{Draft, EditorContext, Rows, editor};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::{
     ApplicationView, Client, ClientError, EnvironmentAccess, EnvironmentId, MountedSecret,
-    SecretAccess, SecretMetadata, StoredSecret,
+    SecretAccess, SecretMetadata, SecretMount, StoredSecret, Template,
     edit::{ApplicationEdit, ServiceEdit},
 };
 use std::collections::BTreeSet;
@@ -28,20 +32,48 @@ impl Feedback {
             notice: RwSignal::new(String::new()),
         }
     }
+
+    /// Shows `message` for the failed request `error`, with its diagnostic.
     fn fail(self, message: String, error: &ClientError) {
         self.notice.set(String::new());
-        self.diagnostic.set(diagnostic_id(error));
+        self.diagnostic.set(error.diagnostic_id());
         self.error.set(Some(message));
     }
+
+    /// Shows `message` instead of any earlier outcome.
     fn succeed(self, message: &str) {
         self.clear();
         self.notice.set(message.into());
     }
+
+    /// Hides the last outcome.
     fn clear(self) {
         self.diagnostic.set(None);
         self.error.set(None);
         self.notice.set(String::new());
     }
+
+    /// Sends `request` while the editor is busy, replacing the last outcome,
+    /// then runs `done` with its response or `failed` with its error.
+    fn send<T: 'static>(
+        self,
+        context: EditorContext,
+        request: impl Future<Output = Result<T, ClientError>> + 'static,
+        done: impl FnOnce(T) + 'static,
+        failed: impl FnOnce(ClientError) + 'static,
+    ) {
+        context.busy.set(true);
+        self.clear();
+        spawn_local(async move {
+            match request.await {
+                Ok(response) => done(response),
+                Err(error) => failed(error),
+            }
+            context.busy.set(false);
+        });
+    }
+
+    /// The error with its diagnostic link, or the success notice.
     fn view(self) -> impl IntoView {
         view! {
             {move || {
@@ -57,9 +89,9 @@ impl Feedback {
                                     .get()
                                     .map(|id| {
                                         view! {
-                                            <A href={format!("/dashboard/errors/{id}")}>
-                                                "Diagnostic details"
-                                            </A>
+                                            <A href={format!(
+                                                "/dashboard/errors/{id}",
+                                            )}>"Diagnostic details"</A>
                                         }
                                     })}
                             },
@@ -96,13 +128,24 @@ fn loader<
                     items.set(loaded);
                     ready.set(true);
                 }
-                Err(e) => feedback.fail(client_error_message(&e), &e),
+                Err(e) => feedback.fail(e.user_message(), &e),
             }
             loading.set(false);
         });
     });
     reload.run(());
     reload
+}
+
+/// Badge of a secret's state: being deleted, its value discarded, or `held`.
+fn status_badge(metadata: &SecretMetadata, held: &'static str) -> AnyView {
+    if metadata.deleting {
+        badge(Tone::Warn, "deletion pending")
+    } else if metadata.unavailable {
+        badge(Tone::Bad, "value discarded")
+    } else {
+        badge(Tone::Ok, held)
+    }
 }
 
 /// The access list a secret form edits: every environment, or the checked
@@ -124,6 +167,8 @@ impl AccessForm {
         form.load(&SecretAccess::default());
         form
     }
+
+    /// Shows `access` in the form.
     fn load(self, access: &SecretAccess) {
         match &access.environments {
             EnvironmentAccess::All => {
@@ -137,6 +182,8 @@ impl AccessForm {
         }
         self.previews.set(access.previews);
     }
+
+    /// The access the form shows.
     fn access(self) -> SecretAccess {
         SecretAccess {
             environments: if self.all.get_untracked() {
@@ -147,57 +194,29 @@ impl AccessForm {
             previews: self.previews.get_untracked(),
         }
     }
+
+    /// Checkboxes for every environment, all of them, and previews.
     fn view(self) -> impl IntoView {
         let context = editor();
-        let checkbox = move |label: String, checked: Signal<bool>, set: Callback<bool>| {
-            view! {
-                <label class="checkbox">
-                    <input
-                        type="checkbox"
-                        prop:checked={move || checked.get()}
-                        on:change={move |e| set.run(event_target_checked(&e))}
-                    />
-                    {label}
-                </label>
-            }
-        };
         view! {
             <div class="stack-sm">
                 <span>"Who may mount it"</span>
-                {checkbox(
-                    "Every environment, including ones created later".into(),
-                    self.all.into(),
-                    Callback::new(move |checked| self.all.set(checked)),
-                )}
+                {checkbox("Every environment, including ones created later", self.all)}
                 <div hidden={move || self.all.get()} class="stack-sm">
                     <For
                         each={move || context.saved.get().environments}
                         key={|environment| environment.id.clone()}
                         children={move |environment| {
-                            let id = environment.id.clone();
-                            let toggled = id.clone();
-                            checkbox(
-                                environment.name.to_string(),
-                                Signal::derive(move || self.allowed.with(|ids| ids.contains(&id))),
-                                Callback::new(move |checked| {
-                                    self.allowed
-                                        .update(|ids| {
-                                            if checked {
-                                                ids.insert(toggled.clone());
-                                            } else {
-                                                ids.remove(&toggled);
-                                            }
-                                        });
-                                }),
-                            )
+                            view! {
+                                <label class="checkbox">
+                                    {member_checkbox(self.allowed, environment.id)}
+                                    {environment.name.to_string()}
+                                </label>
+                            }
                         }}
                     />
                 </div>
-                {checkbox(
-                    "Previews".into(),
-                    self.previews.into(),
-                    Callback::new(move |checked| self.previews.set(checked)),
-                )}
+                {checkbox("Previews", self.previews)}
                 <p class="hint">
                     "Previews do not exist yet; the setting is kept for them. Access applies to later deployments; running ones keep their versions."
                 </p>
@@ -225,9 +244,8 @@ fn StoredSecrets(
     let ready = RwSignal::new(false);
     let feedback = Feedback::new();
     let name = RwSignal::new(String::new());
-    let value = RwSignal::new(String::new());
-    let empty_value = RwSignal::new(String::new());
-    dirty_group("secret-value".into(), value, empty_value);
+    // A typed value is an unsaved edit.
+    let value = Draft::new("secret-value".into(), String::new()).value;
     let form = AccessForm::new();
     let id = StoredValue::new(context.id());
     let reload = loader(secrets, ready, feedback, move || {
@@ -292,19 +310,25 @@ fn StoredSecrets(
         feedback.fail(
             format!(
                 "{} Refresh before another secret change. Any submitted value has been cleared.",
-                client_error_message(&e)
+                e.user_message()
             ),
             &e,
         );
     };
+    // Whether a change may start now.
+    let idle = move || !context.blocked() && ready.get_untracked();
     let write = move |_| {
-        if context.blocked() || !ready.get_untracked() {
+        if !idle() {
             return;
         }
         let name = name.get_untracked();
         let (generation, current) = existing(&name).unzip();
         let generation = generation.unwrap_or(0);
-        if generation > 0 && !window().confirm_with_message(&format!("Replace {name}? Running deployments keep their current version. A later Deploy will use the replacement.")).unwrap_or(false) {
+        if generation > 0
+            && !confirm(&format!(
+                "Replace {name}? Running deployments keep their current version. A later Deploy will use the replacement."
+            ))
+        {
             return;
         }
         let bytes = value.get_untracked().into_bytes();
@@ -313,67 +337,59 @@ fn StoredSecrets(
         // server keeps a list changed elsewhere.
         let access = Some(form.access()).filter(|access| current.as_ref() != Some(access));
         let id = id.get_value();
-        context.busy.set(true);
-        feedback.clear();
-        spawn_local(async move {
-            match Client::browser()
-                .put_stored_secret(&id, &name, generation, bytes, access.as_ref())
-                .await
-            {
-                Ok(secret) => saved(secret, "Secret saved. Deploy to use its new version."),
-                Err(e) => failed(e),
-            }
-            context.busy.set(false);
-        });
+        feedback.send(
+            context,
+            async move {
+                Client::browser()
+                    .put_stored_secret(&id, &name, generation, bytes, access.as_ref())
+                    .await
+            },
+            move |secret| saved(secret, "Secret saved. Deploy to use its new version."),
+            failed,
+        );
     };
     let change_access = move |_| {
-        if context.blocked() || !ready.get_untracked() {
+        if !idle() {
             return;
         }
         let (id, name, access) = (id.get_value(), name.get_untracked(), form.access());
-        context.busy.set(true);
-        feedback.clear();
-        spawn_local(async move {
-            match Client::browser()
-                .set_secret_access(&id, &name, &access)
-                .await
-            {
-                Ok(secret) => saved(secret, "Access saved. It applies to later deployments."),
-                Err(e) => failed(e),
-            }
-            context.busy.set(false);
-        });
+        feedback.send(
+            context,
+            async move {
+                Client::browser()
+                    .set_secret_access(&id, &name, &access)
+                    .await
+            },
+            move |secret| saved(secret, "Access saved. It applies to later deployments."),
+            failed,
+        );
     };
     let remove = Callback::new(move |secret: SecretMetadata| {
-        if context.blocked() || !ready.get_untracked() {
+        if !idle() {
             return;
         }
-        if !window()
-            .confirm_with_message(&format!(
-                "Delete {} from every environment, with its retained versions? Secrets still in use cannot be deleted.",
-                secret.name
-            ))
-            .unwrap_or(false)
-        {
+        if !confirm(&format!(
+            "Delete {} from every environment, with its retained versions? Secrets still in use cannot be deleted.",
+            secret.name
+        )) {
             return;
         }
         let id = id.get_value();
-        context.busy.set(true);
-        feedback.clear();
-        spawn_local(async move {
-            match Client::browser()
-                .delete_stored_secret(&id, &secret.name, secret.generation)
-                .await
-            {
-                Ok(()) => {
-                    secrets.update(|items| items.retain(|s| s.metadata.name != secret.name));
-                    feedback.succeed("Secret deleted.");
-                    notify();
-                }
-                Err(e) => failed(e),
-            }
-            context.busy.set(false);
-        });
+        let name = secret.name.clone();
+        feedback.send(
+            context,
+            async move {
+                Client::browser()
+                    .delete_stored_secret(&id, &secret.name, secret.generation)
+                    .await
+            },
+            move |()| {
+                secrets.update(|items| items.retain(|s| s.metadata.name != name));
+                feedback.succeed("Secret deleted.");
+                notify();
+            },
+            failed,
+        );
     });
     // Every secret, or on an environment's page the ones it may mount or mounts.
     let shown = move || {
@@ -394,7 +410,7 @@ fn StoredSecrets(
         shown()
             .into_iter()
             .map(|secret| {
-                let selected = secret.clone();
+                let selected = secret.metadata.name.clone();
                 let metadata = secret.metadata.clone();
                 let deleting = metadata.deleting;
                 view! {
@@ -405,22 +421,14 @@ fn StoredSecrets(
                         <td class="num">{metadata.generation}</td>
                         <td class="muted">{when(metadata.updated_at_ms)}</td>
                         <td>{secret.access.describe(&environments)}</td>
-                        <td>
-                            {if deleting {
-                                badge(Tone::Warn, "deletion pending")
-                            } else if metadata.unavailable {
-                                badge(Tone::Bad, "value discarded")
-                            } else {
-                                badge(Tone::Ok, "stored")
-                            }}
-                        </td>
+                        <td>{status_badge(&metadata, "stored")}</td>
                         <td class="actions">
                             <span class="btn-group" style="justify-content:flex-end">
                                 <button
                                     type="button"
                                     class="btn btn-sm"
                                     disabled={move || context.blocked() || !ready.get() || deleting}
-                                    on:click={move |_| name.set(selected.metadata.name.clone())}
+                                    on:click={move |_| name.set(selected.clone())}
                                 >
                                     "Edit"
                                 </button>
@@ -440,6 +448,13 @@ fn StoredSecrets(
             .collect_view()
     };
     let stored = move || secrets.with(|items| items.iter().any(|s| s.metadata.name == name.get()));
+    let deleting = move || {
+        secrets.with(|items| {
+            items
+                .iter()
+                .any(|s| s.metadata.name == name.get() && s.metadata.deleting)
+        })
+    };
     view! {
         <section class="card">
             <header>
@@ -481,11 +496,13 @@ fn StoredSecrets(
                     {move || {
                         if shown().is_empty() {
                             if ready.get() {
-                                empty(if scope().is_some() {
-                                    "No stored secret this environment may mount."
-                                } else {
-                                    "No secrets stored for this application."
-                                })
+                                empty(
+                                    if scope().is_some() {
+                                        "No stored secret this environment may mount."
+                                    } else {
+                                        "No secrets stored for this application."
+                                    },
+                                )
                             } else {
                                 empty("Loading secrets…")
                             }
@@ -513,7 +530,7 @@ fn StoredSecrets(
                     <div class="section-header">
                         <h4>"Save a secret"</h4>
                     </div>
-                    {text_input("Secret name", name, String::clone, |v, s| *v = s)}
+                    {text_field("Secret name", name)}
                     <label class="field">
                         <span>"Value"</span>
                         <textarea
@@ -541,13 +558,7 @@ fn StoredSecrets(
                             type="button"
                             class="btn btn-primary"
                             disabled={move || {
-                                name.get().is_empty() || value.get().is_empty()
-                                    || secrets
-                                        .with(|items| {
-                                            items
-                                                .iter()
-                                                .any(|s| s.metadata.name == name.get() && s.metadata.deleting)
-                                        })
+                                name.get().is_empty() || value.get().is_empty() || deleting()
                             }}
                             on:click={write}
                         >
@@ -576,6 +587,7 @@ impl GeneratedAction {
             Self::Delete => "Delete",
         }
     }
+
     fn confirmation(self, name: &str) -> String {
         match self {
             Self::Regenerate => format!(
@@ -586,10 +598,31 @@ impl GeneratedAction {
             ),
         }
     }
+
     fn success(self) -> &'static str {
         match self {
             Self::Regenerate => "New value generated. Deploy to use it.",
             Self::Delete => "Secret deleted.",
+        }
+    }
+
+    /// Applies the action to `secret` of `environment`, returning the
+    /// regenerated secret.
+    async fn send(
+        self,
+        environment: &str,
+        secret: &SecretMetadata,
+    ) -> Result<Option<SecretMetadata>, ClientError> {
+        let client = Client::browser();
+        match self {
+            Self::Regenerate => client
+                .regenerate_secret(environment, &secret.name, secret.generation)
+                .await
+                .map(Some),
+            Self::Delete => client
+                .delete_secret(environment, &secret.name, secret.generation)
+                .await
+                .map(|()| None),
         }
     }
 }
@@ -599,6 +632,7 @@ impl GeneratedAction {
 /// be regenerated for the next deployment, or deleted so a later deployment
 /// generates new ones.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn EnvironmentSecrets() -> impl IntoView {
     let context = editor();
     let generated = RwSignal::new(Vec::<SecretMetadata>::new());
@@ -620,50 +654,33 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
         if context.blocked() || !ready.get_untracked() {
             return;
         }
-        if !window()
-            .confirm_with_message(&action.confirmation(&secret.name))
-            .unwrap_or(false)
-        {
+        if !confirm(&action.confirmation(&secret.name)) {
             return;
         }
         let id = id.get_value();
-        context.busy.set(true);
-        feedback.clear();
-        spawn_local(async move {
-            let client = Client::browser();
-            let (name, generation) = (&secret.name, secret.generation);
-            let result = match action {
-                GeneratedAction::Regenerate => client
-                    .regenerate_secret(&id, name, generation)
-                    .await
-                    .map(Some),
-                GeneratedAction::Delete => client
-                    .delete_secret(&id, name, generation)
-                    .await
-                    .map(|()| None),
-            };
-            match result {
-                Ok(replacement) => {
-                    generated.update(|items| {
-                        items.retain(|s| s.name != secret.name);
-                        items.extend(replacement);
-                        items.sort_by(|a, b| a.name.cmp(&b.name));
-                    });
-                    feedback.succeed(action.success());
-                }
-                Err(e) => {
-                    ready.set(false);
-                    feedback.fail(
-                        format!(
-                            "{} Refresh, then retry if cleanup is pending.",
-                            client_error_message(&e)
-                        ),
-                        &e,
-                    );
-                }
-            }
-            context.busy.set(false);
-        });
+        let name = secret.name.clone();
+        feedback.send(
+            context,
+            async move { action.send(&id, &secret).await },
+            move |replacement| {
+                generated.update(|items| {
+                    items.retain(|s| s.name != name);
+                    items.extend(replacement);
+                    items.sort_by(|a, b| a.name.cmp(&b.name));
+                });
+                feedback.succeed(action.success());
+            },
+            move |e| {
+                ready.set(false);
+                feedback.fail(
+                    format!(
+                        "{} Refresh, then retry if cleanup is pending.",
+                        e.user_message()
+                    ),
+                    &e,
+                );
+            },
+        );
     });
     let mounted = move || {
         let environment = context.selected_environment()?;
@@ -703,8 +720,6 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
             .get()
             .into_iter()
             .map(|secret| {
-                let unavailable = secret.unavailable;
-                let deleting = secret.deleting;
                 view! {
                     <tr>
                         <td>
@@ -712,15 +727,7 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                         </td>
                         <td class="num">{secret.generation}</td>
                         <td class="muted">{when(secret.updated_at_ms)}</td>
-                        <td>
-                            {if deleting {
-                                badge(Tone::Warn, "deletion pending")
-                            } else if unavailable {
-                                badge(Tone::Bad, "value discarded")
-                            } else {
-                                badge(Tone::Ok, "generated")
-                            }}
-                        </td>
+                        <td>{status_badge(&secret, "generated")}</td>
                         <td class="actions">
                             {[GeneratedAction::Regenerate, GeneratedAction::Delete]
                                 .map(|action| {
@@ -863,7 +870,7 @@ pub(super) fn SecretFileSettings() -> impl IntoView {
                         .spec()
                         .services
                         .iter()
-                        .map(|s| s.name.to_string())
+                        .map(|s| s.name.clone())
                         .collect::<Vec<_>>()
                 }}
                 key={|name| name.clone()}
@@ -873,22 +880,30 @@ pub(super) fn SecretFileSettings() -> impl IntoView {
     }
 }
 
+/// The secret file references `service` saves in `saved`.
+fn secret_files(saved: &ApplicationView, service: &str) -> Option<Vec<SecretMount>> {
+    saved
+        .application
+        .spec()
+        .services
+        .iter()
+        .find(|s| s.name.as_str() == service)
+        .map(|s| s.secrets.clone())
+}
+
 /// Editor for one service's secret file references (secret name and container
 /// path), saved as part of the application configuration.
 #[component]
 fn SecretFiles(service_name: String) -> impl IntoView {
     let context = editor();
-    let mounts = RwSignal::new(context.saved.with_untracked(|a| {
-        a.application
-            .spec()
-            .services
-            .iter()
-            .find(|s| s.name.as_str() == service_name)
-            .map(|s| s.secrets.clone())
-            .unwrap_or_default()
-    }));
-    let baseline = RwSignal::new(mounts.get_untracked());
-    dirty_group(format!("secret-files:{service_name}"), mounts, baseline);
+    let draft = Draft::new(
+        format!("secret-files:{service_name}"),
+        context
+            .saved
+            .with_untracked(|saved| secret_files(saved, &service_name))
+            .unwrap_or_default(),
+    );
+    let mounts = draft.value;
     let service = StoredValue::new(service_name.clone());
     let save = move || {
         context.save(
@@ -897,15 +912,8 @@ fn SecretFiles(service_name: String) -> impl IntoView {
                 edit: ServiceEdit::Secrets(mounts.get_untracked()),
             },
             Callback::new(move |saved: ApplicationView| {
-                if let Some(target) = saved
-                    .application
-                    .spec()
-                    .services
-                    .iter()
-                    .find(|s| s.name.as_str() == service.get_value())
-                {
-                    mounts.set(target.secrets.clone());
-                    baseline.set(target.secrets.clone());
+                if let Some(secrets) = secret_files(&saved, &service.get_value()) {
+                    draft.reset(secrets);
                 }
             }),
         );
@@ -922,7 +930,7 @@ fn SecretFiles(service_name: String) -> impl IntoView {
             </header>
             <div class="form-list">
                 <For
-                    each={move || (0..mounts.get().len()).collect::<Vec<_>>()}
+                    each={move || mounts.indices()}
                     key={|i| *i}
                     children={move |index| {
                         view! {
@@ -931,15 +939,11 @@ fn SecretFiles(service_name: String) -> impl IntoView {
                                     <span>"Secret name"</span>
                                     <input
                                         prop:value={move || {
-                                            mounts
-                                                .get()
-                                                .get(index)
-                                                .map(|m| m.name.to_string())
-                                                .unwrap_or_default()
+                                            mounts.field(index, |m| m.name.to_string())
                                         }}
                                         on:input={move |e| {
                                             mounts
-                                                .update(|items| items[index].name = event_target_value(&e).into());
+                                                .edit(index, |m| m.name = event_target_value(&e).into());
                                         }}
                                     />
                                 </label>
@@ -947,49 +951,33 @@ fn SecretFiles(service_name: String) -> impl IntoView {
                                     <span>"Container path"</span>
                                     <input
                                         prop:value={move || {
-                                            mounts
-                                                .get()
-                                                .get(index)
-                                                .map(|m| m.target.clone())
-                                                .unwrap_or_default()
+                                            mounts.field(index, |m| m.target.clone())
                                         }}
                                         on:input={move |e| {
-                                            mounts
-                                                .update(|items| {
-                                                    items[index].target = event_target_value(&e);
-                                                });
+                                            mounts.edit(index, |m| m.target = event_target_value(&e));
                                         }}
                                     />
                                 </label>
-                                {remove_button(move || {
-                                    mounts
-                                        .update(|items| {
-                                            items.remove(index);
-                                        });
-                                })}
+                                {remove_button(move || mounts.remove(index))}
                             </div>
                         }
                     }}
                 />
             </div>
-            <button
-                type="button"
-                class="btn btn-sm"
-                on:click={move |_| {
+            {add_button(
+                "Add secret file",
+                move || {
                     mounts
                         .update(|items| {
                             items
-                                .push(piqueld_client::SecretMount {
-                                    name: piqueld_client::Template::default(),
+                                .push(SecretMount {
+                                    name: Template::default(),
                                     target: "/run/secrets/".into(),
                                 });
                         });
-                }}
-            >
-                {icon(Icon::Plus)}
-                "Add secret file"
-            </button>
-            {save_actions(mounts, baseline, save, || false)}
+                },
+            )}
+            {draft.actions(save, || false)}
         </section>
     }
 }

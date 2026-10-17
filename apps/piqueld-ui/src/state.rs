@@ -12,7 +12,7 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(15);
 /// Maximum delay after repeated failed background refreshes.
 pub const MAX_POLL_INTERVAL: Duration = Duration::from_mins(2);
 
-/// Connection state shown in the dashboard header.
+/// Connection state shown in the dashboard sidebar and system status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConnectionState {
     /// The first request has not completed.
@@ -36,72 +36,6 @@ pub enum DataState {
     Empty,
     /// The last successful view is being retained after a refresh error.
     Stale,
-}
-
-/// The small view model used to describe refresh and selection transitions.
-/// Keeping these transitions pure makes the browser state behavior testable
-/// without a DOM or a browser runtime.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ViewState {
-    /// Refresh outcome for the application list.
-    data: DataState,
-    /// Application shown in the detail flow.
-    selected_id: Option<String>,
-}
-
-impl Default for ViewState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ViewState {
-    /// Starts before the first successful refresh.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            data: DataState::Loading,
-            selected_id: None,
-        }
-    }
-
-    /// Records a successful application listing, including an empty result.
-    pub fn record_success(&mut self, application_count: usize) {
-        self.data = if application_count == 0 {
-            DataState::Empty
-        } else {
-            DataState::Ready
-        };
-    }
-
-    /// Retains a prior successful view when a later refresh fails.
-    pub fn record_failure(&mut self) {
-        if self.data != DataState::Loading {
-            self.data = DataState::Stale;
-        }
-    }
-
-    /// Selects one application for the detail flow.
-    pub fn select(&mut self, application_id: impl Into<String>) {
-        self.selected_id = Some(application_id.into());
-    }
-
-    /// Clears the detail selection.
-    pub fn clear_selection(&mut self) {
-        self.selected_id = None;
-    }
-
-    /// Returns the current refresh state.
-    #[must_use]
-    pub const fn data(&self) -> DataState {
-        self.data
-    }
-
-    /// Returns the currently selected application ID.
-    #[must_use]
-    pub fn selected_id(&self) -> Option<&str> {
-        self.selected_id.as_deref()
-    }
 }
 
 /// A bounded application health label used by the view layer.
@@ -300,22 +234,10 @@ impl PollController {
         self.manual_pending
     }
 
-    /// Returns whether a background request may start now.
-    #[must_use]
-    pub const fn can_poll(&self) -> bool {
-        !self.hidden && !self.in_flight
-    }
-
     /// Returns the delay before the next background attempt.
     #[must_use]
     pub const fn delay(&self) -> Duration {
         self.delay
-    }
-
-    /// Returns whether a request is currently in flight.
-    #[must_use]
-    pub const fn in_flight(&self) -> bool {
-        self.in_flight
     }
 }
 
@@ -359,24 +281,6 @@ mod tests {
     }
 
     #[test]
-    fn view_state_covers_loading_empty_selected_and_stale_views() {
-        let mut state = ViewState::new();
-        assert_eq!(state.data(), DataState::Loading);
-        assert_eq!(state.selected_id(), None);
-
-        state.record_success(0);
-        assert_eq!(state.data(), DataState::Empty);
-        state.record_success(1);
-        assert_eq!(state.data(), DataState::Ready);
-        state.select("app-notes");
-        assert_eq!(state.selected_id(), Some("app-notes"));
-        state.record_failure();
-        assert_eq!(state.data(), DataState::Stale);
-        state.clear_selection();
-        assert_eq!(state.selected_id(), None);
-    }
-
-    #[test]
     fn pagination_stops_after_the_bounded_page_count() {
         let mut pages = PaginationState::new();
         assert_eq!(pages.next_cursor(), None);
@@ -406,7 +310,7 @@ mod tests {
         assert!(poller.begin_request());
         assert!(!poller.begin_request());
         poller.record_failure();
-        assert!(!poller.in_flight());
+        assert!(poller.begin_request());
         assert_eq!(poller.delay(), Duration::from_secs(30));
         poller.record_failure();
         poller.record_failure();
@@ -420,12 +324,11 @@ mod tests {
     fn hidden_pages_pause_background_work_but_allow_manual_refresh() {
         let mut poller = PollController::new();
         poller.set_hidden(true);
-        assert!(!poller.can_poll());
         assert!(!poller.begin_request());
         poller.request_manual_refresh();
         assert!(poller.begin_request());
         poller.record_success();
         poller.set_hidden(false);
-        assert!(poller.can_poll());
+        assert!(poller.begin_request());
     }
 }

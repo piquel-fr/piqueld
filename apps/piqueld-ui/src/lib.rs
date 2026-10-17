@@ -1,4 +1,5 @@
-//! Browser application management and deployment history.
+//! The piqueld web dashboard: its browser views (built for `wasm32` only),
+//! and the transport-independent state, form, and log helpers they use.
 
 pub mod editor;
 pub mod log_output;

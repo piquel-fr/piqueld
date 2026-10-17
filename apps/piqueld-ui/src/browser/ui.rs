@@ -4,6 +4,7 @@ use crate::state::ApplicationHealth;
 use leptos::prelude::*;
 use leptos::wasm_bindgen::JsCast;
 use piqueld_client::{BuildState, OperationState, RouteName};
+use std::collections::BTreeSet;
 
 /// Inline stroke icons, drawn on a 24-unit grid.
 #[derive(Clone, Copy)]
@@ -34,6 +35,7 @@ pub(super) enum Icon {
 }
 
 impl Icon {
+    /// The SVG children drawing the icon.
     const fn markup(self) -> &'static str {
         match self {
             Self::Home => {
@@ -99,6 +101,7 @@ impl Icon {
     }
 }
 
+/// Inline SVG of `icon`, sized by CSS and hidden from assistive technology.
 pub(super) fn icon(icon: Icon) -> AnyView {
     view! {
         <svg
@@ -150,6 +153,7 @@ pub(super) enum Tone {
 }
 
 impl Tone {
+    /// The `data-tone` attribute value CSS colours by.
     pub(super) const fn attr(self) -> &'static str {
         match self {
             Self::Ok => "ok",
@@ -163,6 +167,7 @@ impl Tone {
 }
 
 impl ApplicationHealth {
+    /// Tone of the health's badge.
     pub(super) const fn tone(self) -> Tone {
         match self {
             Self::Converged => Tone::Ok,
@@ -174,6 +179,7 @@ impl ApplicationHealth {
     }
 }
 
+/// Small `tone`d pill with a status `label`.
 pub(super) fn badge(tone: Tone, label: impl Into<String>) -> AnyView {
     view! {
         <span class="badge" data-tone={tone.attr()}>
@@ -183,10 +189,12 @@ pub(super) fn badge(tone: Tone, label: impl Into<String>) -> AnyView {
     .into_any()
 }
 
+/// Badge of an application's or environment's health.
 pub(super) fn health_badge(health: ApplicationHealth) -> AnyView {
     badge(health.tone(), health.label())
 }
 
+/// Badge of an operation's state; running ones pulse.
 pub(super) fn operation_badge(state: OperationState) -> AnyView {
     let tone = match state {
         OperationState::Requested => Tone::Pending,
@@ -198,6 +206,7 @@ pub(super) fn operation_badge(state: OperationState) -> AnyView {
     badge(tone, state.as_str())
 }
 
+/// Badge of a build's state; running ones pulse.
 pub(super) fn build_badge(state: BuildState) -> AnyView {
     let (tone, label) = match state {
         BuildState::Running => (Tone::Info, "running"),
@@ -210,9 +219,14 @@ pub(super) fn build_badge(state: BuildState) -> AnyView {
 
 /// A route's name, or a dash when it has none.
 pub(super) fn route_name(name: Option<RouteName>) -> AnyView {
-    name.map_or_else(
-        || view! { <span class="muted">"—"</span> }.into_any(),
-        |name| view! { <code>{name.to_string()}</code> }.into_any(),
+    code_or(name.map(|name| name.to_string()), "—")
+}
+
+/// `value` as code, or the muted `missing` text without one.
+pub(super) fn code_or(value: Option<String>, missing: &'static str) -> AnyView {
+    value.map_or_else(
+        || view! { <span class="muted">{missing}</span> }.into_any(),
+        |value| view! { <code>{value}</code> }.into_any(),
     )
 }
 
@@ -253,8 +267,155 @@ pub(super) fn remove_button(remove: impl Fn() + 'static) -> AnyView {
     .into_any()
 }
 
+/// Labelled checkbox bound to `value`.
+pub(super) fn checkbox(label: impl IntoView + 'static, value: RwSignal<bool>) -> AnyView {
+    view! {
+        <label class="checkbox">
+            <input
+                type="checkbox"
+                prop:checked={move || value.get()}
+                on:change={move |e| value.set(event_target_checked(&e))}
+            />
+            {label}
+        </label>
+    }
+    .into_any()
+}
+
+/// Checkbox input showing whether `set` holds `item`, adding or removing it
+/// when toggled; callers label it.
+pub(super) fn member_checkbox<T: Ord + Clone + Send + Sync + 'static>(
+    set: RwSignal<BTreeSet<T>>,
+    item: T,
+) -> AnyView {
+    let checked = item.clone();
+    view! {
+        <input
+            type="checkbox"
+            prop:checked={move || set.with(|set| set.contains(&checked))}
+            on:change={move |event| {
+                let item = item.clone();
+                if event_target_checked(&event) {
+                    set.update(|set| {
+                        set.insert(item);
+                    });
+                } else {
+                    set.update(|set| {
+                        set.remove(&item);
+                    });
+                }
+            }}
+        />
+    }
+    .into_any()
+}
+
+/// Small `label`led button adding a row to an editable list.
+pub(super) fn add_button(label: &'static str, add: impl Fn() + 'static) -> AnyView {
+    limited_add_button(label, || false, add)
+}
+
+/// `add_button` for a list of bounded length, disabled once `full`.
+pub(super) fn limited_add_button(
+    label: &'static str,
+    full: impl Fn() -> bool + Send + Sync + 'static,
+    add: impl Fn() + 'static,
+) -> AnyView {
+    view! {
+        <button type="button" class="btn btn-sm" disabled={full} on:click={move |_| add()}>
+            {icon(Icon::Plus)}
+            {label}
+        </button>
+    }
+    .into_any()
+}
+
+/// "Load older …" button of a paginated list, shown while `cursor` names a
+/// next page and disabled while `loading`.
+pub(super) fn load_older(
+    label: &'static str,
+    cursor: RwSignal<Option<String>>,
+    loading: RwSignal<bool>,
+    load: impl Fn() + Clone + Send + Sync + 'static,
+) -> impl IntoView {
+    view! {
+        <Show when={move || cursor.get().is_some()}>
+            <div class="btn-group">
+                <button
+                    type="button"
+                    class="btn"
+                    disabled={move || loading.get()}
+                    on:click={
+                        let load = load.clone();
+                        move |_| load()
+                    }
+                >
+                    {label}
+                </button>
+            </div>
+        </Show>
+    }
+}
+
+/// The toggle of an expandable record (`.expander`): a chevron, then
+/// `summary`, opening and closing `opened`.
+pub(super) fn expander_summary(
+    opened: RwSignal<bool>,
+    summary: impl IntoView + 'static,
+) -> AnyView {
+    view! {
+        <button
+            type="button"
+            class="expander-summary"
+            aria-expanded={move || opened.get().to_string()}
+            on:click={move |_| opened.update(|value| *value = !*value)}
+        >
+            <span class="chevron" aria-hidden="true">
+                {icon(Icon::ChevronRight)}
+            </span>
+            {summary}
+        </button>
+    }
+    .into_any()
+}
+
+/// Placeholder for a list or section without content.
 pub(super) fn empty(message: impl Into<String>) -> AnyView {
     view! { <p class="empty">{message.into()}</p> }.into_any()
+}
+
+/// A loaded resource: `loading` until it loads, then its failure or `show`
+/// of its value.
+pub(super) fn loaded<T: Clone + Send + Sync + 'static>(
+    data: LocalResource<Result<T, String>>,
+    loading: &'static str,
+    show: impl Fn(T) -> AnyView + Send + Sync + 'static,
+) -> impl Fn() -> AnyView + Send + Sync + 'static {
+    move || match data.get() {
+        None => empty(loading),
+        Some(Err(error)) => notice(Tone::Bad, error),
+        Some(Ok(value)) => show(value),
+    }
+}
+
+/// Definition list of `(term, description)` pairs.
+pub(super) fn key_values<K: IntoView + 'static, V: IntoView + 'static>(
+    pairs: impl IntoIterator<Item = (K, V)>,
+) -> AnyView {
+    view! {
+        <dl class="kv">
+            {pairs
+                .into_iter()
+                .map(|(key, value)| {
+                    view! {
+                        <dt>{key}</dt>
+                        <dd>{value}</dd>
+                    }
+                })
+                .collect_view()}
+        </dl>
+    }
+    .into_any()
 }
 
 /// Relative age with the full local timestamp on hover.
@@ -280,6 +441,8 @@ pub(super) fn PageHeader(
     }
 }
 
+/// Labelled text input bound to the part of `state` that `read` and `write`
+/// select.
 pub(super) fn text_input<T: Send + Sync + 'static>(
     label: &'static str,
     state: RwSignal<T>,
@@ -297,6 +460,11 @@ pub(super) fn text_input<T: Send + Sync + 'static>(
         </label>
     }
     .into_any()
+}
+
+/// Labelled text input bound to a whole string signal.
+pub(super) fn text_field(label: &'static str, value: RwSignal<String>) -> AnyView {
+    text_input(label, value, String::clone, |value, input| *value = input)
 }
 
 /// Native dialogs provide focus containment, Escape handling, and focus restoration.
@@ -362,6 +530,8 @@ pub(super) fn Modal(
     }
 }
 
+/// Tab buttons choosing one of `options` into `selected`; the chosen tab is
+/// marked current.
 #[component]
 pub(super) fn Tabs(
     label: &'static str,
