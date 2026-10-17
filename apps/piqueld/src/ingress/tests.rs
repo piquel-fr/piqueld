@@ -15,6 +15,104 @@ use piqueld_core::{
 };
 use serde_json::json;
 
+/// A data directory and store for test ingresses, and the Docker Engine
+/// socket in it, which a stub router answers or nothing serves.
+pub(super) struct Engine {
+    pub(super) directory: tempfile::TempDir,
+    pub(super) store: Arc<Store>,
+    server: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+}
+
+impl Engine {
+    async fn open() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+        Self {
+            directory,
+            store,
+            server: None,
+        }
+    }
+
+    /// A socket nothing listens on: Docker clients require the file to
+    /// exist, and every request fails at once.
+    pub(super) async fn unused() -> Self {
+        let engine = Self::open().await;
+        drop(tokio::net::UnixListener::bind(engine.socket()).unwrap());
+        engine
+    }
+
+    /// An engine answering every request with the router `serve` builds for
+    /// this installation's store.
+    pub(super) async fn serving(serve: impl FnOnce(&Store) -> axum::Router) -> Self {
+        let mut engine = Self::open().await;
+        let listener = tokio::net::UnixListener::bind(engine.socket()).unwrap();
+        let router = serve(&engine.store);
+        engine.server = Some(tokio::spawn(
+            async move { axum::serve(listener, router).await },
+        ));
+        engine
+    }
+
+    /// An engine failing every request with [`PRIVATE_BODY`].
+    pub(super) async fn failing() -> Self {
+        Self::serving(|_| {
+            axum::Router::new()
+                .fallback(|| async { (hyper::StatusCode::INTERNAL_SERVER_ERROR, PRIVATE_BODY) })
+        })
+        .await
+    }
+
+    pub(super) fn socket(&self) -> PathBuf {
+        self.directory.path().join("docker.sock")
+    }
+
+    /// An ingress of this installation, `enabled` or not.
+    pub(super) fn ingress(&self, enabled: bool) -> Ingress {
+        Ingress::new(
+            enabled,
+            &self.socket(),
+            self.directory.path(),
+            Arc::clone(&self.store),
+        )
+        .unwrap()
+    }
+
+    /// The history so far, which never holds [`PRIVATE_BODY`].
+    async fn history(&self) -> Vec<piqueld_core::Event> {
+        let events = self.store.events(None, None, 100).await.unwrap().items;
+        assert!(
+            !serde_json::to_string(&events)
+                .unwrap()
+                .contains(PRIVATE_BODY)
+        );
+        events
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        if let Some(server) = &self.server {
+            server.abort();
+        }
+    }
+}
+
+/// `[ingress.private]`, enabled.
+pub(super) fn private_config() -> crate::config::PrivateIngressConfig {
+    crate::config::PrivateIngressConfig {
+        enabled: true,
+        ..Default::default()
+    }
+}
+
+/// The routes of an application serving `host` with `visibility`.
+pub(super) fn routes(visibility: Visibility, host: &str) -> Vec<ValidatedRoute> {
+    let mut manifest = application("one", host, "body").to_manifest();
+    manifest.spec.routes[0].visibility = visibility;
+    manifest.validate().unwrap().spec().routes.clone()
+}
+
 pub(super) fn application(name: &str, host: &str, body: &str) -> NormalizedApplication {
     piqueld_core::parse_toml(&format!("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[[spec.services]]\nname='web'\ncommand=['caddy']\narguments=['respond','--listen',':8080','--body','{body}']\n[spec.services.source]\ntype='image'\nimage='{CADDY_IMAGE}'\n[[spec.routes]]\nhostname='{host}'\nvisibility='public'\nservice='web'\nport=8080")).unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap())
 }
@@ -992,59 +1090,15 @@ impl Scenario {
 /// Response body that must never reach history, diagnostics or health messages.
 const PRIVATE_BODY: &str = "private-engine-detail";
 
-/// An enabled ingress whose Docker Engine fails every request with `PRIVATE_BODY`.
-struct FailingEngine {
-    directory: tempfile::TempDir,
-    store: Arc<Store>,
-    ingress: Ingress,
-    server: tokio::task::JoinHandle<std::io::Result<()>>,
-}
-
-impl FailingEngine {
-    async fn start() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let socket = directory.path().join("docker.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let engine = axum::Router::new()
-            .fallback(|| async { (hyper::StatusCode::INTERNAL_SERVER_ERROR, PRIVATE_BODY) });
-        let server = tokio::spawn(async move { axum::serve(listener, engine).await });
-        let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
-        let ingress = Ingress::new(true, &socket, directory.path(), Arc::clone(&store)).unwrap();
-        Self {
-            directory,
-            store,
-            ingress,
-            server,
-        }
-    }
-
-    async fn history(&self) -> Vec<piqueld_core::Event> {
-        let events = self.store.events(None, None, 100).await.unwrap().items;
-        assert!(
-            !serde_json::to_string(&events)
-                .unwrap()
-                .contains(PRIVATE_BODY)
-        );
-        events
-    }
-}
-
-impl Drop for FailingEngine {
-    fn drop(&mut self) {
-        self.server.abort();
-    }
-}
-
 #[tokio::test]
 async fn journaled_requests_commit_intent_and_record_sanitized_failures() {
-    let engine = FailingEngine::start().await;
-    let journal = engine
-        .ingress
+    let engine = Engine::failing().await;
+    let ingress = engine.ingress(true);
+    let journal = ingress
         .journal("ingress_create_network", "edge")
         .await
         .unwrap();
-    let result = engine
-        .ingress
+    let result = ingress
         .docker
         .send(&journal, Method::POST, "/networks/create", None)
         .await;
@@ -1071,8 +1125,9 @@ async fn journaled_requests_commit_intent_and_record_sanitized_failures() {
 
 #[tokio::test]
 async fn failed_gateway_sync_reports_health_without_response_details() {
-    let engine = FailingEngine::start().await;
-    engine.ingress.synchronize().await.unwrap_err();
+    let engine = Engine::failing().await;
+    let ingress = engine.ingress(true);
+    ingress.synchronize().await.unwrap_err();
 
     // The failure happened while reading Docker, so no action was journaled.
     let events = engine.history().await;
@@ -1082,7 +1137,7 @@ async fn failed_gateway_sync_reports_health_without_response_details() {
     assert_eq!(health.kind, "dependency_health_changed");
     assert_eq!(health.scope, EventScope::Daemon);
     assert_eq!(health.error_code.as_deref(), Some("ingress_unavailable"));
-    let status = engine.ingress.status().await;
+    let status = ingress.status().await;
     assert!(!status.healthy);
     assert_eq!(
         status.message,
@@ -1155,36 +1210,23 @@ async fn ingress_caddy_dns01_certificates() {
 }
 
 /// An ingress with private ingress enabled whose Docker Engine is never called.
-async fn private_ingress(directory: &tempfile::TempDir) -> Ingress {
-    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
-    // Docker clients require the socket file to exist; nothing listens on it.
-    let socket = directory.path().join("docker.sock");
-    drop(tokio::net::UnixListener::bind(&socket).unwrap());
-    Ingress::new(true, &socket, directory.path(), store)
-        .unwrap()
-        .with_private(&crate::config::PrivateIngressConfig {
-            enabled: true,
-            ..Default::default()
-        })
+async fn private_ingress() -> (Engine, Ingress) {
+    let engine = Engine::unused().await;
+    let ingress = engine.ingress(true).with_private(&private_config());
+    (engine, ingress)
 }
 
 #[tokio::test]
 async fn each_listener_serves_only_its_own_routes() {
-    let directory = tempfile::tempdir().unwrap();
-    let ingress = private_ingress(&directory).await;
-    let routes = |visibility: &str, host: &str| {
-        let mut manifest = application("one", host, "body").to_manifest();
-        manifest.spec.routes[0].visibility = visibility.parse().unwrap();
-        manifest.validate().unwrap().spec().routes.clone()
-    };
+    let (_engine, ingress) = private_ingress().await;
     let table: crate::store::ingress::RoutingTable = [
         (
             EnvironmentId::parse("env-public").unwrap(),
-            routes("public", "www.example.com"),
+            routes(Visibility::Public, "www.example.com"),
         ),
         (
             EnvironmentId::parse("env-private").unwrap(),
-            routes("private", "admin.example.com"),
+            routes(Visibility::Private, "admin.example.com"),
         ),
     ]
     .into();
@@ -1262,20 +1304,19 @@ async fn each_listener_serves_only_its_own_routes() {
 
 #[tokio::test]
 async fn exact_hostnames_win_over_wildcards_covering_them() {
-    let directory = tempfile::tempdir().unwrap();
-    let ingress = private_ingress(&directory)
-        .await
-        .with_webhooks(Some(Hostname::parse("hooks.example.com").unwrap()));
-    let routes = |visibility: &str, host: &str| {
-        let mut manifest = application("one", host, "body").to_manifest();
-        manifest.spec.routes[0].visibility = visibility.parse().unwrap();
-        manifest.validate().unwrap().spec().routes.clone()
-    };
+    let (_engine, ingress) = private_ingress().await;
+    let ingress = ingress.with_webhooks(Some(Hostname::parse("hooks.example.com").unwrap()));
     let table: crate::store::ingress::RoutingTable = [
-        ("env-deeper", routes("public", "api.eu.example.com")),
-        ("env-exact", routes("public", "www.example.com")),
-        ("env-private", routes("private", "admin.example.com")),
-        ("env-wildcard", routes("public", "*.example.com")),
+        (
+            "env-deeper",
+            routes(Visibility::Public, "api.eu.example.com"),
+        ),
+        ("env-exact", routes(Visibility::Public, "www.example.com")),
+        (
+            "env-private",
+            routes(Visibility::Private, "admin.example.com"),
+        ),
+        ("env-wildcard", routes(Visibility::Public, "*.example.com")),
     ]
     .map(|(id, routes)| (EnvironmentId::parse(id).unwrap(), routes))
     .into();
@@ -1330,22 +1371,19 @@ async fn exact_hostnames_win_over_wildcards_covering_them() {
     let wildcard = RouteHostname::parse("*.example.com").unwrap();
     assert!(ingress.dns01_hostnames(&table).contains(&wildcard));
     // Through a tunnel, Cloudflare terminates its TLS.
-    let directory = tempfile::tempdir().unwrap();
-    let tunneled = private_ingress(&directory)
-        .await
-        .with_tunnel(&crate::config::TunnelConfig {
-            credentials: Some(crate::config::TunnelCredentials {
-                id: "6ff42ae2-765d-4adf-8112-31c55c1551ef".parse().unwrap(),
-                file: "{}".into(),
-            }),
-        });
+    let (_engine, tunneled) = private_ingress().await;
+    let tunneled = tunneled.with_tunnel(&crate::config::TunnelConfig {
+        credentials: Some(crate::config::TunnelCredentials {
+            id: "6ff42ae2-765d-4adf-8112-31c55c1551ef".parse().unwrap(),
+            file: "{}".into(),
+        }),
+    });
     assert!(!tunneled.dns01_hostnames(&table).contains(&wildcard));
 }
 
 #[tokio::test]
 async fn the_apps_node_forwards_to_the_private_listener_without_privileges() {
-    let directory = tempfile::tempdir().unwrap();
-    let ingress = private_ingress(&directory).await;
+    let (_engine, ingress) = private_ingress().await;
     let gateway = &ingress.name;
     assert_eq!(
         ingress.serve_configuration(),
@@ -1387,10 +1425,11 @@ async fn the_apps_node_forwards_to_the_private_listener_without_privileges() {
 
 #[tokio::test]
 async fn disabled_private_ingress_is_unconfirmed_until_the_node_is_removed() {
-    let engine = FailingEngine::start().await;
-    engine.ingress.synchronize().await.unwrap_err();
+    let engine = Engine::failing().await;
+    let ingress = engine.ingress(true);
+    ingress.synchronize().await.unwrap_err();
     // The gateway failed, but removing the node was still attempted.
-    let private = engine.ingress.status().await.private;
+    let private = ingress.status().await.private;
     assert!(!private.enabled && !private.healthy);
     assert!(
         private
@@ -1403,19 +1442,8 @@ async fn disabled_private_ingress_is_unconfirmed_until_the_node_is_removed() {
 
 #[tokio::test]
 async fn disabled_ingress_confirms_the_node_stopped_only_once_removed() {
-    let engine = FailingEngine::start().await;
-    let directory = engine.directory.path();
-    let disabled = Ingress::new(
-        false,
-        &directory.join("docker.sock"),
-        directory,
-        Arc::clone(&engine.store),
-    )
-    .unwrap()
-    .with_private(&crate::config::PrivateIngressConfig {
-        enabled: true,
-        ..Default::default()
-    });
+    let engine = Engine::failing().await;
+    let disabled = engine.ingress(false).with_private(&private_config());
     disabled.synchronize().await.unwrap_err();
     let private = disabled.status().await.private;
     assert!(!private.healthy);
@@ -1431,27 +1459,21 @@ async fn disabled_ingress_confirms_the_node_stopped_only_once_removed() {
 /// Whether the private listener is configured on an engine whose Swarm
 /// allocates application networks from `pool`.
 async fn private_listener_with_pool(pool: &'static str) -> bool {
-    let directory = tempfile::tempdir().unwrap();
-    let socket = directory.path().join("docker.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let engine = axum::Router::new()
-        .route(
-            "/info",
-            axum::routing::get(move || async move {
-                axum::Json(json!({"Swarm":{"Cluster":{"DefaultAddrPool":[pool]}}}))
-            }),
-        )
-        .fallback(|| async { axum::Json(json!({"IPAM":{"Config":[{"Subnet":"172.20.0.0/16"}]}})) });
-    let server = tokio::spawn(async move { axum::serve(listener, engine).await });
-    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
-    let ingress = Ingress::new(true, &socket, directory.path(), store)
-        .unwrap()
-        .with_private(&crate::config::PrivateIngressConfig {
-            enabled: true,
-            ..Default::default()
-        });
+    let engine = Engine::serving(|_| {
+        axum::Router::new()
+            .route(
+                "/info",
+                axum::routing::get(move || async move {
+                    axum::Json(json!({"Swarm":{"Cluster":{"DefaultAddrPool":[pool]}}}))
+                }),
+            )
+            .fallback(|| async {
+                axum::Json(json!({"IPAM":{"Config":[{"Subnet":"172.20.0.0/16"}]}}))
+            })
+    })
+    .await;
+    let ingress = engine.ingress(true).with_private(&private_config());
     let configuration = ingress.configuration(&RoutingTable::new()).await.unwrap();
-    server.abort();
     configuration["apps"]["http"]["servers"]
         .get("private")
         .is_some()
@@ -1468,11 +1490,9 @@ async fn the_private_listener_stays_off_while_application_pools_overlap_the_tail
 #[tokio::test]
 async fn the_webhook_hostname_forwards_only_its_webhook_path_to_the_daemon() {
     use std::os::unix::fs::PermissionsExt;
-    let directory = tempfile::tempdir().unwrap();
     let hooks = Hostname::parse("hooks.example.com").unwrap();
-    let ingress = private_ingress(&directory)
-        .await
-        .with_webhooks(Some(hooks.clone()));
+    let (engine, ingress) = private_ingress().await;
+    let ingress = ingress.with_webhooks(Some(hooks.clone()));
     let configuration = ingress.build_configuration(&RoutingTable::new(), None, None);
     let public = &configuration["apps"]["http"]["servers"]["public"];
     assert_eq!(
@@ -1497,7 +1517,10 @@ async fn the_webhook_hostname_forwards_only_its_webhook_path_to_the_daemon() {
     assert_eq!(routes[1]["handle"][0]["status_code"], 404);
 
     let listener = ingress.bind_webhooks().await.unwrap().unwrap();
-    let path = directory.path().join("ingress/control/webhooks.sock");
+    let path = engine
+        .directory
+        .path()
+        .join("ingress/control/webhooks.sock");
     assert_eq!(
         listener.local_addr().unwrap().as_pathname(),
         Some(path.as_path())
@@ -1510,40 +1533,23 @@ async fn the_webhook_hostname_forwards_only_its_webhook_path_to_the_daemon() {
     // Without managed ingress the socket is still served, for another proxy
     // running as the daemon's user, but the gateway routes nothing to it.
     drop(listener);
-    let disabled = Ingress::new(
-        false,
-        &directory.path().join("docker.sock"),
-        directory.path(),
-        ingress.store.clone(),
-    )
-    .unwrap()
-    .with_webhooks(Some(hooks));
+    let disabled = engine.ingress(false).with_webhooks(Some(hooks));
     assert!(disabled.bind_webhooks().await.unwrap().is_some());
     assert_eq!(disabled.webhook_hostname(), None);
     // Without a webhook hostname, there is no socket.
-    let none = Ingress::new(
-        true,
-        &directory.path().join("docker.sock"),
-        directory.path(),
-        ingress.store.clone(),
-    )
-    .unwrap();
+    let none = engine.ingress(true);
     assert!(none.bind_webhooks().await.unwrap().is_none());
 }
 
 #[tokio::test]
 async fn the_dashboard_hostname_is_a_private_host_forwarded_to_the_daemon() {
     use std::os::unix::fs::PermissionsExt;
-    let directory = tempfile::tempdir().unwrap();
     let dashboard = Hostname::parse("dashboard.example.com").unwrap();
-    let ingress =
-        private_ingress(&directory)
-            .await
-            .with_private(&crate::config::PrivateIngressConfig {
-                enabled: true,
-                dashboard_hostname: Some(dashboard.clone()),
-                ..Default::default()
-            });
+    let (engine, ingress) = private_ingress().await;
+    let ingress = ingress.with_private(&crate::config::PrivateIngressConfig {
+        dashboard_hostname: Some(dashboard.clone()),
+        ..private_config()
+    });
     let edge = ["172.20.0.0/16".to_owned()];
     let configuration = ingress.build_configuration(&RoutingTable::new(), Some(&edge), None);
     let servers = &configuration["apps"]["http"]["servers"];
@@ -1577,10 +1583,13 @@ async fn the_dashboard_hostname_is_a_private_host_forwarded_to_the_daemon() {
     assert!(configuration["apps"]["http"]["servers"]["private"].is_null());
 
     let mut config = crate::config::DaemonConfig::default();
-    config.server.data_dir = directory.path().into();
+    config.server.data_dir = engine.directory.path().into();
     config.ingress.private.dashboard_hostname = Some(dashboard.clone());
     let socket = Ingress::bind_dashboard(&config).await.unwrap().unwrap();
-    let path = directory.path().join("ingress/control/dashboard.sock");
+    let path = engine
+        .directory
+        .path()
+        .join("ingress/control/dashboard.sock");
     assert_eq!(
         socket.listener.local_addr().unwrap().as_pathname(),
         Some(path.as_path())
