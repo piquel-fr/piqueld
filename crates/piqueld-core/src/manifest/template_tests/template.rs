@@ -344,11 +344,7 @@ fn saved_hostnames_skip_missing_invalid_and_deployment_only_values() {
 
 #[test]
 fn validation_errors_sort_by_path_then_code_stably() {
-    let error = |path: &str, code: &str, message: &str| ValidationError {
-        path: path.into(),
-        code: code.into(),
-        message: message.into(),
-    };
+    let error = |path: &str, code: &str, message: &str| ValidationError::new(code, path, message);
     let errors = ValidationErrors::sorted(vec![
         error("z", "a", "last"),
         error("a", "z", "third"),
