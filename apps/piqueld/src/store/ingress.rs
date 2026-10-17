@@ -444,8 +444,9 @@ impl Store {
 mod tests {
     use super::*;
     use crate::api::{Mutation, MutationResponse};
+    use crate::store::testing::template;
+    use piqueld_core::NormalizedApplication;
     use piqueld_core::manifest::{ApplicationTemplate, Variable};
-    use piqueld_core::{NormalizedApplication, OperationState};
     use std::fmt::Write as _;
 
     fn app(name: &str, hostname: Option<&str>) -> NormalizedApplication {
@@ -495,8 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn installation_hostnames_and_subdomains_are_never_routed() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let early = app("early", Some("app.piqueld.example.com"));
         let saved = save(&store, early.clone(), true).await.unwrap();
         let id = EnvironmentId::parse(saved.application_id).unwrap();
@@ -534,8 +534,7 @@ mod tests {
 
     #[tokio::test]
     async fn wildcards_keep_the_names_they_serve_from_other_applications() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         // An exact name claimed first stays its owner's, and wins.
         save(
             &store,
@@ -566,8 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn environments_of_one_application_cannot_share_a_hostname() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let saved = save(&store, app("one", Some("site.example.com")), false)
             .await
             .unwrap();
@@ -577,7 +575,7 @@ mod tests {
             source: None,
         };
         assert!(matches!(
-            store.accept(crate::store::Actor::Daemon, staging, None, true, None).await,
+            store.force(staging).await,
             Err(StoreError::SharedHostnameConflict { hostname, environment })
                 if hostname == "site.example.com" && environment.as_str() == "production"
         ));
@@ -594,25 +592,12 @@ mod tests {
 
     #[tokio::test]
     async fn environments_render_their_own_hostnames_from_variables() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
-        let template = piqueld_core::manifest::parse_template_toml(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec.variables]\ndomain='piquel.fr'\n[spec.environments.production]\n[spec.environments.staging.variables]\ndomain='staging.piquel.fr'\n[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='nginx:alpine'\n[[spec.routes]]\nhostname='${{ vars.domain }}'\nservice='web'\nport=80",
-        )
-        .unwrap();
-        let (MutationResponse::Saved(saved), _) = store
-            .accept(
-                crate::api::Actor::Daemon,
-                Mutation::save(template, None, false),
-                Some(0),
-                false,
-                None,
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("saved response")
-        };
+        let (_directory, store) = Store::temporary().await;
+        let template = template(
+            "notes",
+            "[spec.variables]\ndomain='piquel.fr'\n[spec.environments.production]\n[spec.environments.staging.variables]\ndomain='staging.piquel.fr'\n[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='nginx:alpine'\n[[spec.routes]]\nhostname='${{ vars.domain }}'\nservice='web'\nport=80",
+        );
+        let saved = store.save_template(template, false).await;
         let application = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
         // The manifest declares both environments.
         let staging = store
@@ -663,7 +648,7 @@ mod tests {
             deploy: false,
         };
         assert!(matches!(
-            store.accept(crate::api::Actor::Daemon, edit, None, true, None).await,
+            store.force(edit).await,
             Err(StoreError::SharedHostnameConflict { hostname, environment })
                 if hostname == "piquel.fr" && environment.as_str() == "production"
         ));
@@ -671,8 +656,7 @@ mod tests {
 
     #[tokio::test]
     async fn replacing_pending_deployment_releases_only_superseded_hostnames() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         save(&store, app("one", Some("old.example.com")), true)
             .await
             .unwrap();
@@ -692,8 +676,7 @@ mod tests {
 
     #[tokio::test]
     async fn hostname_conflict_rolls_back_deployment_and_replay_receipt() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         save(&store, app("one", Some("taken.example.com")), false)
             .await
             .unwrap();
@@ -756,8 +739,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_saves_cannot_claim_the_same_hostname() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let (one, two) = tokio::join!(
             save(&store, app("one", Some("site.example.com")), false),
             save(&store, app("two", Some("SITE.EXAMPLE.COM.")), false)
@@ -776,8 +758,7 @@ mod tests {
 
     #[tokio::test]
     async fn deployed_names_survive_disabled_ingress_and_failed_gateway_withdrawal() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), false).await.unwrap();
         let id = EnvironmentId::parse(saved.application_id).unwrap();
@@ -813,8 +794,7 @@ mod tests {
 
     #[tokio::test]
     async fn captured_and_fetched_deployments_reserve_hostnames() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let saved = save(&store, app("one", Some("site.example.com")), true)
             .await
             .unwrap();
@@ -827,15 +807,7 @@ mod tests {
             .await
             .unwrap();
         let operation = store.operation(&saved.operation_id.unwrap()).await.unwrap();
-        store
-            .transition_operation(
-                &operation.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&operation.id).await;
         let environment = store.get(&operation.environment_id).await.unwrap();
         let fetched = ApplicationTemplate::from(&app("one", Some("taken.example.com")))
             .with_id(environment.application.application.id().clone());
@@ -850,20 +822,11 @@ mod tests {
 
     #[tokio::test]
     async fn superseded_operations_cannot_publish_routes() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), true).await.unwrap();
         let operation = saved.operation_id.unwrap();
-        store
-            .transition_operation(
-                &operation,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&operation).await;
         save(&store, app("one", Some("new.example.com")), true)
             .await
             .unwrap();
@@ -879,8 +842,7 @@ mod tests {
 
     #[tokio::test]
     async fn withdrawals_precede_cutover_and_repointing_waits_for_readiness() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), false).await.unwrap();
         let id = EnvironmentId::parse(saved.application_id).unwrap();
@@ -917,8 +879,7 @@ mod tests {
 
     #[tokio::test]
     async fn changing_visibility_withdraws_the_route_until_backends_are_ready() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), false).await.unwrap();
         let id = EnvironmentId::parse(saved.application_id).unwrap();
@@ -942,8 +903,7 @@ mod tests {
 
     #[tokio::test]
     async fn route_statuses_are_limited_to_readable_applications() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let mut statuses = Vec::new();
         let mut applications = Vec::new();
         for (name, hostname) in [("one", "one.example.com"), ("two", "two.example.com")] {

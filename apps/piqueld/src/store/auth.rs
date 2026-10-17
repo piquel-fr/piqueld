@@ -1134,8 +1134,7 @@ mod tests {
     /// first wins.
     #[tokio::test]
     async fn credential_reads_skip_the_writer_queue_and_refreshes_respect_revocation() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path().join("state.db")).await.unwrap();
+        let (_dir, store) = Store::temporary().await;
         let user = User {
             id: "alice".into(),
             username: "alice".into(),
@@ -1194,8 +1193,7 @@ mod tests {
     /// that expires while the refresh waits is not revived.
     #[tokio::test]
     async fn refreshes_waiting_for_writers_respect_idle_expiry() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path().join("state.db")).await.unwrap();
+        let (_dir, store) = Store::temporary().await;
         let user = User {
             id: "alice".into(),
             username: "alice".into(),

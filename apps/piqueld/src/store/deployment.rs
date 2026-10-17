@@ -362,7 +362,8 @@ mod tests {
     use piqueld_core::{ApplicationState, OperationState};
 
     fn empty() -> ApplicationTemplate {
-        piqueld_core::manifest::parse_template_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='empty'\n[spec]").unwrap().normalize(piqueld_core::ApplicationId::parse("app-empty-test").unwrap())
+        crate::store::testing::template("empty", "[spec]")
+            .with_id(piqueld_core::ApplicationId::parse("app-empty-test").unwrap())
     }
 
     /// The environment created with a saved application, which shares its ID.
@@ -417,8 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_and_deploy_accepts_saved_only_configuration_but_cannot_reverse_deletion() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let saved = save(&store, empty(), 0).await;
         let id = environment(&saved);
         let application = store.get(&id).await.unwrap().application.application;
@@ -528,15 +528,7 @@ mod tests {
             .await
             .unwrap()
             .template;
-        store
-            .transition_operation(
-                &first.operation_id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&first.operation_id).await;
         let mut edited = original.to_manifest();
         edited.spec.volumes.push(piqueld_core::manifest::Volume {
             name: "later".into(),
@@ -580,8 +572,7 @@ mod tests {
 
     #[tokio::test]
     async fn failure_survives_success_and_empty_target_has_no_resources() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let saved = save(&store, empty(), 0).await;
         let id = environment(&saved);
         let op = store.request_deploy(&id, Some(1)).await.unwrap();
@@ -601,15 +592,7 @@ mod tests {
         assert!(
             target.services.is_empty() && target.networks.is_empty() && target.volumes.is_empty()
         );
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&op.id).await;
         store
             .transition_operation(
                 &op.id,
@@ -621,15 +604,7 @@ mod tests {
             .unwrap();
         let op = store.operation(&op.id).await.unwrap();
         store.retry_operation(&op).await.unwrap();
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&op.id).await;
         store.save_prepared(&op, &target).await.unwrap();
         store.publish_prepared(&op).await.unwrap();
         store

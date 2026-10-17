@@ -408,11 +408,7 @@ mod tests {
                     log_max_bytes: 70_000,
                     log_retention_days: 1,
                 });
-            let app = piqueld_core::parse_toml(include_str!(
-                "../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
-            ))
-            .unwrap()
-            .normalize(piqueld_core::ApplicationId::parse("app-build-test").unwrap());
+            let app = crate::store::testing::prebuilt("app-build-test");
             let operation = store
                 .save_application(&ApplicationTemplate::from(&app), None, None)
                 .await

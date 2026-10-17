@@ -76,15 +76,7 @@ mod tests {
             .save_application(&ApplicationTemplate::from(&application), None, None)
             .await
             .unwrap();
-        store
-            .transition_operation(
-                &operation.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&operation.id).await;
 
         // A terminal failure cannot commit without its cleanup request, even
         // if the earlier request from job execution could not be persisted.
