@@ -161,7 +161,6 @@ pub(super) fn VariableSettings() -> impl IntoView {
                 </div>
                 {add_button(
                     "Add variable",
-                    || false,
                     move || rows.update(|rows| rows.push(VariableDraft::default())),
                 )}
                 {draft.actions(save, || false)}

@@ -500,6 +500,11 @@ impl Mutation {
         Ok(Self(Client::browser().with_request_id(id)))
     }
 
+    /// The tagged client, for a request sent only once.
+    fn client(&self) -> &Client {
+        &self.0
+    }
+
     /// Sends `request`, and once more after a transport failure, whose
     /// outcome is unknown.
     async fn send<T, F: Future<Output = Result<T, ClientError>>>(
@@ -1151,7 +1156,7 @@ fn DeleteApplication() -> impl IntoView {
             async move |mutation| {
                 let confirmed = environments.iter().map(String::as_str).collect::<Vec<_>>();
                 mutation
-                    .0
+                    .client()
                     .delete_application_with_preconditions(
                         saved.application.id().as_str(),
                         Some(saved.generation),

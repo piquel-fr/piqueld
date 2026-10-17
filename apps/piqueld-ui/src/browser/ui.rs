@@ -311,13 +311,18 @@ pub(super) fn member_checkbox<T: Ord + Clone + Send + Sync + 'static>(
 }
 
 /// Small `label`led button adding a row to an editable list.
-pub(super) fn add_button(
+pub(super) fn add_button(label: &'static str, add: impl Fn() + 'static) -> AnyView {
+    limited_add_button(label, || false, add)
+}
+
+/// `add_button` for a list of bounded length, disabled once `full`.
+pub(super) fn limited_add_button(
     label: &'static str,
-    disabled: impl Fn() -> bool + Send + Sync + 'static,
+    full: impl Fn() -> bool + Send + Sync + 'static,
     add: impl Fn() + 'static,
 ) -> AnyView {
     view! {
-        <button type="button" class="btn btn-sm" disabled={disabled} on:click={move |_| add()}>
+        <button type="button" class="btn btn-sm" disabled={full} on:click={move |_| add()}>
             {icon(Icon::Plus)}
             {label}
         </button>

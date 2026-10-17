@@ -6,7 +6,9 @@ use super::super::ui::{
     Icon, Modal, Tabs, Tone, badge, empty, expander_summary, icon, key_values, load_older, notice,
     operation_badge, when,
 };
-use super::super::{Alive, ClientErrorExt, document_hidden, live_row, release_link};
+use super::super::{
+    Alive, ClientErrorExt, document_hidden, live_row, operation_events, release_link,
+};
 use super::releases::ReleaseCard;
 use super::{EditorContext, editor};
 use leptos::prelude::*;
@@ -31,9 +33,9 @@ use std::fmt::Display;
 /// before its own action, into the environments promoted from it. On its own page, Deploy
 /// doesn't name the environment.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn DeploymentActions() -> impl IntoView {
     let context = editor();
-#[expect(clippy::too_many_lines, reason = "flat view! markup")]
     let preview = RwSignal::new(None::<PlanView>);
     let navigate = StoredValue::new(use_navigate());
     let promoted = Memo::new(move |_| {
@@ -300,9 +302,9 @@ fn ChooseEnvironment(
 /// may not use. `compact` is the smaller list-row button; `done` runs once the
 /// promotion was accepted.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn PromoteAction(
     environment: String,
-#[expect(clippy::too_many_lines, reason = "flat view! markup")]
     #[prop(optional)] release: Option<String>,
     #[prop(optional)] compact: bool,
     #[prop(default = None)] done: Option<Callback<()>>,
@@ -1175,7 +1177,7 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
 /// One attempt outcome with a link to its events and diagnostics.
 #[component]
 fn AttemptRow(attempt: Operation) -> impl IntoView {
-    let history = format!("/dashboard/events?operation={}", attempt.id);
+    let history = operation_events(&attempt.id);
     let outcome = match (attempt.error_code, attempt.error_message) {
         (Some(code), Some(message)) => format!("{code}: {message}"),
         (Some(code), None) => code,

@@ -83,7 +83,7 @@ pub enum HealthKind {
 
 /// Form choices bound to a `<select>` by their option values.
 pub trait Choice: Copy + Sized + 'static {
-    /// Every choice, in display order.
+    /// Every choice.
     const ALL: &'static [Self];
 
     /// The `<option>` value of the choice.

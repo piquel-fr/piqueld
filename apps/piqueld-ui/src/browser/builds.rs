@@ -5,7 +5,7 @@ use super::ui::{
     Icon, PageHeader, Tone, build_badge, code_or, empty, expander_summary, icon, load_older,
     notice, when,
 };
-use super::{Alive, ClientErrorExt, dashboard_context, live_row};
+use super::{Alive, ClientErrorExt, dashboard_context, live_row, operation_events};
 use crate::log_output::LogLine;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -190,7 +190,7 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
                                         <dd>{environment}</dd>
                                     }
                                 })} <dt>"Operation"</dt> <dd>
-                                <A href={format!("/dashboard/events?operation={operation_id}")}>
+                                <A href={operation_events(&operation_id)}>
                                     <code>{operation_id.clone()}</code>
                                 </A>
                             </dd>

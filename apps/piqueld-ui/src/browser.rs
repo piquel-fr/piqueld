@@ -767,6 +767,11 @@ fn environment_href(application: &str, environment: &str) -> String {
     format!("/dashboard/applications/{application}/environments/{environment}")
 }
 
+/// Address of the events of operation `id`.
+fn operation_events(id: &str) -> String {
+    format!("/dashboard/events?operation={id}")
+}
+
 /// Link to `release` on `application`'s Releases tab.
 fn release_link(application: &str, release: &str) -> AnyView {
     let href = format!("/dashboard/applications/{application}?release={release}");

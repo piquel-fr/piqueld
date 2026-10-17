@@ -24,8 +24,8 @@ use piqueld_client::{
     sync::{SyncState, SyncedHead},
 };
 
-/// A change to one of the application's environments, sent guarded by the
-/// saved generation.
+/// A change to one of the application's environments. All but `Sync` are
+/// guarded by the saved generation.
 #[derive(Clone)]
 enum EnvironmentEdit {
     /// `promote_from` excludes `branch`.

@@ -262,10 +262,9 @@ impl AuthState {
     }
 
     /// Resumes `session` after it expired.
-    fn resume(self, session: Session) -> Shown {
+    fn resume(self, session: Session) {
         self.current.set(Some(session));
         self.expired.set(false);
-        Shown::default()
     }
 
     /// View shown instead of the dashboard: connecting, a load error with retry,
@@ -410,7 +409,8 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
                 .auth_me()
                 .await
                 .map_err(|_| "Still signed out; sign in first, then continue.".to_owned())?;
-            Ok(state.resume(session))
+            state.resume(session);
+            Ok(Shown::default())
         });
     };
     view! {
@@ -441,7 +441,11 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
                         autofocus
                         disabled={move || feedback.busy.get()}
                         on:click={move |_| {
-                            feedback.run(async move { Ok(state.resume(sign_in().await?)) });
+                            feedback
+                                .run(async move {
+                                    state.resume(sign_in().await?);
+                                    Ok(Shown::default())
+                                });
                         }}
                     >
                         {icon(Icon::Key)}
