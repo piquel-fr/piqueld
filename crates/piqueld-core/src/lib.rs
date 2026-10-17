@@ -20,9 +20,9 @@ pub use names::{
     PreviewSlugError, RouteName, RouteNameError, ServiceName, ServiceNameError, VolumeName,
     VolumeNameError,
 };
+mod changes;
 pub mod operation;
 pub mod planner;
-mod preview;
 pub mod release;
 pub use release::{BuildFingerprint, BuildInputs, Release};
 pub mod resource;
