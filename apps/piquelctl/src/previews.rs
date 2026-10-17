@@ -1,9 +1,8 @@
 //! `piquelctl preview`: disposable deployments of a branch. A preview is
 //! addressed by its stable ID, its slug, or its branch and `--slot`, in that
 //! order. Creating, deploying, and deleting one need no application revision.
-use crate::snapshot::{History, Worktree};
 use crate::{
-    cli::{Cli, LogArgs},
+    cli::LogArgs,
     commands::{resolve_application, wait_for_deletion, wait_for_operation},
     deployments::{Deployed, Target, UrlArgs, WaitArgs, wait_for_accepted},
     environments::logs,
@@ -12,12 +11,13 @@ use crate::{
         Console,
         reports::{CreatedPreviewReport, DeletionReport},
     },
-    support::{confirm, retry_transport},
+    snapshot::{History, Worktree},
+    support::{join_or, retry_transport},
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
-    ApplicationView, BranchState, Client, ClientError, CreatePreviewRequest, EnvironmentView,
-    PrunePreviewsRequest, codes,
+    ApplicationView, BranchState, Client, ClientError, CreatePreviewRequest, CreatedPreview,
+    EnvironmentView, PrunePreviewsRequest, codes,
 };
 
 // `preview` subcommands; `///` on variants and fields is user-facing help.
@@ -165,12 +165,7 @@ impl Target for PreviewArgs {
 
 impl PreviewCommand {
     /// Runs a `preview` subcommand.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         match self {
             Self::Create {
                 application,
@@ -202,10 +197,10 @@ impl PreviewCommand {
             }
             Self::Wait(args) => args.run(console, client).await,
             Self::Url(args) => args.run(console, client).await,
-            Self::Delete { target, flags } => delete(cli, client, console, target, flags).await,
+            Self::Delete { target, flags } => delete(client, console, target, flags).await,
             Self::Prune {
                 application, flags, ..
-            } => prune(cli, client, console, application, flags).await,
+            } => prune(client, console, application, flags).await,
         }
     }
 }
@@ -299,15 +294,11 @@ impl DeployArgs {
         }
         .await;
         let created = progress.settle(uploaded, |_| "uploaded".to_owned())?;
-        let snapshot = bundle.snapshot;
-        let deployed = if self.no_wait {
-            Deployed::accepted(&created.preview, &created.operation.operation_id)
-                .snapshot(&branch, &snapshot)
-        } else {
-            let operation =
-                wait_for_operation(console, client, &created.operation.operation_id).await?;
-            Deployed::read(client, &created.preview, operation).await?
-        };
+        let mut deployed = deployed(console, client, &created, self.no_wait).await?;
+        // A deployment read back once it ended names its snapshot itself.
+        if self.no_wait {
+            deployed = deployed.snapshot(&branch, &bundle.snapshot);
+        }
         console.emit(&CreatedPreviewReport {
             created: &created,
             deployed,
@@ -327,41 +318,49 @@ async fn create(
     let application = resolve_application(client, application).await?;
     let id = application.application.id().as_str();
     let created = retry_transport(|| client.create_preview(id, request)).await?;
-    let deployed = if no_wait {
-        Deployed::accepted(&created.preview, &created.operation.operation_id)
-    } else {
-        let operation =
-            wait_for_operation(console, client, &created.operation.operation_id).await?;
-        Deployed::read(client, &created.preview, operation).await?
-    };
+    let deployed = deployed(console, client, &created, no_wait).await?;
     console.emit(&CreatedPreviewReport {
         created: &created,
         deployed,
     })
 }
 
+/// The deployment that created or deployed a preview: as accepted with
+/// `no_wait`, else read back once it ended.
+async fn deployed(
+    console: &mut Console,
+    client: &Client,
+    created: &CreatedPreview,
+    no_wait: bool,
+) -> Result<Deployed> {
+    let operation_id = &created.operation.operation_id;
+    if no_wait {
+        return Ok(Deployed::accepted(&created.preview, operation_id));
+    }
+    let operation = wait_for_operation(console, client, operation_id).await?;
+    Deployed::read(client, &created.preview, operation).await
+}
+
 /// Confirms and deletes a preview and its volumes. Waits until it is gone
 /// unless `--no-wait`, polling the environment endpoint, which unlike the
 /// preview one never reads the repository.
 async fn delete(
-    cli: &Cli,
     client: &Client,
     console: &mut Console,
     target: &PreviewArgs,
     flags: &PreviewDeletionFlags,
 ) -> Result<()> {
     let (application, preview) = target.resolve(client).await?;
-    confirm(
-        console,
-        cli.noninteractive,
-        flags.yes,
-        &format!(
-            "Delete preview {:?} of application {:?}? Its volumes and their data will be removed. [y/N] ",
-            preview.name.as_str(),
-            application.application.metadata().name
-        ),
-    )
-    .await?;
+    console
+        .confirm(
+            flags.yes,
+            &format!(
+                "Delete preview {:?} of application {:?}? Its volumes and their data will be removed.",
+                preview.name.as_str(),
+                application.application.metadata().name
+            ),
+        )
+        .await?;
     let accepted = retry_transport(|| client.delete_preview(preview.id.as_str())).await?;
     if flags.no_wait {
         return console.emit(&DeletionReport::accepted(&accepted).removing_volumes());
@@ -380,7 +379,6 @@ async fn delete(
 /// delete them. The daemon checks each branch again and keeps any it can no
 /// longer confirm gone. Waits for every deletion unless `--no-wait`.
 async fn prune(
-    cli: &Cli,
     client: &Client,
     console: &mut Console,
     application: &str,
@@ -405,21 +403,16 @@ async fn prune(
     if gone.is_empty() {
         return console.emit(&Vec::<piqueld_client::DeletedPreview>::new());
     }
-    let names = gone
-        .iter()
-        .map(|preview| preview.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    confirm(
-        console,
-        cli.noninteractive,
-        flags.yes,
-        &format!(
-            "Delete previews {names} of application {:?}, whose branches are gone? Their volumes and their data will be removed. [y/N] ",
-            application.application.metadata().name
-        ),
-    )
-    .await?;
+    let names = join_or(gone.iter().map(|preview| &preview.name), "");
+    console
+        .confirm(
+            flags.yes,
+            &format!(
+                "Delete previews {names} of application {:?}, whose branches are gone? Their volumes and their data will be removed.",
+                application.application.metadata().name
+            ),
+        )
+        .await?;
     let request = PrunePreviewsRequest {
         previews: gone.iter().map(|preview| preview.id.clone()).collect(),
     };

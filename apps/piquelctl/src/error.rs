@@ -138,6 +138,44 @@ impl Diagnostic {
             Self::CommandTimeout => CliCode::Timeout,
         }
     }
+
+    /// What to check next, for a report with `cli`'s connection settings.
+    fn hint(&self, cli: &Cli) -> &'static str {
+        match self {
+            Self::Endpoint => {
+                "Check the selected endpoint configuration; use a Unix socket or a plain HTTP origin."
+            }
+            Self::Configuration(_) => {
+                "Check the configuration source above. Profiles require exactly one socket or URL and an optional positive timeout."
+            }
+            Self::Transport(TransportFailure::Connect(kind)) => match kind {
+                io::ErrorKind::NotFound if cli.url.is_none() => {
+                    "Check the socket path and whether the daemon has created its socket."
+                }
+                io::ErrorKind::PermissionDenied if cli.url.is_none() => {
+                    "Check whether your user has access to the socket and its parent directories."
+                }
+                io::ErrorKind::PermissionDenied => {
+                    "Check whether local network access is permitted for this process."
+                }
+                io::ErrorKind::ConnectionRefused => {
+                    "Check whether the daemon is listening at the selected endpoint."
+                }
+                _ => {
+                    "Check the selected endpoint and whether the daemon is listening and accessible."
+                }
+            },
+            Self::Transport(TransportFailure::Timeout) => {
+                "Check daemon responsiveness and whether the configured timeout is sufficient."
+            }
+            Self::CommandTimeout => {
+                "Check daemon responsiveness and whether the timeout allows the command to finish. A server-side operation may still be running."
+            }
+            Self::Transport(TransportFailure::Exchange) | Self::Response(_) => {
+                "Check that the selected endpoint serves the piqueld API and inspect the daemon logs."
+            }
+        }
+    }
 }
 
 impl CliError {
@@ -202,6 +240,19 @@ impl CliError {
 
     pub(crate) fn exit_code(&self) -> u8 {
         self.kind.exit_code()
+    }
+
+    /// The JSON form of the error, without connection facts.
+    pub(crate) fn body(&self) -> ErrorBody<'_> {
+        ErrorBody {
+            code: match &self.code {
+                Code::Api(code) => ErrorCode::Api(code),
+                Code::Cli(code) => ErrorCode::Cli(*code),
+            },
+            message: &self.message,
+            details: self.details.clone(),
+            request_id: self.request_id.as_deref(),
+        }
     }
 
     pub(crate) fn with_details(mut self, details: Value) -> Self {
@@ -334,65 +385,80 @@ impl<'a> ErrorReport<'a> {
             application: Some(application),
         }
     }
-    /// Render only evidence available from configuration and the failed exchange.
-    /// Prints the endpoint (or configuration source), timeout facts for timeouts,
-    /// and a hint chosen from the diagnostic.
-    fn connection(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+    /// Only evidence available from configuration and the failed exchange: the
+    /// endpoint (or configuration source), and timeout facts for timeouts. Each
+    /// is a human label, its JSON key, and its value.
+    fn connection_facts(
+        &self,
+        diagnostic: &Diagnostic,
+    ) -> Vec<(&'static str, &'static str, String)> {
         let cli = self.cli;
-        let Some(diagnostic) = self.error.diagnostic.as_deref() else {
-            return Ok(());
-        };
+        let mut facts = Vec::new();
         if let Diagnostic::Configuration(source) = diagnostic {
-            out.label("  Configuration source", source)?;
+            facts.push((
+                "  Configuration source",
+                "configuration_source",
+                source.clone(),
+            ));
         } else {
             // Rejected endpoint input can contain credentials; never echo it.
             if !matches!(diagnostic, Diagnostic::Endpoint) {
-                out.label("  Endpoint", crate::support::transport_description(cli))?;
+                facts.push(("  Endpoint", "endpoint", cli.transport()));
             }
-            out.label("  Endpoint source", &cli.connection_sources.endpoint)?;
+            facts.push((
+                "  Endpoint source",
+                "endpoint_source",
+                cli.connection_sources.endpoint.to_string(),
+            ));
         }
         if matches!(
             diagnostic,
             Diagnostic::CommandTimeout | Diagnostic::Transport(TransportFailure::Timeout)
         ) {
-            out.label("  Timeout", crate::support::format_duration(cli.timeout))?;
-            out.label("  Timeout source", &cli.connection_sources.timeout)?;
+            facts.push((
+                "  Timeout",
+                "timeout",
+                crate::support::format_duration(cli.timeout),
+            ));
+            facts.push((
+                "  Timeout source",
+                "timeout_source",
+                cli.connection_sources.timeout.to_string(),
+            ));
         }
-        let hint = match diagnostic {
-            Diagnostic::Endpoint => {
-                "Check the selected endpoint configuration; use a Unix socket or a plain HTTP origin."
-            }
-            Diagnostic::Configuration(_) => {
-                "Check the configuration source above. Profiles require exactly one socket or URL and an optional positive timeout."
-            }
-            Diagnostic::Transport(TransportFailure::Connect(kind)) => match kind {
-                std::io::ErrorKind::NotFound if cli.url.is_none() => {
-                    "Check the socket path and whether the daemon has created its socket."
-                }
-                std::io::ErrorKind::PermissionDenied if cli.url.is_none() => {
-                    "Check whether your user has access to the socket and its parent directories."
-                }
-                std::io::ErrorKind::PermissionDenied => {
-                    "Check whether local network access is permitted for this process."
-                }
-                std::io::ErrorKind::ConnectionRefused => {
-                    "Check whether the daemon is listening at the selected endpoint."
-                }
-                _ => {
-                    "Check the selected endpoint and whether the daemon is listening and accessible."
-                }
-            },
-            Diagnostic::Transport(TransportFailure::Timeout) => {
-                "Check daemon responsiveness and whether the configured timeout is sufficient."
-            }
-            Diagnostic::CommandTimeout => {
-                "Check daemon responsiveness and whether the timeout allows the command to finish. A server-side operation may still be running."
-            }
-            Diagnostic::Transport(TransportFailure::Exchange) | Diagnostic::Response(_) => {
-                "Check that the selected endpoint serves the piqueld API and inspect the daemon logs."
-            }
+        facts
+    }
+
+    /// The connection facts a human report shows, as JSON details, with the
+    /// HTTP status of an invalid response.
+    fn connection_details(&self) -> Option<Value> {
+        let diagnostic = self.error.diagnostic.as_deref()?;
+        let mut details = self
+            .connection_facts(diagnostic)
+            .into_iter()
+            .map(|(_, key, value)| (key.to_owned(), Value::String(value)))
+            .collect::<Map<_, _>>();
+        if let Diagnostic::Response(Some(status)) = diagnostic {
+            details.insert("http_status".into(), json!(status.as_u16()));
+        }
+        Some(Value::Object(details))
+    }
+
+    /// The one-line message of a per-application warning.
+    fn warning_message(&self) -> Option<String> {
+        self.application
+            .map(|application| format!("{application}: status unavailable: {}", self.error))
+    }
+
+    /// Renders the connection facts and a hint chosen from the diagnostic.
+    fn connection(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        let Some(diagnostic) = self.error.diagnostic.as_deref() else {
+            return Ok(());
         };
-        out.label("  Hint", hint)
+        for (label, _, value) in self.connection_facts(diagnostic) {
+            out.label(label, value)?;
+        }
+        out.label("  Hint", diagnostic.hint(self.cli))
     }
 
     /// Renders error details. Operation failures get a labelled context block and a
@@ -470,13 +536,9 @@ impl<'a> ErrorReport<'a> {
 impl DiagnosticReport for ErrorReport<'_> {
     fn render(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
         let error = self.error;
-        if let Some(application) = self.application {
-            out.label(
-                "Warning",
-                format_args!("{application}: status unavailable: {error}"),
-            )?;
-        } else {
-            out.label("Error", error)?;
+        match self.warning_message() {
+            Some(message) => out.label("Warning", message)?,
+            None => out.label("Error", error)?,
         }
         if let Code::Api(code) = &error.code {
             out.label("  API code", code)?;
@@ -491,70 +553,14 @@ impl DiagnosticReport for ErrorReport<'_> {
     }
 
     fn event(&self) -> Event<'_> {
-        let error = self.error;
-        if let Some(application) = self.application {
-            return Event::Warning {
-                message: format!("{application}: status unavailable: {error}"),
-            };
+        if let Some(message) = self.warning_message() {
+            return Event::Warning { message };
         }
-        let mut body = ErrorReport::body(error);
+        let mut body = self.error.body();
         if body.details.is_none() {
             body.details = self.connection_details();
         }
         Event::Error(body)
-    }
-}
-
-impl ErrorReport<'_> {
-    /// The JSON form of `error`, without connection facts.
-    pub(crate) fn body(error: &CliError) -> ErrorBody<'_> {
-        ErrorBody {
-            code: match &error.code {
-                Code::Api(code) => ErrorCode::Api(code),
-                Code::Cli(code) => ErrorCode::Cli(*code),
-            },
-            message: &error.message,
-            details: error.details.clone(),
-            request_id: error.request_id.as_deref(),
-        }
-    }
-
-    /// The connection facts a human report shows, as JSON details.
-    fn connection_details(&self) -> Option<Value> {
-        let cli = self.cli;
-        let diagnostic = self.error.diagnostic.as_deref()?;
-        let mut details = Map::new();
-        if let Diagnostic::Response(Some(status)) = diagnostic {
-            details.insert("http_status".into(), json!(status.as_u16()));
-        }
-        if let Diagnostic::Configuration(source) = diagnostic {
-            details.insert("configuration_source".into(), json!(source));
-        } else {
-            if !matches!(diagnostic, Diagnostic::Endpoint) {
-                details.insert(
-                    "endpoint".into(),
-                    json!(crate::support::transport_description(cli)),
-                );
-            }
-            details.insert(
-                "endpoint_source".into(),
-                json!(cli.connection_sources.endpoint.to_string()),
-            );
-        }
-        if matches!(
-            diagnostic,
-            Diagnostic::CommandTimeout | Diagnostic::Transport(TransportFailure::Timeout)
-        ) {
-            details.insert(
-                "timeout".into(),
-                json!(crate::support::format_duration(cli.timeout)),
-            );
-            details.insert(
-                "timeout_source".into(),
-                json!(cli.connection_sources.timeout.to_string()),
-            );
-        }
-        Some(Value::Object(details))
     }
 }
 

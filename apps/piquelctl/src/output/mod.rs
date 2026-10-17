@@ -10,19 +10,28 @@ pub(crate) mod reports;
 #[cfg(test)]
 mod tests;
 
-use crate::{cli::Cli, error::Result};
+use crate::{
+    cli::Cli,
+    error::{CliError, ErrorKind, Result},
+};
 use progress::ProgressOutput;
 pub(crate) use progress::{ProgressTask, TaskOutcome};
 use serde::Serialize;
 use std::{
     fmt,
     io::{self, IsTerminal, Write},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 type Writer = Box<dyn Write + Send>;
 /// Stderr shared between the console and progress tasks.
 type SharedWriter = Arc<Mutex<Writer>>;
+
+/// Locks `mutex`, recovering it from a thread that panicked while holding it:
+/// output state stays usable for the error report.
+fn lock<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// One result event, with independently typed machine data and human rendering.
 pub(crate) trait Report {
@@ -85,6 +94,8 @@ pub(crate) struct Console {
     json: bool,
     /// Whether info messages are shown (off in quiet mode).
     info: bool,
+    /// Whether confirmations fail instead of prompting (`--noninteractive`).
+    noninteractive: bool,
     progress: ProgressOutput,
 }
 
@@ -99,13 +110,16 @@ impl Console {
         } else {
             Box::new(anstream::stdout())
         };
-        Self::with_writers(
-            cli.json,
-            cli.quiet,
-            terminal,
-            stdout,
-            Box::new(anstream::stderr()),
-        )
+        Self {
+            noninteractive: cli.noninteractive,
+            ..Self::with_writers(
+                cli.json,
+                cli.quiet,
+                terminal,
+                stdout,
+                Box::new(anstream::stderr()),
+            )
+        }
     }
 
     /// Builds a console over arbitrary writers; `new` and tests share this.
@@ -129,6 +143,7 @@ impl Console {
             stderr,
             json,
             info: !quiet,
+            noninteractive: false,
         }
     }
 
@@ -212,10 +227,7 @@ impl Console {
     /// then flushes so the event is visible before returning.
     fn write_stderr(&mut self, write: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> Result<()> {
         self.progress.suspend(|| {
-            let mut writer = self
-                .stderr
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut writer = lock(&self.stderr);
             write(writer.as_mut())?;
             writer.flush()?;
             Ok(())
@@ -223,14 +235,45 @@ impl Console {
     }
 
     /// Interactive questions on stderr, always flushed and never quieted;
-    /// a `prompt` event with `--json`.
-    /// The caller enforces --yes/noninteractive policy before invoking this.
-    pub(crate) fn prompt(&mut self, message: &str) -> Result<()> {
+    /// a `prompt` event with `--json`. [`Self::confirm`] enforces the
+    /// `--yes`/`--noninteractive` policy before invoking this.
+    fn prompt(&mut self, message: &str) -> Result<()> {
         if self.json {
             let message = message.trim_end().to_owned();
             return self.write_stderr(|writer| Event::Prompt { message }.write(writer));
         }
         self.write_human(|out| out.value(message))
+    }
+
+    /// Asks `question` with a `[y/N]` suffix before a mutation, accepting `y`
+    /// or `yes` on stdin. `yes` (`--yes`) skips the prompt; without it,
+    /// `--noninteractive` or a non-terminal stdin is an input error. Any other
+    /// answer fails with "operation was not confirmed".
+    pub(crate) async fn confirm(&mut self, yes: bool, question: &str) -> Result<()> {
+        if yes {
+            return Ok(());
+        }
+        if self.noninteractive || !io::stdin().is_terminal() {
+            return Err(CliError::new(
+                ErrorKind::Input,
+                "confirmation is required in a non-interactive terminal; pass --yes",
+            ));
+        }
+        self.prompt(&format!("{question} [y/N] "))?;
+        let answer = crate::support::read_input("confirmation", || {
+            let mut answer = String::new();
+            io::stdin().read_line(&mut answer)?;
+            Ok(answer)
+        })
+        .await?;
+        if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            Ok(())
+        } else {
+            Err(CliError::new(
+                ErrorKind::Input,
+                "operation was not confirmed",
+            ))
+        }
     }
 
     /// Multi-line instructions for the operator, never quieted; values

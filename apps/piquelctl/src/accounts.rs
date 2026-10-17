@@ -5,10 +5,8 @@
 //! applications named with `--app` (every application when omitted). Grants
 //! are displayed with application names where the caller can read them.
 use crate::{
-    cli::Cli,
     error::{CliError, ErrorKind, Result},
-    output::{Console, HumanWriter, Report},
-    support::confirm,
+    output::{Console, HumanWriter, Report, reports::report},
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
@@ -224,12 +222,7 @@ impl TokenCommand {
 
 impl AccountCommand {
     /// Runs one `account` subcommand.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         match self {
             Self::List => {
                 let directory = client.auth_directory().await?;
@@ -249,13 +242,12 @@ impl AccountCommand {
             } => {
                 let target = find(&client.auth_directory().await?, target)?;
                 let grants = grants.grants(client).await?;
-                confirm(
-                    console,
-                    cli.noninteractive,
-                    *yes,
-                    &format!("Replace every grant of {:?}? [y/N] ", target.user.username),
-                )
-                .await?;
+                console
+                    .confirm(
+                        *yes,
+                        &format!("Replace every grant of {:?}?", target.user.username),
+                    )
+                    .await?;
                 client
                     .auth_manage(&Manage::SetGrants {
                         user_id: target.user.id.clone(),
@@ -366,26 +358,20 @@ pub(crate) struct SessionReport {
     pub(crate) session: Session,
     pub(crate) names: Names,
 }
-impl Report for SessionReport {
-    type Json = Session;
-    fn json(&self) -> &Session {
-        &self.session
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        let limited = if self.session.scoped {
-            ", limited credential"
-        } else {
-            ""
-        };
-        match &self.session.principal {
-            Principal::User(user) => {
-                out.line(format_args!("{} ({}{limited})", user.username, user.id))?;
-            }
-            Principal::Operator(operator) => out.line(operator)?,
+report!(SessionReport as Session = session, self, out, {
+    let limited = if self.session.scoped {
+        ", limited credential"
+    } else {
+        ""
+    };
+    match &self.session.principal {
+        Principal::User(user) => {
+            out.line(format_args!("{} ({}{limited})", user.username, user.id))?;
         }
-        self.names.render(&self.session.grants, out)
+        Principal::Operator(operator) => out.line(operator)?,
     }
-}
+    self.names.render(&self.session.grants, out)
+});
 
 /// Accounts with their grants, and live host operator sessions, which are
 /// not accounts (revoke one with `token revoke`).
@@ -399,6 +385,7 @@ struct AccountsReport<'a> {
     list: AccountList<'a>,
     names: &'a Names,
 }
+// Its JSON borrows, which `report!` cannot name.
 impl<'a> Report for AccountsReport<'a> {
     type Json = AccountList<'a>;
     fn json(&self) -> &AccountList<'a> {
@@ -470,9 +457,8 @@ impl AuditArgs {
     pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         if let Some(AuditCommand::Verify) = self.command {
             let verification = client.verify_audit().await?;
-            let broken = verification.broken_at;
-            console.emit(&VerificationReport(verification))?;
-            return match broken {
+            console.emit(&verification)?;
+            return match verification.broken_at {
                 Some(id) => Err(CliError::new(
                     ErrorKind::Conflict,
                     format!("the audit trail was altered at or before record {id}"),
@@ -501,115 +487,88 @@ impl AuditArgs {
         let page = client
             .audit_events(&filter, self.cursor.as_deref(), self.limit)
             .await?;
-        console.emit(&AuditReport(page))
+        console.emit(&page)
     }
 }
 
-/// Result of `audit verify`.
-struct VerificationReport(AuditVerification);
-impl Report for VerificationReport {
-    type Json = AuditVerification;
-    fn json(&self) -> &AuditVerification {
-        &self.0
+// Result of `audit verify`.
+report!(AuditVerification, self, out, {
+    let state = if self.broken_at.is_some() {
+        "broken"
+    } else {
+        "intact"
+    };
+    out.label("Chain", state)?;
+    out.label("Records checked", self.checked)?;
+    if let Some(id) = self.broken_at {
+        out.label("First mismatch", id)?;
     }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        let result = &self.0;
-        let state = if result.broken_at.is_some() {
-            "broken"
-        } else {
-            "intact"
-        };
-        out.label("Chain", state)?;
-        out.label("Records checked", result.checked)?;
-        if let Some(id) = result.broken_at {
-            out.label("First mismatch", id)?;
-        }
-        // Operators keep both elsewhere to detect a rewritten or moved chain.
-        let link = |link: &Option<AuditLink>| {
-            link.as_ref().map_or_else(
-                || "none".to_owned(),
-                |link| format!("{} {}", link.id, link.link),
-            )
-        };
-        out.label("Pruned through", link(&result.anchor))?;
-        let head = if result.broken_at.is_some() {
-            "Last verified"
-        } else {
-            "Newest"
-        };
-        out.label(head, link(&result.head))
-    }
-}
+    // Operators keep both elsewhere to detect a rewritten or moved chain.
+    let link = |link: &Option<AuditLink>| {
+        link.as_ref().map_or_else(
+            || "none".to_owned(),
+            |link| format!("{} {}", link.id, link.link),
+        )
+    };
+    out.label("Pruned through", link(&self.anchor))?;
+    let head = if self.broken_at.is_some() {
+        "Last verified"
+    } else {
+        "Newest"
+    };
+    out.label(head, link(&self.head))
+});
 
-/// A page of audited requests, one line each.
-struct AuditReport(Page<AuditEvent>);
-impl Report for AuditReport {
-    type Json = Page<AuditEvent>;
-    fn json(&self) -> &Page<AuditEvent> {
-        &self.0
+// A page of audited requests, one line each.
+report!(Page<AuditEvent>, self, out, {
+    for event in &self.items {
+        let who = event.who();
+        let credential = event
+            .credential_kind
+            .as_deref()
+            .map_or_else(String::new, |kind| format!(" via {kind}"));
+        let missing = event
+            .permission
+            .as_deref()
+            .map_or_else(String::new, |permission| {
+                format!(" (requires {permission})")
+            });
+        let target = event
+            .target()
+            .map_or_else(String::new, |target| format!(" on {target}"));
+        let tailnet = event
+            .tailnet
+            .as_deref()
+            .map_or_else(String::new, |who| format!(" ({who})"));
+        out.line(format_args!(
+            "{}  {}  {} {}{target}  {who}{credential}  {}{tailnet}{missing}",
+            event.created_at_ms,
+            event.outcome.as_str(),
+            event.status,
+            event.action,
+            event.peer.as_deref().unwrap_or("unix socket"),
+        ))?;
     }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        for event in &self.0.items {
-            let who = event.who();
-            let credential = event
-                .credential_kind
-                .as_deref()
-                .map_or_else(String::new, |kind| format!(" via {kind}"));
-            let missing = event
-                .permission
-                .as_deref()
-                .map_or_else(String::new, |permission| {
-                    format!(" (requires {permission})")
-                });
-            let target = event
-                .target()
-                .map_or_else(String::new, |target| format!(" on {target}"));
-            let tailnet = event
-                .tailnet
-                .as_deref()
-                .map_or_else(String::new, |who| format!(" ({who})"));
-            out.line(format_args!(
-                "{}  {}  {} {}{target}  {who}{credential}  {}{tailnet}{missing}",
-                event.created_at_ms,
-                event.outcome.as_str(),
-                event.status,
-                event.action,
-                event.peer.as_deref().unwrap_or("unix socket"),
-            ))?;
-        }
-        if let Some(cursor) = &self.0.next_cursor {
-            out.label("Next cursor", cursor)?;
-        }
-        Ok(())
-    }
-}
+    out.next_cursor(self.next_cursor.as_deref())
+});
 
 /// A newly created token; human output is the bare secret so it can be piped.
 #[derive(Serialize)]
 struct TokenReport {
     token: String,
 }
-impl Report for TokenReport {
-    type Json = Self;
-    fn json(&self) -> &Self {
-        self
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        out.line(&self.token)
-    }
-}
+report!(TokenReport, self, out, { out.line(&self.token) });
 
 /// The caller's sessions and tokens with their limits.
 struct CredentialsReport {
     credentials: Vec<CredentialView>,
     names: Names,
 }
-impl Report for CredentialsReport {
-    type Json = [CredentialView];
-    fn json(&self) -> &[CredentialView] {
-        &self.credentials
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+report!(
+    CredentialsReport as [CredentialView] = credentials,
+    self,
+    out,
+    {
         for credential in &self.credentials {
             let expires = credential.expires_at.map_or_else(
                 || "never expires".into(),
@@ -629,7 +588,7 @@ impl Report for CredentialsReport {
         }
         Ok(())
     }
-}
+);
 
 /// A newly created invitation or enrollment link; human output is the bare URL.
 #[derive(Serialize)]
@@ -644,15 +603,7 @@ impl LinkReport {
         Ok(Self { url })
     }
 }
-impl Report for LinkReport {
-    type Json = Self;
-    fn json(&self) -> &Self {
-        self
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        out.line(&self.url)
-    }
-}
+report!(LinkReport, self, out, { out.line(&self.url) });
 
 #[cfg(test)]
 mod tests {

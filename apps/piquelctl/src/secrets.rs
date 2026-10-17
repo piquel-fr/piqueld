@@ -1,13 +1,12 @@
 //! Secret values come from a file or stdin, never shell arguments or output.
 use crate::{
-    cli::Cli,
     commands::resolve_application,
     error::{CliError, ErrorKind, Result},
     output::{
         Console,
         reports::{SecretDeletionReport, StoredSecretReport, StoredSecretsReport},
     },
-    support::{confirm, read_input},
+    support::read_input,
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{ApplicationView, Client, EnvironmentAccess, SecretAccess};
@@ -51,16 +50,30 @@ pub(crate) enum SecretAction {
         access: AccessFlags,
     },
     /// Delete a stored secret no environment uses, and its Docker versions.
-    Delete {
-        /// Secret name.
-        name: String,
-        /// Require this secret generation.
-        #[arg(long,value_parser=clap::value_parser!(i64).range(1..))]
-        expected_generation: Option<i64>,
-        /// Skip interactive confirmation.
-        #[arg(long, short)]
-        yes: bool,
-    },
+    Delete(SecretChange),
+}
+
+// A secret to delete or regenerate, guarded by its generation.
+#[derive(Debug, Args)]
+pub(crate) struct SecretChange {
+    /// Secret name.
+    name: String,
+    /// Require this secret generation.
+    #[arg(long,value_parser=clap::value_parser!(i64).range(1..))]
+    expected_generation: Option<i64>,
+    /// Skip interactive confirmation.
+    #[arg(long, short)]
+    yes: bool,
+}
+
+impl SecretChange {
+    /// `--expected-generation`, else the `current` generation of the secret,
+    /// which must exist.
+    fn generation(&self, current: Option<i64>) -> Result<i64> {
+        self.expected_generation
+            .or(current)
+            .ok_or_else(|| CliError::new(ErrorKind::Input, "secret does not exist"))
+    }
 }
 
 /// Access list changes. Unset flags keep the current setting, or the default
@@ -134,7 +147,6 @@ impl SecretAction {
     /// confirmation.
     pub(crate) async fn run(
         &self,
-        cli: &Cli,
         client: &Client,
         console: &mut Console,
         application: &str,
@@ -168,15 +180,14 @@ impl SecretAction {
                     .cloned()
                     .unwrap_or_default()
                     .describe(environments);
-                confirm(
-                    console,
-                    cli.noninteractive,
-                    *yes,
-                    &format!(
-                        "Set secret {name:?} of {name_of_application:?}, mountable by {shown}? Takes effect on a later Deploy. [y/N] "
-                    ),
-                )
-                .await?;
+                console
+                    .confirm(
+                        *yes,
+                        &format!(
+                            "Set secret {name:?} of {name_of_application:?}, mountable by {shown}? Takes effect on a later Deploy."
+                        ),
+                    )
+                    .await?;
                 let file = file.clone();
                 // Stdin can block indefinitely; read off the runtime so Ctrl-C stays responsive.
                 let value = read_input("secret", move || Self::read_value(file.as_deref())).await?;
@@ -211,23 +222,17 @@ impl SecretAction {
                     environments,
                 })?;
             }
-            Self::Delete {
-                name,
-                expected_generation,
-                yes,
-            } => {
-                let generation = expected_generation
-                    .or_else(|| current(name).map(|s| s.metadata.generation))
-                    .ok_or_else(|| CliError::new(ErrorKind::Input, "secret does not exist"))?;
-                confirm(
-                    console,
-                    cli.noninteractive,
-                    *yes,
-                    &format!(
-                        "Delete secret {name:?} of {name_of_application:?} from every environment? [y/N] "
-                    ),
-                )
-                .await?;
+            Self::Delete(change) => {
+                let name = &change.name;
+                let generation = change.generation(current(name).map(|s| s.metadata.generation))?;
+                console
+                    .confirm(
+                        change.yes,
+                        &format!(
+                            "Delete secret {name:?} of {name_of_application:?} from every environment?"
+                        ),
+                    )
+                    .await?;
                 client.delete_stored_secret(id, name, generation).await?;
                 console.emit(&SecretDeletionReport { deleted: name })?;
             }
@@ -255,27 +260,9 @@ pub(crate) enum GeneratedSecretAction {
     /// List the environment's generated secrets; values cannot be read back.
     List,
     /// Generate a new value for the next deployment, to rotate it or replace one discarded by key recovery.
-    Regenerate {
-        /// Secret name.
-        name: String,
-        /// Require this secret generation.
-        #[arg(long,value_parser=clap::value_parser!(i64).range(1..))]
-        expected_generation: Option<i64>,
-        /// Skip interactive confirmation.
-        #[arg(long, short)]
-        yes: bool,
-    },
+    Regenerate(SecretChange),
     /// Delete an unreferenced generated secret; a later deployment generates a new value.
-    Delete {
-        /// Secret name.
-        name: String,
-        /// Require this secret generation.
-        #[arg(long,value_parser=clap::value_parser!(i64).range(1..))]
-        expected_generation: Option<i64>,
-        /// Skip interactive confirmation.
-        #[arg(long, short)]
-        yes: bool,
-    },
+    Delete(SecretChange),
 }
 
 impl GeneratedSecretAction {
@@ -283,7 +270,6 @@ impl GeneratedSecretAction {
     /// `application`, or its only environment.
     pub(crate) async fn run(
         &self,
-        cli: &Cli,
         client: &Client,
         console: &mut Console,
         application: &str,
@@ -293,39 +279,25 @@ impl GeneratedSecretAction {
             crate::environments::select(client, application, environment).await?;
         let id = environment.id.as_str();
         let metadata = client.secrets(id).await?;
-        let (verb, name, expected_generation, yes) = match self {
+        let (verb, change) = match self {
             Self::List => return console.emit(&metadata),
-            Self::Regenerate {
-                name,
-                expected_generation,
-                yes,
-            } => ("Regenerate", name, expected_generation, yes),
-            Self::Delete {
-                name,
-                expected_generation,
-                yes,
-            } => ("Delete", name, expected_generation, yes),
+            Self::Regenerate(change) => ("Regenerate", change),
+            Self::Delete(change) => ("Delete", change),
         };
-        let generation = expected_generation
-            .or_else(|| {
-                metadata
-                    .iter()
-                    .find(|s| s.name == *name)
-                    .map(|s| s.generation)
-            })
-            .ok_or_else(|| CliError::new(ErrorKind::Input, "secret does not exist"))?;
-        confirm(
-            console,
-            cli.noninteractive,
-            *yes,
-            &format!(
-                "{verb} generated secret {name:?} of {:?} in environment {:?}? [y/N] ",
-                application.application.metadata().name,
-                environment.name.as_str()
-            ),
-        )
-        .await?;
-        if let Self::Regenerate { .. } = self {
+        let name = &change.name;
+        let current = metadata.iter().find(|secret| secret.name == *name);
+        let generation = change.generation(current.map(|secret| secret.generation))?;
+        console
+            .confirm(
+                change.yes,
+                &format!(
+                    "{verb} generated secret {name:?} of {:?} in environment {:?}?",
+                    application.application.metadata().name,
+                    environment.name.as_str()
+                ),
+            )
+            .await?;
+        if let Self::Regenerate(_) = self {
             console.emit(&client.regenerate_secret(id, name, generation).await?)
         } else {
             client.delete_secret(id, name, generation).await?;
@@ -347,17 +319,12 @@ pub(crate) enum KeyAction {
 
 impl KeyAction {
     /// Discards every stored secret value after printing the scope and confirming.
-    pub(crate) async fn run(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-    ) -> Result<()> {
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let Self::RecoverKey { yes } = self;
-        let message = "Discard stored and generated secret values for ALL applications and environments? Running services keep their Docker secrets; replacement values and a new deploy are required. [y/N] ";
-        // Print scope even with --yes; the confirmation helper skips its prompt then.
-        console.warning(message.trim_end_matches(" [y/N] "))?;
-        confirm(console, cli.noninteractive, *yes, message).await?;
+        let message = "Discard stored and generated secret values for ALL applications and environments? Running services keep their Docker secrets; replacement values and a new deploy are required.";
+        // Print scope even with --yes; the confirmation skips its prompt then.
+        console.warning(message)?;
+        console.confirm(*yes, message).await?;
         console.emit(&client.recover_secret_key().await?)
     }
 }
