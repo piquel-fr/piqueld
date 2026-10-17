@@ -126,6 +126,41 @@ export async function proof(page: Page, ceremony: Ceremony, registration = false
   return { id: ceremony.id, credential };
 }
 
+/** Calls the API from the signed-in page, returning the response's `data`.
+ * A string body is sent as raw bytes; a failed response throws. */
+export async function call(page: Page, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
+  return page.evaluate(async ({ method, path, body, headers }) => {
+    const raw = typeof body === 'string';
+    const response = await fetch(`/api/v1/${path}`, {
+      method,
+      headers: body === undefined ? headers : { 'Content-Type': raw ? 'application/octet-stream' : 'application/json', ...headers },
+      body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
+    });
+    const value = await response.json();
+    if (!response.ok) throw new Error(JSON.stringify(value));
+    return value.data;
+  }, { method, path, body, headers });
+}
+
+/** The manifest of application `name`, running one `web` service from
+ * `nginx:alpine`, with the rest of `spec`. */
+export const webManifest = (name: string, spec: Record<string, unknown> = {}) => ({
+  api_version: 'piqueld.dev/v1alpha1', kind: 'Application',
+  metadata: { name },
+  spec: { services: [{ name: 'web', source: { type: 'image', image: 'nginx:alpine' } }], ...spec },
+});
+
+/** One of the application page's section tabs. */
+export const applicationTab = (page: Page, name: string) =>
+  page.getByRole('navigation', { name: 'Application sections' }).getByRole('button', { name, exact: true });
+/** One of an environment or preview page's section tabs. */
+export const environmentTab = (page: Page, name: string) =>
+  page.getByRole('navigation', { name: 'Environment sections' }).getByRole('button', { name, exact: true });
+/** The title of an application, environment, or service page. */
+export const title = (page: Page) => page.locator('.detail-title h1');
+/** The header of an application, environment, or service page, with its actions. */
+export const head = (page: Page) => page.locator('.detail-head');
+
 export const test = base.extend<{ daemon: Daemon; passkeys: Passkeys; account: User; cli: Cli; browserErrors: void }>({
   daemon: async ({}, use, testInfo) => {
     const directory = await mkdtemp(join(tmpdir(), 'piqueld-playwright-'));

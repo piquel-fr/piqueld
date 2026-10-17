@@ -1,11 +1,6 @@
-import { test, expect, auth } from '../fixtures.js';
+import { test, expect, auth, applicationTab, environmentTab, title } from '../fixtures.js';
 import type { Page } from '@playwright/test';
 
-const title = (page: Page) => page.locator('.detail-title h1');
-const tab = (page: Page, name: string) =>
-  page.getByRole('navigation', { name: 'Application sections' }).getByRole('button', { name, exact: true });
-const environmentTab = (page: Page, name: string) =>
-  page.getByRole('navigation', { name: 'Environment sections' }).getByRole('button', { name, exact: true });
 /** Save buttons exist for every settings group; only the edited group's is shown. */
 const visible = (page: Page, name: string) => page.getByRole('button', { name, exact: true }).locator('visible=true');
 
@@ -18,7 +13,7 @@ async function createApplication(page: Page, name = 'browser-test') {
   await expect(title(page)).toHaveText(name);
 }
 async function addService(page: Page, name: string, image: string) {
-  await tab(page, 'Services').click();
+  await applicationTab(page, 'Services').click();
   await page.getByRole('button', { name: 'Add service', exact: true }).first().click();
   const dialog = page.getByRole('dialog', { name: 'Add service' });
   await dialog.getByLabel('Service name', { exact: true }).fill(name);
@@ -95,11 +90,11 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   void account;
   await createApplication(page);
   await addService(page, 'web', 'nginx:1.27');
-  await tab(page, 'Volumes').click();
+  await applicationTab(page, 'Volumes').click();
   await page.getByRole('button', { name: 'Add volume', exact: true }).click();
   await page.getByLabel('Volume name', { exact: true }).fill('data');
   await save(page);
-  await tab(page, 'Routes').click();
+  await applicationTab(page, 'Routes').click();
   await page.getByRole('button', { name: 'Add route', exact: true }).click();
   await page.getByLabel('Hostname', { exact: true }).fill('shop.example.com');
   await page.getByLabel('Name', { exact: true }).fill('shop');
@@ -107,11 +102,11 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await page.getByLabel('HTTP port', { exact: true }).fill('8080');
   await save(page);
   await page.reload();
-  await tab(page, 'Routes').click();
+  await applicationTab(page, 'Routes').click();
   await expect(page.getByLabel('Hostname', { exact: true })).toHaveValue('shop.example.com');
   await expect(page.getByLabel('Name', { exact: true })).toHaveValue('shop');
 
-  await tab(page, 'Environments').click();
+  await applicationTab(page, 'Environments').click();
   await page.getByRole('button', { name: 'New environment', exact: true }).click();
   const creator = page.getByRole('dialog', { name: 'Create environment' });
   await creator.getByLabel('Environment name', { exact: true }).fill('staging');
@@ -163,7 +158,7 @@ test('adds, reorders, and removes jobs', async ({ page, account }) => {
   void account;
   await createApplication(page);
   await addService(page, 'web', 'nginx:1.27');
-  await tab(page, 'Jobs').click();
+  await applicationTab(page, 'Jobs').click();
   await expect(page.getByText('No jobs. Deployments roll out services directly.', { exact: true })).toBeVisible();
   const job = (index: number) => page.locator(`[data-job="${index}"]`);
   const fill = async (index: number, name: string, command: string[]) => {
@@ -181,7 +176,7 @@ test('adds, reorders, and removes jobs', async ({ page, account }) => {
   await job(1).getByRole('button', { name: 'Move up', exact: true }).click();
   await save(page);
   await page.reload();
-  await tab(page, 'Jobs').click();
+  await applicationTab(page, 'Jobs').click();
   await expect(job(0).getByLabel('Name', { exact: true })).toHaveValue('migrate');
   await expect(job(0).getByLabel('Command element', { exact: true }).nth(1)).toHaveValue('--all');
   await expect(job(0).getByLabel('Timeout (seconds)', { exact: true })).toHaveValue('60');
@@ -191,7 +186,7 @@ test('adds, reorders, and removes jobs', async ({ page, account }) => {
   await job(1).getByRole('button', { name: 'Remove', exact: true }).first().click();
   await save(page);
   await page.reload();
-  await tab(page, 'Jobs').click();
+  await applicationTab(page, 'Jobs').click();
   await expect(job(0).getByLabel('Name', { exact: true })).toHaveValue('migrate');
   await expect(job(1)).toHaveCount(0);
 
@@ -205,7 +200,7 @@ test('adds, reorders, and removes jobs', async ({ page, account }) => {
 test('unsaved edits block deployment and navigation until discarded', async ({ page, account }) => {
   void account;
   await createApplication(page);
-  await tab(page, 'Volumes').click();
+  await applicationTab(page, 'Volumes').click();
   await page.getByRole('button', { name: 'Add volume', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Deploy to production', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Preview', exact: true })).toBeDisabled();

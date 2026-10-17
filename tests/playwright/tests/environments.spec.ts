@@ -1,39 +1,16 @@
-import { test, expect } from '../fixtures.js';
+import { test, expect, call, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
 import type { Page } from '@playwright/test';
 
+/** `environments` with a second environment, `staging` or, to `collide`,
+ * one named after the first environment's ID. */
 async function createEnvironments(page: Page, collide = false) {
-  return page.evaluate(async (collide) => {
-    const call = async (path: string, body: unknown) => {
-      const response = await fetch(`/api/v1/${path}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const value = await response.json();
-      if (!response.ok) throw new Error(JSON.stringify(value));
-      return value.data;
-    };
-    const saved = await call('applications/apply', {
-      manifest: {
-        api_version: 'piqueld.dev/v1alpha1', kind: 'Application',
-        metadata: { name: 'environments' },
-        spec: { services: [{ name: 'web', source: { type: 'image', image: 'nginx:alpine' } }] },
-      },
-      expected_generation: 0,
-    });
-    const sibling = await call(`applications/${saved.application_id}/environments`, {
-      name: collide ? saved.application_id : 'staging',
-      expected_generation: saved.generation,
-    });
-    return { app: saved.application_id as string, sibling: sibling.id as string };
-  }, collide);
+  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('environments'), expected_generation: 0 });
+  const sibling = await call(page, 'POST', `applications/${saved.application_id}/environments`, {
+    name: collide ? saved.application_id : 'staging',
+    expected_generation: saved.generation,
+  });
+  return { app: saved.application_id as string, sibling: sibling.id as string };
 }
-
-const applicationTab = (page: Page, name: string) =>
-  page.getByRole('navigation', { name: 'Application sections' }).getByRole('button', { name, exact: true });
-const environmentTab = (page: Page, name: string) =>
-  page.getByRole('navigation', { name: 'Environment sections' }).getByRole('button', { name, exact: true });
-const title = (page: Page) => page.locator('.detail-title h1');
 
 test('the application page stays whole and each environment has its own page', async ({ page, account }) => {
   void account;
@@ -117,10 +94,9 @@ test('the dashboard creates, renames and deletes only the chosen environment', a
   const retried = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${qa}/reconcile?`));
   await page.getByRole('button', { name: 'Retry deletion', exact: true }).click();
   expect((await retried).status()).toBe(202);
-  const environments = await page.evaluate(async app => {
-    const response = await fetch(`/api/v1/applications/${app}`);
-    return (await response.json()).data.environments as { id: string; name: string; delete_intent: boolean }[];
-  }, app);
+  const { environments } = await call(page, 'GET', `applications/${app}`) as {
+    environments: { id: string; name: string; delete_intent: boolean }[];
+  };
   expect(environments.find(env => env.id === qa)).toMatchObject({ name: 'preview', delete_intent: true });
   expect(environments.find(env => env.id === app)).toMatchObject({ name: 'production', delete_intent: false });
 });
@@ -177,34 +153,14 @@ test('a deleted environment page cannot resolve to another environment with that
 
 test('a service Logs tab offers each environment once the application has several', async ({ page, account }) => {
   void account;
-  const { app, generation } = await page.evaluate(async () => {
-    const response = await fetch('/api/v1/applications/apply', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        manifest: {
-          api_version: 'piqueld.dev/v1alpha1', kind: 'Application',
-          metadata: { name: 'single' },
-          spec: { services: [{ name: 'web', source: { type: 'image', image: 'nginx:alpine' } }] },
-        },
-        expected_generation: 0,
-      }),
-    });
-    const saved = (await response.json()).data;
-    return { app: saved.application_id as string, generation: saved.generation as number };
-  });
+  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('single'), expected_generation: 0 });
+  const app = saved.application_id as string;
   await page.clock.install();
   await page.goto(`/dashboard/applications/${app}/services/web`);
   await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: 'Logs', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Service logs' })).toBeVisible();
 
-  await page.evaluate(async ({ app, generation }) => {
-    await fetch(`/api/v1/applications/${app}/environments`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'staging', expected_generation: generation }),
-    });
-  }, { app, generation });
+  await call(page, 'POST', `applications/${app}/environments`, { name: 'staging', expected_generation: saved.generation });
   // The next dashboard refresh lists the new environment.
   await page.clock.runFor(16_000);
   await expect(page.getByText('Logs are read per environment.', { exact: false })).toBeVisible();

@@ -1,37 +1,20 @@
-import { test, expect } from '../fixtures.js';
+import { test, expect, call, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
 import type { Page, Route } from '@playwright/test';
 
 /** A repository-backed application following `main`, optionally with a `staging` environment on `release`. */
 async function createRepositoryApplication(page: Page, staging = false) {
-  return page.evaluate(async (staging) => {
-    const call = async (path: string, body: unknown) => {
-      const response = await fetch(`/api/v1/${path}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const value = await response.json();
-      if (!response.ok) throw new Error(JSON.stringify(value));
-      return value.data;
-    };
-    const saved = await call('applications/apply', {
-      manifest: {
-        api_version: 'piqueld.dev/v1alpha1', kind: 'Application',
-        metadata: { name: 'notes' },
-        spec: {
-          manifest: { path: 'app.toml', repository: { url: 'https://example.com/notes.git', branch: 'main' } },
-          services: [{ name: 'web', source: { type: 'image', image: 'nginx:alpine' } }],
-        },
-      },
-      expected_generation: 0,
-    });
-    const sibling = staging
-      ? await call(`applications/${saved.application_id}/environments`, {
-        name: 'staging', branch: 'release', expected_generation: saved.generation,
-      })
-      : null;
-    return { app: saved.application_id as string, staging: sibling?.id as string };
-  }, staging);
+  const saved = await call(page, 'POST', 'applications/apply', {
+    manifest: webManifest('notes', {
+      manifest: { path: 'app.toml', repository: { url: 'https://example.com/notes.git', branch: 'main' } },
+    }),
+    expected_generation: 0,
+  });
+  const sibling = staging
+    ? await call(page, 'POST', `applications/${saved.application_id}/environments`, {
+      name: 'staging', branch: 'release', expected_generation: saved.generation,
+    })
+    : null;
+  return { app: saved.application_id as string, staging: sibling?.id as string };
 }
 
 /** Rewrites the JSON `data` of GET responses whose path is exactly `path`. */
@@ -44,12 +27,6 @@ async function rewrite(page: Page, path: string, edit: (data: Record<string, any
     await route.fulfill({ response, json: body });
   });
 }
-
-const applicationTab = (page: Page, name: string) =>
-  page.getByRole('navigation', { name: 'Application sections' }).getByRole('button', { name, exact: true });
-const environmentTab = (page: Page, name: string) =>
-  page.getByRole('navigation', { name: 'Environment sections' }).getByRole('button', { name, exact: true });
-const title = (page: Page) => page.locator('.detail-title h1');
 
 test('each environment of a repository-backed application follows its own branch', async ({ page, account }) => {
   void account;
@@ -196,14 +173,7 @@ test('a preview created from the dashboard opens on its own page, also from its 
 test('Prune gone submits the previews whose branch is gone', async ({ page, account }) => {
   void account;
   const { app } = await createRepositoryApplication(page);
-  const preview = await page.evaluate(async (app) => {
-    const response = await fetch(`/api/v1/applications/${app}/previews`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ branch: 'old/experiment' }),
-    });
-    return (await response.json()).data.preview.id as string;
-  }, app);
+  const preview = (await call(page, 'POST', `applications/${app}/previews`, { branch: 'old/experiment' })).preview.id as string;
   // The test repository cannot be read, so the listing reports the branch gone.
   await page.route(`**/api/v1/applications/${app}/previews`, async route => {
     const response = await route.fetch();
