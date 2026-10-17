@@ -77,13 +77,14 @@ impl<D: DockerApi> Controller<D> {
                                     let health_failures=Arc::clone(&failures);
                                     let span = tracing::debug_span!("application_health", environment_id = %id, operation_id = %operation_id, generation = application.application.generation);
                                     health_jobs.push(async move {
-                                        let result=async {
-                                            self.maintain_active(&health_id,&health_operation).await?;
+                                        // A failed repair must not keep a revoked link open.
+                                        let maintained=self.maintain_active(&health_id,&health_operation).await;
+                                        let reported=async {
                                             let observed=self.docker.observe(&health_id).await.map_err(super::OperationError::from)?;
                                             self.store.record_health(&health_operation,&observed).await.map_err(super::OperationError::from)?;
                                             self.enforce_links(&health_id,&health_operation,&observed).await
                                         }.await;
-                                        if let Err(error)=result {
+                                        for error in [maintained.err(),reported.err()].into_iter().flatten() {
                                             if let Err(report_error)=self.record_scan_diagnostic(&health_id,&error.diagnostic(),&health_failures).await {
                                                 tracing::error!(environment_id=%health_id,error=?report_error,"health diagnostic could not be persisted");
                                             }
@@ -455,7 +456,10 @@ impl<D: DockerApi> Controller<D> {
     /// be running; other failures are retried or reconsidered. Independently,
     /// the Docker adapter refuses to start a service while a job holds one of
     /// its volumes, including runs of superseded operations.
-    async fn may_roll_out(&self, operation: &super::Operation) -> Result<bool, StoreError> {
+    pub(super) async fn may_roll_out(
+        &self,
+        operation: &super::Operation,
+    ) -> Result<bool, StoreError> {
         let ended = operation.state == OperationState::Cancelled
             || matches!(
                 operation.error_code.as_deref(),

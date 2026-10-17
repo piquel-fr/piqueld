@@ -449,7 +449,7 @@ pub struct DesiredService {
     pub healthcheck: Option<ValidatedHealthCheck>,
     /// Optional CPU and memory limits.
     pub resources: Option<ValidatedResourceLimits>,
-    /// Canonical private network names attached to the service.
+    /// Private, ingress and link network names attached to the service.
     pub networks: Vec<DockerNetworkName>,
     /// Link networks on which importers reach this service, with the name it
     /// answers to there. Projected at runtime by
@@ -1688,10 +1688,10 @@ pub struct ObservedApplication {
 }
 
 impl ObservedApplication {
-    /// Attachments of `environment`'s services to link networks that `granted`
-    /// does not grant them, as service and network names. `granted` is the
-    /// environment's active target projected with its links, if it has one
-    /// and is not being deleted.
+    /// Attachments of `environment`'s services to link networks that none of
+    /// `granted` grants them, as service and network names. `granted` are
+    /// the environment's active and prepared targets projected with its
+    /// current links; none while it is being deleted.
     ///
     /// These are detached as soon as they are found, not by a rollout: an
     /// unrelated failing service or a running deployment must not keep a
@@ -1701,7 +1701,7 @@ impl ObservedApplication {
         &self,
         instance: &InstanceId,
         environment: &EnvironmentId,
-        granted: Option<&ResolvedApplication>,
+        granted: &[ResolvedApplication],
     ) -> Vec<(&str, &str)> {
         let link_networks = self
             .linked_networks
@@ -1717,14 +1717,6 @@ impl ObservedApplication {
             .iter()
             .filter(|service| service.is_owned_by(instance, environment))
             .flat_map(|service| {
-                let granted = granted
-                    .and_then(|target| {
-                        target
-                            .services
-                            .iter()
-                            .find(|desired| desired.name.as_str() == service.name)
-                    })
-                    .map_or(&[][..], |desired| desired.networks.as_slice());
                 service
                     .networks
                     .iter()
@@ -1732,6 +1724,9 @@ impl ObservedApplication {
                     .filter(move |attachment| {
                         !granted
                             .iter()
+                            .flat_map(|target| &target.services)
+                            .filter(|desired| desired.name.as_str() == service.name)
+                            .flat_map(|desired| &desired.networks)
                             .any(|network| network.as_str() == attachment.network)
                     })
                     .map(|attachment| (service.name.as_str(), attachment.network.as_str()))

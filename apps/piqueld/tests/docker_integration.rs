@@ -1333,7 +1333,11 @@ async fn revoke_links(
 ) -> Vec<(String, String)> {
     let observed = engine.docker.observe(&desired.id).await.unwrap();
     let revoked = observed
-        .revoked_links(&desired.instance_id, &desired.id, Some(desired))
+        .revoked_links(
+            &desired.instance_id,
+            &desired.id,
+            std::slice::from_ref(desired),
+        )
         .into_iter()
         .map(|(service, network)| (service.to_owned(), network.to_owned()))
         .collect::<Vec<_>>();

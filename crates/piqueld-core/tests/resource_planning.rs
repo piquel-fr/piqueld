@@ -1439,12 +1439,21 @@ fn services_lose_link_networks_their_links_no_longer_grant() {
         .unwrap();
     let web = as_importer.services[0].name.as_str();
     assert_eq!(
-        runtime.revoked_links(&instance(), &importer.id, Some(&as_importer)),
+        runtime.revoked_links(
+            &instance(),
+            &importer.id,
+            std::slice::from_ref(&as_importer)
+        ),
         Vec::new()
     );
     assert_eq!(
-        runtime.revoked_links(&instance(), &importer.id, Some(&importer)),
+        runtime.revoked_links(&instance(), &importer.id, std::slice::from_ref(&importer)),
         [(web, network.name.as_str())]
+    );
+    assert_eq!(
+        runtime.revoked_links(&instance(), &importer.id, &[importer.clone(), as_importer]),
+        Vec::new(),
+        "a link the prepared target is granted stays open before its promotion"
     );
 
     runtime.linked_networks = vec![network.clone()];
@@ -1455,17 +1464,21 @@ fn services_lose_link_networks_their_links_no_longer_grant() {
     runtime.linked_networks = vec![network.clone()];
     let web = as_exporter.services[0].name.as_str();
     assert_eq!(
-        runtime.revoked_links(&instance(), &exporter.id, Some(&as_exporter)),
+        runtime.revoked_links(
+            &instance(),
+            &exporter.id,
+            std::slice::from_ref(&as_exporter)
+        ),
         Vec::new()
     );
-    for granted in [Some(&exporter), None] {
+    for granted in [std::slice::from_ref(&exporter), &[]] {
         assert_eq!(
             runtime.revoked_links(&instance(), &exporter.id, granted),
             [(web, network.name.as_str())]
         );
     }
     assert_eq!(
-        runtime.revoked_links(&instance(), &importer.id, None),
+        runtime.revoked_links(&instance(), &importer.id, &[]),
         Vec::new(),
         "only the environment's own services are detached"
     );

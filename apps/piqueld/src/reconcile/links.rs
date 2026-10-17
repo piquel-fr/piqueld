@@ -21,15 +21,25 @@ impl<D: DockerApi> Controller<D> {
             Err(StoreError::NotFound) => return Ok(()),
             environment => environment?,
         };
-        let granted = match environment.resolved {
-            Some(target) if !environment.delete_intent() => {
-                Some(self.store.with_links(target, observed).await?)
+        // A deployment's job prerequisites start before it is promoted, so
+        // its prepared target's links stay open while it may still roll out.
+        let mut granted = Vec::new();
+        if !environment.delete_intent() {
+            let prepared = if self
+                .may_roll_out(&self.store.operation(operation_id).await?)
+                .await?
+            {
+                self.store.prepared_target(operation_id).await?
+            } else {
+                None
+            };
+            for target in environment.resolved.into_iter().chain(prepared) {
+                granted.push(self.store.with_links(target, observed).await?);
             }
-            _ => None,
-        };
+        }
         let instance = InstanceId::parse(self.store.instance_id()).expect("valid store identity");
         let ownership = self.ownership_labels(id);
-        for (service, network) in observed.revoked_links(&instance, id, granted.as_ref()) {
+        for (service, network) in observed.revoked_links(&instance, id, &granted) {
             self.journaled_link_change(operation_id, "detach_network", service, || {
                 self.docker.detach_network(service, network, &ownership)
             })
@@ -44,6 +54,7 @@ impl<D: DockerApi> Controller<D> {
                 .labels
                 .get(APPLICATION_LABEL)
                 .and_then(|importer| EnvironmentId::parse(importer.clone()).ok())
+                .filter(|importer| network.is_owned_by(&instance, importer))
             else {
                 continue;
             };

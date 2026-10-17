@@ -925,7 +925,8 @@ impl DockerApi for BollardDocker {
     }
     /// Removes the network from the inspected service's current
     /// specification and updates it at the inspected version, so a pending
-    /// rollout is neither applied nor reverted.
+    /// rollout is neither applied nor reverted. A concurrent update is not
+    /// retried with the stale specification; the next scan detaches again.
     async fn detach_network(
         &self,
         service: &str,
@@ -985,7 +986,9 @@ impl DockerApi for BollardDocker {
                         .id
                         .as_deref()
                         .ok_or(DockerError::Request("read existing service identity"))?;
-                    self.update_service_wire(id, version, &spec).await
+                    self.post_service_update(id, version, &spec)
+                        .await
+                        .map_err(|error| error.sanitized("detach network"))
                 }),
             )
             .await
