@@ -2,11 +2,11 @@
 use crate::{
     cli::{Cli, Command},
     error::{CliError, ErrorKind, Result},
-    output::{Console, HumanWriter, Report},
+    output::{Console, reports::report},
 };
 use piqueld_client::{
     Client,
-    auth::{OperatorLink, User},
+    auth::{OperatorLink, SetupLink, User},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -210,32 +210,14 @@ impl Credentials {
         }
     }
 }
-/// Authenticated account result, shared by `login` and `whoami`.
-pub(crate) struct AccountReport(pub User);
-impl Report for AccountReport {
-    type Json = User;
-    fn json(&self) -> &User {
-        &self.0
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> std::io::Result<()> {
-        out.line(format_args!("{} ({})", self.0.username, self.0.id))
-    }
-}
-/// A link served only over the Unix socket, such as the first-account setup
-/// link; human output is the bare URL so it can be piped.
-pub(crate) struct LinkReport<T> {
-    url: String,
-    link: T,
-}
-impl<T: serde::Serialize> Report for LinkReport<T> {
-    type Json = T;
-    fn json(&self) -> &T {
-        &self.link
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> std::io::Result<()> {
-        out.line(&self.url)
-    }
-}
+// `login` result: the signed-in account.
+report!(User, self, out, {
+    out.line(format_args!("{} ({})", self.username, self.id))
+});
+// Links served only over the Unix socket; human output is the bare URL so it
+// can be piped.
+report!(SetupLink, self, out, { out.line(&self.url) });
+report!(OperatorLink, self, out, { out.line(&self.url) });
 /// Refuses `command` locally unless it will reach the daemon's Unix socket,
 /// the only transport serving it.
 fn require_socket(cli: &Cli, command: &str) -> Result<()> {
@@ -256,11 +238,7 @@ pub(crate) async fn setup_link(
 ) -> Result<()> {
     require_socket(cli, "setup-link")?;
     let link = client.auth_setup_link().await?;
-    let url = link.url.clone();
-    console.emit(&LinkReport {
-        url: url.clone(),
-        link,
-    })?;
+    console.emit(&link)?;
     if open {
         let opener = if cfg!(target_os = "macos") {
             "open"
@@ -268,7 +246,7 @@ pub(crate) async fn setup_link(
             "xdg-open"
         };
         std::process::Command::new(opener)
-            .arg(&url)
+            .arg(&link.url)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -290,7 +268,7 @@ pub(crate) async fn recover_admin(cli: &Cli, client: &Client, console: &mut Cons
     let link = client.auth_recover_admin().await?;
     operator_link(
         console,
-        link,
+        &link,
         "this link creates a new administrator account and works once within 24 hours; \
          open it in a browser and register a passkey. It was recorded as a security event, \
          which notifies administrators when security notifications are enabled.",
@@ -304,7 +282,7 @@ pub(crate) async fn sign_in_link(cli: &Cli, client: &Client, console: &mut Conso
     let link = client.auth_sign_in_link().await?;
     operator_link(
         console,
-        link,
+        &link,
         "this link signs a browser in as the host operator, with full access, for 12 hours; \
          it works once within 10 minutes. It was recorded as a security event, \
          which notifies administrators when security notifications are enabled.",
@@ -312,12 +290,9 @@ pub(crate) async fn sign_in_link(cli: &Cli, client: &Client, console: &mut Conso
 }
 /// Prints a link issued to the host operator after `warning` about what it
 /// grants.
-fn operator_link(console: &mut Console, link: OperatorLink, warning: &str) -> Result<()> {
+fn operator_link(console: &mut Console, link: &OperatorLink, warning: &str) -> Result<()> {
     console.warning(warning)?;
-    console.emit(&LinkReport {
-        url: link.url.clone(),
-        link,
-    })
+    console.emit(link)
 }
 /// Runs the browser device-code login:
 /// 1. Refuses when the daemon has no first account yet (that needs the setup link).
@@ -394,7 +369,7 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
                         );
                         Ok(())
                     })?;
-                    return console.emit(&AccountReport(user));
+                    return console.emit(&user);
                 }
                 _ => {
                     return Err(CliError::new(
