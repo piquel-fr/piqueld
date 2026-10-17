@@ -63,22 +63,12 @@ impl Client {
         &self,
         request: &ApplyApplicationRequest,
     ) -> Result<SavedApplication, ClientError> {
-        self.apply_application_with_force(request, false).await
-    }
-
-    /// Applies a manifest, optionally overriding identity and revision preconditions.
-    /// # Errors
-    /// Returns transport, API, or decoding errors.
-    pub async fn apply_application_with_force(
-        &self,
-        request: &ApplyApplicationRequest,
-        force: bool,
-    ) -> Result<SavedApplication, ClientError> {
-        self.apply_application_with_options(request, force, false)
+        self.apply_application_with_options(request, false, false)
             .await
     }
 
-    /// Saves configuration and optionally creates a deployment in one transaction.
+    /// Saves configuration and optionally creates a deployment in one
+    /// transaction; `force` overrides identity and revision preconditions.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn apply_application_with_options(
@@ -162,19 +152,7 @@ impl Client {
         &self,
         manifest: &str,
     ) -> Result<SavedApplication, ClientError> {
-        self.apply_application_toml_with_generation(manifest, Some(0))
-            .await
-    }
-
-    /// Applies TOML with a revision; existing names also require identity via the full method.
-    /// # Errors
-    /// Returns transport, API, or decoding errors.
-    pub async fn apply_application_toml_with_generation(
-        &self,
-        manifest: &str,
-        expected: Option<u64>,
-    ) -> Result<SavedApplication, ClientError> {
-        self.apply_application_toml_with_preconditions(manifest, expected, None, false, false)
+        self.apply_application_toml_with_preconditions(manifest, Some(0), None, false, false)
             .await
     }
 
@@ -211,15 +189,6 @@ impl Client {
             ("application/toml", manifest.to_owned().into()),
         )
         .await
-    }
-
-    /// Previews applying an application from a TOML manifest.
-    ///
-    /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn plan_application_toml(&self, manifest: &str) -> Result<PlanView, ClientError> {
-        self.plan_application_toml_with_generation(manifest, None, None)
-            .await
     }
 
     /// Previews TOML conditioned on the optional current generation, against
