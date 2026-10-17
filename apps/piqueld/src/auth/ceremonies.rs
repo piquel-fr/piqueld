@@ -1,8 +1,8 @@
 //! Fixed `WebAuthn` policy: discoverable credentials, required user verification,
 //! exact origin/RP binding, and server-side single-use ceremony state.
 use super::{
-    Auth, AuthError, CEREMONY_LIFETIME, CredentialKind, DAY, Identity, MAX_PENDING, Result,
-    now_secs,
+    Auth, AuthError, BROWSER_SESSION_LIFETIME, CEREMONY_LIFETIME, CredentialKind, Identity,
+    MAX_PENDING, Result, now_secs,
 };
 use crate::store::{Invitation, NewPasskey, PasskeyOwner};
 use base64::Engine;
@@ -84,9 +84,7 @@ impl Auth {
         binding: &str,
         caller: Option<&Identity>,
     ) -> Result<Ceremony> {
-        if input.passkey_name.is_empty() || input.passkey_name.len() > 200 {
-            return Err(AuthError::Invalid("passkey name must contain 1–200 bytes"));
-        }
+        Self::validate_passkey_name(&input.passkey_name)?;
         let (user, invitation) = if let Some(id) = input.user_id {
             let caller = caller.ok_or(AuthError::Unauthorized)?;
             let own = caller.user().filter(|user| user.id == id).ok_or(AuthError::Invalid(
@@ -207,7 +205,7 @@ impl Auth {
         Self::new_credential(
             CredentialKind::Browser,
             "Browser",
-            Some(now_secs() + 7 * DAY),
+            Some(now_secs() + BROWSER_SESSION_LIFETIME),
             None,
         )
     }

@@ -87,9 +87,8 @@ impl DirectoryKind {
                 std::path::Component::Normal(name) => current.push(name),
             }
 
-            let is_final = components.peek().is_none();
-            match tokio::fs::symlink_metadata(&current).await {
-                Ok(metadata) if metadata.is_dir() && !metadata.is_symlink() => {}
+            let metadata = match tokio::fs::symlink_metadata(&current).await {
+                Ok(metadata) if metadata.is_dir() && !metadata.is_symlink() => metadata,
                 Ok(_) => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -116,12 +115,12 @@ impl DirectoryKind {
                             ),
                         ));
                     }
+                    metadata
                 }
                 Err(error) => return Err(error),
-            }
+            };
 
-            let metadata = tokio::fs::symlink_metadata(&current).await?;
-            if is_final {
+            if components.peek().is_none() {
                 self.validate_final(&current, &metadata, expected_uid)?;
             } else {
                 let mode = metadata.permissions().mode();
@@ -218,6 +217,37 @@ fn protected_ancestor(mode: u32, owner_uid: u32, daemon_uid: u32) -> bool {
     trusted_owner && (sticky || mode & 0o022 == 0)
 }
 
+/// Holds a directory's exclusive lock until the daemon exits.
+///
+/// Locking the directory inode avoids a removable lock file and also excludes
+/// processes accessing the same directory through another path. The OS releases
+/// the lock when the last handle closes, including after a crash.
+#[derive(Debug)]
+pub struct DirectoryLock {
+    /// Open handle carrying the lock; dropping it releases the lock.
+    _directory: File,
+}
+
+impl DirectoryLock {
+    /// Locks a previously validated state or runtime directory.
+    ///
+    /// # Errors
+    /// Returns `WouldBlock` if another daemon owns the directory, or the source
+    /// I/O error if opening or locking it fails.
+    pub fn acquire(path: &Path) -> io::Result<Self> {
+        let directory = File::open(path)?;
+        directory.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => {
+                io::Error::new(io::ErrorKind::WouldBlock, "directory already in use")
+            }
+            std::fs::TryLockError::Error(source) => source,
+        })?;
+        Ok(Self {
+            _directory: directory,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DirectoryKind, protected_ancestor};
@@ -258,36 +288,5 @@ mod tests {
         assert!(!protected_ancestor(0o41_777, 2_000, daemon_uid));
         assert!(!protected_ancestor(0o40_777, 0, daemon_uid));
         assert!(!protected_ancestor(0o40_555, 2_000, daemon_uid));
-    }
-}
-
-/// Holds a directory's exclusive lock until the daemon exits.
-///
-/// Locking the directory inode avoids a removable lock file and also excludes
-/// processes accessing the same directory through another path. The OS releases
-/// the lock when the last handle closes, including after a crash.
-#[derive(Debug)]
-pub struct DirectoryLock {
-    /// Open handle carrying the lock; dropping it releases the lock.
-    _directory: File,
-}
-
-impl DirectoryLock {
-    /// Locks a previously validated state or runtime directory.
-    ///
-    /// # Errors
-    /// Returns `WouldBlock` if another daemon owns the directory, or the source
-    /// I/O error if opening or locking it fails.
-    pub fn acquire(path: &Path) -> io::Result<Self> {
-        let directory = File::open(path)?;
-        directory.try_lock().map_err(|error| match error {
-            std::fs::TryLockError::WouldBlock => {
-                io::Error::new(io::ErrorKind::WouldBlock, "directory already in use")
-            }
-            std::fs::TryLockError::Error(source) => source,
-        })?;
-        Ok(Self {
-            _directory: directory,
-        })
     }
 }

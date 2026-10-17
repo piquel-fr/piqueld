@@ -1,7 +1,7 @@
 //! Application and environment queries and previews shared by every transport.
-use super::views::{application_view, detail_diagnostics, observed_view, status_view};
+use super::views::{detail_diagnostics, observed_view};
 use super::{ApplicationError, ApplicationService, BoundaryError};
-use crate::store::{StoreError, StoredEnvironment};
+use crate::store::{StoreError, StoredApplication, StoredEnvironment};
 use piqueld_core::{
     ApplicationId, EnvironmentId, NormalizedApplication, ObservedApplication, Plan, PlanRequest,
     ResolutionSet,
@@ -51,15 +51,44 @@ impl ApplicationService {
         id: &ApplicationId,
     ) -> Result<ApplicationView, ApplicationError> {
         let application = self.store.application(id).await?;
+        self.application_view(id, application).await
+    }
+    /// Projects application `id`'s stored intent into the API view, with its
+    /// environments, its previews, the spec hash, and its last sync check
+    /// while it syncs: a check from before sync was turned off describes
+    /// nothing current.
+    async fn application_view(
+        &self,
+        id: &ApplicationId,
+        stored: StoredApplication,
+    ) -> Result<ApplicationView, ApplicationError> {
         let environments = self.store.environments(id).await?;
         let previews = self.store.previews(id).await?;
-        let sync_check = self.store.sync_check(id).await?;
-        Ok(application_view(
-            application,
+        let syncs = stored
+            .application
+            .spec()
+            .manifest
+            .as_ref()
+            .is_some_and(|connection| !connection.sync.is_off());
+        let sync_check = self.store.sync_check(id).await?.filter(|_| syncs);
+        // Saved manifests were validated, declarations included, when saved.
+        let declarations = stored
+            .application
+            .spec()
+            .declared_environments()
+            .unwrap_or_default();
+        Ok(ApplicationView {
+            drift: piqueld_core::manifest::EnvironmentChange::between(&declarations, &environments),
+            sync_check,
+            generation: stored.generation,
+            spec_hash: stored.application.spec_hash(),
+            application: stored.application,
+            delete_intent: stored.delete_intent,
+            created_at_ms: stored.created_at_ms,
+            updated_at_ms: stored.updated_at_ms,
             environments,
             previews,
-            sync_check,
-        ))
+        })
     }
     /// Reads an environment's metadata.
     /// # Errors
@@ -87,7 +116,7 @@ impl ApplicationService {
         &self,
         id: &EnvironmentId,
     ) -> Result<EnvironmentStatusView, ApplicationError> {
-        Ok(status_view(self.store.status(id).await?))
+        Ok(self.store.status(id).await?.into())
     }
     /// Combines saved intent, observed state, history, and bounded diagnostics.
     /// Runtime outages are returned as diagnostics so saved intent remains readable.
@@ -106,8 +135,12 @@ impl ApplicationService {
             match self.runtime.observe(&stored).await {
                 Ok(observed) => (observed, None),
                 Err(error) => {
-                    tracing::warn!(%error,"environment detail observation failed");
-                    (ObservedApplication::default(),Some(DiagnosticView{code:piqueld_core::codes::RUNTIME_UNAVAILABLE.into(),message:"Runtime observation is unavailable. Saved configuration and deployment history are still available.".into()}))
+                    tracing::warn!(%error, "environment detail observation failed");
+                    let diagnostic = DiagnosticView {
+                        code: piqueld_core::codes::RUNTIME_UNAVAILABLE.into(),
+                        message: "Runtime observation is unavailable. Saved configuration and deployment history are still available.".into(),
+                    };
+                    (ObservedApplication::default(), Some(diagnostic))
                 }
             }
         };
@@ -116,16 +149,12 @@ impl ApplicationService {
             &observed,
             observation_error.is_none() && status.state == piqueld_core::ApplicationState::Ready,
         );
-        let status = status_view(status);
+        let status = EnvironmentStatusView::from(status);
         let latest_operation = self.store.latest_operation_for_environment(id).await?;
         let mut diagnostics =
             detail_diagnostics(&status, &observed_view, latest_operation.as_ref());
         diagnostics.extend(observation_error);
-        let application = &stored.environment.application_id;
-        let environments = self.store.environments(application).await?;
-        let previews = self.store.previews(application).await?;
         let release = self.store.current_release(id).await?;
-        let sync_check = self.store.sync_check(application).await?;
         let manifest = match (stored.manifest(), stored.environment.source.promoted_from()) {
             (Some(manifest), _) => Some(manifest.clone()),
             (None, Some(source)) => self.next_promotion_manifest(source).await?,
@@ -133,11 +162,14 @@ impl ApplicationService {
         };
         let urls = self.urls(&stored, &observed_view.services).await?;
         let links = self.store.link_report(id, None, readable).await?;
+        let application = self
+            .application_view(&stored.environment.application_id, stored.application)
+            .await?;
         Ok(EnvironmentDetailView {
             manifest,
             release,
             environment: stored.environment,
-            application: application_view(stored.application, environments, previews, sync_check),
+            application,
             status,
             observed: observed_view,
             latest_operation,
@@ -178,10 +210,7 @@ impl ApplicationService {
         };
         let id = &stored.environment.id;
         let applied = self.store.applied_routes(id).await?;
-        let mut ingress = match &self.ingress {
-            Some(ingress) => ingress.status().await,
-            None => piqueld_core::api::IngressStatus::default(),
-        };
+        let mut ingress = self.ingress_status().await;
         ingress
             .routes
             .retain(|status| status.environment_id == id.as_str());
@@ -430,7 +459,7 @@ impl ApplicationService {
                 &resolutions,
             )
             .map_err(BoundaryError::Compilation)?
-            .with_ingress(self.ingress.as_ref().is_some_and(|ingress| ingress.enabled));
+            .with_ingress(self.ingress_enabled());
             Some(self.store.with_links(desired, &observed).await?)
         } else {
             None

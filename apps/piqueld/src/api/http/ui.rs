@@ -130,49 +130,43 @@ fn lookup(bundle: &'static EmbeddedBundle, name: &str) -> Option<EmbeddedFile> {
         .find(|(candidate, _)| *candidate == name)
 }
 
-/// Serves one bundle file with its content type and cache policy.
+/// Serves one bundle file with its content type and cache policy. The build
+/// script content-hashes asset filenames, so those may be cached forever;
+/// everything else must revalidate because a new daemon binary can replace
+/// the bytes under an unchanged URL.
 fn asset_response(name: &str, body: &'static [u8]) -> Response {
-    let mut response = Response::new(Body::from(body));
-    let headers = response.headers_mut();
-    // The build script content-hashes asset filenames, so those entries may be cached
-    // forever; everything else must revalidate because a new daemon binary
-    // can replace the bytes under an unchanged URL.
-    headers.insert(
-        header::CACHE_CONTROL,
-        header::HeaderValue::from_static(if is_content_hashed(name) {
-            "public, max-age=31536000, immutable"
-        } else {
-            "no-cache"
-        }),
-    );
-    headers.insert(
-        header::CONTENT_TYPE,
-        header::HeaderValue::from_static(content_type(name)),
-    );
-    response
+    let cache = if is_content_hashed(name) {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    file_response(body, content_type(name), cache)
 }
 
 /// Serves the dashboard shell for extensionless client-side routes such as
-/// `/dashboard/applications/notes`.
+/// `/dashboard/applications/notes`. The shell references hashed assets by
+/// URL, so cached copies of it must never outlive the daemon that served it.
 fn shell_response(bundle: &'static EmbeddedBundle) -> Response {
     match lookup(bundle, "index.html") {
-        Some((_, body)) => {
-            let mut response = Response::new(Body::from(body));
-            let headers = response.headers_mut();
-            // The shell references hashed assets by URL, so cached copies of
-            // the shell itself must never outlive the daemon that served it.
-            headers.insert(
-                header::CACHE_CONTROL,
-                header::HeaderValue::from_static("no-store"),
-            );
-            headers.insert(
-                header::CONTENT_TYPE,
-                header::HeaderValue::from_static("text/html; charset=utf-8"),
-            );
-            response
-        }
+        Some((_, body)) => file_response(body, "text/html; charset=utf-8", "no-store"),
         None => not_found(),
     }
+}
+
+/// A bundle file's bytes with its `Content-Type` and `Cache-Control`.
+fn file_response(
+    body: &'static [u8],
+    content_type: &'static str,
+    cache_control: &'static str,
+) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, cache_control),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// Maps a bundle filename to a conservative static `Content-Type`; unknown

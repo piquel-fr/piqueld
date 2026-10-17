@@ -3,7 +3,7 @@
 use super::{ApplicationError, ApplicationService};
 use piqueld_core::access::Scope;
 use piqueld_core::api::{
-    DependencyStatus, DnsStatus, HostConfiguration, ReadinessStatus, SystemStatus,
+    DependencyStatus, DnsStatus, HostConfiguration, IngressStatus, ReadinessStatus, SystemStatus,
 };
 use std::time::Duration;
 
@@ -75,10 +75,7 @@ impl ApplicationService {
         );
         let database = database.is_ok_and(|result| result.is_ok());
         let (docker, swarm) = runtime.unwrap_or((false, false));
-        let mut ingress = match &self.ingress {
-            Some(ingress) => ingress.status().await,
-            None => piqueld_core::api::IngressStatus::default(),
-        };
+        let mut ingress = self.ingress_status().await;
         // Readiness reports storage outages instead of failing, so routes
         // whose applications cannot be looked up are hidden.
         ingress.routes = self
@@ -102,5 +99,18 @@ impl ApplicationService {
                 "A compatible single-node Swarm manager is required",
             ),
         }
+    }
+
+    /// Managed ingress status; empty when the daemon runs no ingress.
+    pub(super) async fn ingress_status(&self) -> IngressStatus {
+        match &self.ingress {
+            Some(ingress) => ingress.status().await,
+            None => IngressStatus::default(),
+        }
+    }
+
+    /// Whether managed ingress is enabled, which compiled targets attach to.
+    pub(super) fn ingress_enabled(&self) -> bool {
+        self.ingress.as_ref().is_some_and(|ingress| ingress.enabled)
     }
 }

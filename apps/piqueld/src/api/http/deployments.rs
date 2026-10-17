@@ -1,7 +1,7 @@
 //! Explicit deployment acceptance and durable history.
-use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
+use super::{ApiError, ApiPath, ApiQuery, ApiState, QueryParams, ok, openapi::ApiErrorResponse};
 use axum::{
-    extract::{Query, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -17,6 +17,11 @@ use piqueld_core::{
 pub(super) struct HistoryQuery {
     /// `next_cursor` from a previous page.
     cursor: Option<String>,
+}
+
+impl QueryParams for HistoryQuery {
+    const INVALID_CODE: &'static str = "pagination_invalid";
+    const INVALID_MESSAGE: &'static str = "invalid pagination parameters";
 }
 
 /// Deployment preconditions plus an optional one-time manifest revision.
@@ -35,20 +40,12 @@ pub(super) struct DeployQuery {
     commit: Option<String>,
 }
 
-impl DeployQuery {
-    /// Unwraps the query, mapping rejections to 400 `query_invalid`.
-    fn decode(
-        query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
-    ) -> Result<Self, ApiError> {
-        query.map(|Query(value)| value).map_err(|_| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "query_invalid",
-                "expected_generation must be an integer, force must be true or false, and branch or commit may appear once",
-            )
-        })
-    }
+impl QueryParams for DeployQuery {
+    const INVALID_CODE: &'static str = "query_invalid";
+    const INVALID_MESSAGE: &'static str = "expected_generation must be an integer, force must be true or false, and branch or commit may appear once";
+}
 
+impl DeployQuery {
     /// The one-time manifest revision, if `branch` or `commit` was given.
     fn revision(&mut self) -> Result<Option<ManifestRevision>, ApiError> {
         match (self.branch.take(), self.commit.take()) {
@@ -80,9 +77,8 @@ pub(super) async fn deploy(
     axum::Extension(identity): axum::Extension<crate::auth::Identity>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    query: Result<Query<DeployQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(mut query): ApiQuery<DeployQuery>,
 ) -> Result<Response, ApiError> {
-    let mut query = DeployQuery::decode(query)?;
     super::applications::accept_mutation(
         &state,
         &identity,
@@ -107,15 +103,8 @@ pub(super) async fn deploy(
 pub(super) async fn list(
     State(state): State<ApiState>,
     ApiPath(id): ApiPath<String>,
-    query: Result<Query<HistoryQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(query): ApiQuery<HistoryQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Query(query) = query.map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "pagination_invalid",
-            "invalid pagination parameters",
-        )
-    })?;
     Ok(ok(state
         .deployments(&EnvironmentId::parse(id)?, query.cursor.as_deref())
         .await?))
@@ -135,15 +124,8 @@ pub(super) async fn list(
 pub(super) async fn releases(
     State(state): State<ApiState>,
     ApiPath(id): ApiPath<String>,
-    query: Result<Query<HistoryQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(query): ApiQuery<HistoryQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Query(query) = query.map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "pagination_invalid",
-            "invalid pagination parameters",
-        )
-    })?;
     Ok(ok(state
         .releases(&ApplicationId::parse(id)?, query.cursor.as_deref())
         .await?))
@@ -160,15 +142,8 @@ pub(super) async fn releases(
 pub(super) async fn attempts(
     State(state): State<ApiState>,
     ApiPath((id, deployment)): ApiPath<(String, String)>,
-    query: Result<Query<HistoryQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(query): ApiQuery<HistoryQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Query(query) = query.map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "pagination_invalid",
-            "invalid pagination parameters",
-        )
-    })?;
     Ok(ok(state
         .deployment_attempts(
             &EnvironmentId::parse(id)?,

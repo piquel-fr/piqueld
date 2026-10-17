@@ -2,14 +2,17 @@
 //! deleting one need no application revision. A preview's status, logs,
 //! deployments, and secrets use the environment endpoints with its ID.
 use super::applications::accept_mutation;
-use super::environments::environment_request;
-use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
+use super::extract::{IDEMPOTENCY_KEY, content_type, optional_header};
+use super::{
+    ApiError, ApiJson, ApiPath, ApiQuery, ApiState, QueryParams, accepted, ok,
+    openapi::ApiErrorResponse,
+};
 use crate::api::{Mutation, MutationResponse, PreviewMutation};
 use crate::auth::Identity;
 use axum::{
     Extension,
-    body::{Body, Bytes},
-    extract::{Query, State, rejection::BytesRejection, rejection::QueryRejection},
+    body::Body,
+    extract::State,
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -42,9 +45,8 @@ pub(super) async fn create(
     Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    ApiJson(request): ApiJson<CreatePreviewRequest>,
 ) -> Result<Response, ApiError> {
-    let request: CreatePreviewRequest = environment_request(&headers, body)?;
     let mutation = Mutation::Preview(PreviewMutation::Create {
         application: ApplicationId::parse(id)?,
         branch: GitBranch::parse(request.branch)?,
@@ -62,6 +64,11 @@ pub(super) struct LocalPreviewQuery {
     branch: String,
     /// Distinguishes several previews of one branch.
     slot: Option<String>,
+}
+
+impl QueryParams for LocalPreviewQuery {
+    const INVALID_CODE: &'static str = "query_invalid";
+    const INVALID_MESSAGE: &'static str = "branch is required, and branch and slot may appear once";
 }
 
 /// A Git bundle, sent as raw bytes; it only documents the request body.
@@ -96,24 +103,17 @@ pub(super) async fn deploy_local(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
-    query: Result<Query<LocalPreviewQuery>, QueryRejection>,
+    ApiQuery(query): ApiQuery<LocalPreviewQuery>,
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ApiError> {
-    if super::content_type(&headers) != Some("application/octet-stream") {
+    if content_type(&headers) != Some("application/octet-stream") {
         return Err(ApiError::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "content_type_unsupported",
             "Content-Type must be application/octet-stream",
         ));
     }
-    let Query(query) = query.map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "query_invalid",
-            "branch is required, and branch and slot may appear once",
-        )
-    })?;
     let preview = (
         ApplicationId::parse(id)?,
         GitBranch::parse(query.branch)?,
@@ -122,7 +122,7 @@ pub(super) async fn deploy_local(
     let length = headers
         .get(header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok()?.parse().ok());
-    let request_id = super::optional_header(&headers, "idempotency-key")?;
+    let request_id = optional_header(&headers, IDEMPOTENCY_KEY)?;
     let deployed = state.deploy_snapshot(
         identity.actor(),
         preview,
@@ -130,7 +130,7 @@ pub(super) async fn deploy_local(
         request_id.as_deref(),
     );
     match Box::pin(deployed).await? {
-        MutationResponse::Preview(preview) => Ok(super::accepted(preview)),
+        MutationResponse::Preview(preview) => Ok(accepted(preview)),
         _ => Err(crate::store::StoreError::Corrupt.into()),
     }
 }
@@ -221,10 +221,8 @@ pub(super) async fn prune(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    ApiJson(request): ApiJson<PrunePreviewsRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let request: PrunePreviewsRequest = environment_request(&headers, body)?;
     let application = ApplicationId::parse(id)?;
     Ok(ok(state
         .prune_previews(identity.actor(), &application, &request.previews)

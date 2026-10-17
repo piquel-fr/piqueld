@@ -1,57 +1,21 @@
 //! Shared application and environment projections and bounded runtime diagnostics.
-use crate::store::{EnvironmentStatus, StoredApplication, StoredEnvironment};
+use crate::store::{EnvironmentStatus, StoredEnvironment};
 use piqueld_core::{
     ObservedApplication,
-    api::{
-        ApplicationView, DiagnosticView, EnvironmentStatusView, EnvironmentView,
-        ObservedApplicationView, ObservedServiceView,
-    },
+    api::{DiagnosticView, EnvironmentStatusView, ObservedApplicationView, ObservedServiceView},
     resource::{Convergence, ObservedService, TaskDiagnostic, TaskState},
 };
 
-/// Projects stored intent, its environments, its previews, and its last
-/// sync check into the API view, adding the spec hash.
-pub(super) fn application_view(
-    stored: StoredApplication,
-    environments: Vec<EnvironmentView>,
-    previews: Vec<EnvironmentView>,
-    sync_check: Option<piqueld_core::sync::SyncCheck>,
-) -> ApplicationView {
-    // A check from before sync was turned off describes nothing current.
-    let syncs = stored
-        .application
-        .spec()
-        .manifest
-        .as_ref()
-        .is_some_and(|connection| !connection.sync.is_off());
-    // Saved manifests were validated, declarations included, when saved.
-    let declarations = stored
-        .application
-        .spec()
-        .declared_environments()
-        .unwrap_or_default();
-    ApplicationView {
-        drift: piqueld_core::manifest::EnvironmentChange::between(&declarations, &environments),
-        sync_check: sync_check.filter(|_| syncs),
-        generation: stored.generation,
-        spec_hash: stored.application.spec_hash(),
-        application: stored.application,
-        delete_intent: stored.delete_intent,
-        created_at_ms: stored.created_at_ms,
-        updated_at_ms: stored.updated_at_ms,
-        environments,
-        previews,
-    }
-}
-
-/// Projects persisted environment status into its API view.
-pub(super) fn status_view(status: EnvironmentStatus) -> EnvironmentStatusView {
-    EnvironmentStatusView {
-        environment_id: status.environment_id.to_string(),
-        state: status.state,
-        runtime_health: status.runtime_health,
-        message: status.message,
-        updated_at_ms: status.updated_at_ms,
+impl From<EnvironmentStatus> for EnvironmentStatusView {
+    /// Projects persisted environment status into its API view.
+    fn from(status: EnvironmentStatus) -> Self {
+        Self {
+            environment_id: status.environment_id.to_string(),
+            state: status.state,
+            runtime_health: status.runtime_health,
+            message: status.message,
+            updated_at_ms: status.updated_at_ms,
+        }
     }
 }
 
@@ -79,41 +43,28 @@ pub(super) fn observed_view(
                 .services
                 .iter()
                 .find(|service| service.name == desired.name.as_str());
-            let (image, observed_replicas, healthy_replicas, convergence, diagnostics) = runtime
-                .map_or_else(
-                    || {
-                        let diagnostics = if reconciled {
-                            vec![DiagnosticView {
-                                code: "service_missing".into(),
-                                message:
-                                    "the desired service was not found in the runtime observation"
-                                        .into(),
-                            }]
-                        } else {
-                            Vec::new()
-                        };
-                        (
-                            None,
-                            0,
-                            0,
-                            if reconciled {
-                                Convergence::Failed
-                            } else {
-                                Convergence::Updating
-                            },
-                            diagnostics,
-                        )
-                    },
-                    |service| {
-                        (
-                            Some(service.image.clone()),
-                            service.replicas,
-                            healthy_replicas(service),
-                            service.convergence,
-                            service_diagnostics(service),
-                        )
-                    },
-                );
+            let (image, observed_replicas, healthy_replicas, convergence, diagnostics) =
+                match runtime {
+                    Some(service) => (
+                        Some(service.image.clone()),
+                        service.replicas,
+                        healthy_replicas(service),
+                        service.convergence,
+                        service_diagnostics(service),
+                    ),
+                    None if reconciled => (
+                        None,
+                        0,
+                        0,
+                        Convergence::Failed,
+                        vec![DiagnosticView {
+                            code: "service_missing".into(),
+                            message: "the desired service was not found in the runtime observation"
+                                .into(),
+                        }],
+                    ),
+                    None => (None, 0, 0, Convergence::Updating, Vec::new()),
+                };
             ObservedServiceView {
                 name: desired.logical_name.to_string(),
                 image,
@@ -236,9 +187,9 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn service_diagnostics_ignore_historical_tasks() {
-        let service = ObservedService {
+    /// A one-replica `web` service running `tasks`.
+    fn service(tasks: Vec<ObservedTask>, healthcheck_configured: bool) -> ObservedService {
+        ObservedService {
             secrets: Vec::new(),
             files: Vec::new(),
             name: "web".into(),
@@ -249,13 +200,21 @@ mod tests {
             arguments: Vec::new(),
             mounts: Vec::new(),
             healthcheck: None,
-            healthcheck_configured: false,
+            healthcheck_configured,
             resources: None,
             networks: Vec::new(),
             labels: BTreeMap::new(),
             rollout: None,
             runtime_configuration_matches: true,
-            tasks: vec![
+            tasks,
+            convergence: Convergence::Converged,
+        }
+    }
+
+    #[test]
+    fn service_diagnostics_ignore_historical_tasks() {
+        let service = service(
+            vec![
                 ObservedTask {
                     state: TaskState::Failed,
                     healthy: None,
@@ -269,8 +228,8 @@ mod tests {
                     diagnostic: Some(TaskDiagnostic::Rejected),
                 },
             ],
-            convergence: Convergence::Converged,
-        };
+            false,
+        );
 
         let diagnostics = service_diagnostics(&service);
 
@@ -286,26 +245,7 @@ mod tests {
             desired_running: true,
             diagnostic: None,
         };
-        let mut service = ObservedService {
-            secrets: Vec::new(),
-            files: Vec::new(),
-            name: "web".into(),
-            image: "example/web@sha256:digest".into(),
-            replicas: 1,
-            environment: BTreeMap::new(),
-            command: Vec::new(),
-            arguments: Vec::new(),
-            mounts: Vec::new(),
-            healthcheck: None,
-            healthcheck_configured: true,
-            resources: None,
-            networks: Vec::new(),
-            labels: BTreeMap::new(),
-            rollout: None,
-            runtime_configuration_matches: false,
-            tasks: vec![task],
-            convergence: Convergence::Updating,
-        };
+        let mut service = service(vec![task], true);
 
         assert_eq!(healthy_replicas(&service), 0);
         service.healthcheck_configured = false;

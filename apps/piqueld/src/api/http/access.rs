@@ -42,7 +42,7 @@ use utoipa_axum::router::UtoipaMethodRouter;
 const EXTENSION: &str = "x-piqueld-access";
 /// What the `{id}` path parameter of a route names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PathOwner {
+pub(super) enum PathOwner {
     /// An application.
     Application,
     /// An environment or preview, checked on its application.
@@ -61,7 +61,7 @@ impl PathOwner {
     ];
 
     /// The owner a matched route names, with its `{id}`, if any.
-    fn find(
+    pub(super) fn find(
         matched: Option<&MatchedPath>,
         params: Result<RawPathParams, RawPathParamsRejection>,
     ) -> Option<(Self, String)> {
@@ -514,36 +514,33 @@ pub(super) fn history(grants: &Grants) -> Result<crate::store::Visibility, Denie
     Ok(visible)
 }
 
+/// Every operation of a path item with its method, borrowed through
+/// `$borrow` (`as_ref` or `as_mut`), in the order `Allow` headers list them.
+macro_rules! path_operations {
+    ($item:expr, $borrow:ident) => {
+        [
+            (Method::GET, $item.get.$borrow()),
+            (Method::POST, $item.post.$borrow()),
+            (Method::PUT, $item.put.$borrow()),
+            (Method::PATCH, $item.patch.$borrow()),
+            (Method::DELETE, $item.delete.$borrow()),
+            (Method::HEAD, $item.head.$borrow()),
+            (Method::OPTIONS, $item.options.$borrow()),
+            (Method::TRACE, $item.trace.$borrow()),
+        ]
+        .into_iter()
+        .filter_map(|(method, operation)| operation.map(|operation| (method, operation)))
+    };
+}
+
 /// Every operation of a path item with its method.
-fn operations(item: &PathItem) -> impl Iterator<Item = (Method, &Operation)> {
-    [
-        (Method::GET, &item.get),
-        (Method::PUT, &item.put),
-        (Method::POST, &item.post),
-        (Method::DELETE, &item.delete),
-        (Method::OPTIONS, &item.options),
-        (Method::HEAD, &item.head),
-        (Method::PATCH, &item.patch),
-        (Method::TRACE, &item.trace),
-    ]
-    .into_iter()
-    .filter_map(|(method, operation)| operation.as_ref().map(|operation| (method, operation)))
+pub(super) fn operations(item: &PathItem) -> impl Iterator<Item = (Method, &Operation)> {
+    path_operations!(item, as_ref)
 }
 
 /// Every operation of a path item with its method, mutably.
 fn operations_mut(item: &mut PathItem) -> impl Iterator<Item = (Method, &mut Operation)> {
-    [
-        (Method::GET, &mut item.get),
-        (Method::PUT, &mut item.put),
-        (Method::POST, &mut item.post),
-        (Method::DELETE, &mut item.delete),
-        (Method::OPTIONS, &mut item.options),
-        (Method::HEAD, &mut item.head),
-        (Method::PATCH, &mut item.patch),
-        (Method::TRACE, &mut item.trace),
-    ]
-    .into_iter()
-    .filter_map(|(method, operation)| operation.as_mut().map(|operation| (method, operation)))
+    path_operations!(item, as_mut)
 }
 
 impl From<Denied> for ApiError {

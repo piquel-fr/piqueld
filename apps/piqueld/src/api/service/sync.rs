@@ -314,15 +314,7 @@ pub(crate) mod tests {
                     .await
                     .unwrap(),
             );
-            // Only the Docker socket's existence is checked; no request is made.
-            let socket = temp.path().join("docker.sock");
-            let docker = tokio::net::UnixListener::bind(&socket).unwrap();
-            let runtime = crate::reconcile::Controller::new(
-                Arc::new(crate::docker::BollardDocker::connect(&socket).unwrap()),
-                Arc::clone(&store),
-            )
-            .runtime(Arc::new(tokio::sync::Notify::new()));
-            let service = ApplicationService::new(store, runtime);
+            let (service, docker) = ApplicationService::unconnected(store, temp.path());
             Self {
                 application: Self::save(&service, "notes", sync).await,
                 service,
