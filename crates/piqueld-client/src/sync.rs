@@ -1,12 +1,12 @@
 //! Deploying on push: per-environment opt-out and GitHub webhooks. How an
 //! application syncs is a repository setting, changed with
-//! [`ApplicationEdit::RepositorySync`](crate::ApplicationEdit).
+//! [`ApplicationEdit::RepositorySync`](crate::edit::ApplicationEdit::RepositorySync).
 pub use piqueld_core::sync::{
     EnvironmentSyncRequest, RepositorySync, SyncCheck, SyncState, SyncedHead, SystemActor,
     WebhookSecret, WebhookView,
 };
 
-use crate::{Client, ClientError, EnvironmentView, client::generated_result};
+use crate::{Client, ClientError, EnvironmentView, client::EnvelopedCall};
 
 impl Client {
     /// Opts an environment in or out of its application's sync.
@@ -19,13 +19,10 @@ impl Client {
         enabled: bool,
     ) -> Result<EnvironmentView, ClientError> {
         let request = EnvironmentSyncRequest { enabled };
-        generated_result(
-            self.generated
-                .set_environment_sync(id, None, &request)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .set_environment_sync(id, None, &request)
+            .data()
+            .await
     }
 
     /// Reads an application's webhook payload URL and secret state.
@@ -33,9 +30,7 @@ impl Client {
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn webhook(&self, application: &str) -> Result<WebhookView, ClientError> {
-        generated_result(self.generated.get_webhook(application).await)
-            .await
-            .map(|response| response.data)
+        self.generated.get_webhook(application).data().await
     }
 
     /// Generates a new webhook secret for an application, replacing the
@@ -47,8 +42,9 @@ impl Client {
         &self,
         application: &str,
     ) -> Result<WebhookSecret, ClientError> {
-        generated_result(self.generated.generate_webhook_secret(application).await)
+        self.generated
+            .generate_webhook_secret(application)
+            .data()
             .await
-            .map(|response| response.data)
     }
 }

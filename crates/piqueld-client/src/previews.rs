@@ -8,7 +8,7 @@ pub use piqueld_core::api::{
 pub use piqueld_core::manifest::PreviewLimits;
 pub use piqueld_core::{EnvironmentKind, Preview, PreviewSlot, PreviewSlug};
 
-use crate::{AcceptedOperation, Client, ClientError, client::generated_result};
+use crate::{AcceptedOperation, Client, ClientError, client::EnvelopedCall};
 
 impl Client {
     /// Lists an application's previews with their branch states.
@@ -16,9 +16,7 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn previews(&self, application: &str) -> Result<Vec<PreviewView>, ClientError> {
-        generated_result(self.generated.list_previews(application).await)
-            .await
-            .map(|response| response.data)
+        self.generated.list_previews(application).data().await
     }
 
     /// Fetches one preview with its branch state.
@@ -26,9 +24,7 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn preview(&self, id: &str) -> Result<PreviewView, ClientError> {
-        generated_result(self.generated.get_preview(id).await)
-            .await
-            .map(|response| response.data)
+        self.generated.get_preview(id).data().await
     }
 
     /// Creates and deploys a preview of a branch, or returns the existing
@@ -41,13 +37,10 @@ impl Client {
         application: &str,
         request: &CreatePreviewRequest,
     ) -> Result<CreatedPreview, ClientError> {
-        generated_result(
-            self.generated
-                .create_preview(application, None, request)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .create_preview(application, None, request)
+            .data()
+            .await
     }
 
     /// Deploys the head of a preview's branch.
@@ -55,9 +48,7 @@ impl Client {
     /// # Errors
     /// Returns transport, API, decoding, or repository errors.
     pub async fn deploy_preview(&self, id: &str) -> Result<AcceptedOperation, ClientError> {
-        generated_result(self.generated.deploy_preview(id, None).await)
-            .await
-            .map(|response| response.data)
+        self.generated.deploy_preview(id, None).data().await
     }
 
     /// Uploads `bundle`, a Git bundle of `length` bytes holding a snapshot
@@ -78,7 +69,7 @@ impl Client {
     ) -> Result<CreatedPreview, ClientError> {
         let mut query = vec![("branch", branch.to_owned())];
         query.extend(slot.map(|slot| ("slot", slot.to_owned())));
-        self.send::<crate::Envelope<CreatedPreview>>(
+        self.send(
             &format!(
                 "/api/v1/applications/{}/previews/local",
                 progenitor_client::encode_path(application)
@@ -88,7 +79,6 @@ impl Client {
             ("application/octet-stream", bundle.into()),
         )
         .await
-        .map(|response| response.data)
     }
 
     /// Deletes a preview with every volume it created.
@@ -96,9 +86,7 @@ impl Client {
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn delete_preview(&self, id: &str) -> Result<AcceptedOperation, ClientError> {
-        generated_result(self.generated.delete_preview(id, None).await)
-            .await
-            .map(|response| response.data)
+        self.generated.delete_preview(id, None).data().await
     }
 
     /// Deletes the listed previews whose branch the repository confirms is
@@ -111,8 +99,9 @@ impl Client {
         application: &str,
         request: &PrunePreviewsRequest,
     ) -> Result<Vec<DeletedPreview>, ClientError> {
-        generated_result(self.generated.prune_previews(application, request).await)
+        self.generated
+            .prune_previews(application, request)
+            .data()
             .await
-            .map(|response| response.data)
     }
 }

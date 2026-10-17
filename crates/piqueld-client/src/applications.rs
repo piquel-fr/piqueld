@@ -1,3 +1,4 @@
+//! Application desired state, planning, releases, and manifests.
 pub use piqueld_core::api::{
     AcceptedOperation, ApplicationSummary, ApplicationView, ApplyApplicationRequest,
     DeletedApplication, DeploymentView, DiagnosticView, MAX_APPLICATION_PAGE_SIZE,
@@ -6,8 +7,8 @@ pub use piqueld_core::api::{
 };
 
 use crate::{
-    Client, ClientError, Envelope, Page,
-    client::{generated_result, invalid_request},
+    Client, ClientError, Page,
+    client::{EnvelopedCall, GeneratedCall, check_page_limit, collect_byte_stream},
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -37,21 +38,13 @@ impl Client {
         &self,
         options: &ListApplicationsOptions,
     ) -> Result<Page<ApplicationSummary>, ClientError> {
-        if options
-            .limit
-            .is_some_and(|limit| !(1..=MAX_APPLICATION_PAGE_SIZE).contains(&limit))
-        {
-            return Err(invalid_request(format!(
-                "application list limit must be between 1 and {MAX_APPLICATION_PAGE_SIZE}"
-            )));
+        if let Some(limit) = options.limit {
+            check_page_limit("application list", limit, MAX_APPLICATION_PAGE_SIZE)?;
         }
-        generated_result(
-            self.generated
-                .list_applications(options.cursor.as_deref(), options.limit.map(u32::from))
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .list_applications(options.cursor.as_deref(), options.limit.map(u32::from))
+            .data()
+            .await
     }
 
     /// Fetches one application and its environments by identifier.
@@ -59,9 +52,7 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn application(&self, id: &str) -> Result<ApplicationView, ClientError> {
-        generated_result(self.generated.get_application(id).await)
-            .await
-            .map(|response| response.data)
+        self.generated.get_application(id).data().await
     }
 
     /// Saves application configuration without deploying.
@@ -96,20 +87,17 @@ impl Client {
         force: bool,
         deploy: bool,
     ) -> Result<SavedApplication, ClientError> {
-        generated_result(
-            self.generated
-                .apply_application(
-                    Some(deploy),
-                    force.then_some(true),
-                    None,
-                    None,
-                    None,
-                    request,
-                )
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .apply_application(
+                Some(deploy),
+                force.then_some(true),
+                None,
+                None,
+                None,
+                request,
+            )
+            .data()
+            .await
     }
 
     /// Deletes an application and all its environments only if the supplied
@@ -138,19 +126,16 @@ impl Client {
         environments: &[&str],
     ) -> Result<DeletedApplication, ClientError> {
         let environments = (!environments.is_empty()).then(|| environments.join(","));
-        generated_result(
-            self.generated
-                .delete_application(
-                    id,
-                    environments.as_deref(),
-                    expected,
-                    force.then_some(true),
-                    None,
-                )
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .delete_application(
+                id,
+                environments.as_deref(),
+                expected,
+                force.then_some(true),
+                None,
+            )
+            .data()
+            .await
     }
 
     /// Previews applying an application without mutating runtime state, against
@@ -163,13 +148,10 @@ impl Client {
         request: &ApplyApplicationRequest,
         environment: Option<&str>,
     ) -> Result<PlanView, ClientError> {
-        generated_result(
-            self.generated
-                .plan_application(environment, None, None, request)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .plan_application(environment, None, None, request)
+            .data()
+            .await
     }
 
     /// Creates an application from TOML, requiring its name to be absent.
@@ -222,14 +204,13 @@ impl Client {
         if let Some(expected_id) = expected_id {
             headers.push(("X-Expected-Application-Id", expected_id.to_owned()));
         }
-        self.send::<Envelope<SavedApplication>>(
+        self.send(
             "/api/v1/applications/apply",
             &query,
             &headers,
             ("application/toml", manifest.to_owned().into()),
         )
         .await
-        .map(|response| response.data)
     }
 
     /// Previews applying an application from a TOML manifest.
@@ -260,14 +241,13 @@ impl Client {
         let query = environment
             .map(|environment| vec![("environment", environment.to_owned())])
             .unwrap_or_default();
-        self.send::<Envelope<PlanView>>(
+        self.send(
             "/api/v1/applications/plan",
             &query,
             &headers,
             ("application/toml", manifest.to_owned().into()),
         )
         .await
-        .map(|response| response.data)
     }
 
     /// Renames an idle application without touching its runtime resources.
@@ -290,17 +270,12 @@ impl Client {
         request: &RenameApplicationRequest,
         force: bool,
     ) -> Result<RenamedApplication, ClientError> {
-        generated_result(
-            self.generated
-                .rename_application(id, force.then_some(true), None, request)
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .rename_application(id, force.then_some(true), None, request)
+            .data()
+            .await
     }
-}
 
-impl Client {
     /// Lists an application's releases newest first, twenty per page.
     /// # Errors
     /// Returns transport, API, or decoding errors.
@@ -309,18 +284,19 @@ impl Client {
         id: &str,
         cursor: Option<&str>,
     ) -> Result<Page<ReleaseView>, ClientError> {
-        generated_result(self.generated.list_releases(id, cursor).await)
-            .await
-            .map(|response| response.data)
+        self.generated.list_releases(id, cursor).data().await
     }
 
     /// Downloads the saved application manifest as TOML.
     /// # Errors
     /// Returns transport, API, or UTF-8 decoding errors.
     pub async fn application_manifest(&self, id: &str) -> Result<String, ClientError> {
-        let stream =
-            generated_result(self.generated.download_application_manifest(id).await).await?;
-        let bytes = crate::client::collect_byte_stream(stream).await?;
+        let stream = self
+            .generated
+            .download_application_manifest(id)
+            .payload()
+            .await?;
+        let bytes = collect_byte_stream(stream).await?;
         String::from_utf8(bytes).map_err(|source| ClientError::TextDecode { source })
     }
 }

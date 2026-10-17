@@ -1,5 +1,5 @@
 //! Thin convenience methods over generated field editing operations.
-use crate::{Client, ClientError, SavedApplication, client::generated_result};
+use crate::{Client, ClientError, SavedApplication, client::EnvelopedCall};
 use piqueld_core::{
     edit::{
         ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, ExportsValue, FilesValue,
@@ -22,8 +22,7 @@ macro_rules! edit_method {
             /// # Errors
             /// Returns transport, validation, revision, or resource errors.
             pub async fn $name(&self, $($path: &str,)+ $($request: &$body,)? options: &EditOptions) -> Result<SavedApplication, ClientError> {
-                generated_result(self.generated.$name($($path,)+ Some(options.deploy), options.expected_generation, Some(options.force), None $(, $request)?).await)
-                    .await.map(|response| response.data)
+                self.generated.$name($($path,)+ Some(options.deploy), options.expected_generation, Some(options.force), None $(, $request)?).data().await
             }
         }
     };
@@ -89,13 +88,10 @@ impl Client {
         name: &str,
         deploy: bool,
     ) -> Result<SavedApplication, ClientError> {
-        generated_result(
-            self.generated
-                .create_application(Some(deploy), None, &StringValue { value: name.into() })
-                .await,
-        )
-        .await
-        .map(|response| response.data)
+        self.generated
+            .create_application(Some(deploy), None, &StringValue { value: name.into() })
+            .data()
+            .await
     }
     /// Sends a typed change through its individual generated endpoint.
     ///
