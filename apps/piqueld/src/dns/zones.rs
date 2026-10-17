@@ -15,52 +15,53 @@ pub enum ZoneError {
     Conflict(Hostname),
 }
 
-/// The provider index and zone owning `hostname`, given each provider's zones.
-pub(super) fn owner<'a>(
-    providers: &[&'a [Zone]],
-    hostname: &Hostname,
-) -> Result<(usize, &'a Zone), ZoneError> {
-    let mut matches = providers.iter().enumerate().flat_map(|(index, zones)| {
-        zones
-            .iter()
-            .filter(|zone| hostname.is_within(&zone.name))
-            .map(move |zone| (index, zone))
-    });
-    let first = matches
-        .next()
-        .ok_or_else(|| ZoneError::NoZone(hostname.clone()))?;
-    let mut best = first;
-    let mut claimed_twice = false;
-    for candidate in matches {
-        let (longer, same) = (
-            candidate.1.name.as_str().len() > best.1.name.as_str().len(),
-            candidate.1.name == best.1.name,
-        );
-        if longer {
-            best = candidate;
-            claimed_twice = false;
-        } else if same && candidate.0 != best.0 {
-            claimed_twice = true;
-        }
-    }
-    if claimed_twice {
-        return Err(ZoneError::Conflict(best.1.name.clone()));
-    }
-    Ok(best)
-}
+/// Each provider's zones, in configuration order.
+pub(super) struct Zones<'a>(pub(super) Vec<&'a [Zone]>);
 
-/// Zones of provider `index` that another provider also claims.
-pub(super) fn conflicts(providers: &[&[Zone]], index: usize) -> Vec<String> {
-    providers[index]
-        .iter()
-        .filter(|zone| {
-            providers
+impl<'a> Zones<'a> {
+    /// The provider index and zone owning `hostname`.
+    pub(super) fn owner(&self, hostname: &Hostname) -> Result<(usize, &'a Zone), ZoneError> {
+        let mut matches = self.0.iter().enumerate().flat_map(|(index, zones)| {
+            zones
                 .iter()
-                .enumerate()
-                .any(|(other, zones)| other != index && zones.iter().any(|z| z.name == zone.name))
-        })
-        .map(|zone| zone.name.to_string())
-        .collect()
+                .filter(|zone| hostname.is_within(&zone.name))
+                .map(move |zone| (index, zone))
+        });
+        let first = matches
+            .next()
+            .ok_or_else(|| ZoneError::NoZone(hostname.clone()))?;
+        let mut best = first;
+        let mut claimed_twice = false;
+        for candidate in matches {
+            let (longer, same) = (
+                candidate.1.name.as_str().len() > best.1.name.as_str().len(),
+                candidate.1.name == best.1.name,
+            );
+            if longer {
+                best = candidate;
+                claimed_twice = false;
+            } else if same && candidate.0 != best.0 {
+                claimed_twice = true;
+            }
+        }
+        if claimed_twice {
+            return Err(ZoneError::Conflict(best.1.name.clone()));
+        }
+        Ok(best)
+    }
+
+    /// Zones of provider `index` that another provider also claims.
+    pub(super) fn conflicts(&self, index: usize) -> Vec<String> {
+        self.0[index]
+            .iter()
+            .filter(|zone| {
+                self.0.iter().enumerate().any(|(other, zones)| {
+                    other != index && zones.iter().any(|z| z.name == zone.name)
+                })
+            })
+            .map(|zone| zone.name.to_string())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -82,7 +83,7 @@ mod tests {
     fn longest_zone_wins_and_shared_zones_conflict() {
         let first = [zone("piquel.fr"), zone("shared.com")];
         let second = [zone("dev.piquel.fr"), zone("shared.com")];
-        let providers = [first.as_slice(), second.as_slice()];
+        let providers = Zones(vec![first.as_slice(), second.as_slice()]);
         for (hostname, expected) in [
             ("piquel.fr", Ok((0, "piquel.fr"))),
             ("admin.piquel.fr", Ok((0, "piquel.fr"))),
@@ -96,11 +97,12 @@ mod tests {
             // Label boundaries: `notpiquel.fr` is not inside `piquel.fr`.
             ("notpiquel.fr", Err(ZoneError::NoZone(host("notpiquel.fr")))),
         ] {
-            let found =
-                owner(&providers, &host(hostname)).map(|(index, zone)| (index, zone.name.as_str()));
+            let found = providers
+                .owner(&host(hostname))
+                .map(|(index, zone)| (index, zone.name.as_str()));
             assert_eq!(found, expected, "{hostname}");
         }
-        assert_eq!(conflicts(&providers, 0), ["shared.com"]);
-        assert_eq!(conflicts(&providers, 1), ["shared.com"]);
+        assert_eq!(providers.conflicts(0), ["shared.com"]);
+        assert_eq!(providers.conflicts(1), ["shared.com"]);
     }
 }

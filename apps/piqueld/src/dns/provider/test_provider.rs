@@ -146,14 +146,7 @@ impl TestProvider {
 
     fn zone_list(&self) -> Result<Vec<Zone>, ApiError> {
         let _state = self.state()?;
-        Ok(self
-            .zones
-            .iter()
-            .map(|name| Zone {
-                name: name.clone(),
-                id: name.to_string(),
-            })
-            .collect())
+        Ok(self.zones.iter().cloned().map(Zone::named).collect())
     }
 
     fn remove(&self, id: &RecordId) -> Result<(), ApiError> {
