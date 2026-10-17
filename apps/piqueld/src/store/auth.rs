@@ -13,8 +13,13 @@ use piqueld_core::auth::{
     PasskeyView, User,
 };
 use piqueld_core::tailnet::TailnetBinding;
+use sqlx::SqliteConnection;
+use std::fmt;
 
-/// Parses a stored tailnet binding.
+/// Browser sessions end after a day without use, even before they expire.
+pub(super) const SESSION_IDLE_SECS: i64 = 86_400;
+
+/// Parses a credential's stored tailnet binding.
 fn binding(stored: Option<String>) -> Result<Option<TailnetBinding>, StoreError> {
     stored
         .map(TailnetBinding::try_from)
@@ -23,11 +28,6 @@ fn binding(stored: Option<String>) -> Result<Option<TailnetBinding>, StoreError>
             StoreError::CorruptSource(format!("auth_credentials.tailnet: {reason}").into())
         })
 }
-use sqlx::{Sqlite, SqliteConnection, query::Query, sqlite::SqliteArguments};
-use std::fmt;
-
-/// Browser sessions end after a day without use, even before they expire.
-pub(super) const SESSION_IDLE_SECS: i64 = 86_400;
 
 /// Account changes refused because nobody could administer the installation
 /// afterwards.
@@ -205,22 +205,6 @@ pub(crate) struct CredentialOwner {
 }
 
 impl Store {
-    /// Runs one statement through the shared writer queue and returns the
-    /// number of affected rows.
-    async fn write_one<'q>(
-        &self,
-        query: Query<'q, Sqlite, SqliteArguments<'q>>,
-    ) -> Result<u64, StoreError> {
-        let (_writer, mut tx) = self.begin_immediate().await?;
-        let rows = query
-            .execute(&mut *tx)
-            .await
-            .map_err(StoreError::constraint)?
-            .rows_affected();
-        tx.commit().await.map_err(StoreError::database)?;
-        Ok(rows)
-    }
-
     /// Whether first-account setup has completed.
     pub(crate) async fn auth_initialized(&self) -> Result<bool, StoreError> {
         sqlx::query_scalar!(
@@ -233,11 +217,12 @@ impl Store {
 
     /// Replaces the setup secret while the installation is unclaimed.
     pub(crate) async fn set_setup_secret(&self, hash: &str) -> Result<(), StoreError> {
-        self.write_one(sqlx::query!(
+        self.write(sqlx::query!(
             "UPDATE auth_setup SET secret_hash=?1 WHERE singleton=1 AND initialized=0",
             hash
         ))
-        .await?;
+        .await
+        .map_err(StoreError::constraint)?;
         Ok(())
     }
 
@@ -556,9 +541,7 @@ impl Store {
             Self::insert_user_on(db, user, now).await?;
             let issuer = Attribution {
                 user_id: Some(&invitation.issuer_id),
-                credential_id: None,
-                operator: None,
-                system: None,
+                ..Attribution::default()
             };
             let how = "by invitation";
             Self::replace_user_grants_on(db, &user.id, &grants, issuer, how).await?;
@@ -639,7 +622,7 @@ impl Store {
     ) -> Result<Option<CredentialOwner>, StoreError> {
         let now = now_secs();
         let idle = now - SESSION_IDLE_SECS;
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         let row = sqlx::query!(
             r#"SELECT c.id AS "credential_id!",c.kind,c.last_used_at,c.scoped AS "scoped: bool",c.tailnet,u.id AS "id!",u.username,u.display_name FROM auth_credentials c JOIN auth_users u ON u.id=c.user_id WHERE c.secret_hash=?1 AND (c.expires_at IS NULL OR c.expires_at>?2) AND (c.kind!='browser' OR c.last_used_at>?3)"#,
             hash,
@@ -706,13 +689,7 @@ impl Store {
             Err(StoreError::CredentialRevoked) => return Ok(None),
             Err(error) => return Err(error),
         };
-        authority.require_unscoped()?;
-        if let Some(grants) = credential.grants {
-            authority
-                .grants
-                .may_grant(grants)
-                .map_err(StoreError::Denied)?;
-        }
+        authority.may_hand_out(credential.grants)?;
         let user = sqlx::query_as!(
             User,
             r#"SELECT id AS "id!",username,display_name FROM auth_users WHERE id=?1"#,
@@ -785,7 +762,7 @@ impl Store {
     pub(crate) async fn auth_directory(&self) -> Result<Directory, StoreError> {
         let now = now_secs();
         let idle = now - SESSION_IDLE_SECS;
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         let users = sqlx::query_as!(
             User,
             r#"SELECT id AS "id!",username,display_name FROM auth_users ORDER BY username"#
@@ -1069,13 +1046,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let authority = caller.load(&mut tx).await?;
-        authority.require_unscoped()?;
-        if let Some(grants) = credential.grants {
-            authority
-                .grants
-                .may_grant(grants)
-                .map_err(StoreError::Denied)?;
-        }
+        authority.may_hand_out(credential.grants)?;
         credential.insert(&mut tx, &authority.user_id).await?;
         let tailnet = tailnet.map(TailnetBinding::as_str);
         sqlx::query!(
@@ -1126,7 +1097,7 @@ impl Store {
     /// Makes every credential look unused since `secs` ago.
     pub(crate) async fn age_auth_credentials(&self, secs: i64) {
         let last_used = now_secs() - secs;
-        self.write_one(sqlx::query!(
+        self.write(sqlx::query!(
             "UPDATE auth_credentials SET last_used_at=?1",
             last_used
         ))
@@ -1137,7 +1108,7 @@ impl Store {
     /// Makes every host operator link and session expire now.
     pub(crate) async fn expire_operator_sessions(&self) {
         let now = now_secs();
-        self.write_one(sqlx::query!(
+        self.write(sqlx::query!(
             "UPDATE auth_operator_sessions SET expires_at=?1",
             now
         ))
@@ -1147,7 +1118,7 @@ impl Store {
 
     /// Empties the account table behind the daemon's back.
     pub(crate) async fn clear_auth_users(&self) {
-        self.write_one(sqlx::query!("DELETE FROM auth_users"))
+        self.write(sqlx::query!("DELETE FROM auth_users"))
             .await
             .unwrap();
     }
@@ -1163,8 +1134,7 @@ mod tests {
     /// first wins.
     #[tokio::test]
     async fn credential_reads_skip_the_writer_queue_and_refreshes_respect_revocation() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path().join("state.db")).await.unwrap();
+        let (_dir, store) = Store::temporary().await;
         let user = User {
             id: "alice".into(),
             username: "alice".into(),
@@ -1223,8 +1193,7 @@ mod tests {
     /// that expires while the refresh waits is not revived.
     #[tokio::test]
     async fn refreshes_waiting_for_writers_respect_idle_expiry() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path().join("state.db")).await.unwrap();
+        let (_dir, store) = Store::temporary().await;
         let user = User {
             id: "alice".into(),
             username: "alice".into(),

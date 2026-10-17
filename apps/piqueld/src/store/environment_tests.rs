@@ -1,4 +1,5 @@
 //! Upgrade coverage for environment identity, captured targets and encrypted secrets.
+use super::testing::template;
 use super::*;
 use crate::api;
 use piqueld_core::manifest::ApplicationTemplate;
@@ -194,22 +195,8 @@ impl LegacyApplication {
 async fn existing_applications_become_one_production_environment_with_the_same_id() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("upgrade.db");
-    let options = SqliteConnectOptions::new()
-        .filename(&path)
-        .create_if_missing(true)
-        .foreign_keys(true);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .unwrap();
     // Legacy rows predate environments, migration 12.
-    let before = 11;
-    for (index, migration) in MIGRATIONS.iter().take(before).enumerate() {
-        Store::apply_migration(&pool, index + 1, migration)
-            .await
-            .unwrap();
-    }
+    let pool = Store::migrated(&path, 11).await;
     let legacy = LegacyApplication::insert(&pool, &directory.path().join("secrets.key")).await;
     let id = legacy.id.clone();
     let manifest = legacy.manifest.clone();
@@ -267,15 +254,7 @@ async fn existing_applications_become_one_production_environment_with_the_same_i
         panic!("deleted")
     };
     let deletion = &deleted.operations[0].operation_id;
-    store
-        .transition_operation(
-            deletion,
-            OperationState::Requested,
-            OperationState::Running,
-            None,
-        )
-        .await
-        .unwrap();
+    store.mark_running(deletion).await;
     store
         .finish_delete_operation(&store.operation(deletion).await.unwrap())
         .await
@@ -291,25 +270,6 @@ async fn existing_applications_become_one_production_environment_with_the_same_i
     assert_eq!(receipts, 0);
 }
 
-/// Opens a database migrated to `version`, before the migrations after it.
-async fn database_at(path: &Path, version: usize) -> SqlitePool {
-    let options = SqliteConnectOptions::new()
-        .filename(path)
-        .create_if_missing(true)
-        .foreign_keys(true);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .unwrap();
-    for (index, migration) in MIGRATIONS.iter().take(version).enumerate() {
-        Store::apply_migration(&pool, index + 1, migration)
-            .await
-            .unwrap();
-    }
-    pool
-}
-
 /// Environments of repository-backed applications follow the branch and
 /// pinned commit `spec.manifest` named, keeping the manifest last fetched for
 /// the application; other environments keep deploying the saved manifest.
@@ -318,18 +278,15 @@ async fn database_at(path: &Path, version: usize) -> SqlitePool {
 async fn repository_backed_environments_take_their_branch_from_the_connection() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("upgrade.db");
-    let pool = database_at(&path, 13).await;
+    let pool = Store::migrated(&path, 13).await;
     let commit = "c".repeat(40);
-    let backed = piqueld_core::manifest::parse_template_toml(&format!(
-        "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='release'\ncommit='{commit}'"
-    ))
-    .unwrap()
-    .normalize(ApplicationId::parse("app-backed-01").unwrap());
-    let saved = piqueld_core::manifest::parse_template_toml(
-        "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='journal'\n[spec]",
+    let backed = template(
+        "notes",
+        &format!("[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='release'\ncommit='{commit}'"),
     )
-    .unwrap()
-    .normalize(ApplicationId::parse("app-saved-01").unwrap());
+    .normalize(ApplicationId::parse("app-backed-01").unwrap());
+    let saved =
+        template("journal", "[spec]").normalize(ApplicationId::parse("app-saved-01").unwrap());
     for (application, environments) in [
         (&backed, ["app-backed-01", "env-backed-staging"]),
         (&saved, ["app-saved-01", "env-saved-staging"]),

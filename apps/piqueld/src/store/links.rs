@@ -111,10 +111,8 @@ impl Store {
             .find(|party| &party.environment == environment)
         {
             party.bindings = if bindings.is_empty() {
-                let applications = Self::applications_by_name_on(
-                    &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-                )
-                .await?;
+                let applications =
+                    Self::applications_by_name_on(&mut *self.connection().await?).await?;
                 piqueld_core::links::bind(exports, imports, &party.bindings, &applications)
             } else {
                 bindings.clone()

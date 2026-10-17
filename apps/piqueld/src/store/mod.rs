@@ -48,9 +48,15 @@ use piqueld_core::{
     resource::ResolvedApplication,
 };
 pub use piqueld_core::{ApplicationState, Operation, OperationKind, OperationState};
+use serde::de::{DeserializeOwned, value::StrDeserializer};
 use sqlx::{
     Sqlite, SqlitePool, Transaction,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+    pool::PoolConnection,
+    query::Query,
+    sqlite::{
+        SqliteArguments, SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions,
+        SqliteQueryResult,
+    },
 };
 use std::{
     error::Error as StdError,
@@ -536,14 +542,14 @@ pub struct Store {
     /// Process-wide writer queue serializing `BEGIN IMMEDIATE` transactions.
     writers: std::sync::Arc<tokio::sync::Mutex<()>>,
     /// Database file path, used to report on-disk size.
-    pub(crate) database_path: std::path::PathBuf,
+    database_path: std::path::PathBuf,
     /// When this store was opened, used to report daemon uptime.
-    pub(crate) started: std::time::Instant,
+    started: std::time::Instant,
     /// Recently sampled daemon statistics, reused for a few seconds.
-    pub(crate) stats_cache:
+    stats_cache:
         std::sync::Arc<tokio::sync::Mutex<Option<piqueld_core::observability::DaemonStats>>>,
     /// Global webhook notification settings.
-    pub(crate) notifications: crate::config::NotificationConfig,
+    notifications: crate::config::NotificationConfig,
     /// Daemon-scoped event retention in days; zero keeps history forever.
     daemon_event_days: u64,
     /// Audit trail retention in days; zero keeps it forever.
@@ -695,7 +701,7 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         Self::set_user_version(&mut tx, version).await?;
-        let generated = format!("instance-{}", Uuid::now_v7().simple());
+        let generated = new_id("instance");
         let schema_version = i64::try_from(version).map_err(StoreError::schema_mismatch)?;
         let now = now_ms();
         // Every committed boundary is independently reopenable. The first
@@ -756,6 +762,27 @@ impl Store {
             .map_err(StoreError::database)?;
         Ok((writer, tx))
     }
+
+    /// A pooled connection for reads that need no consistent snapshot.
+    async fn connection(&self) -> Result<PoolConnection<Sqlite>, StoreError> {
+        self.pool.acquire().await.map_err(StoreError::database)
+    }
+
+    /// A read transaction, so several reads see one consistent snapshot
+    /// without waiting for writers.
+    async fn snapshot(&self) -> Result<Transaction<'static, Sqlite>, StoreError> {
+        self.pool.begin().await.map_err(StoreError::database)
+    }
+
+    /// Runs one write statement on its own behind the writer queue, for
+    /// writes that need no transaction around them.
+    async fn write<'q>(
+        &self,
+        query: Query<'q, Sqlite, SqliteArguments<'q>>,
+    ) -> Result<SqliteQueryResult, sqlx::Error> {
+        let _writer = self.writers.lock().await;
+        query.execute(&self.pool).await
+    }
 }
 
 /// Verifies the database target is a regular file or absent before `SQLite`
@@ -805,6 +832,16 @@ pub(crate) fn now_secs() -> i64 {
     i64::try_from(secs).unwrap_or(i64::MAX)
 }
 
+/// Converts seconds to milliseconds, saturating at `i64::MAX`.
+fn seconds_ms(seconds: u64) -> i64 {
+    i64::try_from(seconds.saturating_mul(1000)).unwrap_or(i64::MAX)
+}
+
+/// The Unix time in milliseconds `days` days ago, for retention cutoffs.
+fn days_ago_ms(days: u64) -> i64 {
+    now_ms().saturating_sub(seconds_ms(days.saturating_mul(86_400)))
+}
+
 /// Generates a time-ordered unique identifier with a type prefix.
 ///
 /// ```text
@@ -814,12 +851,66 @@ fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::now_v7().simple())
 }
 
-/// Validates a requested page size (`1..=MAX_PAGE_SIZE`) and converts it for binding.
-fn page_limit(limit: usize) -> Result<i64, StoreError> {
-    if !(1..=MAX_PAGE_SIZE).contains(&limit) {
-        return Err(StoreError::InvalidInput);
+/// Decodes a value stored as its serde name, like the `'running'` of an
+/// [`OperationState`], reporting unknown names as corruption.
+fn decode_name<T: DeserializeOwned>(name: &str) -> Result<T, StoreError> {
+    T::deserialize(StrDeserializer::<serde::de::value::Error>::new(name))
+        .map_err(StoreError::corrupt)
+}
+
+/// One keyset page of at most `limit` rows. Queries fetch one more row than
+/// the page holds to tell whether more follow; cursors are opaque
+/// `v1:<key>` strings naming the last row already returned.
+#[derive(Clone, Copy, Debug)]
+struct Paging {
+    /// Rows the page holds.
+    limit: usize,
+    /// Rows to fetch, bound into `LIMIT`.
+    fetch: i64,
+}
+
+impl Paging {
+    /// Validates a requested page size (`1..=MAX_PAGE_SIZE`).
+    fn new(limit: usize) -> Result<Self, StoreError> {
+        if !(1..=MAX_PAGE_SIZE).contains(&limit) {
+            return Err(StoreError::InvalidInput);
+        }
+        let fetch = i64::try_from(limit + 1).map_err(StoreError::invalid_input)?;
+        Ok(Self { limit, fetch })
     }
-    i64::try_from(limit).map_err(StoreError::invalid_input)
+
+    /// The key of an opaque page cursor.
+    ///
+    /// ```text
+    /// "v1:app-0192f1c0..." -> "app-0192f1c0..."
+    /// "app-0192f1c0..."    -> InvalidInput
+    /// ```
+    fn cursor(cursor: Option<&str>) -> Result<Option<&str>, StoreError> {
+        cursor
+            .map(|cursor| cursor.strip_prefix("v1:").ok_or(StoreError::InvalidInput))
+            .transpose()
+    }
+
+    /// Drops the extra row fetched, returning whether more rows follow.
+    fn truncate<R>(self, rows: &mut Vec<R>) -> bool {
+        let more = rows.len() > self.limit;
+        rows.truncate(self.limit);
+        more
+    }
+
+    /// Drops the extra row fetched and returns the cursor after the page's
+    /// last row, named by `key`, when more rows follow.
+    fn next_cursor<R, K: std::fmt::Display>(
+        self,
+        rows: &mut Vec<R>,
+        key: impl FnOnce(&R) -> K,
+    ) -> Option<String> {
+        if self.truncate(rows) {
+            rows.last().map(|row| format!("v1:{}", key(row)))
+        } else {
+            None
+        }
+    }
 }
 
 /// Raw `applications` row.
@@ -1010,6 +1101,9 @@ impl StoredEnvironmentRow {
 }
 
 #[cfg(test)]
+mod testing;
+
+#[cfg(test)]
 mod observability_tests;
 
 #[cfg(test)]
@@ -1027,20 +1121,7 @@ mod tests {
         for committed in 0..=MIGRATIONS.len() {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("migration.db");
-            let options = SqliteConnectOptions::new()
-                .filename(&path)
-                .create_if_missing(true)
-                .foreign_keys(true);
-            let pool = SqlitePoolOptions::new()
-                .max_connections(1)
-                .connect_with(options)
-                .await
-                .unwrap();
-            for (index, migration) in MIGRATIONS.iter().take(committed).enumerate() {
-                Store::apply_migration(&pool, index + 1, migration)
-                    .await
-                    .unwrap();
-            }
+            let pool = Store::migrated(&path, committed).await;
             assert!(
                 Store::apply_migration(
                     &pool,
