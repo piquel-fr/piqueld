@@ -4,6 +4,7 @@ mod credential;
 mod listeners;
 mod observability;
 mod tunnel;
+mod view;
 use credential::Resolution;
 pub use credential::{Credential, CredentialError, CredentialFile};
 pub use observability::{MetricsConfig, NotificationConfig, WebhookDestination, WebhookKind};
@@ -142,7 +143,7 @@ impl DaemonConfig {
             ("server.data_dir", &self.server.data_dir),
             ("server.runtime_dir", &self.server.runtime_dir),
         ] {
-            absolute_directory(name, path)?;
+            absolute_path(name, path)?;
             if path.file_name().is_none() {
                 return Err(ConfigError::Invalid(format!(
                     "{name} must name a directory"
@@ -176,17 +177,7 @@ impl DaemonConfig {
         }
         absolute_file("docker.socket", &self.docker.socket)?;
         for host in &self.server.allowed_hosts {
-            if host.len() > 253
-                || host.split('.').any(|label| {
-                    label.is_empty()
-                        || label.len() > 63
-                        || label.starts_with('-')
-                        || label.ends_with('-')
-                        || !label
-                            .bytes()
-                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-                })
-            {
+            if host.len() > 253 || !host.split('.').all(is_dns_label) {
                 return Err(ConfigError::Invalid(
                     "server.allowed_hosts must contain DNS hostnames without schemes, ports, or wildcards".into(),
                 ));
@@ -304,18 +295,23 @@ impl TailscaleConfig {
 
 /// Requires a tailnet node name: a single DNS label.
 fn dns_label(name: &str, value: &str) -> Result<(), ConfigError> {
-    if !(1..=63).contains(&value.len())
-        || value.starts_with('-')
-        || value.ends_with('-')
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    {
+    if !is_dns_label(value) {
         return Err(ConfigError::Invalid(format!(
             "{name} must be a single DNS label"
         )));
     }
     Ok(())
+}
+
+/// Whether `label` is one DNS label: 1-63 letters, digits, or hyphens, not
+/// starting or ending with a hyphen.
+fn is_dns_label(label: &str) -> bool {
+    (1..=63).contains(&label.len())
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+        && label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 /// Explicit installation-wide ingress enablement.
@@ -563,7 +559,7 @@ impl Default for ImagesConfig {
 }
 
 /// Rejects relative paths, naming the offending setting in the error.
-fn absolute_directory(name: &str, path: &Path) -> Result<(), ConfigError> {
+fn absolute_path(name: &str, path: &Path) -> Result<(), ConfigError> {
     if path.is_absolute() {
         Ok(())
     } else {
@@ -575,7 +571,7 @@ fn absolute_directory(name: &str, path: &Path) -> Result<(), ConfigError> {
 
 /// Requires an absolute path that ends in a file name (not `/` or `..`).
 fn absolute_file(name: &str, path: &Path) -> Result<(), ConfigError> {
-    absolute_directory(name, path)?;
+    absolute_path(name, path)?;
     if path.file_name().is_some() {
         Ok(())
     } else {
@@ -799,374 +795,3 @@ pub fn init_tracing(
 
 #[cfg(test)]
 mod tests;
-
-impl DaemonConfig {
-    /// Projects effective settings into the read-only public dashboard response.
-    ///
-    /// Settings are grouped by section and rendered as display strings, e.g.
-    /// `Server` -> `HTTP port` -> `7845`. Credentials appear only as their source.
-    #[must_use]
-    pub fn view(&self) -> piqueld_core::api::HostConfiguration {
-        let mut groups: std::collections::BTreeMap<
-            String,
-            std::collections::BTreeMap<String, String>,
-        > = [
-            (
-                "Server",
-                vec![
-                    ("Data directory", self.server.data_dir.display().to_string()),
-                    (
-                        "Database",
-                        self.server.database_path().display().to_string(),
-                    ),
-                    (
-                        "API socket",
-                        self.server.socket_path().display().to_string(),
-                    ),
-                    ("HTTP listen mode", self.server.listen_mode.to_string()),
-                    ("HTTP port", self.server.port.to_string()),
-                ],
-            ),
-            (
-                "Docker",
-                vec![
-                    ("Socket", self.docker.socket.display().to_string()),
-                    (
-                        "Initialize Swarm",
-                        self.docker.auto_initialize_swarm.to_string(),
-                    ),
-                ],
-            ),
-            ("Ingress", self.ingress_view()),
-            (
-                "Reconciliation",
-                vec![
-                    (
-                        "Scan interval (seconds)",
-                        self.reconciliation.scan_interval_seconds.to_string(),
-                    ),
-                    (
-                        "Preparation timeout (seconds)",
-                        self.reconciliation.prepare_timeout_seconds.to_string(),
-                    ),
-                    (
-                        "Convergence timeout (seconds)",
-                        self.reconciliation.convergence_timeout_seconds.to_string(),
-                    ),
-                ],
-            ),
-        ]
-        .into_iter()
-        .map(|(group, values)| {
-            (
-                group.into(),
-                values
-                    .into_iter()
-                    .map(|(key, value)| (key.into(), value))
-                    .collect(),
-            )
-        })
-        .collect();
-        groups.insert("Retention".into(), self.retention_view());
-        groups.insert("Previews".into(), self.previews_view());
-        groups.insert(
-            "Local snapshots".into(),
-            std::collections::BTreeMap::from([(
-                "Largest upload (bytes)".into(),
-                self.snapshots.max_upload_bytes.to_string(),
-            )]),
-        );
-        groups.insert(
-            "Git checkouts".into(),
-            std::collections::BTreeMap::from([(
-                "Largest total working trees (bytes)".into(),
-                self.checkouts.max_bytes.to_string(),
-            )]),
-        );
-        groups.insert(
-            "Images".into(),
-            std::collections::BTreeMap::from([
-                (
-                    "Deployments kept per environment".into(),
-                    self.images.keep_deployments.to_string(),
-                ),
-                (
-                    "Cleanup interval (seconds)".into(),
-                    self.images.cleanup_interval_seconds.to_string(),
-                ),
-            ]),
-        );
-        groups.insert("Authentication".into(), self.auth_view());
-        groups.insert("Tailscale".into(), self.tailscale_view());
-        groups.insert("Private ingress".into(), self.private_ingress_view());
-        groups.insert("Cloudflare Tunnel".into(), self.tunnel_view());
-        groups.extend(self.dns_view().map(|view| ("DNS providers".into(), view)));
-        groups.insert("Observability".into(), self.observability_view());
-        piqueld_core::api::HostConfiguration { groups }
-    }
-    /// Builds the `Previews` group.
-    fn previews_view(&self) -> std::collections::BTreeMap<String, String> {
-        let previews = &self.previews;
-        std::collections::BTreeMap::from([
-            (
-                "Per application".into(),
-                previews.max_per_application.to_string(),
-            ),
-            ("Installation-wide".into(), previews.max_total.to_string()),
-            (
-                "Default CPU (millicores)".into(),
-                previews.default_cpu_millis.to_string(),
-            ),
-            (
-                "Default memory (bytes)".into(),
-                previews.default_memory_bytes.to_string(),
-            ),
-            (
-                "Replicas per service".into(),
-                previews.max_replicas.to_string(),
-            ),
-        ])
-    }
-
-    /// Builds the `Retention` group.
-    fn retention_view(&self) -> std::collections::BTreeMap<String, String> {
-        let (retention, builds) = (&self.retention, &self.build_history);
-        std::collections::BTreeMap::from([
-            (
-                "Deployment history".into(),
-                "Until application deletion".into(),
-            ),
-            (
-                "Other finished operations (days)".into(),
-                retention.finished_operation_days.to_string(),
-            ),
-            ("Events (days)".into(), retention.event_days.to_string()),
-            (
-                "Build output (days)".into(),
-                builds.log_retention_days.to_string(),
-            ),
-            (
-                "Build output limit (bytes)".into(),
-                builds.log_max_bytes.to_string(),
-            ),
-        ])
-    }
-    /// Builds the `Authentication` group.
-    fn auth_view(&self) -> std::collections::BTreeMap<String, String> {
-        let days = self.auth.max_token_days;
-        std::collections::BTreeMap::from([(
-            "Longest token lifetime (days)".into(),
-            days.map_or_else(|| "unlimited".into(), |days| days.to_string()),
-        )])
-    }
-    /// Builds the `Tailscale` group. The auth key appears only as its file.
-    fn tailscale_view(&self) -> std::collections::BTreeMap<String, String> {
-        let tailscale = &self.tailscale;
-        std::collections::BTreeMap::from([
-            ("Enabled".into(), tailscale.enabled.to_string()),
-            ("Hostname".into(), tailscale.hostname.clone()),
-            (
-                "Auth key".into(),
-                tailscale
-                    .auth_key_file
-                    .as_ref()
-                    .map_or_else(|| "none".into(), ToString::to_string),
-            ),
-            (
-                "tailscaled".into(),
-                tailscale.socket.as_ref().map_or_else(
-                    || format!("own, state in {}", self.server.tailscale_dir().display()),
-                    |socket| format!("shared, {}", socket.display()),
-                ),
-            ),
-            ("HTTPS port".into(), tailscale.https_port.to_string()),
-            ("Public URL".into(), self.public_url().to_owned()),
-        ])
-    }
-    /// Builds the `Ingress` group.
-    fn ingress_view(&self) -> Vec<(&'static str, String)> {
-        let ingress = &self.ingress;
-        vec![
-            ("Enabled (restart required)", ingress.enabled.to_string()),
-            (
-                "Public addresses",
-                if ingress.public_addresses.is_empty() {
-                    "none".into()
-                } else {
-                    ingress
-                        .public_addresses
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                },
-            ),
-            ("ACME directory", ingress.acme.directory.clone()),
-            (
-                "ACME email",
-                ingress.acme.email.clone().unwrap_or_else(|| "none".into()),
-            ),
-            (
-                "Webhook hostname",
-                ingress
-                    .webhook_hostname
-                    .as_ref()
-                    .map_or_else(|| "none".into(), ToString::to_string),
-            ),
-        ]
-    }
-    /// Builds the `Private ingress` group. The auth key appears only as its file.
-    fn private_ingress_view(&self) -> std::collections::BTreeMap<String, String> {
-        let private = &self.ingress.private;
-        std::collections::BTreeMap::from([
-            (
-                "Enabled (restart required)".into(),
-                private.enabled.to_string(),
-            ),
-            ("Hostname".into(), private.hostname.clone()),
-            (
-                "Dashboard hostname".into(),
-                private
-                    .dashboard_hostname
-                    .as_ref()
-                    .map_or_else(|| "none".into(), ToString::to_string),
-            ),
-            (
-                "Auth key".into(),
-                private
-                    .auth_key
-                    .as_ref()
-                    .map_or_else(|| "none".into(), ToString::to_string),
-            ),
-            (
-                "State directory".into(),
-                self.server
-                    .data_dir
-                    .join("ingress/tailscale")
-                    .display()
-                    .to_string(),
-            ),
-        ])
-    }
-    /// Builds the `Cloudflare Tunnel` group. The credentials appear only as
-    /// their file.
-    fn tunnel_view(&self) -> std::collections::BTreeMap<String, String> {
-        let credentials = self.ingress.tunnel.credentials.as_ref();
-        std::collections::BTreeMap::from([
-            (
-                "Enabled (restart required)".into(),
-                credentials.is_some().to_string(),
-            ),
-            (
-                "Tunnel ID".into(),
-                credentials.map_or_else(|| "none".into(), |credentials| credentials.id.to_string()),
-            ),
-            (
-                "Credentials".into(),
-                credentials
-                    .map_or_else(|| "none".into(), |credentials| credentials.file.to_string()),
-            ),
-        ])
-    }
-    /// Builds the `DNS providers` group, numbered in configuration order, or
-    /// none without providers. Credentials appear only as their files.
-    fn dns_view(&self) -> Option<std::collections::BTreeMap<String, String>> {
-        if self.dns.providers.is_empty() {
-            return None;
-        }
-        Some(
-            self.dns
-                .providers
-                .iter()
-                .enumerate()
-                .map(|(index, config)| {
-                    let provider = &config.provider;
-                    let account = match provider {
-                        crate::dns::provider::DnsProvider::Cloudflare(cloudflare) => {
-                            format!("API token {}", cloudflare.api_token())
-                        }
-                        crate::dns::provider::DnsProvider::Ovh(ovh) => format!(
-                            "{}, application key {}, application secret {}, consumer key {}",
-                            ovh.endpoint,
-                            ovh.application_key,
-                            ovh.application_secret,
-                            ovh.consumer_key
-                        ),
-                        #[cfg(test)]
-                        crate::dns::provider::DnsProvider::Challtestsrv(_)
-                        | crate::dns::provider::DnsProvider::Test(_) => "test server".into(),
-                    };
-                    let records = if config.manage_records {
-                        "manages route records"
-                    } else {
-                        "route records are manual"
-                    };
-                    (
-                        format!("{}. {}", index + 1, provider.kind()),
-                        format!("{account}; {records}"),
-                    )
-                })
-                .collect(),
-        )
-    }
-    /// Builds the `Observability` group, listing notification destinations by name
-    /// only so webhook URLs never reach the dashboard.
-    fn observability_view(&self) -> std::collections::BTreeMap<String, String> {
-        std::collections::BTreeMap::from([
-            (
-                "Metrics listeners".into(),
-                self.metrics
-                    .listen
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            ),
-            (
-                "Daemon history (days)".into(),
-                self.retention.daemon_event_days.to_string(),
-            ),
-            (
-                "Audit trail (days)".into(),
-                self.retention.audit_days.to_string(),
-            ),
-            (
-                "Notifications enabled".into(),
-                self.notifications.enabled.to_string(),
-            ),
-            (
-                "Notification categories".into(),
-                self.notifications
-                    .enabled_categories()
-                    .iter()
-                    .map(|category| category.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            ),
-            (
-                "Notification destinations".into(),
-                self.notifications
-                    .destinations
-                    .iter()
-                    .map(|d| {
-                        format!(
-                            "{} ({}, URL {})",
-                            d.name,
-                            if d.enabled { "enabled" } else { "disabled" },
-                            d.url
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            ),
-            (
-                "Notification failure threshold (seconds)".into(),
-                self.notifications.failure_threshold_seconds.to_string(),
-            ),
-            (
-                "Webhook retry window (seconds)".into(),
-                self.notifications.retry_window_seconds.to_string(),
-            ),
-        ])
-    }
-}
