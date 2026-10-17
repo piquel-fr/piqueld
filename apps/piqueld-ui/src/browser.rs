@@ -1,4 +1,11 @@
 //! Leptos client-side-rendered dashboard routes and shared data services.
+// A component keeps one card's or page's markup together. `view!` markup is
+// long but flat, so its line count does not measure complexity, and
+// splitting components only to stay under it would scatter one view.
+#![allow(
+    clippy::too_many_lines,
+    reason = "view! markup is long but flat; see the comment above"
+)]
 
 mod access;
 mod auth;
@@ -29,7 +36,7 @@ use leptos_router::path;
 use piqueld_client::system::ReadinessStatus;
 use piqueld_client::{
     ApplicationSummary, Client, ClientError, EnvironmentDetailView, EnvironmentStatusView,
-    EnvironmentView, ListApplicationsOptions, Page, SystemStatus,
+    EnvironmentView, ListApplicationsOptions, SystemStatus,
 };
 use std::sync::{
     Arc,
@@ -69,6 +76,16 @@ impl EnvironmentRow {
 }
 
 impl ApplicationRow {
+    /// Health badge for a row: the least healthy of its environments, or not
+    /// deployed without any.
+    fn health(&self) -> ApplicationHealth {
+        self.environments
+            .iter()
+            .map(EnvironmentRow::health)
+            .max_by_key(|health| health.severity())
+            .unwrap_or(ApplicationHealth::NotDeployed)
+    }
+
     /// The first status message among the application's environments.
     fn message(&self) -> Option<String> {
         self.environments.iter().find_map(|row| {
@@ -94,6 +111,15 @@ struct DashboardSnapshot {
 struct LoadFailure {
     unreachable: bool,
     message: String,
+}
+
+impl From<ClientError> for LoadFailure {
+    fn from(error: ClientError) -> Self {
+        Self {
+            unreachable: error.transport(),
+            message: error.user_message(),
+        }
+    }
 }
 
 /// Reactive state shared by every dashboard route, written by the refresh loop.
@@ -138,6 +164,228 @@ impl DashboardSignals {
             detail_error: RwSignal::new(None),
         }
     }
+
+    /// Starts one dashboard refresh if `PollController` grants the single in-flight slot.
+    /// `manual` refreshes are queued even while hidden or busy and rerun once the current
+    /// request finishes. On success all dashboard signals are replaced and the selected
+    /// application's detail is reloaded, or cleared if it disappeared from a complete
+    /// listing. On failure application data is kept (marked stale unless still loading)
+    /// and readiness is cleared.
+    fn start_refresh(self, client: Client, controller: StoredValue<PollController>, manual: bool) {
+        if manual {
+            controller.update_value(PollController::request_manual_refresh);
+        }
+        if !controller
+            .try_update_value(PollController::begin_request)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.refreshing.set(true);
+        spawn_local(async move {
+            let result = DashboardSnapshot::fetch(&client).await;
+            // The layout unmounted meanwhile and disposed its signals.
+            if self.system.try_get_untracked().is_none() {
+                return;
+            }
+            match result {
+                Ok(snapshot) => {
+                    controller.update_value(PollController::record_success);
+                    self.apply(snapshot, &client);
+                }
+                Err(failure) => {
+                    controller.update_value(PollController::record_failure);
+                    self.readiness.set(None);
+                    self.readiness_error.set(None);
+                    self.connection.set(if failure.unreachable {
+                        ConnectionState::Unreachable
+                    } else {
+                        ConnectionState::Failed
+                    });
+                    if self.data_state.get_untracked() != DataState::Loading {
+                        self.data_state.set(DataState::Stale);
+                    }
+                    self.refresh_error.set(Some(failure.message));
+                    self.refreshing.set(false);
+                }
+            }
+            if controller.with_value(PollController::manual_pending) {
+                self.start_refresh(client, controller, false);
+            }
+        });
+    }
+
+    /// Replaces every signal with a successful refresh, then reloads the
+    /// selected application's detail, or clears it if it disappeared from a
+    /// complete listing.
+    fn apply(self, snapshot: DashboardSnapshot, client: &Client) {
+        self.system.set(Some(snapshot.system));
+        let (readiness, readiness_error) = match snapshot.readiness {
+            Ok(readiness) => (Some(readiness), None),
+            Err(error) => (None, Some(error)),
+        };
+        self.readiness.set(readiness);
+        self.readiness_error.set(readiness_error);
+        let data_state = if snapshot.applications.is_empty() {
+            DataState::Empty
+        } else {
+            DataState::Ready
+        };
+        self.applications.set(snapshot.applications);
+        self.pagination_incomplete.set(snapshot.incomplete);
+        self.connection.set(ConnectionState::Reachable);
+        self.data_state.set(data_state);
+        self.refresh_error.set(None);
+        self.refreshing.set(false);
+        if let Some(id) = self.selected_id.get_untracked() {
+            if self
+                .applications
+                .with_untracked(|rows| rows.iter().any(|row| row.application.id.as_str() == id))
+            {
+                self.load_detail(client.clone(), id);
+            } else if !snapshot.incomplete {
+                self.selected_id.set(None);
+                self.detail.set(None);
+                self.detail_loading.set(false);
+            }
+        }
+    }
+
+    /// Background loop that triggers a refresh after each `PollController` delay
+    /// until the layout unmounts.
+    fn spawn_poll_loop(self, client: Client, controller: StoredValue<PollController>) {
+        let active = Alive::new();
+        spawn_local(async move {
+            while active.get() {
+                let delay = controller.with_value(PollController::delay);
+                let milliseconds = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX);
+                TimeoutFuture::new(milliseconds).await;
+                if !active.get() {
+                    return;
+                }
+                self.start_refresh(client.clone(), controller, false);
+            }
+        });
+    }
+
+    /// Fetches detail for the shown environment of application `id`: the route's
+    /// environment, or on application pages its only environment. Ignores the
+    /// response if a newer request started or the selection changed meanwhile.
+    fn load_detail(self, client: Client, id: String) {
+        let request = self.detail_request.get_untracked().wrapping_add(1);
+        self.detail_request.set(request);
+        self.detail_loading.set(true);
+        self.detail_error.set(None);
+        let selected = self.selected_environment.get_untracked();
+        spawn_local(async move {
+            let result = environment_detail(&client, &id, selected.as_deref()).await;
+            if self.detail_request.try_get_untracked() != Some(request)
+                || self.selected_id.get_untracked().as_deref() != Some(id.as_str())
+            {
+                return;
+            }
+            match result {
+                Ok(detail) => self.detail.set(detail),
+                Err(error) => self.detail_error.set(Some(error)),
+            }
+            self.detail_loading.set(false);
+        });
+    }
+
+    /// The listed row of an environment, for its health and status.
+    fn environment_row(self, environment: &str) -> Option<EnvironmentRow> {
+        self.applications.with(|rows| {
+            rows.iter()
+                .flat_map(|row| &row.environments)
+                .find(|row| row.environment.id.as_str() == environment)
+                .cloned()
+        })
+    }
+
+    /// The application and dashboard address of an environment in the current
+    /// listing, or `None` when it is not listed (for example after deletion).
+    fn environment_link(self, environment: &str) -> Option<(String, String)> {
+        self.applications.with(|rows| {
+            rows.iter().find_map(|row| {
+                row.environments
+                    .iter()
+                    .find(|listed| listed.environment.id.as_str() == environment)
+                    .map(|listed| {
+                        (
+                            format!("{}/{}", row.application.name, listed.environment.name),
+                            environment_href(row.application.id.as_str(), environment),
+                        )
+                    })
+            })
+        })
+    }
+
+    /// A link to an environment in the current listing, or its ID when it is
+    /// not listed.
+    fn environment_label(self, environment: &str) -> AnyView {
+        self.environment_link(environment).map_or_else(
+            || view! { <code>{environment.to_owned()}</code> }.into_any(),
+            |(label, href)| view! { <A href={href}>{label}</A> }.into_any(),
+        )
+    }
+
+    /// Alert shown while the last refresh failed, titled by whether the daemon
+    /// was unreachable, and a notice while the shown data is from an earlier
+    /// refresh.
+    fn refresh_notices(self) -> impl IntoView {
+        view! {
+            <div
+                class="stack-sm"
+                style="margin-bottom:16px"
+                hidden={move || self.refresh_error.get().is_none()}
+            >
+                {move || {
+                    self.refresh_error
+                        .get()
+                        .map(|message| {
+                            let title = if self.connection.get() == ConnectionState::Unreachable {
+                                "Daemon unreachable"
+                            } else {
+                                "Refresh failed"
+                            };
+                            notice(
+                                Tone::Bad,
+                                view! {
+                                    <strong>{title}</strong>
+                                    {message}
+                                },
+                            )
+                        })
+                }}
+            </div>
+            <div
+                class="stack-sm"
+                style="margin-bottom:16px"
+                hidden={move || self.data_state.get() != DataState::Stale}
+            >
+                {notice(Tone::Warn, "Showing the last successful view; the latest refresh failed.")}
+            </div>
+        }
+    }
+}
+
+/// The current version of `initial` in `list`, matched by `key`, or
+/// `initial` once the list dropped it. `For` keys its rows once, so rows
+/// whose records change in place read them through this.
+fn live_row<T, K>(list: RwSignal<Vec<T>>, initial: T, key: fn(&T) -> &K) -> Signal<T>
+where
+    T: Clone + Send + Sync + 'static,
+    K: PartialEq + ?Sized + 'static,
+{
+    Signal::derive(move || {
+        list.with(|items| {
+            items
+                .iter()
+                .find(|item| key(item) == key(&initial))
+                .cloned()
+                .unwrap_or_else(|| initial.clone())
+        })
+    })
 }
 
 /// Liveness flag for async work spawned by a component: the component's
@@ -190,7 +438,7 @@ fn App() -> impl IntoView {
                 <ParentRoute path={path!("/dashboard")} view={auth::ProtectedDashboardLayout}>
                     <Route path={path!("")} view={OverviewPage} />
                     <Route path={path!("applications")} view={ApplicationsPage} />
-                    <Route path={path!("settings")} view={management::HostPage} />
+                    <Route path={path!("settings")} view={observability::HostPage} />
                     <Route path={path!("accounts")} view={auth::AccountsPage} />
                     <Route path={path!("builds")} view={builds::BuildsPage} />
                     <Route path={path!("events")} view={observability::HistoryPage} />
@@ -233,22 +481,21 @@ fn DashboardLayout() -> impl IntoView {
 
     let refresh = {
         let client = client.clone();
-        Callback::new(move |()| start_refresh(client.clone(), signals, controller, true))
+        Callback::new(move |()| signals.start_refresh(client.clone(), controller, true))
     };
-    let context = DashboardContext {
+    provide_context(DashboardContext {
         signals,
         client: client.clone(),
         refresh,
-    };
-    provide_context(context.clone());
+    });
 
     let visibility_listener = window_event_listener(ev::visibilitychange, move |_| {
         controller.update_value(|controller| controller.set_hidden(document_hidden()));
     });
     on_cleanup(move || visibility_listener.remove());
 
-    start_refresh(client.clone(), signals, controller, true);
-    spawn_poll_loop(client, signals, controller, Alive::new());
+    signals.start_refresh(client.clone(), controller, true);
+    signals.spawn_poll_loop(client, controller);
 
     view! {
         <a class="skip-link" href="#dashboard-main">
@@ -257,8 +504,7 @@ fn DashboardLayout() -> impl IntoView {
         <Sidebar />
 
         <main id="dashboard-main" class="dashboard-main" tabindex="-1">
-            {refresh_error(&context)}
-            {stale_notice(signals)}
+            {signals.refresh_notices()}
 
             <Outlet />
         </main>
@@ -303,20 +549,21 @@ fn ApplicationDetailPage() -> impl IntoView {
         signals.selected_id.set(Some(id.clone()));
         signals.selected_environment.set(environment);
         signals.detail.set(None);
-        load_detail(client.clone(), signals, id);
+        signals.load_detail(client.clone(), id);
     });
 
     view! {
         <For
             each={move || {
                 params
-                    .with(|p| {
-                        p.get("id")
+                    .with(|params| {
+                        params
+                            .get("id")
                             .map(|id| {
                                 let page = match (
-                                    p.get("service"),
-                                    p.get("environment"),
-                                    p.get("preview"),
+                                    params.get("service"),
+                                    params.get("environment"),
+                                    params.get("preview"),
                                 ) {
                                     (Some(service), _, _) => management::Page::Service(service),
                                     (None, Some(environment), _) => {
@@ -358,167 +605,6 @@ fn NotFoundPage() -> impl IntoView {
     }
 }
 
-/// Alert shown while the last refresh failed, titled by whether the daemon was unreachable.
-fn refresh_error(context: &DashboardContext) -> AnyView {
-    let signals = context.signals;
-    view! {
-        <div
-            class="stack-sm"
-            style="margin-bottom:16px"
-            hidden={move || signals.refresh_error.get().is_none()}
-        >
-            {move || {
-                signals
-                    .refresh_error
-                    .get()
-                    .map(|message| {
-                        let title = if signals.connection.get() == ConnectionState::Unreachable {
-                            "Daemon unreachable"
-                        } else {
-                            "Refresh failed"
-                        };
-                        notice(
-                            Tone::Bad,
-                            view! {
-                                <strong>{title}</strong>
-                                {message}
-                            },
-                        )
-                    })
-            }}
-        </div>
-    }
-    .into_any()
-}
-
-/// Notice shown when the dashboard is displaying data from an earlier refresh.
-fn stale_notice(signals: DashboardSignals) -> AnyView {
-    view! {
-        <div
-            class="stack-sm"
-            style="margin-bottom:16px"
-            hidden={move || signals.data_state.get() != DataState::Stale}
-        >
-            {notice(Tone::Warn, "Showing the last successful view; the latest refresh failed.")}
-        </div>
-    }
-    .into_any()
-}
-
-/// Starts one dashboard refresh if `PollController` grants the single in-flight slot.
-/// `manual` refreshes are queued even while hidden or busy and rerun once the current
-/// request finishes. On success all dashboard signals are replaced and the selected
-/// application's detail is reloaded, or cleared if it disappeared from a complete
-/// listing. On failure application data is kept (marked stale unless still loading)
-/// and readiness is cleared.
-fn start_refresh(
-    client: Client,
-    signals: DashboardSignals,
-    controller: StoredValue<PollController>,
-    manual: bool,
-) {
-    if manual {
-        controller.update_value(PollController::request_manual_refresh);
-    }
-    if !controller
-        .try_update_value(PollController::begin_request)
-        .unwrap_or(false)
-    {
-        return;
-    }
-    signals.refreshing.set(true);
-    spawn_local(async move {
-        let result = fetch_snapshot(&client).await;
-        if signals.system.try_get_untracked().is_none() {
-            return;
-        }
-        match result {
-            Ok(snapshot) => {
-                controller.update_value(PollController::record_success);
-                signals.system.set(Some(snapshot.system));
-                match snapshot.readiness {
-                    Ok(readiness) => {
-                        signals.readiness.set(Some(readiness));
-                        signals.readiness_error.set(None);
-                    }
-                    Err(error) => {
-                        signals.readiness.set(None);
-                        signals.readiness_error.set(Some(error));
-                    }
-                }
-                signals.applications.set(snapshot.applications);
-                signals.pagination_incomplete.set(snapshot.incomplete);
-                signals.connection.set(ConnectionState::Reachable);
-                signals
-                    .data_state
-                    .set(if signals.applications.get_untracked().is_empty() {
-                        DataState::Empty
-                    } else {
-                        DataState::Ready
-                    });
-                signals.refresh_error.set(None);
-                signals.refreshing.set(false);
-                if let Some(id) = signals.selected_id.get_untracked() {
-                    if signals
-                        .applications
-                        .get_untracked()
-                        .iter()
-                        .any(|row| row.application.id.to_string() == id)
-                    {
-                        load_detail(client.clone(), signals, id);
-                    } else if !signals.pagination_incomplete.get_untracked() {
-                        signals.selected_id.set(None);
-                        signals.detail.set(None);
-                        signals.detail_loading.set(false);
-                    }
-                }
-            }
-            Err(failure) => {
-                controller.update_value(PollController::record_failure);
-                signals.readiness.set(None);
-                signals.readiness_error.set(None);
-                signals.connection.set(if failure.unreachable {
-                    ConnectionState::Unreachable
-                } else {
-                    ConnectionState::Failed
-                });
-                if signals.data_state.get_untracked() != DataState::Loading {
-                    signals.data_state.set(DataState::Stale);
-                }
-                signals.refresh_error.set(Some(failure.message));
-                signals.refreshing.set(false);
-            }
-        }
-        if controller.with_value(PollController::manual_pending) {
-            start_refresh(client, signals, controller, false);
-        }
-    });
-}
-
-/// Fetches detail for the shown environment of application `id`: the route's
-/// environment, or on application pages its only environment. Ignores the
-/// response if a newer request started or the selection changed meanwhile.
-fn load_detail(client: Client, signals: DashboardSignals, id: String) {
-    let request = signals.detail_request.get_untracked().wrapping_add(1);
-    signals.detail_request.set(request);
-    signals.detail_loading.set(true);
-    signals.detail_error.set(None);
-    let selected = signals.selected_environment.get_untracked();
-    spawn_local(async move {
-        let result = environment_detail(&client, &id, selected.as_deref()).await;
-        if signals.detail_request.try_get_untracked() != Some(request)
-            || signals.selected_id.get_untracked().as_deref() != Some(id.as_str())
-        {
-            return;
-        }
-        match result {
-            Ok(detail) => signals.detail.set(detail),
-            Err(error) => signals.detail_error.set(Some(error)),
-        }
-        signals.detail_loading.set(false);
-    });
-}
-
 /// Loads the application, then the environment or preview with the selected
 /// ID or, with no selection, its only environment. Applications with several environments
 /// (or none) have no environment detail of their own.
@@ -527,10 +613,7 @@ async fn environment_detail(
     id: &str,
     selected: Option<&str>,
 ) -> Result<Option<EnvironmentDetailView>, String> {
-    let application = client
-        .application(id)
-        .await
-        .map_err(|error| client_error_message(&error))?;
+    let application = client.application(id).await.user_error()?;
     // A selection that no longer exists is reported instead of silently
     // replaced, so later actions never target another environment.
     let environment = match selected {
@@ -546,126 +629,144 @@ async fn environment_detail(
         .environment_detail(environment.id.as_str())
         .await
         .map(Some)
-        .map_err(|error| client_error_message(&error))
+        .user_error()
 }
 
-/// Background loop that triggers a refresh after each `PollController` delay
-/// until the layout unmounts.
-fn spawn_poll_loop(
-    client: Client,
-    signals: DashboardSignals,
-    controller: StoredValue<PollController>,
-    active: Alive,
-) {
-    spawn_local(async move {
-        while active.get() {
-            let delay = controller.with_value(PollController::delay);
-            let milliseconds = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX);
-            TimeoutFuture::new(milliseconds).await;
-            if !active.get() {
-                return;
+impl DashboardSnapshot {
+    /// Loads system status, readiness and every application page (bounded by
+    /// `MAX_PAGES`), fetching each application's environment statuses and
+    /// deployments concurrently.
+    /// Only system status and listing failures abort; readiness and per-application
+    /// errors are recorded in the snapshot.
+    async fn fetch(client: &Client) -> Result<Self, LoadFailure> {
+        let system = client.system_status().await?;
+        let readiness = client.system_readiness().await.user_error();
+        let mut pagination = PaginationState::new();
+        let mut cursor = None;
+        let mut applications = Vec::new();
+        loop {
+            let page = client
+                .applications_with(&ListApplicationsOptions {
+                    cursor: cursor.clone(),
+                    limit: Some(PAGE_LIMIT),
+                })
+                .await?;
+            let next_cursor = page.next_cursor.clone();
+            // Status reads are independent, so a bounded pool keeps one slow
+            // application from serializing the whole refresh.
+            let rows = futures_util::stream::iter(
+                page.items
+                    .into_iter()
+                    .map(|application| ApplicationRow::fetch(client, application)),
+            )
+            .buffered(8)
+            .collect::<Vec<_>>()
+            .await;
+            applications.extend(rows);
+            pagination.record_page(next_cursor);
+            cursor = pagination.next_cursor().map(str::to_owned);
+            if cursor.is_none() || pagination.pages_loaded() >= MAX_PAGES {
+                break;
             }
-            start_refresh(client.clone(), signals, controller, false);
         }
-    });
+        Ok(Self {
+            system,
+            readiness,
+            applications,
+            incomplete: pagination.incomplete(),
+        })
+    }
 }
 
-/// Loads system status, readiness and every application page (bounded by
-/// `MAX_PAGES`), fetching each application's environment statuses and
-/// deployments concurrently.
-/// Only system status and listing failures abort; readiness and per-application
-/// errors are recorded in the snapshot.
-async fn fetch_snapshot(client: &Client) -> Result<DashboardSnapshot, LoadFailure> {
-    let system = client
-        .system_status()
-        .await
-        .map_err(|error| load_failure(&error))?;
-    let readiness = client
-        .system_readiness()
-        .await
-        .map_err(|error| client_error_message(&error));
-    let mut pagination = PaginationState::new();
-    let mut cursor = None;
-    let mut applications = Vec::new();
-    loop {
-        let page: Page<ApplicationSummary> = client
-            .applications_with(&ListApplicationsOptions {
-                cursor: cursor.clone(),
-                limit: Some(PAGE_LIMIT),
-            })
-            .await
-            .map_err(|error| load_failure(&error))?;
-        let next_cursor = page.next_cursor.clone();
-        // Status reads are independent, so a bounded pool keeps one slow
-        // application from serializing the whole refresh.
-        let statuses = futures_util::stream::iter(page.items.into_iter().map(|application| {
-            let client = client.clone();
-            async move {
-                let mut environments = Vec::with_capacity(application.environments.len());
-                let mut deployments = Vec::new();
-                let mut deployment_error = None;
-                for environment in &application.environments {
-                    let id = environment.id.as_str();
-                    let (status, status_error) = match client.environment_status(id).await {
-                        Ok(status) => (Some(status), None),
-                        Err(error) => (None, Some(client_error_message(&error))),
-                    };
-                    match client.deployments(id, None).await {
-                        Ok(page) => deployments.extend(page.items),
-                        Err(error) => deployment_error = Some(client_error_message(&error)),
-                    }
-                    environments.push(EnvironmentRow {
-                        environment: environment.clone(),
-                        status,
-                        status_error,
-                    });
-                }
-                ApplicationRow {
-                    application,
-                    environments,
-                    deployments,
-                    deployment_error,
-                }
+impl ApplicationRow {
+    /// Reads each environment's status and deployments, recording failures
+    /// in the row.
+    async fn fetch(client: &Client, application: ApplicationSummary) -> Self {
+        let mut environments = Vec::with_capacity(application.environments.len());
+        let mut deployments = Vec::new();
+        let mut deployment_error = None;
+        for environment in &application.environments {
+            let id = environment.id.as_str();
+            let (status, status_error) = match client.environment_status(id).await {
+                Ok(status) => (Some(status), None),
+                Err(error) => (None, Some(error.user_message())),
+            };
+            match client.deployments(id, None).await {
+                Ok(page) => deployments.extend(page.items),
+                Err(error) => deployment_error = Some(error.user_message()),
             }
-        }))
-        .buffered(8)
-        .collect::<Vec<_>>()
-        .await;
-        applications.extend(statuses);
-        pagination.record_page(next_cursor);
-        cursor = pagination.next_cursor().map(str::to_owned);
-        if cursor.is_none() || pagination.pages_loaded() >= MAX_PAGES {
-            break;
+            environments.push(EnvironmentRow {
+                environment: environment.clone(),
+                status,
+                status_error,
+            });
+        }
+        Self {
+            application,
+            environments,
+            deployments,
+            deployment_error,
         }
     }
-    Ok(DashboardSnapshot {
-        system,
-        readiness,
-        applications,
-        incomplete: pagination.incomplete(),
-    })
 }
 
-/// Classifies a client error as unreachable (transport) or failed.
-fn load_failure(error: &ClientError) -> LoadFailure {
-    LoadFailure {
-        unreachable: matches!(error, ClientError::Transport { .. }),
-        message: client_error_message(error),
+/// How the dashboard reads a failed request.
+trait ClientErrorExt {
+    /// User-facing message.
+    fn user_message(&self) -> String;
+    /// Whether the request failed before a response was received, so the
+    /// daemon may or may not have applied it.
+    fn transport(&self) -> bool;
+    /// Whether the daemon refused the request for want of a valid session.
+    fn unauthorized(&self) -> bool;
+}
+
+impl ClientErrorExt for ClientError {
+    fn user_message(&self) -> String {
+        match self {
+            Self::Endpoint { message } => format!("The dashboard endpoint is invalid: {message}"),
+            Self::Transport { message, .. } => format!("Could not reach piqueld: {message}"),
+            Self::Api { error, .. } => error.message.clone(),
+            Self::Decode { .. } | Self::TextDecode { .. } => {
+                "The daemon returned an invalid public API response.".into()
+            }
+        }
+    }
+
+    fn transport(&self) -> bool {
+        matches!(self, Self::Transport { .. })
+    }
+
+    fn unauthorized(&self) -> bool {
+        matches!(self, Self::Api { status, .. } if status.as_u16() == 401)
+    }
+}
+
+/// Request results whose failures are shown as user-facing messages.
+trait UserError<T> {
+    /// Replaces a failure with its user-facing message.
+    fn user_error(self) -> Result<T, String>;
+}
+
+impl<T> UserError<T> for Result<T, ClientError> {
+    fn user_error(self) -> Result<T, String> {
+        self.map_err(|error| error.user_message())
     }
 }
 
 /// User-facing message for a client error.
 fn client_error_message(error: &ClientError) -> String {
-    match error {
-        ClientError::Endpoint { message } => {
-            format!("The dashboard endpoint is invalid: {message}")
-        }
-        ClientError::Transport { message, .. } => format!("Could not reach piqueld: {message}"),
-        ClientError::Api { error, .. } => error.message.clone(),
-        ClientError::Decode { .. } | ClientError::TextDecode { .. } => {
-            "The daemon returned an invalid public API response.".into()
-        }
-    }
+    error.user_message()
+}
+
+/// The listed row of an environment, for its health and status.
+fn environment_row(signals: DashboardSignals, environment: &str) -> Option<EnvironmentRow> {
+    signals.environment_row(environment)
+}
+
+/// Health badge for a row: the least healthy of its environments.
+fn row_health(row: &ApplicationRow) -> ApplicationHealth {
+    row.health()
 }
 
 /// Returns whether the browser tab is currently hidden.
@@ -675,53 +776,32 @@ fn document_hidden() -> bool {
         .is_some_and(|document| document.hidden())
 }
 
-/// Header label for a connection state.
-fn connection_label(state: ConnectionState) -> &'static str {
-    match state {
-        ConnectionState::Loading => "Checking…",
-        ConnectionState::Reachable => "Reachable",
-        ConnectionState::Failed => "Request failed",
-        ConnectionState::Unreachable => "Unreachable",
+/// Asks the user to confirm `message` in a native dialog; `false` when
+/// dismissed or unavailable.
+fn confirm(message: &str) -> bool {
+    browser_window().is_some_and(|window| window.confirm_with_message(message).unwrap_or(false))
+}
+
+/// Reloads the current page.
+fn reload() {
+    if let Some(window) = browser_window() {
+        let _ = window.location().reload();
     }
 }
 
-/// Health badge for a row: the least healthy of its environments, or not
-/// deployed without any.
-fn row_health(row: &ApplicationRow) -> ApplicationHealth {
-    row.environments
-        .iter()
-        .map(EnvironmentRow::health)
-        .max_by_key(|health| health.severity())
-        .unwrap_or(ApplicationHealth::NotDeployed)
+/// Dashboard address of one of `application`'s environments.
+fn environment_href(application: &str, environment: &str) -> String {
+    format!("/dashboard/applications/{application}/environments/{environment}")
 }
 
-/// The listed row of an environment, for its health and status.
-fn environment_row(signals: DashboardSignals, environment: &str) -> Option<EnvironmentRow> {
-    signals.applications.with(|rows| {
-        rows.iter()
-            .flat_map(|row| &row.environments)
-            .find(|row| row.environment.id.as_str() == environment)
-            .cloned()
-    })
-}
-
-/// The application and dashboard address of an environment in the current
-/// listing, or `None` when it is not listed (for example after deletion).
-fn environment_link(signals: DashboardSignals, environment: &str) -> Option<(String, String)> {
-    signals.applications.with(|rows| {
-        rows.iter().find_map(|row| {
-            row.environments
-                .iter()
-                .find(|listed| listed.environment.id.as_str() == environment)
-                .map(|listed| {
-                    (
-                        format!("{}/{}", row.application.name, listed.environment.name),
-                        format!(
-                            "/dashboard/applications/{}/environments/{environment}",
-                            row.application.id
-                        ),
-                    )
-                })
-        })
-    })
+/// Link to `release` on `application`'s Releases tab.
+fn release_link(application: &str, release: &str) -> AnyView {
+    let href = format!("/dashboard/applications/{application}?release={release}");
+    let release = release.to_owned();
+    view! {
+        <A href={href}>
+            <code>{release}</code>
+        </A>
+    }
+    .into_any()
 }

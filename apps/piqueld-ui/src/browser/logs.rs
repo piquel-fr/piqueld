@@ -1,4 +1,5 @@
 //! Shared log viewer, stream filter, and persisted display preferences.
+use super::ui::checkbox;
 use crate::log_output::LogLine;
 use leptos::prelude::*;
 use piqueld_client::LogStream;
@@ -115,20 +116,6 @@ pub(super) enum LogKind {
     Build,
 }
 
-fn toggle(label: &'static str, value: RwSignal<bool>) -> AnyView {
-    view! {
-        <label class="checkbox">
-            <input
-                type="checkbox"
-                prop:checked={move || value.get()}
-                on:change={move |e| value.set(event_target_checked(&e))}
-            />
-            {label}
-        </label>
-    }
-    .into_any()
-}
-
 /// A stable scroll container; refreshing rows never remounts the viewer.
 #[component]
 pub(super) fn LogViewer(
@@ -155,6 +142,12 @@ pub(super) fn LogViewer(
     let previous_prepend = StoredValue::new(0);
     let height = StoredValue::new(0);
     let updating = StoredValue::new(false);
+    // Remembers where the viewer is scrolled, and follows new output while
+    // scrolled to (within 24 pixels of) the end.
+    let record = move |node: &web_sys::HtmlDivElement| {
+        position.set(node.scroll_top());
+        follow.set(node.scroll_height() - node.client_height() - node.scroll_top() <= 24);
+    };
     Effect::new(move |_| {
         lines.with(|_| ());
         // A prepended chunk can complete an existing partial line, so rendered
@@ -178,17 +171,16 @@ pub(super) fn LogViewer(
                 };
                 node.set_scroll_top(target);
                 height.set_value(node.scroll_height());
-                position.set(node.scroll_top());
-                follow.set(node.scroll_height() - node.client_height() - node.scroll_top() <= 24);
+                record(&node);
             }
             updating.set_value(false);
         });
     });
     view! {
         <div class="log-options" role="group" aria-label="Log display">
-            {toggle("Timestamps", timestamps)}
-            {service.map(|service| toggle("Service names", service))}
-            {toggle("Wrap lines", preferences.wrap)}
+            {checkbox("Timestamps", timestamps)}
+            {service.map(|service| checkbox("Service names", service))}
+            {checkbox("Wrap lines", preferences.wrap)}
         </div>
         <div
             class="terminal"
@@ -198,13 +190,8 @@ pub(super) fn LogViewer(
             role="region"
             aria-label={label}
             on:scroll={move |_| {
-                if let Some(node) = container.get() {
-                    if updating.get_value() {
-                        return;
-                    }
-                    position.set(node.scroll_top());
-                    follow
-                        .set(node.scroll_height() - node.client_height() - node.scroll_top() <= 24);
+                if let Some(node) = container.get() && !updating.get_value() {
+                    record(&node);
                 }
             }}
         >
