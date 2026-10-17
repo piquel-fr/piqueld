@@ -489,13 +489,10 @@ impl Grants {
     /// Adds every grant of `other`.
     pub fn extend(&mut self, other: &Self) {
         if let Some(scope) = &other.admin {
-            self.admin.get_or_insert(Scope::NONE).extend(scope);
+            self.insert_within(Permission::Admin, scope);
         }
         for (permission, scope) in &other.apps {
-            self.apps
-                .entry(*permission)
-                .or_insert(Scope::NONE)
-                .extend(scope);
+            self.insert_within(Permission::App(*permission), scope);
         }
         self.global.extend(other.global.iter().copied());
         self.normalize();
