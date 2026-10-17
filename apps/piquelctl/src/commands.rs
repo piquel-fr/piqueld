@@ -157,6 +157,8 @@ async fn app(
         AppCommand::Volume { command } => command.run(cli, client, console).await,
         AppCommand::Route { command } => command.run(cli, client, console).await,
         AppCommand::Job { command } => command.run(cli, client, console).await,
+        AppCommand::Export { command } => command.run(cli, client, console).await,
+        AppCommand::Import { command } => command.run(cli, client, console).await,
         AppCommand::Repository { command } => command.run(cli, client, console).await,
         AppCommand::Variable { command } => command.run(cli, client, console).await,
         AppCommand::Manifest { name_or_id } => {

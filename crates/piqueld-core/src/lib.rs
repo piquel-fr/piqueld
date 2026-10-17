@@ -10,6 +10,7 @@ pub use environment::{EnvironmentKind, EnvironmentSource, Preview, PromotedFrom,
 pub mod event;
 pub mod exec;
 pub mod identity;
+pub mod links;
 pub use event::{Event, EventActor};
 pub mod manifest;
 pub mod names;

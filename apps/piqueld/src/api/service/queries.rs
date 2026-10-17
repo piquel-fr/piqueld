@@ -91,11 +91,13 @@ impl ApplicationService {
     }
     /// Combines saved intent, observed state, history, and bounded diagnostics.
     /// Runtime outages are returned as diagnostics so saved intent remains readable.
+    /// Links list only importers of `readable` applications.
     /// # Errors
     /// Returns absence or storage errors.
     pub async fn environment_detail(
         &self,
         id: &EnvironmentId,
+        readable: &Scope,
     ) -> Result<EnvironmentDetailView, ApplicationError> {
         let (stored, status) = self.store.get_with_status(id).await?;
         let (observed, observation_error) = if stored.resolved.is_none() {
@@ -130,6 +132,7 @@ impl ApplicationService {
             (None, None) => None,
         };
         let urls = self.urls(&stored, &observed_view.services).await?;
+        let links = self.store.link_report(id, None, readable).await?;
         Ok(EnvironmentDetailView {
             manifest,
             release,
@@ -140,6 +143,7 @@ impl ApplicationService {
             latest_operation,
             diagnostics,
             urls: Some(urls),
+            links: Some(links),
         })
     }
     /// The manifest a promotion from `source` would deploy next: that of the
@@ -418,17 +422,16 @@ impl ApplicationService {
         let resolutions = ResolutionSet::default();
         let unresolved = preview_resolution(app, &resolutions);
         let desired = if unresolved.is_empty() {
-            Some(
-                compile_application(
-                    app,
-                    environment,
-                    piqueld_core::InstanceId::parse(self.store.instance_id())
-                        .map_err(StoreError::corrupt)?,
-                    &resolutions,
-                )
-                .map_err(BoundaryError::Compilation)?
-                .with_ingress(self.ingress.as_ref().is_some_and(|ingress| ingress.enabled)),
+            let desired = compile_application(
+                app,
+                environment,
+                piqueld_core::InstanceId::parse(self.store.instance_id())
+                    .map_err(StoreError::corrupt)?,
+                &resolutions,
             )
+            .map_err(BoundaryError::Compilation)?
+            .with_ingress(self.ingress.as_ref().is_some_and(|ingress| ingress.enabled));
+            Some(self.store.with_links(desired, &observed).await?)
         } else {
             None
         };
@@ -441,6 +444,20 @@ impl ApplicationService {
         );
         plan.redact_configuration();
         plan.add_jobs(app, environment);
+        if current.is_some() {
+            let spec = app.spec();
+            // Plans only warn about imports, so list no importers.
+            plan.warn_links(
+                &self
+                    .store
+                    .link_report(
+                        environment,
+                        Some((&spec.exports, &spec.imports)),
+                        &Scope::NONE,
+                    )
+                    .await?,
+            );
+        }
         Ok(plan)
     }
 }

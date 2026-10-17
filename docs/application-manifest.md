@@ -63,7 +63,8 @@ service can choose its own order; see [Rollout](#rollout).
 Services of one application share a private network on which each answers to
 its manifest name, so `web` reaches a `postgres` service at `postgres:5432`.
 Names resolve only within that application; identically named services in other
-applications are unreachable.
+applications are unreachable, unless their application exports them through a
+[link](#links).
 
 Names are 1–63 lowercase ASCII letters, digits, or hyphens; they start with a
 letter and cannot end with a hyphen. Applications may be empty. Deploying an empty application removes its services and network, retaining volume data.
@@ -94,6 +95,8 @@ error whose message names the offending environment key where applicable:
 | File size | 512,000 bytes (500 KiB, Swarm's config limit) |
 | Files per application | 2 MiB in total |
 | Jobs per application | 16 |
+| Exports, and imports, per application | 64 each |
+| Applications per export | 64 |
 | Job timeout | 86,400 seconds |
 | Health-check interval | 3,600 seconds |
 | Rollout monitor | 3,600 seconds |
@@ -193,7 +196,7 @@ variables, but not other variables. System variables:
 
 References are allowed in values: service `environment` values, `command` and
 `arguments`, health check settings, `replicas`, resource limits, rollout `order`
-and `monitor_seconds`, route `hostname` and redirect `to`, job `command`, service
+and `monitor_seconds`, route `hostname` and redirect `to`, job `command`, import `environment`, service
 secret mount `name`, and the build inputs `image`, `dockerfile`, `context`, build argument values and
 `target`. They are rejected elsewhere, including names, table keys, `type`
 fields, mount and secret targets, `spec.secrets` declarations, Git repository
@@ -1084,6 +1087,115 @@ redacted like service commands, and the order jobs run in as `jobs.order`.
 Besides applying a manifest, jobs can be edited with `piquelctl app job`, the
 dashboard's Jobs tab, or `PUT /api/v1/applications/{id}/jobs`. Renaming a
 service repoints its jobs; removing a service removes them.
+
+## Links
+
+A link lets the services of one application reach a service of another
+directly, without a route through the gateway. Both applications declare it:
+the exporting application lists who may reach the service, and the importing
+application asks for it.
+
+```toml
+# auth
+[[spec.exports]]
+service = "api"
+applications = ["notes", "billing"]
+# previews = true    # let previews of those applications import it too
+
+# notes
+[[spec.imports]]
+application = "auth"
+service = "api"
+# environment = "staging"
+```
+
+Every service of `notes` then reaches the `api` service of `auth` as
+`api.auth` (`<service>.<application>`), on any port it listens on, e.g.
+`http://api.auth:8080`. Nothing is reachable by default: an import that no
+export grants connects to nothing.
+
+**Isolation.** Each link gets its own overlay network, which only the
+importing environment's services and the services it imports join. Linking
+does not join the two applications' private networks: `notes` cannot reach
+`auth`'s other services, by name or by address, and two applications importing
+from `auth` cannot reach each other. Docker networks connect services, not
+ports, so every port the exported service listens on is reachable, and the
+exported service can in turn reach the importing services on the link's
+network. Export services that only listen where importers should connect.
+
+**Environments.** An import reaches the environment of the exporting application
+named like the importing environment: `notes` staging reaches `auth` staging.
+`environment` names another one, and accepts variables, so each environment
+or the previews can choose:
+
+```toml
+[[spec.imports]]
+application = "auth"
+service = "api"
+environment = "${{ vars.auth_env }}"
+
+[spec.variables]
+auth_env = "${{ env.name }}"
+
+[spec.previews.variables]
+auth_env = "staging"
+```
+
+An export grants every environment of the listed applications, and their
+previews only with `previews = true`, like a stored secret's access list. Each
+environment of the exporting application decides for itself: what it exports is
+what it deploys. Previews never export.
+
+**Lifecycle.** A link follows what both environments deploy, never a manifest
+that is only saved. It connects once both sides have deployed it, and goes away
+once either side deploys without it, is deleted, or starts being deleted: the
+exported service then leaves the link's network, and the network is removed.
+Deploying the other side is not needed; it adjusts within seconds, even while
+one of its services is failing or a deployment of it is running. Deployments
+never wait for a link: until the exporter deploys its export, `api.auth` does
+not resolve in `notes`, so its services should retry, as they would while
+`api` restarts. Joining or leaving a link rolls the exported service and the
+importing services out again, as any network change does. Renaming the
+exporting application changes the names its services answer to.
+
+Jobs reach the links of the deployment they run in, but the exporter joins a
+link only once the importing deployment is promoted, after its jobs. A job
+that needs a new import therefore can't reach it on the deployment that adds
+it: deploy the import first.
+
+An environment links to at most 64 importing environments. The oldest keep
+their links, and imports of newer ones wait until a slot frees up.
+
+`env show` and the environment's Overview in the dashboard list each import
+and whether it connects, or why not: no deployed environment of that name
+exports the service to this environment, or it already links to 64. Whether
+that environment exists is not shown, since its application may be hidden from
+you. `app plan` warns about imports that would not connect
+(`import_unconnected`). They also list the environments importing an
+environment's services, from the applications you can read.
+
+**Names.** Exports and imports name applications, so manifests stay portable
+across installations. Deploying an environment binds each name its exports and
+imports use to the application holding it then, and its links follow that
+application, like a stored secret's access list follows environments:
+renaming the application keeps them, and an application later taking a freed
+name connects nothing. Later deployments keep a binding while its application
+exists, and bind a name anew only once it is gone. A name no application held
+at deployment matches whichever application takes it, until the next
+deployment binds it, so an export may name an application created later. An
+application may
+name itself, linking its environments to each other, such as a preview to
+`staging`.
+
+**Validation.** An export names a service of its application, at most once
+(`export_service_missing`, `export_duplicate`), and at least one application
+(`export_applications_empty`); an import names each service of an application
+once (`import_duplicate`).
+
+Besides applying a manifest, links can be edited with `piquelctl app export`
+and `app import`, the dashboard's Links tab, or
+`PUT /api/v1/applications/{id}/exports` and `/imports`. Renaming a service
+renames its export; removing a service removes it.
 
 ## Routes
 

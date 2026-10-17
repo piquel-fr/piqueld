@@ -36,6 +36,12 @@ pub struct ValidatedSpec {
     /// One-shot jobs in declared execution order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<ValidatedJob>,
+    /// Services other applications may reach over private links.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exports: Vec<super::ValidatedExport>,
+    /// Services of other applications this application reaches.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<super::ValidatedImport>,
 }
 
 /// Validated one-shot job.
@@ -285,7 +291,7 @@ impl ValidationErrors {
     }
 
     /// A value at `path` that still references variables.
-    fn unresolved(path: impl Into<String>) -> Self {
+    pub(super) fn unresolved(path: impl Into<String>) -> Self {
         Self(vec![ValidationError {
             code: codes::VARIABLE_UNRESOLVED.into(),
             path: path.into(),
@@ -518,6 +524,18 @@ impl ValidatedSpec {
                 .enumerate()
                 .map(|(index, job)| ValidatedJob::from_input(job, index))
                 .collect::<Result<_, _>>()?,
+            exports: value
+                .exports
+                .into_iter()
+                .enumerate()
+                .map(|(index, export)| export.into_validated(index))
+                .collect::<Result<_, _>>()?,
+            imports: value
+                .imports
+                .into_iter()
+                .enumerate()
+                .map(|(index, import)| import.into_validated(index))
+                .collect::<Result<_, _>>()?,
             manifest: value.manifest,
             secrets: value.secrets,
             services: value
@@ -583,6 +601,16 @@ impl ValidatedSpec {
                 .map(super::ValidatedRoute::to_input)
                 .collect(),
             jobs: self.jobs.iter().map(ValidatedJob::to_input).collect(),
+            exports: self
+                .exports
+                .iter()
+                .map(super::ValidatedExport::to_input)
+                .collect(),
+            imports: self
+                .imports
+                .iter()
+                .map(super::ValidatedImport::to_input)
+                .collect(),
             manifest: self.manifest.clone(),
             secrets: self.secrets.clone(),
             variables: std::collections::BTreeMap::new(),

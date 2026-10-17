@@ -17,6 +17,22 @@
           },
           "type": "object"
         },
+        "exports": {
+          "default": [],
+          "description": "Services other applications may reach over private links.",
+          "items": {
+            "$ref": "#/definitions/Export"
+          },
+          "type": "array"
+        },
+        "imports": {
+          "default": [],
+          "description": "Services of other applications this application reaches.",
+          "items": {
+            "$ref": "#/definitions/Import"
+          },
+          "type": "array"
+        },
         "jobs": {
           "default": [],
           "description": "One-shot jobs, run in declared order at their deployment point.",
@@ -203,6 +219,32 @@
       },
       "type": "object"
     },
+    "Export": {
+      "additionalProperties": false,
+      "description": "A service other applications may reach, `[[spec.exports]]`.",
+      "properties": {
+        "applications": {
+          "description": "Applications whose environments may import the service.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "previews": {
+          "description": "Whether previews of those applications may import it too; `false` by\ndefault, so only their environments can.",
+          "type": "boolean"
+        },
+        "service": {
+          "description": "Service in this application that importers reach.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "service",
+        "applications"
+      ],
+      "type": "object"
+    },
     "FileMode": {
       "description": "Octal file permissions from `0000` to `0777`, written as text such as\n`\"0444\"` or `\"644\"`.",
       "example": "0444",
@@ -333,6 +375,36 @@
           "type": "object"
         }
       ]
+    },
+    "Import": {
+      "additionalProperties": false,
+      "description": "A service of another application this application reaches,\n`[[spec.imports]]`, as `<service>.<application>`.",
+      "properties": {
+        "application": {
+          "description": "Application exporting the service.",
+          "type": "string"
+        },
+        "environment": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/definitions/Template",
+              "description": "Environment of that application to reach. By default, the one named\nlike the importing environment. It may reference variables, so\npreviews can reach e.g. `staging`."
+            }
+          ]
+        },
+        "service": {
+          "description": "Exported service of that application.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "application",
+        "service"
+      ],
+      "type": "object"
     },
     "Job": {
       "additionalProperties": false,

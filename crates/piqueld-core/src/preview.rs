@@ -73,6 +73,28 @@ impl ManifestChange {
             .collect()
     }
 
+    /// Exports, keyed by service, and imports, keyed by their alias and
+    /// valued by the environment they name, if any.
+    fn link_fields(spec: &ApplicationSpec) -> BTreeMap<String, Value> {
+        let exports = spec.exports.iter().map(|export| {
+            let mut value = serde_json::to_value(export).unwrap_or(Value::Null);
+            if let Value::Object(object) = &mut value {
+                object.remove("service");
+            }
+            (format!("exports.{}", export.service), value)
+        });
+        let imports = spec.imports.iter().map(|import| {
+            (
+                format!("imports.{}.{}", import.service, import.application),
+                import
+                    .environment
+                    .as_ref()
+                    .map_or(Value::Null, |environment| environment.as_str().into()),
+            )
+        });
+        exports.chain(imports).collect()
+    }
+
     /// Flattens a specification into comparable field paths. Services and jobs
     /// contribute one entry per top-level setting except `name`, and services
     /// one per file, keyed by target, which summarizes inline content by size
@@ -91,9 +113,11 @@ impl ManifestChange {
     /// environments.staging.variables.domain -> "staging.example.com"
     /// environments.staging.visibility       -> "private"
     /// previews.visibility                   -> "public"
+    /// exports.api                           -> {"applications":["notes"]}
+    /// imports.api.auth                      -> "staging"
     /// ```
     fn fields(spec: &ApplicationSpec) -> BTreeMap<String, Value> {
-        let mut fields = BTreeMap::new();
+        let mut fields = Self::link_fields(spec);
         for service in &spec.services {
             for file in &service.files {
                 let source = match &file.source {
@@ -256,6 +280,34 @@ impl crate::Plan {
                     blocking: false,
                 }),
         );
+    }
+
+    /// Warns about each import of `links` that would not connect.
+    pub fn warn_links(&mut self, links: &crate::links::LinkReport) {
+        use crate::links::ImportState;
+        self.warn(links.imports.iter().filter_map(|import| {
+            let reason = match import.state {
+                ImportState::Connected => return None,
+                ImportState::Unavailable => format!(
+                    "no deployed environment {} of {} exports {} to this environment; {} stays unreachable until one does",
+                    import.environment, import.application, import.service, import.alias
+                ),
+                ImportState::Full => format!(
+                    "{} {} already links to {} environments; {} stays unreachable until one of them stops importing from it",
+                    import.application,
+                    import.environment,
+                    crate::links::MAX_IMPORTERS,
+                    import.alias
+                ),
+            };
+            Some(PlanDiagnostic {
+                code: codes::IMPORT_UNCONNECTED.into(),
+                severity: DiagnosticSeverity::Warning,
+                resource: import.alias.clone(),
+                message: reason,
+                blocking: false,
+            })
+        }));
     }
 
     /// Lists each job where a deployment runs it: after source resolution,

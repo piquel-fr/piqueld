@@ -15,6 +15,7 @@ mod images;
 pub(crate) mod ingress;
 mod jobs;
 mod journal;
+mod links;
 mod notifications;
 mod observability;
 pub use access::{Actor, Attribution, Caller, EnvironmentOwner, Visibility};

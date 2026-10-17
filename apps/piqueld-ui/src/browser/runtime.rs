@@ -1,5 +1,5 @@
-//! Environment runtime overview: lifecycle status, URLs, observed services,
-//! and diagnostics.
+//! Environment runtime overview: lifecycle status, URLs, links, observed
+//! services, and diagnostics.
 use super::format::timestamp;
 use super::ui::{
     Icon, Tone, badge, empty, health_badge, icon, notice, operation_badge, route_name, when,
@@ -9,6 +9,7 @@ use crate::state::ApplicationHealth;
 use leptos::prelude::*;
 use piqueld_client::{
     Client, DiagnosticView, EnvironmentDetailView, ObservedServiceView, RouteUrl, UrlState,
+    links::ImportState,
 };
 
 /// Live runtime detail for an environment page's Overview tab.
@@ -222,7 +223,9 @@ fn detail_view(
                         .into_any()
                     }
                 }}
-            </section> <section class="card card-flush" aria-labelledby="observed-title">
+            </section>
+            {links_card(&detail)}
+            <section class="card card-flush" aria-labelledby="observed-title">
                 <header>
                     <div>
                         <h3 id="observed-title">"Observed services"</h3>
@@ -306,6 +309,70 @@ fn url_row(url: &RouteUrl) -> AnyView {
         </tr>
     }
     .into_any()
+}
+
+/// The environment's imports and whether each connects, and the environments
+/// importing its services; nothing when it takes part in no link.
+fn links_card(detail: &EnvironmentDetailView) -> Option<AnyView> {
+    let links = detail
+        .links
+        .as_ref()
+        .filter(|links| !links.imports.is_empty() || !links.importers.is_empty())?;
+    let imports = links.imports.iter().map(|import| {
+        let (tone, state) = match import.state {
+            ImportState::Connected => (Tone::Ok, "connected"),
+            ImportState::Unavailable => (Tone::Pending, "not exported to this environment"),
+            ImportState::Full => (Tone::Pending, "exporter links to too many environments"),
+        };
+        view! {
+            <tr>
+                <td>"Imports"</td>
+                <td>
+                    <code>{import.alias.clone()}</code>
+                </td>
+                <td>{format!("{} {}", import.application, import.environment)}</td>
+                <td>{badge(tone, state)}</td>
+            </tr>
+        }
+    });
+    let importers = links.importers.iter().map(|importer| {
+        view! {
+            <tr>
+                <td>"Imported by"</td>
+                <td>
+                    <code>{importer.service.to_string()}</code>
+                </td>
+                <td>{format!("{} {}", importer.application, importer.environment)}</td>
+                <td>{badge(Tone::Ok, "connected")}</td>
+            </tr>
+        }
+    });
+    Some(
+        view! {
+            <section class="card card-flush" aria-labelledby="links-title">
+                <header>
+                    <div>
+                        <h3 id="links-title">"Links"</h3>
+                        <p>
+                            "Services this environment reaches in other applications, and the environments reaching its exported services."
+                        </p>
+                    </div>
+                </header>
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>"Direction"</th>
+                            <th>"Service"</th>
+                            <th>"Environment"</th>
+                            <th>"State"</th>
+                        </tr>
+                    </thead>
+                    <tbody>{imports.collect_view()} {importers.collect_view()}</tbody>
+                </table>
+            </section>
+        }
+        .into_any(),
+    )
 }
 
 /// What keeps a URL pending, e.g. `Waiting for: ingress, DNS pending`, or

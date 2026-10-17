@@ -1,14 +1,15 @@
 use super::{
     ApplicationState, Arc, CancellationToken, Controller, DockerApi, Duration, MAX_PAGE_SIZE,
-    Notify, OperationState, Plan, PlanRequest, StoreError, StoredEnvironment, blocked_plan_message,
+    Notify, Operation, OperationKind, OperationState, Plan, PlanRequest, StoreError,
+    StoredEnvironment, blocked_plan_message,
 };
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::collections::{HashMap, HashSet};
 use tracing::Instrument;
 
 /// Result of a discovery pass: whether it was a full scan, and each selected
-/// environment with the ID of its latest operation.
-type Discovered = (bool, Vec<(StoredEnvironment, String)>);
+/// environment with its latest operation.
+type Discovered = (bool, Vec<(StoredEnvironment, Operation)>);
 /// Application/diagnostic-code pairs already recorded during one discovery pass.
 type ScanFailures = Arc<tokio::sync::Mutex<HashSet<(piqueld_core::EnvironmentId, String)>>>;
 
@@ -56,27 +57,34 @@ impl<D: DockerApi> Controller<D> {
             tokio::select! {
                 ()=cancellation.cancelled()=>return Ok(()),
                 ()=wake.notified()=>requested=true,
+                ()=self.relink.notified()=>{
+                    next_scan=tokio::time::Instant::now();
+                    requested=true;
+                }
                 _=tick.tick()=>requested=true,
                 result=async { match discovery.as_mut() {Some(discovery)=>discovery.await,None=>std::future::pending().await} }=> {
                     discovery=None;
                     if let Some((full,applications))=result {
                             recovered=true;
                             let failures = ScanFailures::default();
-                            for (application,operation_id) in applications {
+                            for (application,operation) in applications {
+                                let operation_id=operation.id.clone();
                                 let id=application.id().clone();
-                                // Full scans refresh health, with at most one job per application.
+                                // Full scans refresh health and enforce links, with at most one job per application.
                                 if full && health_active.insert(id.clone()) {
                                     let health_id=id.clone();
                                     let health_operation=operation_id.clone();
                                     let health_failures=Arc::clone(&failures);
                                     let span = tracing::debug_span!("application_health", environment_id = %id, operation_id = %operation_id, generation = application.application.generation);
                                     health_jobs.push(async move {
-                                        let result=async {
-                                            self.maintain_active(&health_id,&health_operation).await?;
+                                        // A failed repair must not keep a revoked link open.
+                                        let maintained=self.maintain_active(&health_id,&health_operation).await;
+                                        let reported=async {
                                             let observed=self.docker.observe(&health_id).await.map_err(super::OperationError::from)?;
-                                            self.store.record_health(&health_operation,&observed).await.map_err(super::OperationError::from)
+                                            self.store.record_health(&health_operation,&observed).await.map_err(super::OperationError::from)?;
+                                            self.enforce_links(&health_id,&health_operation,&observed).await
                                         }.await;
-                                        if let Err(error)=result {
+                                        for error in [maintained.err(),reported.err()].into_iter().flatten() {
                                             if let Err(report_error)=self.record_scan_diagnostic(&health_id,&error.diagnostic(),&health_failures).await {
                                                 tracing::error!(environment_id=%health_id,error=?report_error,"health diagnostic could not be persisted");
                                             }
@@ -95,12 +103,21 @@ impl<D: DockerApi> Controller<D> {
                                 }
                                 let token=cancellation.child_token();
                                 active.insert(id.clone(),(operation_id,token.clone()));
+                                // A deletion unlinks the environment as soon as it is requested;
+                                // only its first run asks the other side to replan, not retries.
+                                if operation.kind==OperationKind::Delete
+                                    && operation.state==OperationState::Requested
+                                    && application.resolved.as_ref().is_some_and(piqueld_core::ResolvedApplication::has_links)
+                                {
+                                    self.relink.notify_one();
+                                }
                                 let scan_failures=Arc::clone(&failures);
                                 jobs.push(async move {
                                     if let Err(error)=Box::pin(self.scan_application(&application,&token,&scan_failures)).await {
                                         let failure=super::OperationError::Journal(error);
                                         self.store.report_diagnostic(&failure.diagnostic(),Some(&id)).await;
                                     }
+                                    if self.relinked(&application).await { self.relink.notify_one(); }
                                     id
                                 });
                             }
@@ -115,6 +132,19 @@ impl<D: DockerApi> Controller<D> {
                 }
             }
         }
+    }
+
+    /// Whether the exports or imports `before` deployed changed since, so the
+    /// environments it links to must replan now rather than at the next full
+    /// scan. Read failures count as unchanged; the next full scan replans anyway.
+    async fn relinked(&self, before: &StoredEnvironment) -> bool {
+        let links = |target: Option<&piqueld_core::ResolvedApplication>| {
+            target.map(|target| (target.exports.clone(), target.imports.clone()))
+        };
+        self.store
+            .get(before.id())
+            .await
+            .is_ok_and(|after| links(after.resolved.as_ref()) != links(before.resolved.as_ref()))
     }
 
     /// Recovers interrupted work on the first pass, prunes history on full
@@ -153,7 +183,10 @@ impl<D: DockerApi> Controller<D> {
     /// Pages through all environments and selects those needing work. A full scan
     /// selects every environment with an operation; otherwise only requested,
     /// cleanly running, or retry-due operations are selected.
-    async fn discover(&self, full: bool) -> Result<Vec<(StoredEnvironment, String)>, StoreError> {
+    async fn discover(
+        &self,
+        full: bool,
+    ) -> Result<Vec<(StoredEnvironment, Operation)>, StoreError> {
         let mut cursor = None;
         let mut applications = Vec::new();
         loop {
@@ -169,7 +202,7 @@ impl<D: DockerApi> Controller<D> {
                             && operation.error_code.is_none())
                         || Self::retry_due(&operation))
                 {
-                    applications.push((app, operation.id));
+                    applications.push((app, operation));
                 }
             }
             cursor = page.next_cursor;
@@ -179,17 +212,36 @@ impl<D: DockerApi> Controller<D> {
         }
     }
 
-    /// Runs one concurrent observation/reconciliation pass, also used by runtime tests.
+    /// Runs one concurrent observation/reconciliation pass, also used by runtime
+    /// tests. Each environment then enforces its links, as full scans do.
     /// # Errors
     /// Returns a store error if environments cannot be discovered or processed.
     pub async fn scan(&self, cancellation: &CancellationToken) -> Result<(), StoreError> {
         let applications = self.discover(true).await?;
         let mut jobs = FuturesUnordered::new();
         let failures = ScanFailures::default();
-        for (application, _) in applications {
+        for (application, operation) in applications {
             let scan_failures = Arc::clone(&failures);
             jobs.push(async move {
-                Box::pin(self.scan_application(&application, cancellation, &scan_failures)).await
+                Box::pin(self.scan_application(&application, cancellation, &scan_failures)).await?;
+                let enforced = async {
+                    let observed = self.docker.observe(application.id()).await?;
+                    self.enforce_links(application.id(), &operation.id, &observed)
+                        .await
+                }
+                .await;
+                match enforced {
+                    Ok(()) => Ok(()),
+                    Err(super::OperationError::Journal(error)) => Err(error),
+                    Err(error) => {
+                        self.record_scan_diagnostic(
+                            application.id(),
+                            &error.diagnostic(),
+                            &scan_failures,
+                        )
+                        .await
+                    }
+                }
             });
         }
         while let Some(result) = jobs.next().await {
@@ -325,7 +377,7 @@ impl<D: DockerApi> Controller<D> {
             }
         } else if let Some(target) = target {
             PlanRequest::Reconcile {
-                desired: target.clone().with_ingress(self.ingress_enabled()),
+                desired: self.runtime_target(target, &[], &observed).await?,
             }
         } else {
             return Ok(());
@@ -404,7 +456,10 @@ impl<D: DockerApi> Controller<D> {
     /// be running; other failures are retried or reconsidered. Independently,
     /// the Docker adapter refuses to start a service while a job holds one of
     /// its volumes, including runs of superseded operations.
-    async fn may_roll_out(&self, operation: &super::Operation) -> Result<bool, StoreError> {
+    pub(super) async fn may_roll_out(
+        &self,
+        operation: &super::Operation,
+    ) -> Result<bool, StoreError> {
         let ended = operation.state == OperationState::Cancelled
             || matches!(
                 operation.error_code.as_deref(),
@@ -470,14 +525,10 @@ impl<D: DockerApi> Controller<D> {
         };
         let accepted_routes = self.store.applied_routes(id).await?;
         let observed = self.docker.observe(id).await?;
-        let mut plan = Plan::from_request(
-            &PlanRequest::Reconcile {
-                desired: target
-                    .clone()
-                    .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
-            },
-            &observed,
-        );
+        let desired = self
+            .runtime_target(&target, &accepted_routes, &observed)
+            .await?;
+        let mut plan = Plan::from_request(&PlanRequest::Reconcile { desired }, &observed);
         if plan.is_blocked() {
             return Ok(());
         }

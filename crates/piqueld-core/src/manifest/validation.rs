@@ -387,6 +387,11 @@ pub fn safe_decode_path(path: &str) -> String {
         "monitor_seconds",
         "variables",
         "environments",
+        "exports",
+        "imports",
+        "application",
+        "applications",
+        "previews",
     ];
     let mut safe = Vec::new();
     for component in path.split('.') {
@@ -662,6 +667,17 @@ impl ApplicationManifest {
         validate_volumes(&self.spec.volumes, &mut errors);
         validate_generated_secrets(&self.spec.secrets, &mut errors);
         validate_jobs(&self.spec.jobs, &self.spec.services, &mut errors);
+        super::links::validate(
+            &self
+                .spec
+                .services
+                .iter()
+                .map(|service| service.name.as_str())
+                .collect(),
+            &self.spec.exports,
+            &self.spec.imports,
+            &mut errors,
+        );
         self.spec.check_variables(&mut errors);
         if let Err(invalid) = self.spec.declared_environments() {
             errors.extend(invalid.0);
@@ -778,7 +794,7 @@ fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationErro
         );
         within_budget = false;
     }
-    within_budget
+    super::links::within_budget(&input.spec.exports, &input.spec.imports, errors) && within_budget
 }
 
 impl Source {
@@ -1564,7 +1580,7 @@ fn unique_names<'a>(
 }
 
 /// Reports `NAME_INVALID` unless `value` is a safe logical resource name.
-fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
+pub(super) fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     if Template::mentions_reference(value) {
         error(
             errors,
@@ -1861,7 +1877,7 @@ fn validate_process_arguments(
 }
 
 /// Appends one validation error.
-fn error(errors: &mut Vec<ValidationError>, code: &str, path: &str, message: &str) {
+pub(super) fn error(errors: &mut Vec<ValidationError>, code: &str, path: &str, message: &str) {
     errors.push(ValidationError {
         code: code.into(),
         path: path.into(),

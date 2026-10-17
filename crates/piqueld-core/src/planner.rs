@@ -478,6 +478,19 @@ impl Plan {
         });
     }
 
+    /// Records a non-blocking note that a link network stays while the
+    /// exporting environment's services are still attached to it.
+    fn link_cleanup_deferred(&mut self, name: &str) {
+        self.diagnostics.push(PlanDiagnostic {
+            code: codes::CLEANUP_DEFERRED.into(),
+            severity: DiagnosticSeverity::Info,
+            resource: name.into(),
+            message: "the link network remains until the exporting environment's services leave it"
+                .into(),
+            blocking: false,
+        });
+    }
+
     /// Computes action counts from the current plan.
     #[must_use]
     pub fn summary(&self) -> PlanSummary {
@@ -920,7 +933,9 @@ impl Plan {
     }
 
     /// Removes owned networks no longer desired once `cleanup_ready`; must run
-    /// after service removal so no removed network is still attached.
+    /// after service removal so no removed network is still attached. A link
+    /// network stays while the exporter's services are still attached: they
+    /// leave it once the exporter's next reconciliation sees the link gone.
     fn remove_obsolete_networks(
         &mut self,
         desired: &ResolvedApplication,
@@ -937,7 +952,9 @@ impl Plan {
             .filter(|network| !wanted.contains(network.name.as_str()))
         {
             if network.is_owned_by(&desired.instance_id, &desired.id) {
-                if cleanup_ready {
+                if network.is_linked_in_use() {
+                    self.link_cleanup_deferred(&network.name);
+                } else if cleanup_ready {
                     self.actions.push(PlanAction::new(
                         ActionKind::RemoveNetwork {
                             name: network.name.clone(),
@@ -956,6 +973,10 @@ impl Plan {
     /// Plans application deletion: remove owned services and wait for them,
     /// then remove owned networks, and retain owned volumes. Any unowned
     /// observed resource is a blocking collision rather than being ignored.
+    ///
+    /// A link network still in use is left behind, so the deletion never
+    /// waits for the exporting environment: the exporter's services leave it
+    /// on its next scan, which then removes it.
     fn deletion(
         environment_id: &EnvironmentId,
         instance_id: &InstanceId,
@@ -979,15 +1000,17 @@ impl Plan {
         }
         plan.actions.append(&mut waits);
         for network in sorted_by_name(&observed.networks, |network| &network.name) {
-            if network.is_owned_by(instance_id, environment_id) {
+            if !network.is_owned_by(instance_id, environment_id) {
+                plan.collision(&network.name, &mut collisions);
+            } else if network.is_linked_in_use() {
+                plan.link_cleanup_deferred(&network.name);
+            } else {
                 plan.actions.push(PlanAction::new(
                     ActionKind::RemoveNetwork {
                         name: network.name.clone(),
                     },
                     ActionReason::ApplicationDeletion,
                 ));
-            } else {
-                plan.collision(&network.name, &mut collisions);
             }
         }
         for volume in sorted_by_name(&observed.volumes, |volume| &volume.name) {

@@ -330,6 +330,15 @@ pub trait DockerApi: Send + Sync + 'static {
         name: &str,
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError>;
+    /// Detaches a managed service from `network`, after rechecking its
+    /// ownership, and leaves the rest of its current specification alone. A
+    /// missing service or network, or one not attached, counts as detached.
+    async fn detach_network(
+        &self,
+        service: &str,
+        network: &str,
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError>;
     /// Starts the run of `job`. Any existing service of the same job, including
     /// a finished run of the same operation, is removed first, and its
     /// container has stopped before the new run is created, so two runs never

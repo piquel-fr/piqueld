@@ -188,6 +188,20 @@ pub const SOURCE_UNRESOLVED: &str = "source_unresolved";
 pub const SOURCE_RESOLUTION_MISMATCH: &str = "source_resolution_mismatch";
 /// A repository file a service mounts was not captured with its manifest.
 pub const FILE_UNRESOLVED: &str = "file_unresolved";
+/// An application declares too many exports or imports, or an export
+/// grants too many applications.
+pub const LINK_COUNT_EXCESSIVE: &str = "link_count_excessive";
+/// An export references a service the application does not declare.
+pub const EXPORT_SERVICE_MISSING: &str = "export_service_missing";
+/// A service is exported, or an application granted, more than once.
+pub const EXPORT_DUPLICATE: &str = "export_duplicate";
+/// An export grants no application.
+pub const EXPORT_APPLICATIONS_EMPTY: &str = "export_applications_empty";
+/// A service of another application is imported more than once.
+pub const IMPORT_DUPLICATE: &str = "import_duplicate";
+/// An import does not connect: its environment is missing or does not
+/// export the service to the importer.
+pub const IMPORT_UNCONNECTED: &str = "import_unconnected";
 /// A release's manifest renders a build input differently for another
 /// environment than for the release, so its images do not apply there.
 pub const RELEASE_INCOMPATIBLE: &str = "release_incompatible";

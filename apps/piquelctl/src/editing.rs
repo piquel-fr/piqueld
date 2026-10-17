@@ -11,10 +11,10 @@ use crate::{
 };
 use clap::{Args, Subcommand, builder::TypedValueParser};
 use piqueld_client::{
-    ApplicationView, Build, Client, FileMode, FileSource, GitRepository, HealthCheck, Job, JobRun,
-    JobVolumeAccess, Mount, Redirect, RedirectStatus, RepositoryManifest, Rollout, RolloutOrder,
-    Route, SavedApplication, Service, ServiceFile, Source, SourceRepository, Template, Typed,
-    Variable, Visibility, Volume,
+    ApplicationView, Build, Client, Export, FileMode, FileSource, GitRepository, HealthCheck,
+    Import, Job, JobRun, JobVolumeAccess, Mount, Redirect, RedirectStatus, RepositoryManifest,
+    Rollout, RolloutOrder, Route, SavedApplication, Service, ServiceFile, Source, SourceRepository,
+    Template, Typed, Variable, Visibility, Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit, Variables},
     sync::RepositorySync,
 };
@@ -626,6 +626,73 @@ pub(crate) enum JobCommand {
     Remove(JobTarget),
 }
 #[derive(Debug, Args)]
+pub(crate) struct ExportTarget {
+    /// Application name or stable ID.
+    app: String,
+    /// Exported service of the application.
+    service: String,
+    #[command(flatten)]
+    flags: EditFlags,
+}
+#[derive(Debug, Args)]
+pub(crate) struct SetExportArgs {
+    #[command(flatten)]
+    target: ExportTarget,
+    /// Applications whose environments may import the service, comma-separated.
+    #[arg(long, value_delimiter = ',', required = true)]
+    applications: Vec<String>,
+    /// Let previews of those applications import it too.
+    #[arg(long)]
+    previews: bool,
+}
+#[derive(Debug, Subcommand)]
+pub(crate) enum ExportCommand {
+    /// List the services the application exports, as saved.
+    List {
+        /// Application name or stable ID.
+        app: String,
+    },
+    /// Export a service to other applications, or replace who may import it.
+    Set(SetExportArgs),
+    /// Stop exporting a service.
+    Remove(ExportTarget),
+}
+#[derive(Debug, Args)]
+pub(crate) struct ImportTarget {
+    /// Application name or stable ID.
+    app: String,
+    /// Application exporting the service.
+    application: String,
+    /// Exported service of that application.
+    service: String,
+    #[command(flatten)]
+    flags: EditFlags,
+}
+#[derive(Debug, Args)]
+pub(crate) struct AddImportArgs {
+    #[command(flatten)]
+    target: ImportTarget,
+    /// Environment of that application to reach, e.g. `staging` or
+    /// `${{ vars.auth_env }}`. By default, the one named like the importing
+    /// environment.
+    #[arg(long)]
+    environment: Option<Template>,
+}
+#[derive(Debug, Subcommand)]
+pub(crate) enum ImportCommand {
+    /// List the services the application imports, as saved. `env show`
+    /// reports whether each connects.
+    List {
+        /// Application name or stable ID.
+        app: String,
+    },
+    /// Import a service of another application, or replace the environment
+    /// it reaches.
+    Add(AddImportArgs),
+    /// Stop importing a service.
+    Remove(ImportTarget),
+}
+#[derive(Debug, Args)]
 pub(crate) struct RepositoryTarget {
     /// Application name or stable ID.
     app: String,
@@ -1153,6 +1220,118 @@ impl JobCommand {
             current,
             &target.flags,
             &ApplicationEdit::Jobs(jobs),
+        )
+        .await
+    }
+}
+impl ExportCommand {
+    /// Lists saved exports, or edits them client-side and saves the whole
+    /// list, like jobs: setting an exported service replaces its grants in place.
+    pub(crate) async fn run(
+        &self,
+        cli: &Cli,
+        client: &Client,
+        console: &mut Console,
+    ) -> Result<()> {
+        let target = match self {
+            Self::List { app } => {
+                let application = resolve_application(client, app).await?;
+                return console.emit(&application.application.to_manifest().spec.exports);
+            }
+            Self::Set(args) => &args.target,
+            Self::Remove(target) => target,
+        };
+        let current = resolve_application(client, &target.app).await?;
+        let mut exports = current.application.to_manifest().spec.exports;
+        let existing = exports
+            .iter()
+            .position(|export| export.service == target.service);
+        match (self, existing) {
+            (Self::Set(args), existing) => {
+                let export = Export {
+                    service: target.service.clone(),
+                    applications: args.applications.clone(),
+                    previews: args.previews,
+                };
+                match existing {
+                    Some(index) => exports[index] = export,
+                    None => exports.push(export),
+                }
+            }
+            (Self::Remove(_), Some(index)) => {
+                exports.remove(index);
+            }
+            (_, None) => {
+                return Err(CliError::new(
+                    ErrorKind::Input,
+                    format!("service {:?} is not exported", target.service),
+                ));
+            }
+            (Self::List { .. }, Some(_)) => unreachable!("listing returned above"),
+        }
+        save_loaded(
+            cli,
+            client,
+            console,
+            current,
+            &target.flags,
+            &ApplicationEdit::Exports(exports),
+        )
+        .await
+    }
+}
+impl ImportCommand {
+    /// Lists saved imports, or edits them client-side and saves the whole
+    /// list: adding an imported service again replaces its environment.
+    pub(crate) async fn run(
+        &self,
+        cli: &Cli,
+        client: &Client,
+        console: &mut Console,
+    ) -> Result<()> {
+        let target = match self {
+            Self::List { app } => {
+                let application = resolve_application(client, app).await?;
+                return console.emit(&application.application.to_manifest().spec.imports);
+            }
+            Self::Add(args) => &args.target,
+            Self::Remove(target) => target,
+        };
+        let current = resolve_application(client, &target.app).await?;
+        let mut imports = current.application.to_manifest().spec.imports;
+        let existing = imports.iter().position(|import| {
+            import.application == target.application && import.service == target.service
+        });
+        match (self, existing) {
+            (Self::Add(args), existing) => {
+                let import = Import {
+                    application: target.application.clone(),
+                    service: target.service.clone(),
+                    environment: args.environment.clone(),
+                };
+                match existing {
+                    Some(index) => imports[index] = import,
+                    None => imports.push(import),
+                }
+            }
+            (Self::Remove(_), Some(index)) => {
+                imports.remove(index);
+            }
+            (_, None) => {
+                return Err(CliError::new(
+                    ErrorKind::Input,
+                    format!("{}.{} is not imported", target.service, target.application),
+                ));
+            }
+            (Self::List { .. }, Some(_)) => unreachable!("listing returned above"),
+        }
+        save_loaded(
+            cli,
+            client,
+            console,
+            current,
+            &target.flags,
+            &ApplicationEdit::Imports(imports),
         )
         .await
     }

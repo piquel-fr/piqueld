@@ -204,9 +204,10 @@ impl ServiceRuntimePolicy {
     }
 
     /// Requires unique, non-empty network targets without driver options,
-    /// accepting only the service's logical name as an alias. Which network
-    /// carries it is compared against desired attachments during planning,
-    /// because targets here are still Docker network IDs.
+    /// accepting only the service's logical name and its link aliases
+    /// (`<logical name>.<application>`) as aliases. Which network carries
+    /// each is compared against desired attachments during planning, because
+    /// targets here are still Docker network IDs.
     fn networks(spec: &ServiceSpec, task: &TaskSpec) -> bool {
         let logical_name = spec
             .labels
@@ -220,7 +221,15 @@ impl ServiceRuntimePolicy {
                     .as_ref()
                     .is_some_and(|value| !value.is_empty() && targets.insert(value.as_str()))
                     && network.aliases.as_ref().is_none_or(|aliases| {
-                        aliases.iter().all(|alias| Some(alias) == logical_name)
+                        aliases.iter().all(|alias| {
+                            logical_name.is_some_and(|logical_name| {
+                                alias == logical_name
+                                    || alias
+                                        .strip_prefix(logical_name.as_str())
+                                        .and_then(|rest| rest.strip_prefix('.'))
+                                        .is_some_and(piqueld_core::valid_logical_name)
+                            })
+                        })
                     })
                     && network
                         .driver_opts
@@ -315,6 +324,7 @@ mod tests {
         let image = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
         let application = piqueld_core::EnvironmentId::parse("app-policy").unwrap();
         DesiredService {
+            link_aliases: BTreeMap::new(),
             secrets: Vec::new(),
             files: Vec::new(),
             logical_name: piqueld_core::ServiceName::parse("web").unwrap(),

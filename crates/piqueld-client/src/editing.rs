@@ -2,12 +2,12 @@
 use crate::{Client, ClientError, SavedApplication, client::generated_result};
 use piqueld_core::{
     edit::{
-        ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, FilesValue, HealthValue,
-        JobsValue, MemoryValue, MountsValue, OptionalStringValue, ReplicasValue,
-        RepositorySyncValue, RepositoryValue, ResourcesValue, RolloutValue, RoutesValue,
-        SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue,
-        StringValue, StringsValue, TemplateValue, TemplatesValue, VariablesValue, VisibilityValue,
-        VolumesValue,
+        ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, ExportsValue, FilesValue,
+        HealthValue, ImportsValue, JobsValue, MemoryValue, MountsValue, OptionalStringValue,
+        ReplicasValue, RepositorySyncValue, RepositoryValue, ResourcesValue, RolloutValue,
+        RoutesValue, SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral, ServiceProcess,
+        SourceValue, StringValue, StringsValue, TemplateValue, TemplatesValue, VariablesValue,
+        VisibilityValue, VolumesValue,
     },
     manifest::{Mount, Service, ServiceFile, Volume},
 };
@@ -31,6 +31,8 @@ macro_rules! edit_method {
 edit_method!(set_application_volumes, (id), request: VolumesValue);
 edit_method!(set_application_routes, (id), request: RoutesValue);
 edit_method!(set_application_jobs, (id), request: JobsValue);
+edit_method!(set_application_exports, (id), request: ExportsValue);
+edit_method!(set_application_imports, (id), request: ImportsValue);
 edit_method!(set_application_name, (id), request: StringValue);
 edit_method!(set_application_variables, (id), request: VariablesValue);
 edit_method!(set_environment_visibility, (id, environment), request: VisibilityValue);
@@ -121,6 +123,12 @@ impl Client {
                 send!(set_application_routes, RoutesValue, value.clone())
             }
             ApplicationEdit::Jobs(value) => send!(set_application_jobs, JobsValue, value.clone()),
+            ApplicationEdit::Exports(value) => {
+                send!(set_application_exports, ExportsValue, value.clone())
+            }
+            ApplicationEdit::Imports(value) => {
+                send!(set_application_imports, ImportsValue, value.clone())
+            }
             ApplicationEdit::Name(value) => send!(set_application_name, StringValue, value.clone()),
             ApplicationEdit::Repository(None) => {
                 self.disconnect_manifest_repository(id, options).await

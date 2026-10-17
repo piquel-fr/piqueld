@@ -274,6 +274,47 @@ and its prepared target are saved, so cleanup cannot remove the images in
 between.
 `app releases` shows whether each release's images are present.
 
+## Link networks
+
+A [link](application-manifest.md#links) is an overlay network the importing
+environment owns, named after it and the exporting environment
+(`piqueld-<importer>-network-link-<exporter>-…`), labelled with the importer's
+ownership labels plus `io.piqueld.link=<exporter environment ID>`. Every service
+of the importer joins it without an alias; the exporter's imported services
+join it with their link alias, `<service>.<application>`, and no other service
+does, so a link never joins either environment's private network. The
+importer's job containers join its link networks too, so jobs reach its
+imports.
+
+Links are resolved from both environments' active targets whenever either is
+planned, like ingress, and are never part of a prepared target. The importer
+creates the network in its own plan. The exporter observes the link networks
+labelled for it, checks their owner and name, and attaches its services only
+to those that exist; an attachment to any other network is drift. The
+controller runs a full scan right away when the importer creates a link
+network, when an operation changes the exports or imports an environment
+deploys, and when the deletion of an environment with links is first
+attempted, so the other side attaches or detaches within seconds rather than
+at the next scan interval. The exporter thus joins while the importer's
+services are still starting.
+
+Revoking a link never waits for a rollout. Every full scan, each environment
+detaches its services from the link networks its links no longer grant,
+removing only that attachment from each service's current specification, even
+while a failing service blocks its plan or a repair fails. What a deployment
+that may still roll out grants counts too, so the services it starts for its
+jobs keep their links. Removing a link, or deleting either environment, thus
+detaches both sides. The importer
+removes an obsolete link network once no container is attached to it any
+longer (Docker refuses otherwise). Its deletion does not wait for that: it
+leaves link networks still in use behind, and the exporter removes them on a
+later full scan, once its services have left them, or when it is deleted
+itself.
+
+An exporting environment links to at most 64 importing environments. The
+oldest keep their links; imports of newer ones stay unconnected until a slot
+frees up.
+
 ## Ingress coordination
 
 Runtime targets retain portable route intent regardless of global ingress enablement.

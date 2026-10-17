@@ -130,7 +130,17 @@ impl<D: DockerApi> Controller<D> {
             self.docker.ensure_swarm(false).await?;
         }
         match kind {
-            ActionKind::EnsureNetwork { network } => self.docker.ensure_network(network).await,
+            ActionKind::EnsureNetwork { network } => {
+                self.docker.ensure_network(network).await?;
+                // The exporter attaches to a link network only once it exists.
+                if network
+                    .labels
+                    .contains_key(piqueld_core::resource::LINK_LABEL)
+                {
+                    self.relink.notify_one();
+                }
+                Ok(())
+            }
             ActionKind::EnsureVolume { volume } => self.docker.ensure_volume(volume).await,
             ActionKind::EnsureService { service } => {
                 for (name, value) in secrets {

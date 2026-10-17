@@ -141,16 +141,32 @@ impl ApplicationService {
             .map(|volume| volume.logical_name.to_string())
             .collect();
         let ingress = self.ingress.as_ref().is_some_and(|ingress| ingress.enabled);
+        let desired = self
+            .store
+            .with_links(desired.with_ingress(ingress), &observed)
+            .await?;
         let mut plan = Plan::from_request(
             &PlanRequest::Preview {
                 unresolved: Vec::new(),
-                desired: Some(desired.with_ingress(ingress)),
+                desired: Some(desired),
             },
             &observed,
         );
         plan.redact_configuration();
         plan.warn_rollouts(app);
         plan.add_jobs(app, target.id());
+        let spec = app.spec();
+        // Plans only warn about imports, so list no importers.
+        plan.warn_links(
+            &self
+                .store
+                .link_report(
+                    target.id(),
+                    Some((&spec.exports, &spec.imports)),
+                    &piqueld_core::access::Scope::NONE,
+                )
+                .await?,
+        );
         // Compare with what runs, not with a later attempt that never published.
         let operation = self
             .store
@@ -208,15 +224,20 @@ impl ApplicationService {
             return Ok(());
         };
         let observed = self.runtime.observe(source).await?;
-        // Network attachments include ingress's, projected as the controller does.
+        // Network attachments include ingress's and links', projected as the
+        // controller does.
         let ingress = self.ingress.as_ref().is_some_and(|ingress| ingress.enabled);
         let routes = self.store.applied_routes(source.id()).await?;
-        if source.resolved.as_ref().is_some_and(|target| {
-            target
-                .clone()
-                .with_ingress_routes(ingress, &routes)
+        if let Some(target) = &source.resolved
+            && self
+                .store
+                .with_links(
+                    target.clone().with_ingress_routes(ingress, &routes),
+                    &observed,
+                )
+                .await?
                 .converged_in(&observed)
-        }) {
+        {
             return Ok(());
         }
         Err(StoreError::from(PromotionError::SourceNotReady {

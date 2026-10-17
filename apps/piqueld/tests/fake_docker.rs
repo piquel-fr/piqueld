@@ -202,6 +202,17 @@ impl FakeDocker {
         }
     }
 
+    /// Whether any of `services` is attached to the network `name`, as
+    /// Docker refuses to remove it then.
+    fn attached(services: &[ObservedService], name: &str) -> bool {
+        services.iter().any(|service| {
+            service
+                .networks
+                .iter()
+                .any(|attachment| attachment.network == name)
+        })
+    }
+
     fn ownership_matches(
         observed: &BTreeMap<String, String>,
         expected: &BTreeMap<String, String>,
@@ -460,6 +471,21 @@ impl DockerApi for FakeDocker {
         }
         drop(slow);
         let mut observed = observed.clone();
+        for network in &mut observed.networks {
+            network.in_use = Self::attached(&observed.services, &network.name);
+        }
+        observed.linked_networks = observed
+            .networks
+            .iter()
+            .filter(|network| {
+                network
+                    .labels
+                    .get(piqueld_core::resource::LINK_LABEL)
+                    .map(String::as_str)
+                    == Some(application.as_str())
+            })
+            .cloned()
+            .collect();
         if self.isolate_observations {
             let belongs = |labels: &BTreeMap<String, String>| {
                 labels
@@ -498,6 +524,7 @@ impl DockerApi for FakeDocker {
             name: desired.name.to_string(),
             runtime_configuration_matches: true,
             labels: desired.labels.clone(),
+            in_use: false,
         });
         Ok(())
     }
@@ -578,6 +605,30 @@ impl DockerApi for FakeDocker {
             return Err(DockerError::OwnershipConflict);
         }
         observed.services.retain(|service| service.name != name);
+        Ok(())
+    }
+
+    async fn detach_network(
+        &self,
+        service: &str,
+        network: &str,
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        let _probe = self.mutations.enter().await;
+        let mut observed = self.observed.lock().await;
+        let Some(existing) = observed
+            .services
+            .iter_mut()
+            .find(|existing| existing.name == service)
+        else {
+            return Ok(());
+        };
+        if !Self::ownership_matches(&existing.labels, ownership) {
+            return Err(DockerError::OwnershipConflict);
+        }
+        existing
+            .networks
+            .retain(|attachment| attachment.network != network);
         Ok(())
     }
 
@@ -689,6 +740,9 @@ impl DockerApi for FakeDocker {
             && !Self::ownership_matches(&existing.labels, ownership)
         {
             return Err(DockerError::OwnershipConflict);
+        }
+        if Self::attached(&observed.services, name) {
+            return Err(DockerError::Request("remove a network in use"));
         }
         observed.networks.retain(|network| network.name != name);
         Ok(())
@@ -993,21 +1047,20 @@ impl EnvironmentHarness {
             .await
             .unwrap();
         let production = environment(&harness.application);
-        let MutationResponse::Environment(staging) = applications
-            .accept(
-                Daemon,
-                Mutation::CreateEnvironment {
-                    application: harness.application.id().clone(),
-                    name: EnvironmentName::parse("staging").unwrap(),
-                    source: None,
-                },
-                Some(saved.generation),
-                false,
-                None,
-            )
-            .await
-            .unwrap()
-        else {
+        // Boxed: accepting a mutation holds a whole manifest across awaits.
+        let MutationResponse::Environment(staging) = Box::pin(applications.accept(
+            Daemon,
+            Mutation::CreateEnvironment {
+                application: harness.application.id().clone(),
+                name: EnvironmentName::parse("staging").unwrap(),
+                source: None,
+            },
+            Some(saved.generation),
+            false,
+            None,
+        ))
+        .await
+        .unwrap() else {
             panic!("created staging")
         };
         // Creating an environment bumps the application generation.
@@ -1065,7 +1118,7 @@ impl EnvironmentHarness {
 
 #[tokio::test]
 async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
-    let fixture = EnvironmentHarness::new().await;
+    let fixture = Box::pin(EnvironmentHarness::new()).await;
     let harness = &fixture.harness;
     let store = &harness.store;
     let production = &fixture.production;
@@ -1163,6 +1216,228 @@ async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
             .generation,
         fixture.generation + 1,
         "deleting staging bumps the generation once"
+    );
+}
+
+/// Deploys `auth`, whose `web` service is exported to `notes` beside an
+/// unexported `worker`, and `notes`, which imports it, then scans until they
+/// are linked. Returns the harness and both environments.
+async fn linked_harness() -> (ControllerHarness, EnvironmentId, EnvironmentId) {
+    let mut harness = ControllerHarness::new().await;
+    harness.docker = Arc::new(FakeDocker {
+        isolate_observations: true,
+        ..FakeDocker::default()
+    });
+    harness.controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
+    let web = piqueld_core::ServiceName::parse("web").unwrap();
+    let source = harness.resolutions.sources[&web].clone();
+    harness
+        .resolutions
+        .sources
+        .insert(piqueld_core::ServiceName::parse("worker").unwrap(), source);
+    let deploy = |name: &str, edit: fn(&mut piqueld_core::manifest::ApplicationManifest)| {
+        let mut manifest = harness.application.to_manifest();
+        manifest.metadata.name = name.into();
+        edit(&mut manifest);
+        let application = manifest
+            .validate()
+            .unwrap()
+            .normalize(ApplicationId::parse(format!("app-{name}-0001")).unwrap());
+        let resolved = compile_application(
+            &application,
+            &environment(&application),
+            InstanceId::parse(harness.store.instance_id()).unwrap(),
+            &harness.resolutions,
+        )
+        .unwrap();
+        let store = Arc::clone(&harness.store);
+        async move {
+            store
+                .save_application(
+                    &ApplicationTemplate::from(&application),
+                    Some(&resolved),
+                    None,
+                )
+                .await
+                .unwrap();
+            resolved.id
+        }
+    };
+    let auth = deploy("auth", |manifest| {
+        manifest.spec.exports.push(piqueld_core::manifest::Export {
+            service: "web".into(),
+            applications: vec!["notes".into()],
+            previews: false,
+        });
+        let mut worker = manifest.spec.services[0].clone();
+        worker.name = "worker".into();
+        manifest.spec.services.push(worker);
+    })
+    .await;
+    let notes = deploy("notes", |manifest| {
+        manifest.spec.imports.push(piqueld_core::manifest::Import {
+            application: "auth".into(),
+            service: "web".into(),
+            environment: None,
+        });
+    })
+    .await;
+    for _ in 0..3 {
+        harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+    }
+
+    (harness, auth, notes)
+}
+
+/// `observed`'s `web` service.
+fn web(observed: &ObservedApplication) -> ObservedService {
+    observed
+        .services
+        .iter()
+        .find(|service| service.labels.get(SERVICE_LABEL).map(String::as_str) == Some("web"))
+        .unwrap()
+        .clone()
+}
+
+/// Two applications linked by an export and an import connect once both
+/// deploy: the importer creates the link network, and the exporter's service
+/// joins it on its next scan under `<service>.<application>`.
+#[tokio::test]
+async fn linked_applications_join_the_importers_network() {
+    use piqueld_core::links::ImportState;
+    let (harness, auth, notes) = linked_harness().await;
+    let network = piqueld_core::DockerNetworkName::for_link(&notes, &auth);
+    let importer = harness.docker.observe(&notes).await.unwrap();
+    assert!(
+        importer
+            .networks
+            .iter()
+            .any(|observed| observed.name == network.as_str())
+    );
+    assert!(importer.services[0].networks.iter().any(|attachment| {
+        attachment.network == network.as_str() && attachment.aliases.is_empty()
+    }));
+    let exporter = harness.docker.observe(&auth).await.unwrap();
+    assert!(
+        web(&exporter)
+            .networks
+            .contains(&piqueld_core::resource::NetworkAttachment {
+                network: network.to_string(),
+                aliases: vec!["web.auth".into()],
+            })
+    );
+    assert!(
+        exporter
+            .services
+            .iter()
+            .filter(|service| service.name != web(&exporter).name)
+            .all(|service| service
+                .networks
+                .iter()
+                .all(|attachment| attachment.network != network.as_str())),
+        "only the exported service joins"
+    );
+    let report = harness
+        .store
+        .link_report(&notes, None, &piqueld_core::access::Scope::All)
+        .await
+        .unwrap();
+    assert_eq!(report.imports[0].state, ImportState::Connected);
+    let report = harness
+        .store
+        .link_report(&auth, None, &piqueld_core::access::Scope::All)
+        .await
+        .unwrap();
+    assert_eq!(report.importers[0].application.as_str(), "notes");
+}
+
+/// auth's worker fails, which blocks its plan. Deleting notes neither waits
+/// for auth nor leaves web attached: web leaves the link network, which is
+/// removed once nothing uses it.
+#[tokio::test]
+async fn revoked_links_close_while_the_exporters_plan_is_blocked() {
+    let (harness, auth, notes) = linked_harness().await;
+    let network = piqueld_core::DockerNetworkName::for_link(&notes, &auth);
+    for service in &mut harness.docker.observed.lock().await.services {
+        if service.labels.get(SERVICE_LABEL).map(String::as_str) == Some("worker") {
+            service.convergence = Convergence::Failed;
+        }
+    }
+    harness.store.request_delete(&notes).await.unwrap();
+    for _ in 0..3 {
+        harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+    }
+    assert!(matches!(
+        harness.store.get(&notes).await,
+        Err(piqueld::store::StoreError::NotFound)
+    ));
+    let exporter = harness.docker.observe(&auth).await.unwrap();
+    assert!(
+        web(&exporter)
+            .networks
+            .iter()
+            .all(|attachment| attachment.network != network.as_str())
+    );
+    assert_eq!(exporter.linked_networks, []);
+    assert!(
+        exporter
+            .services
+            .iter()
+            .any(|service| service.convergence == Convergence::Failed),
+        "auth's plan stayed blocked"
+    );
+}
+
+#[tokio::test]
+async fn deleting_an_exporter_removes_networks_its_deleted_importers_left() {
+    let (harness, auth, notes) = linked_harness().await;
+    let network = piqueld_core::DockerNetworkName::for_link(&notes, &auth);
+    let scan = || async {
+        for _ in 0..3 {
+            harness
+                .controller
+                .scan(&CancellationToken::new())
+                .await
+                .unwrap();
+        }
+    };
+    let leftover = harness
+        .docker
+        .observed
+        .lock()
+        .await
+        .networks
+        .iter()
+        .find(|observed| observed.name == network.as_str())
+        .cloned()
+        .unwrap();
+    harness.store.request_delete(&notes).await.unwrap();
+    scan().await;
+    // As if auth's deletion came before the full scan that removes it.
+    harness.docker.observed.lock().await.networks.push(leftover);
+    harness.store.request_delete(&auth).await.unwrap();
+    scan().await;
+    assert!(matches!(
+        harness.store.get(&auth).await,
+        Err(piqueld::store::StoreError::NotFound)
+    ));
+    assert!(
+        harness
+            .docker
+            .observed
+            .lock()
+            .await
+            .networks
+            .iter()
+            .all(|observed| observed.name != network.as_str())
     );
 }
 
@@ -1437,6 +1712,7 @@ async fn controller_refuses_a_foreign_same_name_network() {
         name: resolved.networks[0].name.to_string(),
         runtime_configuration_matches: true,
         labels: foreign_labels(&environment(&application)),
+        in_use: false,
     };
     let docker = Arc::new(FakeDocker::with_observed(ObservedApplication {
         networks: vec![foreign],
@@ -5177,6 +5453,7 @@ async fn blocked_deployment_runs_no_jobs() {
                 .to_string(),
             runtime_configuration_matches: true,
             labels: foreign_labels(&operation.environment_id),
+            in_use: false,
         });
     assert_eq!(
         harness.scan_result(&operation).await,
@@ -5389,11 +5666,14 @@ mod promotion {
     impl Shop {
         async fn new(manifest: &str) -> Self {
             let harness = ControllerHarness::new().await;
-            let saved = harness
-                .applications()
-                .save(parse_template_toml(manifest).unwrap(), Some(0))
-                .await
-                .unwrap();
+            // Boxed: saving holds a whole manifest across awaits.
+            let saved = Box::pin(
+                harness
+                    .applications()
+                    .save(parse_template_toml(manifest).unwrap(), Some(0)),
+            )
+            .await
+            .unwrap();
             let application = ApplicationId::parse(saved.application_id).unwrap();
             let environments = harness.store.environments(&application).await.unwrap();
             let named = |name: &str| {
@@ -5528,7 +5808,7 @@ mod promotion {
         let detail = shop
             .harness
             .applications()
-            .environment_detail(&shop.production)
+            .environment_detail(&shop.production, &piqueld_core::access::Scope::All)
             .await
             .unwrap();
         assert_eq!(detail.manifest, Some(next));

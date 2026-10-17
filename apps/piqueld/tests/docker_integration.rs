@@ -118,6 +118,7 @@ impl SwarmScenario {
             .await
             .unwrap();
         let service = DesiredService {
+            link_aliases: BTreeMap::new(),
             secrets: vec![piqueld_core::resource::SecretFile { secret_name: secret_name.clone(), target: "/run/secrets/token".into() }],
             files: vec![Self::motd(&app)],
             logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
@@ -1180,4 +1181,295 @@ async fn git_build_runs_as_a_local_swarm_image() {
     .expect("the removed service's containers go");
     docker.remove_image(&owner, &id).await.unwrap();
     assert!(built().await.is_none());
+}
+
+/// Applies `request`'s plans until nothing is left to do: each environment
+/// replans after every action, as the controller does. Projects `links` onto
+/// a reconcile request first.
+async fn converge(
+    engine: &IsolatedDocker,
+    request: &piqueld_core::PlanRequest,
+    links: &[piqueld_core::links::Link],
+) {
+    use piqueld_core::{ActionKind, Plan, PlanRequest};
+    let (id, ownership) = match request {
+        PlanRequest::Reconcile { desired } => {
+            (desired.id.clone(), desired.networks[0].labels.clone())
+        }
+        PlanRequest::Delete {
+            environment_id,
+            instance_id,
+        } => (
+            environment_id.clone(),
+            BTreeMap::from([
+                ("io.piqueld.managed".into(), "true".into()),
+                ("io.piqueld.instance".into(), instance_id.to_string()),
+                ("io.piqueld.application".into(), environment_id.to_string()),
+            ]),
+        ),
+        PlanRequest::Preview { .. } => unreachable!("previews are never applied"),
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{id} did not converge"
+        );
+        let observed = engine.docker.observe(&id).await.unwrap();
+        let request = match request {
+            PlanRequest::Reconcile { desired } => PlanRequest::Reconcile {
+                desired: desired.clone().with_links(links, &observed),
+            },
+            other => other.clone(),
+        };
+        let plan = Plan::from_request(&request, &observed);
+        assert!(!plan.is_blocked(), "{:?}", plan.diagnostics);
+        let Some(action) = plan
+            .actions
+            .iter()
+            .find(|action| !matches!(action.kind, ActionKind::RetainVolume { .. }))
+        else {
+            return;
+        };
+        match &action.kind {
+            ActionKind::EnsureNetwork { network } => {
+                engine.docker.ensure_network(network).await.unwrap();
+            }
+            ActionKind::EnsureService { service } => {
+                engine.ensure_service_eventually(service).await;
+            }
+            ActionKind::RemoveService { name } => {
+                engine
+                    .docker
+                    .remove_service(name, &ownership)
+                    .await
+                    .unwrap();
+            }
+            ActionKind::RemoveNetwork { name } => {
+                // The other side may still be leaving the network.
+                let _ = engine.docker.remove_network(name, &ownership).await;
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            _ => tokio::time::sleep(Duration::from_millis(250)).await,
+        }
+    }
+}
+
+/// Compiles the application `name` with image `services`, resolved through
+/// `images` (reference to digest reference).
+fn compile_images(
+    name: &str,
+    services: &serde_json::Value,
+    images: &BTreeMap<&str, String>,
+) -> piqueld_core::ResolvedApplication {
+    let manifest = serde_json::json!({"api_version": "piqueld.dev/v1alpha1", "kind": "Application", "metadata": {"name": name}, "spec": {"services": services}});
+    let id = ApplicationId::parse(format!("app-{name}")).unwrap();
+    let app = piqueld_core::parse_json(&manifest.to_string())
+        .unwrap()
+        .normalize(id.clone());
+    let sources = app
+        .spec()
+        .services
+        .iter()
+        .map(|service| {
+            let piqueld_core::manifest::ValidatedSource::Image { image } = &service.source else {
+                unreachable!("image sources only")
+            };
+            let digest = images[image.as_str()].clone();
+            (
+                service.name.clone(),
+                ResolvedSource::parse_image(image.as_str(), digest).unwrap(),
+            )
+        })
+        .collect();
+    piqueld_core::compile_application(
+        &app,
+        &EnvironmentId::default_for(&id),
+        InstanceId::parse("integration-instance").unwrap(),
+        &piqueld_core::ResolutionSet {
+            sources,
+            secret_names: BTreeMap::new(),
+        },
+    )
+    .unwrap()
+}
+
+/// Waits until `service` of `environment` logs `line`, and returns its logs.
+async fn logged(
+    engine: &IsolatedDocker,
+    environment: &EnvironmentId,
+    service: &str,
+    line: &str,
+) -> Vec<String> {
+    let instance = InstanceId::parse("integration-instance").unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let messages = engine
+            .docker
+            .application_logs(&instance, environment, Some(service), 200, 300, None)
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|record| record.message)
+            .collect::<Vec<_>>();
+        if messages.iter().any(|message| message == line) {
+            return messages;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{service} never logged {line}: {messages:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Detaches `desired`'s services from the link networks it no longer grants
+/// them, as link enforcement does, and returns those attachments. Nothing
+/// else about the services changes.
+async fn revoke_links(
+    engine: &IsolatedDocker,
+    desired: &piqueld_core::ResolvedApplication,
+) -> Vec<(String, String)> {
+    let observed = engine.docker.observe(&desired.id).await.unwrap();
+    let revoked = observed
+        .revoked_links(
+            &desired.instance_id,
+            &desired.id,
+            std::slice::from_ref(desired),
+        )
+        .into_iter()
+        .map(|(service, network)| (service.to_owned(), network.to_owned()))
+        .collect::<Vec<_>>();
+    for (service, network) in &revoked {
+        engine
+            .docker
+            .detach_network(service, network, &desired.networks[0].labels)
+            .await
+            .unwrap();
+    }
+    let observed = engine.docker.observe(&desired.id).await.unwrap();
+    assert!(
+        observed.services.iter().all(|service| desired
+            .services
+            .iter()
+            .any(|wanted| service.matches(wanted))),
+        "only the link attachments changed"
+    );
+    revoked
+}
+
+/// An importer reaches the exported service by its link name and nothing else
+/// of the exporter; an unlinked application resolves neither; removing the
+/// link detaches the exporter and removes the network.
+#[tokio::test]
+#[ignore = "requires an isolated privileged Docker Engine"]
+async fn links_reach_only_the_imported_service_until_removed() {
+    use piqueld_core::links::Link;
+    use piqueld_core::{PlanRequest, ServiceName};
+    let engine = IsolatedDocker::from_env().await;
+    let suffix = &uuid::Uuid::now_v7().simple().to_string()[..12];
+    let exporter_name = format!("auth-{suffix}");
+    let whoami = engine
+        .docker
+        .resolve_image("traefik/whoami:v1.10")
+        .await
+        .unwrap();
+    let alpine = engine.docker.resolve_image("alpine:3.20").await.unwrap();
+    let images = BTreeMap::from([("traefik/whoami:v1.10", whoami), ("alpine:3.20", alpine)]);
+    let compile =
+        |name: &str, services: serde_json::Value| compile_images(name, &services, &images);
+    let exporter = compile(
+        &exporter_name,
+        serde_json::json!([
+            {"name": "api", "source": {"type": "image", "image": "traefik/whoami:v1.10"}},
+            {"name": "admin", "source": {"type": "image", "image": "traefik/whoami:v1.10"}},
+        ]),
+    );
+    let admin = exporter.services[0].name.to_string();
+    let shell = |script: String| serde_json::json!([{"name": "web", "source": {"type": "image", "image": "alpine:3.20"}, "command": ["/bin/sh", "-c", script]}]);
+    let importer = compile(
+        &format!("notes-{suffix}"),
+        shell(format!(
+            "until wget -q -T 2 -O /dev/null http://api.{exporter_name}/; do sleep 1; done; echo reached-api; \
+             for name in admin.{exporter_name} api {admin}; do getent hosts $name >/dev/null && echo $name-visible; done; \
+             echo checked; while true; do sleep 5; done"
+        )),
+    );
+    let unlinked = compile(
+        &format!("other-{suffix}"),
+        shell(format!(
+            "while true; do getent hosts api.{exporter_name} >/dev/null && echo api-visible || echo api-hidden; sleep 1; done"
+        )),
+    );
+    let link = Link {
+        importer: importer.id.clone(),
+        exporter: exporter.id.clone(),
+        exporter_application: exporter.name.clone(),
+        services: [ServiceName::parse("api").unwrap()].into(),
+    };
+    let reconcile = |desired: &piqueld_core::ResolvedApplication| PlanRequest::Reconcile {
+        desired: desired.clone(),
+    };
+
+    converge(&engine, &reconcile(&exporter), &[]).await;
+    converge(&engine, &reconcile(&unlinked), &[]).await;
+    // The importer creates the network the exporter's `api` then joins.
+    converge(&engine, &reconcile(&importer), std::slice::from_ref(&link)).await;
+    converge(&engine, &reconcile(&exporter), std::slice::from_ref(&link)).await;
+    let reached = logged(&engine, &importer.id, "web", "checked").await;
+    assert!(reached.contains(&"reached-api".to_owned()));
+    assert!(
+        !reached.iter().any(|line| line.ends_with("-visible")),
+        "only api.{exporter_name} resolves in the importer: {reached:?}"
+    );
+    let unlinked_logs = logged(&engine, &unlinked.id, "web", "api-hidden").await;
+    assert!(!unlinked_logs.contains(&"api-visible".to_owned()));
+
+    // Removing the link revokes the exporter's attachment without its plan,
+    // keeping the rest of the service, then removes the network.
+    let network = piqueld_core::DockerNetworkName::for_link(&importer.id, &exporter.id);
+    converge(&engine, &reconcile(&importer), &[]).await;
+    let api = exporter
+        .services
+        .iter()
+        .find(|service| service.logical_name.as_str() == "api")
+        .unwrap();
+    assert_eq!(
+        revoke_links(&engine, &exporter).await,
+        [(api.name.to_string(), network.to_string())]
+    );
+    while engine
+        .docker
+        .observe(&importer.id)
+        .await
+        .unwrap()
+        .networks
+        .iter()
+        .any(|observed| observed.name == network.as_str())
+    {
+        // Docker reports the exporter's old tasks as attached a while longer.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        converge(&engine, &reconcile(&importer), &[]).await;
+    }
+    let observed = engine.docker.observe(&exporter.id).await.unwrap();
+    assert_eq!(observed.linked_networks, []);
+    assert!(observed.services.iter().all(|service| {
+        service
+            .networks
+            .iter()
+            .all(|attachment| attachment.network != network.as_str())
+    }));
+
+    for desired in [&importer, &exporter, &unlinked] {
+        converge(
+            &engine,
+            &PlanRequest::Delete {
+                environment_id: desired.id.clone(),
+                instance_id: desired.instance_id.clone(),
+            },
+            &[],
+        )
+        .await;
+    }
 }

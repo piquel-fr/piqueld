@@ -16,6 +16,8 @@ const NETWORK_INSPECT_RETRY_DELAY: std::time::Duration = std::time::Duration::fr
 /// An application's observed networks, with what service observation needs.
 struct NetworkSnapshot {
     observed: Vec<ObservedNetwork>,
+    /// Link networks other environments own for links to this one.
+    linked: Vec<ObservedNetwork>,
     /// Network names keyed by the Docker IDs that service specs reference.
     names: HashMap<String, String>,
     /// Address range of the application's ingress network, when it exists.
@@ -26,43 +28,39 @@ impl BollardDocker {
     /// Inspects networks and retains their ID-to-name mapping and the ingress
     /// network's address range for services.
     ///
-    /// Networks are listed by ownership label and by readable name prefix,
-    /// deduplicated, then fully inspected concurrently. Networks that vanish
-    /// mid-observation are skipped. The name map covers every inspected
-    /// network, while the observations keep only those `relevant` to the app.
+    /// Networks are listed by ownership label, by readable name prefix, and
+    /// by link label, deduplicated, then fully inspected concurrently.
+    /// Networks that vanish mid-observation are skipped. The name map covers
+    /// every inspected network, while the observations keep only those
+    /// `relevant` to the app, and the link networks of its importers.
     async fn snapshot_networks(
         &self,
         application: &EnvironmentId,
     ) -> Result<NetworkSnapshot, DockerError> {
-        let mut raw_networks = Self::map_request(
-            "list networks",
-            self.docker
-                .list_networks(Some(
-                    ListNetworksOptionsBuilder::default()
-                        .filters(&Self::application_label_filter(application))
-                        .build(),
-                ))
-                .await,
-        )?;
-        let named_networks = Self::map_request(
-            "list networks by name",
-            self.docker
-                .list_networks(Some(
-                    ListNetworksOptionsBuilder::default()
-                        .filters(&Self::application_name_filter(application))
-                        .build(),
-                ))
-                .await,
-        )?;
-        let mut seen_networks = raw_networks
-            .iter()
-            .map(|network| (network.id.clone(), network.name.clone()))
-            .collect::<BTreeSet<_>>();
-        raw_networks.extend(
-            named_networks
-                .into_iter()
-                .filter(|network| seen_networks.insert((network.id.clone(), network.name.clone()))),
-        );
+        let mut raw_networks = Vec::new();
+        let mut seen_networks = BTreeSet::new();
+        for (request, filters) in [
+            ("list networks", Self::application_label_filter(application)),
+            (
+                "list networks by name",
+                Self::application_name_filter(application),
+            ),
+            ("list linked networks", Self::link_label_filter(application)),
+        ] {
+            let listed = Self::map_request(
+                request,
+                self.docker
+                    .list_networks(Some(
+                        ListNetworksOptionsBuilder::default()
+                            .filters(&filters)
+                            .build(),
+                    ))
+                    .await,
+            )?;
+            raw_networks.extend(listed.into_iter().filter(|network| {
+                seen_networks.insert((network.id.clone(), network.name.clone()))
+            }));
+        }
         let mut inspections = stream::iter(
             raw_networks
                 .into_iter()
@@ -92,21 +90,33 @@ impl BollardDocker {
             .iter()
             .find(|network| network.name.as_deref() == Some(ingress.as_str()))
             .and_then(Self::ingress_proxies);
-        let observed = raw_networks
+        let (observed, linked) = raw_networks
             .into_iter()
             .filter_map(|network| {
                 let runtime_configuration_matches = Self::network_configuration_matches(&network);
+                // Overlay networks list a load balancer endpoint on each node
+                // where any task uses them; only containers hold them.
+                let in_use = network.containers.as_ref().is_some_and(|containers| {
+                    containers
+                        .keys()
+                        .any(|endpoint| !endpoint.starts_with("lb-"))
+                });
                 let name = network.name?;
                 Some(ObservedNetwork {
                     name,
                     runtime_configuration_matches,
                     labels: network.labels.unwrap_or_default().into_iter().collect(),
+                    in_use,
                 })
             })
-            .filter(|r| Self::relevant(&r.name, &r.labels, application))
-            .collect();
+            .filter(|network| {
+                Self::relevant(&network.name, &network.labels, application)
+                    || Self::linked(&network.labels, application)
+            })
+            .partition(|network| Self::relevant(&network.name, &network.labels, application));
         Ok(NetworkSnapshot {
             observed,
+            linked,
             names: network_names,
             ingress_proxies,
         })
@@ -657,6 +667,7 @@ impl DockerApi for BollardDocker {
                     networks: networks.observed,
                     volumes,
                     services,
+                    linked_networks: networks.linked,
                 })
             })
             .await
@@ -909,6 +920,76 @@ impl DockerApi for BollardDocker {
             .run(
                 "remove service",
                 self.remove_owned_service(name, ownership, ResourceKind::Service),
+            )
+            .await
+    }
+    /// Removes the network from the inspected service's current
+    /// specification and updates it at the inspected version, so a pending
+    /// rollout is neither applied nor reverted. A concurrent update is not
+    /// retried with the stale specification; the next scan detaches again.
+    async fn detach_network(
+        &self,
+        service: &str,
+        network: &str,
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        DockerTimeout::Request
+            .run(
+                "detach network",
+                Box::pin(async {
+                    let Some(existing) = self.inspect_service_wire(service).await? else {
+                        return Ok(());
+                    };
+                    let mut spec = existing
+                        .spec
+                        .ok_or(DockerError::Request("read existing service specification"))?;
+                    if !Self::owns_resource(
+                        spec.labels.clone().unwrap_or_default(),
+                        ownership,
+                        ResourceKind::Service,
+                        service,
+                    ) {
+                        return Err(DockerError::OwnershipConflict);
+                    }
+                    let network_id = match self
+                        .docker
+                        .inspect_network(network, None::<InspectNetworkOptions>)
+                        .await
+                    {
+                        Ok(inspected) => inspected.id,
+                        Err(bollard::errors::Error::DockerResponseServerError {
+                            status_code: 404,
+                            ..
+                        }) => return Ok(()),
+                        Err(error) => return Err(DockerError::request("inspect network", error)),
+                    };
+                    let Some(attachments) = spec
+                        .task_template
+                        .as_mut()
+                        .and_then(|template| template.networks.as_mut())
+                    else {
+                        return Ok(());
+                    };
+                    let attached = attachments.len();
+                    attachments.retain(|attachment| {
+                        let target = attachment.target.as_deref();
+                        target != Some(network) && target != network_id.as_deref()
+                    });
+                    if attachments.len() == attached {
+                        return Ok(());
+                    }
+                    let version = existing
+                        .version
+                        .and_then(|version| version.index)
+                        .ok_or(DockerError::Request("read existing service version"))?;
+                    let id = existing
+                        .id
+                        .as_deref()
+                        .ok_or(DockerError::Request("read existing service identity"))?;
+                    self.post_service_update(id, version, &spec)
+                        .await
+                        .map_err(|error| error.sanitized("detach network"))
+                }),
             )
             .await
     }

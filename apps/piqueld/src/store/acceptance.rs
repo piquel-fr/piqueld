@@ -830,6 +830,8 @@ impl Store {
             | ApplicationEdit::RemoveVolume(_) => "volumes",
             ApplicationEdit::Routes(_) => "routes",
             ApplicationEdit::Jobs(_) => "jobs",
+            ApplicationEdit::Exports(_) => "exports",
+            ApplicationEdit::Imports(_) => "imports",
             ApplicationEdit::Variables(_) => "variables",
             ApplicationEdit::EnvironmentVisibility { .. } => "environments",
         };

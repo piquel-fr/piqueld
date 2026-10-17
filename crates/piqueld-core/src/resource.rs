@@ -34,6 +34,9 @@ pub const JOB_LABEL: &str = "io.piqueld.job";
 pub const JOB_OPERATION_LABEL: &str = "io.piqueld.job-operation";
 /// Label marking the Swarm configs piqueld publishes for service files.
 pub const FILE_LABEL: &str = "io.piqueld.file";
+/// Label on a link network naming the exporting environment; the importing
+/// environment owns the network.
+pub const LINK_LABEL: &str = "io.piqueld.link";
 /// Environment variable listing the ingress network's CIDRs in routed services.
 /// Only the gateway and the application's own routed services share that
 /// network, so `X-Forwarded-For` from these peers carries the client address.
@@ -296,7 +299,8 @@ impl DesiredNetwork {
         let Some((application, _)) = desired_application_from_labels(&self.labels) else {
             return false;
         };
-        !self.labels.contains_key(SERVICE_LABEL) && self.name.is_for_application(&application)
+        !self.labels.contains_key(SERVICE_LABEL)
+            && self.name.is_canonical(&application, &self.labels)
     }
 }
 
@@ -445,8 +449,13 @@ pub struct DesiredService {
     pub healthcheck: Option<ValidatedHealthCheck>,
     /// Optional CPU and memory limits.
     pub resources: Option<ValidatedResourceLimits>,
-    /// Canonical private network names attached to the service.
+    /// Private, ingress and link network names attached to the service.
     pub networks: Vec<DockerNetworkName>,
+    /// Link networks on which importers reach this service, with the name it
+    /// answers to there. Projected at runtime by
+    /// [`ResolvedApplication::with_links`], never prepared.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub link_aliases: BTreeMap<DockerNetworkName, String>,
     /// Ownership labels.
     pub labels: BTreeMap<String, String>,
     /// Logical services that must converge before this service rolls out.
@@ -485,8 +494,9 @@ impl DesiredService {
     /// Returns the attachments piqueld authors for this service. The logical
     /// name is an alias only on the application's private network, so peers
     /// reach `postgres:5432` while same-named services in other applications
-    /// stay isolated on their own networks. Without valid ownership labels
-    /// naming the application, no attachment gets an alias.
+    /// stay isolated on their own networks. On a link network, an exported
+    /// service answers to its link alias. Without valid ownership labels
+    /// naming the application, the private network gets no alias.
     #[must_use]
     pub fn network_attachments(&self) -> Vec<NetworkAttachment> {
         let private = desired_application_from_labels(&self.labels)
@@ -498,7 +508,11 @@ impl DesiredService {
                 aliases: if private.as_ref() == Some(network) {
                     vec![self.logical_name.to_string()]
                 } else {
-                    Vec::new()
+                    self.link_aliases
+                        .get(network)
+                        .cloned()
+                        .into_iter()
+                        .collect()
                 },
             })
             .collect()
@@ -633,6 +647,16 @@ pub struct ResolvedApplication {
     /// One-shot jobs in declared execution order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<DesiredJob>,
+    /// Services other applications may reach, as deployed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exports: Vec<crate::manifest::ValidatedExport>,
+    /// Services of other applications this environment reaches, as deployed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<crate::manifest::ValidatedImport>,
+    /// The applications `exports` and `imports` name, bound when the target
+    /// is saved; see [`crate::links::bind`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: crate::links::Bindings,
 }
 
 impl ResolvedApplication {
@@ -720,6 +744,79 @@ impl ResolvedApplication {
             self.networks
                 .sort_by(|left, right| left.name.cmp(&right.name));
         }
+        self
+    }
+
+    /// Whether the target declares exports or imports, without which it takes
+    /// part in no link.
+    #[must_use]
+    pub fn has_links(&self) -> bool {
+        !self.exports.is_empty() || !self.imports.is_empty()
+    }
+
+    /// Projects `links` this environment takes part in into networks and
+    /// attachments. The importer owns one network per link, which all of its
+    /// services join. The exporter's linked services join it once `observed`
+    /// shows it exists, answering to `<service>.<application>` there, so
+    /// importers reach no other service and no other importer.
+    ///
+    /// Links are never part of a prepared target: project them onto a fresh
+    /// copy, as ingress, each time the target is planned.
+    #[must_use]
+    pub fn with_links(
+        mut self,
+        links: &[crate::links::Link],
+        observed: &ObservedApplication,
+    ) -> Self {
+        let ownership = Ownership {
+            instance_id: self.instance_id.clone(),
+            environment_id: self.id.clone(),
+            service: None,
+            spec_hash: self.spec_hash.clone(),
+        };
+        for link in links {
+            if link.importer == self.id && !self.services.is_empty() {
+                let name = DockerNetworkName::for_link(&self.id, &link.exporter);
+                for service in &mut self.services {
+                    service.networks.push(name.clone());
+                }
+                // Jobs run before rollout, so they reach imports too.
+                for job in &mut self.jobs {
+                    job.container.networks.push(name.clone());
+                    job.container.networks.sort();
+                }
+                let mut labels = ownership.labels();
+                labels.insert(LINK_LABEL.into(), link.exporter.to_string());
+                self.networks.push(DesiredNetwork { name, labels });
+            } else if link.exporter == self.id {
+                let name = DockerNetworkName::for_link(&link.importer, &self.id);
+                let exists = observed.linked_networks.iter().any(|network| {
+                    network.name == name.as_str()
+                        && network.is_owned_by(&self.instance_id, &link.importer)
+                        && network.labels.get(LINK_LABEL) == Some(&self.id.to_string())
+                });
+                if !exists {
+                    continue;
+                }
+                for service in &mut self.services {
+                    if link.services.contains(&service.logical_name) {
+                        service.networks.push(name.clone());
+                        service.link_aliases.insert(
+                            name.clone(),
+                            crate::manifest::links::alias(
+                                &service.logical_name,
+                                &link.exporter_application,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        for service in &mut self.services {
+            service.networks.sort();
+        }
+        self.networks
+            .sort_by(|left, right| left.name.cmp(&right.name));
         self
     }
 
@@ -945,6 +1042,9 @@ fn compile(
             .collect(),
         secret_names: resolutions.secret_names.clone(),
         routes: app.spec().routes.clone(),
+        exports: app.spec().exports.clone(),
+        imports: app.spec().imports.clone(),
+        bindings: BTreeMap::new(),
         id: environment.clone(),
         name: app.metadata().name.clone(),
         instance_id,
@@ -1150,6 +1250,7 @@ fn compile_service(
         healthcheck: service.healthcheck.clone(),
         resources: service.resources.clone(),
         networks: vec![private_network.clone()],
+        link_aliases: BTreeMap::new(),
         labels: ownership.labels(),
         depends_on: service.depends_on.clone(),
         rollout: service.rollout,
@@ -1351,9 +1452,18 @@ pub struct ObservedNetwork {
     pub runtime_configuration_matches: bool,
     /// Ownership labels observed on the network.
     pub labels: BTreeMap<String, String>,
+    /// Whether containers are attached to the network on this node.
+    #[serde(default)]
+    pub in_use: bool,
 }
 
 impl ObservedNetwork {
+    /// Whether this is a link network services are still attached to.
+    #[must_use]
+    pub fn is_linked_in_use(&self) -> bool {
+        self.in_use && self.labels.contains_key(LINK_LABEL)
+    }
+
     /// Returns whether ownership labels identify the desired network.
     ///
     /// Only checks identity (owner and name), not configuration drift.
@@ -1572,6 +1682,57 @@ pub struct ObservedApplication {
     pub volumes: Vec<ObservedVolume>,
     /// Services observed for the application.
     pub services: Vec<ObservedService>,
+    /// Link networks other environments own for their links to this one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub linked_networks: Vec<ObservedNetwork>,
+}
+
+impl ObservedApplication {
+    /// Attachments of `environment`'s services to link networks that none of
+    /// `granted` grants them, as service and network names. `granted` are
+    /// the environment's active and prepared targets projected with its
+    /// current links; none while it is being deleted.
+    ///
+    /// These are detached as soon as they are found, not by a rollout: an
+    /// unrelated failing service or a running deployment must not keep a
+    /// revoked link open.
+    #[must_use]
+    pub fn revoked_links(
+        &self,
+        instance: &InstanceId,
+        environment: &EnvironmentId,
+        granted: &[ResolvedApplication],
+    ) -> Vec<(&str, &str)> {
+        let link_networks = self
+            .linked_networks
+            .iter()
+            .chain(
+                self.networks
+                    .iter()
+                    .filter(|network| network.labels.contains_key(LINK_LABEL)),
+            )
+            .map(|network| network.name.as_str())
+            .collect::<BTreeSet<_>>();
+        self.services
+            .iter()
+            .filter(|service| service.is_owned_by(instance, environment))
+            .flat_map(|service| {
+                service
+                    .networks
+                    .iter()
+                    .filter(|attachment| link_networks.contains(attachment.network.as_str()))
+                    .filter(move |attachment| {
+                        !granted
+                            .iter()
+                            .flat_map(|target| &target.services)
+                            .filter(|desired| desired.name.as_str() == service.name)
+                            .flat_map(|desired| &desired.networks)
+                            .any(|network| network.as_str() == attachment.network)
+                    })
+                    .map(|attachment| (service.name.as_str(), attachment.network.as_str()))
+            })
+            .collect()
+    }
 }
 
 /// Result of comparing runtime ownership labels with an expected owner.
@@ -1612,7 +1773,7 @@ impl OwnershipState {
             ResourceKind::Network => {
                 !labels.contains_key(SERVICE_LABEL)
                     && DockerNetworkName::parse(name)
-                        .is_ok_and(|name| name.is_for_application(application))
+                        .is_ok_and(|name| name.is_canonical(application, labels))
             }
             ResourceKind::Volume | ResourceKind::File => !labels.contains_key(SERVICE_LABEL),
             ResourceKind::Job => {

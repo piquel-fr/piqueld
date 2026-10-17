@@ -3,6 +3,7 @@ use super::{
     EnvironmentId, HashMap, INSTANCE_LABEL, ImageSource, MANAGED_LABEL, ResourceKind,
     SERVICE_LABEL, TryStreamExt, docker_resource_name, docker_resource_readable_prefix,
 };
+use piqueld_core::resource::LINK_LABEL;
 
 impl BollardDocker {
     /// Builds the Docker label filter selecting one application's resources.
@@ -17,6 +18,18 @@ impl BollardDocker {
             "label".to_owned(),
             vec![format!("{APPLICATION_LABEL}={application}")],
         )])
+    }
+
+    /// Selects the link networks importers own for their links to `exporter`.
+    pub(super) fn link_label_filter(exporter: &EnvironmentId) -> HashMap<String, Vec<String>> {
+        HashMap::from([("label".to_owned(), vec![format!("{LINK_LABEL}={exporter}")])])
+    }
+
+    /// Whether `labels` mark a network another environment owns for its link
+    /// to `exporter`. Its owner and name are checked before any use.
+    pub(super) fn linked(labels: &BTreeMap<String, String>, exporter: &EnvironmentId) -> bool {
+        labels.get(LINK_LABEL).map(String::as_str) == Some(exporter.as_str())
+            && labels.get(APPLICATION_LABEL).map(String::as_str) != Some(exporter.as_str())
     }
 
     /// Builds the complementary name filter used to detect canonical resources
@@ -51,7 +64,7 @@ impl BollardDocker {
             }
             if let Ok(owner) = EnvironmentId::parse(owner.clone()) {
                 if piqueld_core::DockerNetworkName::parse(name).is_ok_and(|name| {
-                    name.is_for_application(&owner) && !name.is_for_application(app)
+                    name.is_canonical(&owner, labels) && !name.is_canonical(app, labels)
                 }) {
                     return false;
                 }

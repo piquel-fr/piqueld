@@ -118,7 +118,7 @@ without one. Environments that render the same hostname conflict; the error
 names the environment already reserving it.
 
 Applications have one main tab row: Overview (the default), Environments,
-Previews, Services, Source, Variables, Routes, Volumes, Jobs, Secrets, Releases, Builds,
+Previews, Services, Source, Variables, Routes, Volumes, Jobs, Links, Secrets, Releases, Builds,
 and Events. The Releases tab lists the application's immutable releases, newest
 first: each successful preparation of an environment's deployment (never a preview's) records one,
 environments that prepared the same content share it, and deleting an environment keeps
@@ -137,7 +137,11 @@ Jobs inherit the referenced service's startup dependencies, which start or
 update and become healthy first. Other services wait for all jobs to succeed;
 if a job fails, its dependencies return to the running deployment. A job's
 volume access is read-only by default; exclusive access stops the services
-using its writable volumes until the rollout. The Routes tab
+using its writable volumes until the rollout. The Links tab edits the
+application's [links](application-manifest.md#links): the services it exports
+and the applications that may import them (and whether their previews may),
+and the services of other applications it imports, with an optional
+environment; saving replaces only that list. The Routes tab
 edits hostnames, each with an optional [name](application-manifest.md#routes)
 and pointing at a service port or a redirect with a public or
 private visibility, and shows each deployed route's name, effective visibility, the DNS
@@ -157,7 +161,10 @@ revision, and environments, and the delete action. Builds and Events cover every
 environment, each linking to its environment, and include application-wide
 events such as edits and renames; a deleted environment's events remain until
 the application is deleted. Events has an **Errors only** filter. An environment's Overview shows the runtime status, the latest operation,
-a URLs card, observed services, and reconciliation diagnostics. The URLs card
+a URLs card, a Links card when it imports or exports services, observed
+services, and reconciliation diagnostics. The Links card lists each import as
+connected or waiting, with why, and the environments of readable applications
+importing its services. The URLs card
 lists the URL of each route the current deployment renders, with its name,
 visibility, destination and state: **ready**, or **pending** with what it waits
 for (ingress, HTTPS, DNS records, or a healthy service), as the daemon reports

@@ -63,9 +63,10 @@ impl<D: DockerApi> Controller<D> {
             // A completed run must stop before another job of this operation
             // starts: cleanup selects runs by operation ID.
             self.retry_job_cleanup(&operation.environment_id).await?;
-            self.prepare_job_dependencies(operation, target, job, &ownership, cancellation)
+            let job = self
+                .prepare_job_dependencies(operation, target, job, &ownership, cancellation)
                 .await?;
-            self.run_job(operation, job, &ownership, cancellation)
+            self.run_job(operation, &job, &ownership, cancellation)
                 .await?;
         }
         Ok(())
@@ -75,7 +76,8 @@ impl<D: DockerApi> Controller<D> {
     /// infrastructure, this job's startup dependencies, and the removal of
     /// services sharing its exclusive volumes. Replanning preserves dependency
     /// ordering without promoting the candidate or touching other services.
-    /// Each dependency receives its own convergence budget.
+    /// Each dependency receives its own convergence budget. Returns the run
+    /// as last planned, joined to the links its environment imports.
     async fn prepare_job_dependencies(
         &self,
         operation: &Operation,
@@ -83,24 +85,25 @@ impl<D: DockerApi> Controller<D> {
         job: &DesiredJobRun,
         ownership: &BTreeMap<String, String>,
         cancellation: &CancellationToken,
-    ) -> Result<(), OperationError> {
+    ) -> Result<DesiredJobRun, OperationError> {
         let mut deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
         loop {
             let observed = self
                 .observe_with_retry(operation, cancellation, deadline)
                 .await?;
             let accepted_routes = self.store.applied_routes(&operation.environment_id).await?;
-            let plan = Plan::from_request(
-                &PlanRequest::Reconcile {
-                    desired: target
-                        .clone()
-                        .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
-                },
-                &observed,
-            );
+            let desired = self
+                .runtime_target(target, &accepted_routes, &observed)
+                .await?;
+            let projected = desired
+                .jobs
+                .iter()
+                .find(|projected| projected.logical_name == job.logical_name)
+                .map(|projected| projected.for_operation(job.operation()));
+            let plan = Plan::from_request(&PlanRequest::Reconcile { desired }, &observed);
             self.check_plan(operation, &plan).await?;
             let Some(action) = plan.next_job_preparation(target, job, &observed) else {
-                return Ok(());
+                return Ok(projected.unwrap_or_else(|| job.clone()));
             };
             self.execute_action(&action, operation, ownership, cancellation, deadline)
                 .await?;

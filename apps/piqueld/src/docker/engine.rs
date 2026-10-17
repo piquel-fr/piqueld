@@ -337,21 +337,11 @@ impl BollardDocker {
     ) -> Result<(), DockerError> {
         let deadline = tokio::time::Instant::now() + SERVICE_REQUEST_TIMEOUT;
         loop {
-            match tokio::time::timeout_at(
-                deadline,
-                self.service_request(
-                    Method::POST,
-                    // registryAuthFrom=spec is intentional: piqueld specs are
-                    // auth-free, so Docker must not fall back to credentials
-                    // from its own store.
-                    &format!("/services/{id}/update?version={version}&registryAuthFrom=spec"),
-                    Some(spec),
-                ),
-            )
-            .await
-            .map_err(|source| DockerError::unavailable("update service", source))?
+            match tokio::time::timeout_at(deadline, self.post_service_update(id, version, spec))
+                .await
+                .map_err(|source| DockerError::unavailable("update service", source))?
             {
-                Ok(_) => return Ok(()),
+                Ok(()) => return Ok(()),
                 Err(error)
                     if Self::update_out_of_sequence(&error)
                         && tokio::time::Instant::now() < deadline =>
@@ -397,6 +387,25 @@ impl BollardDocker {
                 Err(error) => return Err(error.sanitized("update service")),
             }
         }
+    }
+
+    /// Submits `spec` once as service `id`'s update at `version`.
+    pub(super) async fn post_service_update(
+        &self,
+        id: &str,
+        version: u64,
+        spec: &ServiceSpec,
+    ) -> Result<(), WireError> {
+        self.service_request(
+            Method::POST,
+            // registryAuthFrom=spec is intentional: piqueld specs are
+            // auth-free, so Docker must not fall back to credentials
+            // from its own store.
+            &format!("/services/{id}/update?version={version}&registryAuthFrom=spec"),
+            Some(spec),
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Returns whether Docker reported the one transient update conflict that

@@ -3165,7 +3165,11 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     assert_eq!(saved.operation_id, Some(replay.operation_id));
     assert_eq!(saved.generation, replay.generation);
     let id = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
-    let direct = service.clone().environment_detail(&id).await.unwrap();
+    let direct = service
+        .clone()
+        .environment_detail(&id, &piqueld_core::access::Scope::All)
+        .await
+        .unwrap();
     let response = api_router(service.clone(), FakeAuth)
         .oneshot(
             Request::builder()
@@ -6573,7 +6577,7 @@ async fn environments_deploy_independently_and_runtime_commands_never_pick_one()
     assert_eq!(deployed.environment_id, staging.id.as_str());
     assert!(
         service
-            .environment_detail(&production)
+            .environment_detail(&production, &piqueld_core::access::Scope::All)
             .await
             .unwrap()
             .latest_operation
@@ -6581,7 +6585,7 @@ async fn environments_deploy_independently_and_runtime_commands_never_pick_one()
     );
     assert_eq!(
         service
-            .environment_detail(&staging.id)
+            .environment_detail(&staging.id, &piqueld_core::access::Scope::All)
             .await
             .unwrap()
             .latest_operation

@@ -1162,3 +1162,79 @@ fn exclusive_jobs_need_a_writable_volume_their_dependencies_do_not_mount() {
         );
     }
 }
+
+#[test]
+fn links_validate_both_sides_and_round_trip() {
+    let links = r#"
+[[spec.exports]]
+service = "web"
+applications = ["billing", "auth"]
+previews = true
+[[spec.imports]]
+application = "auth"
+service = "api"
+environment = "staging"
+[[spec.imports]]
+application = "auth"
+service = "events"
+"#;
+    let app = parse_toml(&format!("{}{links}", valid_manifest("notes")))
+        .unwrap()
+        .normalize(ApplicationId::parse("app-notes-01").unwrap());
+    assert_eq!(app.spec().exports[0].service.as_str(), "web");
+    assert_eq!(app.spec().exports[0].applications.len(), 2);
+    assert_eq!(app.spec().imports[0].alias(), "api.auth");
+    assert_eq!(
+        app.spec().imports[0]
+            .environment
+            .as_ref()
+            .map(piqueld_core::EnvironmentName::as_str),
+        Some("staging")
+    );
+    let reparsed = parse_toml(&app.export_toml().unwrap())
+        .unwrap()
+        .normalize(app.id().clone());
+    assert_eq!(reparsed, app);
+
+    let invalid = r#"
+[[spec.exports]]
+service = "missing"
+applications = []
+[[spec.exports]]
+service = "web"
+applications = ["notes", "auth", "auth"]
+[[spec.imports]]
+application = "notes"
+service = "web"
+[[spec.imports]]
+application = "auth"
+service = "api"
+environment = "Staging"
+[[spec.imports]]
+application = "auth"
+service = "api"
+"#;
+    let errors = parse_toml(&format!("{}{invalid}", valid_manifest("notes")))
+        .unwrap_err()
+        .0
+        .into_iter()
+        .map(|error| (error.code, error.path))
+        .collect::<Vec<_>>();
+    let expected = [
+        (codes::EXPORT_SERVICE_MISSING, "spec.exports[0].service"),
+        (
+            codes::EXPORT_APPLICATIONS_EMPTY,
+            "spec.exports[0].applications",
+        ),
+        (codes::EXPORT_DUPLICATE, "spec.exports[1].applications[2]"),
+        (codes::NAME_INVALID, "spec.imports[1].environment"),
+        (codes::IMPORT_DUPLICATE, "spec.imports[2].service"),
+    ];
+    for (code, path) in expected {
+        assert!(
+            errors.contains(&(code.to_owned(), path.to_owned())),
+            "missing {code} at {path} in {errors:?}"
+        );
+    }
+    assert_eq!(errors.len(), expected.len(), "{errors:?}");
+}

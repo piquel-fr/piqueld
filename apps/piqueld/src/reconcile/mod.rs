@@ -33,6 +33,10 @@ pub struct Controller<D> {
     retry: RetryPolicy,
     /// Image cleanup, and the lock preparations hold against it.
     images: images::ImageRetention,
+    /// Asks the coordinator for a full scan now, so environments linked to
+    /// one whose links changed replan within seconds rather than at the next
+    /// scan interval.
+    relink: Notify,
 }
 
 impl<D> Controller<D> {
@@ -47,6 +51,7 @@ impl<D> Controller<D> {
             ingress: None,
             retry: RetryPolicy::default(),
             images: images::ImageRetention::default(),
+            relink: Notify::new(),
         }
     }
 
@@ -60,6 +65,25 @@ impl<D> Controller<D> {
     /// Whether route intent should be projected onto runtime networks.
     fn ingress_enabled(&self) -> bool {
         self.ingress.as_ref().is_some_and(|ingress| ingress.enabled)
+    }
+
+    /// `target` as reconciliation plans it against `observed`: with the
+    /// ingress networks its routes and the `accepted` ones need, and the links
+    /// it takes part in. Prepared targets never carry either.
+    async fn runtime_target(
+        &self,
+        target: &piqueld_core::ResolvedApplication,
+        accepted: &[piqueld_core::manifest::ValidatedRoute],
+        observed: &piqueld_core::ObservedApplication,
+    ) -> Result<piqueld_core::ResolvedApplication, StoreError> {
+        self.store
+            .with_links(
+                target
+                    .clone()
+                    .with_ingress_routes(self.ingress_enabled(), accepted),
+                observed,
+            )
+            .await
     }
 
     /// Applies the daemon's validated reconciliation timing configuration.
@@ -209,3 +233,4 @@ mod deployment;
 mod images;
 pub use images::ImagesInUse;
 mod jobs;
+mod links;

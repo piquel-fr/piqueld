@@ -190,6 +190,11 @@ impl<D: DockerApi> Controller<D> {
             }
             // Boxed: it would otherwise grow every operation's future.
             Box::pin(self.remove_preview_volumes(operation)).await?;
+            // Nothing enforces its links once it is gone, so it removes the
+            // networks of importers deleted before it now.
+            let observed = self.docker.observe(&operation.environment_id).await?;
+            Box::pin(self.enforce_links(&operation.environment_id, &operation.id, &observed))
+                .await?;
         }
         Ok(())
     }
@@ -338,9 +343,9 @@ impl<D: DockerApi> Controller<D> {
             let accepted_routes = self.store.applied_routes(&operation.environment_id).await?;
             let runtime_request = match &request {
                 PlanRequest::Reconcile { desired } => PlanRequest::Reconcile {
-                    desired: desired
-                        .clone()
-                        .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
+                    desired: self
+                        .runtime_target(desired, &accepted_routes, &observed)
+                        .await?,
                 },
                 _ => request.clone(),
             };
@@ -588,8 +593,7 @@ impl<D: DockerApi> Controller<D> {
         self.store
             .save_prepared(operation, &prepared)
             .await
-            .map_err(OperationError::from)?;
-        Ok(prepared)
+            .map_err(OperationError::from)
     }
 
     /// Fails with `Superseded` when a newer operation exists for the environment,

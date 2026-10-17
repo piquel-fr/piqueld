@@ -553,6 +553,22 @@
             "description": "Configuration for each environment, selected by environment name.",
             "type": "object"
           },
+          "exports": {
+            "default": [],
+            "description": "Services other applications may reach over private links.",
+            "items": {
+              "$ref": "#/components/schemas/Export"
+            },
+            "type": "array"
+          },
+          "imports": {
+            "default": [],
+            "description": "Services of other applications this application reaches.",
+            "items": {
+              "$ref": "#/components/schemas/Import"
+            },
+            "type": "array"
+          },
           "jobs": {
             "default": [],
             "description": "One-shot jobs, run in declared order at their deployment point.",
@@ -2376,6 +2392,13 @@
             "description": "Ownership labels.",
             "type": "object"
           },
+          "link_aliases": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Link networks on which importers reach this service, with the name it\nanswers to there. Projected at runtime by\n[`ResolvedApplication::with_links`], never prepared.",
+            "type": "object"
+          },
           "logical_name": {
             "$ref": "#/components/schemas/ServiceName",
             "description": "Manifest-level service name."
@@ -2392,7 +2415,7 @@
             "description": "Canonical Docker service name."
           },
           "networks": {
-            "description": "Canonical private network names attached to the service.",
+            "description": "Private, ingress and link network names attached to the service.",
             "items": {
               "$ref": "#/components/schemas/DockerNetworkName"
             },
@@ -3604,6 +3627,25 @@
                       }
                     ],
                     "description": "Most recent durable operation, when one exists."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
+              "links": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/LinkReport"
+                      }
+                    ],
+                    "description": "The private links the current runtime target takes part in. Absent\nfrom daemons that predate links."
                   },
                   {
                     "enum": [
@@ -6083,6 +6125,25 @@
               }
             ]
           },
+          "links": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/LinkReport"
+                  }
+                ],
+                "description": "The private links the current runtime target takes part in. Absent\nfrom daemons that predate links."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "manifest": {
             "oneOf": [
               {
@@ -6777,6 +6838,48 @@
         ],
         "type": "object"
       },
+      "Export": {
+        "additionalProperties": false,
+        "description": "A service other applications may reach, `[[spec.exports]]`.",
+        "properties": {
+          "applications": {
+            "description": "Applications whose environments may import the service.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "previews": {
+            "description": "Whether previews of those applications may import it too; `false` by\ndefault, so only their environments can.",
+            "type": "boolean"
+          },
+          "service": {
+            "description": "Service in this application that importers reach.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "applications"
+        ],
+        "type": "object"
+      },
+      "ExportsValue": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "description": "New value; null explicitly clears an optional setting.",
+            "items": {
+              "$ref": "#/components/schemas/Export"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
       "FailureCount": {
         "description": "Frequency of a diagnostic classification.",
         "properties": {
@@ -7073,6 +7176,127 @@
         "pattern": "^(?:sha256:[0-9a-f]{64}|(?=.{1,512}$)(?=.{1,255}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$)(?:(?:(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)(?::0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?:0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64})$",
         "type": "string"
       },
+      "Import": {
+        "additionalProperties": false,
+        "description": "A service of another application this application reaches,\n`[[spec.imports]]`, as `<service>.<application>`.",
+        "properties": {
+          "application": {
+            "description": "Application exporting the service.",
+            "type": "string"
+          },
+          "environment": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Template"
+                  }
+                ],
+                "description": "Environment of that application to reach. By default, the one named\nlike the importing environment. It may reference variables, so\npreviews can reach e.g. `staging`."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "service": {
+            "description": "Exported service of that application.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "application",
+          "service"
+        ],
+        "type": "object"
+      },
+      "ImportState": {
+        "description": "Whether an import connects, and why not.",
+        "enum": [
+          "connected",
+          "unavailable",
+          "full"
+        ],
+        "type": "string"
+      },
+      "ImportStatus": {
+        "additionalProperties": false,
+        "description": "One import of an environment and whether it connects.",
+        "properties": {
+          "alias": {
+            "description": "Name the service answers to: `<service>.<application>`.",
+            "type": "string"
+          },
+          "application": {
+            "$ref": "#/components/schemas/ApplicationName",
+            "description": "Application exporting the service."
+          },
+          "environment": {
+            "description": "Environment of the application the import reaches.",
+            "type": "string"
+          },
+          "service": {
+            "$ref": "#/components/schemas/ServiceName",
+            "description": "Imported service."
+          },
+          "state": {
+            "$ref": "#/components/schemas/ImportState",
+            "description": "Whether it connects."
+          }
+        },
+        "required": [
+          "application",
+          "service",
+          "environment",
+          "alias",
+          "state"
+        ],
+        "type": "object"
+      },
+      "Importer": {
+        "additionalProperties": false,
+        "description": "An environment that reaches one of this environment's exported services.",
+        "properties": {
+          "application": {
+            "$ref": "#/components/schemas/ApplicationName",
+            "description": "Importing application."
+          },
+          "environment": {
+            "description": "Importing environment, or a preview's slug.",
+            "type": "string"
+          },
+          "service": {
+            "$ref": "#/components/schemas/ServiceName",
+            "description": "Exported service it reaches."
+          }
+        },
+        "required": [
+          "application",
+          "environment",
+          "service"
+        ],
+        "type": "object"
+      },
+      "ImportsValue": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "description": "New value; null explicitly clears an optional setting.",
+            "items": {
+              "$ref": "#/components/schemas/Import"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
       "IngressStatus": {
         "description": "Managed gateway health, per listener, and route diagnostics.",
         "properties": {
@@ -7243,6 +7467,31 @@
         "required": [
           "id",
           "created_at_ms"
+        ],
+        "type": "object"
+      },
+      "LinkReport": {
+        "additionalProperties": false,
+        "description": "The links an environment takes part in, as deployed.",
+        "properties": {
+          "importers": {
+            "description": "Environments that reach its exported services.",
+            "items": {
+              "$ref": "#/components/schemas/Importer"
+            },
+            "type": "array"
+          },
+          "imports": {
+            "description": "Each import of the environment and whether it connects.",
+            "items": {
+              "$ref": "#/components/schemas/ImportStatus"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "imports",
+          "importers"
         ],
         "type": "object"
       },
@@ -10960,6 +11209,33 @@
           }
         ]
       },
+      "ValidatedExport": {
+        "additionalProperties": false,
+        "description": "A validated export.",
+        "properties": {
+          "applications": {
+            "description": "Applications whose environments may import it.",
+            "items": {
+              "$ref": "#/components/schemas/ApplicationName"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "previews": {
+            "description": "Whether previews of those applications may import it too.",
+            "type": "boolean"
+          },
+          "service": {
+            "$ref": "#/components/schemas/ServiceName",
+            "description": "Exported service of this application."
+          }
+        },
+        "required": [
+          "service",
+          "applications"
+        ],
+        "type": "object"
+      },
       "ValidatedHealthCheck": {
         "description": "Validated container health check.",
         "oneOf": [
@@ -11043,6 +11319,44 @@
             "type": "object"
           }
         ]
+      },
+      "ValidatedImport": {
+        "additionalProperties": false,
+        "description": "A validated import.",
+        "properties": {
+          "application": {
+            "$ref": "#/components/schemas/ApplicationName",
+            "description": "Application exporting the service."
+          },
+          "environment": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/EnvironmentName"
+                  }
+                ],
+                "description": "Environment of that application to reach; unset reaches the one named\nlike the importing environment."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "service": {
+            "$ref": "#/components/schemas/ServiceName",
+            "description": "Exported service of that application."
+          }
+        },
+        "required": [
+          "application",
+          "service"
+        ],
+        "type": "object"
       },
       "ValidatedJob": {
         "description": "Validated one-shot job.",
@@ -11442,6 +11756,20 @@
       "ValidatedSpec": {
         "description": "Validated application resource lists.",
         "properties": {
+          "exports": {
+            "description": "Services other applications may reach over private links.",
+            "items": {
+              "$ref": "#/components/schemas/ValidatedExport"
+            },
+            "type": "array"
+          },
+          "imports": {
+            "description": "Services of other applications this application reaches.",
+            "items": {
+              "$ref": "#/components/schemas/ValidatedImport"
+            },
+            "type": "array"
+          },
           "jobs": {
             "description": "One-shot jobs in declared execution order.",
             "items": {
@@ -12772,6 +13100,356 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/VisibilityValue"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved and deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "x-piqueld-access": "apps:write"
+      }
+    },
+    "/api/v1/applications/{id}/exports": {
+      "put": {
+        "operationId": "set_application_exports",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required inspected generation unless force is set.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass the revision check.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "in": "query",
+            "name": "deploy",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportsValue"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved and deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "x-piqueld-access": "apps:write"
+      }
+    },
+    "/api/v1/applications/{id}/imports": {
+      "put": {
+        "operationId": "set_application_imports",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required inspected generation unless force is set.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass the revision check.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Deploy the changed configuration to the application's only environment;\nomitted/false saves only.",
+            "in": "query",
+            "name": "deploy",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportsValue"
               }
             }
           },
