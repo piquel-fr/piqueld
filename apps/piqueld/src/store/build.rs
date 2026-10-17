@@ -1,6 +1,6 @@
 //! Build records outlive operation retention; output is chunked and bounded.
 use super::access::scope_json;
-use super::{Store, StoreError, now_ms, page_limit};
+use super::{Paging, Store, StoreError, days_ago_ms, decode_name, now_ms};
 use piqueld_core::access::Scope;
 use piqueld_core::{
     ApplicationId, EnvironmentId,
@@ -29,12 +29,28 @@ struct BuildRow {
     log_expired: i64,
 }
 
-/// `build_log_chunks` row shared by the stream-filtered and unfiltered page queries.
-struct BuildLogRow {
-    offset: i64,
-    data: Vec<u8>,
-    stream: String,
-    timestamp_ms: i64,
+impl BuildRow {
+    /// Converts raw columns into a build record, reporting unknown states as
+    /// corruption.
+    fn decode(self) -> Result<BuildRecord, StoreError> {
+        Ok(BuildRecord {
+            id: self.id,
+            environment_id: self.environment_id,
+            operation_id: self.operation_id,
+            service: self.service,
+            job: self.job,
+            source: serde_json::from_str(&self.source_json).map_err(StoreError::corrupt)?,
+            state: decode_name(&self.state)?,
+            started_at_ms: self.started_at_ms,
+            finished_at_ms: self.finished_at_ms,
+            commit: self.commit_hash,
+            image_id: self.image_id,
+            exit_code: self.exit_code,
+            log_bytes: self.log_bytes,
+            log_truncated: self.log_truncated != 0,
+            log_expired: self.log_expired != 0,
+        })
+    }
 }
 
 impl Store {
@@ -57,8 +73,7 @@ impl Store {
         let source = serde_json::to_string(source).map_err(StoreError::invalid_input)?;
         let app = application.as_str();
         let now = now_ms();
-        let _writer = self.writers.lock().await;
-        Ok(sqlx::query!("INSERT INTO builds(environment_id,operation_id,service,job,source_json,state,started_at_ms) VALUES(?1,?2,?3,?4,?5,'running',?6)",app,operation,service,job,source,now).execute(&self.pool).await.map_err(StoreError::database)?.last_insert_rowid())
+        Ok(self.write(sqlx::query!("INSERT INTO builds(environment_id,operation_id,service,job,source_json,state,started_at_ms) VALUES(?1,?2,?3,?4,?5,'running',?6)",app,operation,service,job,source,now)).await.map_err(StoreError::database)?.last_insert_rowid())
     }
     /// Appends build output, splitting it into chunks of at most 4096 bytes.
     /// Output past the per-build byte cap is dropped and the build is marked
@@ -130,29 +145,34 @@ impl Store {
     }
     /// Records the repository commit a build checked out.
     pub(crate) async fn build_commit(&self, id: i64, commit: &str) -> Result<(), StoreError> {
-        let _writer = self.writers.lock().await;
-        sqlx::query!("UPDATE builds SET commit_hash=?1 WHERE id=?2", commit, id)
-            .execute(&self.pool)
-            .await
-            .map_err(StoreError::database)?;
+        self.write(sqlx::query!(
+            "UPDATE builds SET commit_hash=?1 WHERE id=?2",
+            commit,
+            id
+        ))
+        .await
+        .map_err(StoreError::database)?;
         Ok(())
     }
     /// Records the exit code of a finished job run.
     pub(crate) async fn build_exit_code(&self, id: i64, code: i64) -> Result<(), StoreError> {
-        let _writer = self.writers.lock().await;
-        sqlx::query!("UPDATE builds SET exit_code=?1 WHERE id=?2", code, id)
-            .execute(&self.pool)
-            .await
-            .map_err(StoreError::database)?;
+        self.write(sqlx::query!(
+            "UPDATE builds SET exit_code=?1 WHERE id=?2",
+            code,
+            id
+        ))
+        .await
+        .map_err(StoreError::database)?;
         Ok(())
     }
     /// Marks a build's output truncated when its producer dropped some of it.
     pub(crate) async fn build_log_truncated(&self, id: i64) -> Result<(), StoreError> {
-        let _writer = self.writers.lock().await;
-        sqlx::query!("UPDATE builds SET log_truncated=1 WHERE id=?1", id)
-            .execute(&self.pool)
-            .await
-            .map_err(StoreError::database)?;
+        self.write(sqlx::query!(
+            "UPDATE builds SET log_truncated=1 WHERE id=?1",
+            id
+        ))
+        .await
+        .map_err(StoreError::database)?;
         Ok(())
     }
     /// Marks a running build finished with a terminal state and optional image ID.
@@ -170,8 +190,15 @@ impl Store {
             BuildState::Interrupted => "interrupted",
         };
         let now = now_ms();
-        let _writer = self.writers.lock().await;
-        sqlx::query!("UPDATE builds SET state=?1,finished_at_ms=?2,image_id=?3 WHERE id=?4 AND state='running'",state,now,image,id).execute(&self.pool).await.map_err(StoreError::database)?;
+        self.write(sqlx::query!(
+            "UPDATE builds SET state=?1,finished_at_ms=?2,image_id=?3 WHERE id=?4 AND state='running'",
+            state,
+            now,
+            image,
+            id
+        ))
+        .await
+        .map_err(StoreError::database)?;
         Ok(())
     }
     /// Names of the jobs an operation already ran successfully. Retries and
@@ -193,12 +220,10 @@ impl Store {
     /// Marks builds left running by a previous daemon process as interrupted.
     pub(crate) async fn recover_builds(&self) -> Result<(), StoreError> {
         let now = now_ms();
-        let _writer = self.writers.lock().await;
-        sqlx::query!(
+        self.write(sqlx::query!(
             "UPDATE builds SET state='interrupted',finished_at_ms=?1 WHERE state='running'",
             now
-        )
-        .execute(&self.pool)
+        ))
         .await
         .map_err(StoreError::database)?;
         Ok(())
@@ -206,8 +231,7 @@ impl Store {
     /// Deletes output of builds finished before the retention window, keeping
     /// their metadata and flagging the output as expired.
     pub(crate) async fn prune_build_logs(&self) -> Result<(), StoreError> {
-        let cutoff =
-            now_ms().saturating_sub(i64::from(self.build_history.log_retention_days) * 86_400_000);
+        let cutoff = days_ago_ms(self.build_history.log_retention_days.into());
         let (_writer, mut tx) = self.begin_immediate().await?;
         sqlx::query!("DELETE FROM build_log_chunks WHERE build_id IN (SELECT id FROM builds WHERE finished_at_ms<?1)",cutoff).execute(&mut *tx).await.map_err(StoreError::database)?;
         sqlx::query!(
@@ -232,15 +256,11 @@ impl Store {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<BuildRecord>, StoreError> {
-        let fetch = page_limit(limit)? + 1;
-        let before = cursor
-            .map(|c| {
-                c.strip_prefix("v1:")
-                    .ok_or(StoreError::InvalidInput)?
-                    .parse::<i64>()
-                    .map_err(StoreError::invalid_input)
-            })
-            .transpose()?
+        let paging = Paging::new(limit)?;
+        let before = Paging::cursor(cursor)?
+            .map(str::parse::<i64>)
+            .transpose()
+            .map_err(StoreError::invalid_input)?
             .unwrap_or(i64::MAX);
         if before < 1 {
             return Err(StoreError::InvalidInput);
@@ -268,45 +288,19 @@ impl Store {
                 .push_bind(application.as_str())
                 .push(")");
         }
-        query.push(" ORDER BY id DESC LIMIT ").push_bind(fetch);
+        query
+            .push(" ORDER BY id DESC LIMIT ")
+            .push_bind(paging.fetch);
         let mut rows = query
             .build_query_as::<BuildRow>()
             .fetch_all(&self.pool)
             .await
             .map_err(StoreError::database)?;
-        let more = rows.len() > limit;
-        rows.truncate(limit);
-        let next_cursor = more
-            .then(|| rows.last().map(|r| format!("v1:{}", r.id)))
-            .flatten();
+        let next_cursor = paging.next_cursor(&mut rows, |row| row.id);
         let items = rows
             .into_iter()
-            .map(|r| {
-                Ok(BuildRecord {
-                    id: r.id,
-                    environment_id: r.environment_id,
-                    operation_id: r.operation_id,
-                    service: r.service,
-                    job: r.job,
-                    source: serde_json::from_str(&r.source_json).map_err(StoreError::corrupt)?,
-                    state: match r.state.as_str() {
-                        "running" => BuildState::Running,
-                        "succeeded" => BuildState::Succeeded,
-                        "failed" => BuildState::Failed,
-                        "interrupted" => BuildState::Interrupted,
-                        _ => return Err(StoreError::Corrupt),
-                    },
-                    started_at_ms: r.started_at_ms,
-                    finished_at_ms: r.finished_at_ms,
-                    commit: r.commit_hash,
-                    image_id: r.image_id,
-                    exit_code: r.exit_code,
-                    log_bytes: r.log_bytes,
-                    log_truncated: r.log_truncated != 0,
-                    log_expired: r.log_expired != 0,
-                })
-            })
-            .collect::<Result<Vec<_>, StoreError>>()?;
+            .map(BuildRow::decode)
+            .collect::<Result<_, _>>()?;
         Ok(Page { items, next_cursor })
     }
     /// Returns the owner of the environment a build attempt belongs to, if
@@ -357,48 +351,33 @@ impl Store {
         .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
         let before = before.unwrap_or(i64::MAX);
-        let mut chunks = if let Some(stream) = stream {
-            let filter = stream.as_str();
-            sqlx::query_as!(
-                BuildLogRow,
-                "SELECT offset,data,stream,timestamp_ms FROM build_log_chunks
-                 WHERE build_id=?1 AND stream=?2 AND offset<?3
-                 ORDER BY offset DESC LIMIT 17",
-                id,
-                filter,
-                before
-            )
-            .fetch_all(&mut *tx)
-            .await
-        } else {
-            sqlx::query_as!(
-                BuildLogRow,
-                "SELECT offset,data,stream,timestamp_ms FROM build_log_chunks
-                 WHERE build_id=?1 AND offset<?2 ORDER BY offset DESC LIMIT 17",
-                id,
-                before
-            )
-            .fetch_all(&mut *tx)
-            .await
-        }
+        let stream = stream.map(LogStream::as_str);
+        let mut chunks = sqlx::query!(
+            "SELECT offset,data,stream,timestamp_ms FROM build_log_chunks
+             WHERE build_id=?1 AND (?2 IS NULL OR stream=?2) AND offset<?3
+             ORDER BY offset DESC LIMIT 17",
+            id,
+            stream,
+            before
+        )
+        .fetch_all(&mut *tx)
+        .await
         .map_err(StoreError::database)?;
         let more = chunks.len() > 16;
         chunks.truncate(16);
         chunks.reverse();
         let previous_offset = more.then(|| chunks[0].offset);
-        let mut items = Vec::new();
-        for chunk in chunks {
-            items.push(BuildLogChunk {
-                offset: chunk.offset,
-                timestamp_ms: chunk.timestamp_ms,
-                stream: match chunk.stream.as_str() {
-                    "stdout" => LogStream::Stdout,
-                    "stderr" => LogStream::Stderr,
-                    _ => return Err(StoreError::Corrupt),
-                },
-                text: String::from_utf8_lossy(&chunk.data).into_owned(),
-            });
-        }
+        let items = chunks
+            .into_iter()
+            .map(|chunk| {
+                Ok(BuildLogChunk {
+                    offset: chunk.offset,
+                    timestamp_ms: chunk.timestamp_ms,
+                    stream: decode_name(&chunk.stream)?,
+                    text: String::from_utf8_lossy(&chunk.data).into_owned(),
+                })
+            })
+            .collect::<Result<_, StoreError>>()?;
         Ok(BuildLogPage {
             items,
             previous_offset,

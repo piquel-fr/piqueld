@@ -2,9 +2,9 @@
 //! resolved targets, deploying their application's shared manifest or
 //! releases promoted from another environment.
 use super::{
-    ApplicationId, EnvironmentId, EnvironmentOwner, EnvironmentPage, EnvironmentStatus, Operation,
-    OperationKind, ResolvedApplication, Store, StoreError, StoredEnvironment, StoredEnvironmentRow,
-    now_ms, page_limit,
+    ApplicationId, ApplicationState, EnvironmentId, EnvironmentOwner, EnvironmentPage,
+    EnvironmentStatus, Operation, OperationKind, Paging, ResolvedApplication, Store, StoreError,
+    StoredEnvironment, StoredEnvironmentRow, now_ms,
 };
 use crate::api::SourceChoice;
 use piqueld_core::{
@@ -51,18 +51,9 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::constraint)?;
-        Self::write_status(tx, id, "not_deployed", None, now).await?;
+        Self::write_status(tx, id, ApplicationState::NotDeployed, now).await?;
         let message = format!("created environment {name}");
-        sqlx::query!(
-            "INSERT INTO events(application_id,environment_id,kind,message,created_at_ms) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'environment_created',?2,?3)",
-            id,
-            message,
-            now
-        )
-        .execute(&mut **tx)
-        .await
-        .map_err(StoreError::database)?;
-        Ok(())
+        Self::environment_event_on(tx, id, "environment_created", &message, now).await
     }
 
     /// The `branch`, `pinned_commit`, and `promoted_from` columns of `source`.
@@ -172,15 +163,7 @@ impl Store {
         .await
         .map_err(StoreError::constraint)?;
         let message = format!("renamed environment {old} to {name}");
-        sqlx::query!(
-            "INSERT INTO events(application_id,environment_id,kind,message,created_at_ms) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'environment_renamed',?2,?3)",
-            id,
-            message,
-            now
-        )
-        .execute(&mut **tx)
-        .await
-        .map_err(StoreError::database)?;
+        Self::environment_event_on(tx, id, "environment_renamed", &message, now).await?;
         Self::bump_generation_on(
             tx,
             &environment.environment.application_id,
@@ -318,15 +301,7 @@ impl Store {
             Self::describe_source_on(tx, &source).await?,
             Self::describe_source_on(tx, previous).await?,
         );
-        sqlx::query!(
-            "INSERT INTO events(application_id,environment_id,kind,message,created_at_ms) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'environment_source_changed',?2,?3)",
-            id,
-            message,
-            now
-        )
-        .execute(&mut **tx)
-        .await
-        .map_err(StoreError::database)?;
+        Self::environment_event_on(tx, id, "environment_source_changed", &message, now).await?;
         Ok(SourceWrite::Changed { deploying })
     }
 
@@ -371,7 +346,7 @@ impl Store {
             return Err(StoreError::IllegalTransition);
         }
         let operation = Self::insert_operation(tx, id, OperationKind::Delete, now).await?;
-        Self::write_status(tx, environment_id, "deleting", None, now).await?;
+        Self::write_status(tx, environment_id, ApplicationState::Deleting, now).await?;
         Ok(operation)
     }
 
@@ -444,7 +419,13 @@ impl Store {
         // Keep the existing on-disk operation kind for deployment records.
         let operation =
             Self::insert_operation(tx, environment.id(), OperationKind::Refresh, now).await?;
-        Self::write_status(tx, environment.id().as_str(), "pending", None, now).await?;
+        Self::write_status(
+            tx,
+            environment.id().as_str(),
+            ApplicationState::Pending,
+            now,
+        )
+        .await?;
         Ok(operation)
     }
 
@@ -651,21 +632,12 @@ impl Store {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<EnvironmentPage, StoreError> {
-        let fetch_limit = page_limit(limit)? + 1;
-        let after = cursor
-            .map(|value| value.strip_prefix("v1:").ok_or(StoreError::InvalidInput))
-            .transpose()?
-            .unwrap_or("");
+        let paging = Paging::new(limit)?;
+        let after = Paging::cursor(cursor)?.unwrap_or("");
         let mut rows = sqlx::query_as!(StoredEnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.promoted_from,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id>?1 ORDER BY e.id LIMIT ?2"#,after,fetch_limit)
+            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.promoted_from,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.manifest_json,e.resolved_json,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!",a.desired_json AS "desired_json!",a.generation AS "generation!",a.delete_intent AS "application_delete_intent!",a.created_at_ms AS "application_created_at_ms!",a.updated_at_ms AS "application_updated_at_ms!" FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id>?1 ORDER BY e.id LIMIT ?2"#,after,paging.fetch)
             .fetch_all(&self.pool).await.map_err(StoreError::database)?;
-        let has_more = rows.len() > limit;
-        rows.truncate(limit);
-        let next_cursor = if has_more {
-            rows.last().map(|row| format!("v1:{}", row.id))
-        } else {
-            None
-        };
+        let next_cursor = paging.next_cursor(&mut rows, |row| row.id.clone());
         let items = rows.into_iter().filter_map(|row| {
             let id = row.id.clone();
             match row.decode() {

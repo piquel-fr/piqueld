@@ -251,14 +251,7 @@ impl Store {
         if fetched.url != wanted.url || fetched.branch != wanted.branch || wanted.commit.is_some() {
             return Ok(false);
         }
-        let synced = sqlx::query_scalar!(
-            r#"SELECT actor_system IS NOT NULL AS "synced!: bool" FROM operations WHERE id=?1"#,
-            operation.id
-        )
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(StoreError::database)?;
-        Ok(synced)
+        Self::requested_by_sync_on(tx, operation).await
     }
 }
 

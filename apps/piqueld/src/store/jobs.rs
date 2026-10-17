@@ -46,11 +46,12 @@ impl Store {
 
     /// Clears intent only after Docker confirms the job containers have stopped.
     pub(crate) async fn finish_job_cleanup(&self, operation: &str) -> Result<(), StoreError> {
-        let _writer = self.writers.lock().await;
-        sqlx::query!("DELETE FROM job_cleanup WHERE operation_id=?1", operation)
-            .execute(&self.pool)
-            .await
-            .map_err(StoreError::database)?;
+        self.write(sqlx::query!(
+            "DELETE FROM job_cleanup WHERE operation_id=?1",
+            operation
+        ))
+        .await
+        .map_err(StoreError::database)?;
         Ok(())
     }
 }

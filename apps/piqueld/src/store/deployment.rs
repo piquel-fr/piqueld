@@ -1,5 +1,5 @@
 //! Saved configuration and immutable deployment inputs. Saving never creates work.
-use super::{EnvironmentId, NormalizedApplication, Operation, Store, StoreError, now_ms};
+use super::{EnvironmentId, NormalizedApplication, Operation, Paging, Store, StoreError, now_ms};
 use piqueld_core::{
     api::{DeploymentView, DiagnosticView, Page, SavedApplication},
     manifest::{ApplicationTemplate, Rendering, VariableValue},
@@ -7,7 +7,7 @@ use piqueld_core::{
 use sqlx::{Sqlite, Transaction};
 use std::collections::BTreeMap;
 
-/// `deployments` row shared by the first-page and cursor page queries.
+/// `deployments` row shared by the snapshot and history queries.
 struct DeploymentRow {
     id: String,
     manifest_json: String,
@@ -273,40 +273,22 @@ impl Store {
         limit: usize,
     ) -> Result<Page<DeploymentView>, StoreError> {
         self.get(app).await?;
-        let limit_sql = super::page_limit(limit)? + 1;
-        let before = cursor
-            .map(|v| v.strip_prefix("v1:").ok_or(StoreError::InvalidInput))
-            .transpose()?;
+        let paging = Paging::new(limit)?;
+        let before = Paging::cursor(cursor)?;
         let app_id = app.as_str();
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
-        let mut rows = if let Some(before) = before {
-            sqlx::query_as!(
-                DeploymentRow,
-                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments
-                 WHERE environment_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
-                app_id,
-                before,
-                limit_sql
-            )
-            .fetch_all(&mut *tx)
-            .await
-        } else {
-            sqlx::query_as!(
-                DeploymentRow,
-                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments
-                 WHERE environment_id=?1 ORDER BY id DESC LIMIT ?2",
-                app_id,
-                limit_sql
-            )
-            .fetch_all(&mut *tx)
-            .await
-        }
+        let mut rows = sqlx::query_as!(
+            DeploymentRow,
+            r#"SELECT id AS "id!",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments
+             WHERE environment_id=?1 AND (?2 IS NULL OR id<?2) ORDER BY id DESC LIMIT ?3"#,
+            app_id,
+            before,
+            paging.fetch
+        )
+        .fetch_all(&mut *tx)
+        .await
         .map_err(StoreError::database)?;
-        let more = rows.len() > limit;
-        rows.truncate(limit);
-        let next_cursor = more
-            .then(|| rows.last().map(|row| format!("v1:{}", row.id)))
-            .flatten();
+        let next_cursor = paging.next_cursor(&mut rows, |row| row.id.clone());
         let current = Self::current_deployment_on(&mut tx, app)
             .await?
             .map(|current| current.id);
@@ -348,22 +330,22 @@ impl Store {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Operation>, StoreError> {
-        let before = cursor
-            .map(|v| {
-                v.strip_prefix("v1:")
-                    .ok_or(StoreError::InvalidInput)?
-                    .parse::<i64>()
-                    .map_err(StoreError::invalid_input)
-            })
-            .transpose()?
+        let before = Paging::cursor(cursor)?
+            .map(str::parse::<i64>)
+            .transpose()
+            .map_err(StoreError::invalid_input)?
             .unwrap_or(i64::MAX);
-        let limit_sql = super::page_limit(limit)? + 1;
-        let mut rows=sqlx::query!("SELECT attempt,outcome_json FROM deployment_attempts WHERE deployment_id=?1 AND attempt<?2 ORDER BY attempt DESC LIMIT ?3",id,before,limit_sql).fetch_all(&self.pool).await.map_err(StoreError::database)?;
-        let more = rows.len() > limit;
-        rows.truncate(limit);
-        let next_cursor = more
-            .then(|| rows.last().map(|row| format!("v1:{}", row.attempt)))
-            .flatten();
+        let paging = Paging::new(limit)?;
+        let mut rows = sqlx::query!(
+            "SELECT attempt,outcome_json FROM deployment_attempts WHERE deployment_id=?1 AND attempt<?2 ORDER BY attempt DESC LIMIT ?3",
+            id,
+            before,
+            paging.fetch
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        let next_cursor = paging.next_cursor(&mut rows, |row| row.attempt);
         let items = rows
             .into_iter()
             .map(|row| serde_json::from_str(&row.outcome_json).map_err(StoreError::corrupt))

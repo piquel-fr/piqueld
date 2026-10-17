@@ -4,7 +4,7 @@ use super::{Actor, Operation, OperationKind, Store, StoreError, StoredApplicatio
 use crate::api::{Mutation, MutationResponse, PreviewMutation, PromotionMutation};
 use piqueld_core::access::{AppPermission, Grants, Target};
 use piqueld_core::api::{
-    AcceptedOperation, CreatedPreview, DeletedApplication, RenamedApplication,
+    AcceptedOperation, CreatedPreview, DeletedApplication, EnvironmentView, RenamedApplication,
 };
 use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName};
 use sha2::{Digest, Sha256};
@@ -480,7 +480,7 @@ impl Store {
             Mutation::Sync(listed) => Self::sync_on(tx, listed, now).await,
             Mutation::Delete { id } => {
                 let current = Self::checked_environment_on(tx, &id, expected).await?;
-                let operation = match Self::pending_deletion_on(tx, &current).await? {
+                let operation = match Self::pending_deletion_on(tx, &current.environment).await? {
                     Some(operation) => operation,
                     None => Self::delete_environment_on(tx, &current).await?,
                 };
@@ -655,23 +655,32 @@ impl Store {
         tx: &mut Transaction<'_, Sqlite>,
         preview: &super::StoredEnvironment,
     ) -> Result<Accepted, StoreError> {
-        let operation = match Self::pending_deletion_on(tx, preview).await? {
-            Some(operation) => operation,
-            None => Self::request_delete_on(tx, preview.id()).await?,
-        };
+        let operation = Self::deletion_on(tx, &preview.environment).await?;
         Ok(Self::operation_accepted(&operation))
+    }
+
+    /// Requests `environment`'s deletion (see `request_delete_on`), or
+    /// returns the one already pending.
+    async fn deletion_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        environment: &EnvironmentView,
+    ) -> Result<Operation, StoreError> {
+        match Self::pending_deletion_on(tx, environment).await? {
+            Some(operation) => Ok(operation),
+            None => Self::request_delete_on(tx, &environment.id).await,
+        }
     }
 
     /// The deletion already requested for `environment`, which a repeated
     /// request returns rather than requesting another.
     async fn pending_deletion_on(
         tx: &mut Transaction<'_, Sqlite>,
-        environment: &super::StoredEnvironment,
+        environment: &EnvironmentView,
     ) -> Result<Option<Operation>, StoreError> {
-        Ok(Self::latest_operation_on(tx, environment.id())
+        Ok(Self::latest_operation_on(tx, &environment.id)
             .await?
             .filter(|operation| {
-                environment.delete_intent() && operation.kind == OperationKind::Delete
+                environment.delete_intent && operation.kind == OperationKind::Delete
             }))
     }
 
@@ -1036,15 +1045,7 @@ impl Store {
         }
         let mut operations = Vec::with_capacity(environments.len());
         for environment in &environments {
-            let pending = Self::latest_operation_on(tx, &environment.id)
-                .await?
-                .filter(|operation| {
-                    environment.delete_intent && operation.kind == OperationKind::Delete
-                });
-            let operation = match pending {
-                Some(operation) => operation,
-                None => Self::request_delete_on(tx, &environment.id).await?,
-            };
+            let operation = Self::deletion_on(tx, environment).await?;
             operations.push(AcceptedOperation::from(&operation));
         }
         Self::finish_application_delete_on(tx, &id).await?;
@@ -1064,12 +1065,13 @@ impl Store {
 
     /// Deletes expired idempotency receipts.
     pub(crate) async fn prune_receipts(&self) -> Result<(), StoreError> {
-        let _writer = self.writers.lock().await;
         let now = now_ms();
-        sqlx::query!("DELETE FROM request_receipts WHERE expires_at_ms<=?1", now)
-            .execute(&self.pool)
-            .await
-            .map_err(StoreError::database)?;
+        self.write(sqlx::query!(
+            "DELETE FROM request_receipts WHERE expires_at_ms<=?1",
+            now
+        ))
+        .await
+        .map_err(StoreError::database)?;
         Ok(())
     }
 }
