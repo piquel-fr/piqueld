@@ -1,4 +1,4 @@
-//! Validated names and shared string-newtype scaffolding.
+//! Validated names and shared scaffolding for string-backed types.
 
 // Validators stay with the owning type; the macro only supplies identical
 // construction, wire-format, and standard-trait implementations.
@@ -80,6 +80,82 @@ macro_rules! validated_string {
     };
 }
 pub(crate) use validated_string;
+
+// Declares a fieldless enum whose variants each have one stable string form,
+// taken from a single `Variant => "form"` table, with `ALL`, `as_str`,
+// `parse`, and `Display`, so storage, API, and display values cannot drift
+// apart. A leading `#[serde]` also derives `Deserialize`, `Serialize`, and
+// `ToSchema`, renaming each variant to its form. Further derives, such as
+// `Default` or `Ord`, go with the enum's other attributes. Forms are matched
+// as `tt` rather than `literal`: `ToSchema` ignores a rename whose value
+// arrives as a `literal` fragment, wrapped in an invisible group.
+//
+//     string_enum! {
+//         #[serde]
+//         /// Docs for the enum.
+//         pub enum Outcome {
+//             /// Docs for the variant.
+//             Allowed => "allowed",
+//         }
+//     }
+macro_rules! string_enum {
+    (
+        #[serde]
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $($(#[$variant_meta:meta])* $variant:ident => $value:tt),+ $(,)?
+        }
+    ) => {
+        $crate::names::string_enum! {
+            $(#[$meta])*
+            #[derive(serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
+            $vis enum $name {
+                $($(#[$variant_meta])* #[serde(rename = $value)] $variant => $value),+
+            }
+        }
+    };
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $($(#[$variant_meta:meta])* $variant:ident => $value:tt),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        $vis enum $name {
+            $($(#[$variant_meta])* $variant),+
+        }
+
+        impl $name {
+            /// Every value, in declaration order.
+            pub const ALL: [Self; [$($value),+].len()] = [$(Self::$variant),+];
+
+            /// Stable string form, as stored, sent, and shown.
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $value),+
+                }
+            }
+
+            /// Parses a stable string form, rejecting unknown ones.
+            #[must_use]
+            pub fn parse(value: &str) -> Option<Self> {
+                match value {
+                    $($value => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(self.as_str())
+            }
+        }
+    };
+}
+pub(crate) use string_enum;
 
 validated_string!(
     /// User-facing logical application name.

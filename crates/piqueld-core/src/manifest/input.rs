@@ -2,6 +2,7 @@
 
 use super::variables::{RenderTarget, Template, Typed};
 use super::{APPLICATION_API_VERSION, APPLICATION_KIND, Visibility};
+use crate::names::string_enum;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -421,18 +422,20 @@ pub struct Job {
     pub volume_access: JobVolumeAccess,
 }
 
-/// How a job may use the volumes its service mounts.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(rename_all = "kebab-case")]
-pub enum JobVolumeAccess {
-    /// Every volume is mounted read-only, so the job can run beside the
-    /// services that still write them.
-    #[default]
-    ReadOnly,
-    /// The service's writable volumes stay writable. Every service mounting
-    /// one of them stops before the job runs and restarts with the rollout,
-    /// or with the previous deployment if a job fails.
-    Exclusive,
+string_enum! {
+    #[serde]
+    /// How a job may use the volumes its service mounts.
+    #[derive(Default)]
+    pub enum JobVolumeAccess {
+        /// Every volume is mounted read-only, so the job can run beside the
+        /// services that still write them.
+        #[default]
+        ReadOnly => "read-only",
+        /// The service's writable volumes stay writable. Every service mounting
+        /// one of them stops before the job runs and restarts with the rollout,
+        /// or with the previous deployment if a job fails.
+        Exclusive => "exclusive",
+    }
 }
 
 impl JobVolumeAccess {
@@ -441,18 +444,6 @@ impl JobVolumeAccess {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
-
-    /// Every access, in manifest spelling order.
-    pub const ALL: [Self; 2] = [Self::ReadOnly, Self::Exclusive];
-
-    /// The stable manifest spelling.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ReadOnly => "read-only",
-            Self::Exclusive => "exclusive",
-        }
-    }
 }
 
 impl std::str::FromStr for JobVolumeAccess {
@@ -460,10 +451,7 @@ impl std::str::FromStr for JobVolumeAccess {
 
     /// Parses the manifest spelling, `read-only` or `exclusive`.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::ALL
-            .into_iter()
-            .find(|access| access.as_str() == value)
-            .ok_or_else(|| format!("unknown job volume access {value:?}"))
+        Self::parse(value).ok_or_else(|| format!("unknown job volume access {value:?}"))
     }
 }
 

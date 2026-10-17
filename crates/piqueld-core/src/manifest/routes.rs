@@ -2,7 +2,10 @@
 //! route destinations.
 
 use super::{ValidationErrors, input, variables::Template};
-use crate::{RouteName, ServiceName, names::validated_string};
+use crate::{
+    RouteName, ServiceName,
+    names::{string_enum, validated_string},
+};
 use serde::{Deserialize, Serialize};
 use std::{fmt, num::NonZeroU16};
 use utoipa::ToSchema;
@@ -191,32 +194,21 @@ impl RedirectUrl {
 #[error("visibility must be public or private")]
 pub struct VisibilityError;
 
-/// Who may connect to a route: everyone, or only tailnet devices. It says
-/// nothing about how traffic arrives; the installation decides that.
-///
-/// Variants are ordered from least to most restrictive, so the stricter of
-/// two visibilities is their maximum.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    Deserialize,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToSchema,
-)]
-#[serde(rename_all = "lowercase")]
-pub enum Visibility {
-    /// Reachable from the internet.
-    Public,
-    /// Reachable only from the tailnet, on the same hostname.
-    #[default]
-    Private,
+string_enum! {
+    #[serde]
+    /// Who may connect to a route: everyone, or only tailnet devices. It says
+    /// nothing about how traffic arrives; the installation decides that.
+    ///
+    /// Variants are ordered from least to most restrictive, so the stricter of
+    /// two visibilities is their maximum.
+    #[derive(Default, Hash, Ord, PartialOrd)]
+    pub enum Visibility {
+        /// Reachable from the internet.
+        Public => "public",
+        /// Reachable only from the tailnet, on the same hostname.
+        #[default]
+        Private => "private",
+    }
 }
 
 impl Visibility {
@@ -239,25 +231,11 @@ impl Visibility {
     }
 }
 
-/// `public` or `private`, as written in manifests.
-impl fmt::Display for Visibility {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Public => "public",
-            Self::Private => "private",
-        })
-    }
-}
-
 impl std::str::FromStr for Visibility {
     type Err = VisibilityError;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        match text {
-            "public" => Ok(Self::Public),
-            "private" => Ok(Self::Private),
-            _ => Err(VisibilityError),
-        }
+        Self::parse(text).ok_or(VisibilityError)
     }
 }
 

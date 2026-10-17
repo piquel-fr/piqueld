@@ -3,28 +3,20 @@
 //! result; none probes a URL or computes readiness itself.
 use crate::api::{DnsRecordState, IngressStatus, ObservedServiceView, PublicIngressStatus};
 use crate::manifest::{RouteTarget, ValidatedRoute, Visibility};
+use crate::names::string_enum;
 use crate::{Convergence, RouteName, ServiceName};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Whether a URL is reachable. A known URL is not a ready one.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum UrlState {
-    /// At least one condition in `pending` holds.
-    Pending,
-    /// Served by the gateway over verified HTTPS, with its DNS records in
-    /// place and its service healthy.
-    Ready,
-}
-
-/// `pending` or `ready`.
-impl std::fmt::Display for UrlState {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Pending => "pending",
-            Self::Ready => "ready",
-        })
+string_enum! {
+    #[serde]
+    /// Whether a URL is reachable. A known URL is not a ready one.
+    pub enum UrlState {
+        /// At least one condition in `pending` holds.
+        Pending => "pending",
+        /// Served by the gateway over verified HTTPS, with its DNS records in
+        /// place and its service healthy.
+        Ready => "ready",
     }
 }
 
