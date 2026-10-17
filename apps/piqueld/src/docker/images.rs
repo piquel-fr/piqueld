@@ -1,5 +1,5 @@
 //! Local image inventory and removal of this installation's builds.
-use super::{BTreeMap, BollardDocker, DockerError, InstanceId, LocalImage};
+use super::{BTreeMap, BollardDocker, BollardResult, DockerError, InstanceId, LocalImage};
 use bollard::query_parameters::{
     ListContainersOptionsBuilder, ListImagesOptionsBuilder, RemoveImageOptionsBuilder,
 };
@@ -11,29 +11,26 @@ impl BollardDocker {
     /// container uses. IDs and digests Docker reports in another form (a
     /// non-SHA-256 store) are skipped, so such images are never removed.
     pub(super) async fn list_local_images(&self) -> Result<Vec<LocalImage>, DockerError> {
-        let containers = Self::map_request(
-            "list containers",
-            self.docker
-                .list_containers(Some(
-                    ListContainersOptionsBuilder::default().all(true).build(),
-                ))
-                .await,
-        )?;
-        let used = containers
+        let used = self
+            .docker
+            .list_containers(Some(
+                ListContainersOptionsBuilder::default().all(true).build(),
+            ))
+            .await
+            .or_request("list containers")?
             .into_iter()
             .filter_map(|container| container.image_id)
             .collect::<BTreeSet<_>>();
-        let images = Self::map_request(
-            "list images",
-            self.docker
-                .list_images(Some(
-                    ListImagesOptionsBuilder::default()
-                        .all(true)
-                        .digests(true)
-                        .build(),
-                ))
-                .await,
-        )?;
+        let images = self
+            .docker
+            .list_images(Some(
+                ListImagesOptionsBuilder::default()
+                    .all(true)
+                    .digests(true)
+                    .build(),
+            ))
+            .await
+            .or_request("list images")?;
         Ok(images
             .into_iter()
             .filter_map(|image| {
@@ -59,23 +56,25 @@ impl BollardDocker {
         instance: &InstanceId,
         id: &piqueld_core::Sha256Digest,
     ) -> Result<(), DockerError> {
-        let labels = match self.docker.inspect_image(id.as_str()).await {
-            Ok(image) => image
-                .config
-                .and_then(|config| config.labels)
-                .unwrap_or_default()
-                .into_iter()
-                .collect::<BTreeMap<_, _>>(),
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => return Ok(()),
-            Err(error) => return Err(DockerError::request("inspect image", error)),
+        let Some(image) = self
+            .docker
+            .inspect_image(id.as_str())
+            .await
+            .found()
+            .or_request("inspect image")?
+        else {
+            return Ok(());
         };
+        let labels = image
+            .config
+            .and_then(|config| config.labels)
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
         if !LocalImage::labelled_for(&labels, instance) {
             return Err(DockerError::OwnershipConflict);
         }
-        match self
-            .docker
+        self.docker
             .remove_image(
                 id.as_str(),
                 Some(
@@ -87,12 +86,8 @@ impl BollardDocker {
                 None,
             )
             .await
-        {
-            Ok(_)
-            | Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => Ok(()),
-            Err(error) => Err(DockerError::request("remove image", error)),
-        }
+            .found()
+            .or_request("remove image")?;
+        Ok(())
     }
 }

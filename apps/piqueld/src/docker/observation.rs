@@ -1,6 +1,6 @@
 use super::policy::ServiceRuntimePolicy;
 use super::{
-    BTreeMap, BollardDocker, Convergence, DockerError, HealthCheck, HealthConfig,
+    BTreeMap, BollardDocker, BollardResult, Convergence, DockerError, HealthCheck, HealthConfig,
     INGRESS_PROXIES_ENV, InspectContainerOptionsBuilder, MountTypeEnum, NANO_CPUS_PER_MILLICORE,
     NANOSECONDS_PER_SECOND, NetworkAttachment, ObservedMount, ObservedService, ObservedTask,
     ResourceLimits, ServiceSpec, TaskDiagnostic, TaskSpecContainerSpec, TaskState,
@@ -46,33 +46,26 @@ impl BollardDocker {
         &self,
         container_id: &str,
     ) -> Result<Option<bool>, DockerError> {
-        match self
+        Ok(self
             .docker
             .inspect_container(
                 container_id,
                 Some(InspectContainerOptionsBuilder::default().build()),
             )
             .await
-        {
-            Ok(inspection) => Ok(Self::health_verdict(
-                inspection.state.and_then(|state| state.health),
-            )),
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => Ok(None),
-            Err(error) => Err(DockerError::request("inspect container health", error)),
-        }
+            .found()
+            .or_request("inspect container health")?
+            .and_then(|inspection| Self::health_verdict(inspection.state?.health)))
     }
 
     /// Converts Docker's reported healthcheck result into the neutral verdict.
     fn health_verdict(health: Option<bollard::models::Health>) -> Option<bool> {
-        match health.and_then(|health| health.status) {
-            Some(HealthStatusEnum::HEALTHY) => Some(true),
-            Some(HealthStatusEnum::UNHEALTHY) => Some(false),
+        match health?.status? {
+            HealthStatusEnum::HEALTHY => Some(true),
+            HealthStatusEnum::UNHEALTHY => Some(false),
             // "none" (no healthcheck), "starting", and absent states carry no
             // verdict yet and must not fail an otherwise running task.
-            Some(HealthStatusEnum::NONE | HealthStatusEnum::STARTING | HealthStatusEnum::EMPTY)
-            | None => None,
+            HealthStatusEnum::NONE | HealthStatusEnum::STARTING | HealthStatusEnum::EMPTY => None,
         }
     }
 
@@ -120,7 +113,7 @@ impl BollardDocker {
             .name
             .clone()
             .ok_or(DockerError::Request("read service name"))?;
-        let replicas = BollardDocker::replica_count(spec);
+        let replicas = Self::replica_count(spec);
         let labels = spec
             .labels
             .clone()
@@ -132,16 +125,15 @@ impl BollardDocker {
             .health_check
             .as_ref()
             .is_some_and(Self::healthcheck_configured);
-        let convergence =
-            BollardDocker::convergence(&tasks, replicas, update, healthcheck_configured);
+        let convergence = Self::convergence(&tasks, replicas, update, healthcheck_configured);
         Ok(ObservedService {
             name,
             image: container.image.clone().unwrap_or_default(),
             replicas,
-            environment: BollardDocker::observed_environment(container),
+            environment: Self::observed_environment(container),
             command: container.command.clone().unwrap_or_default(),
             arguments: container.args.clone().unwrap_or_default(),
-            mounts: BollardDocker::observed_mounts(container),
+            mounts: Self::observed_mounts(container),
             secrets: container
                 .secrets
                 .iter()
@@ -153,16 +145,16 @@ impl BollardDocker {
                     })
                 })
                 .collect(),
-            files: BollardDocker::observed_files(container),
+            files: Self::observed_files(container),
             healthcheck: container
                 .health_check
                 .as_ref()
-                .and_then(BollardDocker::observed_health),
+                .and_then(Self::observed_health),
             healthcheck_configured,
-            resources: BollardDocker::observed_resources(spec),
-            networks: BollardDocker::observed_networks(spec),
+            resources: Self::observed_resources(spec),
+            networks: Self::observed_networks(spec),
             labels,
-            rollout: BollardDocker::observed_rollout(spec),
+            rollout: Self::observed_rollout(spec),
             runtime_configuration_matches,
             tasks,
             convergence,

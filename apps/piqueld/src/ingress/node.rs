@@ -26,8 +26,9 @@
 //! Like the gateway's, changes are daemon-scoped journal actions, and a
 //! container whose spec hash differs is replaced.
 
-use super::{Ingress, TAILSCALE_IMAGE, wire::UnixApi};
+use super::{Ingress, TAILSCALE_IMAGE, gateway::TMPFS, wire::UnixApi};
 use crate::config::{Credential, PrivateIngressConfig};
+use crate::tailnet::ProxyListener;
 use anyhow::{Context, Result};
 use piqueld_core::api::PrivateIngressStatus;
 use serde::Deserialize;
@@ -96,9 +97,7 @@ impl Node {
             login_url: std::sync::Mutex::new(None),
         })
     }
-}
 
-impl Node {
     /// The node's `LocalAPI` socket, below the ingress `directory`.
     pub(super) fn socket(directory: &std::path::Path) -> PathBuf {
         directory.join("tailscale/run/tailscaled.sock")
@@ -127,13 +126,11 @@ impl Ingress {
         json!({"TCP":{"443":forward(PRIVATE_HTTPS_PORT),"80":forward(PRIVATE_HTTP_PORT)}})
     }
 
-    /// Builds the hardened node container spec: the daemon's user, userspace
-    /// networking, a read-only root, no capabilities, only the edge network,
-    /// and the node's directories bind-mounted. Like the gateway's, the spec's
-    /// own hash is stored in `CONFIGURATION_LABEL` to detect drift.
+    /// Builds the hardened node container spec (see [`Self::managed_spec`]):
+    /// userspace networking, and the node's directories bind-mounted. Like
+    /// the gateway's, the spec's own hash is stored in `CONFIGURATION_LABEL`
+    /// to detect drift.
     pub(super) fn node_spec(&self, node: &Node) -> Value {
-        let uid = rustix::process::geteuid().as_raw();
-        let gid = rustix::process::getegid().as_raw();
         let directory = self.node_directory();
         let binds: Vec<_> = [("state", ""), ("run", ""), ("config", ":ro")]
             .into_iter()
@@ -157,19 +154,14 @@ impl Ingress {
             environment.push("TS_AUTHKEY=file:/config/auth-key".to_owned());
             labels[AUTH_KEY_LABEL] = Self::fingerprint(key).into();
         }
-        let mut spec = json!({
-            "Image":TAILSCALE_IMAGE,"User":format!("{uid}:{gid}"),
-            "Cmd":["/usr/local/bin/containerboot"],
-            "Env":environment,
-            "Labels":labels,
-            "HostConfig":{
-                "Binds":binds,"RestartPolicy":{"Name":"unless-stopped"},
-                "ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],
-                "Tmpfs":{"/tmp":"rw,noexec,nosuid,size=16777216"},
-                "LogConfig":{"Type":"local","Config":{"max-size":"10m","max-file":"3"}},
-                "NetworkMode":self.name
-            }
-        });
+        let mut spec = self.managed_spec(
+            TAILSCALE_IMAGE,
+            json!(["/usr/local/bin/containerboot"]),
+            json!(environment),
+            labels,
+            json!(binds),
+        );
+        spec["HostConfig"]["Tmpfs"] = json!({"/tmp": TMPFS});
         Self::label_hash(&mut spec);
         spec
     }
@@ -198,22 +190,17 @@ impl Ingress {
             crate::prepare_data_dir(&directory.join(name)).await?;
         }
         let config = directory.join("config");
-        super::certificates::write_private(
+        Self::write_private(
             &config.join("serve.json"),
             &serde_json::to_vec(&self.serve_configuration())?,
         )
         .await?;
         let key = config.join("auth-key");
         match &node.auth_key {
-            Some(key_value) => {
-                super::certificates::write_private(&key, key_value.expose().as_bytes()).await?;
-            }
-            None => match tokio::fs::remove_file(&key).await {
-                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                    return Err(error).context("remove the unconfigured auth key");
-                }
-                _ => {}
-            },
+            Some(key_value) => Self::write_private(&key, key_value.expose().as_bytes()).await?,
+            None => Self::remove_file(&key)
+                .await
+                .context("remove the unconfigured auth key")?,
         }
         self.ensure_image(TAILSCALE_IMAGE).await
     }
@@ -263,13 +250,9 @@ impl Ingress {
 }
 
 /// A loopback relay that prefixes every connection to `target` with a PROXY v2
-/// header naming `client`, as the apps node does. It stops when the returned
-/// set is dropped.
-///
-/// ```text
-/// [signature: 12][0x21 PROXY][0x11 TCP over IPv4][length: 12]
-/// [client ip: 4][target ip: 4][client port: 2][target port: 2]
-/// ```
+/// header naming `client` (see [`ProxyListener::header`]), as the apps node
+/// does. An IPv6 `target` is announced as the unspecified IPv4 address. It
+/// stops when the returned set is dropped.
 pub(super) async fn proxy_relay(
     target: SocketAddr,
     client: SocketAddrV4,
@@ -281,11 +264,7 @@ pub(super) async fn proxy_relay(
         IpAddr::V4(ip) => ip,
         IpAddr::V6(_) => Ipv4Addr::UNSPECIFIED,
     };
-    let mut header = b"\r\n\r\n\0\r\nQUIT\n\x21\x11\0\x0c".to_vec();
-    header.extend(client.ip().octets());
-    header.extend(destination.octets());
-    header.extend(client.port().to_be_bytes());
-    header.extend(target.port().to_be_bytes());
+    let header = ProxyListener::header(client, SocketAddrV4::new(destination, target.port()));
     let mut relay = JoinSet::new();
     relay.spawn(async move {
         // Dropped with the relay, which aborts open connections.

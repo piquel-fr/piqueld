@@ -341,7 +341,12 @@ impl DockerApi for FakeDocker {
         Ok(SwarmState::Ready)
     }
 
-    async fn build_image(&self, build: &ImageBuild<'_>) -> Result<Sha256Digest, DockerError> {
+    /// Build output is not recorded.
+    async fn build_image(
+        &self,
+        build: &ImageBuild<'_>,
+        _log: Option<&piqueld::build::BuildLog>,
+    ) -> Result<Sha256Digest, DockerError> {
         assert!(build.context.is_dir());
         let contents = tokio::fs::read_to_string(&build.dockerfile).await.unwrap();
         if contents.contains("build-fails") {
@@ -365,14 +370,6 @@ impl DockerApi for FakeDocker {
             gate.release.notified().await;
         }
         Ok(id)
-    }
-    /// Build output is not recorded.
-    async fn build_image_recorded(
-        &self,
-        build: &ImageBuild<'_>,
-        _log: Option<&piqueld::build::BuildLog>,
-    ) -> Result<Sha256Digest, DockerError> {
-        self.build_image(build).await
     }
     /// The reconciler never runs commands.
     async fn create_exec(

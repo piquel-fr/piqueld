@@ -1,11 +1,11 @@
 use super::{
-    BTreeMap, BTreeSet, BollardDocker, DesiredNetwork, DesiredService, DesiredVolume, DockerApi,
-    DockerError, DockerNetworkName, DockerTimeout, EnvironmentId, HashMap, InspectNetworkOptions,
-    InspectServiceOptions, Ipam, ListNetworksOptionsBuilder, ListServicesOptionsBuilder,
-    ListTasksOptionsBuilder, ListVolumesOptionsBuilder, NetworkCreateRequest,
-    OBSERVATION_INSPECT_CONCURRENCY, ObservedApplication, ObservedNetwork, ObservedService,
-    ObservedVolume, ResourceKind, StreamExt, SwarmInitRequest, SwarmState, TryStreamExt,
-    VolumeCreateOptions, async_trait, resolve_image_digest, stream,
+    BTreeMap, BTreeSet, BollardDocker, BollardResult, DesiredNetwork, DesiredService,
+    DesiredVolume, DockerApi, DockerError, DockerNetworkName, DockerTimeout, EnvironmentId,
+    HashMap, InspectNetworkOptions, InspectServiceOptions, Ipam, ListNetworksOptionsBuilder,
+    ListServicesOptionsBuilder, ListTasksOptionsBuilder, ListVolumesOptionsBuilder,
+    NetworkCreateRequest, OBSERVATION_INSPECT_CONCURRENCY, ObservedApplication, ObservedNetwork,
+    ObservedService, ObservedVolume, ResourceKind, StreamExt, SwarmInitRequest, SwarmState,
+    TryStreamExt, VolumeCreateOptions, async_trait, resolve_image_digest, stream,
 };
 
 /// Inspections attempted before an incomplete network response is an error.
@@ -24,73 +24,116 @@ struct NetworkSnapshot {
     ingress_proxies: Option<String>,
 }
 
+/// Docker list filters, such as `{"label": ["<key>=<value>"]}`.
+type Filters = HashMap<String, Vec<String>>;
+
 impl BollardDocker {
+    /// Lists resources with `list` under each of `listings`' filters and
+    /// merges the listings, keeping the first resource of each `key`. Each
+    /// listing's operation labels its failure.
+    async fn list_unique<T, K: Ord, F>(
+        listings: impl IntoIterator<Item = (&'static str, Filters)>,
+        list: impl Fn(Filters) -> F,
+        key: impl Fn(&T) -> K,
+    ) -> Result<Vec<T>, DockerError>
+    where
+        F: Future<Output = Result<Vec<T>, bollard::errors::Error>>,
+    {
+        let mut unique = Vec::new();
+        let mut seen = BTreeSet::new();
+        for (operation, filters) in listings {
+            let listed = list(filters).await.or_request(operation)?;
+            unique.extend(listed.into_iter().filter(|item| seen.insert(key(item))));
+        }
+        Ok(unique)
+    }
+
+    /// The listings selecting an application's candidate resources: by
+    /// ownership label, and by readable name prefix (see [`Self::relevant`]),
+    /// labelled `by_label` and `by_name`.
+    fn candidate_listings(
+        application: &EnvironmentId,
+        [by_label, by_name]: [&'static str; 2],
+    ) -> [(&'static str, Filters); 2] {
+        [
+            (by_label, Self::application_label_filter(application)),
+            (by_name, Self::application_name_filter(application)),
+        ]
+    }
+
+    /// Runs `inspect` on every ID concurrently and keeps the inspections of
+    /// resources that still exist; one that vanished mid-observation is
+    /// skipped and reported to `vanished`.
+    async fn inspect_all<T, F>(
+        ids: impl IntoIterator<Item = String>,
+        inspect: impl Fn(String) -> F,
+        vanished: impl Fn(&str),
+    ) -> Result<Vec<T>, DockerError>
+    where
+        F: Future<Output = (String, Result<Option<T>, DockerError>)>,
+    {
+        let mut inspections = stream::iter(ids)
+            .map(inspect)
+            .buffer_unordered(OBSERVATION_INSPECT_CONCURRENCY);
+        let mut inspected = Vec::new();
+        while let Some((id, result)) = inspections.next().await {
+            if let Some(resource) = result? {
+                inspected.push(resource);
+            } else {
+                vanished(&id);
+            }
+        }
+        Ok(inspected)
+    }
+
     /// Inspects networks and retains their ID-to-name mapping and the ingress
     /// network's address range for services.
     ///
-    /// Networks are listed by ownership label, by readable name prefix, and
-    /// by link label, deduplicated, then fully inspected concurrently.
-    /// Networks that vanish mid-observation are skipped. The name map covers
-    /// every inspected network, while the observations keep only those
-    /// `relevant` to the app, and the link networks of its importers.
+    /// Candidate networks (see [`Self::candidate_listings`]) and the link
+    /// networks importers own for links to the app are fully inspected
+    /// concurrently. The name map covers every inspected network, while the
+    /// observations keep only those `relevant` to the app, and the link
+    /// networks of its importers.
     async fn snapshot_networks(
         &self,
         application: &EnvironmentId,
     ) -> Result<NetworkSnapshot, DockerError> {
-        let mut raw_networks = Vec::new();
-        let mut seen_networks = BTreeSet::new();
-        for (request, filters) in [
-            ("list networks", Self::application_label_filter(application)),
-            (
-                "list networks by name",
-                Self::application_name_filter(application),
-            ),
-            ("list linked networks", Self::link_label_filter(application)),
-        ] {
-            let listed = Self::map_request(
-                request,
-                self.docker
-                    .list_networks(Some(
-                        ListNetworksOptionsBuilder::default()
-                            .filters(&filters)
-                            .build(),
-                    ))
-                    .await,
-            )?;
-            raw_networks.extend(listed.into_iter().filter(|network| {
-                seen_networks.insert((network.id.clone(), network.name.clone()))
-            }));
-        }
-        let mut inspections = stream::iter(
-            raw_networks
+        let [by_label, by_name] =
+            Self::candidate_listings(application, ["list networks", "list networks by name"]);
+        let listed = Self::list_unique(
+            [
+                by_label,
+                by_name,
+                ("list linked networks", Self::link_label_filter(application)),
+            ],
+            |filters| {
+                self.docker.list_networks(Some(
+                    ListNetworksOptionsBuilder::default()
+                        .filters(&filters)
+                        .build(),
+                ))
+            },
+            |network| (network.id.clone(), network.name.clone()),
+        )
+        .await?;
+        let networks = Self::inspect_all(
+            listed
                 .into_iter()
                 .filter_map(|network| network.id.or(network.name)),
+            |id| async move { (id.clone(), self.inspect_network_complete(&id).await) },
+            |id| tracing::debug!(network_id = %id, "network vanished during observation"),
         )
-        .map(|id| async {
-            let inspected = self.inspect_network_complete(&id).await;
-            (id, inspected)
-        })
-        .buffer_unordered(OBSERVATION_INSPECT_CONCURRENCY);
-        let mut raw_networks = Vec::new();
-        while let Some((id, inspected)) = inspections.next().await {
-            match inspected {
-                Ok(Some(network)) => raw_networks.push(network),
-                Ok(None) => {
-                    tracing::debug!(network_id = %id, "network vanished during observation");
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        let network_names = raw_networks
+        .await?;
+        let names = networks
             .iter()
             .filter_map(|network| Some((network.id.clone()?, network.name.clone()?)))
             .collect::<HashMap<_, _>>();
         let ingress = DockerNetworkName::for_ingress(application);
-        let ingress_proxies = raw_networks
+        let ingress_proxies = networks
             .iter()
             .find(|network| network.name.as_deref() == Some(ingress.as_str()))
             .and_then(Self::ingress_proxies);
-        let (observed, linked) = raw_networks
+        let (observed, linked) = networks
             .into_iter()
             .filter_map(|network| {
                 let runtime_configuration_matches = Self::network_configuration_matches(&network);
@@ -117,53 +160,35 @@ impl BollardDocker {
         Ok(NetworkSnapshot {
             observed,
             linked,
-            names: network_names,
+            names,
             ingress_proxies,
         })
     }
 
-    /// Lists volumes by ownership label and by readable name prefix,
-    /// deduplicated by name, and keeps those `relevant` to the application.
+    /// Lists candidate volumes (see [`Self::candidate_listings`]) and keeps
+    /// those `relevant` to the application.
     ///
     /// Volumes are observed from the list responses without further inspection.
     async fn snapshot_volumes(
         &self,
         application: &EnvironmentId,
     ) -> Result<Vec<ObservedVolume>, DockerError> {
-        let mut raw_volumes = Self::map_request(
-            "list volumes",
-            self.docker
-                .list_volumes(Some(
-                    ListVolumesOptionsBuilder::default()
-                        .filters(&Self::application_label_filter(application))
-                        .build(),
-                ))
-                .await,
-        )?
-        .volumes
-        .unwrap_or_default();
-        let named_volumes = Self::map_request(
-            "list volumes by name",
-            self.docker
-                .list_volumes(Some(
-                    ListVolumesOptionsBuilder::default()
-                        .filters(&Self::application_name_filter(application))
-                        .build(),
-                ))
-                .await,
-        )?
-        .volumes
-        .unwrap_or_default();
-        let mut seen_volumes = raw_volumes
-            .iter()
-            .map(|volume| volume.name.clone())
-            .collect::<BTreeSet<_>>();
-        raw_volumes.extend(
-            named_volumes
-                .into_iter()
-                .filter(|volume| seen_volumes.insert(volume.name.clone())),
-        );
-        let volumes = raw_volumes
+        let volumes = Self::list_unique(
+            Self::candidate_listings(application, ["list volumes", "list volumes by name"]),
+            |filters| async move {
+                self.docker
+                    .list_volumes(Some(
+                        ListVolumesOptionsBuilder::default()
+                            .filters(&filters)
+                            .build(),
+                    ))
+                    .await
+                    .map(|listed| listed.volumes.unwrap_or_default())
+            },
+            |volume| volume.name.clone(),
+        )
+        .await?;
+        Ok(volumes
             .into_iter()
             .map(|volume| {
                 let runtime_configuration_matches = Self::volume_configuration_matches(&volume);
@@ -174,11 +199,10 @@ impl BollardDocker {
                 }
             })
             .filter(|r| Self::relevant(&r.name, &r.labels, application))
-            .collect();
-        Ok(volumes)
+            .collect())
     }
 
-    /// Lists services by ownership label and by readable name prefix, then
+    /// Lists candidate services (see [`Self::candidate_listings`]), then
     /// fully inspects each one concurrently.
     ///
     /// Returns the inspected services (skipping any that vanished) and the
@@ -187,70 +211,41 @@ impl BollardDocker {
         &self,
         application: &EnvironmentId,
     ) -> Result<(Vec<bollard::models::Service>, Vec<String>), DockerError> {
-        let mut listed_services = Self::map_request(
-            "list services",
-            self.docker
-                .list_services(Some(
+        let mut listed = Self::list_unique(
+            Self::candidate_listings(application, ["list services", "list services by name"]),
+            |filters| {
+                self.docker.list_services(Some(
                     ListServicesOptionsBuilder::default()
-                        .filters(&Self::application_label_filter(application))
+                        .filters(&filters)
                         .status(true)
                         .build(),
                 ))
-                .await,
-        )?;
-        let named_services = Self::map_request(
-            "list services by name",
-            self.docker
-                .list_services(Some(
-                    ListServicesOptionsBuilder::default()
-                        .filters(&Self::application_name_filter(application))
-                        .status(true)
-                        .build(),
-                ))
-                .await,
-        )?;
-        let mut seen_services = listed_services
-            .iter()
-            .map(|service| service.id.clone())
-            .collect::<BTreeSet<_>>();
-        listed_services.extend(
-            named_services
-                .into_iter()
-                .filter(|service| seen_services.insert(service.id.clone())),
-        );
+            },
+            |service| service.id.clone(),
+        )
+        .await?;
         // One-shot jobs run outside the maintained target. Planning, repair, and
         // health never see them; job execution and deletion remove them.
-        listed_services.retain(|service| {
+        listed.retain(|service| {
             !service
                 .spec
                 .as_ref()
                 .and_then(|spec| spec.labels.as_ref())
                 .is_some_and(|labels| labels.contains_key(piqueld_core::resource::JOB_LABEL))
         });
-        let service_names = listed_services
+        let names = listed
             .iter()
             .filter_map(|service| service.spec.as_ref()?.name.clone())
             .collect::<Vec<_>>();
         // Complete inspections run concurrently so one slow service cannot
         // serialize the whole snapshot.
-        let mut inspections =
-            stream::iter(listed_services.into_iter().filter_map(|listed| listed.id))
-                .map(|id| async {
-                    let inspected = self.inspect_service_wire(&id).await;
-                    (id, inspected)
-                })
-                .buffer_unordered(OBSERVATION_INSPECT_CONCURRENCY);
-        let mut raw_services = Vec::new();
-        while let Some((id, inspected)) = inspections.next().await {
-            match inspected {
-                Ok(Some(service)) => raw_services.push(service),
-                Ok(None) => {
-                    tracing::debug!(service_id = %id, "service vanished during observation");
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Ok((raw_services, service_names))
+        let services = Self::inspect_all(
+            listed.into_iter().filter_map(|listed| listed.id),
+            |id| async move { (id.clone(), self.inspect_service_wire(&id).await) },
+            |id| tracing::debug!(service_id = %id, "service vanished during observation"),
+        )
+        .await?;
+        Ok((services, names))
     }
 
     /// Observes the application's services together with their tasks.
@@ -273,16 +268,14 @@ impl BollardDocker {
             // there is nothing to list for.
             Vec::new()
         } else {
-            Self::map_request(
-                "list tasks",
-                self.docker
-                    .list_tasks(Some(
-                        ListTasksOptionsBuilder::default()
-                            .filters(&HashMap::from([("service", service_names)]))
-                            .build(),
-                    ))
-                    .await,
-            )?
+            self.docker
+                .list_tasks(Some(
+                    ListTasksOptionsBuilder::default()
+                        .filters(&HashMap::from([("service", service_names)]))
+                        .build(),
+                ))
+                .await
+                .or_request("list tasks")?
         };
         let health_by_container = self
             .observe_running_health(&raw_services, &all_tasks)
@@ -358,34 +351,29 @@ impl BollardDocker {
         ownership: &BTreeMap<String, String>,
         kind: ResourceKind,
     ) -> Result<(), DockerError> {
-        let existing = match self
+        let Some(existing) = self
             .docker
             .inspect_service(name, None::<InspectServiceOptions>)
             .await
-        {
-            Ok(value) => value,
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => return Ok(()),
-            Err(error) => return Err(DockerError::request("inspect service", error)),
+            .found()
+            .or_request("inspect service")?
+        else {
+            return Ok(());
         };
         let id = existing
             .id
             .clone()
             .ok_or(DockerError::Request("read existing service identity"))?;
         let labels = existing.spec.and_then(|s| s.labels).unwrap_or_default();
-        if !Self::owns_resource(labels, ownership, kind, name) {
-            return Err(DockerError::OwnershipConflict);
-        }
+        Self::check_ownership(labels, ownership, kind, name)?;
         // Delete the resource that was inspected, even if the name is replaced
         // between the ownership check and this request.
-        match self.docker.delete_service(&id).await {
-            Ok(())
-            | Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => Ok(()),
-            Err(error) => Err(DockerError::request("delete service", error)),
-        }
+        self.docker
+            .delete_service(&id)
+            .await
+            .found()
+            .or_request("delete service")?;
+        Ok(())
     }
 
     /// List responses can omit immutable network fields, so reconciliation
@@ -407,36 +395,29 @@ impl BollardDocker {
         identifier: &str,
         ready: impl Fn(&bollard::models::Network) -> bool,
     ) -> Result<Option<bollard::models::Network>, DockerError> {
-        let mut attempt = 1;
-        loop {
-            match self
+        for attempt in 1..=NETWORK_INSPECT_ATTEMPTS {
+            let Some(network) = self
                 .docker
                 .inspect_network(identifier, None::<InspectNetworkOptions>)
                 .await
-            {
-                Ok(network)
-                    if network
-                        .driver
-                        .as_deref()
-                        .is_some_and(|driver| !driver.is_empty())
-                        && network.attachable.is_some()
-                        && ready(&network) =>
-                {
-                    return Ok(Some(network));
-                }
-                Ok(_) if attempt == NETWORK_INSPECT_ATTEMPTS => {
-                    return Err(DockerError::Request("read complete network inspection"));
-                }
-                Ok(_) => {
-                    attempt += 1;
-                    tokio::time::sleep(NETWORK_INSPECT_RETRY_DELAY).await;
-                }
-                Err(bollard::errors::Error::DockerResponseServerError {
-                    status_code: 404, ..
-                }) => return Ok(None),
-                Err(error) => return Err(DockerError::request("inspect network", error)),
+                .found()
+                .or_request("inspect network")?
+            else {
+                return Ok(None);
+            };
+            let complete = network
+                .driver
+                .as_deref()
+                .is_some_and(|driver| !driver.is_empty())
+                && network.attachable.is_some();
+            if complete && ready(&network) {
+                return Ok(Some(network));
+            }
+            if attempt < NETWORK_INSPECT_ATTEMPTS {
+                tokio::time::sleep(NETWORK_INSPECT_RETRY_DELAY).await;
             }
         }
+        Err(DockerError::Request("read complete network inspection"))
     }
 }
 
@@ -526,18 +507,16 @@ impl DockerApi for BollardDocker {
                 {
                     return Err(DockerError::NotManager);
                 }
-                Self::map_request(
-                    "initialize Docker Swarm",
-                    self.docker
-                        .init_swarm(SwarmInitRequest {
-                            // Plan 06 is intentionally single-host. Do not expose the
-                            // manager control port while bootstrapping the local Swarm.
-                            listen_addr: Some("127.0.0.1:2377".into()),
-                            advertise_addr: Some("127.0.0.1".into()),
-                            ..Default::default()
-                        })
-                        .await,
-                )?;
+                self.docker
+                    .init_swarm(SwarmInitRequest {
+                        // Plan 06 is intentionally single-host. Do not expose the
+                        // manager control port while bootstrapping the local Swarm.
+                        listen_addr: Some("127.0.0.1:2377".into()),
+                        advertise_addr: Some("127.0.0.1".into()),
+                        ..Default::default()
+                    })
+                    .await
+                    .or_request("initialize Docker Swarm")?;
                 let checked = self.swarm_info("verify initialized Docker Swarm").await?;
                 if checked.control_available != Some(true) {
                     return Err(DockerError::NotManager);
@@ -549,12 +528,6 @@ impl DockerApi for BollardDocker {
     }
 
     async fn build_image(
-        &self,
-        build: &super::ImageBuild<'_>,
-    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
-        self.build_image_recorded(build, None).await
-    }
-    async fn build_image_recorded(
         &self,
         build: &super::ImageBuild<'_>,
         log: Option<&crate::build::BuildLog>,
@@ -683,61 +656,51 @@ impl DockerApi for BollardDocker {
                 if !desired.has_valid_identity() {
                     return Err(DockerError::OwnershipConflict);
                 }
-                let existing = Self::map_request(
-                    "find network by name",
-                    self.docker
-                        .list_networks(Some(
-                            ListNetworksOptionsBuilder::default()
-                                .filters(&HashMap::from([("name", vec![desired.name.to_string()])]))
-                                .build(),
-                        ))
-                        .await,
-                )?;
+                let existing = self
+                    .docker
+                    .list_networks(Some(
+                        ListNetworksOptionsBuilder::default()
+                            .filters(&HashMap::from([("name", vec![desired.name.to_string()])]))
+                            .build(),
+                    ))
+                    .await
+                    .or_request("find network by name")?;
                 if let Some(network) = existing
                     .into_iter()
                     .find(|n| n.name.as_deref() == Some(desired.name.as_str()))
                 {
-                    let Some(network) = self
+                    let network = self
                         .inspect_network_complete(
                             network.id.as_deref().unwrap_or(desired.name.as_str()),
                         )
                         .await?
-                    else {
-                        return Err(DockerError::Request("inspect existing network"));
-                    };
+                        .ok_or(DockerError::Request("inspect existing network"))?;
                     let runtime_configuration_matches =
                         Self::network_configuration_matches(&network);
-                    if !Self::owns_resource(
+                    return Self::check_existing(
                         network.labels.unwrap_or_default(),
                         &desired.labels,
                         ResourceKind::Network,
                         desired.name.as_str(),
-                    ) {
-                        return Err(DockerError::OwnershipConflict);
-                    }
-                    if !runtime_configuration_matches {
-                        return Err(DockerError::ConfigurationConflict);
-                    }
-                    return Ok(());
+                        runtime_configuration_matches,
+                    );
                 }
-                Self::map_request(
-                    "create network",
-                    self.docker
-                        .create_network(NetworkCreateRequest {
-                            name: desired.name.to_string(),
-                            driver: Some("overlay".into()),
-                            internal: Some(false),
-                            attachable: Some(true),
-                            ingress: Some(false),
-                            ipam: Some(Ipam::default()),
-                            enable_ipv6: Some(false),
-                            options: Some(HashMap::new()),
-                            labels: Some(desired.labels.clone().into_iter().collect()),
-                            ..Default::default()
-                        })
-                        .await,
-                )
-                .map(|_| ())
+                self.docker
+                    .create_network(NetworkCreateRequest {
+                        name: desired.name.to_string(),
+                        driver: Some("overlay".into()),
+                        internal: Some(false),
+                        attachable: Some(true),
+                        ingress: Some(false),
+                        ipam: Some(Ipam::default()),
+                        enable_ipv6: Some(false),
+                        options: Some(HashMap::new()),
+                        labels: Some(desired.labels.clone().into_iter().collect()),
+                        ..Default::default()
+                    })
+                    .await
+                    .or_request("create network")?;
+                Ok(())
             })
             .await
     }
@@ -750,49 +713,40 @@ impl DockerApi for BollardDocker {
                 if !desired.has_valid_identity() {
                     return Err(DockerError::OwnershipConflict);
                 }
-                let existing = Self::map_request(
-                    "find volume by name",
-                    self.docker
-                        .list_volumes(Some(
-                            ListVolumesOptionsBuilder::default()
-                                .filters(&HashMap::from([("name", vec![desired.name.to_string()])]))
-                                .build(),
-                        ))
-                        .await,
-                )?
-                .volumes
-                .unwrap_or_default()
-                .into_iter()
-                .find(|v| v.name == desired.name.as_str());
+                let existing = self
+                    .docker
+                    .list_volumes(Some(
+                        ListVolumesOptionsBuilder::default()
+                            .filters(&HashMap::from([("name", vec![desired.name.to_string()])]))
+                            .build(),
+                    ))
+                    .await
+                    .or_request("find volume by name")?
+                    .volumes
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|v| v.name == desired.name.as_str());
                 if let Some(volume) = existing {
                     let runtime_configuration_matches = Self::volume_configuration_matches(&volume);
-                    if !Self::owns_resource(
+                    return Self::check_existing(
                         volume.labels,
                         &desired.labels,
                         ResourceKind::Volume,
                         desired.name.as_str(),
-                    ) {
-                        return Err(DockerError::OwnershipConflict);
-                    }
-                    return if runtime_configuration_matches {
-                        Ok(())
-                    } else {
-                        Err(DockerError::ConfigurationConflict)
-                    };
+                        runtime_configuration_matches,
+                    );
                 }
-                Self::map_request(
-                    "create volume",
-                    self.docker
-                        .create_volume(VolumeCreateOptions {
-                            name: Some(desired.name.to_string()),
-                            driver: Some("local".into()),
-                            driver_opts: Some(HashMap::new()),
-                            labels: Some(desired.labels.clone().into_iter().collect()),
-                            ..Default::default()
-                        })
-                        .await,
-                )
-                .map(|_| ())
+                self.docker
+                    .create_volume(VolumeCreateOptions {
+                        name: Some(desired.name.to_string()),
+                        driver: Some("local".into()),
+                        driver_opts: Some(HashMap::new()),
+                        labels: Some(desired.labels.clone().into_iter().collect()),
+                        ..Default::default()
+                    })
+                    .await
+                    .or_request("create volume")?;
+                Ok(())
             })
             .await
     }
@@ -816,20 +770,16 @@ impl DockerApi for BollardDocker {
                         return Err(DockerError::OwnershipConflict);
                     }
                     self.check_volumes_free(desired).await?;
-                    let matches = Self::map_request(
-                        "find service by name",
-                        self.docker
-                            .list_services(Some(
-                                ListServicesOptionsBuilder::default()
-                                    .filters(&HashMap::from([(
-                                        "name",
-                                        vec![desired.name.to_string()],
-                                    )]))
-                                    .status(true)
-                                    .build(),
-                            ))
-                            .await,
-                    )?;
+                    let matches = self
+                        .docker
+                        .list_services(Some(
+                            ListServicesOptionsBuilder::default()
+                                .filters(&HashMap::from([("name", vec![desired.name.to_string()])]))
+                                .status(true)
+                                .build(),
+                        ))
+                        .await
+                        .or_request("find service by name")?;
                     let node_id = self.local_node_id().await?;
                     let spec = self.runtime_service_spec(desired, &node_id).await?;
                     match matches.into_iter().find(|s| {
@@ -848,7 +798,7 @@ impl DockerApi for BollardDocker {
                             let Some(existing) = inspected else {
                                 return self.create_service_wire(&spec).await;
                             };
-                            if !Self::owns_resource(
+                            Self::check_ownership(
                                 existing
                                     .spec
                                     .as_ref()
@@ -857,9 +807,7 @@ impl DockerApi for BollardDocker {
                                 &desired.labels,
                                 ResourceKind::Service,
                                 desired.name.as_str(),
-                            ) {
-                                return Err(DockerError::OwnershipConflict);
-                            }
+                            )?;
                             let existing_spec = existing.spec.as_ref().ok_or(
                                 DockerError::Request("read existing service specification"),
                             )?;
@@ -872,14 +820,11 @@ impl DockerApi for BollardDocker {
                                     .as_ref()
                                     .and_then(|status| status.state),
                             )?;
-                            let networks = Self::map_request(
-                                "list service networks",
-                                self.docker
-                                    .list_networks(Some(
-                                        ListNetworksOptionsBuilder::default().build(),
-                                    ))
-                                    .await,
-                            )?;
+                            let networks = self
+                                .docker
+                                .list_networks(Some(ListNetworksOptionsBuilder::default().build()))
+                                .await
+                                .or_request("list service networks")?;
                             let network_names = networks
                                 .into_iter()
                                 .filter_map(|network| Some((network.id?, network.name?)))
@@ -943,26 +888,22 @@ impl DockerApi for BollardDocker {
                     let mut spec = existing
                         .spec
                         .ok_or(DockerError::Request("read existing service specification"))?;
-                    if !Self::owns_resource(
+                    Self::check_ownership(
                         spec.labels.clone().unwrap_or_default(),
                         ownership,
                         ResourceKind::Service,
                         service,
-                    ) {
-                        return Err(DockerError::OwnershipConflict);
-                    }
-                    let network_id = match self
+                    )?;
+                    let Some(inspected) = self
                         .docker
                         .inspect_network(network, None::<InspectNetworkOptions>)
                         .await
-                    {
-                        Ok(inspected) => inspected.id,
-                        Err(bollard::errors::Error::DockerResponseServerError {
-                            status_code: 404,
-                            ..
-                        }) => return Ok(()),
-                        Err(error) => return Err(DockerError::request("inspect network", error)),
+                        .found()
+                        .or_request("inspect network")?
+                    else {
+                        return Ok(());
                     };
+                    let network_id = inspected.id;
                     let Some(attachments) = spec
                         .task_template
                         .as_mut()
@@ -1032,35 +973,28 @@ impl DockerApi for BollardDocker {
     ) -> Result<(), DockerError> {
         DockerTimeout::Request
             .run("remove network", async {
-                let existing = match self
+                let Some(existing) = self
                     .docker
                     .inspect_network(name, None::<InspectNetworkOptions>)
                     .await
-                {
-                    Ok(value) => value,
-                    Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 404,
-                        ..
-                    }) => return Ok(()),
-                    Err(error) => return Err(DockerError::request("inspect network", error)),
+                    .found()
+                    .or_request("inspect network")?
+                else {
+                    return Ok(());
                 };
                 let id = existing
                     .id
                     .clone()
                     .ok_or(DockerError::Request("read existing network identity"))?;
                 let labels = existing.labels.unwrap_or_default();
-                if !Self::owns_resource(labels, ownership, ResourceKind::Network, name) {
-                    return Err(DockerError::OwnershipConflict);
-                }
+                Self::check_ownership(labels, ownership, ResourceKind::Network, name)?;
                 // Network IDs make the ownership check and removal target the same object.
-                match self.docker.remove_network(&id).await {
-                    Ok(())
-                    | Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 404,
-                        ..
-                    }) => Ok(()),
-                    Err(error) => Err(DockerError::request("delete network", error)),
-                }
+                self.docker
+                    .remove_network(&id)
+                    .await
+                    .found()
+                    .or_request("delete network")?;
+                Ok(())
             })
             .await
     }
@@ -1076,29 +1010,22 @@ impl DockerApi for BollardDocker {
     ) -> Result<(), DockerError> {
         DockerTimeout::Request
             .run("remove volume", async {
-                let existing = match self.docker.inspect_volume(name).await {
-                    Ok(value) => value,
-                    Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 404,
-                        ..
-                    }) => return Ok(()),
-                    Err(error) => return Err(DockerError::request("inspect volume", error)),
-                };
-                if !Self::owns_resource(existing.labels, ownership, ResourceKind::Volume, name) {
-                    return Err(DockerError::OwnershipConflict);
-                }
-                match self
+                let Some(existing) = self
                     .docker
+                    .inspect_volume(name)
+                    .await
+                    .found()
+                    .or_request("inspect volume")?
+                else {
+                    return Ok(());
+                };
+                Self::check_ownership(existing.labels, ownership, ResourceKind::Volume, name)?;
+                self.docker
                     .remove_volume(name, None::<bollard::query_parameters::RemoveVolumeOptions>)
                     .await
-                {
-                    Ok(())
-                    | Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 404,
-                        ..
-                    }) => Ok(()),
-                    Err(error) => Err(DockerError::request("delete volume", error)),
-                }
+                    .found()
+                    .or_request("delete volume")?;
+                Ok(())
             })
             .await
     }

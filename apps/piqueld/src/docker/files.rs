@@ -8,9 +8,7 @@
 use super::configs::ConfigKind;
 use super::{BollardDocker, DesiredService, DockerError, HealthProbe, TaskSpecContainerSpec};
 use bollard::models::{TaskSpecContainerSpecConfigs, TaskSpecContainerSpecFile1};
-use piqueld_core::resource::{
-    APPLICATION_LABEL, FILE_LABEL, INSTANCE_LABEL, MANAGED_LABEL, ObservedFile,
-};
+use piqueld_core::resource::{FILE_LABEL, ObservedFile};
 use std::collections::BTreeMap;
 
 impl BollardDocker {
@@ -69,17 +67,13 @@ impl BollardDocker {
     fn file_labels(
         ownership: &BTreeMap<String, String>,
     ) -> Result<BTreeMap<String, String>, DockerError> {
-        let mut labels = [MANAGED_LABEL, INSTANCE_LABEL, APPLICATION_LABEL]
-            .into_iter()
-            .map(|key| {
-                let value = ownership
-                    .get(key)
-                    .ok_or(DockerError::Validation("service file ownership"))?;
-                Ok((key.to_owned(), value.clone()))
-            })
-            .collect::<Result<BTreeMap<_, _>, DockerError>>()?;
-        labels.insert(FILE_LABEL.to_owned(), "true".to_owned());
-        Ok(labels)
+        Ok(
+            Self::environment_labels(ownership, "service file ownership")?
+                .into_iter()
+                .chain([(FILE_LABEL, "true")])
+                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                .collect(),
+        )
     }
 
     /// The configs `container` mounts as service files: every config except

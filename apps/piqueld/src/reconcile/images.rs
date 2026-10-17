@@ -132,14 +132,14 @@ impl<D: DockerApi> Controller<D> {
     /// # Errors
     /// Returns storage errors, or Docker errors listing images or pruning
     /// probe configs. A failed removal is journaled and the image kept.
+    ///
     /// # Panics
     /// Panics if the store violates its validated instance identity invariant.
     pub async fn clean_images(&self) -> Result<bool, OperationError> {
         let Ok(_exclusive) = self.images.in_use.try_write() else {
             return Ok(false);
         };
-        let instance =
-            InstanceId::parse(self.store.instance_id()).expect("store instance identity is valid");
+        let instance = self.instance_id();
         let retained = self
             .store
             .retained_images(self.images.keep_deployments)
@@ -200,14 +200,14 @@ impl<D: DockerApi> Controller<D> {
             .store
             .begin_daemon_action(None, "remove_image", Some(image.id.as_str()))
             .await?;
-        let removed = match self.store.action_request(&journal, 1).await {
-            Ok(()) => self
-                .docker
-                .remove_image(instance, &image.id)
-                .await
-                .map_err(OperationError::from),
-            Err(error) => Err(error.into()),
-        };
+        let removed = self
+            .request_once(&journal, async {
+                Ok(self.docker.remove_image(instance, &image.id).await?)
+            })
+            .await;
+        // Unlike `close_action`, only failing to open or close the journal
+        // action fails cleanup; a removal that fails, or whose intent can't
+        // be recorded, keeps the image.
         self.store
             .finish_action(
                 &journal,

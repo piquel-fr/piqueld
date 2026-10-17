@@ -77,6 +77,13 @@ impl From<TreeTooLarge> for SnapshotError {
     }
 }
 
+impl SnapshotError {
+    /// An upload that could not be read or stored because of `error`.
+    fn internal(error: impl Into<anyhow::Error>) -> Self {
+        Self::Internal(error.into())
+    }
+}
+
 /// The snapshot ref every bundle carries, and the branch its repository has.
 const SNAPSHOT_BRANCH: &str = "snapshot";
 
@@ -118,12 +125,7 @@ impl Snapshots {
 
     /// Opens `root`, removing uploads a previous process left half-received.
     pub(crate) async fn open(root: PathBuf) -> std::io::Result<Self> {
-        let staging = root.join("staging");
-        match tokio::fs::remove_dir_all(&staging).await {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
-            _ => {}
-        }
-        tokio::fs::create_dir_all(&staging).await?;
+        Checkouts::recreate(&root.join("staging")).await?;
         Ok(Self {
             root,
             lock: tokio::sync::Mutex::new(()),
@@ -157,7 +159,7 @@ impl Snapshots {
             .receiving
             .acquire()
             .await
-            .map_err(|error| SnapshotError::Internal(error.into()))?;
+            .map_err(SnapshotError::internal)?;
         let (commit, base, staging) = tokio::time::timeout(
             Self::RECEIVE_TIMEOUT,
             self.stage(body, limit, url, checkouts),
@@ -185,7 +187,7 @@ impl Snapshots {
         let staging = tempfile::Builder::new()
             .prefix("upload-")
             .tempdir_in(self.root.join("staging"))
-            .map_err(|error| SnapshotError::Internal(error.into()))?;
+            .map_err(SnapshotError::internal)?;
         let bundle = staging.path().join("snapshot.bundle");
         Self::store(body, &bundle, limit).await?;
         let header = BundleHeader::read(&bundle).await?;
@@ -213,22 +215,25 @@ impl Snapshots {
         path: &Path,
         limit: u64,
     ) -> Result<(), SnapshotError> {
-        let internal = |error: std::io::Error| SnapshotError::Internal(error.into());
-        let mut file = tokio::fs::File::create(path).await.map_err(internal)?;
+        let mut file = tokio::fs::File::create(path)
+            .await
+            .map_err(SnapshotError::internal)?;
         let mut written = 0_u64;
         let mut body = std::pin::pin!(body);
         while let Some(chunk) = tokio::time::timeout(Self::IDLE_TIMEOUT, body.next())
             .await
             .map_err(|_| SnapshotError::TimedOut)?
         {
-            let chunk = chunk.map_err(|error| SnapshotError::Internal(error.into()))?;
+            let chunk = chunk.map_err(SnapshotError::internal)?;
             written = written.saturating_add(chunk.len() as u64);
             if written > limit {
                 return Err(SnapshotError::TooLarge { limit });
             }
-            file.write_all(&chunk).await.map_err(internal)?;
+            file.write_all(&chunk)
+                .await
+                .map_err(SnapshotError::internal)?;
         }
-        file.flush().await.map_err(internal)
+        file.flush().await.map_err(SnapshotError::internal)
     }
 
     /// Moves `received` into place, unless that commit already is, and runs
@@ -240,14 +245,15 @@ impl Snapshots {
         received: Received<'_>,
         accept: impl Future<Output = Result<T, E>>,
     ) -> Result<T, E> {
-        let internal = |error: std::io::Error| SnapshotError::Internal(error.into());
         let _lock = self.lock.lock().await;
         let path = self.path(&received.commit);
-        let installed = !tokio::fs::try_exists(&path).await.map_err(internal)?;
+        let installed = !tokio::fs::try_exists(&path)
+            .await
+            .map_err(SnapshotError::internal)?;
         if installed {
             tokio::fs::rename(received.staging.path().join("repository.git"), &path)
                 .await
-                .map_err(internal)?;
+                .map_err(SnapshotError::internal)?;
         }
         let accepted = accept.await;
         // The refusal is what the caller needs; pruning retries a failed removal.
@@ -318,8 +324,8 @@ impl Staged {
 
     /// Runs Git in the repository.
     async fn git(&self, operation: &'static str, arguments: &[&str]) -> anyhow::Result<Vec<u8>> {
-        let mut command = Checkout::command();
-        command.arg("-C").arg(&self.0).args(arguments);
+        let mut command = Checkout::command_in(&self.0);
+        command.args(arguments);
         LoggedCommand::output(&mut command, operation, 4096).await
     }
 
@@ -512,7 +518,7 @@ impl BundleHeader {
     async fn read(path: &Path) -> Result<Self, SnapshotError> {
         let file = tokio::fs::File::open(path)
             .await
-            .map_err(|error| SnapshotError::Internal(error.into()))?;
+            .map_err(SnapshotError::internal)?;
         let mut lines =
             tokio::io::AsyncReadExt::take(tokio::io::BufReader::new(file), Snapshots::HEADER_LIMIT)
                 .lines();
@@ -650,6 +656,11 @@ mod tests {
         )
     }
 
+    /// Snapshots kept in `root/snapshots`.
+    async fn snapshots(root: &Path) -> Snapshots {
+        Snapshots::open(root.join("snapshots")).await.unwrap()
+    }
+
     async fn receive<'a>(
         snapshots: &'a Snapshots,
         bytes: Vec<u8>,
@@ -670,9 +681,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (base, commit) = fixture(root.path());
         let remote = root.path().join("remote");
-        let snapshots = Snapshots::open(root.path().join("snapshots"))
-            .await
-            .unwrap();
+        let snapshots = snapshots(root.path()).await;
         let thin = bundle(root.path(), &format!("^{base}"));
         let complete = bundle(root.path(), "");
         assert!(thin.len() < complete.len());
@@ -726,9 +735,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (base, _) = fixture(root.path());
         let remote = root.path().join("remote");
-        let snapshots = Snapshots::open(root.path().join("snapshots"))
-            .await
-            .unwrap();
+        let snapshots = snapshots(root.path()).await;
         let thin = bundle(root.path(), &format!("^{base}"));
         let length = thin.len() as u64;
 
@@ -805,9 +812,7 @@ mod tests {
              git update-ref refs/heads/snapshot HEAD && git rev-parse HEAD",
         );
         let remote = root.path().join("remote");
-        let snapshots = Snapshots::open(root.path().join("snapshots"))
-            .await
-            .unwrap();
+        let snapshots = snapshots(root.path()).await;
         let merged = bundle(root.path(), &format!("^{base}"));
         let received = receive(&snapshots, merged, 1 << 20, &remote).await.unwrap();
         assert_eq!((received.commit, received.base), (commit, Some(base)));
@@ -824,9 +829,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (base, _) = fixture(root.path());
         let remote = root.path().join("remote");
-        let snapshots = Snapshots::open(root.path().join("snapshots"))
-            .await
-            .unwrap();
+        let snapshots = snapshots(root.path()).await;
         let thin = bundle(root.path(), &format!("^{base}"));
         let received = receive(&snapshots, thin, 1 << 20, &remote).await.unwrap();
         assert_eq!(
@@ -847,9 +850,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn stalled_uploads_time_out() {
         let root = tempfile::tempdir().unwrap();
-        let snapshots = Snapshots::open(root.path().join("snapshots"))
-            .await
-            .unwrap();
+        let snapshots = snapshots(root.path()).await;
         let stalled = futures_util::stream::pending::<Result<Bytes, std::io::Error>>();
         let received = snapshots
             .receive(stalled, (None, 1 << 20), "unused", &checkouts(1 << 30))
@@ -926,9 +927,7 @@ mod tests {
     #[tokio::test]
     async fn prune_keeps_only_needed_snapshots() {
         let root = tempfile::tempdir().unwrap();
-        let snapshots = Snapshots::open(root.path().join("snapshots"))
-            .await
-            .unwrap();
+        let snapshots = snapshots(root.path()).await;
         let (kept, removed) = ("a".repeat(40), "b".repeat(40));
         for commit in [&kept, &removed] {
             std::fs::create_dir(snapshots.path(commit)).unwrap();
