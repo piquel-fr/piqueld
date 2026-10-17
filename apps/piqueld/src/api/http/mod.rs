@@ -370,19 +370,9 @@ async fn bind_error_request_id(
     request: Request,
     next: Next,
 ) -> Response {
-    let environment = matched
-        .filter(|path| {
-            ["/api/v1/environments/{id}", "/api/v1/previews/{id}"]
-                .iter()
-                .any(|prefix| path.as_str().starts_with(prefix))
-        })
-        .and_then(|_| params.ok())
-        .and_then(|params| {
-            params
-                .iter()
-                .find(|(name, _)| *name == "id")
-                .and_then(|(_, id)| piqueld_core::EnvironmentId::parse(id).ok())
-        });
+    let environment = access::PathOwner::find(matched.as_ref(), params)
+        .filter(|(owner, _)| *owner == access::PathOwner::Environment)
+        .and_then(|(_, id)| piqueld_core::EnvironmentId::parse(id).ok());
     let request_id = request
         .extensions()
         .get::<RequestId>()
