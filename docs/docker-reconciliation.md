@@ -301,12 +301,15 @@ services are still starting.
 Revoking a link never waits for a rollout. Every full scan, each environment
 detaches its services from the link networks its links no longer grant,
 removing only that attachment from each service's current specification, even
-while a failing service blocks its plan or a deployment is running. Removing a
-link, or deleting either environment, thus detaches both sides. The importer
+while a failing service blocks its plan or a repair fails. What a deployment
+that may still roll out grants counts too, so the services it starts for its
+jobs keep their links. Removing a link, or deleting either environment, thus
+detaches both sides. The importer
 removes an obsolete link network once no container is attached to it any
 longer (Docker refuses otherwise). Its deletion does not wait for that: it
 leaves link networks still in use behind, and the exporter removes them on a
-later full scan, once its services have left them.
+later full scan, once its services have left them, or when it is deleted
+itself.
 
 An exporting environment links to at most 64 importing environments. The
 oldest keep their links; imports of newer ones stay unconnected until a slot

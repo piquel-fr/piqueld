@@ -1397,6 +1397,51 @@ async fn revoked_links_close_while_the_exporters_plan_is_blocked() {
 }
 
 #[tokio::test]
+async fn deleting_an_exporter_removes_networks_its_deleted_importers_left() {
+    let (harness, auth, notes) = linked_harness().await;
+    let network = piqueld_core::DockerNetworkName::for_link(&notes, &auth);
+    let scan = || async {
+        for _ in 0..3 {
+            harness
+                .controller
+                .scan(&CancellationToken::new())
+                .await
+                .unwrap();
+        }
+    };
+    let leftover = harness
+        .docker
+        .observed
+        .lock()
+        .await
+        .networks
+        .iter()
+        .find(|observed| observed.name == network.as_str())
+        .cloned()
+        .unwrap();
+    harness.store.request_delete(&notes).await.unwrap();
+    scan().await;
+    // As if auth's deletion came before the full scan that removes it.
+    harness.docker.observed.lock().await.networks.push(leftover);
+    harness.store.request_delete(&auth).await.unwrap();
+    scan().await;
+    assert!(matches!(
+        harness.store.get(&auth).await,
+        Err(piqueld::store::StoreError::NotFound)
+    ));
+    assert!(
+        harness
+            .docker
+            .observed
+            .lock()
+            .await
+            .networks
+            .iter()
+            .all(|observed| observed.name != network.as_str())
+    );
+}
+
+#[tokio::test]
 async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
     let harness = ControllerHarness::new().await;
     let created = harness.create().await;

@@ -190,6 +190,11 @@ impl<D: DockerApi> Controller<D> {
             }
             // Boxed: it would otherwise grow every operation's future.
             Box::pin(self.remove_preview_volumes(operation)).await?;
+            // Nothing enforces its links once it is gone, so it removes the
+            // networks of importers deleted before it now.
+            let observed = self.docker.observe(&operation.environment_id).await?;
+            Box::pin(self.enforce_links(&operation.environment_id, &operation.id, &observed))
+                .await?;
         }
         Ok(())
     }

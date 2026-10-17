@@ -10,7 +10,8 @@ impl<D: DockerApi> Controller<D> {
     /// deleted, as `observed` shows them. Neither waits for a rollout: an
     /// unrelated failing service or a running deployment never keeps a
     /// revoked link open, nor does an exporter hold up an importer's deletion.
-    /// Each change is journaled under `operation_id`.
+    /// Runs on full scans and as an environment's deletion ends. Each change
+    /// is journaled under `operation_id`.
     pub(super) async fn enforce_links(
         &self,
         id: &EnvironmentId,
