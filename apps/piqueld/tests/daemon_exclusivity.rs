@@ -59,7 +59,11 @@ fn competing_daemon_preserves_database_and_live_socket() {
     let database = path.join("piqueld.db");
     std::fs::write(&database, b"untouched database").unwrap();
     let socket = path.join("piqueld.sock");
-    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    // Bound relative to the working directory, so its path fits a socket
+    // address even in deeply nested checkouts.
+    let cwd = std::env::current_dir().unwrap();
+    let _listener =
+        std::os::unix::net::UnixListener::bind(socket.strip_prefix(cwd).unwrap()).unwrap();
     let inode = std::fs::metadata(&socket).unwrap().ino();
     let config = path.join("config.toml");
     // HTTP is disabled so TCP binding cannot accidentally provide exclusivity.
