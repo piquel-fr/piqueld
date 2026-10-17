@@ -169,11 +169,10 @@ impl ValidatedImport {
 impl ApplicationSpec {
     /// Checks the link budgets; returns `false` when one is exceeded.
     pub(super) fn links_within_budget(&self, errors: &mut Vec<ValidationError>) -> bool {
-        let (exports, imports) = (&self.exports, &self.imports);
         let mut within = true;
         for (path, count) in [
-            ("spec.exports", exports.len()),
-            ("spec.imports", imports.len()),
+            ("spec.exports", self.exports.len()),
+            ("spec.imports", self.imports.len()),
         ] {
             if count > MAX_LINKS {
                 errors.push(ValidationError::new(
@@ -184,7 +183,7 @@ impl ApplicationSpec {
                 within = false;
             }
         }
-        for (index, export) in exports.iter().enumerate() {
+        for (index, export) in self.exports.iter().enumerate() {
             if export.applications.len() > MAX_LINKS {
                 errors.push(ValidationError::new(
                     codes::LINK_COUNT_EXCESSIVE,
@@ -205,14 +204,13 @@ impl ApplicationSpec {
     ///
     /// An application may name itself: its environments then link to each other.
     pub(super) fn validate_links(&self, errors: &mut Vec<ValidationError>) {
-        let (exports, imports) = (&self.exports, &self.imports);
         let services = self
             .services
             .iter()
             .map(|service| service.name.as_str())
             .collect::<BTreeSet<_>>();
         let mut exported = BTreeSet::new();
-        for (index, export) in exports.iter().enumerate() {
+        for (index, export) in self.exports.iter().enumerate() {
             let path = format!("spec.exports[{index}]");
             validate_name(&export.service, &format!("{path}.service"), errors);
             if !services.contains(export.service.as_str()) {
@@ -251,7 +249,7 @@ impl ApplicationSpec {
             }
         }
         let mut imported = BTreeSet::new();
-        for (index, import) in imports.iter().enumerate() {
+        for (index, import) in self.imports.iter().enumerate() {
             let path = format!("spec.imports[{index}]");
             validate_name(&import.application, &format!("{path}.application"), errors);
             validate_name(&import.service, &format!("{path}.service"), errors);
