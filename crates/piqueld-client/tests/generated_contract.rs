@@ -138,6 +138,11 @@ async fn toml_adapter_preserves_headers_and_unsigned_revisions() {
     assert_eq!(request.headers.get_all("idempotency-key").iter().count(), 1);
     assert_eq!(request.headers["idempotency-key"], "fallback-key");
     assert_eq!(request.body, manifest.as_bytes());
+
+    // Creating from TOML requires the name to be absent.
+    client.apply_application_toml(manifest).await.unwrap();
+    let request = server.requests.recv().await.unwrap();
+    assert_eq!(request.headers["x-expected-generation"], "0");
 }
 
 #[tokio::test]
