@@ -11,13 +11,58 @@ let
     "both"
   ];
   withoutNulls = lib.filterAttrsRecursive (_: value: value != null);
-  tailscale = cfg.settings.tailscale;
+  absolutePath = lib.types.strMatching "/.+";
+  nodeName = lib.types.strMatching "[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
+  # A `_file` setting: a string, not a path, so the secret is never copied
+  # into the Nix store.
+  credentialFile =
+    description:
+    lib.mkOption {
+      type = lib.types.nullOr absolutePath;
+      default = null;
+      inherit description;
+    };
+  # Whether `dir` is a dedicated directory below `parent`, such as /var/lib/.
+  dedicatedBelow =
+    parent: dir:
+    lib.hasPrefix parent dir
+    && lib.all (part: part != "" && part != "." && part != "..") (
+      lib.splitString "/" (lib.removePrefix parent dir)
+    );
   privateIngress = cfg.settings.ingress.private;
   tunnel = cfg.settings.ingress.tunnel;
   destinations = cfg.settings.notifications.destinations;
   # `_file` settings name host files. systemd copies each into the unit's
   # private $CREDENTIALS_DIRECTORY, so the files may stay root-only, and the
-  # daemon resolves the credential name there.
+  # daemon resolves the credential name there. These are the set ones among
+  # single settings, by credential name and setting path.
+  settingCredentials = lib.filter (credential: credential.file != null) (
+    map (credential: credential // { file = lib.getAttrFromPath credential.setting cfg.settings; }) [
+      {
+        name = "ts-auth-key";
+        setting = [
+          "tailscale"
+          "auth_key_file"
+        ];
+      }
+      {
+        name = "ts-apps-auth-key";
+        setting = [
+          "ingress"
+          "private"
+          "auth_key_file"
+        ];
+      }
+      {
+        name = "cloudflared-tunnel";
+        setting = [
+          "ingress"
+          "tunnel"
+          "credentials_file"
+        ];
+      }
+    ]
+  );
   webhookCredential = index: "webhook-${toString index}";
   providers = cfg.settings.dns.providers;
   # Credential files of a DNS provider, by setting name.
@@ -25,36 +70,27 @@ let
     provider: lib.filterAttrs (name: value: lib.hasSuffix "_file" name && value != null) provider;
   dnsCredential = index: setting: "dns-${toString index}-${lib.removeSuffix "_file" setting}";
   generatedConfiguration = (pkgs.formats.toml { }).generate "piqueld.toml" (
-    lib.recursiveUpdate (withoutNulls cfg.settings) (
-      {
-        server.data_dir = cfg.dataDir;
-        server.runtime_dir = cfg.runtimeDir;
-        notifications.destinations = lib.imap0 (
-          index: destination:
-          withoutNulls (
-            destination
-            // lib.optionalAttrs (destination.url_file != null) { url_file = webhookCredential index; }
-          )
-        ) destinations;
-        dns.providers = lib.imap0 (
-          index: provider:
-          withoutNulls (
-            provider // lib.mapAttrs (setting: _: dnsCredential index setting) (dnsFiles provider)
-          )
-        ) providers;
-      }
-      // lib.optionalAttrs (tailscale.auth_key_file != null) {
-        tailscale.auth_key_file = "ts-auth-key";
-      }
-      // {
-        ingress =
-          lib.optionalAttrs (privateIngress.auth_key_file != null) {
-            private.auth_key_file = "ts-apps-auth-key";
-          }
-          // lib.optionalAttrs (tunnel.credentials_file != null) {
-            tunnel.credentials_file = "cloudflared-tunnel";
-          };
-      }
+    lib.foldl' lib.recursiveUpdate (withoutNulls cfg.settings) (
+      [
+        {
+          server.data_dir = cfg.dataDir;
+          server.runtime_dir = cfg.runtimeDir;
+          notifications.destinations = lib.imap0 (
+            index: destination:
+            withoutNulls (
+              destination
+              // lib.optionalAttrs (destination.url_file != null) { url_file = webhookCredential index; }
+            )
+          ) destinations;
+          dns.providers = lib.imap0 (
+            index: provider:
+            withoutNulls (
+              provider // lib.mapAttrs (setting: _: dnsCredential index setting) (dnsFiles provider)
+            )
+          ) providers;
+        }
+      ]
+      ++ map (credential: lib.setAttrByPath credential.setting credential.name) settingCredentials
     )
   );
   # `piqueld check-config` reads no credentials and touches nothing on the
@@ -134,28 +170,23 @@ in
             description = "Join the tailnet as a dedicated node and serve the website over HTTPS on its https_port, with a tailnet-issued certificate. Requires HTTPS certificates to be enabled for the tailnet.";
           };
           tailscale.hostname = lib.mkOption {
-            type = lib.types.strMatching "[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
+            type = nodeName;
             default = "piqueld";
             description = "Node name, which becomes <hostname>.<tailnet>.ts.net.";
           };
-          tailscale.auth_key_file = lib.mkOption {
-            # A string, not a path, so the secret is never copied into the Nix store.
-            type = lib.types.nullOr (lib.types.strMatching "/.+");
-            default = null;
-            description = "Host file with a Tailscale auth key for the node's first login, such as an agenix secret, passed to piqueld as a systemd credential. Node state in dataDir makes it unnecessary afterwards.";
-          };
+          tailscale.auth_key_file = credentialFile "Host file with a Tailscale auth key for the node's first login, such as an agenix secret, passed to piqueld as a systemd credential. Node state in dataDir makes it unnecessary afterwards.";
           tailscale.https_port = lib.mkOption {
             type = lib.types.ints.between 1 65535;
             default = 443;
             description = "Node port serving the website over HTTPS.";
           };
           tailscale.socket = lib.mkOption {
-            type = lib.types.nullOr (lib.types.strMatching "/.+");
+            type = lib.types.nullOr absolutePath;
             default = null;
             description = "Socket of a logged-in tailscaled, running as the piqueld user, to share instead of starting a dedicated one. piqueld then only adds https_port to its Serve configuration.";
           };
           docker.socket = lib.mkOption {
-            type = lib.types.strMatching "/.+";
+            type = absolutePath;
             default = "/var/run/docker.sock";
             description = "Absolute path to the Docker Engine Unix socket.";
           };
@@ -194,7 +225,7 @@ in
             description = "Serve private routes to the tailnet through a second tailnet node, run as a container beside the gateway. Private routes need DNS-01 certificates through dns.providers. Restart piqueld to apply.";
           };
           ingress.private.hostname = lib.mkOption {
-            type = lib.types.strMatching "[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
+            type = nodeName;
             default = "piqueld-apps";
             description = "Apps node name, which becomes <hostname>.<tailnet>.ts.net. Must differ from tailscale.hostname.";
           };
@@ -204,23 +235,13 @@ in
             example = "dashboard.example.com";
             description = "Private hostname on which the gateway serves piqueld's website (dashboard and API) to the tailnet, with a DNS-01 certificate. It gets a private route's DNS records, managed when a provider sets manage_records, applications may not route it or its subdomains, and an unset auth.public_url becomes its HTTPS origin. Requires ingress.enabled and ingress.private.enabled. Restart piqueld to apply.";
           };
-          ingress.private.auth_key_file = lib.mkOption {
-            # A string, not a path, so the secret is never copied into the Nix store.
-            type = lib.types.nullOr (lib.types.strMatching "/.+");
-            default = null;
-            description = "Host file with a Tailscale auth key for the apps node's first login, such as an agenix secret, passed to piqueld as a systemd credential. Without one, the daemon logs the node's login URL.";
-          };
+          ingress.private.auth_key_file = credentialFile "Host file with a Tailscale auth key for the apps node's first login, such as an agenix secret, passed to piqueld as a systemd credential. Without one, the daemon logs the node's login URL.";
           ingress.tunnel.enabled = lib.mkOption {
             type = lib.types.bool;
             default = false;
             description = "Serve public routes through a locally managed Cloudflare Tunnel instead of ports 80/443, which are then closed. Each public hostname needs a proxied CNAME to <tunnel-id>.cfargotunnel.com. Restart piqueld to apply.";
           };
-          ingress.tunnel.credentials_file = lib.mkOption {
-            # A string, not a path, so the secret is never copied into the Nix store.
-            type = lib.types.nullOr (lib.types.strMatching "/.+");
-            default = null;
-            description = "Host file with the tunnel's credentials, from `cloudflared tunnel create`, such as an agenix secret, passed to piqueld as a systemd credential. Required while the tunnel is enabled.";
-          };
+          ingress.tunnel.credentials_file = credentialFile "Host file with the tunnel's credentials, from `cloudflared tunnel create`, such as an agenix secret, passed to piqueld as a systemd credential. Required while the tunnel is enabled.";
           ingress.webhook_hostname = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
@@ -232,14 +253,9 @@ in
               lib.types.submodule {
                 options =
                   let
-                    # A string, not a path, so the secret is never copied into the Nix store.
                     file =
                       description:
-                      lib.mkOption {
-                        type = lib.types.nullOr (lib.types.strMatching "/.+");
-                        default = null;
-                        description = "${description}, such as an agenix secret, passed to piqueld as a systemd credential.";
-                      };
+                      credentialFile "${description}, such as an agenix secret, passed to piqueld as a systemd credential.";
                   in
                   {
                     kind = lib.mkOption {
@@ -401,12 +417,7 @@ in
                     default = null;
                     description = "Webhook URL. URLs often contain credentials and this one enters the Nix store; prefer url_file.";
                   };
-                  url_file = lib.mkOption {
-                    # A string, not a path, so the secret is never copied into the Nix store.
-                    type = lib.types.nullOr (lib.types.strMatching "/.+");
-                    default = null;
-                    description = "Host file with the webhook URL, such as an agenix secret, passed to piqueld as a systemd credential.";
-                  };
+                  url_file = credentialFile "Host file with the webhook URL, such as an agenix secret, passed to piqueld as a systemd credential.";
                 };
               }
             );
@@ -467,19 +478,11 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion =
-          lib.hasPrefix "/var/lib/" cfg.dataDir
-          && lib.all (part: part != "" && part != "." && part != "..") (
-            lib.splitString "/" (lib.removePrefix "/var/lib/" cfg.dataDir)
-          );
+        assertion = dedicatedBelow "/var/lib/" cfg.dataDir;
         message = "services.piqueld.dataDir must be a dedicated directory below /var/lib";
       }
       {
-        assertion =
-          lib.hasPrefix "/run/" cfg.runtimeDir
-          && lib.all (part: part != "" && part != "." && part != "..") (
-            lib.splitString "/" (lib.removePrefix "/run/" cfg.runtimeDir)
-          );
+        assertion = dedicatedBelow "/run/" cfg.runtimeDir;
         message = "services.piqueld.runtimeDir must be a dedicated directory below /run";
       }
       {
@@ -537,13 +540,7 @@ in
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/piqueld --config ${configuration}";
         LoadCredential =
-          lib.optional (tailscale.auth_key_file != null) "ts-auth-key:${tailscale.auth_key_file}"
-          ++ lib.optional (
-            privateIngress.auth_key_file != null
-          ) "ts-apps-auth-key:${privateIngress.auth_key_file}"
-          ++ lib.optional (
-            tunnel.credentials_file != null
-          ) "cloudflared-tunnel:${tunnel.credentials_file}"
+          map (credential: "${credential.name}:${credential.file}") settingCredentials
           ++ lib.concatLists (
             lib.imap0 (
               index: destination:
