@@ -942,9 +942,7 @@ fn SecretFiles(service_name: String) -> impl IntoView {
                                         }}
                                         on:input={move |e| {
                                             mounts
-                                                .update(|items| {
-                                                    items[index].name = event_target_value(&e).into();
-                                                });
+                                                .edit(index, |m| m.name = event_target_value(&e).into());
                                         }}
                                     />
                                 </label>
@@ -955,10 +953,7 @@ fn SecretFiles(service_name: String) -> impl IntoView {
                                             mounts.field(index, |m| m.target.clone())
                                         }}
                                         on:input={move |e| {
-                                            mounts
-                                                .update(|items| {
-                                                    items[index].target = event_target_value(&e);
-                                                });
+                                            mounts.edit(index, |m| m.target = event_target_value(&e));
                                         }}
                                     />
                                 </label>

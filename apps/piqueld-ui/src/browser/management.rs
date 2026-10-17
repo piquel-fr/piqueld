@@ -653,7 +653,9 @@ impl<T: Send + Sync + 'static> Rows<T> for RwSignal<Vec<T>> {
 
     fn remove(self, index: usize) {
         self.update(|rows| {
-            rows.remove(index);
+            if index < rows.len() {
+                rows.remove(index);
+            }
         });
     }
 
