@@ -198,29 +198,33 @@ fn detail_view(
                 <header>
                     <div>
                         <h3 id="urls-title">"URLs"</h3>
-                        <p>"Routes of the current runtime target, and whether each is reachable."</p>
+                        <p>
+                            "Routes of the current runtime target, and whether each is reachable."
+                        </p>
                     </div>
                 </header>
                 {match detail.urls.as_deref() {
                     None => empty("This daemon does not report URLs."),
                     Some([]) => empty("No routes are deployed in this environment."),
                     Some(_) => {
-                    view! {
-                        <table class="table">
-                            <thead>
-                                <tr>
-                                    <th>"URL"</th>
-                                    <th>"Name"</th>
-                                    <th>"Visibility"</th>
-                                    <th>"Destination"</th>
-                                    <th>"State"</th>
-                                    <th>"Details"</th>
-                                </tr>
-                            </thead>
-                            <tbody>{detail.urls.iter().flatten().map(url_row).collect_view()}</tbody>
-                        </table>
-                    }
-                        .into_any()
+                        view! {
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>"URL"</th>
+                                        <th>"Name"</th>
+                                        <th>"Visibility"</th>
+                                        <th>"Destination"</th>
+                                        <th>"State"</th>
+                                        <th>"Details"</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {detail.urls.iter().flatten().map(url_row).collect_view()}
+                                </tbody>
+                            </table>
+                        }
+                            .into_any()
                     }
                 }}
             </section>

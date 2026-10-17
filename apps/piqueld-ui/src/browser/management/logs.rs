@@ -105,7 +105,10 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
                             {move || {
                                 context
                                     .environment_manifest()
-                                    .map_or_else(|| context.manifest(), |manifest| manifest.to_manifest())
+                                    .map_or_else(
+                                        || context.manifest(),
+                                        |manifest| manifest.to_manifest(),
+                                    )
                                     .spec
                                     .services
                                     .into_iter()

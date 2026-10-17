@@ -97,7 +97,11 @@ fn command_rows(draft: RwSignal<Vec<JobDraft>>, index: usize) -> AnyView {
                                 <input
                                     type="text"
                                     prop:value={move || {
-                                        field(draft, index, |j| j.command.get(element).cloned().unwrap_or_default())
+                                        field(
+                                            draft,
+                                            index,
+                                            |j| j.command.get(element).cloned().unwrap_or_default(),
+                                        )
                                     }}
                                     on:input={move |event| {
                                         edit(
@@ -197,9 +201,9 @@ pub(super) fn JobSettings() -> impl IntoView {
                 </div>
             </header>
             <fieldset class="stack-sm" disabled={move || context.blocked()}>
-                <Show when={move || draft.with(Vec::is_empty)}>
-                    {empty("No jobs. Deployments roll out services directly.")}
-                </Show>
+                <Show when={move || {
+                    draft.with(Vec::is_empty)
+                }}>{empty("No jobs. Deployments roll out services directly.")}</Show>
                 <For
                     each={move || (0..draft.with(Vec::len)).collect::<Vec<_>>()}
                     key={|index| *index}
@@ -221,9 +225,17 @@ pub(super) fn JobSettings() -> impl IntoView {
                                     <label class="field">
                                         <span>"Service"</span>
                                         <select
-                                            prop:value={move || field(draft, index, |j| j.service.clone())}
+                                            prop:value={move || field(
+                                                draft,
+                                                index,
+                                                |j| j.service.clone(),
+                                            )}
                                             on:change={move |event| {
-                                                edit(draft, index, |j| j.service = event_target_value(&event));
+                                                edit(
+                                                    draft,
+                                                    index,
+                                                    |j| j.service = event_target_value(&event),
+                                                );
                                             }}
                                         >
                                             <option value="">"Select a service"</option>
@@ -250,24 +262,38 @@ pub(super) fn JobSettings() -> impl IntoView {
                                             type="number"
                                             min="1"
                                             max={Job::MAX_TIMEOUT_SECONDS}
-                                            prop:value={move || field(draft, index, |j| j.timeout.clone())}
+                                            prop:value={move || field(
+                                                draft,
+                                                index,
+                                                |j| j.timeout.clone(),
+                                            )}
                                             on:input={move |event| {
-                                                edit(draft, index, |j| j.timeout = event_target_value(&event));
+                                                edit(
+                                                    draft,
+                                                    index,
+                                                    |j| j.timeout = event_target_value(&event),
+                                                );
                                             }}
                                         />
                                     </label>
                                     <label class="field" style="max-width:200px">
                                         <span>"Volume access"</span>
                                         <select
-                                            prop:value={move || field(draft, index, |j| j.volume_access.as_str())}
+                                            prop:value={move || field(
+                                                draft,
+                                                index,
+                                                |j| j.volume_access.as_str(),
+                                            )}
                                             on:change={move |event| {
                                                 if let Ok(access) = event_target_value(&event).parse() {
                                                     edit(draft, index, |j| j.volume_access = access);
                                                 }
                                             }}
                                         >
-                                            <option value={JobVolumeAccess::ReadOnly.as_str()}>"Read-only"</option>
-                                            <option value={JobVolumeAccess::Exclusive.as_str()}>"Exclusive"</option>
+                                            <option value={JobVolumeAccess::ReadOnly
+                                                .as_str()}>"Read-only"</option>
+                                            <option value={JobVolumeAccess::Exclusive
+                                                .as_str()}>"Exclusive"</option>
                                         </select>
                                     </label>
                                     <div class="btn-group">

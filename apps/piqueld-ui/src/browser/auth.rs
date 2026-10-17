@@ -1259,10 +1259,7 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
                     </button>
                 </Show>
             </div>
-            <Show
-                when={move || editing.get()}
-                fallback={move || summary(&initial.get_value())}
-            >
+            <Show when={move || editing.get()} fallback={move || summary(&initial.get_value())}>
                 <GrantEditor initial={initial.get_value()} value={grants} />
                 <div class="form-actions">
                     <button
@@ -1328,7 +1325,12 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
                 {if own {
                     view! {
                         <div class="form-row">
-                            {text_input("New passkey name", passkey_name, String::clone, |v, s| *v = s)}
+                            {text_input(
+                                "New passkey name",
+                                passkey_name,
+                                String::clone,
+                                |v, s| *v = s,
+                            )}
                             <button
                                 type="button"
                                 class="btn"

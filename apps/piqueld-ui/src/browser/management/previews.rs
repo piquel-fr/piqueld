@@ -90,7 +90,11 @@ fn deploys(view: &PreviewView) -> AnyView {
     let base = snapshot.base.as_ref().map_or_else(
         || view! { ", uploaded with its whole history" }.into_any(),
         |base| {
-            view! { " on " <code title={base.clone()}>{commit(base).to_owned()}</code> }.into_any()
+            view! {
+                " on "
+                <code title={base.clone()}>{commit(base).to_owned()}</code>
+            }
+            .into_any()
         },
     );
     let redeploy = match &view.branch {
@@ -363,9 +367,7 @@ fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
     let bounded = bounds_badge(&view.bounds);
     let (sync, sync_reason) = sync_badge(view.sync);
     let synced = view.preview.synced.clone().map(|head| {
-        view! {
-            <span class="meta">"synced " {last_synced(Some(head))}</span>
-        }
+        view! { <span class="meta">"synced " {last_synced(Some(head))}</span> }
     });
     let deleting = view.preview.delete_intent;
     let status = if deleting {
@@ -391,7 +393,10 @@ fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
                 aria-label={format!("Delete preview {name}")}
                 disabled={move || context.blocked() || deleting}
                 on:click={move |_| {
-                    preview.with_value(|preview| context.delete_preview(preview, move || deleted.run(())));
+                    preview
+                        .with_value(|preview| {
+                            context.delete_preview(preview, move || deleted.run(()))
+                        });
                 }}
             >
                 "Delete"
@@ -435,7 +440,7 @@ pub(super) fn PreviewActions() -> impl IntoView {
                     .selected_environment()
                     .map_or_else(String::new, |preview| local_command(&preview));
                 format!(
-                    "Deploy the head of this preview's branch from the repository, replacing a local snapshot it runs. Deploy a new snapshot from its worktree with `{command}`."
+                    "Deploy the head of this preview's branch from the repository, replacing a local snapshot it runs. Deploy a new snapshot from its worktree with `{command}`.",
                 )
             }}
             disabled={move || context.environment_action_blocked()}

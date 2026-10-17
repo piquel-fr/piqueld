@@ -311,10 +311,14 @@ pub(super) fn EnvironmentVariables() -> impl IntoView {
             </header>
             {move || {
                 let source = context.selected_environment().map(|environment| environment.source);
-                let fetched = source.as_ref().is_none_or(|source| *source == EnvironmentSource::Saved)
-                    || signals.detail.with(|detail| {
-                        detail.as_ref().is_some_and(|detail| detail.manifest.is_some())
-                    });
+                let fetched = source
+                    .as_ref()
+                    .is_none_or(|source| *source == EnvironmentSource::Saved)
+                    || signals
+                        .detail
+                        .with(|detail| {
+                            detail.as_ref().is_some_and(|detail| detail.manifest.is_some())
+                        });
                 if !fetched {
                     return empty(
                         if source.as_ref().is_some_and(|source| source.promoted_from().is_some()) {
@@ -341,7 +345,9 @@ pub(super) fn EnvironmentVariables() -> impl IntoView {
                                             </td>
                                             <td>
                                                 {match value {
-                                                    Some(value) => view! { <code>{value.to_string()}</code> }.into_any(),
+                                                    Some(value) => {
+                                                        view! { <code>{value.to_string()}</code> }.into_any()
+                                                    }
                                                     None => badge(Tone::Warn, "No value").into_any(),
                                                 }}
                                             </td>

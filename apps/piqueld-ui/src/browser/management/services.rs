@@ -212,7 +212,10 @@ fn ServiceLogs(name: String) -> impl IntoView {
         }
         view! {
             <div class="stack-sm">
-                {notice(Tone::Info, "Logs are read per environment. Choose one to read this service's logs.")}
+                {notice(
+                    Tone::Info,
+                    "Logs are read per environment. Choose one to read this service's logs.",
+                )}
                 <div class="btn-group">
                     {move || {
                         context

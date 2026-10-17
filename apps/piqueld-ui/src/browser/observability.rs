@@ -332,9 +332,9 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
                         .and_then(EventActor::credential_id)
                         .map(|id| {
                             view! {
-                                <A href={format!("/dashboard/audit?credential={id}")}>
-                                    "Requester"
-                                </A>
+                                <A href={format!(
+                                    "/dashboard/audit?credential={id}",
+                                )}>"Requester"</A>
                             }
                         })}
                     {event
@@ -456,7 +456,9 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
                                     environment_link(dashboard_context().signals, id.as_str())
                                         .map_or_else(
                                             || view! { <code>{id.to_string()}</code> }.into_any(),
-                                            |(label, href)| view! { <A href={href}>{label}</A> }.into_any(),
+                                            |(label, href)| {
+                                                view! { <A href={href}>{label}</A> }.into_any()
+                                            },
                                         )
                                 },
                             )}
@@ -970,10 +972,7 @@ pub(super) fn AuditPage() -> impl IntoView {
                                                             <td>{who}</td>
                                                             <td class="muted" title={event.credential_id.clone()}>
                                                                 {event.credential_kind.unwrap_or_default()}
-                                                                {event
-                                                                    .scoped
-                                                                    .unwrap_or(false)
-                                                                    .then_some(" (limited)")}
+                                                                {event.scoped.unwrap_or(false).then_some(" (limited)")}
                                                             </td>
                                                             <td class="muted">
                                                                 {event.peer.unwrap_or_else(|| "Unix socket".into())}
