@@ -310,6 +310,7 @@ mod tests {
         assert!(poller.begin_request());
         assert!(!poller.begin_request());
         poller.record_failure();
+        assert!(poller.begin_request());
         assert_eq!(poller.delay(), Duration::from_secs(30));
         poller.record_failure();
         poller.record_failure();
