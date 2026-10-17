@@ -58,6 +58,20 @@ validated_string!(
 );
 
 impl RouteHostname {
+    /// The canonical spelling of a hostname as written in a manifest:
+    /// lowercase, without a trailing dot. The result may still be invalid.
+    ///
+    /// ```text
+    /// "NOTES.Example.COM." -> "notes.example.com"
+    /// ```
+    #[must_use]
+    pub(crate) fn canonicalize(hostname: &str) -> String {
+        hostname
+            .strip_suffix('.')
+            .unwrap_or(hostname)
+            .to_ascii_lowercase()
+    }
+
     /// The hostname whose direct children a wildcard matches; `None` when
     /// exact.
     ///
