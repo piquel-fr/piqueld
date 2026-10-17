@@ -722,6 +722,16 @@ fn resource_limits_validate_cpu_and_memory_bounds_at_their_fields() {
             ),
         ],
     );
+    assert_errors(
+        &manifest(""),
+        &[
+            (codes::RESOURCE_LIMITS_EMPTY, "spec.services[0].resources"),
+            (
+                codes::ROLLOUT_MONITOR_INVALID,
+                "spec.services[0].rollout.monitor_seconds",
+            ),
+        ],
+    );
 }
 
 /// Every per-item validator reports at its own field, in path order.
