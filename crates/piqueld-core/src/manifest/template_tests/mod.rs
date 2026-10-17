@@ -70,21 +70,26 @@ fn codes_and_paths(errors: &ValidationErrors) -> Vec<(&str, &str)> {
 fn id() -> ApplicationId {
     ApplicationId::parse("app-notes-01").unwrap()
 }
+
 fn environment(name: &str) -> RenderTarget {
     RenderTarget::Environment(EnvironmentName::parse(name).unwrap())
 }
+
 fn saved() -> RenderContext {
     RenderContext::saved(environment("production"))
 }
+
 fn base() -> ApplicationManifest {
     toml::from_str(include_str!(
         "../../../tests/fixtures/manifests/prebuilt.toml"
     ))
     .unwrap()
 }
+
 fn normalize(manifest: ApplicationManifest) -> ApplicationTemplate {
     manifest.validate_template().unwrap().normalize(id())
 }
+
 fn repository() -> RepositoryManifest {
     RepositoryManifest {
         repository: GitRepository {

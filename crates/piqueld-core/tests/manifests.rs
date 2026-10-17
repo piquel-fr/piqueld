@@ -1,7 +1,9 @@
 //! Manifest parsing, validation budgets, canonicalization, and hashing.
 
 use piqueld_core::codes;
-use piqueld_core::{ApplicationId, NormalizedApplication, parse_json, parse_toml};
+use piqueld_core::{
+    ApplicationId, NormalizedApplication, ValidationErrors, parse_json, parse_toml,
+};
 use proptest::prelude::*;
 
 const TOML: &str = include_str!("fixtures/manifests/prebuilt.toml");
@@ -15,6 +17,11 @@ fn normalized() -> NormalizedApplication {
     parse_toml(TOML)
         .unwrap()
         .normalize(ApplicationId::parse("app-notes-01").unwrap())
+}
+
+/// Whether validation reported `code`.
+fn has_code(errors: &ValidationErrors, code: &str) -> bool {
+    errors.0.iter().any(|error| error.code == code)
 }
 
 fn valid_manifest(name: &str) -> String {
@@ -58,33 +65,13 @@ fn normalization_is_canonical_and_round_trips() {
 fn spec_hash_is_pinned_and_ignores_metadata() {
     let app = normalized();
     assert_eq!(app.spec_hash(), GOLDEN_SPEC_HASH);
-
-    let renamed = parse_toml(&valid_manifest("renamed"))
+    // Metadata is outside the v2 envelope: a cosmetic rename keeps the hash.
+    let exported = app.export_toml().unwrap();
+    let renamed = parse_toml(&exported.replace("name = \"notes\"", "name = \"renamed\""))
         .unwrap()
         .normalize(app.id().clone());
-    assert_ne!(renamed.metadata().name, app.metadata().name);
-
-    // Metadata is outside the v2 envelope: a cosmetic rename keeps the hash
-    // only when the spec matches; the fixture spec differs from prebuilt's, so
-    // pin the invariant on identical specs instead.
-    let mut same_spec = parse_toml(TOML).unwrap();
-    let mut manifest_with_other_name = same_spec_name_override(&mut same_spec);
-    manifest_with_other_name.push('\n');
-    let other_named = parse_toml(&manifest_with_other_name)
-        .unwrap()
-        .normalize(app.id().clone());
-    assert_eq!(other_named.spec_hash(), app.spec_hash());
-}
-
-fn same_spec_name_override(validated: &mut piqueld_core::ValidatedApplication) -> String {
-    let mut exported = {
-        let app = validated
-            .clone()
-            .normalize(ApplicationId::parse("app-notes-01").unwrap());
-        app.export_toml().unwrap()
-    };
-    exported = exported.replace("name = \"notes\"", "name = \"renamed\"");
-    exported
+    assert_eq!(renamed.metadata().name.as_str(), "renamed");
+    assert_eq!(renamed.spec_hash(), app.spec_hash());
 }
 
 #[test]
@@ -308,18 +295,8 @@ image = "nginx:1.27"
 #[test]
 fn malformed_and_invalid_manifests_return_safe_validation_errors() {
     let error = parse_toml(include_str!("fixtures/manifests/invalid.toml")).unwrap_err();
-    assert!(
-        error
-            .0
-            .iter()
-            .any(|error| error.code == codes::API_VERSION_UNSUPPORTED)
-    );
-    assert!(
-        error
-            .0
-            .iter()
-            .any(|error| error.code == codes::IMAGE_INVALID)
-    );
+    assert!(has_code(&error, codes::API_VERSION_UNSUPPORTED));
+    assert!(has_code(&error, codes::IMAGE_INVALID));
     let error = parse_json("{\"api_version\":").unwrap_err();
     assert!(
         error
@@ -362,12 +339,7 @@ fn registry_host_case_is_canonicalized_and_ipv6_is_rejected() {
 
     let ipv6 = valid_manifest("notes").replace("ghcr.io/example", "[::1]:5000/example");
     let error = parse_toml(&ipv6).unwrap_err();
-    assert!(
-        error
-            .0
-            .iter()
-            .any(|error| error.code == codes::IMAGE_INVALID)
-    );
+    assert!(has_code(&error, codes::IMAGE_INVALID));
 }
 
 #[test]
@@ -517,12 +489,7 @@ image = "nginx:1"
 "#
     );
     let errors = parse_toml(&manifest).unwrap_err();
-    assert!(
-        errors
-            .0
-            .iter()
-            .any(|error| error.code == codes::ENVIRONMENT_COUNT_EXCESSIVE)
-    );
+    assert!(has_code(&errors, codes::ENVIRONMENT_COUNT_EXCESSIVE));
 }
 
 #[test]
@@ -546,12 +513,7 @@ image = "nginx:1"
             .join(", ")
     );
     let errors = parse_toml(&many_arguments).unwrap_err();
-    assert!(
-        errors
-            .0
-            .iter()
-            .any(|error| error.code == codes::PROCESS_ARGUMENTS_EXCESSIVE)
-    );
+    assert!(has_code(&errors, codes::PROCESS_ARGUMENTS_EXCESSIVE));
 
     let long_element = "x".repeat(4_097);
     let manifest = valid_manifest("notes").replace(
@@ -559,12 +521,7 @@ image = "nginx:1"
         &format!("arguments = [\"{long_element}\"]\n[spec.services.source]"),
     );
     let errors = parse_toml(&manifest).unwrap_err();
-    assert!(
-        errors
-            .0
-            .iter()
-            .any(|error| error.code == codes::PROCESS_ARGUMENTS_EXCESSIVE)
-    );
+    assert!(has_code(&errors, codes::PROCESS_ARGUMENTS_EXCESSIVE));
 }
 
 #[test]
@@ -595,12 +552,7 @@ image = "nginx:1"
 "#
     );
     let errors = parse_toml(&manifest).unwrap_err();
-    assert!(
-        errors
-            .0
-            .iter()
-            .any(|error| error.code == codes::MOUNT_COUNT_EXCESSIVE)
-    );
+    assert!(has_code(&errors, codes::MOUNT_COUNT_EXCESSIVE));
 }
 
 #[test]
@@ -625,13 +577,7 @@ target = "{target}"
 "#
         );
         let errors = parse_toml(&manifest).unwrap_err();
-        assert!(
-            errors
-                .0
-                .iter()
-                .any(|error| error.code == codes::MOUNT_TARGET_UNSAFE),
-            "{target}"
-        );
+        assert!(has_code(&errors, codes::MOUNT_TARGET_UNSAFE), "{target}");
     }
 }
 
@@ -653,12 +599,7 @@ name = "notes"
 "#
     );
     let errors = parse_toml(&manifest).unwrap_err();
-    assert!(
-        errors
-            .0
-            .iter()
-            .any(|error| error.code == codes::SERVICE_COUNT_EXCESSIVE)
-    );
+    assert!(has_code(&errors, codes::SERVICE_COUNT_EXCESSIVE));
 
     let volumes = (0..65)
         .map(|index| format!("[[spec.volumes]]\nname = \"vol{index}\""))
@@ -679,12 +620,7 @@ image = "nginx:1"
 "#
     );
     let errors = parse_toml(&manifest).unwrap_err();
-    assert!(
-        errors
-            .0
-            .iter()
-            .any(|error| error.code == codes::VOLUME_COUNT_EXCESSIVE)
-    );
+    assert!(has_code(&errors, codes::VOLUME_COUNT_EXCESSIVE));
 }
 
 #[test]
@@ -713,24 +649,14 @@ fn healthcheck_rules_include_the_interval_cap_and_single_zero_error() {
         "image = \"ghcr.io/example/notes:1\"\n\n[spec.services.healthcheck]\ntype = \"http\"\nport = 8080\ninterval_seconds = 3601\ntimeout_seconds = 10",
     );
     let errors = parse_toml(&huge_interval).unwrap_err();
-    assert!(
-        errors
-            .0
-            .iter()
-            .any(|error| error.code == codes::HEALTHCHECK_INTERVAL_EXCESSIVE)
-    );
+    assert!(has_code(&errors, codes::HEALTHCHECK_INTERVAL_EXCESSIVE));
 
     let timeout_above_interval = valid_manifest("notes").replace(
         "image = \"ghcr.io/example/notes:1\"",
         "image = \"ghcr.io/example/notes:1\"\n\n[spec.services.healthcheck]\ntype = \"http\"\nport = 8080\ninterval_seconds = 10\ntimeout_seconds = 11",
     );
     let errors = parse_toml(&timeout_above_interval).unwrap_err();
-    assert!(
-        errors
-            .0
-            .iter()
-            .any(|error| error.code == codes::HEALTHCHECK_TIMEOUT_INVALID)
-    );
+    assert!(has_code(&errors, codes::HEALTHCHECK_TIMEOUT_INVALID));
 }
 
 #[test]
@@ -740,24 +666,14 @@ fn resource_limits_validate_cpu_bounds() {
         "image = \"ghcr.io/example/notes:1\"\n\n[spec.services.resources]\ncpu_millis = 0",
     );
     let errors = parse_toml(&zero_cpu).unwrap_err();
-    assert!(
-        errors
-            .0
-            .iter()
-            .any(|error| error.code == codes::CPU_LIMIT_INVALID)
-    );
+    assert!(has_code(&errors, codes::CPU_LIMIT_INVALID));
 
     let excessive_cpu = valid_manifest("notes").replace(
         "image = \"ghcr.io/example/notes:1\"",
         "image = \"ghcr.io/example/notes:1\"\n\n[spec.services.resources]\ncpu_millis = 1048577",
     );
     let errors = parse_toml(&excessive_cpu).unwrap_err();
-    assert!(
-        errors
-            .0
-            .iter()
-            .any(|error| error.code == codes::CPU_LIMIT_EXCESSIVE)
-    );
+    assert!(has_code(&errors, codes::CPU_LIMIT_EXCESSIVE));
 }
 
 /// The fixture with `settings` in its service's rollout block.
