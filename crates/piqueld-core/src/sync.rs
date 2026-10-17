@@ -10,6 +10,7 @@
 use crate::api::EnvironmentView;
 use crate::codes;
 use crate::manifest::{RepositoryManifest, ValidationError};
+use crate::names::string_enum;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -149,40 +150,15 @@ impl EnvironmentView {
     }
 }
 
-/// The automated actors piqueld records on what they caused, next to
-/// accounts and the host operator.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-pub enum SystemActor {
-    /// Sync found a moved branch while polling.
-    #[serde(rename = "sync:poll")]
-    SyncPoll,
-    /// Sync found a moved branch after a GitHub push webhook.
-    #[serde(rename = "sync:webhook")]
-    SyncWebhook,
-}
-
-impl SystemActor {
-    /// Stored and displayed form, e.g. `sync:poll`.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SyncPoll => "sync:poll",
-            Self::SyncWebhook => "sync:webhook",
-        }
-    }
-
-    /// Parses the stored form.
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        [Self::SyncPoll, Self::SyncWebhook]
-            .into_iter()
-            .find(|actor| actor.as_str() == value)
-    }
-}
-
-impl std::fmt::Display for SystemActor {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
+string_enum! {
+    #[serde]
+    /// The automated actors piqueld records on what they caused, next to
+    /// accounts and the host operator.
+    pub enum SystemActor {
+        /// Sync found a moved branch while polling.
+        SyncPoll => "sync:poll",
+        /// Sync found a moved branch after a GitHub push webhook.
+        SyncWebhook => "sync:webhook",
     }
 }
 

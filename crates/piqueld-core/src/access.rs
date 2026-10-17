@@ -19,36 +19,27 @@
 //! types make an application scope on an installation-wide permission
 //! unrepresentable.
 use crate::ApplicationId;
+use crate::names::string_enum;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
 
-// Declares a permission enum whose wire names, descriptions, and `ALL` list all
-// come from one `Variant => "wire", "description"` table.
+// Declares a permission enum whose wire names and descriptions come from one
+// `Variant => "wire", "description"` table.
 macro_rules! permissions {
     ($(#[$meta:meta])* $name:ident { $($(#[$variant_meta:meta])* $variant:ident => $value:literal, $description:literal),+ $(,)? }) => {
-        $(#[$meta])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        pub enum $name {
-            $($(#[$variant_meta])* $variant),+
+        string_enum! {
+            $(#[$meta])*
+            #[derive(PartialOrd, Ord, Hash)]
+            pub enum $name {
+                $($(#[$variant_meta])* $variant => $value),+
+            }
         }
         impl $name {
-            /// Every value, in declaration order.
-            pub const ALL: &[Self] = &[$(Self::$variant),+];
-            /// Stable wire and storage name.
-            #[must_use]
-            pub const fn as_str(self) -> &'static str {
-                match self { $(Self::$variant => $value),+ }
-            }
             /// One-line explanation shown next to the permission.
             #[must_use]
             pub const fn description(self) -> &'static str {
                 match self { $(Self::$variant => $description),+ }
-            }
-            /// Parses a wire name, rejecting unknown permissions.
-            #[must_use]
-            pub fn parse(value: &str) -> Option<Self> {
-                match value { $($value => Some(Self::$variant),)+ _ => None }
             }
         }
     };
@@ -484,7 +475,7 @@ impl Grants {
         for permission in AppPermission::ALL {
             if let Some(including) = permission.included_in().and_then(|p| self.apps.get(&p)) {
                 let including = including.clone();
-                if let Some(scope) = self.apps.get_mut(permission) {
+                if let Some(scope) = self.apps.get_mut(&permission) {
                     *scope = scope.without(&including);
                 }
             }
@@ -805,44 +796,23 @@ impl ToSchema for Grants {
     }
 }
 
-/// Common grant combinations offered by account, invitation, and token forms.
-/// Presets only fill in grants; what is stored is the explicit grant list.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Preset {
-    /// Read applications, their logs and history.
-    ReadOnly,
-    /// Read and deploy applications, e.g. for CI.
-    Deploy,
-    /// Everything on applications except deleting them.
-    Developer,
-    /// `admin` on the scope; on every application, full control of the installation.
-    Admin,
+string_enum! {
+    /// Common grant combinations offered by account, invitation, and token
+    /// forms, from least to most access, named as in `--preset`. Presets only
+    /// fill in grants; what is stored is the explicit grant list.
+    pub enum Preset {
+        /// Read applications, their logs and history.
+        ReadOnly => "read-only",
+        /// Read and deploy applications, e.g. for CI.
+        Deploy => "deploy",
+        /// Everything on applications except deleting them.
+        Developer => "developer",
+        /// `admin` on the scope; on every application, full control of the installation.
+        Admin => "admin",
+    }
 }
 
 impl Preset {
-    /// Every preset, from least to most access.
-    pub const ALL: &[Self] = &[Self::ReadOnly, Self::Deploy, Self::Developer, Self::Admin];
-
-    /// Stable name used by forms and `--preset`.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ReadOnly => "read-only",
-            Self::Deploy => "deploy",
-            Self::Developer => "developer",
-            Self::Admin => "admin",
-        }
-    }
-
-    /// Parses a preset name.
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        Self::ALL
-            .iter()
-            .copied()
-            .find(|preset| preset.as_str() == value)
-    }
-
     /// The preset's permissions. On every application, read-only and
     /// developer access also include reading daemon status. Developers may
     /// run commands in containers: deploying their own configuration already

@@ -1,75 +1,46 @@
 //! Shared asynchronous operation records.
 
 use crate::EnvironmentId;
+use crate::names::string_enum;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use utoipa::ToSchema;
 
-/// Environment change being reconciled.
-/// Deployment operations retain the serialized kind `refresh` for compatibility
-/// with existing stored records and API clients.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum OperationKind {
-    /// Apply the requested application state.
-    Apply,
-    /// Resolve the current manifest again without changing its generation.
-    /// Used by Deploy and Apply with deployment.
-    Refresh,
-    /// Delete its resources.
-    Delete,
-}
-
-impl OperationKind {
-    /// Returns the serialized operation name.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Apply => "apply",
-            Self::Refresh => "refresh",
-            Self::Delete => "delete",
-        }
+string_enum! {
+    #[serde]
+    /// Environment change being reconciled.
+    /// Deployment operations retain the serialized kind `refresh` for compatibility
+    /// with existing stored records and API clients.
+    pub enum OperationKind {
+        /// Apply the requested application state.
+        Apply => "apply",
+        /// Resolve the current manifest again without changing its generation.
+        /// Used by Deploy and Apply with deployment.
+        Refresh => "refresh",
+        /// Delete its resources.
+        Delete => "delete",
     }
 }
 
-impl fmt::Display for OperationKind {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
+string_enum! {
+    #[serde]
+    /// Lifecycle of one desired-state operation.
+    pub enum OperationState {
+        /// Accepted and waiting to run.
+        Requested => "requested",
+        /// Reconciling and verifying runtime state.
+        Running => "running",
+        /// Runtime state matches the requested state.
+        Succeeded => "succeeded",
+        /// Reconciliation failed.
+        Failed => "failed",
+        /// Cancelled without a replacement operation.
+        Cancelled => "cancelled",
+        /// Replaced by newer intent; callers may stop waiting successfully.
+        Superseded => "superseded",
     }
-}
-
-/// Lifecycle of one desired-state operation.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum OperationState {
-    /// Accepted and waiting to run.
-    Requested,
-    /// Reconciling and verifying runtime state.
-    Running,
-    /// Runtime state matches the requested state.
-    Succeeded,
-    /// Reconciliation failed.
-    Failed,
-    /// Cancelled without a replacement operation.
-    Cancelled,
-    /// Replaced by newer intent; callers may stop waiting successfully.
-    Superseded,
 }
 
 impl OperationState {
-    /// Returns the serialized state name.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Requested => "requested",
-            Self::Running => "running",
-            Self::Succeeded => "succeeded",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-            Self::Superseded => "superseded",
-        }
-    }
-
     /// Whether this attempt has finished.
     #[must_use]
     pub const fn terminal(self) -> bool {
@@ -113,12 +84,6 @@ impl OperationState {
     }
 }
 
-impl fmt::Display for OperationState {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
 /// Durable asynchronous operation returned by the API.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct Operation {
@@ -159,44 +124,23 @@ pub struct Operation {
     pub finished_at_ms: Option<i64>,
 }
 
-/// Current environment reconciliation status.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ApplicationState {
-    /// Configuration is saved but no deployment has been requested.
-    NotDeployed,
-    /// Desired state is waiting to be reconciled.
-    Pending,
-    /// Runtime resources are being reconciled.
-    Deploying,
-    /// Runtime state matches desired state.
-    Ready,
-    /// Runtime state is not fully healthy.
-    Degraded,
-    /// Runtime resources are being deleted.
-    Deleting,
-    /// Reconciliation failed.
-    Failed,
-}
-
-impl ApplicationState {
-    /// Returns the serialized status name.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::NotDeployed => "not_deployed",
-            Self::Pending => "pending",
-            Self::Deploying => "deploying",
-            Self::Ready => "ready",
-            Self::Degraded => "degraded",
-            Self::Deleting => "deleting",
-            Self::Failed => "failed",
-        }
-    }
-}
-
-impl fmt::Display for ApplicationState {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
+string_enum! {
+    #[serde]
+    /// Current environment reconciliation status.
+    pub enum ApplicationState {
+        /// Configuration is saved but no deployment has been requested.
+        NotDeployed => "not_deployed",
+        /// Desired state is waiting to be reconciled.
+        Pending => "pending",
+        /// Runtime resources are being reconciled.
+        Deploying => "deploying",
+        /// Runtime state matches desired state.
+        Ready => "ready",
+        /// Runtime state is not fully healthy.
+        Degraded => "degraded",
+        /// Runtime resources are being deleted.
+        Deleting => "deleting",
+        /// Reconciliation failed.
+        Failed => "failed",
     }
 }

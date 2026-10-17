@@ -8,7 +8,7 @@
 //! [`super::NormalizedApplication`].
 
 use super::{ApplicationSpec, RepositoryManifest, ValidationError, input::Variable};
-use crate::{EnvironmentName, PreviewSlug, codes};
+use crate::{EnvironmentName, PreviewSlug, codes, names::string_enum};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -179,47 +179,27 @@ impl fmt::Display for Template {
     }
 }
 
-/// A system variable, set by piqueld for every rendering.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum SystemVariable {
-    /// `app.name`: the application name.
-    AppName,
-    /// `env.name`: the environment name.
-    EnvName,
-    /// `env.slug`: a DNS-safe identifier of the environment.
-    EnvSlug,
-    /// `git.branch`: the branch the manifest was read from.
-    GitBranch,
-    /// `git.sha`: the commit the manifest was read from.
-    GitSha,
-    /// `deployment.id`: the deployment being captured.
-    DeploymentId,
+string_enum! {
+    /// A system variable, set by piqueld for every rendering, by its
+    /// reference spelling.
+    #[derive(Hash, Ord, PartialOrd)]
+    pub enum SystemVariable {
+        /// `app.name`: the application name.
+        AppName => "app.name",
+        /// `env.name`: the environment name.
+        EnvName => "env.name",
+        /// `env.slug`: a DNS-safe identifier of the environment.
+        EnvSlug => "env.slug",
+        /// `git.branch`: the branch the manifest was read from.
+        GitBranch => "git.branch",
+        /// `git.sha`: the commit the manifest was read from.
+        GitSha => "git.sha",
+        /// `deployment.id`: the deployment being captured.
+        DeploymentId => "deployment.id",
+    }
 }
 
 impl SystemVariable {
-    /// Every system variable.
-    pub const ALL: [Self; 6] = [
-        Self::AppName,
-        Self::EnvName,
-        Self::EnvSlug,
-        Self::GitBranch,
-        Self::GitSha,
-        Self::DeploymentId,
-    ];
-
-    /// The reference spelling, e.g. `env.name`.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::AppName => "app.name",
-            Self::EnvName => "env.name",
-            Self::EnvSlug => "env.slug",
-            Self::GitBranch => "git.branch",
-            Self::GitSha => "git.sha",
-            Self::DeploymentId => "deployment.id",
-        }
-    }
-
     /// Whether only repository-backed manifests have this variable.
     const fn needs_repository(self) -> bool {
         matches!(self, Self::GitBranch | Self::GitSha)
@@ -247,9 +227,7 @@ impl Reference {
         match namespace {
             "vars" => Ok(Self::Variable(name.into())),
             "secrets" => Err(TemplateError::Reserved(echo(inner))),
-            "app" | "env" | "git" | "deployment" => SystemVariable::ALL
-                .into_iter()
-                .find(|variable| variable.as_str() == inner)
+            "app" | "env" | "git" | "deployment" => SystemVariable::parse(inner)
                 .map(Self::System)
                 .ok_or_else(|| TemplateError::UnknownSystemVariable(echo(inner))),
             _ => Err(TemplateError::UnknownNamespace(echo(namespace))),

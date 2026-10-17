@@ -14,6 +14,7 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::names::string_enum;
 pub use crate::urls::{RouteUrl, UrlCondition, UrlState};
 
 /// Versioned prefix used by all API endpoints.
@@ -1074,23 +1075,15 @@ pub struct ApplicationLogs {
     /// More output existed than the requested window or safety limit.
     pub truncated: bool,
 }
-/// A selectable process output stream. Merged terminal output is only included without a filter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize, ToSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum LogStream {
-    /// Standard output.
-    Stdout,
-    /// Standard error.
-    Stderr,
-}
-impl LogStream {
-    /// Wire and storage representation.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Stdout => "stdout",
-            Self::Stderr => "stderr",
-        }
+
+string_enum! {
+    #[serde]
+    /// A selectable process output stream. Merged terminal output is only included without a filter.
+    pub enum LogStream {
+        /// Standard output.
+        Stdout => "stdout",
+        /// Standard error.
+        Stderr => "stderr",
     }
 }
 
@@ -1618,42 +1611,24 @@ impl std::fmt::Display for DnsRecords {
     }
 }
 
-/// Who keeps a route's DNS records current.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum DnsRecordState {
-    /// The operator: no provider with `manage_records` hosts the hostname's
-    /// zone, or a direct public route has no `[ingress] public_addresses`.
-    #[default]
-    Manual,
-    /// piqueld created the records and keeps them current.
-    Managed,
-    /// piqueld will manage the records but has not written them yet: the
-    /// gateway has not applied the route, the apps node has no addresses
-    /// yet, or the provider failed and the change is retried.
-    Pending,
-    /// A record piqueld does not own already exists at the hostname. piqueld
-    /// never overwrites it; remove it to let piqueld manage the hostname.
-    DnsConflict,
-}
-
-impl DnsRecordState {
-    /// Wire representation.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Manual => "manual",
-            Self::Managed => "managed",
-            Self::Pending => "pending",
-            Self::DnsConflict => "dns_conflict",
-        }
-    }
-}
-
-/// `manual`, `managed`, `pending` or `dns_conflict`.
-impl std::fmt::Display for DnsRecordState {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
+string_enum! {
+    #[serde]
+    /// Who keeps a route's DNS records current.
+    #[derive(Default)]
+    pub enum DnsRecordState {
+        /// The operator: no provider with `manage_records` hosts the hostname's
+        /// zone, or a direct public route has no `[ingress] public_addresses`.
+        #[default]
+        Manual => "manual",
+        /// piqueld created the records and keeps them current.
+        Managed => "managed",
+        /// piqueld will manage the records but has not written them yet: the
+        /// gateway has not applied the route, the apps node has no addresses
+        /// yet, or the provider failed and the change is retried.
+        Pending => "pending",
+        /// A record piqueld does not own already exists at the hostname. piqueld
+        /// never overwrites it; remove it to let piqueld manage the hostname.
+        DnsConflict => "dns_conflict",
     }
 }
 
