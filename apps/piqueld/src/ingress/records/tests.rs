@@ -5,7 +5,7 @@ use crate::{
         DnsProvider, DnsProviderConfig,
         test_provider::{Mimics, Outage, TestProvider},
     },
-    ingress::tests::{application, request_deployment},
+    ingress::tests::{Engine, application, private_config, request_deployment},
     store::Store,
 };
 use piqueld_core::{
@@ -20,7 +20,7 @@ const TUNNEL: &str = "6ff42ae2-765d-4adf-8112-31c55c1551ef";
 /// An ingress whose only provider keeps `example.com` in memory, with
 /// private ingress enabled and Docker never called.
 struct Harness {
-    directory: tempfile::TempDir,
+    engine: Engine,
     store: Arc<Store>,
     provider: TestProvider,
     ingress: Ingress,
@@ -28,34 +28,27 @@ struct Harness {
 
 impl Harness {
     async fn new(manage_records: bool) -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+        let engine = Engine::unused().await;
         let provider = TestProvider::new(&["example.com"]);
-        let ingress = Self::ingress(&directory, &store, &provider, manage_records, None).await;
+        let ingress = Self::ingress(&engine, &provider, manage_records, None).await;
         ingress.converged();
         Self {
-            directory,
-            store,
+            store: Arc::clone(&engine.store),
+            engine,
             provider,
             ingress,
         }
     }
 
-    /// Another manager of the same store and zone, as after a restart.
+    /// A manager of `engine`'s store and `provider`'s zone.
     async fn ingress(
-        directory: &tempfile::TempDir,
-        store: &Arc<Store>,
+        engine: &Engine,
         provider: &TestProvider,
         manage_records: bool,
         tunnel: Option<TunnelCredentials>,
     ) -> Ingress {
-        // Docker clients require the socket file to exist; nothing listens on it.
-        let socket = directory.path().join("docker.sock");
-        if !socket.exists() {
-            drop(tokio::net::UnixListener::bind(&socket).unwrap());
-        }
-        let ingress = Ingress::new(true, &socket, directory.path(), Arc::clone(store))
-            .unwrap()
+        let ingress = engine
+            .ingress(true)
             .with_dns(
                 &crate::config::DnsConfig {
                     providers: vec![DnsProviderConfig {
@@ -66,10 +59,7 @@ impl Harness {
                 &crate::config::AcmeConfig::default(),
             )
             .unwrap()
-            .with_private(&crate::config::PrivateIngressConfig {
-                enabled: true,
-                ..Default::default()
-            })
+            .with_private(&private_config())
             .with_tunnel(&crate::config::TunnelConfig {
                 credentials: tunnel,
             })
@@ -81,7 +71,7 @@ impl Harness {
     /// Another manager of this store and zone, as after a restart, before its
     /// gateway has converged.
     async fn restart(&self, tunnel: Option<TunnelCredentials>) -> Ingress {
-        Self::ingress(&self.directory, &self.store, &self.provider, true, tunnel).await
+        Self::ingress(&self.engine, &self.provider, true, tunnel).await
     }
 
     /// Sets the apps node's tailnet addresses.
@@ -582,15 +572,10 @@ async fn tunnel_routes_wait_in_zones_that_cannot_proxy() {
 async fn the_webhook_hostname_gets_a_public_routes_records() {
     let harness = Harness::new(true).await;
     let hooks = Hostname::parse("hooks.example.com").unwrap();
-    let direct = Harness::ingress(
-        &harness.directory,
-        &harness.store,
-        &harness.provider,
-        true,
-        None,
-    )
-    .await
-    .with_webhooks(Some(hooks.clone()));
+    let direct = harness
+        .restart(None)
+        .await
+        .with_webhooks(Some(hooks.clone()));
     direct.converged();
     assert!(Harness::pass_of(&direct).await);
     assert_eq!(
