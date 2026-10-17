@@ -30,8 +30,10 @@ impl Fixture {
         }
     }
 
+    /// The API socket, relative to the working directory so its path fits a
+    /// socket address even in deeply nested checkouts.
     fn socket(&self) -> PathBuf {
-        self.runtime.join("piqueld.sock")
+        fixture_dir::relative(&self.runtime).join("piqueld.sock")
     }
 
     fn socket_inode(&self) -> u64 {
@@ -140,9 +142,10 @@ async fn regular_files_and_symlinks_at_socket_path_are_preserved() {
     assert!(format!("{error:#}").contains("refusing to replace non-socket"));
     assert_eq!(std::fs::read(fixture.socket()).unwrap(), b"keep this");
     std::fs::remove_file(fixture.socket()).unwrap();
-    let target = fixture.runtime.join("target.sock");
+    let target = fixture.socket().with_file_name("target.sock");
     let _listener = tokio::net::UnixListener::bind(&target).unwrap();
-    std::os::unix::fs::symlink(&target, fixture.socket()).unwrap();
+    // Relative to the link's own directory.
+    std::os::unix::fs::symlink("target.sock", fixture.socket()).unwrap();
     assert!(runtime.bind_api().await.is_err());
     assert!(
         std::fs::symlink_metadata(fixture.socket())
