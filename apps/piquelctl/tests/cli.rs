@@ -52,34 +52,33 @@ struct Reply {
 }
 
 impl Reply {
-    fn json(data: Value) -> Self {
-        let data = serde_json::to_value(data).expect("JSON value");
+    /// Replies `status` with `body` as JSON, such as an API error.
+    fn status(status: &'static str, body: &Value) -> Self {
         Self {
-            status: "200 OK",
+            status,
             content_type: "application/json",
-            body: serde_json::to_vec(&json!({"data": data})).expect("JSON response"),
+            body: serde_json::to_vec(body).expect("JSON response"),
             drop_connection: false,
         }
+    }
+
+    /// Replies `status` with `data` in the API's `data` envelope.
+    fn enveloped(status: &'static str, data: Value) -> Self {
+        let envelope = serde_json::Map::from_iter([("data".to_owned(), data)]);
+        Self::status(status, &Value::Object(envelope))
+    }
+
+    fn json(data: Value) -> Self {
+        Self::enveloped("200 OK", data)
     }
 
     /// Replies with `data` as the whole body, as authentication endpoints do.
     fn bare(data: &Value) -> Self {
-        Self {
-            status: "200 OK",
-            content_type: "application/json",
-            body: serde_json::to_vec(data).expect("JSON response"),
-            drop_connection: false,
-        }
+        Self::status("200 OK", data)
     }
 
     fn accepted(data: Value) -> Self {
-        let data = serde_json::to_value(data).expect("JSON value");
-        Self {
-            status: "202 Accepted",
-            content_type: "application/json",
-            body: serde_json::to_vec(&json!({"data": data})).expect("JSON response"),
-            drop_connection: false,
-        }
+        Self::enveloped("202 Accepted", data)
     }
 
     /// Accepts an exec WebSocket; see [`echo_exec`].
@@ -129,10 +128,24 @@ impl TestServer {
             .expect("server thread");
         self.records.lock().expect("request records").clone()
     }
+
+    /// A `piquelctl` command connected to this server.
+    fn command(&self) -> Command {
+        let mut command = support::command();
+        match &self.endpoint {
+            Endpoint::Tcp(url) => command.args(["--url", url]),
+            Endpoint::Unix(path) => command.args(["--socket", path.to_str().expect("socket path")]),
+        };
+        command
+    }
 }
 
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Serves `expected_requests` connections, each with one request answered by
+/// `handler`, over a Unix socket or TCP. Gives up once no client connected
+/// for `ACCEPT_TIMEOUT`, so a request-count mismatch fails fast instead of
+/// hanging forever.
 fn start_server<F>(unix: bool, expected_requests: usize, handler: F) -> TestServer
 where
     F: FnMut(Request) -> Reply + Send + 'static,
@@ -140,30 +153,19 @@ where
     let directory = tempdir().expect("temporary server directory");
     let records = Arc::new(Mutex::new(Vec::new()));
     let stop = Arc::new(AtomicBool::new(false));
-    let stop_for_thread = Arc::clone(&stop);
-    let handler = Arc::new(Mutex::new(handler));
-    let records_for_thread = Arc::clone(&records);
-    let handler_for_thread = Arc::clone(&handler);
-
-    let (endpoint, join) = if unix {
-        let path = directory.path().join("piqueld.sock");
-        let listener = UnixListener::bind(&path).expect("Unix listener");
-        listener
-            .set_nonblocking(true)
-            .expect("non-blocking accept applies");
-        let join = thread::spawn(move || {
+    let handler = Mutex::new(handler);
+    let serve = {
+        let (records, stop) = (Arc::clone(&records), Arc::clone(&stop));
+        move |mut accept: Accept| {
             let mut deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
             let mut served = 0;
-            while served < expected_requests && !stop_for_thread.load(Ordering::Relaxed) {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        // BSD sockets inherit the listener's nonblocking mode.
-                        stream.set_nonblocking(false).expect("blocking request I/O");
+            while served < expected_requests && !stop.load(Ordering::Relaxed) {
+                match accept() {
+                    Ok(stream) => {
                         served += 1;
                         deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
-                        serve_stream(stream, &records_for_thread, &handler_for_thread);
+                        serve_stream(stream, &records, &handler);
                     }
-                    // A request-count mismatch must fail fast, not hang forever.
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         if std::time::Instant::now() >= deadline {
                             break;
@@ -173,55 +175,59 @@ where
                     Err(_) => break,
                 }
             }
-        });
-        (Endpoint::Unix(path), join)
+        }
+    };
+    // BSD sockets inherit the listener's nonblocking mode, so each accepted
+    // stream is made blocking again.
+    let (endpoint, accept): (_, Accept) = if unix {
+        let path = directory.path().join("piqueld.sock");
+        let listener = UnixListener::bind(&path).expect("Unix listener");
+        listener
+            .set_nonblocking(true)
+            .expect("non-blocking accept applies");
+        let accept = move || {
+            let (stream, _) = listener.accept()?;
+            stream.set_nonblocking(false).expect("blocking request I/O");
+            Ok(Box::new(stream) as Box<dyn Stream>)
+        };
+        (Endpoint::Unix(path), Box::new(accept))
     } else {
         let listener = TcpListener::bind("127.0.0.1:0").expect("TCP listener");
         let address = listener.local_addr().expect("TCP address");
         listener
             .set_nonblocking(true)
             .expect("non-blocking accept applies");
-        let join = thread::spawn(move || {
-            let mut deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
-            let mut served = 0;
-            while served < expected_requests && !stop_for_thread.load(Ordering::Relaxed) {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        // BSD sockets inherit the listener's nonblocking mode.
-                        stream.set_nonblocking(false).expect("blocking request I/O");
-                        served += 1;
-                        deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
-                        serve_stream(stream, &records_for_thread, &handler_for_thread);
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        if std::time::Instant::now() >= deadline {
-                            break;
-                        }
-                        thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        (Endpoint::Tcp(format!("http://{address}/")), join)
+        let accept = move || {
+            let (stream, _) = listener.accept()?;
+            stream.set_nonblocking(false).expect("blocking request I/O");
+            Ok(Box::new(stream) as Box<dyn Stream>)
+        };
+        (
+            Endpoint::Tcp(format!("http://{address}/")),
+            Box::new(accept),
+        )
     };
-
     TestServer {
         endpoint,
         records,
         _directory: directory,
-        join: Some(join),
+        join: Some(thread::spawn(move || serve(accept))),
         stop,
     }
 }
 
-fn serve_stream<S>(
-    mut stream: S,
-    records: &Arc<Mutex<Vec<Request>>>,
-    handler: &Arc<Mutex<impl FnMut(Request) -> Reply>>,
-) where
-    S: Read + Write,
-{
+/// A connection the test server reads a request from and answers.
+trait Stream: Read + Write {}
+impl<S: Read + Write> Stream for S {}
+
+/// Accepts the next connection of a nonblocking listener.
+type Accept = Box<dyn FnMut() -> std::io::Result<Box<dyn Stream>> + Send>;
+
+fn serve_stream(
+    mut stream: Box<dyn Stream>,
+    records: &Mutex<Vec<Request>>,
+    handler: &Mutex<impl FnMut(Request) -> Reply>,
+) {
     let Some(request) = read_request(&mut stream) else {
         return;
     };
@@ -376,15 +382,7 @@ fn run_human(server: &TestServer, arguments: &[&str]) -> Output {
 }
 
 fn run_with_format(server: &TestServer, arguments: &[&str], timeout: &str, json: bool) -> Output {
-    let mut command = support::command();
-    match &server.endpoint {
-        Endpoint::Tcp(url) => {
-            command.args(["--url", url]);
-        }
-        Endpoint::Unix(path) => {
-            command.args(["--socket", path.to_str().expect("socket path")]);
-        }
-    }
+    let mut command = server.command();
     if json {
         command.arg("--json");
     }
@@ -498,6 +496,11 @@ fn saved_deployment(id: &str) -> Value {
         "generation": 1, "operation_id": "operation-01",
         "application_id": id
     })
+}
+
+/// A saved configuration without a deployment, as returned by edits.
+fn saved() -> Value {
+    json!({"application_id": "app-notes-01", "generation": 2, "operation_id": null})
 }
 
 /// An accepted application deletion with one environment.
@@ -627,20 +630,9 @@ fn exec_cat(stdin: Stdio, input: &[u8]) -> (TestServer, Output) {
         }
         path => panic!("unexpected path {path}"),
     });
-    let Endpoint::Tcp(url) = &server.endpoint else {
-        unreachable!("TCP server")
-    };
-    let mut child = support::command()
-        .args([
-            "--url",
-            url,
-            "app",
-            "exec",
-            "app-notes-01",
-            "web",
-            "-i",
-            "--",
-        ])
+    let mut child = server
+        .command()
+        .args(["app", "exec", "app-notes-01", "web", "-i", "--"])
         .args(["cat", "-"])
         .stdin(stdin)
         .stdout(Stdio::piped())
@@ -715,7 +707,7 @@ fn apply_deploy_confirmation_and_transport_retry_are_exercised() {
         let manifest = write_manifest(&directory);
         let mut mutation_requests = Vec::new();
         let server = start_server(unix, 3, move |request| match request.path.as_str() {
-            "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
+            "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
             "/api/v1/applications/apply?deploy=true" => {
                 mutation_requests.push(request.clone());
                 assert_eq!(request.body, MANIFEST.as_bytes());
@@ -778,7 +770,7 @@ fn noninteractive_apply_stops_after_inspection() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(false, 1, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
+        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
         path => panic!("mutation must not be sent; got {path}"),
     });
     let output = run(
@@ -802,7 +794,7 @@ fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(false, 3, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
+        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
         "/api/v1/applications/apply?deploy=true" => {
             Reply::accepted(saved_deployment("app-notes-01"))
         }
@@ -998,19 +990,9 @@ fn progress_is_visible_before_the_server_completes_the_command() {
             Reply::json(operation("succeeded"))
         }
     });
-    let Endpoint::Tcp(url) = &server.endpoint else {
-        unreachable!()
-    };
-    let mut child = support::command()
-        .args([
-            "--url",
-            url,
-            "--json",
-            "--timeout",
-            "10s",
-            "operation",
-            "operation-01",
-        ])
+    let mut child = server
+        .command()
+        .args(["--json", "--timeout", "10s", "operation", "operation-01"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1108,7 +1090,7 @@ fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(true, 3, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
+        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
         "/api/v1/applications/apply?deploy=true" => {
             Reply::accepted(saved_deployment("app-notes-01"))
         }
@@ -1242,15 +1224,10 @@ fn delete_reports_named_volume_retention_and_operation_completion() {
                 deleting = true;
                 Reply::accepted(deleted("app-notes-01"))
             }
-            "/api/v1/applications/app-notes-01" => {
-                let mut reply = Reply::json(Value::Null);
-                reply.status = "404 Not Found";
-                reply.body = serde_json::to_vec(
-                    &json!({"code":"not_found","message":"Application deleted"}),
-                )
-                .unwrap();
-                reply
-            }
+            "/api/v1/applications/app-notes-01" => Reply::status(
+                "404 Not Found",
+                &json!({"code":"not_found","message":"Application deleted"}),
+            ),
             path => panic!("unexpected path {path}"),
         });
         let output = run(&server, &["app", "delete", "notes", "--yes"]);
@@ -1343,13 +1320,8 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
     for _ in 0..3 {
         // Rebuild the command each attempt; `Command::args` accumulates, so
         // reusing one command would append duplicate arguments.
-        let mut command = support::command();
-        if let Endpoint::Tcp(url) = &interrupt_server.endpoint {
-            command.args(["--url", url]);
-        } else {
-            panic!("interrupt fixture uses TCP");
-        }
-        let child = command
+        let child = interrupt_server
+            .command()
             .args(["--timeout", "5s", "operation", "operation-01"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1387,11 +1359,9 @@ fn ctrl_c_ends_a_pending_secret_read_from_stdin() {
         }
         path => panic!("unexpected path {path}"),
     });
-    let Endpoint::Tcp(url) = &server.endpoint else {
-        unreachable!()
-    };
-    let mut child = support::command()
-        .args(["--url", url, "app", "secret", "app-notes-01"])
+    let mut child = server
+        .command()
+        .args(["app", "secret", "app-notes-01"])
         .args(["set", "database-password", "--stdin", "--yes"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1493,13 +1463,11 @@ fn fifo_manifest_is_rejected_before_opening() {
 #[test]
 fn human_output_reports_a_closed_pipe_without_panicking() {
     let server = start_server(false, 1, |_| Reply::json(operation("requested")));
-    let Endpoint::Tcp(url) = &server.endpoint else {
-        panic!("TCP fixture")
-    };
     let (reader, writer) = std::os::unix::net::UnixStream::pair().expect("output pipe");
     drop(reader);
-    let output = support::command()
-        .args(["--url", url, "operation", "operation-01", "--no-wait"])
+    let output = server
+        .command()
+        .args(["operation", "operation-01", "--no-wait"])
         .stdout(Stdio::from(std::os::fd::OwnedFd::from(writer)))
         .output()
         .expect("CLI reports output failure");
@@ -1604,7 +1572,7 @@ fn apply_defaults_to_saving_without_preview_or_operation_polling() {
                     .map(String::as_str),
                 Some("1")
             );
-            Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
+            Reply::json(saved())
         }
         _ => panic!("unexpected request {}", request.path),
     });
@@ -1648,10 +1616,10 @@ fn apply_protects_the_inspected_identity_and_revision_with_confirmation_skipped(
                 .map(String::as_str),
             Some("app-notes-01")
         );
-        let mut reply = Reply::json(Value::Null);
-        reply.status = "409 Conflict";
-        reply.body=serde_json::to_vec(&json!({"code":"generation_conflict","message":"Application changed since inspection; run the command again"})).unwrap();
-        reply
+        Reply::status(
+            "409 Conflict",
+            &json!({"code":"generation_conflict","message":"Application changed since inspection; run the command again"}),
+        )
     });
     let output = run(
         &server,
@@ -1680,30 +1648,18 @@ fn apply_protects_the_inspected_identity_and_revision_with_confirmation_skipped(
 
 #[test]
 fn rename_uses_the_inspected_revision_and_preserves_identity() {
-    let server = start_server(false, 2, |request| {
-        if request.method == "GET" {
-            return Reply::json(app_view("app-notes-01", "notes"));
-        }
-        assert_eq!(request.method, "PUT");
-        assert_eq!(
-            request.path,
-            "/api/v1/applications/app-notes-01/name?deploy=false&expected_generation=1&force=false"
-        );
-        let body: Value = serde_json::from_slice(&request.body).unwrap();
-        assert_eq!(body, json!({"value":"renamed"}));
-        assert!(request.headers.contains_key("idempotency-key"));
-        Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
-    });
-    let output = run(
-        &server,
+    let output = assert_saves(
+        app_view("app-notes-01", "notes"),
         &["app", "rename", "app-notes-01", "renamed", "--yes"],
+        "PUT",
+        "name",
+        &json!({"value":"renamed"}),
     );
     assert_eq!(
         assert_json_success(&output)["application_id"],
         "app-notes-01"
     );
     assert_eq!(output.stderr, b"");
-    assert_eq!(server.finish().len(), 2);
 }
 
 #[test]
@@ -1714,7 +1670,7 @@ fn force_does_not_skip_confirmation_and_explicit_force_is_sent_to_the_endpoint()
         let mut mutations = 0;
         let server = start_server(false, if yes { 3 } else { 1 }, move |request| {
             if request.path == "/api/v1/applications?limit=100" {
-                return Reply::json(json!({"items":[],"next_cursor":null}));
+                return Reply::json(page(Vec::new(), None));
             }
             assert_eq!(
                 request.path,
@@ -1763,7 +1719,7 @@ fn apply_returns_superseded_success_without_following_the_replacement() {
     let directory = tempdir().unwrap();
     let manifest = write_manifest(&directory);
     let server = start_server(false, 3, |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
+        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
         "/api/v1/applications/apply?deploy=true" => {
             Reply::accepted(saved_deployment("app-notes-01"))
         }
@@ -1821,9 +1777,7 @@ fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
         }
         server.finish();
     }
-    let server = start_server(false, 1, |_| {
-        Reply::json(json!({"items": [], "next_cursor": null}))
-    });
+    let server = start_server(false, 1, |_| Reply::json(page(Vec::new(), None)));
     let output = run_human(&server, &["--quiet", "builds", "list"]);
     assert!(output.status.success());
     assert_eq!(output.stdout, b"");
@@ -1981,31 +1935,49 @@ fn field_edit_sends_only_the_selected_value_and_defaults_to_save_only() {
     }
 }
 
-/// Runs `arguments` against a server that serves the `notes` application,
-/// asserting they save only `expected` at the service field `suffix`.
-fn assert_saves_field(arguments: &[&str], suffix: &str, expected: &Value) {
-    let (suffix, expected) = (suffix.to_owned(), expected.clone());
+/// Runs `arguments` against a server that serves `view` as `app-notes-01`,
+/// asserting they save only `expected` with one `method` request to the
+/// application's `path`, conditioned on the inspected revision.
+fn assert_saves(
+    view: Value,
+    arguments: &[&str],
+    method: &'static str,
+    path: &str,
+    expected: &Value,
+) -> Output {
+    let path = format!(
+        "/api/v1/applications/app-notes-01/{path}?deploy=false&expected_generation=1&force=false"
+    );
+    let expected = expected.clone();
     let server = start_server(false, 2, move |request| {
         if request.method == "GET" {
-            return Reply::json(app_view("app-notes-01", "notes"));
+            return Reply::json(view.clone());
         }
-        assert_eq!(request.method, "PUT");
-        assert_eq!(
-            request.path,
-            format!(
-                "/api/v1/applications/app-notes-01/services/web/{suffix}?deploy=false&expected_generation=1&force=false"
-            )
-        );
+        assert_eq!(request.method, method);
+        assert_eq!(request.path, path);
         assert_eq!(
             serde_json::from_slice::<Value>(&request.body).unwrap(),
             expected
         );
         assert!(request.headers.contains_key("idempotency-key"));
-        Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
+        Reply::json(saved())
     });
     let output = run(&server, arguments);
     assert_eq!(assert_json_success(&output)["generation"], 2);
     assert_eq!(server.finish().len(), 2);
+    output
+}
+
+/// [`assert_saves`] for the `notes` application's `web` service field `suffix`.
+fn assert_saves_field(arguments: &[&str], suffix: &str, expected: &Value) {
+    let view = app_view("app-notes-01", "notes");
+    assert_saves(
+        view,
+        arguments,
+        "PUT",
+        &format!("services/web/{suffix}"),
+        expected,
+    );
 }
 
 #[test]
@@ -2120,24 +2092,7 @@ fn job_commands_edit_the_loaded_jobs_and_save_the_whole_list() {
             job("migrate", &["notes", "migrate"], 60),
             job("seed", &["notes", "seed"], 300)
         ]);
-        let server = start_server(false, 2, move |request| {
-            if request.method == "GET" {
-                return Reply::json(view.clone());
-            }
-            assert_eq!(request.method, "PUT");
-            assert_eq!(
-                request.path,
-                "/api/v1/applications/app-notes-01/jobs?deploy=false&expected_generation=1&force=false"
-            );
-            assert_eq!(
-                serde_json::from_slice::<Value>(&request.body).unwrap(),
-                json!({"value": expected})
-            );
-            Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
-        });
-        let output = run(&server, &arguments);
-        assert_eq!(assert_json_success(&output)["generation"], 2);
-        assert_eq!(server.finish().len(), 2);
+        assert_saves(view, &arguments, "PUT", "jobs", &json!({"value": expected}));
     }
 
     let server = start_server(false, 1, |_| Reply::json(app_view("app-notes-01", "notes")));
@@ -2304,7 +2259,7 @@ fn git_service_creation_does_not_require_a_placeholder_image() {
             body["source"],
             json!({"type":"git","repository":{"url":"https://example.com/app.git","branch":"release"},"build":{"type":"docker","dockerfile":"build/Dockerfile","context":"build","args":{"ORIGIN":"https://a=b"},"target":"runtime"}})
         );
-        Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
+        Reply::json(saved())
     });
     let output = run(
         &server,
@@ -2337,23 +2292,8 @@ fn git_service_creation_does_not_require_a_placeholder_image() {
 // URL are both given.
 #[test]
 fn repository_connect_sends_the_repository_without_replacing_the_endpoint() {
-    let server = start_server(false, 2, |request| {
-        if request.method == "GET" {
-            return Reply::json(app_view("app-notes-01", "notes"));
-        }
-        assert_eq!(request.method, "PUT");
-        assert_eq!(
-            request.path,
-            "/api/v1/applications/app-notes-01/repository?deploy=false&expected_generation=1&force=false"
-        );
-        assert_eq!(
-            serde_json::from_slice::<Value>(&request.body).unwrap(),
-            json!({"value":{"repository":{"url":"https://example.com/app.git","branch":"release"},"path":"piquel.toml"}})
-        );
-        Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
-    });
-    let output = run(
-        &server,
+    assert_saves(
+        app_view("app-notes-01", "notes"),
         &[
             "app",
             "repository",
@@ -2365,9 +2305,10 @@ fn repository_connect_sends_the_repository_without_replacing_the_endpoint() {
             "release",
             "--yes",
         ],
+        "PUT",
+        "repository",
+        &json!({"value":{"repository":{"url":"https://example.com/app.git","branch":"release"},"path":"piquel.toml"}}),
     );
-    assert_eq!(assert_json_success(&output)["generation"], 2);
-    assert_eq!(server.finish().len(), 2);
 }
 
 #[test]
@@ -2695,9 +2636,7 @@ fn audit_matches_accounts_missing_from_the_directory() {
             "credentials": [],
             "invitations": []
         })),
-        path if path.starts_with("/api/v1/audit?") => {
-            Reply::json(json!({"items": [], "next_cursor": null}))
-        }
+        path if path.starts_with("/api/v1/audit?") => Reply::json(page(Vec::new(), None)),
         path => panic!("unexpected path {path}"),
     });
     for user in ["alice", deleted] {
@@ -2719,29 +2658,13 @@ fn audit_matches_accounts_missing_from_the_directory() {
 
 #[test]
 fn sync_settings_and_environment_opt_outs_are_sent_as_typed_requests() {
-    let server = start_server(false, 2, |request| {
-        if request.method == "GET" {
-            let mut view = app_view("app-notes-01", "notes");
-            view["application"]["spec"]["manifest"] = json!({
-                "repository": {"url": "https://example.com/notes.git", "branch": "main"},
-                "path": "app.toml"
-            });
-            return Reply::json(view);
-        }
-        assert_eq!(request.method, "PUT");
-        assert_eq!(
-            request.path,
-            "/api/v1/applications/app-notes-01/repository/sync?deploy=false&expected_generation=1&force=false"
-        );
-        let body: Value = serde_json::from_slice(&request.body).unwrap();
-        assert_eq!(
-            body,
-            json!({"value": {"mode": "poll", "interval_seconds": 120}})
-        );
-        Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
+    let mut view = app_view("app-notes-01", "notes");
+    view["application"]["spec"]["manifest"] = json!({
+        "repository": {"url": "https://example.com/notes.git", "branch": "main"},
+        "path": "app.toml"
     });
-    let output = run(
-        &server,
+    assert_saves(
+        view,
         &[
             "app",
             "repository",
@@ -2752,9 +2675,10 @@ fn sync_settings_and_environment_opt_outs_are_sent_as_typed_requests() {
             "120",
             "--yes",
         ],
+        "PUT",
+        "repository/sync",
+        &json!({"value": {"mode": "poll", "interval_seconds": 120}}),
     );
-    assert_eq!(assert_json_success(&output)["generation"], 2);
-    let _ = server.finish();
 
     // An interval only applies to polling, and nothing is sent.
     let server = start_server(false, 0, |request| panic!("unexpected {}", request.path));
@@ -3146,12 +3070,7 @@ fn json_errors_are_one_envelope_on_stderr() {
     let server = start_server(false, 2, move |request| {
         match request.path.split('?').next().unwrap() {
             "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
-            "/api/v1/applications/app-notes-01/previews" => Reply {
-                status: "409 Conflict",
-                content_type: "application/json",
-                body: serde_json::to_vec(&body).unwrap(),
-                drop_connection: false,
-            },
+            "/api/v1/applications/app-notes-01/previews" => Reply::status("409 Conflict", &body),
             path => panic!("unexpected path {path}"),
         }
     });
