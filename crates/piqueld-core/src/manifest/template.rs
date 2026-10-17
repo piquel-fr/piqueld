@@ -282,11 +282,7 @@ impl ApplicationTemplate {
                     .name
                     .as_literal()
                     .unwrap_or_else(|| secret.name.to_string());
-                let source = if spec.secrets.iter().any(|declared| declared.name == name) {
-                    SecretSource::Generated
-                } else {
-                    SecretSource::Stored
-                };
+                let source = SecretSource::of(&name, &spec.secrets);
                 (name, source)
             })
             .collect()

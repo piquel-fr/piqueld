@@ -1034,9 +1034,7 @@ impl Plan {
         }
         plan
     }
-}
 
-impl Plan {
     /// Adds `diagnostics`, keeping every diagnostic in resource order.
     pub fn warn(&mut self, diagnostics: impl IntoIterator<Item = PlanDiagnostic>) {
         self.diagnostics.extend(diagnostics);

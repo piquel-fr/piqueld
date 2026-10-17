@@ -76,9 +76,7 @@ impl AuditEvent {
             |operator| operator.to_string(),
         )
     }
-}
 
-impl AuditEvent {
     /// What the request addressed, e.g. `application app-blog` or
     /// `environment env-staging of app-blog`.
     #[must_use]
