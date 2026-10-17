@@ -2415,7 +2415,7 @@
             "description": "Canonical Docker service name."
           },
           "networks": {
-            "description": "Canonical private network names attached to the service.",
+            "description": "Private, ingress and link network names attached to the service.",
             "items": {
               "$ref": "#/components/schemas/DockerNetworkName"
             },
