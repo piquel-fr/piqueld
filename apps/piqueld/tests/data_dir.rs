@@ -1,181 +1,146 @@
 //! Privacy enforcement for the daemon's single data directory.
 
-use std::os::unix::fs::PermissionsExt;
+#[path = "support/fixture_dir.rs"]
+mod fixture_dir;
 
-// Test our owned fixture tree rather than the synthetic root or /tmp in a
-// Nix build sandbox, whose owners are intentionally unmapped in its user namespace.
-async fn prepare_data_dir(path: &std::path::Path) -> std::io::Result<()> {
-    let cwd = std::env::current_dir()?;
-    piqueld::prepare_data_dir(path.strip_prefix(&cwd).unwrap_or(path)).await
+use std::io::ErrorKind;
+use std::path::Path;
+
+async fn prepare_data_dir(path: &Path) -> std::io::Result<()> {
+    piqueld::prepare_data_dir(fixture_dir::relative(path)).await
+}
+
+/// A temporary directory below the working directory, see
+/// [`fixture_dir::relative`].
+fn fixture() -> tempfile::TempDir {
+    tempfile::tempdir_in(".").expect("temporary directory")
+}
+
+/// Asserts `path` is refused as a data directory with `kind`, and an error
+/// message containing `message`, which may be empty.
+async fn assert_refused(path: &Path, kind: ErrorKind, message: &str) {
+    let error = prepare_data_dir(path)
+        .await
+        .expect_err("the data directory is refused");
+    assert_eq!(error.kind(), kind);
+    assert!(error.to_string().contains(message), "{error}");
 }
 
 #[tokio::test]
 async fn missing_data_dir_is_created_private() {
-    let directory = tempfile::tempdir_in(".").expect("temporary directory");
+    let directory = fixture();
     let data_dir = directory.path().join("var").join("lib").join("piqueld");
 
     prepare_data_dir(&data_dir)
         .await
         .expect("missing data directories are created");
 
-    let mode = std::fs::symlink_metadata(&data_dir)
-        .expect("created data dir metadata")
-        .permissions()
-        .mode();
-    assert_eq!(mode & 0o777, 0o700);
+    assert_eq!(fixture_dir::mode(&data_dir), 0o700);
 }
 
 #[tokio::test]
 async fn nested_creation_grants_no_group_or_other_access_to_new_components() {
-    let directory = tempfile::tempdir_in(".").expect("temporary directory");
-    let inner = directory.path().join("a").join("b").join("c");
-    std::fs::create_dir(directory.path().join("a")).expect("outer component exists");
-    std::fs::set_permissions(
-        directory.path().join("a"),
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .expect("outer component is permissive");
+    let directory = fixture();
+    let outer = directory.path().join("a");
+    std::fs::create_dir(&outer).expect("outer component exists");
+    fixture_dir::set_mode(&outer, 0o755);
 
-    prepare_data_dir(&inner)
+    prepare_data_dir(&outer.join("b").join("c"))
         .await
         .expect("nested data directories are created under an existing parent");
 
-    for component in [
-        directory.path().join("a").join("b"),
-        directory.path().join("a").join("b").join("c"),
-    ] {
-        let mode = std::fs::symlink_metadata(&component)
-            .expect("created component metadata")
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o700);
+    for component in [outer.join("b"), outer.join("b").join("c")] {
+        assert_eq!(fixture_dir::mode(&component), 0o700);
     }
 }
 
 #[tokio::test]
 async fn existing_private_data_dir_is_kept_unchanged() {
-    let directory = tempfile::tempdir_in(".").expect("temporary directory");
+    let directory = fixture();
     let data_dir = directory.path().join("private");
     std::fs::create_dir(&data_dir).expect("data dir is created");
-    std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700))
-        .expect("data dir permissions are set");
+    fixture_dir::set_mode(&data_dir, 0o700);
 
     prepare_data_dir(&data_dir)
         .await
         .expect("private data directories are accepted");
 
-    let mode = std::fs::symlink_metadata(&data_dir)
-        .expect("existing data dir metadata")
-        .permissions()
-        .mode();
-    assert_eq!(mode & 0o777, 0o700);
+    assert_eq!(fixture_dir::mode(&data_dir), 0o700);
 }
 
 #[tokio::test]
 async fn permissive_data_dir_is_rejected_without_chmodding_it() {
-    let directory = tempfile::tempdir_in(".").expect("temporary directory");
+    let directory = fixture();
     let data_dir = directory.path().join("shared");
     std::fs::create_dir(&data_dir).expect("data dir is created");
-    std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o755))
-        .expect("data dir permissions are set");
+    fixture_dir::set_mode(&data_dir, 0o755);
 
-    let Err(error) = prepare_data_dir(&data_dir).await else {
-        panic!("permissive data dir was accepted");
-    };
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    assert!(error.to_string().contains("must be private"));
-    let mode = std::fs::symlink_metadata(&data_dir)
-        .expect("unchanged data dir metadata")
-        .permissions()
-        .mode();
-    assert_eq!(mode & 0o777, 0o755);
+    assert_refused(&data_dir, ErrorKind::InvalidInput, "must be private").await;
+    assert_eq!(fixture_dir::mode(&data_dir), 0o755);
 }
 
 #[tokio::test]
 async fn unsafe_writable_ancestor_is_rejected() {
-    let directory = tempfile::tempdir_in(".").expect("temporary directory");
+    let directory = fixture();
     let shared = directory.path().join("shared");
     let data_dir = shared.join("piqueld");
     std::fs::create_dir_all(&data_dir).expect("data directory tree is created");
-    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777))
-        .expect("ancestor permissions are set");
-    std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700))
-        .expect("data directory permissions are set");
+    fixture_dir::set_mode(&shared, 0o777);
+    fixture_dir::set_mode(&data_dir, 0o700);
 
-    let error = prepare_data_dir(&data_dir)
-        .await
-        .expect_err("unsafe writable ancestor is rejected");
-    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-    assert!(error.to_string().contains("ancestor"));
+    assert_refused(&data_dir, ErrorKind::PermissionDenied, "ancestor").await;
 }
 
 #[tokio::test]
 async fn symlinked_data_dir_is_rejected() {
-    let directory = tempfile::tempdir_in(".").expect("temporary directory");
+    let directory = fixture();
     let target = directory.path().join("target");
     std::fs::create_dir(&target).expect("target directory is created");
     let link = directory.path().join("link");
     std::os::unix::fs::symlink(&target, &link).expect("data dir symlink is created");
 
-    let Err(error) = prepare_data_dir(&link).await else {
-        panic!("symlinked data dir was accepted");
-    };
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    assert!(error.to_string().contains("not a real directory"));
+    assert_refused(&link, ErrorKind::InvalidInput, "not a real directory").await;
 }
 
 #[tokio::test]
 async fn symlinked_intermediate_component_is_rejected() {
-    let directory = tempfile::tempdir_in(".").expect("temporary directory");
-    let real = directory.path().join("real").join("piqueld");
-    std::fs::create_dir_all(&real).expect("real directory tree is created");
+    let directory = fixture();
+    let real = directory.path().join("real");
+    std::fs::create_dir_all(real.join("piqueld")).expect("real directory tree is created");
     let link = directory.path().join("link");
-    std::os::unix::fs::symlink(directory.path().join("real"), &link)
-        .expect("intermediate symlink is created");
+    std::os::unix::fs::symlink(&real, &link).expect("intermediate symlink is created");
 
-    let Err(error) = prepare_data_dir(&link.join("piqueld")).await else {
-        panic!("symlinked intermediate component was accepted");
-    };
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert_refused(&link.join("piqueld"), ErrorKind::InvalidInput, "").await;
 }
 
 #[tokio::test]
 async fn parent_component_paths_are_rejected() {
-    let directory = tempfile::tempdir_in(".").expect("temporary directory");
+    let directory = fixture();
     let path = directory.path().join("state").join("..").join("piqueld");
-    let Err(error) = prepare_data_dir(&path).await else {
-        panic!("parent component was accepted");
-    };
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    assert!(error.to_string().contains("parent component"));
+
+    assert_refused(&path, ErrorKind::InvalidInput, "parent component").await;
 }
 
 #[tokio::test]
 async fn non_directory_data_path_is_rejected() {
-    let directory = tempfile::tempdir_in(".").expect("temporary directory");
+    let directory = fixture();
     let file = directory.path().join("file");
     std::fs::write(&file, b"not a directory").expect("file is written");
 
-    let Err(error) = prepare_data_dir(&file).await else {
-        panic!("non-directory data path was accepted");
-    };
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert_refused(&file, ErrorKind::InvalidInput, "").await;
 }
 
 #[tokio::test]
 async fn paths_without_a_dedicated_directory_are_rejected() {
     for path in ["", ".", "./"] {
-        let error = piqueld::prepare_data_dir(std::path::Path::new(path))
+        let error = piqueld::prepare_data_dir(Path::new(path))
             .await
             .expect_err("path without a dedicated directory is rejected");
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
     }
 }
 
 #[tokio::test]
 async fn root_directory_is_rejected() {
-    let Err(error) = prepare_data_dir(std::path::Path::new("/")).await else {
-        panic!("root data directory was accepted");
-    };
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert_refused(Path::new("/"), ErrorKind::InvalidInput, "").await;
 }

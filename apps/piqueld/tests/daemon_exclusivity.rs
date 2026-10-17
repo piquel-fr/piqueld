@@ -1,5 +1,8 @@
 //! Startup must exclude competing processes before touching durable state.
 
+#[path = "support/daemon.rs"]
+mod daemon;
+
 use piqueld::DirectoryLock;
 use std::{
     io::{BufRead, BufReader, Write},
@@ -65,12 +68,7 @@ fn competing_daemon_preserves_database_and_live_socket() {
         format!("[server]\ndata_dir={:?}\n", path.to_str().unwrap()),
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_piqueld"))
-        .args(["--config", config.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let error = String::from_utf8(output.stderr).unwrap();
+    let error = daemon::refused_start(&config);
     assert!(error.contains("directory already in use"), "{error}");
     assert_eq!(std::fs::read(database).unwrap(), b"untouched database");
     assert_eq!(std::fs::metadata(socket).unwrap().ino(), inode);

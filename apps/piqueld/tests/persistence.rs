@@ -1,57 +1,58 @@
 //! Durable desired state and operation history.
 
-use piqueld::store::{Store, StoreError};
-use piqueld_core::manifest::ApplicationTemplate;
-use piqueld_core::resource::{ResolutionSet, ResolvedSource, compile_application};
-use piqueld_core::{ApplicationId, EnvironmentId, InstanceId, OperationState, parse_toml};
-use sqlx::{Connection, SqliteConnection};
+#[path = "support/prebuilt.rs"]
+mod prebuilt;
+#[path = "support/sqlite.rs"]
+mod sqlite;
 
-fn application() -> piqueld_core::NormalizedApplication {
-    parse_toml(include_str!(
-        "../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
-    ))
-    .expect("fixture is valid")
-    .normalize(ApplicationId::parse("app-persist-01").expect("fixture ID is valid"))
+use piqueld::store::{Store, StoreError};
+use piqueld_core::api::Page;
+use piqueld_core::manifest::ApplicationTemplate;
+use piqueld_core::{EnvironmentId, NormalizedApplication, Operation, OperationState};
+
+fn application() -> NormalizedApplication {
+    prebuilt::application("app-persist-01")
 }
 
-fn application_named(id: &str, name: &str) -> piqueld_core::NormalizedApplication {
-    let manifest =
-        include_str!("../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml")
-            .replacen("name = \"notes\"", &format!("name = \"{name}\""), 1);
-    parse_toml(&manifest)
+/// The fixture saved as application `id`, named `name`.
+fn application_named(id: &str, name: &str) -> NormalizedApplication {
+    let mut manifest = prebuilt::manifest();
+    manifest.metadata.name = name.into();
+    manifest
+        .validate()
         .expect("fixture variant is valid")
-        .normalize(ApplicationId::parse(id).expect("fixture ID is valid"))
+        .normalize(piqueld_core::ApplicationId::parse(id).expect("fixture ID is valid"))
 }
 
 /// The environment created with `application`, which shares its ID.
-fn environment(application: &piqueld_core::NormalizedApplication) -> EnvironmentId {
+fn environment(application: &NormalizedApplication) -> EnvironmentId {
     EnvironmentId::default_for(application.id())
 }
 
-fn resolved(
-    application: &piqueld_core::NormalizedApplication,
-    instance_id: &str,
-) -> piqueld_core::resource::ResolvedApplication {
-    let resolutions = ResolutionSet {
-        secret_names: std::collections::BTreeMap::default(),
-        sources: [(
-            piqueld_core::ServiceName::parse("web").unwrap(),
-            ResolvedSource::parse_image(
-                "ghcr.io/example/notes:1.4.0",
-                format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
-            )
-            .unwrap(),
-        )]
-        .into_iter()
-        .collect(),
-    };
-    compile_application(
-        application,
-        &environment(application),
-        InstanceId::parse(instance_id).expect("store instance ID is valid"),
-        &resolutions,
-    )
-    .expect("fixture resolves")
+/// Saves `application` with its resolved target, without a revision check.
+async fn save(store: &Store, application: &NormalizedApplication) -> Operation {
+    store
+        .save_application(
+            &ApplicationTemplate::from(application),
+            Some(&prebuilt::resolve(application, store.instance_id())),
+            None,
+        )
+        .await
+        .expect("application saved")
+}
+
+/// Every item of the pages `page` returns for each cursor, from the first.
+async fn all_pages<T>(mut page: impl AsyncFnMut(Option<String>) -> Page<T>) -> Vec<T> {
+    let mut items = Vec::new();
+    let mut cursor = None;
+    loop {
+        let next = page(cursor).await;
+        items.extend(next.items);
+        cursor = next.next_cursor;
+        if cursor.is_none() {
+            return items;
+        }
+    }
 }
 
 #[tokio::test]
@@ -60,19 +61,10 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     let database = directory.path().join("control-plane.db");
     let store = Store::open(&database).await.expect("fresh database opens");
     let application = application();
-    let desired = resolved(&application, store.instance_id());
-    let created = store
-        .save_application(
-            &ApplicationTemplate::from(&application),
-            Some(&desired),
-            None,
-        )
-        .await
-        .expect("application saved");
-    let stored = store
-        .get(&environment(&application))
-        .await
-        .expect("application readable");
+    let environment = environment(&application);
+    let created = save(&store, &application).await;
+    let desired = prebuilt::resolve(&application, store.instance_id());
+    let stored = store.get(&environment).await.expect("application readable");
     assert_eq!(stored.resolved, Some(desired.clone()));
     assert!(!stored.delete_intent());
     assert_eq!(
@@ -81,7 +73,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     );
 
     let deleted = store
-        .request_delete(&environment(&application))
+        .request_delete(&environment)
         .await
         .expect("deletion saved");
     assert_eq!(
@@ -89,32 +81,13 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
         OperationState::Superseded
     );
     assert_eq!(deleted.state, OperationState::Requested);
-    assert!(
-        store
-            .get(&environment(&application))
-            .await
-            .unwrap()
-            .delete_intent()
-    );
+    assert!(store.get(&environment).await.unwrap().delete_intent());
     drop(store);
 
     let reopened = Store::open(&database).await.expect("database reopens");
-    assert_eq!(
-        reopened
-            .get(&environment(&application))
-            .await
-            .unwrap()
-            .resolved
-            .unwrap(),
-        desired
-    );
-    assert!(
-        reopened
-            .get(&environment(&application))
-            .await
-            .unwrap()
-            .delete_intent()
-    );
+    let stored = reopened.get(&environment).await.unwrap();
+    assert!(stored.delete_intent());
+    assert_eq!(stored.resolved.unwrap(), desired);
     reopened
         .transition_operation(
             &deleted.id,
@@ -127,7 +100,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     let running = reopened.operation(&deleted.id).await.unwrap();
     reopened.finish_delete_operation(&running).await.unwrap();
     assert!(matches!(
-        reopened.get(&environment(&application)).await,
+        reopened.get(&environment).await,
         Err(StoreError::NotFound)
     ));
     assert!(matches!(
@@ -136,7 +109,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     ));
     // Its events stay in the application's history until the application is deleted.
     let events = reopened
-        .events(Some(&environment(&application)), None, 100)
+        .events(Some(&environment), None, 100)
         .await
         .unwrap();
     assert!(
@@ -154,28 +127,14 @@ async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation
         .await
         .unwrap();
     let application = application();
-    let first = store
-        .save_application(
-            &ApplicationTemplate::from(&application),
-            Some(&resolved(&application, store.instance_id())),
-            None,
-        )
-        .await
-        .unwrap();
+    let first = save(&store, &application).await;
     let mut replacement = application.to_manifest();
     replacement.spec.services[0].replicas = 2.into();
     let replacement = replacement
         .validate()
         .unwrap()
         .normalize(application.id().clone());
-    let replaced = store
-        .save_application(
-            &ApplicationTemplate::from(&replacement),
-            Some(&resolved(&replacement, store.instance_id())),
-            None,
-        )
-        .await
-        .unwrap();
+    let replaced = save(&store, &replacement).await;
     assert_ne!(first.id, replaced.id);
     assert_eq!(
         store.operation(&first.id).await.unwrap().state,
@@ -229,33 +188,14 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
     let store = Store::open(&database).await.expect("fresh database opens");
     let corrupt = application();
     let healthy = application_named("app-persist-02", "archive");
-    store
-        .save_application(
-            &ApplicationTemplate::from(&corrupt),
-            Some(&resolved(&corrupt, store.instance_id())),
-            None,
-        )
-        .await
-        .expect("corrupt application is created");
-    store
-        .save_application(
-            &ApplicationTemplate::from(&healthy),
-            Some(&resolved(&healthy, store.instance_id())),
-            None,
-        )
-        .await
-        .expect("healthy application is created");
+    save(&store, &corrupt).await;
+    save(&store, &healthy).await;
 
-    let mut connection =
-        SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", database.display()))
-            .await
-            .expect("database can be inspected");
     sqlx::query("UPDATE applications SET desired_json='{}' WHERE id=?1")
         .bind(corrupt.id().as_str())
-        .execute(&mut connection)
+        .execute(&mut sqlite::connect(&database).await)
         .await
         .expect("row can be corrupted");
-    drop(connection);
 
     let summaries = store
         .list_summaries(&piqueld_core::access::Scope::All, None, 50)
@@ -278,36 +218,24 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
     // cursor: quarantined rows still consume page slots, so the surviving
     // applications stay reachable on later pages.
     let third = application_named("app-persist-03", "gallery");
-    store
-        .save_application(
-            &ApplicationTemplate::from(&third),
-            Some(&resolved(&third, store.instance_id())),
-            None,
-        )
-        .await
-        .expect("third application is created");
+    save(&store, &third).await;
     let fourth = application_named("app-persist-04", "wiki");
-    store
-        .save_application(
-            &ApplicationTemplate::from(&fourth),
-            Some(&resolved(&fourth, store.instance_id())),
-            None,
-        )
-        .await
-        .expect("fourth application is created");
+    save(&store, &fourth).await;
 
     // The corrupt row consumes one slot, but must not hide later applications.
+    let ids = |page: &piqueld::store::EnvironmentPage| {
+        page.items
+            .iter()
+            .map(|environment| environment.id().to_string())
+            .collect::<Vec<_>>()
+    };
     let first_page = store
         .list(None, 2)
         .await
         .expect("first page tolerates a corrupt row");
     assert_eq!(
-        first_page
-            .items
-            .iter()
-            .map(|environment| environment.id().as_str())
-            .collect::<Vec<_>>(),
-        vec![healthy.id().as_str()],
+        ids(&first_page),
+        [healthy.id().as_str()],
         "the corrupt row is quarantined inside the full page"
     );
     let next_cursor = first_page.next_cursor.expect("full page reports a cursor");
@@ -317,12 +245,8 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
         .await
         .expect("second page tolerates a corrupt row");
     assert_eq!(
-        second_page
-            .items
-            .iter()
-            .map(|environment| environment.id().as_str())
-            .collect::<Vec<_>>(),
-        vec![third.id().as_str(), fourth.id().as_str()],
+        ids(&second_page),
+        [third.id().as_str(), fourth.id().as_str()],
         "the remaining healthy application follows the quarantined page"
     );
 }
@@ -334,7 +258,7 @@ async fn deployment_history_survives_pruning_and_events_have_independent_retenti
         .await
         .unwrap();
     let app = application();
-    let desired = resolved(&app, store.instance_id());
+    let desired = prebuilt::resolve(&app, store.instance_id());
     let first = store
         .save_application(&ApplicationTemplate::from(&app), Some(&desired), Some(0))
         .await
@@ -378,6 +302,7 @@ async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
     let database = directory.path().join("history.db");
     let store = Store::open(&database).await.unwrap();
     let app = application();
+    let environment = environment(&app);
     let other = application_named("app-other", "other");
     let initial = store
         .save_application(&ApplicationTemplate::from(&app), None, Some(0))
@@ -391,42 +316,37 @@ async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
     for _ in 0..3 {
         expected_deployments.push(
             store
-                .request_deploy(&environment(&app), Some(1))
+                .request_deploy(&environment, Some(1))
                 .await
                 .unwrap()
                 .id,
         );
         store
-            .request_deploy(&environment(&other), Some(1))
+            .request_deploy(&EnvironmentId::default_for(other.id()), Some(1))
             .await
             .unwrap();
     }
     expected_deployments.sort_unstable_by(|left, right| right.cmp(left));
 
     // Equal creation times must not change the API's ID-based order or cursor.
-    let mut connection = SqliteConnection::connect(&format!("sqlite://{}", database.display()))
-        .await
-        .unwrap();
     sqlx::query("UPDATE deployments SET created_at_ms=1")
-        .execute(&mut connection)
+        .execute(&mut sqlite::connect(&database).await)
         .await
         .unwrap();
-    let mut cursor = None;
-    let mut deployments = Vec::new();
-    loop {
-        let page = store
-            .deployments(&environment(&app), cursor.as_deref(), 2)
+    let deployments = all_pages(async |cursor| {
+        store
+            .deployments(&environment, cursor.as_deref(), 2)
             .await
-            .unwrap();
-        for deployment in page.items {
-            assert_eq!(deployment.operation.environment_id, environment(&app));
-            deployments.push(deployment.operation.id);
-        }
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
+            .unwrap()
+    })
+    .await;
+    for deployment in &deployments {
+        assert_eq!(deployment.operation.environment_id, environment);
     }
+    let deployments = deployments
+        .into_iter()
+        .map(|deployment| deployment.operation.id)
+        .collect::<Vec<_>>();
     assert_eq!(deployments, expected_deployments);
 
     let expected_events = store
@@ -435,24 +355,20 @@ async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
         .unwrap()
         .items
         .into_iter()
-        .filter(|event| event.environment_id.as_ref() == Some(&environment(&app)))
+        .filter(|event| event.environment_id.as_ref() == Some(&environment))
         .map(|event| event.id)
         .collect::<Vec<_>>();
-    let mut events = Vec::new();
-    loop {
-        let page = store
-            .events(Some(&environment(&app)), cursor.as_deref(), 2)
+    let events = all_pages(async |cursor| {
+        store
+            .events(Some(&environment), cursor.as_deref(), 2)
             .await
-            .unwrap();
-        for event in page.items {
-            assert_eq!(event.environment_id.as_ref(), Some(&environment(&app)));
-            events.push(event.id);
-        }
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
+            .unwrap()
+    })
+    .await;
+    for event in &events {
+        assert_eq!(event.environment_id.as_ref(), Some(&environment));
     }
+    let events = events.into_iter().map(|event| event.id).collect::<Vec<_>>();
     assert_eq!(events, expected_events);
     let absent = EnvironmentId::parse("app-absent").unwrap();
     assert!(

@@ -1,10 +1,14 @@
 //! Runtime directory validation, socket recovery, and independent-daemon exclusion.
 
+#[path = "support/daemon.rs"]
+mod daemon;
+#[path = "support/fixture_dir.rs"]
+mod fixture_dir;
+
 use piqueld::RuntimeDir;
 use std::{
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 struct Fixture {
@@ -13,11 +17,13 @@ struct Fixture {
 }
 
 impl Fixture {
+    /// A runtime directory with permissions `mode`, below the working
+    /// directory, see [`fixture_dir::relative`].
     fn new(mode: u32) -> Self {
         let directory = tempfile::tempdir_in(".").unwrap();
         let runtime = directory.path().join("run");
         std::fs::create_dir(&runtime).unwrap();
-        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(mode)).unwrap();
+        fixture_dir::set_mode(&runtime, mode);
         Self {
             _directory: directory,
             runtime,
@@ -28,14 +34,22 @@ impl Fixture {
         self.runtime.join("piqueld.sock")
     }
 
+    fn socket_inode(&self) -> u64 {
+        std::fs::metadata(self.socket()).unwrap().ino()
+    }
+
     async fn acquire(&self) -> anyhow::Result<RuntimeDir> {
         Self::acquire_at(&self.runtime).await
     }
 
     async fn acquire_at(path: &Path) -> anyhow::Result<RuntimeDir> {
-        // Only inspect the owned fixture tree in Nix's user namespace.
-        let cwd = std::env::current_dir().unwrap();
-        RuntimeDir::acquire(path.strip_prefix(cwd).unwrap_or(path)).await
+        RuntimeDir::acquire(fixture_dir::relative(path)).await
+    }
+
+    /// Asserts acquiring `path` fails with an error mentioning `message`.
+    async fn assert_refused(path: &Path, message: &str) {
+        let error = Self::acquire_at(path).await.unwrap_err();
+        assert!(format!("{error:#}").contains(message), "{error:#}");
     }
 }
 
@@ -46,17 +60,10 @@ async fn socket_uses_effective_group_and_0660_in_shared_and_private_directories(
         let runtime = fixture.acquire().await.unwrap();
         let _listener = runtime.bind_api().await.unwrap();
         let socket = std::fs::metadata(fixture.socket()).unwrap();
-        assert_eq!(socket.permissions().mode() & 0o777, 0o660);
+        assert_eq!(fixture_dir::mode(&fixture.socket()), 0o660);
         assert_eq!(socket.uid(), rustix::process::geteuid().as_raw());
         assert_eq!(socket.gid(), rustix::process::getegid().as_raw());
-        assert_eq!(
-            std::fs::metadata(&fixture.runtime)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            mode
-        );
+        assert_eq!(fixture_dir::mode(&fixture.runtime), mode);
         tokio::net::UnixStream::connect(fixture.socket())
             .await
             .unwrap();
@@ -67,8 +74,7 @@ async fn socket_uses_effective_group_and_0660_in_shared_and_private_directories(
 async fn missing_runtime_directory_is_not_created() {
     let fixture = Fixture::new(0o700);
     let missing = fixture.runtime.join("missing");
-    let error = Fixture::acquire_at(&missing).await.unwrap_err();
-    assert!(format!("{error:#}").contains("prepare it before starting"));
+    Fixture::assert_refused(&missing, "prepare it before starting").await;
     assert!(!missing.exists());
 }
 
@@ -76,16 +82,12 @@ async fn missing_runtime_directory_is_not_created() {
 async fn unsafe_permissions_are_rejected_without_modification() {
     for mode in [0o770, 0o755, 0o707, 0o777] {
         let fixture = Fixture::new(mode);
-        let error = fixture.acquire().await.unwrap_err();
-        assert!(format!("{error:#}").contains("must grant no group write or other access"));
-        assert_eq!(
-            std::fs::metadata(&fixture.runtime)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            mode
-        );
+        Fixture::assert_refused(
+            &fixture.runtime,
+            "must grant no group write or other access",
+        )
+        .await;
+        assert_eq!(fixture_dir::mode(&fixture.runtime), mode);
     }
 }
 
@@ -94,27 +96,24 @@ async fn symlinks_and_unsafe_ancestors_are_rejected() {
     let fixture = Fixture::new(0o700);
     let link = fixture.runtime.with_file_name("link");
     std::os::unix::fs::symlink(&fixture.runtime, &link).unwrap();
-    let error = Fixture::acquire_at(&link).await.unwrap_err();
-    assert!(format!("{error:#}").contains("not a real directory"));
+    Fixture::assert_refused(&link, "not a real directory").await;
     let child = fixture.runtime.join("child");
     std::fs::create_dir(&child).unwrap();
-    std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let error = Fixture::acquire_at(&link.join("child")).await.unwrap_err();
-    assert!(format!("{error:#}").contains("not a real directory"));
-    std::fs::set_permissions(&fixture.runtime, std::fs::Permissions::from_mode(0o777)).unwrap();
-    let error = Fixture::acquire_at(&child).await.unwrap_err();
-    assert!(format!("{error:#}").contains("not protected from replacement"));
+    fixture_dir::set_mode(&child, 0o700);
+    Fixture::assert_refused(&link.join("child"), "not a real directory").await;
+    fixture_dir::set_mode(&fixture.runtime, 0o777);
+    Fixture::assert_refused(&child, "not protected from replacement").await;
 }
 
 #[tokio::test]
 async fn active_listener_without_a_directory_lock_is_preserved() {
     let fixture = Fixture::new(0o700);
     let listener = tokio::net::UnixListener::bind(fixture.socket()).unwrap();
-    let inode = std::fs::metadata(fixture.socket()).unwrap().ino();
+    let inode = fixture.socket_inode();
     let runtime = fixture.acquire().await.unwrap();
     let error = runtime.bind_api().await.unwrap_err();
     assert!(format!("{error:#}").contains("active listener"));
-    assert_eq!(std::fs::metadata(fixture.socket()).unwrap().ino(), inode);
+    assert_eq!(fixture.socket_inode(), inode);
     let _probe = listener.accept().await.unwrap();
 }
 
@@ -157,7 +156,7 @@ async fn competing_daemon_with_different_state_cannot_replace_socket_or_open_dat
     let fixture = Fixture::new(0o700);
     let runtime = fixture.acquire().await.unwrap();
     let _listener = runtime.bind_api().await.unwrap();
-    let inode = std::fs::metadata(fixture.socket()).unwrap().ino();
+    let inode = fixture.socket_inode();
     let state = fixture.runtime.with_file_name("different-state");
     let config = fixture.runtime.with_file_name("config.toml");
     std::fs::write(
@@ -168,18 +167,12 @@ async fn competing_daemon_with_different_state_cannot_replace_socket_or_open_dat
         ),
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_piqueld"))
-        .arg("--config")
-        .arg(config)
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let error = String::from_utf8(output.stderr).unwrap();
+    let error = daemon::refused_start(&config);
     assert!(
         error.contains("failed to lock runtime directory"),
         "{error}"
     );
     assert!(error.contains("directory already in use"), "{error}");
     assert!(!state.join("piqueld.db").exists());
-    assert_eq!(std::fs::metadata(fixture.socket()).unwrap().ino(), inode);
+    assert_eq!(fixture.socket_inode(), inode);
 }
