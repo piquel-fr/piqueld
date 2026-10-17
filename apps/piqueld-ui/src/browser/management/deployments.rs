@@ -145,7 +145,8 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                     type="button"
                     class="btn"
                     disabled={move || {
-                        context.environment_action_blocked() || context.environment_manifest().is_none()
+                        context.environment_action_blocked()
+                            || context.environment_manifest().is_none()
                     }}
                     on:click={inspect}
                     title={move || {
@@ -412,8 +413,7 @@ pub(super) fn PromoteAction(
                     class="btn btn-primary"
                     // A failed promotion stays blocked until inspected again.
                     disabled={move || {
-                        context.action_blocked()
-                            || context.error.with(Option::is_some)
+                        context.action_blocked() || context.error.with(Option::is_some)
                             || promotable().is_none()
                     }}
                     on:click={confirm}
@@ -449,16 +449,22 @@ fn PromotionPlan(plan: PlanView) -> impl IntoView {
                                 Tone::Bad,
                                 match problem {
                                     SecretProblem::Missing { secret } => {
-                                        format!("Secret {secret} is missing from the application's store.")
+                                        format!(
+                                            "Secret {secret} is missing from the application's store.",
+                                        )
                                     }
                                     SecretProblem::AccessDenied { secret } => {
                                         format!("Secret {secret} does not allow this environment.")
                                     }
                                     SecretProblem::Unavailable { secret } => {
-                                        format!("Secret {secret} lost its value in key recovery; store a new version.")
+                                        format!(
+                                            "Secret {secret} lost its value in key recovery; store a new version.",
+                                        )
                                     }
                                     SecretProblem::Deleting { secret } => {
-                                        format!("Secret {secret} is being deleted; finish or abandon the deletion.")
+                                        format!(
+                                            "Secret {secret} is being deleted; finish or abandon the deletion.",
+                                        )
                                     }
                                 },
                             )
@@ -539,11 +545,7 @@ fn PlanDetails(plan: PlanView) -> impl IntoView {
                 <h3>"Configuration changes"</h3>
             </div>
             {if plan.changes.is_empty() {
-                view! {
-                    <p class="hint">
-                        "No configuration changes since the last deployment."
-                    </p>
-                }
+                view! { <p class="hint">"No configuration changes since the last deployment."</p> }
                     .into_any()
             } else {
                 plan.changes
@@ -597,8 +599,7 @@ fn PlanDetails(plan: PlanView) -> impl IntoView {
                 <h3>"Planned actions"</h3>
             </div>
             {if plan.plan.actions.is_empty() {
-                view! { <p class="hint">"No runtime actions are required."</p> }
-                    .into_any()
+                view! { <p class="hint">"No runtime actions are required."</p> }.into_any()
             } else {
                 view! {
                     <ul class="stack-sm">
@@ -654,10 +655,7 @@ fn PlanDetails(plan: PlanView) -> impl IntoView {
                             .plan
                             .diagnostics
                             .into_iter()
-                            .map(|d| notice(
-                                Tone::Warn,
-                                format!("{}: {}", d.resource, d.message),
-                            ))
+                            .map(|d| notice(Tone::Warn, format!("{}: {}", d.resource, d.message)))
                             .collect_view()}
                     </div>
                 }
@@ -848,7 +846,8 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
                     tab.get() != "Details"
                 }}>
                     {move || {
-                        let DeploymentView { operation: op, release, origin, .. } = deployment.get();
+                        let DeploymentView { operation: op, release, origin, .. } = deployment
+                            .get();
                         let release = release
                             .map(|release| {
                                 let href = format!(
@@ -943,30 +942,42 @@ fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
         {move || {
             let deployment = deployment.get();
             let (hint, spec) = match &deployment.application {
-                Some(application) => (
-                    "Configuration captured when this deployment was accepted, rendered for its environment.",
-                    application.to_manifest().spec,
-                ),
-                None => (
-                    "The repository manifest has not been fetched yet; showing the captured configuration with references unresolved.",
-                    deployment.template.to_manifest().spec,
-                ),
+                Some(application) => {
+                    (
+                        "Configuration captured when this deployment was accepted, rendered for its environment.",
+                        application.to_manifest().spec,
+                    )
+                }
+                None => {
+                    (
+                        "The repository manifest has not been fetched yet; showing the captured configuration with references unresolved.",
+                        deployment.template.to_manifest().spec,
+                    )
+                }
             };
-            let fetched = deployment.template.spec().manifest.as_ref().map(|manifest| {
-                let revision = manifest
-                    .repository
-                    .commit
-                    .as_ref()
-                    .unwrap_or(&manifest.repository.branch);
-                format!("Manifest {} from {revision}.", manifest.path)
-            });
+            let fetched = deployment
+                .template
+                .spec()
+                .manifest
+                .as_ref()
+                .map(|manifest| {
+                    let revision = manifest
+                        .repository
+                        .commit
+                        .as_ref()
+                        .unwrap_or(&manifest.repository.branch);
+                    format!("Manifest {} from {revision}.", manifest.path)
+                });
             view! {
                 <p class="hint">{hint}</p>
                 {fetched.map(|fetched| view! { <p class="hint">{fetched}</p> })}
                 {deployment
                     .warnings
                     .iter()
-                    .map(|warning| notice(Tone::Warn, format!("{}: {}", warning.code, warning.message)))
+                    .map(|warning| notice(
+                        Tone::Warn,
+                        format!("{}: {}", warning.code, warning.message),
+                    ))
                     .collect_view()}
                 {(!deployment.variables.is_empty())
                     .then(|| {
@@ -1019,7 +1030,11 @@ fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
                                         view! {
                                             <li>
                                                 <strong>{job.name}</strong>
-                                                {format!(" on {}, up to {}s: ", job.service, job.timeout_seconds)}
+                                                {format!(
+                                                    " on {}, up to {}s: ",
+                                                    job.service,
+                                                    job.timeout_seconds,
+                                                )}
                                                 <code>{join(&job.command, " ")}</code>
                                             </li>
                                         }

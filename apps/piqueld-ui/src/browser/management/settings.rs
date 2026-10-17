@@ -117,7 +117,9 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                             |v| v.1.repository.url.clone(),
                             |v, s| v.1.repository.url = s,
                         )}
-                        <Show when={move || !connected()}>
+                        <Show when={move || {
+                            !connected()
+                        }}>
                             {text_input(
                                 "Branch",
                                 draft,
@@ -150,13 +152,15 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                                     draft
                                         .update(|v| {
                                             v.1.sync = match mode.as_str() {
-                                                "poll" => RepositorySync::Poll {
-                                                    interval_seconds: v
-                                                        .2
-                                                        .trim()
-                                                        .parse()
-                                                        .unwrap_or(RepositorySync::DEFAULT_INTERVAL),
-                                                },
+                                                "poll" => {
+                                                    RepositorySync::Poll {
+                                                        interval_seconds: v
+                                                            .2
+                                                            .trim()
+                                                            .parse()
+                                                            .unwrap_or(RepositorySync::DEFAULT_INTERVAL),
+                                                    }
+                                                }
                                                 "webhook" => RepositorySync::Webhook,
                                                 _ => RepositorySync::Off,
                                             };
@@ -164,8 +168,12 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                                 }}
                             >
                                 <option value="off">"Off: deploy only when asked"</option>
-                                <option value="poll">"Poll: check the branches on an interval"</option>
-                                <option value="webhook">"Webhook: when GitHub reports a push"</option>
+                                <option value="poll">
+                                    "Poll: check the branches on an interval"
+                                </option>
+                                <option value="webhook">
+                                    "Webhook: when GitHub reports a push"
+                                </option>
                             </select>
                         </label>
                         <Show when={polling}>
@@ -183,8 +191,7 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                                                 if let (
                                                     RepositorySync::Poll { interval_seconds },
                                                     Ok(seconds),
-                                                ) = (&mut v.1.sync, text.trim().parse())
-                                                {
+                                                ) = (&mut v.1.sync, text.trim().parse()) {
                                                     *interval_seconds = seconds;
                                                 }
                                                 v.2 = text;
@@ -242,8 +249,7 @@ fn SyncCheck() -> impl IntoView {
                             || view! { <span class="muted">"Not yet"</span> }.into_any(),
                             |check| when(check.checked_at_ms),
                         )
-                }}
-                " "
+                }} " "
                 <button type="button" class="btn btn-sm" on:click={move |_| loaded.refetch()}>
                     {icon(Icon::Refresh)}
                     "Refresh"
@@ -372,10 +378,18 @@ fn WebhookSettings() -> impl IntoView {
                                         .secret_created_at_ms
                                         .map_or_else(
                                             || {
-                                                view! { <span class="muted">"None yet: generate one"</span> }
+                                                view! {
+                                                    <span class="muted">"None yet: generate one"</span>
+                                                }
                                                     .into_any()
                                             },
-                                            |at| view! { "Generated " {when(at)} }.into_any(),
+                                            |at| {
+                                                view! {
+                                                    "Generated "
+                                                    {when(at)}
+                                                }
+                                                    .into_any()
+                                            },
                                         )}
                                 </dd>
                             </dl>
@@ -621,7 +635,8 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
             <fieldset disabled={move || {
                 context.blocked() || context.managed()
             }}>
-                {service_fields(section, name.get_value(), draft)} {save_actions(draft, baseline, save, || false)}
+                {service_fields(section, name.get_value(), draft)}
+                {save_actions(draft, baseline, save, || false)}
             </fieldset>
         </section>
     }
@@ -686,7 +701,9 @@ pub(super) fn service_fields(
                             )
                         } else {
                             view! {
-                                <Show when={move || kind.get() == "git"}>
+                                <Show when={move || {
+                                    kind.get() == "git"
+                                }}>
                                     {text_input(
                                         "Repository",
                                         form,
@@ -808,10 +825,9 @@ pub(super) fn string_rows(
                                 },
                             )}
                             {remove_button(move || {
-                                form
-                                    .update(|v| {
-                                        write(v).remove(i);
-                                    })
+                                form.update(|v| {
+                                    write(v).remove(i);
+                                })
                             })}
                         </div>
                     }
@@ -848,7 +864,9 @@ pub(super) fn dependency_fields(service: String, form: RwSignal<ServiceForm>) ->
                         <label class="checkbox">
                             <input
                                 type="checkbox"
-                                prop:checked={move || form.with(|v| v.depends_on.contains(&checked))}
+                                prop:checked={move || {
+                                    form.with(|v| v.depends_on.contains(&checked))
+                                }}
                                 on:change={move |ev| {
                                     let selected = event_target_checked(&ev);
                                     form.update(|v| {
@@ -907,10 +925,9 @@ pub(super) fn pair_rows(
                                 },
                             )}
                             {remove_button(move || {
-                                form
-                                    .update(|v| {
-                                        write(v).remove(i);
-                                    })
+                                form.update(|v| {
+                                    write(v).remove(i);
+                                })
                             })}
                         </div>
                     }
@@ -971,10 +988,9 @@ pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> AnyView {
                                 "Read only"
                             </label>
                             {remove_button(move || {
-                                form
-                                    .update(|v| {
-                                        v.mounts.remove(i);
-                                    })
+                                form.update(|v| {
+                                    v.mounts.remove(i);
+                                })
                             })}
                         </div>
                     }
@@ -1039,10 +1055,9 @@ pub(super) fn file_fields(form: RwSignal<ServiceForm>) -> AnyView {
                                     write(i, |file, s| file.mode = s),
                                 )}
                                 {remove_button(move || {
-                                    form
-                                        .update(|v| {
-                                            v.files.remove(i);
-                                        })
+                                    form.update(|v| {
+                                        v.files.remove(i);
+                                    })
                                 })}
                             </div>
                             {if repository {
@@ -1066,13 +1081,15 @@ pub(super) fn file_fields(form: RwSignal<ServiceForm>) -> AnyView {
                                             spellcheck="false"
                                             rows="6"
                                             prop:value={move || {
-                                                form.with(read(
-                                                    i,
-                                                    |file| match &file.source {
-                                                        FileSource::Content(content) => content.clone(),
-                                                        FileSource::Path(_) => String::new(),
-                                                    },
-                                                ))
+                                                form.with(
+                                                    read(
+                                                        i,
+                                                        |file| match &file.source {
+                                                            FileSource::Content(content) => content.clone(),
+                                                            FileSource::Path(_) => String::new(),
+                                                        },
+                                                    ),
+                                                )
                                             }}
                                             on:input={move |event| {
                                                 form.update(|v| {

@@ -57,9 +57,9 @@ impl Feedback {
                                     .get()
                                     .map(|id| {
                                         view! {
-                                            <A href={format!("/dashboard/errors/{id}")}>
-                                                "Diagnostic details"
-                                            </A>
+                                            <A href={format!(
+                                                "/dashboard/errors/{id}",
+                                            )}>"Diagnostic details"</A>
                                         }
                                     })}
                             },
@@ -481,11 +481,13 @@ fn StoredSecrets(
                     {move || {
                         if shown().is_empty() {
                             if ready.get() {
-                                empty(if scope().is_some() {
-                                    "No stored secret this environment may mount."
-                                } else {
-                                    "No secrets stored for this application."
-                                })
+                                empty(
+                                    if scope().is_some() {
+                                        "No stored secret this environment may mount."
+                                    } else {
+                                        "No secrets stored for this application."
+                                    },
+                                )
                             } else {
                                 empty("Loading secrets…")
                             }
@@ -546,7 +548,9 @@ fn StoredSecrets(
                                         .with(|items| {
                                             items
                                                 .iter()
-                                                .any(|s| s.metadata.name == name.get() && s.metadata.deleting)
+                                                .any(|s| {
+                                                    s.metadata.name == name.get() && s.metadata.deleting
+                                                })
                                         })
                             }}
                             on:click={write}
@@ -939,7 +943,9 @@ fn SecretFiles(service_name: String) -> impl IntoView {
                                         }}
                                         on:input={move |e| {
                                             mounts
-                                                .update(|items| items[index].name = event_target_value(&e).into());
+                                                .update(|items| {
+                                                    items[index].name = event_target_value(&e).into();
+                                                });
                                         }}
                                     />
                                 </label>

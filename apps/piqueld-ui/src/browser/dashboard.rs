@@ -51,7 +51,9 @@ pub(super) fn Sidebar() -> impl IntoView {
                     {nav_link("/dashboard/events", Icon::Events, "Events", false)}
                     {nav_link("/dashboard/errors", Icon::Errors, "Errors", false)}
                     {nav_link("/dashboard/analytics", Icon::Analytics, "Analytics", false)}
-                    <Show when={move || system.get()}>
+                    <Show when={move || {
+                        system.get()
+                    }}>
                         {nav_link(
                             "/dashboard/notifications",
                             Icon::Notifications,
@@ -62,7 +64,9 @@ pub(super) fn Sidebar() -> impl IntoView {
                 </div>
                 <div class="nav-group">
                     <span class="nav-group-label">"System"</span>
-                    <Show when={move || system.get()}>
+                    <Show when={move || {
+                        system.get()
+                    }}>
                         {nav_link("/dashboard/system", Icon::Daemon, "Daemon status", false)}
                         {nav_link("/dashboard/settings", Icon::Settings, "Host settings", false)}
                     </Show>
@@ -216,7 +220,9 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                         let providers = signals
                             .system
                             .with(|system| {
-                                system.as_ref().is_some_and(|system| !system.dns.providers.is_empty())
+                                system
+                                    .as_ref()
+                                    .is_some_and(|system| !system.dns.providers.is_empty())
                             });
                         (providers && operate.get())
                             .then(|| {
@@ -225,11 +231,15 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                                         type="button"
                                         class="btn btn-sm"
                                         disabled={move || checking_dns.get()}
-                                        on:click=check_dns
+                                        on:click={check_dns}
                                     >
                                         {icon(Icon::Key)}
                                         {move || {
-                                            if checking_dns.get() { "Checking…" } else { "Check DNS providers" }
+                                            if checking_dns.get() {
+                                                "Checking…"
+                                            } else {
+                                                "Check DNS providers"
+                                            }
                                         }}
                                     </button>
                                 }
@@ -256,33 +266,44 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                 {move || {
                     dns_error
                         .get()
-                        .map(|error| notice(Tone::Bad, format!("DNS provider check failed: {error}")))
+                        .map(|error| notice(
+                            Tone::Bad,
+                            format!("DNS provider check failed: {error}"),
+                        ))
                 }}
                 <div class="status-grid">
                     {move || connection_readiness(signals.connection.get())}
                     {move || {
-                        signals.system.get().filter(|system| system.tailscale.enabled).map(|system| {
-                            let tailnet = system.tailscale;
-                            let (tone, label) = if tailnet.healthy {
-                                (Tone::Ok, "Ready")
-                            } else {
-                                (Tone::Bad, "Unhealthy")
-                            };
-                            status_card("Tailnet node", tone, label, &tailnet.message)
-                        })
+                        signals
+                            .system
+                            .get()
+                            .filter(|system| system.tailscale.enabled)
+                            .map(|system| {
+                                let tailnet = system.tailscale;
+                                let (tone, label) = if tailnet.healthy {
+                                    (Tone::Ok, "Ready")
+                                } else {
+                                    (Tone::Bad, "Unhealthy")
+                                };
+                                status_card("Tailnet node", tone, label, &tailnet.message)
+                            })
                     }}
-                    {move || signals.system.get().map(|system| preview_card(system.previews.as_ref()))}
-                    {move || signals.system.get().map(|system| images_card(&system.images))}
                     {move || {
-                        signals.system.get().map(|system| {
-                            system
-                                .dns
-                                .providers
-                                .iter()
-                                .map(dns_provider_card)
-                                .chain(system.dns.certificates.iter().map(certificate_card))
-                                .collect_view()
-                        })
+                        signals.system.get().map(|system| preview_card(system.previews.as_ref()))
+                    }} {move || signals.system.get().map(|system| images_card(&system.images))}
+                    {move || {
+                        signals
+                            .system
+                            .get()
+                            .map(|system| {
+                                system
+                                    .dns
+                                    .providers
+                                    .iter()
+                                    .map(dns_provider_card)
+                                    .chain(system.dns.certificates.iter().map(certificate_card))
+                                    .collect_view()
+                            })
                     }}
                     {move || {
                         signals
@@ -297,8 +318,6 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                                 } else {
                                     (Tone::Ok, "Ready")
                                 };
-                                // The apps node's name and addresses are what private
-                                // routes' DNS records point at.
                                 let private = &ingress.private;
                                 let private_card = (ingress.enabled && private.enabled)
                                     .then(|| {
@@ -307,7 +326,10 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                                         } else {
                                             (Tone::Bad, "Unhealthy")
                                         };
-                                        let node = match (&private.dns_name, private.addresses.is_empty()) {
+                                        let node = match (
+                                            &private.dns_name,
+                                            private.addresses.is_empty(),
+                                        ) {
                                             (Some(name), false) => {
                                                 format!("{name} ({}). ", private.addresses.join(", "))
                                             }
@@ -320,26 +342,32 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                                             &format!("{node}{}", private.message),
                                         )
                                     });
-                                // In tunnel mode, public routes' CNAME records point
-                                // at the tunnel ID.
                                 let tunnel_card = match &ingress.public {
-                                    PublicIngressStatus::Tunnel { id, connected, message }
-                                        if ingress.enabled =>
-                                    {
+                                    PublicIngressStatus::Tunnel {
+                                        id,
+                                        connected,
+                                        message,
+                                    } if ingress.enabled => {
                                         let (tone, label) = if *connected {
                                             (Tone::Ok, "Connected")
                                         } else {
                                             (Tone::Bad, "Disconnected")
                                         };
-                                        Some(status_card(
-                                            "Cloudflare Tunnel",
-                                            tone,
-                                            label,
-                                            &format!("Tunnel {id}. {message}"),
-                                        ))
+                                        Some(
+                                            status_card(
+                                                "Cloudflare Tunnel",
+                                                tone,
+                                                label,
+                                                &format!("Tunnel {id}. {message}"),
+                                            ),
+                                        )
                                     }
                                     _ => None,
                                 };
+                                // The apps node's name and addresses are what private
+                                // routes' DNS records point at.
+                                // In tunnel mode, public routes' CNAME records point
+                                // at the tunnel ID.
                                 view! {
                                     {dependency_readiness("Database", status.database)}
                                     {dependency_readiness("Docker Engine", status.docker)}

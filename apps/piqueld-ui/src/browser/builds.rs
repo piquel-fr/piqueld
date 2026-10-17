@@ -213,7 +213,9 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
                                             {link
                                                 .map_or_else(
                                                     || view! { <code>{environment.clone()}</code> }.into_any(),
-                                                    |(label, href)| view! { <A href={href}>{label}</A> }.into_any(),
+                                                    |(label, href)| {
+                                                        view! { <A href={href}>{label}</A> }.into_any()
+                                                    },
                                                 )}
                                         </dd>
                                     }

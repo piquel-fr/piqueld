@@ -219,7 +219,9 @@ pub(super) fn RouteSettings() -> impl IntoView {
                     {move || {
                         readiness
                             .get()
-                            .filter(|status| status.ingress.enabled && !status.ingress.private.enabled)
+                            .filter(|status| {
+                                status.ingress.enabled && !status.ingress.private.enabled
+                            })
                             .map(|_| {
                                 notice(
                                     Tone::Info,
@@ -239,9 +241,17 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                 <input
                                                     type="text"
                                                     placeholder="app.example.com"
-                                                    prop:value={move || field(draft, index, |r| r.hostname.clone())}
+                                                    prop:value={move || field(
+                                                        draft,
+                                                        index,
+                                                        |r| r.hostname.clone(),
+                                                    )}
                                                     on:input={move |event| {
-                                                        edit(draft, index, |r| r.hostname = event_target_value(&event));
+                                                        edit(
+                                                            draft,
+                                                            index,
+                                                            |r| r.hostname = event_target_value(&event),
+                                                        );
                                                     }}
                                                 />
                                             </label>
@@ -260,7 +270,9 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                             <label class="field" style="max-width:130px">
                                                 <span>"Visibility"</span>
                                                 <select
-                                                    prop:value={move || field(draft, index, |r| r.visibility).to_string()}
+                                                    prop:value={move || {
+                                                        field(draft, index, |r| r.visibility).to_string()
+                                                    }}
                                                     on:change={move |event| {
                                                         if let Ok(visibility) = event_target_value(&event).parse() {
                                                             edit(draft, index, |r| r.visibility = visibility);
@@ -275,10 +287,18 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                 <span>"Destination"</span>
                                                 <select
                                                     prop:value={move || {
-                                                        if field(draft, index, |r| r.redirect) { "redirect" } else { "service" }
+                                                        if field(draft, index, |r| r.redirect) {
+                                                            "redirect"
+                                                        } else {
+                                                            "service"
+                                                        }
                                                     }}
                                                     on:change={move |event| {
-                                                        edit(draft, index, |r| r.redirect = event_target_value(&event) == "redirect");
+                                                        edit(
+                                                            draft,
+                                                            index,
+                                                            |r| r.redirect = event_target_value(&event) == "redirect",
+                                                        );
                                                     }}
                                                 >
                                                     <option value="service">"Service"</option>
@@ -302,9 +322,17 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                         <label class="field" style="max-width:180px">
                                                             <span>"Status"</span>
                                                             <select
-                                                                prop:value={move || field(draft, index, |r| r.status.clone())}
+                                                                prop:value={move || field(
+                                                                    draft,
+                                                                    index,
+                                                                    |r| r.status.clone(),
+                                                                )}
                                                                 on:change={move |event| {
-                                                                    edit(draft, index, |r| r.status = event_target_value(&event));
+                                                                    edit(
+                                                                        draft,
+                                                                        index,
+                                                                        |r| r.status = event_target_value(&event),
+                                                                    );
                                                                 }}
                                                             >
                                                                 <option value="308">"308 Permanent"</option>
@@ -317,9 +345,17 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                         <label class="checkbox">
                                                             <input
                                                                 type="checkbox"
-                                                                prop:checked={move || field(draft, index, |r| r.preserve_path)}
+                                                                prop:checked={move || field(
+                                                                    draft,
+                                                                    index,
+                                                                    |r| r.preserve_path,
+                                                                )}
                                                                 on:change={move |event| {
-                                                                    edit(draft, index, |r| r.preserve_path = event_target_checked(&event));
+                                                                    edit(
+                                                                        draft,
+                                                                        index,
+                                                                        |r| r.preserve_path = event_target_checked(&event),
+                                                                    );
                                                                 }}
                                                             />
                                                             "Keep path and query"
@@ -331,9 +367,17 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                         <label class="field">
                                                             <span>"Service"</span>
                                                             <select
-                                                                prop:value={move || field(draft, index, |r| r.service.clone())}
+                                                                prop:value={move || field(
+                                                                    draft,
+                                                                    index,
+                                                                    |r| r.service.clone(),
+                                                                )}
                                                                 on:change={move |event| {
-                                                                    edit(draft, index, |r| r.service = event_target_value(&event));
+                                                                    edit(
+                                                                        draft,
+                                                                        index,
+                                                                        |r| r.service = event_target_value(&event),
+                                                                    );
                                                                 }}
                                                             >
                                                                 <option value="">"Select a service"</option>
@@ -386,10 +430,7 @@ pub(super) fn RouteSettings() -> impl IntoView {
                             class="btn btn-sm"
                             disabled={move || draft.with(Vec::len) >= 64}
                             on:click={move |_| {
-                                draft
-                                    .update(|rows| {
-                                        rows.push(RouteDraft::default())
-                                    });
+                                draft.update(|rows| { rows.push(RouteDraft::default()) });
                             }}
                         >
                             {icon(Icon::Plus)}
@@ -447,7 +488,10 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                             <code>{route.dns.to_string()}</code>
                                                         </td>
                                                         <td>
-                                                            {badge(dns_tone(route.dns_state), route.dns_state.to_string())}
+                                                            {badge(
+                                                                dns_tone(route.dns_state),
+                                                                route.dns_state.to_string(),
+                                                            )}
                                                         </td>
                                                         <td>
                                                             {badge(route_tone(&route.state), route.state.clone())}

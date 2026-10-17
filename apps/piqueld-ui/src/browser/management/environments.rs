@@ -303,7 +303,9 @@ fn Drift() -> impl IntoView {
                             .into_iter()
                             .map(|change| {
                                 let tone = match change {
-                                    piqueld_client::EnvironmentChange::Undeclared { .. } => Tone::Warn,
+                                    piqueld_client::EnvironmentChange::Undeclared { .. } => {
+                                        Tone::Warn
+                                    }
                                     _ => Tone::Neutral,
                                 };
                                 view! {
@@ -315,9 +317,9 @@ fn Drift() -> impl IntoView {
                                         {badge(
                                             tone,
                                             match change {
-                                                piqueld_client::EnvironmentChange::Undeclared {
-                                                    ..
-                                                } => "Not declared",
+                                                piqueld_client::EnvironmentChange::Undeclared { .. } => {
+                                                    "Not declared"
+                                                }
                                                 _ => "Pending",
                                             },
                                         )}
@@ -547,14 +549,21 @@ fn NewEnvironment() -> impl IntoView {
                         }}
                     </p>
                     <Show when={move || {
-                        context.saved.with(|saved| !saved.application.spec().environments.is_empty())
+                        context
+                            .saved
+                            .with(|saved| !saved.application.spec().environments.is_empty())
                     }}>
                         {notice(
                             Tone::Neutral,
                             "The manifest declares this application's environments. To add one it manages, add a [spec.environments.<name>] block to it; one created here is not declared, and shows as a difference from the manifest.",
                         )}
                     </Show>
-                    {text_input("Environment name", name, String::clone, |value, input| *value = input)}
+                    {text_input(
+                        "Environment name",
+                        name,
+                        String::clone,
+                        |value, input| *value = input,
+                    )}
                     <Show when={move || sources.with(|sources| !sources.is_empty())}>
                         <PromotionSource
                             value={promote_from}
@@ -562,7 +571,9 @@ fn NewEnvironment() -> impl IntoView {
                             none="None: build its own source"
                         />
                     </Show>
-                    <Show when={move || context.managed() && builds()}>
+                    <Show when={move || {
+                        context.managed() && builds()
+                    }}>
                         {text_input("Branch", branch, |v| v.0.clone(), |v, input| v.0 = input)}
                         {text_input(
                             "Commit (optional)",
@@ -720,15 +731,18 @@ fn SourceSettings() -> impl IntoView {
                             (Some(from), _) => {
                                 view! {
                                     "Receives releases promoted from "
-                                    <A href={context.environment_href(&from)}>
-                                        {context.environment_name(&from)}
-                                    </A>
+                                    <A href={context
+                                        .environment_href(
+                                            &from,
+                                        )}>{context.environment_name(&from)}</A>
                                     ", and never builds or fetches."
                                 }
                                     .into_any()
                             }
                             (None, Some(branch)) => {
-                                format!("Builds the manifest on branch {branch} of the application's repository.")
+                                format!(
+                                    "Builds the manifest on branch {branch} of the application's repository.",
+                                )
                                     .into_any()
                             }
                             (None, None) => "Builds the application's saved manifest.".into_any(),
@@ -791,10 +805,7 @@ fn SourceSettings() -> impl IntoView {
                         view! {
                             <dl class="kv">
                                 <dt>"Deploy on push"</dt>
-                                <dd>
-                                    {badge}
-                                    <div class="muted">{reason}</div>
-                                </dd>
+                                <dd>{badge} <div class="muted">{reason}</div></dd>
                                 <dt>"Last synced"</dt>
                                 <dd>{last_synced(environment.synced)}</dd>
                             </dl>
@@ -802,7 +813,9 @@ fn SourceSettings() -> impl IntoView {
                                 <button
                                     type="button"
                                     class="btn"
-                                    disabled={move || context.action_blocked() || deleting() || declared()}
+                                    disabled={move || {
+                                        context.action_blocked() || deleting() || declared()
+                                    }}
                                     on:click={toggle_sync}
                                 >
                                     {if environment.sync {
@@ -868,7 +881,10 @@ fn EnvironmentVisibility() -> impl IntoView {
                 </div>
             </header>
             <form class="stack-sm" on:submit={save}>
-                <fieldset class="stack-sm" disabled={move || context.blocked() || context.managed()}>
+                <fieldset
+                    class="stack-sm"
+                    disabled={move || context.blocked() || context.managed()}
+                >
                     <label class="field">
                         <span>"Route visibility"</span>
                         <select
@@ -879,7 +895,9 @@ fn EnvironmentVisibility() -> impl IntoView {
                                 }
                             }}
                         >
-                            <option value="public">"Public: routes keep their own visibility"</option>
+                            <option value="public">
+                                "Public: routes keep their own visibility"
+                            </option>
                             <option value="private">"Private: every route is tailnet-only"</option>
                         </select>
                     </label>
@@ -970,7 +988,12 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                         context.action_blocked() || deleting() || context.declared(&current())
                     }}
                 >
-                    {text_input("Environment name", name, String::clone, |value, input| *value = input)}
+                    {text_input(
+                        "Environment name",
+                        name,
+                        String::clone,
+                        |value, input| *value = input,
+                    )}
                     <dl class="kv">
                         <dt>"Environment ID"</dt>
                         <dd>
@@ -989,7 +1012,12 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                         title={move || {
                             context
                                 .declared(&current())
-                                .then(|| format!("The manifest declares [spec.environments.{}]; rename that block instead.", current()))
+                                .then(|| {
+                                    format!(
+                                        "The manifest declares [spec.environments.{}]; rename that block instead.",
+                                        current(),
+                                    )
+                                })
                         }}
                     >
                         "Rename environment"
@@ -1012,7 +1040,12 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                     title={move || {
                         context
                             .declared(&current())
-                            .then(|| format!("Remove [spec.environments.{}] from the manifest first.", current()))
+                            .then(|| {
+                                format!(
+                                    "Remove [spec.environments.{}] from the manifest first.",
+                                    current(),
+                                )
+                            })
                     }}
                     on:click={delete}
                 >

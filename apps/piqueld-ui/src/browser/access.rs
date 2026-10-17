@@ -157,8 +157,7 @@ pub(super) fn GrantEditor(
                         Tone::Warn,
                         "These grants cover different applications per permission. Changing the selection below applies it to every application permission.",
                     )
-                })}
-            <label class="field">
+                })} <label class="field">
                 <span>"Preset"</span>
                 <select on:change={move |event| apply_preset(event_target_value(&event))}>
                     <option value="">"Choose a preset…"</option>
@@ -177,7 +176,9 @@ pub(super) fn GrantEditor(
                             <label class="checkbox" title={permission.description()}>
                                 <input
                                     type="checkbox"
-                                    prop:checked={move || permissions.with(|set| set.contains(&permission))}
+                                    prop:checked={move || {
+                                        permissions.with(|set| set.contains(&permission))
+                                    }}
                                     on:change={move |event| {
                                         let checked = event_target_checked(&event);
                                         permissions
@@ -196,16 +197,14 @@ pub(super) fn GrantEditor(
                         }
                     })
                     .collect_view()}
-            </div>
-            <label class="checkbox">
+            </div> <label class="checkbox">
                 <input
                     type="checkbox"
                     prop:checked={move || everywhere.get()}
                     on:change={move |event| everywhere.set(event_target_checked(&event))}
                 />
                 "Application permissions apply to every application, including future ones"
-            </label>
-            <Show when={move || !everywhere.get()}>
+            </label> <Show when={move || !everywhere.get()}>
                 <div class="grant-applications">
                     {move || {
                         rows.get()

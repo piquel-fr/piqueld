@@ -942,8 +942,7 @@ fn EnvironmentPage() -> impl IntoView {
         <Tabs label="Environment sections" options={&ENVIRONMENT_TABS} selected={context.tab} />
         <div hidden={move || context.tab.get() != "Overview"}>
             <div class="stack">
-                {preview.then(|| view! { <previews::PreviewSettings /> })}
-                <RuntimeOverview />
+                {preview.then(|| view! { <previews::PreviewSettings /> })} <RuntimeOverview />
                 <variables::EnvironmentVariables />
                 {(!preview).then(|| view! { <environments::EnvironmentSettings /> })}
                 {preview.then(|| view! { <previews::DeletePreview /> })}
@@ -1206,11 +1205,14 @@ fn ApplicationSettings() -> impl IntoView {
                         })
                 }} <div hidden={move || context.tab.get() != "Source"}>
                     <RepositorySettings />
-                </div> <fieldset disabled={move || context.managed()}>
+                </div>
+                <fieldset disabled={move || {
+                    context.managed()
+                }}>
                     {move || {
+                        fetched.with(|_| ());
                         // Read, not only tracked: memos are lazy, and one never
                         // read never subscribes to `saved`.
-                        fetched.with(|_| ());
                         view! {
                             <div hidden={move || context.tab.get() != "Services"}>
                                 <div class="section-header">
