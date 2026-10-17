@@ -1,6 +1,6 @@
 use super::{
-    APPLICATION_LABEL, BTreeMap, BollardDocker, CreateImageOptionsBuilder, Docker, DockerError,
-    EnvironmentId, HashMap, INSTANCE_LABEL, ImageSource, MANAGED_LABEL, ResourceKind,
+    APPLICATION_LABEL, BTreeMap, BollardDocker, BollardResult, CreateImageOptionsBuilder, Docker,
+    DockerError, EnvironmentId, HashMap, INSTANCE_LABEL, ImageSource, MANAGED_LABEL, ResourceKind,
     SERVICE_LABEL, TryStreamExt, docker_resource_name, docker_resource_readable_prefix,
 };
 use piqueld_core::resource::LINK_LABEL;
@@ -127,36 +127,80 @@ impl BollardDocker {
 
     /// Rechecks ownership labels, resource role, and the canonical name before
     /// mutating an existing Docker resource. `observed` takes Docker's label map as-is.
-    pub(super) fn owns_resource(
+    ///
+    /// # Errors
+    /// Returns [`DockerError::OwnershipConflict`] unless `expected` owns it.
+    pub(super) fn check_ownership(
         observed: HashMap<String, String>,
         expected: &BTreeMap<String, String>,
         kind: ResourceKind,
         name: &str,
-    ) -> bool {
+    ) -> Result<(), DockerError> {
         let observed = observed.into_iter().collect::<BTreeMap<_, _>>();
-        let Some(application) = expected
+        let application = expected
             .get(APPLICATION_LABEL)
-            .and_then(|value| EnvironmentId::parse(value.clone()).ok())
-        else {
-            return false;
-        };
-        let Some(instance) = expected
+            .and_then(|value| EnvironmentId::parse(value.clone()).ok());
+        let instance = expected
             .get(INSTANCE_LABEL)
-            .and_then(|value| piqueld_core::InstanceId::parse(value.clone()).ok())
-        else {
-            return false;
+            .and_then(|value| piqueld_core::InstanceId::parse(value.clone()).ok());
+        let owned = application
+            .zip(instance)
+            .is_some_and(|(application, instance)| {
+                expected.get(MANAGED_LABEL).map(String::as_str) == Some("true")
+                    && expected
+                        .get(SERVICE_LABEL)
+                        .is_none_or(|service| observed.get(SERVICE_LABEL) == Some(service))
+                    && piqueld_core::OwnershipState::for_resource(
+                        &observed,
+                        &instance,
+                        &application,
+                        kind,
+                        name,
+                    ) == piqueld_core::OwnershipState::Owned
+            });
+        if owned {
+            Ok(())
+        } else {
+            Err(DockerError::OwnershipConflict)
+        }
+    }
+
+    /// Accepts an existing resource named like a desired one only when it is
+    /// owned (see [`Self::check_ownership`]) and its immutable settings match,
+    /// else fails with [`DockerError::ConfigurationConflict`].
+    pub(super) fn check_existing(
+        observed: HashMap<String, String>,
+        expected: &BTreeMap<String, String>,
+        kind: ResourceKind,
+        name: &str,
+        configuration_matches: bool,
+    ) -> Result<(), DockerError> {
+        Self::check_ownership(observed, expected, kind, name)?;
+        if configuration_matches {
+            Ok(())
+        } else {
+            Err(DockerError::ConfigurationConflict)
+        }
+    }
+
+    /// The managed, instance, and application labels of `ownership`, which
+    /// select an environment's resources, or a validation error naming
+    /// `operation` when one is missing.
+    pub(super) fn environment_labels<'a>(
+        ownership: &'a BTreeMap<String, String>,
+        operation: &'static str,
+    ) -> Result<[(&'static str, &'a str); 3], DockerError> {
+        let label = |key: &'static str| {
+            ownership
+                .get(key)
+                .map(|value| (key, value.as_str()))
+                .ok_or(DockerError::Validation(operation))
         };
-        expected.get(MANAGED_LABEL).map(String::as_str) == Some("true")
-            && expected
-                .get(SERVICE_LABEL)
-                .is_none_or(|service| observed.get(SERVICE_LABEL) == Some(service))
-            && piqueld_core::OwnershipState::for_resource(
-                &observed,
-                &instance,
-                &application,
-                kind,
-                name,
-            ) == piqueld_core::OwnershipState::Owned
+        Ok([
+            label(MANAGED_LABEL)?,
+            label(INSTANCE_LABEL)?,
+            label(APPLICATION_LABEL)?,
+        ])
     }
 
     /// Returns whether an image reference contains a complete SHA-256 digest.
@@ -178,13 +222,12 @@ impl BollardDocker {
 impl ImageSource for Docker {
     /// Inspects the local image; a 404 means the reference was never pulled.
     async fn repo_digests(&self, reference: &str) -> Result<Option<Vec<String>>, DockerError> {
-        match self.inspect_image(reference).await {
-            Ok(image) => Ok(Some(image.repo_digests.unwrap_or_default())),
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => Ok(None),
-            Err(error) => Err(DockerError::image_resolution("inspect image", error)),
-        }
+        Ok(self
+            .inspect_image(reference)
+            .await
+            .found()
+            .map_err(|error| DockerError::image_resolution("inspect image", error))?
+            .map(|image| image.repo_digests.unwrap_or_default()))
     }
 
     /// Pulls through the Engine, draining and discarding the progress stream.
@@ -208,26 +251,20 @@ impl ImageSource for Docker {
 mod tests {
     use super::*;
 
+    /// Docker reports an unused `ConfigFrom` as null or with an empty
+    /// network, and adds its VXLAN option; a named source is a conflict.
     #[test]
-    fn ordinary_overlay_network_accepts_docker_empty_config_reference() {
-        let mut network = bollard::models::Network {
-            driver: Some("overlay".into()),
-            internal: Some(false),
-            attachable: Some(true),
-            enable_ipv6: Some(false),
-            config_only: Some(false),
-            ingress: Some(false),
-            config_from: Some(bollard::models::ConfigReference {
-                network: Some(String::new()),
-            }),
-            ..Default::default()
-        };
-
+    fn empty_config_from_is_an_engine_default_but_named_sources_are_conflicts() {
+        let mut network: bollard::models::Network = serde_json::from_value(serde_json::json!({
+            "Driver":"overlay","Internal":false,"Attachable":true,"ConfigFrom":{"Network":""},
+            "Options":{"com.docker.network.driver.overlay.vxlanid_list":"4100"}
+        }))
+        .unwrap();
         assert!(BollardDocker::network_configuration_matches(&network));
-        network.config_from = Some(bollard::models::ConfigReference {
-            network: Some("shared-config".into()),
-        });
+        network.config_from.as_mut().unwrap().network = Some("external-template".into());
         assert!(!BollardDocker::network_configuration_matches(&network));
+        network.config_from = None;
+        assert!(BollardDocker::network_configuration_matches(&network));
     }
 
     #[test]
@@ -256,19 +293,5 @@ mod tests {
             assert!(BollardDocker::relevant(&own_name, &labels, &app));
             assert!(BollardDocker::relevant(&own_name, &BTreeMap::new(), &app));
         }
-    }
-}
-
-#[cfg(test)]
-mod network_defaults_tests {
-    use super::BollardDocker;
-    #[test]
-    fn empty_config_from_is_an_engine_default_but_named_sources_are_conflicts() {
-        let mut network: bollard::models::Network=serde_json::from_value(serde_json::json!({"Driver":"overlay","Internal":false,"Attachable":true,"ConfigFrom":{"Network":""},"Options":{"com.docker.network.driver.overlay.vxlanid_list":"4100"}})).unwrap();
-        assert!(BollardDocker::network_configuration_matches(&network));
-        network.config_from.as_mut().unwrap().network = Some("external-template".into());
-        assert!(!BollardDocker::network_configuration_matches(&network));
-        network.config_from = None;
-        assert!(BollardDocker::network_configuration_matches(&network));
     }
 }

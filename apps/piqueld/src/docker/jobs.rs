@@ -1,10 +1,10 @@
 //! One-shot jobs run as Swarm replicated jobs so they share service secrets,
 //! networks, mounts, and node placement.
 use super::{
-    BTreeMap, BollardDocker, DockerError, Duration, HashMap, HealthConfig, InspectServiceOptions,
-    JobOutput, JobRuns, JobStatus, ListServicesOptionsBuilder, ListTasksOptionsBuilder,
-    ResourceKind, ServiceSpec, ServiceSpecMode, StreamExt, TaskSpecRestartPolicy,
-    TaskSpecRestartPolicyConditionEnum,
+    BTreeMap, BollardDocker, BollardResult, DockerError, Duration, HashMap, HealthConfig,
+    InspectServiceOptions, JobOutput, JobRuns, JobStatus, ListServicesOptionsBuilder,
+    ListTasksOptionsBuilder, ResourceKind, ServiceSpec, ServiceSpecMode, StreamExt,
+    TaskSpecRestartPolicy, TaskSpecRestartPolicyConditionEnum,
 };
 use bollard::{
     container::LogOutput,
@@ -17,7 +17,7 @@ use bollard::{
 use piqueld_core::{
     DesiredJobRun,
     api::LogStream,
-    resource::{APPLICATION_LABEL, INSTANCE_LABEL, JOB_LABEL, JOB_OPERATION_LABEL, MANAGED_LABEL},
+    resource::{APPLICATION_LABEL, JOB_LABEL, JOB_OPERATION_LABEL},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -204,7 +204,11 @@ impl BollardDocker {
                 .filters(&HashMap::from([("label", labels.to_vec())]))
                 .build()
         });
-        let tasks = Self::map_request("list tasks", self.docker.list_tasks(options).await)?;
+        let tasks = self
+            .docker
+            .list_tasks(options)
+            .await
+            .or_request("list tasks")?;
         Ok(tasks
             .into_iter()
             .filter(|task| {
@@ -256,16 +260,14 @@ impl BollardDocker {
 
     /// Services carrying every label in `labels`.
     async fn labelled_services(&self, labels: Vec<String>) -> Result<Vec<Service>, DockerError> {
-        Self::map_request(
-            "list services",
-            self.docker
-                .list_services(Some(
-                    ListServicesOptionsBuilder::default()
-                        .filters(&HashMap::from([("label", labels)]))
-                        .build(),
-                ))
-                .await,
-        )
+        self.docker
+            .list_services(Some(
+                ListServicesOptionsBuilder::default()
+                    .filters(&HashMap::from([("label", labels)]))
+                    .build(),
+            ))
+            .await
+            .or_request("list services")
     }
 
     /// Running containers carrying every label in `labels`.
@@ -273,29 +275,21 @@ impl BollardDocker {
         &self,
         labels: Vec<String>,
     ) -> Result<Vec<ContainerSummary>, DockerError> {
-        Self::map_request(
-            "list job containers",
-            self.docker
-                .list_containers(Some(
-                    ListContainersOptionsBuilder::default()
-                        .filters(&HashMap::from([("label", labels)]))
-                        .build(),
-                ))
-                .await,
-        )
+        self.docker
+            .list_containers(Some(
+                ListContainersOptionsBuilder::default()
+                    .filters(&HashMap::from([("label", labels)]))
+                    .build(),
+            ))
+            .await
+            .or_request("list job containers")
     }
 
     /// Label filters selecting the application named by `ownership`.
     fn ownership_filter(ownership: &BTreeMap<String, String>) -> Result<Vec<String>, DockerError> {
-        [MANAGED_LABEL, INSTANCE_LABEL, APPLICATION_LABEL]
-            .into_iter()
-            .map(|key| {
-                ownership
-                    .get(key)
-                    .map(|value| format!("{key}={value}"))
-                    .ok_or(DockerError::Validation("job ownership"))
-            })
-            .collect()
+        Ok(Self::environment_labels(ownership, "job ownership")?
+            .map(|(key, value)| format!("{key}={value}"))
+            .into())
     }
 
     /// Waits until no task that has not stopped, and no running container,
@@ -309,11 +303,12 @@ impl BollardDocker {
                 .build();
             while self.live_tasks(None).await?.iter().any(|task| {
                 Self::container_mounts(task).any(|(mounted, _)| mounted == volume.as_str())
-            }) || !Self::map_request(
-                "list volume containers",
-                self.docker.list_containers(Some(options.clone())).await,
-            )?
-            .is_empty()
+            }) || !self
+                .docker
+                .list_containers(Some(options.clone()))
+                .await
+                .or_request("list volume containers")?
+                .is_empty()
             {
                 tokio::time::sleep(JOB_STOP_POLL_INTERVAL).await;
             }
@@ -364,16 +359,14 @@ impl BollardDocker {
         job: &DesiredJobRun,
     ) -> Result<Option<(Option<SystemTime>, Vec<Task>)>, DockerError> {
         let name = job.container.name.as_str();
-        let service = match self
+        let Some(service) = self
             .docker
             .inspect_service(name, None::<InspectServiceOptions>)
             .await
-        {
-            Ok(service) => service,
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => return Ok(None),
-            Err(error) => return Err(DockerError::request("inspect job", error)),
+            .found()
+            .or_request("inspect job")?
+        else {
+            return Ok(None);
         };
         let labels = service.spec.and_then(|s| s.labels).unwrap_or_default();
         if labels.get(JOB_OPERATION_LABEL).map(String::as_str) != Some(job.operation()) {
@@ -383,23 +376,20 @@ impl BollardDocker {
             .get(JOB_DEADLINE_LABEL)
             .and_then(|deadline| deadline.parse().ok())
             .map(|deadline| UNIX_EPOCH + Duration::from_millis(deadline));
-        if !Self::owns_resource(labels, &job.container.labels, ResourceKind::Job, name) {
-            return Err(DockerError::OwnershipConflict);
-        }
+        Self::check_ownership(labels, &job.container.labels, ResourceKind::Job, name)?;
         let id = service
             .id
             .ok_or(DockerError::Request("read job service identity"))?;
-        Self::map_request(
-            "list job tasks",
-            self.docker
-                .list_tasks(Some(
-                    ListTasksOptionsBuilder::default()
-                        .filters(&HashMap::from([("service", vec![id])]))
-                        .build(),
-                ))
-                .await,
-        )
-        .map(|tasks| Some((deadline, tasks)))
+        let tasks = self
+            .docker
+            .list_tasks(Some(
+                ListTasksOptionsBuilder::default()
+                    .filters(&HashMap::from([("service", vec![id])]))
+                    .build(),
+            ))
+            .await
+            .or_request("list job tasks")?;
+        Ok(Some((deadline, tasks)))
     }
 
     /// Reads the progress of the operation's run of the job.
@@ -444,17 +434,15 @@ impl BollardDocker {
         let mut output = JobOutput::default();
         let mut remaining = JOB_OUTPUT_MAX_BYTES;
         while let Some(item) = logs.next().await {
+            // The container is gone: its output so far is all there is.
+            let Some(item) = item.found().or_request("read job output")? else {
+                break;
+            };
             let (stream, message) = match item {
-                Ok(LogOutput::StdErr { message }) => (LogStream::Stderr, message),
-                Ok(
-                    LogOutput::StdOut { message }
-                    | LogOutput::Console { message }
-                    | LogOutput::StdIn { message },
-                ) => (LogStream::Stdout, message),
-                Err(bollard::errors::Error::DockerResponseServerError {
-                    status_code: 404, ..
-                }) => break,
-                Err(error) => return Err(DockerError::request("read job output", error)),
+                LogOutput::StdErr { message } => (LogStream::Stderr, message),
+                LogOutput::StdOut { message }
+                | LogOutput::Console { message }
+                | LogOutput::StdIn { message } => (LogStream::Stdout, message),
             };
             let kept = &message[..message.len().min(remaining)];
             remaining -= kept.len();
@@ -482,22 +470,21 @@ impl BollardDocker {
         let application = ownership
             .get(APPLICATION_LABEL)
             .ok_or(DockerError::Validation("job ownership"))?;
-        let services = Self::map_request(
-            "list jobs",
-            self.docker
-                .list_services(Some(
-                    ListServicesOptionsBuilder::default()
-                        .filters(&HashMap::from([(
-                            "label",
-                            vec![
-                                format!("{APPLICATION_LABEL}={application}"),
-                                JOB_LABEL.to_owned(),
-                            ],
-                        )]))
-                        .build(),
-                ))
-                .await,
-        )?;
+        let services = self
+            .docker
+            .list_services(Some(
+                ListServicesOptionsBuilder::default()
+                    .filters(&HashMap::from([(
+                        "label",
+                        vec![
+                            format!("{APPLICATION_LABEL}={application}"),
+                            JOB_LABEL.to_owned(),
+                        ],
+                    )]))
+                    .build(),
+            ))
+            .await
+            .or_request("list jobs")?;
         for spec in services.into_iter().filter_map(|service| service.spec) {
             let operation = spec
                 .labels

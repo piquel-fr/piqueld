@@ -55,6 +55,20 @@ pub enum DockerError {
 }
 
 impl DockerError {
+    /// Whether retrying cannot help: ownership, configuration, Swarm
+    /// topology, and local validation failures.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::OwnershipConflict
+                | Self::ConfigurationConflict
+                | Self::NotManager
+                | Self::IncompatibleSwarm
+                | Self::Validation(_)
+        )
+    }
+
     /// Builds a [`DockerError::UnavailableSource`] that keeps `source` for diagnostics.
     pub(crate) fn unavailable(
         operation: &'static str,
@@ -82,6 +96,31 @@ impl DockerError {
         Self::RequestSource {
             operation,
             source: Box::new(source),
+        }
+    }
+}
+
+/// Classifies Bollard results at the adapter boundary.
+pub(super) trait BollardResult<T> {
+    /// Keeps a failure as [`DockerError::RequestSource`] labelled with `operation`.
+    fn or_request(self, operation: &'static str) -> Result<T, DockerError>;
+
+    /// Turns Docker's HTTP 404 into `Ok(None)`: the resource does not exist.
+    fn found(self) -> Result<Option<T>, bollard::errors::Error>;
+}
+
+impl<T> BollardResult<T> for Result<T, bollard::errors::Error> {
+    fn or_request(self, operation: &'static str) -> Result<T, DockerError> {
+        self.map_err(|error| DockerError::request(operation, error))
+    }
+
+    fn found(self) -> Result<Option<T>, bollard::errors::Error> {
+        match self {
+            Ok(value) => Ok(Some(value)),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(None),
+            Err(error) => Err(error),
         }
     }
 }

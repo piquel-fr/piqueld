@@ -13,7 +13,7 @@ use piqueld_core::{
     DesiredNetwork, DesiredService, DesiredVolume, EnvironmentId, ObservedApplication,
 };
 use std::{collections::BTreeMap, sync::Arc};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 /// A [`DockerApi`] wrapper that bounds process-wide concurrent Docker work.
 pub(crate) struct LimitedDocker<D> {
@@ -37,7 +37,16 @@ impl<D> LimitedDocker<D> {
             observations: Semaphore::new(8),
         }
     }
+
+    /// Waits for an observation permit, held until the returned guard drops.
+    async fn observing(&self) -> SemaphorePermit<'_> {
+        self.observations
+            .acquire()
+            .await
+            .expect("semaphore is never closed")
+    }
 }
+
 #[async_trait]
 impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     async fn application_logs(
@@ -49,11 +58,7 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
         since: u32,
         stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<piqueld_core::api::ApplicationLogs, DockerError> {
-        let _permit = self
-            .observations
-            .acquire()
-            .await
-            .expect("semaphore never closed");
+        let _permit = self.observing().await;
         self.inner
             .application_logs(instance, application, service, tail, since, stream)
             .await
@@ -107,40 +112,26 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
             })
             .await
     }
-    async fn build_image_recorded(
+    async fn build_image(
         &self,
         build: &super::ImageBuild<'_>,
         log: Option<&crate::build::BuildLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
         let _turn = self.builds.turn(build.priority).await;
-        self.inner.build_image_recorded(build, log).await
-    }
-    async fn build_image(
-        &self,
-        build: &super::ImageBuild<'_>,
-    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
-        self.build_image_recorded(build, None).await
+        self.inner.build_image(build, log).await
     }
     /// Waiting for an observation permit counts against the request budget.
     async fn observe(&self, id: &EnvironmentId) -> Result<ObservedApplication, DockerError> {
         DockerTimeout::Request
             .run("observe application", async {
-                let _permit = self
-                    .observations
-                    .acquire()
-                    .await
-                    .expect("semaphore is never closed");
+                let _permit = self.observing().await;
                 self.inner.observe(id).await
             })
             .await
     }
     /// Listing images counts as an observation.
     async fn images(&self) -> Result<Vec<super::LocalImage>, DockerError> {
-        let _permit = self
-            .observations
-            .acquire()
-            .await
-            .expect("semaphore is never closed");
+        let _permit = self.observing().await;
         self.inner.images().await
     }
     async fn remove_image(
@@ -187,22 +178,14 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
         &self,
         job: &piqueld_core::DesiredJobRun,
     ) -> Result<super::JobStatus, DockerError> {
-        let _permit = self
-            .observations
-            .acquire()
-            .await
-            .expect("semaphore never closed");
+        let _permit = self.observing().await;
         self.inner.job_status(job).await
     }
     async fn job_output(
         &self,
         job: &piqueld_core::DesiredJobRun,
     ) -> Result<super::JobOutput, DockerError> {
-        let _permit = self
-            .observations
-            .acquire()
-            .await
-            .expect("semaphore never closed");
+        let _permit = self.observing().await;
         self.inner.job_output(job).await
     }
     async fn remove_jobs(

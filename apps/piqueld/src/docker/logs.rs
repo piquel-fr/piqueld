@@ -1,5 +1,5 @@
 //! Read owned container output on demand. No daemon log persistence or followers.
-use super::{BollardDocker, DockerError};
+use super::{BollardDocker, BollardResult, DockerError};
 use bollard::{
     container::LogOutput,
     query_parameters::{ListServicesOptionsBuilder, ListTasksOptionsBuilder, LogsOptionsBuilder},
@@ -50,7 +50,7 @@ impl BollardDocker {
                     .build(),
             ))
             .await
-            .map_err(|e| DockerError::request("list log tasks", e))?;
+            .or_request("list log tasks")?;
         let mut result = ApplicationLogs::default();
         let mut bytes = 0usize;
         let since = Self::log_since(since);
@@ -87,16 +87,9 @@ impl BollardDocker {
                 ),
             );
             while let Some(item) = logs.next().await {
-                let item = match item {
-                    Ok(item) => item,
-                    Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 404,
-                        ..
-                    }) => {
-                        result.truncated = true;
-                        break;
-                    }
-                    Err(error) => return Err(DockerError::request("read container logs", error)),
+                let Some(item) = item.found().or_request("read container logs")? else {
+                    result.truncated = true;
+                    break;
                 };
                 let source = match &item {
                     LogOutput::StdOut { .. } => "stdout",
@@ -176,7 +169,7 @@ impl BollardDocker {
                     .build(),
             ))
             .await
-            .map_err(|e| DockerError::request("list owned services", e))?
+            .or_request("list owned services")?
             .into_iter()
             .filter_map(|s| {
                 let id = s.id?;
