@@ -54,8 +54,8 @@ pub struct ErrorBody {
     pub request_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Metadata returned when listing applications.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct ApplicationSummary {
     /// Stable application identifier.
     pub id: ApplicationId,
@@ -73,8 +73,8 @@ pub struct ApplicationSummary {
     pub environments: Vec<EnvironmentView>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Public application state returned by the API.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct ApplicationView {
     /// Saved manifest, shared by every environment, with references unresolved.
     pub application: ApplicationTemplate,
@@ -126,15 +126,10 @@ impl ApplicationView {
     /// can equal another environment's ID.
     #[must_use]
     pub fn environment(&self, id_or_name: &str) -> Option<&EnvironmentView> {
-        let environments = &self.environments;
-        environments
-            .iter()
+        let environments = || self.environments.iter();
+        environments()
             .find(|environment| environment.id.as_str() == id_or_name)
-            .or_else(|| {
-                environments
-                    .iter()
-                    .find(|environment| environment.name.as_str() == id_or_name)
-            })
+            .or_else(|| environments().find(|environment| environment.name.as_str() == id_or_name))
     }
 
     /// Finds a preview by stable ID, then by slug, then by branch and `slot`,
@@ -165,9 +160,9 @@ impl ApplicationView {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 /// A deployable unit of an application, with its own deployment history,
 /// status, volumes, generated secrets, routes, and Docker network.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct EnvironmentView {
     /// Stable environment identifier; runtime names derive from it.
     pub id: EnvironmentId,
@@ -488,9 +483,9 @@ pub struct ApplicationPreviews {
     pub previews: u32,
 }
 
+/// Desired application state to apply or preview.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-/// Desired application state to apply or preview.
 pub struct ApplyApplicationRequest {
     /// Application configuration to save or preview. Deployment is an explicit query option.
     pub manifest: ApplicationManifest,
@@ -502,8 +497,8 @@ pub struct ApplyApplicationRequest {
     pub expected_application_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Operation accepted by a mutation endpoint.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct AcceptedOperation {
     /// Asynchronous operation identifier.
     pub operation_id: String,
@@ -515,8 +510,8 @@ pub struct AcceptedOperation {
     pub generation: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Dry-run plan returned by the API.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct PlanView {
     /// Stable application identifier.
     pub application_id: String,
@@ -550,8 +545,8 @@ pub struct PlanView {
     pub release: Option<ReleasePlan>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// A service's effective rollout order and monitor window.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct ServiceRolloutView {
     /// Logical service name.
     pub service: String,
@@ -563,8 +558,8 @@ pub struct ServiceRolloutView {
     pub monitor_seconds: u32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Current environment reconciliation status.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct EnvironmentStatusView {
     /// Stable environment identifier.
     pub environment_id: String,
@@ -578,8 +573,8 @@ pub struct EnvironmentStatusView {
     pub updated_at_ms: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Sanitized runtime diagnostic shown by the read-only dashboard.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct DiagnosticView {
     /// Stable diagnostic category.
     pub code: String,
@@ -598,8 +593,8 @@ impl From<PlanDiagnostic> for DiagnosticView {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Observed service state summarized for browser and operator clients.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct ObservedServiceView {
     /// Logical service name from the desired application.
     pub name: String,
@@ -617,8 +612,8 @@ pub struct ObservedServiceView {
     pub diagnostics: Vec<DiagnosticView>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
 /// Bounded observed runtime state for one environment.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
 pub struct ObservedApplicationView {
     /// Observed services in desired service order.
     pub services: Vec<ObservedServiceView>,
@@ -628,8 +623,8 @@ pub struct ObservedApplicationView {
     pub volume_count: u32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Read-only environment detail composed at the API boundary.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct EnvironmentDetailView {
     /// The environment.
     pub environment: EnvironmentView,
@@ -683,8 +678,8 @@ impl EnvironmentDetailView {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Current control-plane status.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct SystemStatus {
     /// Machine-readable service status.
     pub status: String,
@@ -799,7 +794,7 @@ pub struct RenamedApplication {
     pub generation: u64,
 }
 
-// Summarizes a newly accepted operation for mutation responses.
+/// Summarizes a newly accepted operation for mutation responses.
 impl From<&Operation> for AcceptedOperation {
     fn from(operation: &Operation) -> Self {
         Self {
@@ -1066,7 +1061,7 @@ pub struct ReleasePlan {
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct HostConfiguration {
     /// Settings grouped by server, Docker, reconciliation and retention.
-    pub groups: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    pub groups: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// Bounded historical container output read directly from Docker.
@@ -1159,6 +1154,7 @@ pub enum DependencyStatus {
         message: String,
     },
 }
+
 impl DependencyStatus {
     /// Creates a dependency verdict with a safe failure explanation.
     #[must_use]
@@ -1172,6 +1168,7 @@ impl DependencyStatus {
         }
     }
 }
+
 /// Deployment prerequisites. Configuration APIs remain available when false.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct ReadinessStatus {
@@ -1189,7 +1186,7 @@ pub struct ReadinessStatus {
 }
 
 /// Durable source-preparation attempt or one-shot job run, independent of the executor.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct BuildRecord {
     /// Monotonic build identifier.
     pub id: i64,
@@ -1224,10 +1221,9 @@ pub struct BuildRecord {
     /// Output was removed by retention.
     pub log_expired: bool,
 }
+
 /// Outcome of a source-preparation attempt or job run.
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BuildState {
     /// Source preparation is running.
@@ -1239,8 +1235,9 @@ pub enum BuildState {
     /// Execution was cancelled or interrupted by daemon shutdown.
     Interrupted,
 }
+
 /// Bounded byte-offset page of build output.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct BuildLogPage {
     /// Structured output chunks in chronological order.
     pub items: Vec<BuildLogChunk>,
@@ -1253,7 +1250,7 @@ pub struct BuildLogPage {
 }
 
 /// Captured output with stream identity and capture time.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct BuildLogChunk {
     /// Byte position in the retained output.
     pub offset: i64,
@@ -1265,26 +1262,8 @@ pub struct BuildLogChunk {
     pub text: String,
 }
 
-#[cfg(test)]
-mod log_tests {
-    use super::LogRecord;
-    #[test]
-    fn terminal_controls_are_removed_but_text_and_lines_survive() {
-        assert_eq!(
-            LogRecord::clean_message("\x1b[31mred\x1b[0m\r\0\ttext\n"),
-            "red\ttext\n"
-        );
-        assert_eq!(
-            LogRecord::clean_message(
-                "\x1b]0;hidden title\x07text \x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\"
-            ),
-            "text link"
-        );
-    }
-}
-
 /// Metadata only: secret values are never returned.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct SecretMetadata {
     /// Logical name.
     pub name: String,
@@ -1490,7 +1469,7 @@ impl std::fmt::Display for MountedSecret {
 }
 
 /// Metadata-only result of lost-key recovery. Never rotates application credentials.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct SecretKeyRecovery {
     /// Environments whose generated values were discarded.
     pub affected_environments: i64,
@@ -1720,10 +1699,10 @@ pub struct RouteStatus {
 }
 
 #[cfg(test)]
-mod environment_tests {
+mod tests {
     use super::{
-        ApplicationView, EnvironmentAccess, EnvironmentView, MountedSecret, SecretAccess,
-        SecretMetadata, StoredSecret,
+        ApplicationView, EnvironmentAccess, EnvironmentView, LogRecord, MountedSecret,
+        SecretAccess, SecretMetadata, StoredSecret,
     };
     use crate::{ApplicationId, EnvironmentId, EnvironmentName, EnvironmentSource};
 
@@ -1826,6 +1805,20 @@ generate={type='random',bytes=16}
                 ("stripe".into(), MountedSecret::Stored { generation: 3 }),
                 ("unset".into(), MountedSecret::Missing),
             ]
+        );
+    }
+
+    #[test]
+    fn terminal_controls_are_removed_but_text_and_lines_survive() {
+        assert_eq!(
+            LogRecord::clean_message("\x1b[31mred\x1b[0m\r\0\ttext\n"),
+            "red\ttext\n"
+        );
+        assert_eq!(
+            LogRecord::clean_message(
+                "\x1b]0;hidden title\x07text \x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\"
+            ),
+            "text link"
         );
     }
 }
