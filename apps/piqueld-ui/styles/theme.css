@@ -1,4 +1,6 @@
-/* Design tokens and element defaults. The dashboard ships one dark palette. */
+/* Design tokens and element defaults. The dashboard ships one dark palette.
+   reset.css, loaded first, already zeroes margins, padding, and borders,
+   inherits fonts into form controls, and strips list styles. */
 :root {
     color-scheme: dark;
     --page: #0b0b0e;
@@ -41,26 +43,13 @@
 }
 
 @layer base {
-    * {
-        box-sizing: border-box;
-    }
-
     html {
         background: var(--page);
     }
 
     body {
-        margin: 0;
         color: var(--ink);
         background: var(--page);
-    }
-
-    h1,
-    h2,
-    h3,
-    h4,
-    p {
-        margin: 0;
     }
 
     h1 {
@@ -84,17 +73,8 @@
         color: var(--accent);
     }
 
-    button,
-    input,
-    select,
-    textarea {
-        font: inherit;
-        color: inherit;
-    }
-
     code,
     pre {
-        font-family: var(--font-mono);
         font-size: .92em;
         overflow-wrap: anywhere;
     }
@@ -112,24 +92,6 @@
     }
 
     fieldset {
-        border: 0;
-        padding: 0;
-        margin: 0;
         min-width: 0;
-    }
-
-    ul,
-    ol {
-        margin: 0;
-        padding: 0;
-        list-style: none;
-    }
-
-    dl {
-        margin: 0;
-    }
-
-    [hidden] {
-        display: none !important;
     }
 }
