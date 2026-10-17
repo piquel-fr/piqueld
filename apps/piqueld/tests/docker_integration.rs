@@ -1242,26 +1242,28 @@ async fn logged(
     line: &str,
 ) -> Vec<String> {
     let instance = InstanceId::parse("integration-instance").unwrap();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        let messages = engine
-            .docker
-            .application_logs(&instance, environment, Some(service), 200, 300, None)
-            .await
-            .unwrap()
-            .items
-            .into_iter()
-            .map(|record| record.message)
-            .collect::<Vec<_>>();
-        if messages.iter().any(|message| message == line) {
-            return messages;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "{service} never logged {line}: {messages:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    let mut messages = Vec::new();
+    eventually(
+        Duration::from_mins(1),
+        Duration::from_millis(500),
+        async || {
+            messages = engine
+                .docker
+                .application_logs(&instance, environment, Some(service), 200, 300, None)
+                .await
+                .unwrap()
+                .items
+                .into_iter()
+                .map(|record| record.message)
+                .collect();
+            messages
+                .iter()
+                .any(|message| message == line)
+                .then(|| messages.clone())
+        },
+    )
+    .await
+    .unwrap_or_else(|| panic!("{service} never logged {line}: {messages:?}"))
 }
 
 /// Detaches `desired`'s services from the link networks it no longer grants
