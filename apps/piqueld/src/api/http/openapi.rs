@@ -1,8 +1,10 @@
+//! The published `OpenAPI` 3.0 contract, generated from the routes' Utoipa
+//! metadata and served at `/api/v1/openapi.json`.
 use axum::{Extension, response::IntoResponse};
 use http::header;
 use piqueld_core::api::{Envelope, ErrorBody, SecretMetadata};
 use piqueld_core::{edit::RoutesValue, manifest::Route};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::sync::Arc;
 use utoipa::{OpenApi, ToResponse};
 
@@ -62,10 +64,11 @@ pub(super) fn base_document() -> utoipa::openapi::OpenApi {
     ApiDoc::openapi()
 }
 
-// Utoipa's declarative response schema uses this tuple field as a body type;
-// no runtime value reads the field. Keep the schema-only wrapper rather than
-// replacing the derive with a handwritten ToResponse implementation.
-#[allow(dead_code)]
+// The structured error response every operation documents.
+#[expect(
+    dead_code,
+    reason = "Utoipa reads the field's type as the body schema; no value is ever built"
+)]
 #[derive(ToResponse)]
 #[response(description = "Structured, sanitized error")]
 pub(super) struct ApiErrorResponse(ErrorBody);
@@ -207,44 +210,44 @@ fn convert_to_openapi_30(value: &mut Value) {
 /// Adds the 403 returned by the TCP browser trust middleware
 /// (`browser::BrowserPolicy`) to every documented operation.
 fn complete_http_contract(document: &mut Value) {
-    let Some(paths) = document.get_mut("paths").and_then(Value::as_object_mut) else {
-        return;
-    };
-    for item in paths.values_mut().filter_map(Value::as_object_mut) {
-        for operation in item.values_mut().filter_map(Value::as_object_mut) {
-            if let Some(responses) = operation
-                .get_mut("responses")
-                .and_then(Value::as_object_mut)
-            {
-                responses.insert("403".into(), serde_json::json!({
-                    "description": "TCP authority or browser origin is not trusted",
-                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorBody"}}}
-                }));
-            }
+    for operation in operations_mut(document) {
+        if let Some(responses) = operation
+            .get_mut("responses")
+            .and_then(Value::as_object_mut)
+        {
+            responses.insert("403".into(), serde_json::json!({
+                "description": "TCP authority or browser origin is not trusted",
+                "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorBody"}}}
+            }));
         }
     }
 }
 
 /// Optional HTTP parameters are absent rather than represented as JSON null.
 fn remove_nullable_parameters(document: &mut Value) {
-    let Some(paths) = document.get_mut("paths").and_then(Value::as_object_mut) else {
-        return;
-    };
-    for item in paths.values_mut().filter_map(Value::as_object_mut) {
-        for operation in item.values_mut().filter_map(Value::as_object_mut) {
-            let Some(parameters) = operation
-                .get_mut("parameters")
-                .and_then(Value::as_array_mut)
-            else {
-                continue;
-            };
-            for parameter in parameters.iter_mut().filter_map(Value::as_object_mut) {
-                if parameter.get("required").and_then(Value::as_bool) != Some(true)
-                    && let Some(schema) = parameter.get_mut("schema").and_then(Value::as_object_mut)
-                {
-                    schema.remove("nullable");
-                }
+    for operation in operations_mut(document) {
+        let Some(parameters) = operation
+            .get_mut("parameters")
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for parameter in parameters.iter_mut().filter_map(Value::as_object_mut) {
+            if parameter.get("required").and_then(Value::as_bool) != Some(true)
+                && let Some(schema) = parameter.get_mut("schema").and_then(Value::as_object_mut)
+            {
+                schema.remove("nullable");
             }
         }
     }
+}
+
+/// Every operation object under the serialized document's `paths`.
+fn operations_mut(document: &mut Value) -> impl Iterator<Item = &mut Map<String, Value>> {
+    document
+        .get_mut("paths")
+        .and_then(Value::as_object_mut)
+        .into_iter()
+        .flat_map(|paths| paths.values_mut().filter_map(Value::as_object_mut))
+        .flat_map(|item| item.values_mut().filter_map(Value::as_object_mut))
 }
