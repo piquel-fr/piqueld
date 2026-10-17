@@ -29,6 +29,14 @@ struct BuildRow {
     log_expired: i64,
 }
 
+/// `build_log_chunks` row shared by the stream-filtered and unfiltered page queries.
+struct BuildLogRow {
+    offset: i64,
+    data: Vec<u8>,
+    stream: String,
+    timestamp_ms: i64,
+}
+
 impl BuildRow {
     /// Converts raw columns into a build record, reporting unknown states as
     /// corruption.
@@ -351,17 +359,31 @@ impl Store {
         .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
         let before = before.unwrap_or(i64::MAX);
-        let stream = stream.map(LogStream::as_str);
-        let mut chunks = sqlx::query!(
-            "SELECT offset,data,stream,timestamp_ms FROM build_log_chunks
-             WHERE build_id=?1 AND (?2 IS NULL OR stream=?2) AND offset<?3
-             ORDER BY offset DESC LIMIT 17",
-            id,
-            stream,
-            before
-        )
-        .fetch_all(&mut *tx)
-        .await
+        // Separate queries, so a stream filter seeks `build_log_stream`.
+        let mut chunks = if let Some(stream) = stream {
+            let stream = stream.as_str();
+            sqlx::query_as!(
+                BuildLogRow,
+                "SELECT offset,data,stream,timestamp_ms FROM build_log_chunks
+                 WHERE build_id=?1 AND stream=?2 AND offset<?3
+                 ORDER BY offset DESC LIMIT 17",
+                id,
+                stream,
+                before
+            )
+            .fetch_all(&mut *tx)
+            .await
+        } else {
+            sqlx::query_as!(
+                BuildLogRow,
+                "SELECT offset,data,stream,timestamp_ms FROM build_log_chunks
+                 WHERE build_id=?1 AND offset<?2 ORDER BY offset DESC LIMIT 17",
+                id,
+                before
+            )
+            .fetch_all(&mut *tx)
+            .await
+        }
         .map_err(StoreError::database)?;
         let more = chunks.len() > 16;
         chunks.truncate(16);

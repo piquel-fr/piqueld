@@ -7,7 +7,7 @@ use piqueld_core::{
 use sqlx::{Sqlite, Transaction};
 use std::collections::BTreeMap;
 
-/// `deployments` row shared by the snapshot and history queries.
+/// `deployments` row shared by the snapshot and history page queries.
 struct DeploymentRow {
     id: String,
     manifest_json: String,
@@ -273,16 +273,29 @@ impl Store {
         let before = Paging::cursor(cursor)?;
         let app_id = app.as_str();
         let mut tx = self.snapshot().await?;
-        let mut rows = sqlx::query_as!(
-            DeploymentRow,
-            r#"SELECT id AS "id!",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments
-             WHERE environment_id=?1 AND (?2 IS NULL OR id<?2) ORDER BY id DESC LIMIT ?3"#,
-            app_id,
-            before,
-            paging.fetch
-        )
-        .fetch_all(&mut *tx)
-        .await
+        // Separate queries, so a cursor seeks `deployment_application`.
+        let mut rows = if let Some(before) = before {
+            sqlx::query_as!(
+                DeploymentRow,
+                r#"SELECT id AS "id!",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments
+                 WHERE environment_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3"#,
+                app_id,
+                before,
+                paging.fetch
+            )
+            .fetch_all(&mut *tx)
+            .await
+        } else {
+            sqlx::query_as!(
+                DeploymentRow,
+                r#"SELECT id AS "id!",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments
+                 WHERE environment_id=?1 ORDER BY id DESC LIMIT ?2"#,
+                app_id,
+                paging.fetch
+            )
+            .fetch_all(&mut *tx)
+            .await
+        }
         .map_err(StoreError::database)?;
         let next_cursor = paging.next_cursor(&mut rows, |row| row.id.clone());
         let current = Self::current_deployment_on(&mut tx, app)
@@ -359,7 +372,7 @@ mod tests {
 
     fn empty() -> ApplicationTemplate {
         crate::store::testing::template("empty", "[spec]")
-            .with_id(piqueld_core::ApplicationId::parse("app-empty-test").unwrap())
+            .normalize(piqueld_core::ApplicationId::parse("app-empty-test").unwrap())
     }
 
     /// The environment created with a saved application, which shares its ID.

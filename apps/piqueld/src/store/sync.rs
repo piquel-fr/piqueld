@@ -231,22 +231,26 @@ impl Store {
         &self,
         operation: &super::Operation,
     ) -> Result<bool, StoreError> {
-        Self::requested_by_sync_on(&mut *self.connection().await?, operation).await
+        // An operation pruned since was not.
+        match Self::requested_by_sync_on(&mut *self.connection().await?, operation).await {
+            Err(StoreError::DatabaseSource(sqlx::Error::RowNotFound)) => Ok(false),
+            requested => requested,
+        }
     }
 
-    /// [`Self::requested_by_sync`] on an existing connection or transaction.
+    /// [`Self::requested_by_sync`] on an existing connection or transaction,
+    /// where a missing operation is a storage error.
     pub(super) async fn requested_by_sync_on(
         connection: &mut SqliteConnection,
         operation: &super::Operation,
     ) -> Result<bool, StoreError> {
-        Ok(sqlx::query_scalar!(
+        sqlx::query_scalar!(
             r#"SELECT actor_system IS NOT NULL AS "sync!: bool" FROM operations WHERE id=?1"#,
             operation.id
         )
-        .fetch_optional(connection)
+        .fetch_one(connection)
         .await
-        .map_err(StoreError::database)?
-        .unwrap_or(false))
+        .map_err(StoreError::database)
     }
 
     /// Records `head` as the branch head of `id`'s last deployment, stored
