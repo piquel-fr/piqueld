@@ -302,7 +302,7 @@ async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
     let database = directory.path().join("history.db");
     let store = Store::open(&database).await.unwrap();
     let app = application();
-    let environment = environment(&app);
+    let env = environment(&app);
     let other = application_named("app-other", "other");
     let initial = store
         .save_application(&ApplicationTemplate::from(&app), None, Some(0))
@@ -314,15 +314,9 @@ async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
         .unwrap();
     let mut expected_deployments = vec![initial.id];
     for _ in 0..3 {
-        expected_deployments.push(
-            store
-                .request_deploy(&environment, Some(1))
-                .await
-                .unwrap()
-                .id,
-        );
+        expected_deployments.push(store.request_deploy(&env, Some(1)).await.unwrap().id);
         store
-            .request_deploy(&EnvironmentId::default_for(other.id()), Some(1))
+            .request_deploy(&environment(&other), Some(1))
             .await
             .unwrap();
     }
@@ -333,15 +327,11 @@ async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
         .execute(&mut sqlite::connect(&database).await)
         .await
         .unwrap();
-    let deployments = all_pages(async |cursor| {
-        store
-            .deployments(&environment, cursor.as_deref(), 2)
-            .await
-            .unwrap()
-    })
-    .await;
+    let deployments =
+        all_pages(async |cursor| store.deployments(&env, cursor.as_deref(), 2).await.unwrap())
+            .await;
     for deployment in &deployments {
-        assert_eq!(deployment.operation.environment_id, environment);
+        assert_eq!(deployment.operation.environment_id, env);
     }
     let deployments = deployments
         .into_iter()
@@ -355,18 +345,18 @@ async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
         .unwrap()
         .items
         .into_iter()
-        .filter(|event| event.environment_id.as_ref() == Some(&environment))
+        .filter(|event| event.environment_id.as_ref() == Some(&env))
         .map(|event| event.id)
         .collect::<Vec<_>>();
     let events = all_pages(async |cursor| {
         store
-            .events(Some(&environment), cursor.as_deref(), 2)
+            .events(Some(&env), cursor.as_deref(), 2)
             .await
             .unwrap()
     })
     .await;
     for event in &events {
-        assert_eq!(event.environment_id.as_ref(), Some(&environment));
+        assert_eq!(event.environment_id.as_ref(), Some(&env));
     }
     let events = events.into_iter().map(|event| event.id).collect::<Vec<_>>();
     assert_eq!(events, expected_events);

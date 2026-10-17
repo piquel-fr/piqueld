@@ -306,8 +306,8 @@ impl FakeDocker {
         }
     }
 
-    /// Refuses reusing an existing network or volume another owner, or a
-    /// service, labelled, or that Docker configured differently.
+    /// Refuses reusing a network or volume owned by someone else or labelled
+    /// as a service, or one Docker configured differently.
     fn check_reusable(
         labels: &BTreeMap<String, String>,
         runtime_configuration_matches: bool,
@@ -839,15 +839,6 @@ fn with_token(mut manifest: ApplicationManifest) -> ApplicationManifest {
     manifest
 }
 
-/// Makes a Git `source` build the fixture's failing `Failfile`.
-fn fail_build(source: &mut piqueld_core::Source) {
-    let piqueld_core::Source::Git { build, .. } = source else {
-        unreachable!("Git source expected")
-    };
-    let piqueld_core::manifest::Build::Docker { dockerfile, .. } = build;
-    *dockerfile = "Failfile".into();
-}
-
 /// The fixture manifest with before-rollout jobs that reuse its `web` service.
 fn manifest_with_jobs(jobs: &[&str], timeout_seconds: u32) -> ApplicationManifest {
     let mut input = manifest();
@@ -1223,6 +1214,10 @@ impl ControllerHarness {
             OperationState::Failed
         );
         let observed = self.docker.observed.lock().await;
+        // Nothing replaced them, and nothing else appeared beside them.
+        assert_eq!(observed.services.len(), foreign.services.len());
+        assert_eq!(observed.networks.len(), foreign.networks.len());
+        assert_eq!(observed.volumes.len(), foreign.volumes.len());
         assert!(
             foreign
                 .services
@@ -2512,7 +2507,7 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
     let operation = harness.operation(&accepted.operation_id).await;
     harness.finish(&operation).await;
     assert!(harness.pulls().await > pulls);
-    fail_build(&mut input.spec.services[0].source);
+    input.spec.services[0].source = fixture.failing_source();
     let failed = harness.apply(input, Some(1)).await;
     harness.scan().await;
     let failure = harness.operation(&failed.id).await;
@@ -2543,10 +2538,10 @@ async fn mixed_sources_report_the_failing_source() {
         let mut input = manifest();
         let mut git_service = input.spec.services[0].clone();
         git_service.name = "git-service".into();
-        git_service.source = fixture.source.clone();
         if git_fails {
-            fail_build(&mut git_service.source);
+            git_service.source = fixture.failing_source();
         } else {
+            git_service.source = fixture.source.clone();
             input.spec.services[0].source = piqueld_core::Source::Image {
                 image: "ghcr.io/example/unstable:1".into(),
             };
@@ -3079,8 +3074,7 @@ mod repository_deployments {
         let build = git_fixture::GitBuildFixture::new();
         let mut failing = initial.clone();
         failing.spec.manifest = None;
-        failing.spec.services[0].source = build.source.clone();
-        fail_build(&mut failing.spec.services[0].source);
+        failing.spec.services[0].source = build.failing_source();
         repository.write("app.json", &failing);
         repository.commit(&[]);
         let failed = harness.deploy(&first.environment_id).await;
@@ -3112,8 +3106,7 @@ mod repository_deployments {
         harness.finish(&first).await;
         let build = git_fixture::GitBuildFixture::new();
         let mut candidate = initial.clone();
-        candidate.spec.services[0].source = build.source.clone();
-        fail_build(&mut candidate.spec.services[0].source);
+        candidate.spec.services[0].source = build.failing_source();
         repository.write("app.json", &candidate);
         repository.commit(&[]);
         let failed = harness.deploy(&first.environment_id).await;

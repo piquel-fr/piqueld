@@ -1,9 +1,15 @@
 //! Privileged end-to-end qualification for the Docker adapter.
 
+// Each test binary compiles the support modules on its own; this one builds
+// from Git but never fails a build, clones, or bundles, as fake_docker does.
+#[allow(dead_code, reason = "only GitBuildFixture's build is used here")]
 #[path = "support/git.rs"]
 mod git_fixture;
 #[path = "support/poll.rs"]
 mod poll;
+#[allow(dead_code, reason = "only GitBuildFixture's commits are used here")]
+#[path = "support/repository.rs"]
+mod repository;
 
 use bollard::query_parameters::{InspectServiceOptions, UpdateServiceOptionsBuilder};
 use git_fixture::GitBuildFixture;
