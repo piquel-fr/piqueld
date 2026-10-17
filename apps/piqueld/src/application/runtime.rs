@@ -365,14 +365,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
                     )));
                 };
                 let (commit, image_id) = self
-                    .prepare_git(
-                        environment,
-                        name,
-                        &source,
-                        repository,
-                        build,
-                        self.docker.as_ref(),
-                    )
+                    .prepare_git(environment, name, &source, repository, build)
                     .await
                     .map_err(BoundaryError::GitBuild)?;
                 Ok(ResolvedSource::Git {
@@ -396,8 +389,8 @@ impl<D: DockerApi> ApplicationRuntime<D> {
         source: &Source,
         repository: &piqueld_core::manifest::GitRepository,
         build: &piqueld_core::manifest::ValidatedBuild,
-        docker: &D,
     ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
+        let docker = self.docker.as_ref();
         let repository =
             crate::git::snapshot::SnapshotSource::checkout(self.snapshot.as_ref(), repository);
         let owner = (&self.instance_id, self.priority);
