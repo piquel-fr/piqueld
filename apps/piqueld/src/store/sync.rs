@@ -48,7 +48,7 @@ impl Store {
     /// # Errors
     /// Returns a storage or decoding error.
     pub(crate) async fn sync_applications(&self) -> Result<Vec<SyncApplication>, StoreError> {
-        let mut connection = self.pool.acquire().await.map_err(StoreError::database)?;
+        let mut connection = self.connection().await?;
         let rows = sqlx::query!(
             r#"SELECT id AS "id!",desired_json FROM applications WHERE delete_intent=0 AND json_extract(desired_json,'$.spec.manifest.sync.mode') IS NOT NULL ORDER BY id"#
         )
@@ -231,11 +231,7 @@ impl Store {
         &self,
         operation: &super::Operation,
     ) -> Result<bool, StoreError> {
-        Self::requested_by_sync_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            operation,
-        )
-        .await
+        Self::requested_by_sync_on(&mut *self.connection().await?, operation).await
     }
 
     /// [`Self::requested_by_sync`] on an existing connection or transaction.

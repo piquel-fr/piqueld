@@ -171,7 +171,7 @@ impl Store {
         if request_id.is_none() {
             return Ok(None);
         }
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         let fingerprint = Self::mutation_fingerprint(mutation, expected_generation, force)?;
         let checked = Self::check_request_on(
             &mut tx,

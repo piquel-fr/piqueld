@@ -108,12 +108,9 @@ impl Store {
     /// # Errors
     /// Returns a storage error or `NotFound`.
     pub async fn application(&self, id: &ApplicationId) -> Result<StoredApplication, StoreError> {
-        Self::application_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            id.as_str(),
-        )
-        .await?
-        .ok_or(StoreError::NotFound)
+        Self::application_on(&mut *self.connection().await?, id.as_str())
+            .await?
+            .ok_or(StoreError::NotFound)
     }
 
     /// Reads an application on an existing connection or transaction.
@@ -132,11 +129,7 @@ impl Store {
     /// # Errors
     /// Returns a storage or decoding error.
     pub async fn find_by_name(&self, name: &str) -> Result<Option<StoredApplication>, StoreError> {
-        Self::find_by_name_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            name,
-        )
-        .await
+        Self::find_by_name_on(&mut *self.connection().await?, name).await
     }
 
     /// Finds an application by name on an existing connection or transaction.
@@ -174,11 +167,7 @@ impl Store {
         &self,
         id: &ApplicationId,
     ) -> Result<Vec<EnvironmentView>, StoreError> {
-        Self::environments_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            id.as_str(),
-        )
-        .await
+        Self::environments_on(&mut *self.connection().await?, id.as_str()).await
     }
 
     /// Lists an application's environments on an existing connection or
@@ -328,7 +317,7 @@ impl Store {
             .map_err(StoreError::invalid_input)?;
         let after = after.as_ref().map_or("", ApplicationId::as_str);
         let visible = super::access::scope_json(visible);
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         let mut rows = sqlx::query!(
             r#"SELECT id AS "id!",name,generation,delete_intent,created_at_ms,updated_at_ms FROM applications WHERE id>?1 AND (?3 IS NULL OR id IN (SELECT value FROM json_each(?3))) ORDER BY id LIMIT ?2"#,
             after,

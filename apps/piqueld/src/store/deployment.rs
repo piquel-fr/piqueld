@@ -95,11 +95,7 @@ impl Store {
         &self,
         environment: &EnvironmentId,
     ) -> Result<Option<CurrentDeployment>, StoreError> {
-        Self::current_deployment_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            environment,
-        )
-        .await
+        Self::current_deployment_on(&mut *self.connection().await?, environment).await
     }
 
     /// Saves edited configuration with the next generation without creating an
@@ -276,7 +272,7 @@ impl Store {
         let paging = Paging::new(limit)?;
         let before = Paging::cursor(cursor)?;
         let app_id = app.as_str();
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         let mut rows = sqlx::query_as!(
             DeploymentRow,
             r#"SELECT id AS "id!",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments

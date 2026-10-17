@@ -153,7 +153,7 @@ impl Store {
             return Err(StoreError::InvalidInput);
         }
         let applications = super::access::scope_json(&visible.applications);
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         let coverage = sqlx::query!(
             "SELECT started_at_ms,pruned_through_ms FROM history_coverage WHERE singleton=1"
         )

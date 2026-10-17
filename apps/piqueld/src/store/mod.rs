@@ -51,6 +51,7 @@ pub use piqueld_core::{ApplicationState, Operation, OperationKind, OperationStat
 use serde::de::{DeserializeOwned, value::StrDeserializer};
 use sqlx::{
     Sqlite, SqlitePool, Transaction,
+    pool::PoolConnection,
     query::Query,
     sqlite::{
         SqliteArguments, SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions,
@@ -760,6 +761,17 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         Ok((writer, tx))
+    }
+
+    /// A pooled connection for reads that need no consistent snapshot.
+    async fn connection(&self) -> Result<PoolConnection<Sqlite>, StoreError> {
+        self.pool.acquire().await.map_err(StoreError::database)
+    }
+
+    /// A read transaction, so several reads see one consistent snapshot
+    /// without waiting for writers.
+    async fn snapshot(&self) -> Result<Transaction<'static, Sqlite>, StoreError> {
+        self.pool.begin().await.map_err(StoreError::database)
     }
 
     /// Runs one write statement on its own behind the writer queue, for

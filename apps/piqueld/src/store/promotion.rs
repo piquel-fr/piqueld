@@ -218,7 +218,7 @@ impl Store {
         target: &EnvironmentId,
         selection: &PromotionSelection,
     ) -> Result<PromotionCandidate, StoreError> {
-        let mut snapshot = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut snapshot = self.snapshot().await?;
         let target = Self::environment_on(&mut snapshot, target.as_str())
             .await?
             .filter(|target| target.environment.preview().is_none())
@@ -396,12 +396,7 @@ impl Store {
         environment: &EnvironmentView,
         app: &NormalizedApplication,
     ) -> Result<Vec<SecretProblem>, StoreError> {
-        Self::secret_problems_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            environment,
-            app,
-        )
-        .await
+        Self::secret_problems_on(&mut *self.connection().await?, environment, app).await
     }
 
     /// Checks again that `promotion`'s origin applies to `target`, which
