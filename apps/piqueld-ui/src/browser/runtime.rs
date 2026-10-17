@@ -321,8 +321,8 @@ fn links_card(detail: &EnvironmentDetailView) -> Option<AnyView> {
     let imports = links.imports.iter().map(|import| {
         let (tone, state) = match import.state {
             ImportState::Connected => (Tone::Ok, "connected"),
-            ImportState::EnvironmentMissing => (Tone::Pending, "environment not deployed"),
-            ImportState::NotExported => (Tone::Pending, "not exported to this environment"),
+            ImportState::Unavailable => (Tone::Pending, "not exported to this environment"),
+            ImportState::Full => (Tone::Pending, "exporter links to too many environments"),
         };
         view! {
             <tr>

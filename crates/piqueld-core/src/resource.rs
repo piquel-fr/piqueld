@@ -1458,6 +1458,12 @@ pub struct ObservedNetwork {
 }
 
 impl ObservedNetwork {
+    /// Whether this is a link network services are still attached to.
+    #[must_use]
+    pub fn is_linked_in_use(&self) -> bool {
+        self.in_use && self.labels.contains_key(LINK_LABEL)
+    }
+
     /// Returns whether ownership labels identify the desired network.
     ///
     /// Only checks identity (owner and name), not configuration drift.
@@ -1679,6 +1685,59 @@ pub struct ObservedApplication {
     /// Link networks other environments own for their links to this one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub linked_networks: Vec<ObservedNetwork>,
+}
+
+impl ObservedApplication {
+    /// Attachments of `environment`'s services to link networks that `granted`
+    /// does not grant them, as service and network names. `granted` is the
+    /// environment's active target projected with its links, if it has one
+    /// and is not being deleted.
+    ///
+    /// These are detached as soon as they are found, not by a rollout: an
+    /// unrelated failing service or a running deployment must not keep a
+    /// revoked link open.
+    #[must_use]
+    pub fn revoked_links(
+        &self,
+        instance: &InstanceId,
+        environment: &EnvironmentId,
+        granted: Option<&ResolvedApplication>,
+    ) -> Vec<(&str, &str)> {
+        let link_networks = self
+            .linked_networks
+            .iter()
+            .chain(
+                self.networks
+                    .iter()
+                    .filter(|network| network.labels.contains_key(LINK_LABEL)),
+            )
+            .map(|network| network.name.as_str())
+            .collect::<BTreeSet<_>>();
+        self.services
+            .iter()
+            .filter(|service| service.is_owned_by(instance, environment))
+            .flat_map(|service| {
+                let granted = granted
+                    .and_then(|target| {
+                        target
+                            .services
+                            .iter()
+                            .find(|desired| desired.name.as_str() == service.name)
+                    })
+                    .map_or(&[][..], |desired| desired.networks.as_slice());
+                service
+                    .networks
+                    .iter()
+                    .filter(|attachment| link_networks.contains(attachment.network.as_str()))
+                    .filter(move |attachment| {
+                        !granted
+                            .iter()
+                            .any(|network| network.as_str() == attachment.network)
+                    })
+                    .map(|attachment| (service.name.as_str(), attachment.network.as_str()))
+            })
+            .collect()
+    }
 }
 
 /// Result of comparing runtime ownership labels with an expected owner.

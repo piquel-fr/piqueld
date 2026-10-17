@@ -626,7 +626,8 @@ application's exported service as `<service>.<application>`, in the
 environment named like each importing one unless `--environment` names one (it
 accepts `${{ vars.<name> }}`). Like jobs, link edits preserve the others and
 use the inspected generation. `env show` lists each import of the environment
-and whether it connects, and the environments importing its services.
+and whether it connects, and the environments of readable applications
+importing its services.
 
 `app variable set` sets a variable's default, or with `--env NAME` its value in
 the environment named `NAME`, which must exist (an edit never declares a new

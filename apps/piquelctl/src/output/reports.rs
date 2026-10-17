@@ -994,8 +994,8 @@ report!(EnvironmentShowReport<'_>, self, out, {
     for import in self.detail.links.iter().flat_map(|links| &links.imports) {
         let state = match import.state {
             ImportState::Connected => "connected",
-            ImportState::EnvironmentMissing => "waiting: the environment has not deployed",
-            ImportState::NotExported => "waiting: not exported to this environment",
+            ImportState::Unavailable => "waiting: not exported to this environment",
+            ImportState::Full => "waiting: the exporter links to too many environments",
         };
         out.label(
             "Import",

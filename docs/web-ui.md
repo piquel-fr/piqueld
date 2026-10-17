@@ -163,7 +163,8 @@ events such as edits and renames; a deleted environment's events remain until
 the application is deleted. Events has an **Errors only** filter. An environment's Overview shows the runtime status, the latest operation,
 a URLs card, a Links card when it imports or exports services, observed
 services, and reconciliation diagnostics. The Links card lists each import as
-connected or waiting, with why, and the environments importing its services. The URLs card
+connected or waiting, with why, and the environments of readable applications
+importing its services. The URLs card
 lists the URL of each route the current deployment renders, with its name,
 visibility, destination and state: **ready**, or **pending** with what it waits
 for (ingress, HTTPS, DNS records, or a healthy service), as the daemon reports

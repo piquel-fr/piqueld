@@ -298,12 +298,19 @@ attempted, so the other side attaches or detaches within seconds rather than
 at the next scan interval. The exporter thus joins while the importer's
 services are still starting.
 
-Removing a link detaches both sides; the importer removes its obsolete link
-network only once no container is attached to it any longer (Docker refuses
-otherwise), deferring cleanup while the exporter's services are still on it.
-Deleting an environment that is being imported from, or that imports, detaches
-the other side; the importer's deletion retries until its link networks are
-gone.
+Revoking a link never waits for a rollout. Every full scan, each environment
+detaches its services from the link networks its links no longer grant,
+removing only that attachment from each service's current specification, even
+while a failing service blocks its plan or a deployment is running. Removing a
+link, or deleting either environment, thus detaches both sides. The importer
+removes an obsolete link network once no container is attached to it any
+longer (Docker refuses otherwise). Its deletion does not wait for that: it
+leaves link networks still in use behind, and the exporter removes them on a
+later full scan, once its services have left them.
+
+An exporting environment links to at most 64 importing environments. The
+oldest keep their links; imports of newer ones stay unconnected until a slot
+frees up.
 
 ## Ingress coordination
 

@@ -7218,8 +7218,8 @@
         "description": "Whether an import connects, and why not.",
         "enum": [
           "connected",
-          "environment_missing",
-          "not_exported"
+          "unavailable",
+          "full"
         ],
         "type": "string"
       },

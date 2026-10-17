@@ -91,11 +91,13 @@ impl ApplicationService {
     }
     /// Combines saved intent, observed state, history, and bounded diagnostics.
     /// Runtime outages are returned as diagnostics so saved intent remains readable.
+    /// Links list only importers of `readable` applications.
     /// # Errors
     /// Returns absence or storage errors.
     pub async fn environment_detail(
         &self,
         id: &EnvironmentId,
+        readable: &Scope,
     ) -> Result<EnvironmentDetailView, ApplicationError> {
         let (stored, status) = self.store.get_with_status(id).await?;
         let (observed, observation_error) = if stored.resolved.is_none() {
@@ -130,7 +132,7 @@ impl ApplicationService {
             (None, None) => None,
         };
         let urls = self.urls(&stored, &observed_view.services).await?;
-        let links = self.store.link_report(id, None).await?;
+        let links = self.store.link_report(id, None, readable).await?;
         Ok(EnvironmentDetailView {
             manifest,
             release,
@@ -444,10 +446,15 @@ impl ApplicationService {
         plan.add_jobs(app, environment);
         if current.is_some() {
             let spec = app.spec();
+            // Plans only warn about imports, so list no importers.
             plan.warn_links(
                 &self
                     .store
-                    .link_report(environment, Some((&spec.exports, &spec.imports)))
+                    .link_report(
+                        environment,
+                        Some((&spec.exports, &spec.imports)),
+                        &Scope::NONE,
+                    )
                     .await?,
             );
         }

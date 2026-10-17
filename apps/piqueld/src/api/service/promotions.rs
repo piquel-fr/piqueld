@@ -156,10 +156,15 @@ impl ApplicationService {
         plan.warn_rollouts(app);
         plan.add_jobs(app, target.id());
         let spec = app.spec();
+        // Plans only warn about imports, so list no importers.
         plan.warn_links(
             &self
                 .store
-                .link_report(target.id(), Some((&spec.exports, &spec.imports)))
+                .link_report(
+                    target.id(),
+                    Some((&spec.exports, &spec.imports)),
+                    &piqueld_core::access::Scope::NONE,
+                )
                 .await?,
         );
         // Compare with what runs, not with a later attempt that never published.

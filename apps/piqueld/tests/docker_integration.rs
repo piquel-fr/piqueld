@@ -1324,6 +1324,37 @@ async fn logged(
     }
 }
 
+/// Detaches `desired`'s services from the link networks it no longer grants
+/// them, as link enforcement does, and returns those attachments. Nothing
+/// else about the services changes.
+async fn revoke_links(
+    engine: &IsolatedDocker,
+    desired: &piqueld_core::ResolvedApplication,
+) -> Vec<(String, String)> {
+    let observed = engine.docker.observe(&desired.id).await.unwrap();
+    let revoked = observed
+        .revoked_links(&desired.instance_id, &desired.id, Some(desired))
+        .into_iter()
+        .map(|(service, network)| (service.to_owned(), network.to_owned()))
+        .collect::<Vec<_>>();
+    for (service, network) in &revoked {
+        engine
+            .docker
+            .detach_network(service, network, &desired.networks[0].labels)
+            .await
+            .unwrap();
+    }
+    let observed = engine.docker.observe(&desired.id).await.unwrap();
+    assert!(
+        observed.services.iter().all(|service| desired
+            .services
+            .iter()
+            .any(|wanted| service.matches(wanted))),
+        "only the link attachments changed"
+    );
+    revoked
+}
+
 /// An importer reaches the exported service by its link name and nothing else
 /// of the exporter; an unlinked application resolves neither; removing the
 /// link detaches the exporter and removes the network.
@@ -1391,10 +1422,19 @@ async fn links_reach_only_the_imported_service_until_removed() {
     let unlinked_logs = logged(&engine, &unlinked.id, "web", "api-hidden").await;
     assert!(!unlinked_logs.contains(&"api-visible".to_owned()));
 
-    // Removing the link detaches the exporter, then removes the network.
+    // Removing the link revokes the exporter's attachment without its plan,
+    // keeping the rest of the service, then removes the network.
     let network = piqueld_core::DockerNetworkName::for_link(&importer.id, &exporter.id);
     converge(&engine, &reconcile(&importer), &[]).await;
-    converge(&engine, &reconcile(&exporter), &[]).await;
+    let api = exporter
+        .services
+        .iter()
+        .find(|service| service.logical_name.as_str() == "api")
+        .unwrap();
+    assert_eq!(
+        revoke_links(&engine, &exporter).await,
+        [(api.name.to_string(), network.to_string())]
+    );
     while engine
         .docker
         .observe(&importer.id)

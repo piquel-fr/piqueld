@@ -1365,7 +1365,8 @@ fn links_join_the_importer_and_only_imported_services_on_the_importers_network()
 }
 
 /// Once the link is gone, the importer keeps its network while the
-/// exporter's containers are attached, then removes it.
+/// exporter's containers are attached, then removes it. Deleting the
+/// importer leaves it behind instead of waiting for the exporter.
 #[test]
 fn importers_remove_link_networks_once_nothing_is_attached() {
     let (importer, exporter, link) = linked_environments();
@@ -1396,6 +1397,76 @@ fn importers_remove_link_networks_once_nothing_is_attached() {
             })
     };
     assert!(!removes(&runtime));
+    let deletion = Plan::from_request(
+        &PlanRequest::Delete {
+            environment_id: importer.id.clone(),
+            instance_id: instance(),
+        },
+        &runtime,
+    );
+    assert!(!deletion.is_blocked());
+    let deleted_networks = deletion
+        .actions
+        .iter()
+        .filter_map(|action| match &action.kind {
+            ActionKind::RemoveNetwork { name } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(!deleted_networks.is_empty() && !deleted_networks.contains(&name.as_str()));
     runtime.networks.last_mut().unwrap().in_use = false;
     assert!(removes(&runtime));
+}
+
+/// Services leave link networks as soon as their links stop granting them,
+/// whether they import through the network or are exported on it.
+#[test]
+fn services_lose_link_networks_their_links_no_longer_grant() {
+    let (importer, exporter, link) = linked_environments();
+    let as_importer = importer
+        .clone()
+        .with_links(std::slice::from_ref(&link), &ObservedApplication::default());
+    let mut runtime = observed(&as_importer);
+    let network = runtime
+        .networks
+        .iter()
+        .find(|network| {
+            network
+                .labels
+                .contains_key(piqueld_core::resource::LINK_LABEL)
+        })
+        .cloned()
+        .unwrap();
+    let web = as_importer.services[0].name.as_str();
+    assert_eq!(
+        runtime.revoked_links(&instance(), &importer.id, Some(&as_importer)),
+        Vec::new()
+    );
+    assert_eq!(
+        runtime.revoked_links(&instance(), &importer.id, Some(&importer)),
+        [(web, network.name.as_str())]
+    );
+
+    runtime.linked_networks = vec![network.clone()];
+    let as_exporter = exporter
+        .clone()
+        .with_links(std::slice::from_ref(&link), &runtime);
+    let mut runtime = observed(&as_exporter);
+    runtime.linked_networks = vec![network.clone()];
+    let web = as_exporter.services[0].name.as_str();
+    assert_eq!(
+        runtime.revoked_links(&instance(), &exporter.id, Some(&as_exporter)),
+        Vec::new()
+    );
+    for granted in [Some(&exporter), None] {
+        assert_eq!(
+            runtime.revoked_links(&instance(), &exporter.id, granted),
+            [(web, network.name.as_str())]
+        );
+    }
+    assert_eq!(
+        runtime.revoked_links(&instance(), &importer.id, None),
+        Vec::new(),
+        "only the environment's own services are detached"
+    );
 }

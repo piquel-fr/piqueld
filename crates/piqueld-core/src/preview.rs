@@ -288,13 +288,16 @@ impl crate::Plan {
         self.warn(links.imports.iter().filter_map(|import| {
             let reason = match import.state {
                 ImportState::Connected => return None,
-                ImportState::EnvironmentMissing => format!(
-                    "{} has no deployed environment {}; {} stays unreachable until it has one",
-                    import.application, import.environment, import.alias
+                ImportState::Unavailable => format!(
+                    "no deployed environment {} of {} exports {} to this environment; {} stays unreachable until one does",
+                    import.environment, import.application, import.service, import.alias
                 ),
-                ImportState::NotExported => format!(
-                    "{} {} does not export {} to this environment; {} stays unreachable until it does",
-                    import.application, import.environment, import.service, import.alias
+                ImportState::Full => format!(
+                    "{} {} already links to {} environments; {} stays unreachable until one of them stops importing from it",
+                    import.application,
+                    import.environment,
+                    crate::links::MAX_IMPORTERS,
+                    import.alias
                 ),
             };
             Some(PlanDiagnostic {

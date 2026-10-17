@@ -923,6 +923,73 @@ impl DockerApi for BollardDocker {
             )
             .await
     }
+    /// Removes the network from the inspected service's current
+    /// specification and updates it at the inspected version, so a pending
+    /// rollout is neither applied nor reverted.
+    async fn detach_network(
+        &self,
+        service: &str,
+        network: &str,
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        DockerTimeout::Request
+            .run(
+                "detach network",
+                Box::pin(async {
+                    let Some(existing) = self.inspect_service_wire(service).await? else {
+                        return Ok(());
+                    };
+                    let mut spec = existing
+                        .spec
+                        .ok_or(DockerError::Request("read existing service specification"))?;
+                    if !Self::owns_resource(
+                        spec.labels.clone().unwrap_or_default(),
+                        ownership,
+                        ResourceKind::Service,
+                        service,
+                    ) {
+                        return Err(DockerError::OwnershipConflict);
+                    }
+                    let network_id = match self
+                        .docker
+                        .inspect_network(network, None::<InspectNetworkOptions>)
+                        .await
+                    {
+                        Ok(inspected) => inspected.id,
+                        Err(bollard::errors::Error::DockerResponseServerError {
+                            status_code: 404,
+                            ..
+                        }) => return Ok(()),
+                        Err(error) => return Err(DockerError::request("inspect network", error)),
+                    };
+                    let Some(attachments) = spec
+                        .task_template
+                        .as_mut()
+                        .and_then(|template| template.networks.as_mut())
+                    else {
+                        return Ok(());
+                    };
+                    let attached = attachments.len();
+                    attachments.retain(|attachment| {
+                        let target = attachment.target.as_deref();
+                        target != Some(network) && target != network_id.as_deref()
+                    });
+                    if attachments.len() == attached {
+                        return Ok(());
+                    }
+                    let version = existing
+                        .version
+                        .and_then(|version| version.index)
+                        .ok_or(DockerError::Request("read existing service version"))?;
+                    let id = existing
+                        .id
+                        .as_deref()
+                        .ok_or(DockerError::Request("read existing service identity"))?;
+                    self.update_service_wire(id, version, &spec).await
+                }),
+            )
+            .await
+    }
     async fn start_job(&self, job: &piqueld_core::DesiredJobRun) -> Result<(), DockerError> {
         DockerTimeout::Request
             .run("start job", Box::pin(self.create_job(job)))

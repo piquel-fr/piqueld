@@ -1,5 +1,6 @@
 //! Private links between environments, resolved from their active targets.
 use super::{Store, StoreError};
+use piqueld_core::access::Scope;
 use piqueld_core::links::{Bindings, Link, LinkParty, LinkReport};
 use piqueld_core::manifest::{ValidatedExport, ValidatedImport};
 use piqueld_core::{
@@ -18,11 +19,12 @@ fn decode<T: serde::de::DeserializeOwned + Default>(json: Option<String>) -> Res
 impl Store {
     /// Every environment and preview that has deployed and is not being
     /// deleted, with the links its active target declares, plus `including`
-    /// whatever its state.
+    /// whatever its state. Oldest first, as [`piqueld_core::links::links`]
+    /// expects.
     async fn link_parties(&self, including: &EnvironmentId) -> Result<Vec<LinkParty>, StoreError> {
         let including = including.as_str();
         let rows = sqlx::query!(
-            r#"SELECT e.id AS "id!",e.name AS "name!",e.kind AS "kind!",a.id AS "application_id!",a.name AS "application!",json_extract(e.resolved_json,'$.exports') AS "exports: String",json_extract(e.resolved_json,'$.imports') AS "imports: String",json_extract(e.resolved_json,'$.bindings') AS "bindings: String" FROM environments e JOIN applications a ON a.id=e.application_id WHERE (e.resolved_json IS NOT NULL AND e.delete_intent=0 AND a.delete_intent=0) OR e.id=?1"#,
+            r#"SELECT e.id AS "id!",e.name AS "name!",e.kind AS "kind!",a.id AS "application_id!",a.name AS "application!",json_extract(e.resolved_json,'$.exports') AS "exports: String",json_extract(e.resolved_json,'$.imports') AS "imports: String",json_extract(e.resolved_json,'$.bindings') AS "bindings: String" FROM environments e JOIN applications a ON a.id=e.application_id WHERE (e.resolved_json IS NOT NULL AND e.delete_intent=0 AND a.delete_intent=0) OR e.id=?1 ORDER BY e.created_at_ms,e.id"#,
             including
         )
         .fetch_all(&self.pool)
@@ -158,14 +160,15 @@ impl Store {
     }
 
     /// Reports the links of `environment`: whether each of its imports
-    /// connects, and who imports its services. They are those it deploys, or
-    /// `own`, bound as deploying them would, when given.
+    /// connects, and who among `readable` imports its services. They are
+    /// those it deploys, or `own`, bound as deploying them would, when given.
     /// # Errors
     /// Returns storage or decoding errors.
     pub async fn link_report(
         &self,
         environment: &EnvironmentId,
         own: Option<(&[ValidatedExport], &[ValidatedImport])>,
+        readable: &Scope,
     ) -> Result<LinkReport, StoreError> {
         let parties = match own {
             Some((exports, imports)) => {
@@ -174,6 +177,6 @@ impl Store {
             }
             None => Box::pin(self.link_parties(environment)).await?,
         };
-        Ok(piqueld_core::links::report(environment, &parties))
+        Ok(piqueld_core::links::report(environment, &parties, readable))
     }
 }

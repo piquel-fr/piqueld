@@ -172,6 +172,14 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     ) -> Result<(), DockerError> {
         self.inner.remove_service(name, ownership).await
     }
+    async fn detach_network(
+        &self,
+        service: &str,
+        network: &str,
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        self.inner.detach_network(service, network, ownership).await
+    }
     async fn start_job(&self, job: &piqueld_core::DesiredJobRun) -> Result<(), DockerError> {
         self.inner.start_job(job).await
     }

@@ -10,11 +10,17 @@
 //! application holding it ([`bind`]): links then follow that application,
 //! renamed or not, and another one taking a freed name gains nothing.
 
+use crate::access::Scope;
 use crate::manifest::{ValidatedExport, ValidatedImport};
 use crate::{ApplicationId, ApplicationName, EnvironmentId, ServiceName};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
+
+/// Most environments that may link to one exporting environment. Each link
+/// attaches the exported services to one more network, so the oldest
+/// importers keep their links and newer ones wait for a free slot.
+pub const MAX_IMPORTERS: usize = 64;
 
 /// The application each name an environment's exports and imports use is
 /// bound to.
@@ -87,11 +93,13 @@ pub struct Link {
 pub enum ImportState {
     /// The service is reachable.
     Connected,
-    /// No environment of that name of the application has deployed.
-    EnvironmentMissing,
-    /// That environment does not export the service to this application, or
-    /// not to previews.
-    NotExported,
+    /// No deployed environment of that name exports the service to this
+    /// application, or to previews. Whether the environment exists is not
+    /// told apart, since the importer may not be allowed to see it.
+    Unavailable,
+    /// The environment exports the service, but already links to
+    /// [`MAX_IMPORTERS`] older environments.
+    Full,
 }
 
 /// One import of an environment and whether it connects.
@@ -164,71 +172,84 @@ impl LinkParty {
         })
     }
 
-    /// Resolves `import` among `parties`: the exporter it connects to, or why
-    /// it does not. Previews are never exporters.
-    fn resolve<'a>(
-        &self,
-        import: &ValidatedImport,
-        parties: &'a [Self],
-    ) -> Result<&'a Self, ImportState> {
-        let exporter = parties
-            .iter()
-            .find(|party| {
-                !party.preview
-                    && self.names(&import.application, party)
-                    && party.name == self.target(import)
-                    && party.environment != self.environment
-            })
-            .ok_or(ImportState::EnvironmentMissing)?;
-        if exporter.exports_to(&import.service, self) {
-            Ok(exporter)
-        } else {
-            Err(ImportState::NotExported)
-        }
+    /// The exporter `import` resolves to among `parties`, if one exports the
+    /// service to this environment. Previews are never exporters.
+    fn resolve<'a>(&self, import: &ValidatedImport, parties: &'a [Self]) -> Option<&'a Self> {
+        parties.iter().find(|party| {
+            !party.preview
+                && self.names(&import.application, party)
+                && party.name == self.target(import)
+                && party.environment != self.environment
+                && party.exports_to(&import.service, self)
+        })
     }
 }
 
 /// Every link between `parties`, one per importer and exporter pair.
+/// `parties` come oldest first: once an exporter links to [`MAX_IMPORTERS`]
+/// environments, newer ones get no link to it.
 #[must_use]
 pub fn links(parties: &[LinkParty]) -> Vec<Link> {
     let mut links = BTreeMap::<(&EnvironmentId, &EnvironmentId), Link>::new();
+    let mut importers = BTreeMap::<&EnvironmentId, usize>::new();
     for importer in parties {
         for import in &importer.imports {
-            if let Ok(exporter) = importer.resolve(import, parties) {
-                links
-                    .entry((&importer.environment, &exporter.environment))
-                    .or_insert_with(|| Link {
-                        importer: importer.environment.clone(),
-                        exporter: exporter.environment.clone(),
-                        exporter_application: exporter.application.clone(),
-                        services: BTreeSet::new(),
-                    })
-                    .services
-                    .insert(import.service.clone());
+            let Some(exporter) = importer.resolve(import, parties) else {
+                continue;
+            };
+            let key = (&importer.environment, &exporter.environment);
+            if !links.contains_key(&key) {
+                let count = importers.entry(&exporter.environment).or_default();
+                if *count == MAX_IMPORTERS {
+                    continue;
+                }
+                *count += 1;
             }
+            links
+                .entry(key)
+                .or_insert_with(|| Link {
+                    importer: importer.environment.clone(),
+                    exporter: exporter.environment.clone(),
+                    exporter_application: exporter.application.clone(),
+                    services: BTreeSet::new(),
+                })
+                .services
+                .insert(import.service.clone());
         }
     }
     links.into_values().collect()
 }
 
 /// Reports the links of `environment` among `parties`: each of its imports,
-/// and the environments importing its services.
+/// and the environments importing its services whose applications are in
+/// `readable`.
 #[must_use]
-pub fn report(environment: &EnvironmentId, parties: &[LinkParty]) -> LinkReport {
+pub fn report(environment: &EnvironmentId, parties: &[LinkParty], readable: &Scope) -> LinkReport {
     let Some(party) = parties
         .iter()
         .find(|party| &party.environment == environment)
     else {
         return LinkReport::default();
     };
+    let links = links(parties);
     let imports = party
         .imports
         .iter()
         .map(|import| {
-            let resolved = party.resolve(import, parties);
+            let exporter = party.resolve(import, parties);
+            let state = match exporter {
+                None => ImportState::Unavailable,
+                Some(exporter)
+                    if links.iter().any(|link| {
+                        link.importer == party.environment && link.exporter == exporter.environment
+                    }) =>
+                {
+                    ImportState::Connected
+                }
+                Some(_) => ImportState::Full,
+            };
             // A renamed exporter keeps the link, under its current name.
-            let application = resolved
-                .as_ref()
+            let application = exporter
                 .map_or(&import.application, |exporter| &exporter.application)
                 .clone();
             ImportStatus {
@@ -236,20 +257,26 @@ pub fn report(environment: &EnvironmentId, parties: &[LinkParty]) -> LinkReport 
                 application,
                 service: import.service.clone(),
                 environment: party.target(import).to_owned(),
-                state: resolved.map_or_else(|state| state, |_| ImportState::Connected),
+                state,
             }
         })
         .collect();
-    let mut importers = parties
+    let mut importers = links
         .iter()
-        .flat_map(|importer| {
-            importer.imports.iter().filter_map(move |import| {
-                let exporter = importer.resolve(import, parties).ok()?;
-                (&exporter.environment == environment).then(|| Importer {
-                    application: importer.application.clone(),
-                    environment: importer.name.clone(),
-                    service: import.service.clone(),
-                })
+        .filter(|link| &link.exporter == environment)
+        .filter_map(|link| {
+            let importer = parties
+                .iter()
+                .find(|party| party.environment == link.importer)?;
+            readable
+                .contains(&importer.application_id)
+                .then_some((importer, link))
+        })
+        .flat_map(|(importer, link)| {
+            link.services.iter().map(|service| Importer {
+                application: importer.application.clone(),
+                environment: importer.name.clone(),
+                service: service.clone(),
             })
         })
         .collect::<Vec<_>>();
@@ -329,12 +356,16 @@ mod tests {
         assert_eq!(links[0].exporter, parties[0].environment);
         assert_eq!(links[0].exporter_application.as_str(), "auth");
 
-        let report = report(&parties[3].environment, &parties);
-        assert_eq!(report.imports[0].state, ImportState::NotExported);
+        let report = report(&parties[3].environment, &parties, &Scope::All);
+        assert_eq!(report.imports[0].state, ImportState::Unavailable);
         assert_eq!(report.imports[0].alias, "api.auth");
-        let report = super::report(&parties[0].environment, &parties);
+        let report = super::report(&parties[0].environment, &parties, &Scope::All);
         assert_eq!(report.importers.len(), 1);
         assert_eq!(report.importers[0].application.as_str(), "notes");
+        // Readers who cannot see notes do not learn it imports anything.
+        let hidden = Scope::one(parties[0].application_id.clone());
+        let report = super::report(&parties[0].environment, &parties, &hidden);
+        assert_eq!(report.importers, Vec::new());
     }
 
     #[test]
@@ -349,14 +380,13 @@ mod tests {
         let mut parties = deployed(vec![auth, preview, missing]);
 
         assert_eq!(links(&parties), Vec::new());
-        assert_eq!(
-            report(&parties[1].environment, &parties).imports[0].state,
-            ImportState::NotExported
-        );
-        assert_eq!(
-            report(&parties[2].environment, &parties).imports[0].state,
-            ImportState::EnvironmentMissing
-        );
+        // Not exporting to previews and not existing look the same.
+        for party in &parties[1..] {
+            assert_eq!(
+                report(&party.environment, &parties, &Scope::All).imports[0].state,
+                ImportState::Unavailable
+            );
+        }
 
         parties[0].exports[0].previews = true;
         let links = links(&parties);
@@ -411,14 +441,14 @@ mod tests {
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].importer, parties[1].environment);
         assert_eq!(
-            report(&parties[2].environment, &parties).imports[0].state,
-            ImportState::NotExported
+            report(&parties[2].environment, &parties, &Scope::All).imports[0].state,
+            ImportState::Unavailable
         );
 
         // Renaming auth keeps notes' link, which reports auth's new name.
         let mut parties = parties;
         parties[0].application = ApplicationName::parse("identity").unwrap();
-        let report = report(&parties[1].environment, &parties);
+        let report = report(&parties[1].environment, &parties, &Scope::All);
         assert_eq!(report.imports[0].state, ImportState::Connected);
         assert_eq!(report.imports[0].alias, "api.identity");
     }
@@ -434,5 +464,35 @@ mod tests {
         notes.imports = vec![import("auth", "api", None)];
         let notes = deployed(vec![auth.clone(), notes]).remove(1);
         assert_eq!(links(&[auth, notes]).len(), 1);
+    }
+
+    #[test]
+    fn exporters_link_to_at_most_the_oldest_importers() {
+        let mut auth = party("auth", "auth", "staging");
+        auth.exports = vec![export("api", &["notes"], false)];
+        let mut parties = vec![auth];
+        for index in 0..=MAX_IMPORTERS {
+            let mut notes = party(&format!("notes{index}"), "notes", "staging");
+            notes.imports = vec![import("auth", "api", None)];
+            parties.push(notes);
+        }
+        let parties = deployed(parties);
+        let links = links(&parties);
+        assert_eq!(links.len(), MAX_IMPORTERS);
+        assert!(
+            links
+                .iter()
+                .all(|link| link.importer != parties[MAX_IMPORTERS + 1].environment)
+        );
+        assert_eq!(
+            report(
+                &parties[MAX_IMPORTERS + 1].environment,
+                &parties,
+                &Scope::All
+            )
+            .imports[0]
+                .state,
+            ImportState::Full
+        );
     }
 }

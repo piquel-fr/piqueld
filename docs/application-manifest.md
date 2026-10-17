@@ -1150,7 +1150,8 @@ what it deploys. Previews never export.
 that is only saved. It connects once both sides have deployed it, and goes away
 once either side deploys without it, is deleted, or starts being deleted: the
 exported service then leaves the link's network, and the network is removed.
-Deploying the other side is not needed; it adjusts within seconds. Deployments
+Deploying the other side is not needed; it adjusts within seconds, even while
+one of its services is failing or a deployment of it is running. Deployments
 never wait for a link: until the exporter deploys its export, `api.auth` does
 not resolve in `notes`, so its services should retry, as they would while
 `api` restarts. Joining or leaving a link rolls the exported service and the
@@ -1162,11 +1163,16 @@ link only once the importing deployment is promoted, after its jobs. A job
 that needs a new import therefore can't reach it on the deployment that adds
 it: deploy the import first.
 
+An environment links to at most 64 importing environments. The oldest keep
+their links, and imports of newer ones wait until a slot frees up.
+
 `env show` and the environment's Overview in the dashboard list each import
-and whether it connects, or why not: the environment has not deployed, or does
-not export the service to this environment. `app plan` warns about imports that
-would not connect (`import_unconnected`). They also list the environments
-importing an environment's services.
+and whether it connects, or why not: no deployed environment of that name
+exports the service to this environment, or it already links to 64. Whether
+that environment exists is not shown, since its application may be hidden from
+you. `app plan` warns about imports that would not connect
+(`import_unconnected`). They also list the environments importing an
+environment's services, from the applications you can read.
 
 **Names.** Exports and imports name applications, so manifests stay portable
 across installations. Deploying an environment binds each name its exports and

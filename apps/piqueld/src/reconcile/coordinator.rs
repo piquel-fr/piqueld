@@ -70,7 +70,7 @@ impl<D: DockerApi> Controller<D> {
                             for (application,operation) in applications {
                                 let operation_id=operation.id.clone();
                                 let id=application.id().clone();
-                                // Full scans refresh health, with at most one job per application.
+                                // Full scans refresh health and enforce links, with at most one job per application.
                                 if full && health_active.insert(id.clone()) {
                                     let health_id=id.clone();
                                     let health_operation=operation_id.clone();
@@ -80,7 +80,8 @@ impl<D: DockerApi> Controller<D> {
                                         let result=async {
                                             self.maintain_active(&health_id,&health_operation).await?;
                                             let observed=self.docker.observe(&health_id).await.map_err(super::OperationError::from)?;
-                                            self.store.record_health(&health_operation,&observed).await.map_err(super::OperationError::from)
+                                            self.store.record_health(&health_operation,&observed).await.map_err(super::OperationError::from)?;
+                                            self.enforce_links(&health_id,&health_operation,&observed).await
                                         }.await;
                                         if let Err(error)=result {
                                             if let Err(report_error)=self.record_scan_diagnostic(&health_id,&error.diagnostic(),&health_failures).await {
@@ -210,17 +211,36 @@ impl<D: DockerApi> Controller<D> {
         }
     }
 
-    /// Runs one concurrent observation/reconciliation pass, also used by runtime tests.
+    /// Runs one concurrent observation/reconciliation pass, also used by runtime
+    /// tests. Each environment then enforces its links, as full scans do.
     /// # Errors
     /// Returns a store error if environments cannot be discovered or processed.
     pub async fn scan(&self, cancellation: &CancellationToken) -> Result<(), StoreError> {
         let applications = self.discover(true).await?;
         let mut jobs = FuturesUnordered::new();
         let failures = ScanFailures::default();
-        for (application, _) in applications {
+        for (application, operation) in applications {
             let scan_failures = Arc::clone(&failures);
             jobs.push(async move {
-                Box::pin(self.scan_application(&application, cancellation, &scan_failures)).await
+                Box::pin(self.scan_application(&application, cancellation, &scan_failures)).await?;
+                let enforced = async {
+                    let observed = self.docker.observe(application.id()).await?;
+                    self.enforce_links(application.id(), &operation.id, &observed)
+                        .await
+                }
+                .await;
+                match enforced {
+                    Ok(()) => Ok(()),
+                    Err(super::OperationError::Journal(error)) => Err(error),
+                    Err(error) => {
+                        self.record_scan_diagnostic(
+                            application.id(),
+                            &error.diagnostic(),
+                            &scan_failures,
+                        )
+                        .await
+                    }
+                }
             });
         }
         while let Some(result) = jobs.next().await {
