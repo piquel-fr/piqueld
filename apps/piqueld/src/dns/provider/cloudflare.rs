@@ -260,7 +260,7 @@ mod tests {
         assert!(
             requests
                 .iter()
-                .all(|r| r.authorization.as_deref() == Some("Bearer token"))
+                .all(|r| r.header("authorization") == Some("Bearer token"))
         );
         assert_eq!(
             requests[2].body,

@@ -18,6 +18,7 @@ use piqueld_core::{api::DnsProviderStatus, manifest::Hostname};
 use provider::{DnsProvider, DnsProviderConfig, Zone};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
+use zones::Zones;
 
 /// The latest zone discovery of one provider.
 #[derive(Default)]
@@ -26,6 +27,18 @@ struct Discovery {
     zones: Vec<Zone>,
     /// The latest discovery failure, cleared by a success.
     error: Option<String>,
+}
+
+impl Discovery {
+    /// Every provider's zones, from their `discoveries`.
+    fn zones(discoveries: &[Self]) -> Zones<'_> {
+        Zones(
+            discoveries
+                .iter()
+                .map(|discovery| discovery.zones.as_slice())
+                .collect(),
+        )
+    }
 }
 
 /// Configured providers with their discovered zones.
@@ -133,20 +146,21 @@ impl Dns {
     /// No zone contains it, or its longest matching zone has two providers.
     pub async fn zone_for(&self, hostname: &Hostname) -> Result<(usize, Zone), ZoneError> {
         let discovered = self.discovered.read().await;
-        let zones: Vec<_> = discovered.iter().map(|d| d.zones.as_slice()).collect();
-        zones::owner(&zones, hostname).map(|(index, zone)| (index, zone.clone()))
+        Discovery::zones(&discovered)
+            .owner(hostname)
+            .map(|(index, zone)| (index, zone.clone()))
     }
 
     /// Per-provider kind, zones and discovery health.
     pub async fn status(&self) -> Vec<DnsProviderStatus> {
         let discovered = self.discovered.read().await;
-        let zones: Vec<_> = discovered.iter().map(|d| d.zones.as_slice()).collect();
+        let zones = Discovery::zones(&discovered);
         self.providers
             .iter()
             .zip(discovered.iter())
             .enumerate()
             .map(|(index, (config, discovery))| {
-                let conflicts = zones::conflicts(&zones, index);
+                let conflicts = zones.conflicts(index);
                 let message = match (&discovery.error, conflicts.is_empty()) {
                     (Some(error), _) => format!("Zone discovery failed: {error}"),
                     (None, false) => format!(

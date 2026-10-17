@@ -245,6 +245,15 @@ pub struct Zone {
 }
 
 impl Zone {
+    /// A zone whose provider handle is its name.
+    #[cfg(test)]
+    fn named(name: Hostname) -> Self {
+        Self {
+            id: name.to_string(),
+            name,
+        }
+    }
+
     /// `name` relative to the zone, as OVH names records; the apex is empty.
     fn relative<'a>(&self, name: &'a str) -> &'a str {
         name.strip_suffix(self.name.as_str())
@@ -451,7 +460,6 @@ pub(crate) mod tests {
         pub(crate) method: Method,
         /// Path with its query.
         pub(crate) path: String,
-        pub(crate) authorization: Option<String>,
         headers: axum::http::HeaderMap,
         /// JSON body, or `null` when empty.
         pub(crate) body: serde_json::Value,
@@ -491,10 +499,6 @@ pub(crate) mod tests {
                         .find(|(m, p, ..)| *m == method && *p == path)
                         .unwrap_or_else(|| panic!("unexpected request {method} {path}"));
                     requests.lock().await.push(Request {
-                        authorization: headers
-                            .get("authorization")
-                            .and_then(|v| v.to_str().ok())
-                            .map(Into::into),
                         method,
                         path,
                         headers,
