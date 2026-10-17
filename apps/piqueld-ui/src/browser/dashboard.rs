@@ -196,6 +196,7 @@ pub(super) fn OverviewPage() -> impl IntoView {
 /// DNS providers are configured and the caller holds `system:operate`, one
 /// that checks their credentials now.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn ReadinessPanel() -> impl IntoView {
     let context = dashboard_context();
     let signals = context.signals;

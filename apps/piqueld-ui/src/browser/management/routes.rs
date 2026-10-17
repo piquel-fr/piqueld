@@ -199,6 +199,7 @@ pub(super) fn RouteSettings() -> impl IntoView {
 
 /// Fields of route `index`: its hostname, name, visibility, and either the
 /// redirect or the service it leads to.
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 fn route_row(routes: RwSignal<Vec<RouteDraft>>, index: usize) -> AnyView {
     let context = editor();
     let destination = move || {

@@ -109,6 +109,7 @@ pub(super) fn ReleaseHistory(application: String) -> impl IntoView {
 /// unless it is `planned`: shown in such a deployment's plan, where it starts
 /// expanded. Also starts expanded when it matches `?release=`.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn ReleaseCard(release: ReleaseView, #[prop(optional)] planned: bool) -> impl IntoView {
     let context = editor();
     let selected = leptos_router::hooks::use_query_map()

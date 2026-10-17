@@ -14,6 +14,7 @@ use piqueld_client::Client;
 /// manifest the shown environment deploys; `fixed_service` scopes it to one
 /// service and hides the selector. Responses for an outdated filter are discarded and refetched.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -> impl IntoView {
     let context = editor();
     let logs = RwSignal::new(None::<piqueld_client::ApplicationLogs>);

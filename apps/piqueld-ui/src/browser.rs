@@ -1,11 +1,4 @@
 //! Leptos client-side-rendered dashboard routes and shared data services.
-// A component keeps one card's or page's markup together. `view!` markup is
-// long but flat, so its line count does not measure complexity, and
-// splitting components only to stay under it would scatter one view.
-#![allow(
-    clippy::too_many_lines,
-    reason = "view! markup is long but flat; see the comment above"
-)]
 
 mod access;
 mod auth;

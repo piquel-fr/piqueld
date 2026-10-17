@@ -160,6 +160,7 @@ fn bounds(bounds: Vec<DiagnosticView>) -> AnyView {
 /// The application's previews with their status and branch state, read when
 /// the tab opens and on refresh. "Prune gone" deletes those whose branch is gone.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn PreviewList() -> impl IntoView {
     let context = editor();
     // Listing runs a `git ls-remote` of the manifest repository, so it is

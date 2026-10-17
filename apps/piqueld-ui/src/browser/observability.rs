@@ -150,6 +150,7 @@ pub(super) fn ErrorsPage() -> impl IntoView {
 /// `?operation=` query filter; changing any filter or the operation resets to
 /// the newest page. Auto-refreshes via `Refresh`.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn EventHistory(
     #[prop(optional, into)] application: Option<String>,
     #[prop(optional, into)] environment: Option<String>,
@@ -636,6 +637,7 @@ pub(super) fn AnalyticsPage() -> impl IntoView {
         >
             {period.select(false, || {})}
         </PageHeader>
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
         {loaded(data, "Loading analytics…", analytics)}
     }
 }
