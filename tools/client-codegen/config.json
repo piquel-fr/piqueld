@@ -556,11 +556,6 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::observability::NotificationDelivery>>"
     },
     {
-      "schema": "Envelope_bool",
-      "name": "EnvelopeBool",
-      "rustType": "piqueld_core::api::Envelope<bool>"
-    },
-    {
       "schema": "EventScope",
       "name": "EventScope",
       "rustType": "piqueld_core::observability::EventScope"
