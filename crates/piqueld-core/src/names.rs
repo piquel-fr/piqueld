@@ -14,11 +14,18 @@
 //         Name, NameError, "error message", |value: &str| !value.is_empty()
 //     );
 macro_rules! validated_string {
-    ($(#[$meta:meta])* $name:ident, $error:ident, $message:literal, $validate:expr) => {
+    ($(#[$meta:meta])* $name:ident, $error:ident, $message:expr, $validate:expr) => {
         #[doc = concat!("Invalid `", stringify!($name), "` input.")]
-        #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-        #[error($message)]
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub struct $error;
+
+        impl std::fmt::Display for $error {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str($message)
+            }
+        }
+
+        impl std::error::Error for $error {}
 
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, utoipa::ToSchema)]
         $(#[$meta])*
@@ -80,6 +87,23 @@ macro_rules! validated_string {
     };
 }
 pub(crate) use validated_string;
+
+// Declares a logical name: a `validated_string!` checked by
+// `valid_logical_name`, whose error message starts with `$subject`, such as
+// "service names".
+macro_rules! logical_name {
+    ($(#[$meta:meta])* $name:ident, $error:ident, $subject:literal) => {
+        $crate::names::validated_string!(
+            $(#[$meta])*
+            $name, $error,
+            concat!(
+                $subject,
+                " must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit"
+            ),
+            $crate::resource::valid_logical_name
+        );
+    };
+}
 
 // Declares a fieldless enum whose variants each have one stable string form,
 // taken from a single `Variant => "form"` table, with `ALL`, `as_str`,
@@ -157,17 +181,13 @@ macro_rules! string_enum {
 }
 pub(crate) use string_enum;
 
-validated_string!(
+logical_name!(
     /// User-facing logical application name.
-    ApplicationName, ApplicationNameError,
-    "application names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    ApplicationName, ApplicationNameError, "application names"
 );
-validated_string!(
+logical_name!(
     /// User-facing environment name, unique within its application.
-    EnvironmentName, EnvironmentNameError,
-    "environment names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    EnvironmentName, EnvironmentNameError, "environment names"
 );
 validated_string!(
     /// A valid Git branch name, such as the branch a preview deploys.
@@ -175,11 +195,9 @@ validated_string!(
     "branch must be a valid Git branch name",
     crate::manifest::valid_git_branch
 );
-validated_string!(
+logical_name!(
     /// Distinguishes several previews of one branch, e.g. one per agent.
-    PreviewSlot, PreviewSlotError,
-    "preview slots must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    PreviewSlot, PreviewSlotError, "preview slots"
 );
 validated_string!(
     /// DNS-safe identifier of a preview, derived once by
@@ -197,36 +215,28 @@ impl From<PreviewSlug> for EnvironmentName {
     }
 }
 
-validated_string!(
+logical_name!(
     /// Logical service name, distinct from an application or volume name.
     ///
     /// ```compile_fail
     /// use piqueld_core::{ServiceName, VolumeName};
     /// let volume: VolumeName = ServiceName::parse("data").unwrap();
     /// ```
-    ServiceName, ServiceNameError,
-    "service names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    ServiceName, ServiceNameError, "service names"
 );
-validated_string!(
+logical_name!(
     /// Logical volume name, including references from service mounts.
-    VolumeName, VolumeNameError,
-    "volume names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    VolumeName, VolumeNameError, "volume names"
 );
-validated_string!(
+logical_name!(
     /// Optional stable name of a route, unique within its application. Every
     /// environment and preview renders the same routes, so a name selects the
     /// same route in each, whatever hostname it renders.
-    RouteName, RouteNameError,
-    "route names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    RouteName, RouteNameError, "route names"
 );
-validated_string!(
+logical_name!(
     /// Logical one-shot job name.
-    JobName, JobNameError,
-    "job names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    JobName, JobNameError, "job names"
 );
 
 #[cfg(test)]
