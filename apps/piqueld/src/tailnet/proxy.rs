@@ -229,6 +229,14 @@ mod tests {
 
     #[tokio::test]
     async fn reads_ipv4_and_ipv6_clients_and_leaves_the_payload() {
+        // Client, then destination, addresses and ports, as the relays write them.
+        assert_eq!(
+            v4_header(),
+            header(
+                TCP_V4,
+                &[100, 64, 0, 1, 100, 64, 0, 2, 0x9c, 0x40, 0x01, 0xbb]
+            )
+        );
         let mut v4 = v4_header();
         v4.extend(b"GET /");
         let mut stream = v4.as_slice();
