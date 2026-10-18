@@ -1,5 +1,5 @@
 //! Transactional hostname ownership and the gateway's durable routing projection.
-use super::{Store, StoreError, access::scope_json};
+use super::{Store, StoreError, auth::access::scope_json};
 use piqueld_core::{
     EnvironmentId,
     access::Scope,

@@ -1,7 +1,7 @@
 //! Upgrade coverage for environment identity, captured targets and encrypted secrets.
-use super::testing::template;
-use super::*;
 use crate::api;
+use crate::store::testing::template;
+use crate::store::*;
 use piqueld_core::manifest::ApplicationTemplate;
 
 struct LegacyApplication {
@@ -18,7 +18,7 @@ impl LegacyApplication {
         let id = ApplicationId::parse("app-legacy-01").unwrap();
         let manifest = piqueld_core::parse_toml(&format!(
             "{}\n[[spec.services.secrets]]\nname='token'\ntarget='/run/secrets/token'\n[[spec.routes]]\nhostname='notes.example.com'\nservice='web'\nport=80",
-            include_str!("../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml")
+            include_str!("../../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml")
         ))
         .unwrap()
         .normalize(id.clone());

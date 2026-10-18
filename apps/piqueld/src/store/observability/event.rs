@@ -1,6 +1,6 @@
 //! Immutable diagnostic history, independent of operation retention.
-use super::access::{Visibility, scope_json};
-use super::{
+use crate::store::auth::access::{Visibility, scope_json};
+use crate::store::{
     ApplicationId, EnvironmentId, Paging, Store, StoreError, days_ago_ms, decode_name, new_id,
     now_ms,
 };
@@ -18,7 +18,7 @@ impl Store {
     /// For a failed operation it attaches a diagnostic, reusing the one already
     /// recorded for the same attempt and error code so repeated events share one
     /// occurrence ID.
-    pub(super) async fn operation_event(
+    pub(in crate::store) async fn operation_event(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
         kind: &str,
@@ -224,7 +224,7 @@ impl Store {
         diagnostic: &Diagnostic,
         request_id: Option<&str>,
         application: Option<&EnvironmentId>,
-        actor: super::Attribution<'_>,
+        actor: crate::store::Attribution<'_>,
     ) -> Result<(), StoreError> {
         let mut diagnostic = diagnostic.clone();
         if application.is_none() {
@@ -261,7 +261,7 @@ impl Store {
 
     /// Records an informational `kind` event about environment `id`, in its
     /// application's history, outside any operation.
-    pub(super) async fn environment_event_on(
+    pub(in crate::store) async fn environment_event_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
         kind: &str,
@@ -289,7 +289,7 @@ impl Store {
     /// Returns storage errors.
     pub(crate) async fn record_environment_event(
         &self,
-        actor: super::Attribution<'_>,
+        actor: crate::store::Attribution<'_>,
         application: &ApplicationId,
         environment: &EnvironmentId,
         kind: &str,
@@ -361,7 +361,7 @@ impl Store {
         application: Option<&EnvironmentId>,
     ) {
         tracing::error!(diagnostic_id=%diagnostic.id, code=%diagnostic.code, summary=%diagnostic.summary, "control-plane failure");
-        let daemon = super::Attribution::default();
+        let daemon = crate::store::Attribution::default();
         if let Err(error) = self
             .record_diagnostic(diagnostic, None, application, daemon)
             .await

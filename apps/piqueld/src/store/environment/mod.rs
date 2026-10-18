@@ -1,6 +1,9 @@
 //! Environments: deployable units with their own operations, status, and
 //! resolved targets, deploying their application's shared manifest or
-//! releases promoted from another environment.
+//! releases promoted from another environment. The ones a manifest manages
+//! converge in `declaration`.
+mod declaration;
+
 use super::{
     ApplicationId, ApplicationState, EnvironmentId, EnvironmentOwner, EnvironmentPage,
     EnvironmentStatus, Operation, OperationKind, Paging, ResolvedApplication, Store, StoreError,
@@ -641,3 +644,6 @@ impl Store {
         Ok(EnvironmentPage { items, next_cursor })
     }
 }
+
+#[cfg(test)]
+mod tests;

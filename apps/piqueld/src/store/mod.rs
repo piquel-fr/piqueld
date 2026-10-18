@@ -2,29 +2,26 @@
 //! environment commands; Docker planning and execution belong to the controller.
 
 mod acceptance;
-mod access;
 mod application;
 mod audit;
 mod auth;
 mod build;
-mod declaration;
 mod deployment;
 mod environment;
-mod event;
 mod images;
 pub(crate) mod ingress;
 mod jobs;
 mod journal;
 mod links;
-mod notifications;
 mod observability;
-pub use access::{Actor, Attribution, Caller, EnvironmentOwner, Visibility};
 pub(crate) use audit::NewAuditEvent;
+pub use auth::access::{Actor, Attribution, Caller, EnvironmentOwner, Visibility};
 pub use auth::{CredentialKind, Lockout};
-pub(crate) use auth::{Invitation, NewCredential, NewInvitation, NewPasskey, PasskeyOwner};
+pub(crate) use auth::{
+    Invitation, NewCredential, NewInvitation, NewPasskey, PasskeyOwner, SecurityEvent,
+};
 pub(crate) use journal::JournalAction;
 pub(crate) use secret::SecretDeletion;
-pub(crate) use security::SecurityEvent;
 mod operation;
 mod preview;
 mod promotion;
@@ -33,7 +30,6 @@ pub use promotion::{Promotion, PromotionCandidate, PromotionError};
 mod release;
 mod repository;
 mod secret;
-mod security;
 mod status;
 mod sync;
 pub(crate) use sync::{BranchHead, SyncApplication};
@@ -1102,15 +1098,6 @@ impl StoredEnvironmentRow {
 
 #[cfg(test)]
 mod testing;
-
-#[cfg(test)]
-mod observability_tests;
-
-#[cfg(test)]
-mod environment_tests;
-
-#[cfg(test)]
-mod preview_tests;
 
 #[cfg(test)]
 mod tests {

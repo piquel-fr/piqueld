@@ -1,7 +1,7 @@
 //! Grant storage. Each `auth_grants` row grants one permission on one
 //! application, or on every application when `application_id` is NULL, to
 //! exactly one account, credential, or invitation.
-use super::{Store, StoreError, now_secs};
+use crate::store::{Store, StoreError, now_secs};
 use piqueld_core::{
     ApplicationId, EnvironmentId,
     access::{AppPermission, Grants, Permission, Scope, Target},
@@ -225,7 +225,7 @@ impl Caller<'_> {
     /// since authentication is `CredentialRevoked`.
     pub(crate) async fn load(self, db: &mut SqliteConnection) -> Result<Authority, StoreError> {
         let now = now_secs();
-        let idle = now - super::auth::SESSION_IDLE_SECS;
+        let idle = now - super::SESSION_IDLE_SECS;
         let row = sqlx::query!(
             r#"SELECT user_id,scoped AS "scoped: bool" FROM auth_credentials WHERE id=?1 AND (expires_at IS NULL OR expires_at>?2) AND (kind!='browser' OR last_used_at>?3)"#,
             self.credential_id,
@@ -424,7 +424,7 @@ impl Store {
 
     /// Commits a change to accounts, credentials, or grants and notifies
     /// [`Self::access_changes`].
-    pub(super) async fn commit_access_change(
+    pub(in crate::store) async fn commit_access_change(
         &self,
         tx: sqlx::Transaction<'_, sqlx::Sqlite>,
     ) -> Result<(), StoreError> {
@@ -509,10 +509,10 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testing::template;
-    use super::super::{CredentialKind, NewCredential};
     use super::*;
     use crate::api::{Actor, Mutation, MutationResponse};
+    use crate::store::testing::template;
+    use crate::store::{CredentialKind, NewCredential};
     use piqueld_core::access::{AppPermission, Preset};
 
     /// The actor `alice`'s session (see `Store::seed_caller`) records as.

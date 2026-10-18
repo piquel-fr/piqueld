@@ -1,7 +1,7 @@
 //! Environments the manifest manages (see `piqueld_core::manifest::declaration`):
 //! converging an application's environments to the ones its manifest
 //! declares, and refusing imperative changes to declared ones.
-use super::{Store, StoreError, environment::SourceWrite};
+use crate::store::{Store, StoreError, environment::SourceWrite};
 use piqueld_core::manifest::{
     ApplicationSpec, ApplicationTemplate, Declaration, DeclaredSource, EnvironmentChange,
     EnvironmentConfig,
@@ -17,7 +17,7 @@ impl Store {
     /// Refuses to create or delete environment `name` while `application`'s
     /// saved manifest declares it: its `[spec.environments.<name>]` block
     /// decides whether it exists.
-    pub(super) fn check_undeclared(
+    pub(in crate::store) fn check_undeclared(
         application: &ApplicationTemplate,
         name: &EnvironmentName,
     ) -> Result<(), StoreError> {
@@ -27,7 +27,7 @@ impl Store {
     /// Refuses to change the source or sync of environment `name` while its
     /// block in `application`'s saved manifest sets them (see
     /// `EnvironmentConfig::sets_source`).
-    pub(super) fn check_source_undeclared(
+    pub(in crate::store) fn check_source_undeclared(
         application: &ApplicationTemplate,
         name: &EnvironmentName,
     ) -> Result<(), StoreError> {
@@ -67,7 +67,7 @@ impl Store {
     /// application revision; returns whether it changed the source of an
     /// environment with a deployment in progress, for which the caller must
     /// (see `write_source_on`). Saving the manifest always does.
-    pub(super) async fn converge_environments_on(
+    pub(in crate::store) async fn converge_environments_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &ApplicationId,
         declarations: &[Declaration],
@@ -99,7 +99,8 @@ impl Store {
                     let id = if creating && environment == EnvironmentName::default_name() {
                         EnvironmentId::default_for(application)
                     } else {
-                        EnvironmentId::parse(super::new_id("env")).map_err(StoreError::corrupt)?
+                        EnvironmentId::parse(crate::store::new_id("env"))
+                            .map_err(StoreError::corrupt)?
                     };
                     Self::insert_environment_on(
                         tx,
@@ -130,7 +131,9 @@ impl Store {
                         )
                         .await
                         {
-                            Err(StoreError::Promotion(super::PromotionError::Cycle { .. })) => {
+                            Err(StoreError::Promotion(crate::store::PromotionError::Cycle {
+                                ..
+                            })) => {
                                 continue;
                             }
                             checked => checked?,
@@ -184,7 +187,7 @@ impl Store {
         tx: &mut Transaction<'_, Sqlite>,
         live: &BTreeMap<EnvironmentName, EnvironmentId>,
         name: &EnvironmentName,
-    ) -> Result<super::StoredEnvironment, StoreError> {
+    ) -> Result<crate::store::StoredEnvironment, StoreError> {
         let id = live.get(name).ok_or(StoreError::NotFound)?;
         Self::environment_on(tx, id.as_str())
             .await?
@@ -199,7 +202,7 @@ impl Store {
     /// a block that leaves its source as it is: editing configuration never
     /// changes which environments the manifest reports, or where they deploy
     /// from. `before` is the saved manifest, `after` the edited one.
-    pub(super) async fn declare_edited_on(
+    pub(in crate::store) async fn declare_edited_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &ApplicationId,
         before: &ApplicationSpec,

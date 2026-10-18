@@ -1,5 +1,5 @@
 //! Build records outlive operation retention; output is chunked and bounded.
-use super::access::scope_json;
+use super::auth::access::scope_json;
 use super::{Paging, Store, StoreError, days_ago_ms, decode_name, now_ms};
 use piqueld_core::access::Scope;
 use piqueld_core::{

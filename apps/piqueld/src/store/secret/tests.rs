@@ -674,7 +674,7 @@ async fn developer(store: &Store) -> crate::store::Actor<'static> {
 async fn demote_developer(store: &Store) -> piqueld_core::access::Denied {
     use piqueld_core::access::{AppPermission, Denied, Permission, Preset, Scope};
     let mut db = store.pool.acquire().await.unwrap();
-    super::super::access::Holder::User("dev")
+    crate::store::auth::access::Holder::User("dev")
         .replace(&mut db, &Preset::ReadOnly.grants(&Scope::All))
         .await
         .unwrap();

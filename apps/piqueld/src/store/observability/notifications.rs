@@ -1,6 +1,6 @@
 //! Durable notification conditions and delivery outbox, driven by committed events.
-use super::{Paging, Store, StoreError, new_id, now_ms, seconds_ms};
 use crate::config::{NotificationConfig, WebhookDestination};
+use crate::store::{Paging, Store, StoreError, new_id, now_ms, seconds_ms};
 use piqueld_core::{
     Event,
     api::Page,
@@ -100,7 +100,7 @@ impl Store {
     /// Returns absence, disabled delivery or storage errors.
     pub async fn retry_delivery(
         &self,
-        actor: super::Actor<'_>,
+        actor: crate::store::Actor<'_>,
         id: &str,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
@@ -351,7 +351,7 @@ impl Store {
         }
         // Security events and daemon starts each notify; neither is a
         // condition that recovers.
-        if super::SecurityEvent::parse(&event.kind).is_some() {
+        if crate::store::SecurityEvent::parse(&event.kind).is_some() {
             let security = NotificationCategory::Security;
             return Self::enqueue(tx, &self.notifications, event.id, security).await;
         }

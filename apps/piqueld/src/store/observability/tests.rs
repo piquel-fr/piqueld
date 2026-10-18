@@ -1,8 +1,8 @@
 //! Behavioral tests for durable diagnostics, deletion, crash recovery and delivery policies.
-use super::testing::template;
-use super::*;
 use crate::api::{Mutation, MutationResponse};
 use crate::config::{DaemonConfig, WebhookDestination, WebhookKind};
+use crate::store::testing::template;
+use crate::store::*;
 use piqueld_core::observability::{
     DeliveryState, Diagnostic, EventFilter, EventScope, NotificationCategory,
 };

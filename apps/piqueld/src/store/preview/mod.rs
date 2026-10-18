@@ -481,3 +481,6 @@ impl PreviewOrigins {
         self.current.or(self.latest).unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+mod tests;

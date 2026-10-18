@@ -1,5 +1,5 @@
 //! Atomic acceptance: compare current intent, write the change and its replay receipt together.
-use super::access::{EnvironmentOwner, Holder};
+use super::auth::access::{EnvironmentOwner, Holder};
 use super::{Actor, Operation, OperationKind, Store, StoreError, StoredApplication, now_ms};
 use crate::api::{Mutation, MutationResponse, PreviewMutation, PromotionMutation};
 use piqueld_core::access::{AppPermission, Grants, Target};
@@ -25,7 +25,7 @@ enum Checked {
     /// A new request.
     New {
         /// The caller's authority; `None` for the daemon and the host operator.
-        caller: Option<super::access::Authority>,
+        caller: Option<super::auth::access::Authority>,
         /// Whether it creates an application.
         creating: bool,
     },

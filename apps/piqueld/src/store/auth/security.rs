@@ -1,7 +1,7 @@
 //! Security events: daemon history about access to the daemon itself. Each
 //! is delivered as a `security` notification (see `process_notification_event`).
-use super::access::Holder;
-use super::{Attribution, NewCredential, Store, StoreError, now_ms};
+use crate::store::auth::access::Holder;
+use crate::store::{Attribution, NewCredential, Store, StoreError, now_ms};
 use piqueld_core::access::Grants;
 use sqlx::SqliteConnection;
 
@@ -150,7 +150,7 @@ impl Store {
     /// Raises [`SecurityEvent::DenialBurst`] when a just-recorded refusal
     /// brings its address and account to [`DENIAL_BURST`] refusals within a
     /// minute, unless they raised one within [`DENIAL_BURST_COOLDOWN_MS`].
-    pub(super) async fn check_denial_burst_on(
+    pub(in crate::store) async fn check_denial_burst_on(
         db: &mut SqliteConnection,
         peer: Option<&str>,
         actor: Attribution<'_>,

@@ -1,8 +1,8 @@
 //! Preview lifecycle: idempotent creation without the application revision,
 //! separation from environments, and shared secret access.
-use super::*;
 use crate::api::Actor::Daemon;
 use crate::api::{Mutation, MutationResponse, PreviewMutation};
+use crate::store::*;
 use piqueld_core::{
     GitBranch, PreviewSlot,
     access::Scope,
@@ -497,7 +497,7 @@ async fn local_snapshot_previews_are_not_pruned_nor_promotion_sources() {
     assert!(matches!(
         accept(promoted).await,
         Err(StoreError::Promotion(
-            super::PromotionError::SourceInvalid { .. }
+            crate::store::PromotionError::SourceInvalid { .. }
         ))
     ));
 

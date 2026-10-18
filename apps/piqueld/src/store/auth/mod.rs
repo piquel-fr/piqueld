@@ -5,8 +5,12 @@
 //! behind the shared writer, and account changes refuse to lock everyone out.
 //! Changes to an account take the [`Caller`], whose authority over the account
 //! is checked against both sides' current grants inside the same transaction.
-use super::access::{Authority, Caller, Holder};
+pub(super) mod access;
+mod security;
+pub(crate) use security::SecurityEvent;
+
 use super::{Actor, Attribution, Store, StoreError, now_secs};
+use access::{Authority, Caller, Holder};
 use piqueld_core::access::{GlobalPermission, Grants, Permission};
 use piqueld_core::auth::{
     Account, CredentialView, Directory, HostOperator, InvitationView, OperatorSessionView,

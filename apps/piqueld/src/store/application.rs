@@ -336,7 +336,7 @@ impl Store {
             .transpose()
             .map_err(StoreError::invalid_input)?;
         let after = after.as_ref().map_or("", ApplicationId::as_str);
-        let visible = super::access::scope_json(visible);
+        let visible = super::auth::access::scope_json(visible);
         let mut tx = self.snapshot().await?;
         let mut rows = sqlx::query!(
             r#"SELECT id AS "id!",name,generation,delete_intent,created_at_ms,updated_at_ms FROM applications WHERE id>?1 AND (?3 IS NULL OR id IN (SELECT value FROM json_each(?3))) ORDER BY id LIMIT ?2"#,
